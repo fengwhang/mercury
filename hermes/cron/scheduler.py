@@ -5717,10 +5717,43 @@ def run_job(
                 _omp_env.setdefault(_k, _v)
 
         _job_workdir_omp = (job.get("workdir") or "").strip() or _repo
+        _omp_timeout = int(os.environ.get("OMP_DIRECT_TIMEOUT", "1800"))
+
+        # -------------------------------------------------------------
+        # MERCURY-OMP PATCH (C1 slice 2b): RPC-first transport. Approval
+        # gates in the omp child route into the mercury guard stack
+        # (hardline floor / deny rules / smart guardian) instead of
+        # failing closed headless. The helper returns None ONLY when the
+        # RPC child could not START (kill-switch, missing transport, no
+        # ready frame — never after the prompt was sent), in which case
+        # the -p one-shot below runs as fallback. A tuple return is
+        # FINAL: a started-RPC failure is never retried on the one-shot
+        # (double-execution hazard for side-effecting tasks).
+        # -------------------------------------------------------------
+        try:
+            from cron.omp_direct_rpc import omp_direct_rpc_attempt
+        except Exception:
+            logger.debug("Job '%s': omp_direct_rpc import failed", job_id, exc_info=True)
+            _rpc_result = None
+        else:
+            _rpc_result = omp_direct_rpc_attempt(
+                omp_bin=_omp_bin,
+                model=_env_model,
+                prompt=_omp_prompt,
+                env=_omp_env,
+                workdir=_job_workdir_omp,
+                timeout=_omp_timeout,
+                job_id=job_id,
+                job_name=job_name,
+                now_iso=_hermes_now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        if _rpc_result is not None:
+            return _rpc_result
+
         try:
             _proc = _sp.run(
                 [_omp_bin, "--model", _env_model, "-p", _omp_prompt],
-                capture_output=True, text=True, timeout=int(os.environ.get("OMP_DIRECT_TIMEOUT", "1800")),
+                capture_output=True, text=True, timeout=_omp_timeout,
                 cwd=_job_workdir_omp, env=_omp_env,
             )
         except _sp.TimeoutExpired:
