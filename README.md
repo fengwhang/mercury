@@ -13,8 +13,13 @@ and those subagents can spawn subagents of their own.
 ## Quick install (Linux / macOS / WSL2)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash -s -- https://github.com/fengwhang/mercury/releases/download/v0.0.1/mercury-0.0.1.tar.gz
+curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash -s -- https://github.com/fengwhang/mercury/releases/download/v0.0.1/mercury-0.0.1.tar.gz && source ~/.bashrc
 ```
+
+(zsh: `&& source ~/.zshrc` · fish: `&& source ~/.config/fish/config.fish`)
+
+The trailing `source` runs in YOUR shell (the pipe only covers the install),
+so `mercury` works in the current terminal immediately — no new terminal needed.
 
 One interactive session: preflight → uv + pinned venv → unpack the prebuilt
 engines (no bun, no rust needed) → **`mercury setup` — the full wizard:
