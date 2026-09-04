@@ -447,7 +447,7 @@ main() {
 
 if [ -n "$ENSURE_DEPS" ]; then
     detect_system
-    INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-$HOME/.local/share/mercury}"
+    INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-$HOME/.mercury/mercury-agent}"
     install_uv
     for d in ${ENSURE_DEPS//,/ }; do
         case $d in

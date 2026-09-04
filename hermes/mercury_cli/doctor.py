@@ -2215,8 +2215,10 @@ def run_doctor(args):
             _cmd_link_dir = Path(_prefix) / "bin"
             _cmd_link_display = "$PREFIX/bin"
         else:
-            _cmd_link_dir = Path.home() / ".local" / "bin"
-            _cmd_link_display = "~/.local/bin"
+            # MERCURY LAYOUT: command lives at $MERCURY_HOME/bin (single home)
+            from mercury_constants import get_command_link_dir
+            _cmd_link_dir = get_command_link_dir()
+            _cmd_link_display = "~/.mercury/bin"
         _cmd_link = _cmd_link_dir / "mercury"
 
         if _venv_bin is None:
@@ -2267,7 +2269,7 @@ def run_doctor(args):
                     if str(_cmd_link_dir) not in _path_dirs:
                         check_warn(
                             f"{_cmd_link_display} is not on your PATH",
-                            "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")"
+                            "(add it to your shell config: export PATH=\"$HOME/.mercury/bin:$PATH\")"
                         )
                         manual_issues.append(f"Add {_cmd_link_display} to your PATH")
                 else:

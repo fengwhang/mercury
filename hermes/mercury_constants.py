@@ -1696,6 +1696,31 @@ def get_env_path() -> Path:
 # ─── Network Preferences ─────────────────────────────────────────────────────
 
 
+
+
+def get_command_link_dir() -> Path:
+    """MERCURY LAYOUT (user rule): everything lives under ~/.mercury.
+
+    The single location for the ``mercury`` command and all managed
+    binaries (uv, browser-use): ``$MERCURY_HOME/bin`` (default
+    ``~/.mercury/bin``). There is NO other location — not ~/.local/bin,
+    not /usr/local/bin. Every surface that needs the command-link
+    directory (installer logic mirrors, doctor checks, desktop entries,
+    profile wrappers, PATH advice) resolves it HERE so the layout can
+    never drift between components again.
+    """
+    mercury_home = os.environ.get("MERCURY_HOME", "").strip()
+    base = Path(mercury_home) if mercury_home else _get_platform_default_hermes_home()
+    return base / "bin"
+
+
+def get_install_root() -> Path:
+    """Code tree location: ``$MERCURY_HOME/mercury-agent`` (single home)."""
+    mercury_home = os.environ.get("MERCURY_HOME", "").strip()
+    base = Path(mercury_home) if mercury_home else _get_platform_default_hermes_home()
+    return base / "mercury-agent"
+
+
 def apply_ipv4_preference(force: bool = False) -> None:
     """Monkey-patch ``socket.getaddrinfo`` to prefer IPv4 connections.
 

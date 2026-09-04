@@ -11201,7 +11201,7 @@ def cmd_profile(args):
                             print(
                                 "  Add to your shell config (~/.bashrc or ~/.zshrc):"
                             )
-                            print('    export PATH="$HOME/.local/bin:$PATH"')
+                            print('    export PATH="$HOME/.mercury/bin:$PATH"')
 
             # Profile dir for display
             try:

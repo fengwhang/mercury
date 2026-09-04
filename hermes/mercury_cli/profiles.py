@@ -310,8 +310,9 @@ def _get_active_profile_path() -> Path:
 
 
 def _get_wrapper_dir() -> Path:
-    """Return the directory for wrapper scripts."""
-    return Path.home() / ".local" / "bin"
+    """Return the directory for wrapper scripts (MERCURY LAYOUT: $MERCURY_HOME/bin)."""
+    from mercury_constants import get_command_link_dir
+    return get_command_link_dir()
 
 
 # ---------------------------------------------------------------------------

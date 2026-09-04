@@ -471,14 +471,20 @@ def _known_wrapper_candidates():
     (``$PREFIX/bin``). The wrapper is always named ``mercury``.
     """
     candidates = []
-    home = Path.home()
     prefix = os.environ.get("PREFIX")
     if prefix:
         candidates.append(Path(prefix) / "bin" / "mercury")
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        candidates.append(Path("/usr/local/bin/mercury"))
-    candidates.append(home / ".local" / "bin" / "mercury")
+    # MERCURY LAYOUT (user rule): the ONE command location is
+    # $MERCURY_HOME/bin/mercury. Legacy locations are appended ONLY as
+    # last-resort probes for pre-layout migrations, never created.
+    from mercury_constants import get_command_link_dir
+    candidates.append(get_command_link_dir() / "mercury")
+    candidates.append(home_fallback_local_bin())
     return candidates
+
+
+def home_fallback_local_bin() -> Path:
+    return Path.home() / ".local" / "bin" / "mercury"
 
 
 def _project_root() -> Path:
