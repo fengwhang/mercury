@@ -1,0 +1,2 @@
+hermes: NousResearch/hermes-agent v2026.8.31 (v0.21.0) commit 29112be
+omp:    can1357/oh-my-pi v18.1.6 commit d2d2c17

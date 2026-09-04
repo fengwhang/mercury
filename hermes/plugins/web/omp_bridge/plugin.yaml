@@ -1,0 +1,8 @@
+name: web-omp-bridge
+version: 1.0.0
+description: "omp-bridged web providers — hermes gains omp's ENTIRE search/scrape registry (zai, kagi, perplexity, kimi, tavily, ...) via the __omp_worker_bridge_search pipe. Same env keys serve both engines."
+author: hermes-omp
+kind: backend
+provides_web_providers:
+  - omp-bridge
+  - zai

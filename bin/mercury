@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# mercury — the ONE entrypoint of the Mercury distribution (F0).
+#
+# HERMES-OMP PATCH (test-drive gate #1): this launcher is the single place
+# that composes the environment for both halves of the distribution. Nothing
+# else ever hardcodes paths (F0 rule). Both engines are pointed at the ONE
+# state tree (MERCURY_HOME) via env indirection — NEVER symlinks (user
+# decision 2026-09-04).
+#
+# Layout materialized on boot:
+#   MERCURY_HOME (default ~/.mercury)
+#     config.yaml     ← THE one config (MERCURY_CONFIG; created by setup, not here)
+#     skills/         ← THE one skills library (both read, both write — F4)
+#     SOUL.md MEMORY.md USER.md   ← the one memory trio (hermes-owned — F3)
+#     hermes/         ← hermes-private state via HERMES_HOME
+#     omp/            ← omp-private state via PI_CODING_AGENT_DIR
+#
+# Env composition (defaults; every one overridable except HERMES_HOME,
+# which is FORCED — see below):
+#   MERCURY_HOME, MERCURY_CONFIG, MERCURY_SKILLS_DIR, MERCURY_MEMORY_DIR,
+#   HERMES_OMP_BIN, MERCURY_REPO, PI_CODING_AGENT_DIR.
+#
+# Dispatch: exec python -m mercury_cli.main "$@" — argv passes through
+# byte-for-byte (the `omp` subcommand is intercepted pre-argparse inside
+# main.py, NB-2). `--print-env` (as FIRST arg) prints the composed env and
+# exits — launcher self-inspection, never reaches the CLI.
+
+set -euo pipefail
+
+# --------------------------------------------------------------------------
+# Locate the distribution repo: MERCURY_REPO > the repo this script lives in
+# (installed at <repo>/bin/mercury).
+# --------------------------------------------------------------------------
+if [[ -n "${MERCURY_REPO:-}" ]]; then
+    REPO="${MERCURY_REPO%/}"
+else
+    SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+    REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
+fi
+if [[ ! -f "$REPO/hermes/pyproject.toml" ]]; then
+    echo "mercury: no distribution repo at $REPO (need hermes/pyproject.toml)." >&2
+    echo "mercury: set MERCURY_REPO or install bin/mercury inside the repo." >&2
+    exit 1
+fi
+export MERCURY_REPO="$REPO"
+
+# --------------------------------------------------------------------------
+# The ONE state tree.
+# --------------------------------------------------------------------------
+MERCURY_HOME="${MERCURY_HOME:-$HOME/.mercury}"
+export MERCURY_HOME
+mkdir -p "$MERCURY_HOME/skills" "$MERCURY_HOME/hermes" "$MERCURY_HOME/omp"
+
+export MERCURY_CONFIG="${MERCURY_CONFIG:-$MERCURY_HOME/config.yaml}"
+export MERCURY_SKILLS_DIR="${MERCURY_SKILLS_DIR:-$MERCURY_HOME/skills}"
+# The memory trio (SOUL/MEMORY/USER.md) lives at the MERCURY_HOME top level.
+export MERCURY_MEMORY_DIR="${MERCURY_MEMORY_DIR:-$MERCURY_HOME}"
+
+# --------------------------------------------------------------------------
+# hermes half. HERMES_HOME is FORCED, not inherited: an ambient HERMES_HOME
+# (e.g. a stock install exporting it) must never point the fork at the
+# standing install's state. Same for PI_CODING_AGENT_DIR on the omp side —
+# ambient values are how two installs silently share (and corrupt) state.
+# --------------------------------------------------------------------------
+# Snapshot the AMBIENT hermes home BEFORE forcing ours — first-boot .env
+# inheritance reads credentials from where the user actually came from.
+_AMBIENT_HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+export HERMES_HOME="$MERCURY_HOME/hermes"
+export PI_CODING_AGENT_DIR="$MERCURY_HOME/omp"
+
+# HERMES-OMP PATCH (drive fix 2026-09-05): FIRST-BOOT INHERITANCE. The forced
+# home starts empty — .env didn't exist in it, so the first drive prompted
+# for the ZAI key by hand and omp children couldn't resolve the model.
+# Inherit ONCE (idempotent guard on the target), from the invoking hermes
+# home. D3's installer will do this same step interactively; the provider
+# block in the unified config's hermes: subtree is synthesized at load time
+# from the models: slots (already the case), so the key is the only secret.
+_INHERIT_FROM="${MERCURY_INHERIT_FROM:-$_AMBIENT_HERMES_HOME}"
+if [ ! -f "$HERMES_HOME/.env" ] && [ -f "$_INHERIT_FROM/.env" ]; then
+    cp "$_INHERIT_FROM/.env" "$HERMES_HOME/.env" 2>/dev/null || true
+    echo "mercury: inherited .env from $_INHERIT_FROM (first boot)" >&2
+fi
+
+# Seed hand-editable defaults from the repo's config/ directory (the ONE
+# source of user-facing defaults — .example files are gone by design):
+# HERMES.md / OMP.md (per-side system prompts) land at MERCURY_HOME top
+# level only if absent; never overwrite what the user has edited.
+for _seed in HERMES.md OMP.md SOUL.md MEMORY.md USER.md AGENTS.md; do
+    if [ ! -f "$MERCURY_HOME/$_seed" ] && [ -f "$REPO/config/$_seed" ]; then
+        cp "$REPO/config/$_seed" "$MERCURY_HOME/$_seed" 2>/dev/null || true
+    fi
+done
+
+# omp engine binary: explicit override > the repo-vendored build.
+export HERMES_OMP_BIN="${HERMES_OMP_BIN:-$REPO/omp/packages/coding-agent/dist/omp}"
+
+# --------------------------------------------------------------------------
+# Interpreter: MERCURY_PYTHON > the shared venv that has hermes' deps >
+# python3. The venv is used READ-ONLY (established dev-box precedent); on a
+# clean install MERCURY_PYTHON or the venv must supply the dependencies.
+# --------------------------------------------------------------------------
+if [[ -n "${MERCURY_PYTHON:-}" ]]; then
+    PY="$MERCURY_PYTHON"
+elif [[ -x "$REPO/hermes/.venv/bin/python" ]]; then
+    # venv created by install.sh (uv, exact-pinned deps)
+    PY="$REPO/hermes/.venv/bin/python"
+elif [[ -x /opt/hermes/.venv/bin/python ]]; then
+    # dev-box compat only (public users never hit this)
+    PY=/opt/hermes/.venv/bin/python
+else
+    PY="$(command -v python3 || true)"
+    if [[ -z "$PY" ]]; then
+        echo "mercury: no python3 on PATH and no MERCURY_PYTHON set." >&2
+        exit 1
+    fi
+fi
+
+# The fork's tree must shadow any installed hermes package.
+export PYTHONPATH="$REPO/hermes${PYTHONPATH:+:$PYTHONPATH}"
+
+# --------------------------------------------------------------------------
+# Launcher self-inspection (first-arg intercept; never reaches the CLI).
+# --------------------------------------------------------------------------
+if [[ "${1:-}" == "--print-env" ]]; then
+    echo "MERCURY_REPO=$MERCURY_REPO"
+    echo "MERCURY_HOME=$MERCURY_HOME"
+    echo "MERCURY_CONFIG=$MERCURY_CONFIG"
+    echo "MERCURY_SKILLS_DIR=$MERCURY_SKILLS_DIR"
+    echo "MERCURY_MEMORY_DIR=$MERCURY_MEMORY_DIR"
+    echo "HERMES_HOME=$HERMES_HOME"
+    echo "PI_CODING_AGENT_DIR=$PI_CODING_AGENT_DIR"
+    echo "HERMES_OMP_BIN=$HERMES_OMP_BIN"
+    echo "PYTHON=$PY"
+    echo "omp_binary_present=$([[ -x "$HERMES_OMP_BIN" ]] && echo yes || echo no)"
+    echo "config_present=$([[ -f "$MERCURY_CONFIG" ]] && echo yes || echo no)"
+    exit 0
+fi
+
+# Fail fast, with an actionable message, if the interpreter can't run the
+# fork's imports (e.g. python3 without PyYAML on a clean box).
+if ! "$PY" -c 'import yaml' >/dev/null 2>&1; then
+    echo "mercury: $PY is missing hermes dependencies (no yaml)." >&2
+    echo "mercury: set MERCURY_PYTHON to an interpreter with the fork's deps" >&2
+    echo "mercury: installed (see hermes/pyproject.toml)." >&2
+    exit 1
+fi
+
+exec "$PY" -m mercury_cli.main "$@"

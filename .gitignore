@@ -1,0 +1,15 @@
+omp/node_modules/
+hermes/.venv/
+*.pyc
+__pycache__/
+omp/node_modules/
+omp/packages/*/node_modules/
+omp/packages/natives/native/
+omp/**/target/
+omp/packages/coding-agent/dist/
+
+# ephemeral ad-hoc verifiers (scripts/tmp-*) — run then delete
+scripts/tmp-*
+
+# release artifacts (GitHub release assets, never git objects)
+dist/

@@ -1,0 +1,26 @@
+# Mercury — model slots reference copy (LEGACY location)
+#
+# THE source of truth is ~/.mercury/config.yaml (MERCURY_CONFIG env).
+# This repo-root copy is kept as a schema reference ONLY — the bridge
+# does not read it by default. Kept validating so pointing
+# HERMES_OMP_CONFIG at it works for scratch testing.
+#
+# Four primary slots (names are the v3 schema — delegate_model /
+# delegate_fallback, renamed from delegate_default 2026-09-04):
+#   - `fallback` is REQUIRED. If unset/empty, the bridge fails hard (no
+#     silent fallback to default, no hardcoded chain).
+#   - `delegate_model` is the model omp -p runs under (delegation/fan-out).
+#   - `delegate_fallback` is REQUIRED whenever delegation is used. If
+#     unset, delegation fails hard rather than degrading to default's
+#     fallback.
+#   - All slots are explicit. Nothing is inferred from ~/.omp or elsewhere.
+#
+# The unified file also carries per-engine subtrees:
+#   hermes: {}   hermes-private settings (explicit keys WIN over slots)
+#   omp:         omp-private settings (bridge writes the delegate retry chain)
+
+models:
+  default: <provider/model>
+  fallback: <provider/model>
+  delegate_model: <provider/model>
+  delegate_fallback: <provider/model>
