@@ -22,6 +22,18 @@ provider OAuth / Nous Portal login, model pickers, tools** (configures BOTH
 engines) → optional Browser Use CLI, cua-driver, gateway → done. Then run
 `mercury`.
 
+**Layout** — everything lives under one home, hermes-style:
+
+```
+~/.mercury/                 the Mercury home (MERCURY_HOME)
+├── mercury-agent/          the code tree (bin/, config/, hermes/, omp/, …)
+├── bin/mercury             the command (managed bin dir; uv + browser-use too)
+├── config.yaml             the ONE unified config (both engines)
+├── SOUL.md MEMORY.md USER.md AGENTS.md   shared state, both engines
+├── skills/                 the shared skills library
+└── hermes/  omp/           engine-private state (sessions, auth, omp data)
+```
+
 | | |
 |---|---|
 | **One command** | `mercury` starts the chat; `mercury omp` drops you into the omp engine directly |

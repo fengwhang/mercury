@@ -86,11 +86,39 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _swap_tree_preserving(src: Path, dst: Path, keep: set[str]) -> None:
+    """Recursively replace src into dst but never touch entries in `keep`."""
+    keep_paths = {dst / name for name in keep}
+    for entry in src.iterdir():
+        target = dst / entry.name
+        if target in keep_paths:
+            continue
+        if target.exists() or target.is_symlink():
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.copytree(entry, target, symlinks=True)
+        else:
+            shutil.copy2(entry, target)
+
+
 def _swap_tree(src: Path, dst: Path) -> None:
-    """Replace dst's contents with src's, preserving dst's protected entries."""
+    """Replace dst's contents with src's, preserving dst's protected entries.
+
+    MERCURY-OMP PATCH: the venv lives at hermes/.venv (inside the hermes
+    engine dir), so a whole-tree rsync-style replace would delete it. The
+    tarball has no hermes/.venv; preserve dst's when the tarball lacks it.
+    """
     for entry in src.iterdir():
         target = dst / entry.name
         if entry.name in PRESERVED_TOP_LEVEL:
+            continue
+        # nested preserve: hermes/.venv survives even though "hermes" is
+        # replaced wholesale (copytree would rmtree it first).
+        if entry.name == "hermes" and (dst / "hermes" / ".venv").exists():
+            _swap_tree_preserving(entry, target, {".venv"})
             continue
         if target.exists() or target.is_symlink():
             if target.is_dir() and not target.is_symlink():

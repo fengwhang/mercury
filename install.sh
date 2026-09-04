@@ -47,8 +47,12 @@ echo -e "${MAGENTA}└───────────────────�
 
 # --- config ---
 MERCURY_HOME="${MERCURY_HOME:-$HOME/.mercury}"
-INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-$HOME/.local/share/mercury}"
-BIN_DIR="${MERCURY_BIN_DIR:-$HOME/.local/bin}"
+# MERCURY LAYOUT: everything under one home, hermes-style.
+#   code   -> $INSTALL_ROOT  (default ~/.mercury/mercury-agent)
+#   data   -> $MERCURY_HOME  (default ~/.mercury — shared layer, seeds)
+#   cmd    -> $BIN_DIR       (default ~/.mercury/bin — the managed bin dir)
+INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-$HOME/.mercury/mercury-agent}"
+BIN_DIR="${MERCURY_BIN_DIR:-$HOME/.mercury/bin}"
 TARBALL_URL=""
 RUN_SETUP=true
 NON_INTERACTIVE=false
@@ -249,7 +253,17 @@ fetch_tarball() {
         log_info "unpacking to $INSTALL_ROOT"
         tar -xzf "$TMP/mercury.tar.gz" -C "$TMP"
         mkdir -p "$INSTALL_ROOT"
+        mkdir -p "$INSTALL_ROOT"
+        # the venv is NOT in the tarball; rsync --delete would destroy it and
+        # force a full dependency reinstall every update. Preserve it.
+        if [ -x "$INSTALL_ROOT/hermes/.venv" ]; then
+            mv "$INSTALL_ROOT/hermes/.venv" "$TMP/venv-keep"
+        fi
         rsync -a --delete "$TMP/mercury/" "$INSTALL_ROOT/" 2>/dev/null || cp -r "$TMP/mercury/." "$INSTALL_ROOT/"
+        if [ -d "$TMP/venv-keep" ]; then
+            rm -rf "$INSTALL_ROOT/hermes/.venv"
+            mv "$TMP/venv-keep" "$INSTALL_ROOT/hermes/.venv"
+        fi
     elif [ -x "$INSTALL_ROOT/bin/mercury" ]; then
         log_info "existing tree at $INSTALL_ROOT — reinstalling in place (~/.mercury state kept)"
     else
@@ -377,7 +391,8 @@ seed_defaults() {
 setup_path() {
     mkdir -p "$BIN_DIR"
     ln -sf "$INSTALL_ROOT/bin/mercury" "$BIN_DIR/mercury"
-    case ":$PATH:" in *":$BIN_DIR:"*) log_success "mercury command: $BIN_DIR/mercury" ;;
+    log_success "mercury command: $BIN_DIR/mercury"
+    case ":$PATH:" in *":$BIN_DIR:"*) ;;
         *) log_warn "add $BIN_DIR to PATH: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc" ;; esac
 }
 
@@ -402,13 +417,14 @@ main() {
     fetch_tarball
     setup_venv
     smoke_test
+    setup_path            # command link EARLY: a later failure must not
+                          # leave an installed-but-unlaunchable system
     install_system_packages
     install_browser_use_cli
     install_computer_use_driver
+    seed_defaults
     run_setup_wizard
     maybe_start_gateway
-    seed_defaults
-    setup_path
     print_success
 }
 
