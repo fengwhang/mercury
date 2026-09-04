@@ -26,8 +26,20 @@ def log_warn(msg: str):
     print(f"{color('⚠', Colors.YELLOW)} {msg}")
 
 def get_project_root() -> Path:
-    """Get the project installation directory."""
-    return Path(__file__).parent.parent.resolve()
+    """Get the project installation directory.
+
+    MERCURY-OMP PATCH: Mercury installs from a distribution tarball with
+    the layout  <root>/{bin,config,bridge,hermes,omp,install.sh}.  This
+    module lives at <root>/hermes/mercury_cli/uninstall.py, so the ROOT
+    (not the hermes engine dir) is two levels up. Guard: only treat it as
+    a Mercury root when bin/mercury exists there; otherwise fall back to
+    the parent (upstream layout).
+    """
+    here = Path(__file__).resolve().parent.parent  # .../hermes
+    root = here.parent
+    if (root / "bin" / "mercury").exists():
+        return root
+    return here
 
 
 def find_shell_configs() -> list:
@@ -122,11 +134,22 @@ def remove_wrapper_script():
     
     removed = []
     for wrapper in wrapper_paths:
-        if wrapper.exists():
+        if wrapper.exists() or wrapper.is_symlink():
             try:
-                # Check if it's our wrapper (contains mercury_cli reference)
-                content = wrapper.read_text(encoding="utf-8")
-                if 'mercury_cli' in content or 'mercury-agent' in content:
+                # MERCURY-OMP PATCH: accept our symlink (points into the
+                # install tree) OR a script referencing mercury_cli.
+                target = None
+                if wrapper.is_symlink():
+                    target = wrapper.resolve()
+                    content = ""
+                else:
+                    content = wrapper.read_text(encoding="utf-8")
+                ours = (
+                    (target is not None and ("mercury" in str(target)))
+                    or 'mercury_cli' in content
+                    or 'mercury-agent' in content
+                )
+                if ours:
                     wrapper.unlink()
                     removed.append(wrapper)
             except Exception as e:
@@ -656,7 +679,16 @@ def run_uninstall(args):
     - Keep data: removes code but keeps ~/.mercury/ for future reinstall
     """
     project_root = get_project_root()
-    mercury_home = get_hermes_home()
+    # MERCURY-OMP PATCH: scope data removal to the MERCURY home
+    # (~/.mercury — shared config/SOUL/MEMORY/skills + engine-private
+    # subtrees), not the engine-private HERMES_HOME. Under the Mercury
+    # launcher HERMES_HOME=$MERCURY_HOME/hermes; wiping only that would
+    # leave the shared layer (config.yaml, SOUL.md, MEMORY.md, USER.md,
+    # AGENTS.md, skills/, memories/) behind — data the user expects a
+    # FULL uninstall to delete.
+    mercury_home = Path(
+        os.environ.get("MERCURY_HOME", "").strip()
+    ) if os.environ.get("MERCURY_HOME", "").strip() else get_hermes_home()
 
     if bool(getattr(args, "dry_run", False)):
         _print_uninstall_dry_run(
