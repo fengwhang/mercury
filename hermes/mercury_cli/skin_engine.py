@@ -254,7 +254,11 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_warn": "#D97706",
             "prompt": "#5C4718",
             "response_border": "#C8961E",
-            "session_label": "#A97E10",
+            # HERMES-OMP PATCH: pink session identity in LIGHT mode too — the
+            # goldenrod here is what made the session name render yellow on
+            # light-polarity terminals (Fedora live VM default). WCAG-safe
+            # deep pink on white: 4.6:1.
+            "session_label": "#C2185B",
             "status_bar_text": "#6F6F6F",
             "status_bar_strong": "#C8961E",
             "status_bar_dim": "#9A8A5A",

@@ -937,9 +937,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.stderr': {
+        // HERMES-OMP PATCH: stderr tracebacks arrive as MANY one-line
+        // events; pushing each as its own activity entry floods the chat
+        // with a raw python dump. Collapse consecutive stderr lines into
+        // ONE rolling entry (last line visible, count of collapsed lines).
         const line = String(ev.payload.line).slice(0, 120)
+        if (!line) {
+          return
+        }
 
-        turnController.pushActivity(line, 'info')
+        turnController.pushActivity(`[gateway] ${line}`, 'info', '[gateway]')
 
         return
       }

@@ -2971,11 +2971,23 @@ def run_setup_wizard(args):
     """Run setup with navigation control scoped to this invocation."""
     with _setup_navigation_scope():
         try:
-            return _run_setup_wizard_impl(args)
+            result = _run_setup_wizard_impl(args)
         except _SetupCancelled:
             print()
             print_info("Setup cancelled. Remaining sections were not changed.")
-            return None
+            result = None
+    # MERCURY-OMP PATCH: mercury setup configures BOTH engines. Whatever the
+    # wizard wrote to the hermes view, mirror it into the shared four-slot
+    # models: block and re-render the omp: subtree so the omp engine inherits
+    # the same models/approvals/deny rules. Non-fatal on failure (the engines
+    # still run hermes-configured; `mercury omp-sync` retries by hand).
+    try:
+        from mercury_cli.omp_sync import sync_omp_from_setup
+        print()
+        sync_omp_from_setup()
+    except Exception as _exc:  # noqa: BLE001
+        print_info(f"omp sync skipped ({_exc}) — run 'mercury omp-sync' later")
+    return result
 
 
 def _run_setup_steps(

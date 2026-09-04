@@ -12400,6 +12400,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "omp",
+        "omp-sync",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
         "project", "proxy",
@@ -13276,6 +13277,24 @@ def main():
         help="Arguments passed to omp verbatim (everything after `omp`)",
     )
     omp_parser.set_defaults(func=cmd_omp)
+
+    # =========================================================================
+    # omp-sync command  (MERCURY-OMP PATCH: mirror hermes config -> both engines)
+    # =========================================================================
+    from mercury_cli.omp_sync import sync_omp_from_setup
+
+    omp_sync_parser = subparsers.add_parser(
+        "omp-sync",
+        help="Sync unified config to the omp engine (models + approvals)",
+        description=(
+            "Mirror the hermes-side model configuration into the shared "
+            "four-slot models: block and re-render the omp: subtree via the "
+            "config bridge. Runs automatically at the end of `mercury setup`; "
+            "this command re-runs it by hand (e.g. after editing config.yaml)."
+        ),
+    )
+    omp_sync_parser.add_argument("--quiet", action="store_true", help="Suppress output")
+    omp_sync_parser.set_defaults(func=lambda args: sync_omp_from_setup(quiet=args.quiet))
 
     # =========================================================================
     # model command  (parser built in mercury_cli/subcommands/model.py)

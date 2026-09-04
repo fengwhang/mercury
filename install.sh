@@ -1,10 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # ============================================================================
 # Mercury Installer — the hybrid distribution (Hermes + omp)
 # ============================================================================
 # One command for both engines. Modeled on the installers of both parents:
-# hermes' (uv + venv + system deps + interactive setup) and omp's (prebuilt
-# binary + arch detection + smoke test), combined without redundant steps.
+# hermes' (managed uv + venv + Browser Use CLI + cua-driver + `hermes setup`
+# wizard with provider OAuth/Nous Portal + gateway) and omp's (prebuilt
+# binary, arch rigor, checksum, smoke test) — combined, redundancies stripped
+# (model provider asked ONCE, via `mercury setup`).
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash -s -- <tarball-url>
@@ -12,18 +14,19 @@
 #   bash install.sh                   # reinstall in place
 #
 # Options:
-#   --tarball URL     Distribution tarball (else $1, else in-place)
-#   --dir PATH        Installation directory (default ~/.local/share/mercury)
-#   --non-interactive Skip all questions; sensible defaults
-#   --yes             Alias for --non-interactive
-#   --skip-browser    Skip Playwright/Chromium (browser tools off)
-#   --skip-computer-use  Skip cua-driver (desktop control off)
-#   --no-skills       Blank slate — seed no bundled skills
-#   --ensure DEPS     Install only these deps: node,browser,ripgrep,ffmpeg
+#   --tarball URL        Distribution tarball (else $1, else in-place)
+#   --dir PATH           Installation directory (default ~/.local/share/mercury)
+#   --skip-setup         Skip the interactive setup wizard
+#   --non-interactive|--yes   Non-interactive: no wizard, no questions
+#   --skip-browser       Skip Browser Use CLI + Chromium (browser tools off)
+#   --skip-computer-use  Skip the cua-driver (desktop control off)
+#   --no-skills          Blank slate — seed no bundled skills
+#   --skip-gateway       Skip the gateway install question
+#   --ensure DEPS        Install only these deps: browser,computer-use,ripgrep,ffmpeg
 # ============================================================================
 set -euo pipefail
 
-# --- env hygiene (hermes installer lesson: leaking PYTHONPATH breaks pip) ---
+# --- env hygiene (hermes lesson: leaking PYTHONPATH breaks pip installs) ---
 if [ -n "${PYTHONPATH:-}" ]; then echo "⚠ ignoring inherited PYTHONPATH"; unset PYTHONPATH; fi
 if [ -n "${PYTHONHOME:-}" ]; then echo "⚠ ignoring inherited PYTHONHOME"; unset PYTHONHOME; fi
 export UV_NO_CONFIG=1
@@ -35,7 +38,6 @@ log_success() { echo -e "${GREEN}✓${NC} $1"; }
 log_warn()    { echo -e "${YELLOW}⚠${NC} $1"; }
 log_error()   { echo -e "${RED}✗${NC} $1"; }
 
-# --- banner ---
 echo -e "\n${MAGENTA}┌──────────────────────────────────────────────┐${NC}"
 echo -e "${MAGENTA}│            🌡 Mercury Installer                │${NC}"
 echo -e "${MAGENTA}│   Hermes + omp — one agent, one config        │${NC}"
@@ -44,39 +46,42 @@ echo -e "${MAGENTA}│   Hermes by Nous Research and omp by can1357  │${NC}"
 echo -e "${MAGENTA}└──────────────────────────────────────────────┘${NC}\n"
 
 # --- config ---
+MERCURY_HOME="${MERCURY_HOME:-$HOME/.mercury}"
 INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-$HOME/.local/share/mercury}"
 BIN_DIR="${MERCURY_BIN_DIR:-$HOME/.local/bin}"
 TARBALL_URL=""
+RUN_SETUP=true
 NON_INTERACTIVE=false
 SKIP_BROWSER=false
 SKIP_COMPUTER_USE=false
+SKIP_GATEWAY=false
 NO_SKILLS=false
 ENSURE_DEPS=""
 OS=""; DISTRO=""; ARCH=""
+UV_CMD=""
 
-# --- interactive detection (curl | bash has no tty on stdin) ---
 IS_INTERACTIVE=true
 [ -t 0 ] || IS_INTERACTIVE=false
 
-# --- args ---
 while [[ $# -gt 0 ]]; do
     case $1 in
         --tarball) TARBALL_URL="$2"; shift 2 ;;
         --dir) INSTALL_ROOT="$2"; shift 2 ;;
-        --non-interactive|--yes|-y) NON_INTERACTIVE=true; shift ;;
+        --skip-setup) RUN_SETUP=false; shift ;;
+        --non-interactive|--yes|-y) NON_INTERACTIVE=true; RUN_SETUP=false; shift ;;
         --skip-browser|--no-playwright) SKIP_BROWSER=true; shift ;;
         --skip-computer-use) SKIP_COMPUTER_USE=true; shift ;;
+        --skip-gateway) SKIP_GATEWAY=true; shift ;;
         --no-skills) NO_SKILLS=true; shift ;;
         --ensure) ENSURE_DEPS="$2"; shift 2 ;;
-        -h|--help)
-            sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)
             if [ -z "$TARBALL_URL" ] && { [[ "$1" == http* ]] || [ -f "$1" ]; }; then TARBALL_URL="$1"; shift
             else echo "Unknown option: $1"; exit 1; fi ;;
     esac
 done
 
-# --- prompting that works under curl|bash (reads /dev/tty like hermes') ---
+# --- prompting: works under curl|bash via /dev/tty (hermes pattern) ---
 prompt() { # $1=question $2=default(yes/no)
     local q="$1" def="${2:-yes}" suffix answer=""
     case "$def" in y|Y|yes|true) suffix="[Y/n]" ;; *) suffix="[y/N]" ;; esac
@@ -89,19 +94,9 @@ prompt() { # $1=question $2=default(yes/no)
     [ -z "$answer" ] && case "$def" in y|Y|yes|true) return 0 ;; *) return 1 ;; esac
     case "$answer" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
 }
-prompt_value() { # $1=question $2=default  -> echoes answer
-    local q="$1" def="${2:-}" answer=""
-    if [ "$NON_INTERACTIVE" = true ]; then echo "$def"; return 0; fi
-    if [ "$IS_INTERACTIVE" = true ]; then read -r -p "$q [$def]: " answer || answer=""
-    elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
-        printf "%s [%s]: " "$q" "$def" > /dev/tty
-        IFS= read -r answer < /dev/tty || answer=""
-    fi
-    echo "${answer:-$def}"
-}
 
 # ============================================================================
-# system detection (omp's arch rigor + hermes' distro detection)
+# system detection
 # ============================================================================
 detect_system() {
     case "$(uname -s)" in
@@ -119,36 +114,44 @@ detect_system() {
     esac
     log_success "Detected: $OS ($DISTRO) $ARCH"
     if [ "$OS" = "linux" ] && { [ -f /etc/alpine-release ] || { command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; }; }; then
-        log_warn "musl system detected — the omp binary links libstdc++/libgcc dynamically:"
+        log_warn "musl system — the omp binary links libstdc++/libgcc dynamically:"
         log_warn "  if it fails to start: apk add libstdc++ libgcc"
     fi
 }
 
 # ============================================================================
-# dependencies (hermes' managed-uv pattern)
+# uv (hermes managed-uv pattern: owns its copy, no PATH dependence)
 # ============================================================================
 install_uv() {
-    local managed="$HOME/.local/bin/uv"
-    if [ -x "$managed" ]; then log_success "uv found ($("$managed" --version 2>/dev/null)"; return 0; fi
-    if command -v uv >/dev/null 2>&1; then log_success "uv found on PATH"; return 0; fi
-    log_info "Installing uv (no root needed)..."
+    local managed="$MERCURY_HOME/bin/uv"
+    if [ -x "$managed" ]; then UV_CMD="$managed"; log_success "managed uv found ($("$managed" --version 2>/dev/null)"; return 0; fi
+    if command -v uv >/dev/null 2>&1; then UV_CMD="$(command -v uv)"; log_success "uv found on PATH"; return 0; fi
+    log_info "Installing managed uv into $MERCURY_HOME/bin ..."
+    mkdir -p "$MERCURY_HOME/bin"
     local installer logf
     installer="$(mktemp)"; logf="$(mktemp)"
-    curl -LsSf https://astral.sh/uv/install.sh -o "$installer" 2>"$logf" || { log_error "uv download failed"; cat "$logf" >&2; exit 1; }
-    UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh "$installer" >>"$logf" 2>&1 || { log_error "uv install failed"; cat "$logf" >&2; exit 1; }
-    [ -x "$managed" ] || { log_error "uv installer reported success but no binary"; exit 1; }
-    log_success "uv installed"
+    if ! curl -LsSf https://astral.sh/uv/install.sh -o "$installer" 2>"$logf"; then
+        log_error "uv download failed"; sed 's/^/    /' "$logf" >&2; exit 1
+    fi
+    if UV_UNMANAGED_INSTALL="$MERCURY_HOME/bin" sh "$installer" >>"$logf" 2>&1 && [ -x "$managed" ]; then
+        UV_CMD="$managed"; log_success "managed uv installed ($("$managed" --version 2>/dev/null))"
+    else
+        log_error "uv install failed"; sed 's/^/    /' "$logf" >&2; exit 1
+    fi
+    rm -f "$installer" "$logf"
 }
 
+# ============================================================================
+# optional system packages (hermes pattern: distro-aware, sudo-aware, best-effort)
+# ============================================================================
 install_system_packages() {
-    # ripgrep + ffmpeg: hermes' optional tool deps; best-effort like upstream
     local missing=""
     command -v rg  >/dev/null 2>&1 || missing="$missing ripgrep"
     command -v ffmpeg >/dev/null 2>&1 || missing="$missing ffmpeg"
     [ -z "$missing" ] && { log_success "system tools present (rg, ffmpeg)"; return 0; }
     log_info "missing system tools:$missing"
     if [ "$NON_INTERACTIVE" = true ]; then TRY_SYS=true
-    else prompt "Install missing system packages (needs sudo where applicable)?" yes && TRY_SYS=true || TRY_SYS=false; fi
+    else prompt "Install missing system packages (may need sudo)?" yes && TRY_SYS=true || TRY_SYS=false; fi
     [ "${TRY_SYS:-false}" = true ] || { log_warn "skipping; some hermes-side tools (search/media) will be limited"; return 0; }
     local sudo_cmd=""
     [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
@@ -161,28 +164,65 @@ install_system_packages() {
     esac
 }
 
-install_browser() {
-    # Playwright/Chromium for hermes-side browser tools (omp ships its own)
-    if [ "$SKIP_BROWSER" = true ]; then log_info "skipping browser (--skip-browser)"; return 0; fi
-    if [ -d "$HOME/.cache/ms-playwright" ] && ls "$HOME/.cache/ms-playwright"/chromium-* >/dev/null 2>&1; then
-        log_success "Playwright browsers already present"; return 0; fi
-    if [ "$NON_INTERACTIVE" = true ]; then
-        log_info "non-interactive: skipping browser install (enable later: mercury tools)"; return 0
+# ============================================================================
+# Browser Use CLI (hermes pattern: uv tool into the managed bin — this is the
+# browser backend; NO python playwright module is involved)
+# ============================================================================
+install_browser_use_cli() {
+    if [ "$SKIP_BROWSER" = true ]; then log_info "skipping Browser Use CLI (--skip-browser)"; return 0; fi
+    [ "$DISTRO" = "termux" ] && return 0
+    [ -n "$UV_CMD" ] || { log_info "skipping Browser Use CLI (uv unavailable)"; return 0; }
+    if [ -x "$MERCURY_HOME/bin/browser-use" ]; then log_success "Browser Use CLI already installed"; return 0; fi
+    log_info "Installing Browser Use CLI (default browser backend)..."
+    if run_with_timeout 600 env UV_NO_CONFIG=1 UV_TOOL_BIN_DIR="$MERCURY_HOME/bin" \
+        "$UV_CMD" tool install browser-use >/dev/null 2>&1; then
+        log_success "Browser Use CLI installed"
+    else
+        log_warn "Browser Use CLI install failed — browser automation falls back to built-in tools"
+        log_info "Install later with: $UV_CMD tool install browser-use  (or 'mercury tools')"
     fi
-    prompt "Install Playwright/Chromium now for browser tools (~300MB)?" yes || { log_info "skipping browser (enable later via 'mercury tools')"; return 0; }
-    VENV="$INSTALL_ROOT/hermes/.venv"
-    [ -x "$VENV/bin/python" ] || return 0
-    "$VENV/bin/python" -m playwright install chromium 2>&1 | tail -1 || log_warn "browser install failed — run 'mercury tools' later"
 }
 
-install_computer_use() {
-    if [ "$SKIP_COMPUTER_USE" = true ]; then log_info "skipping computer-use"; return 0; fi
-    if [ "$NON_INTERACTIVE" = true ]; then return 0; fi
-    command -v cua-driver >/dev/null 2>&1 && { log_success "cua-driver present"; return 0; }
-    prompt "Install cua-driver for desktop control?" no || return 0
-    VENV="$INSTALL_ROOT/hermes/.venv"
-    [ -x "$VENV/bin/python" ] || return 0
-    "$VENV/bin/pip" install --quiet cua-driver 2>/dev/null || log_warn "cua-driver install failed — see 'mercury computer-use install'"
+# ============================================================================
+# cua-driver (hermes pattern: trycua's upstream installer, time-boxed, log tail)
+# ============================================================================
+run_with_timeout() { # $1=secs, rest=cmd
+    local secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; else "$@"; fi
+}
+
+cua_driver_runtime_compatible() {
+    local driver_path version_output major minor
+    driver_path="$(command -v cua-driver 2>/dev/null)" || return 1
+    version_output="$("$driver_path" --version 2>/dev/null)" || return 1
+    [[ "$version_output" =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]] || return 1
+    major="${BASH_REMATCH[1]}"; minor="${BASH_REMATCH[2]}"
+    (( major == 0 && minor < 20 )) && return 1
+    return 0
+}
+
+install_computer_use_driver() {
+    if [ "$SKIP_COMPUTER_USE" = true ]; then log_info "skipping cua-driver (--skip-computer-use)"; return 0; fi
+    [ "$DISTRO" = "termux" ] && return 0
+    if command -v cua-driver >/dev/null 2>&1; then
+        if cua_driver_runtime_compatible; then log_success "cua-driver already installed and compatible"; return 0; fi
+        log_warn "existing cua-driver is old; repairing"
+    fi
+    if [ "$(uname -s)" = "Darwin" ] && [ -d /Applications ] && [ ! -w /Applications ]; then
+        log_info "skipping cua-driver: /Applications not writable"; return 0
+    fi
+    log_info "Installing Computer Use driver (cua-driver)..."
+    local cua_log; cua_log="$(mktemp)"
+    if run_with_timeout 660 /bin/bash -c \
+        'curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh | /bin/bash' \
+        >"$cua_log" 2>&1; then
+        log_success "cua-driver installed (enable via 'mercury tools' → Computer Use)"
+    else
+        log_warn "cua-driver install failed — it installs on demand when you enable the tool"
+        log_info "Install later with: mercury computer-use install"
+        tail -n 5 "$cua_log" >&2 || true
+    fi
+    rm -f "$cua_log"
 }
 
 # ============================================================================
@@ -192,18 +232,15 @@ fetch_tarball() {
     if [ -n "$TARBALL_URL" ]; then
         log_info "fetching distribution tarball"
         TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-        if [ -f "$TARBALL_URL" ]; then
-            cp "$TARBALL_URL" "$TMP/mercury.tar.gz"
+        if [ -f "$TARBALL_URL" ]; then cp "$TARBALL_URL" "$TMP/mercury.tar.gz"
         else
             curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 60 "$TARBALL_URL" -o "$TMP/mercury.tar.gz" \
                 || { log_error "tarball download failed"; exit 1; }
         fi
-        # checksum when sibling .sha256 exists (URL or local path)
-        local SHA_SRC=""
+        local SHA_SRC="" want have
         if [ -f "${TARBALL_URL}.sha256" ]; then SHA_SRC="${TARBALL_URL}.sha256"
         elif [[ "$TARBALL_URL" == http* ]] && curl -fsSL "${TARBALL_URL}.sha256" -o "$TMP/mercury.tar.gz.sha256" 2>/dev/null; then SHA_SRC="$TMP/mercury.tar.gz.sha256"; fi
         if [ -n "$SHA_SRC" ]; then
-            local want have
             want="$(awk '{print $1}' "$SHA_SRC" | head -1)"
             have="$(sha256sum "$TMP/mercury.tar.gz" | awk '{print $1}')"
             [ "$want" = "$have" ] && log_success "checksum verified" \
@@ -217,7 +254,7 @@ fetch_tarball() {
         log_info "existing tree at $INSTALL_ROOT — reinstalling in place (~/.mercury state kept)"
     else
         log_error "no tarball URL and no existing tree at $INSTALL_ROOT"
-        log_info  "usage: install.sh <tarball-url>   (or --tarball URL)"; exit 1
+        log_info  "usage: install.sh <tarball-url>"; exit 1
     fi
     cd "$INSTALL_ROOT"
     [ -f bin/mercury ] || { log_error "distribution incomplete: bin/mercury missing"; exit 1; }
@@ -229,8 +266,8 @@ setup_venv() {
     log_info "python environment (uv + exact-pinned venv)"
     local VENV="$INSTALL_ROOT/hermes/.venv"
     if [ ! -x "$VENV/bin/python" ]; then
-        uv venv "$VENV" --python '>=3.11,<3.14' 2>/dev/null || uv venv "$VENV"
-        ( cd hermes && uv pip install --python "$VENV/bin/python" -q -e . ) || { log_error "python deps failed"; exit 1; }
+        "$UV_CMD" venv "$VENV" --python '>=3.11,<3.14' 2>/dev/null || "$UV_CMD" venv "$VENV"
+        ( cd hermes && "$UV_CMD" pip install --python "$VENV/bin/python" -q -e . ) || { log_error "python deps failed"; exit 1; }
     fi
     log_success "python environment ready"
 }
@@ -243,88 +280,62 @@ smoke_test() {
     omp/packages/coding-agent/dist/omp --version >/dev/null 2>&1 || { log_error "omp binary failed to start"; exit 1; }
     log_success "omp binary starts ($(omp/packages/coding-agent/dist/omp --version 2>/dev/null | head -1))"
     local VENV="$INSTALL_ROOT/hermes/.venv"
-    "$VENV/bin/python" -c "import sys; sys.path.insert(0, '.'); import mercury_cli.main" 2>/dev/null \
+    ( cd hermes && "$VENV/bin/python" -c "import mercury_cli.main" ) >/dev/null 2>&1 \
         || { log_error "hermes CLI import failed"; exit 1; }
     log_success "hermes CLI imports"
 }
 
 # ============================================================================
-# wizard (the interactive heart — mirrors hermes setup's question set,
-# mercury-specific: four slots, one approvals knob, both engines' surfaces)
+# THE setup wizard: `mercury setup` — the full hermes wizard (provider OAuth,
+# Nous Portal one-shot, model pickers, API keys, TTS, tools, telemetry),
+# which now ALSO syncs the omp engine at its tail (mercury_cli/omp_sync).
+# Stdin from /dev/tty so it works under curl|bash (hermes pattern).
 # ============================================================================
-run_wizard() {
-    local cfg="$HOME/.mercury/config.yaml"
-    mkdir -p "$HOME/.mercury"
-
-    if [ -f "$cfg" ]; then
-        log_info "existing config at $cfg — keeping it (edit by hand or delete to re-wizard)"
-        # still ensure the approvals knob exists on migrated configs
-        if ! grep -q '^approvals:' "$cfg"; then
-            local am; am="$(prompt_value "approvals.mode (manual|smart|off=PERMANENT yolo)" smart)"
-            case "$am" in manual|smart|off) ;; *) am=smart ;; esac
-            printf 'approvals:\n  mode: "%s"\n\n' "$am" | cat - "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
-        fi
+run_setup_wizard() {
+    if [ "$RUN_SETUP" = false ]; then log_info "skipping setup wizard (--skip-setup/--non-interactive)"; return 0; fi
+    if ! (: </dev/tty) 2>/dev/null; then
+        log_info "setup wizard skipped (no terminal). Run 'mercury setup' after install."
         return 0
     fi
-
     echo ""
-    log_info "model configuration — four slots, fail-hard (no fallback = no start)"
-    local DEFAULT FALLBACK DELEGATE DELEGATE_FB
-    DEFAULT="$(prompt_value "default model (provider/model, e.g. zai/glm-5.3 or anthropic/claude-sonnet-4-6)" "")"
-    while [ -z "$DEFAULT" ]; do log_warn "required"; DEFAULT="$(prompt_value "default model" "")"; done
-    FALLBACK="$(prompt_value "fallback model (required — fail-hard)" "")"
-    while [ -z "$FALLBACK" ]; do log_warn "required"; FALLBACK="$(prompt_value "fallback model" "")"; done
-    [ "$DEFAULT" = "$FALLBACK" ] && { log_error "default and fallback must differ"; exit 1; }
-    DELEGATE="$(prompt_value "delegate model (omp subagents; Enter = default)" "$DEFAULT")"
-    DELEGATE_FB="$(prompt_value "delegate fallback (Enter = fallback)" "$FALLBACK")"
-
+    log_info "starting setup wizard (configures BOTH engines: models, OAuth, tools)..."
     echo ""
-    log_info "approvals — ONE mode for both engines"
-    echo "  manual: prompt for write/exec everywhere"
-    echo "  smart:  read+workspace-write auto-approved; exec prompts   [default]"
-    echo "  off:    PERMANENT yolo — no prompts anywhere (deny-rules + hardline floor stay active)"
-    local am; am="$(prompt_value "approvals.mode" smart)"
-    case "$am" in manual|smart|off) ;; *) am=smart ;; esac
+    local VENV="$INSTALL_ROOT/hermes/.venv"
+    ( cd hermes && MERCURY_HOME="$MERCURY_HOME" MERCURY_CONFIG="$MERCURY_HOME/config.yaml" \
+        PYTHONPATH="$INSTALL_ROOT/hermes" \
+        "$VENV/bin/python" -m mercury_cli.main setup </dev/tty ) || log_warn "setup wizard exited non-zero — run 'mercury setup' later"
+}
 
-    cat > "$cfg" <<EOF
-approvals:
-  mode: "$am"
-
-models:
-  default: $DEFAULT
-  fallback: $FALLBACK
-  delegate_model: $DELEGATE
-  delegate_fallback: $DELEGATE_FB
-
-hermes: {}
-EOF
-    log_success "config written: $cfg (approvals: $am)"
-
-    # --- keys (hermes-style: offer the common ones, write to .env) ---
+# ============================================================================
+# gateway (hermes pattern: offer background service when messaging tokens exist)
+# ============================================================================
+maybe_start_gateway() {
+    [ "$SKIP_GATEWAY" = true ] && return 0
+    local ENV_FILE="$MERCURY_HOME/hermes/.env"
+    [ -f "$ENV_FILE" ] || return 0
+    local HAS_MESSAGING=false VAL VAR
+    for VAR in TELEGRAM_BOT_TOKEN DISCORD_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN WHATSAPP_ENABLED SIMPLEX_BOT_TOKEN; do
+        VAL=$(grep "^${VAR}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2-)
+        [ -n "$VAL" ] && HAS_MESSAGING=true && break
+    done
+    [ "$HAS_MESSAGING" = false ] && return 0
     echo ""
-    log_info "API keys — written to ~/.mercury/hermes/.env (chmod 600, never in the repo; Enter skips)"
-    local ENVF="$HOME/.mercury/hermes/.env"
-    mkdir -p "$HOME/.mercury/hermes"; touch "$ENVF"; chmod 600 "$ENVF"
-    add_key() {
-        grep -q "^$1=" "$ENVF" && return 0
-        local v; v="$(prompt_value "  $1" "")"
-        [ -n "$v" ] && printf '%s=%s\n' "$1" "$v" >> "$ENVF" && log_success "  $1 saved"
-    }
-    local prov="${DEFAULT%%/*}"
-    case "$prov" in
-        zai) add_key ZAI_API_KEY ;;
-        openai) add_key OPENAI_API_KEY ;;
-        anthropic) add_key ANTHROPIC_API_KEY ;;
-        openrouter) add_key OPENROUTER_API_KEY ;;
-        *) log_info "  provider '$prov' — add its key to $ENVF" ;;
-    esac
-    prompt "Also set a web-search/scrape key now (FIRECRAWL_API_KEY — both engines)?" no && add_key FIRECRAWL_API_KEY
-    prompt "Also set ZAI_API_KEY for zai web search (both engines)?" no && add_key ZAI_API_KEY
-
-    # --- surfaces (hermes' gateway question, mercury-scoped) ---
-    echo ""
-    if prompt "Set up a messaging gateway now (Telegram/SimpleX/Discord/... — 'mercury gateway')?" no; then
-        log_info "run after install:  mercury gateway setup && mercury gateway start"
+    log_info "Messaging platform token detected — the gateway must run for the bot to work."
+    if ! (: </dev/tty) 2>/dev/null; then return 0; fi
+    prompt "Install the gateway as a background service?" yes || return 0
+    local MERCURY_CMD="$BIN_DIR/mercury"
+    if command -v systemctl >/dev/null 2>&1 && [ "$DISTRO" != "termux" ]; then
+        log_info "installing systemd service..."
+        if "$MERCURY_CMD" gateway install >/dev/null 2>&1; then
+            log_success "gateway service installed"
+            "$MERCURY_CMD" gateway start >/dev/null 2>&1 && log_success "gateway started — your bot is online" \
+                || log_warn "service installed but failed to start: mercury gateway start"
+        else
+            log_warn "systemd install failed: start manually with 'mercury gateway'"
+        fi
+    else
+        nohup "$MERCURY_CMD" gateway > "$MERCURY_HOME/logs/gateway.log" 2>&1 &
+        log_success "gateway started (PID $!) — logs: $MERCURY_HOME/logs/gateway.log"
     fi
 }
 
@@ -333,20 +344,21 @@ EOF
 # ============================================================================
 seed_defaults() {
     log_info "seeding hand-editable defaults from config/ (never overwrites)"
+    mkdir -p "$MERCURY_HOME"
     for _seed in HERMES.md OMP.md SOUL.md MEMORY.md USER.md AGENTS.md; do
-        [ -f "$HOME/.mercury/$_seed" ] || cp "$INSTALL_ROOT/config/$_seed" "$HOME/.mercury/$_seed" 2>/dev/null || true
+        [ -f "$MERCURY_HOME/$_seed" ] || cp "$INSTALL_ROOT/config/$_seed" "$MERCURY_HOME/$_seed" 2>/dev/null || true
     done
     if [ "$NO_SKILLS" = true ]; then
         log_info "--no-skills: seeding no bundled skills"
     elif [ -d "$INSTALL_ROOT/hermes/skills" ]; then
-        if [ ! -d "$HOME/.mercury/skills" ]; then
+        if [ ! -d "$MERCURY_HOME/skills" ]; then
             log_info "seeding the shared skills library (~/.mercury/skills)"
-            mkdir -p "$HOME/.mercury/skills"
-            ( cd "$INSTALL_ROOT/hermes/skills" && tar cf - . ) | ( cd "$HOME/.mercury/skills" && tar xf - )
+            mkdir -p "$MERCURY_HOME/skills"
+            ( cd "$INSTALL_ROOT/hermes/skills" && tar cf - . ) | ( cd "$MERCURY_HOME/skills" && tar xf - )
         else
             for _cat in "$INSTALL_ROOT/hermes/skills"/*/; do
                 _name="$(basename "$_cat")"
-                [ -d "$HOME/.mercury/skills/$_name" ] || cp -r "$_cat" "$HOME/.mercury/skills/$_name"
+                [ -d "$MERCURY_HOME/skills/$_name" ] || cp -r "$_cat" "$MERCURY_HOME/skills/$_name"
             done
         fi
     fi
@@ -356,7 +368,7 @@ setup_path() {
     mkdir -p "$BIN_DIR"
     ln -sf "$INSTALL_ROOT/bin/mercury" "$BIN_DIR/mercury"
     case ":$PATH:" in *":$BIN_DIR:"*) log_success "mercury command: $BIN_DIR/mercury" ;;
-        *) log_warn "add $BIN_DIR to PATH (e.g. echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc)" ;; esac
+        *) log_warn "add $BIN_DIR to PATH: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc" ;; esac
 }
 
 print_success() {
@@ -364,6 +376,7 @@ print_success() {
     echo -e "${GREEN}✓ Mercury installed.${NC}"
     echo "  First run:   mercury"
     echo "  omp engine:  mercury omp"
+    echo "  Reconfigure: mercury setup   (both engines)"
     echo "  Docs:        https://github.com/fengwhang/mercury"
     echo ""
     echo "  Mercury is a hybrid distribution of Hermes by Nous Research"
@@ -380,22 +393,24 @@ main() {
     setup_venv
     smoke_test
     install_system_packages
-    install_browser
-    install_computer_use
-    run_wizard
+    install_browser_use_cli
+    install_computer_use_driver
+    run_setup_wizard
+    maybe_start_gateway
     seed_defaults
     setup_path
     print_success
 }
 
 if [ -n "$ENSURE_DEPS" ]; then
-    # --ensure node,browser,ripgrep,ffmpeg — deps only, no install
     detect_system
-    OLDROOT="$INSTALL_ROOT"; INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-$HOME/.local/share/mercury}"
+    INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-$HOME/.local/share/mercury}"
+    install_uv
     for d in ${ENSURE_DEPS//,/ }; do
         case $d in
-            ripgrep|ffmpeg) ENSURE_ONE="$d" ;;
-            browser) install_browser ;;
+            browser) install_browser_use_cli ;;
+            computer-use|cua) install_computer_use_driver ;;
+            ripgrep|ffmpeg) install_system_packages ;;
             *) log_warn "unknown --ensure dep: $d" ;;
         esac
     done

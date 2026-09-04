@@ -1925,7 +1925,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
     zip_url = (
-        f"https://github.com/NousResearch/mercury-agent/archive/refs/heads/{branch}.zip"
+        f"https://github.com/fengwhang/mercury/archive/refs/heads/{branch}.zip"
     )
 
     print("→ Downloading latest version...")
@@ -2839,14 +2839,16 @@ def _discard_stashed_changes(
     print("→ Discarded local source changes (updates.non_interactive_local_changes=discard).")
     return True
 
+# MERCURY-OMP PATCH: Mercury's official repo is fengwhang/mercury (the
+# distribution), NOT NousResearch/hermes-agent (the upstream engine).
 OFFICIAL_REPO_URLS = {
-    "https://github.com/NousResearch/mercury-agent.git",
-    "git@github.com:NousResearch/mercury-agent.git",
-    "https://github.com/NousResearch/mercury-agent",
-    "git@github.com:NousResearch/mercury-agent",
+    "https://github.com/fengwhang/mercury.git",
+    "git@github.com:fengwhang/mercury.git",
+    "https://github.com/fengwhang/mercury",
+    "git@github.com:fengwhang/mercury",
 }
 
-OFFICIAL_REPO_URL = "https://github.com/NousResearch/mercury-agent.git"
+OFFICIAL_REPO_URL = "https://github.com/fengwhang/mercury.git"
 
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
@@ -2983,7 +2985,7 @@ def _sync_with_upstream_if_needed(
 
         print()
         print("ℹ Your fork is not tracking the official Mercury repository.")
-        print("  This means you may miss updates from NousResearch/mercury-agent.")
+        print("  This means you may miss updates from fengwhang/mercury.")
         print()
 
         if assume_yes or (
@@ -2993,7 +2995,7 @@ def _sync_with_upstream_if_needed(
             # without persisting the decline so interactive runs still get asked.
             print("  Skipping upstream setup (non-interactive run).")
             print(
-                "  Add it later with: git remote add upstream https://github.com/NousResearch/mercury-agent.git"
+                "  Add it later with: git remote add upstream https://github.com/fengwhang/mercury.git"
             )
             return False
 
@@ -3019,7 +3021,7 @@ def _sync_with_upstream_if_needed(
             print("→ Adding upstream remote...")
             if _add_upstream_remote(git_cmd, cwd):
                 print(
-                    "  ✓ Added upstream: https://github.com/NousResearch/mercury-agent.git"
+                    "  ✓ Added upstream: https://github.com/fengwhang/mercury.git"
                 )
                 has_upstream = True
             else:
@@ -3027,7 +3029,7 @@ def _sync_with_upstream_if_needed(
                 return False
         else:
             print(
-                "  Skipped. Run 'git remote add upstream https://github.com/NousResearch/mercury-agent.git' to add later."
+                "  Skipped. Run 'git remote add upstream https://github.com/fengwhang/mercury.git' to add later."
             )
             _mark_skip_upstream_prompt()
             return False
@@ -8158,11 +8160,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if sys.platform == "win32":
             use_zip_update = True
         else:
-            print("✗ Not a git repository. Please reinstall:")
-            print(
-                "  curl -fsSL https://mercury-agent.nousresearch.com/install.sh | bash"
-            )
-            sys.exit(1)
+            # MERCURY-OMP PATCH: tarball installs (the normal Mercury install
+            # path) have no .git — upstream's git updater can't run. Use the
+            # release-asset updater against fengwhang/mercury instead.
+            from mercury_cli.update_release import update_from_release
+
+            sys.exit(update_from_release(assume_yes=bool(getattr(args, "yes", False))))
 
     # On Windows, git can fail with "unable to write loose object file: Invalid argument"
     # due to filesystem atomicity issues. Set the recommended workaround.
