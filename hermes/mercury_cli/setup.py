@@ -1070,37 +1070,55 @@ def _prompt_mercury_slots(config: dict) -> None:
     print_info(f"   Default:  {slots['default']}")
     print()
 
+    # MERCURY-OMP PATCH: dropdown pickers — the SAME _prompt_model_selection
+    # UX the default model gets (curses list, provider-scoped catalog, pricing
+    # columns, current-first, built-in "Enter custom model name" escape).
+    from mercury_cli.auth import _prompt_model_selection
+    from mercury_cli.models import provider_model_ids, get_pricing_for_provider
+
+    provider = slots["default"].split("/", 1)[0] if "/" in slots["default"] else ""
+    try:
+        catalog = provider_model_ids(provider, force_refresh=False)
+    except Exception:
+        catalog = []
+    if not catalog:
+        catalog = [slots["default"]]
+    try:
+        pricing = get_pricing_for_provider(provider, force_refresh=False)
+    except Exception:
+        pricing = None
+
+    def _pick(slot_label: str, current: str) -> str:
+        chosen = _prompt_model_selection(
+            catalog,
+            current_model=current,
+            pricing=pricing,
+        )
+        return chosen or current
+
     # Fallback — required by policy, must differ from default.
-    fallback = slots["fallback"]
     while True:
-        prompt_text = "Fallback model (used when the default fails mid-turn)"
-        if fallback:
-            raw = input(color(f"{prompt_text} [{fallback}]: ", Colors.ORANGERED)).strip()
-            fallback = raw or fallback
-        else:
-            raw = input(color(f"{prompt_text}: ", Colors.ORANGERED)).strip()
-            fallback = raw
+        fallback = _pick("Fallback", slots["fallback"] or (catalog[1] if len(catalog) > 1 else ""))
         if not fallback:
             print_warning("Fallback is required (fail-hard: no fallback = no start).")
             continue
-        if fallback == slots["default"]:
+        if f"{provider}/{fallback}" == slots["default"] or fallback == slots["default"]:
             print_warning("Fallback must differ from the default model.")
             continue
         break
+    fallback = f"{provider}/{fallback}" if provider and "/" not in fallback else fallback
 
     print_info("The next two slots are for SUBAGENTS: coding tasks fan out to omp")
     print_info("subagents, and these set which model those subagents run on.")
     print()
 
     # Delegate model — defaults to the default model.
-    delegate_model = slots["delegate_model"] or slots["default"]
-    raw = input(color(f"Delegate (subagent) model [{delegate_model}]: ", Colors.ORANGERED)).strip()
-    delegate_model = raw or delegate_model
+    delegate_model = _pick("Delegate", slots["delegate_model"] or slots["default"])
+    delegate_model = f"{provider}/{delegate_model}" if provider and "/" not in delegate_model else delegate_model
 
     # Delegate fallback — defaults to the main fallback.
-    delegate_fallback = slots["delegate_fallback"] or fallback
-    raw = input(color(f"Delegate fallback (subagent retry) [{delegate_fallback}]: ", Colors.ORANGERED)).strip()
-    delegate_fallback = raw or delegate_fallback
+    delegate_fallback = _pick("Delegate fallback", slots["delegate_fallback"] or fallback)
+    delegate_fallback = f"{provider}/{delegate_fallback}" if provider and "/" not in delegate_fallback else delegate_fallback
 
     # Write the shared models: block (line-oriented, omp_sync-compatible).
     from mercury_cli.omp_sync import _write_slots
