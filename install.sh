@@ -417,39 +417,78 @@ setup_path() {
 }
 
 ensure_path_configured() {
-    case ":$PATH:" in *":$BIN_DIR:"*)
-        return 0 ;;
-    esac
-    local _shell _rc
-    _shell="$(basename "${SHELL:-/bin/bash}")"
-    case "$_shell" in
-        zsh)  _rc="$HOME/.zshrc" ;;
-        *)    _rc="$HOME/.bashrc" ;;
-    esac
-    # login-shell coverage: when bash has NO rc pair at all, create the
-    # minimal pair — .bashrc holds the export, .bash_profile sources it so
-    # login shells get it too. (Writing only .profile leaves non-login
-    # interactive shells without PATH.)
-    if [ "$_shell" != "zsh" ] && [ ! -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.bash_profile" ]; then
-        touch "$HOME/.bashrc"
-        printf '[ -f ~/.bashrc ] && . ~/.bashrc\n' > "$HOME/.bash_profile"
+    # HERMES PATTERN (faithful copy): probe a real non-login interactive
+    # shell exactly as the user will use it; only if it cannot resolve
+    # mercury, write the PATH export into EVERY existing shell rc.
+    # Permanent across reboots; covers login, non-login, and new shells.
+    if env -i HOME="$HOME" TERM="${TERM:-dumb}" PATH="/usr/local/bin:/usr/bin:/bin" \
+        bash -i -c 'command -v mercury' >/dev/null 2>&1; then
+        log_success "mercury resolves in interactive shells (PATH already configured)"
+        return 0
     fi
-    # system-wide best-effort: /etc/profile.d catches login shells that
-    # skip rc files entirely
+
+    LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
+    SHELL_CONFIGS=()
+    IS_FISH=false
+    case "$LOGIN_SHELL" in
+        zsh)
+            [ -f "$HOME/.zshrc" ] && SHELL_CONFIGS+=("$HOME/.zshrc")
+            [ -f "$HOME/.zprofile" ] && SHELL_CONFIGS+=("$HOME/.zprofile")
+            if [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
+                touch "$HOME/.zshrc" && SHELL_CONFIGS+=("$HOME/.zshrc")
+            fi
+            ;;
+        fish)
+            IS_FISH=true
+            FISH_CONFIG="$HOME/.config/fish/config.fish"
+            mkdir -p "$(dirname "$FISH_CONFIG")"
+            touch "$FISH_CONFIG"
+            ;;
+        *)
+            # bash and everything POSIX: write ALL existing rc files, and
+            # create the minimal pair when none exists
+            if [ ! -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.bash_profile" ] && [ ! -f "$HOME/.profile" ]; then
+                touch "$HOME/.bashrc"
+                printf '[ -f ~/.bashrc ] && . ~/.bashrc\n' > "$HOME/.bash_profile"
+            fi
+            [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
+            [ -f "$HOME/.bash_profile" ] && SHELL_CONFIGS+=("$HOME/.bash_profile")
+            [ -f "$HOME/.profile" ] && SHELL_CONFIGS+=("$HOME/.profile")
+            ;;
+    esac
+
+    if [ "$IS_FISH" = true ]; then
+        if ! grep -q 'mercury/bin' "$FISH_CONFIG" 2>/dev/null; then
+            echo "" >> "$FISH_CONFIG"
+            echo "# Mercury — ensure ~/.mercury/bin is on PATH" >> "$FISH_CONFIG"
+            echo "fish_add_path -g \"$BIN_DIR\"" >> "$FISH_CONFIG"
+            log_success "added $BIN_DIR to PATH ($FISH_CONFIG, fish_add_path)"
+        fi
+    else
+        PATH_LINE="export PATH=\"$BIN_DIR:\$PATH\""
+        for SHELL_CONFIG in "${SHELL_CONFIGS[@]}"; do
+            if ! grep -v '^[[:space:]]*#' "$SHELL_CONFIG" 2>/dev/null | grep -qF "$BIN_DIR"; then
+                echo "" >> "$SHELL_CONFIG"
+                echo "# Mercury — ensure $BIN_DIR is on PATH" >> "$SHELL_CONFIG"
+                echo "$PATH_LINE" >> "$SHELL_CONFIG"
+                log_success "added $BIN_DIR to PATH ($SHELL_CONFIG)"
+            fi
+        done
+    fi
+
+    # system-wide catch-all for login shells (writable without sudo only in
+    # containers; best-effort)
     if [ -d /etc/profile.d ] && [ -w /etc/profile.d ] && [ ! -f /etc/profile.d/mercury.sh ]; then
         printf 'export PATH="%s:$PATH"\n' "$BIN_DIR" > /etc/profile.d/mercury.sh 2>/dev/null \
             && log_success "system-wide: /etc/profile.d/mercury.sh"
     fi
-    if ! grep -q 'MERCURY-PATH' "$_rc" 2>/dev/null; then
-        {
-            echo ''
-            echo '# MERCURY-PATH: the mercury command lives under ~/.mercury (single home)'
-            echo "export PATH="$BIN_DIR:\$PATH""
-        } >> "$_rc"
-        log_success "added $BIN_DIR to PATH ($_rc) — new terminals resolve 'mercury'"
-        log_info "current shell: run 'export PATH="$BIN_DIR:\$PATH"' or open a new terminal"
+
+    # verify: the SAME probe must now succeed
+    if env -i HOME="$HOME" TERM="${TERM:-dumb}" PATH="/usr/local/bin:/usr/bin:/bin" \
+        bash -i -c 'command -v mercury' >/dev/null 2>&1; then
+        log_success "mercury command ready (verified in a fresh interactive shell)"
     else
-        log_success "PATH already configured ($_rc)"
+        log_warn "PATH written; open a new terminal for it to take effect"
     fi
 }
 
