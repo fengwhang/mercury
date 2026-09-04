@@ -24,6 +24,7 @@ per process before the first spawn.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import signal
@@ -33,7 +34,9 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # Distribution layout: <repo>/mercury/ is this tree; repo root one level up.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -45,8 +48,23 @@ def _bridge_path() -> Path:
 
 
 def _config_path() -> Path:
-    return Path(os.environ.get("HERMES_OMP_CONFIG")
-                or _REPO_ROOT / "config.yaml")
+    """The config file the BRIDGE will read (cache-key truth).
+
+    Mirrors bridge.py's resolution (HERMES_OMP_CONFIG > MERCURY_CONFIG >
+    $MERCURY_HOME/config.yaml > ~/.mercury/config.yaml) so the mtime cache
+    key tracks the file the bridge actually validates. Post-ship the repo
+    root has NO config.yaml (the hand-editable default lives in config/;
+    a stale _REPO_ROOT fallback made the cache key permanently None →
+    config edits never invalidated the cached delegate env).
+    """
+    for var in ("HERMES_OMP_CONFIG", "MERCURY_CONFIG"):
+        value = os.environ.get(var)
+        if value:
+            return Path(value)
+    home = os.environ.get("MERCURY_HOME")
+    if home:
+        return Path(home) / "config.yaml"
+    return Path.home() / ".mercury" / "config.yaml"
 
 
 DEFAULT_TIMEOUT = int(os.environ.get("HERMES_OMP_TIMEOUT", "1800"))
@@ -80,11 +98,20 @@ def _untrack_proc(proc: "subprocess.Popen",
             pass
 
 
-def _kill_procs(procs: List["subprocess.Popen"]) -> None:
-    """SIGKILL a scoped list of omp process groups (batch-scoped interrupt)."""
+def _kill_procs(procs: List[Any]) -> None:
+    """SIGKILL a scoped list of child handles (batch-scoped interrupt).
+
+    Entries are Popen (``-p`` one-shots) or Popen-duck RPC children
+    (``OmpRpcChild``: same .pid / .kill surface). Entries whose pid is
+    still None (RPC child raced between construction and spawn) are
+    skipped — os.getpgid(None) would return OUR process group.
+    """
     for p in list(procs):
+        pid = getattr(p, "pid", None)
+        if pid is None:
+            continue
         try:
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             try:
                 p.kill()
@@ -170,14 +197,48 @@ def _build_task_prompt(goal: str, context: Optional[str],
     return "".join(parts).strip()
 
 
+# C1 slice 2: RPC-first child transport. Approval-capable (prompt-tier
+# decisions route into hermes' guard stack); the -p one-shot remains as
+# fallback ONLY for RPC start failure (binary too old / not RPC-capable /
+# vendored client import error). ``startup`` bounds the ready-frame wait so
+# a non-RPC binary fails over fast instead of stalling the fan-out.
+RPC_STARTUP_TIMEOUT = float(os.environ.get("HERMES_OMP_RPC_STARTUP", "20"))
+
+
+def _rpc_disabled() -> bool:
+    """Kill-switch: HERMES_OMP_TRANSPORT=oneshot forces the -p engine."""
+    return os.environ.get("HERMES_OMP_TRANSPORT", "").strip().lower() == "oneshot"
+
+
+def _parent_approval_callback() -> Optional[Callable[..., Any]]:
+    """The parent turn's thread-local approval callback, if any.
+
+    Copied onto the RPC responder thread so check_all_command_guards can
+    surface a human prompt in the user's chat (same pattern delegate_tool
+    uses when spawning Mercury children — see terminal_tool
+    set_approval_callback / _callback_tls).
+    """
+    try:
+        from tools.terminal_tool import _get_approval_callback
+
+        return _get_approval_callback()
+    except Exception:
+        return None
+
+
 def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[str],
                   timeout: int, fallback_chain: Optional[str],
                   batch_procs: Optional[List["subprocess.Popen"]] = None) -> Dict[str, Any]:
-    """Run ONE omp one-shot child; return a result entry (old entry contract).
+    """Run ONE omp child; return a result entry (old entry contract).
+
+    C1 slice 2: prefer the RPC transport (approval routing live); fall
+    back to the ``-p`` one-shot when the RPC child cannot START. A task
+    that starts under RPC and then fails is a real failure — no silent
+    re-run on the other transport (double-execution hazard for
+    side-effecting tasks).
 
     status ∈ {completed, failed, interrupted}; exit_reason ∈ {completed,
-    error, timeout, interrupted}; truncated is always False (omp one-shot has
-    no iteration budget knob on this path).
+    error, timeout, interrupted}; truncated is always False.
     """
     omp_path = _resolve_omp_binary()
     started = time.time()
@@ -196,6 +257,67 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
             "duration_seconds": 0.0,
         }
 
+    if not _rpc_disabled():
+        try:
+            from tools.omp_rpc_transport import (
+                OmpRpcStartError,
+                run_omp_task_rpc,
+            )
+        except Exception as exc:
+            logger.warning(
+                "C1: omp_rpc_transport unavailable (%s) — falling back to "
+                "-p one-shot for task %d", exc, task_index)
+        else:
+            rpc_env = os.environ.copy()
+            if fallback_chain:
+                rpc_env["OMP_FALLBACK_CHAIN"] = fallback_chain
+            try:
+                entry = run_omp_task_rpc(
+                    omp_path=omp_path,
+                    model=model,
+                    prompt=prompt,
+                    workdir=workdir,
+                    env=rpc_env,
+                    timeout=float(timeout),
+                    startup_timeout=RPC_STARTUP_TIMEOUT,
+                    batch_procs=batch_procs,
+                    approval_callback=_parent_approval_callback(),
+                )
+            except OmpRpcStartError as start_exc:
+                logger.warning(
+                    "C1: omp RPC start failed (%s) — falling back to -p "
+                    "one-shot for task %d", start_exc, task_index)
+                entry = _run_omp_one_shot(
+                    task_index, prompt, model, omp_path, workdir,
+                    timeout, fallback_chain, batch_procs, started)
+                entry["transport"] = "oneshot-fallback"
+                return entry
+            except Exception as exc:  # after a good start: real failure
+                return {
+                    "task_index": task_index,
+                    "status": "failed",
+                    "summary": None,
+                    "error": f"omp RPC child failed: {exc}",
+                    "exit_reason": "error",
+                    "truncated": False,
+                    "model": model,
+                    "duration_seconds": round(time.time() - started, 2),
+                }
+            entry["task_index"] = task_index
+            entry["transport"] = "rpc"
+            return entry
+
+    return _run_omp_one_shot(
+        task_index, prompt, model, omp_path, workdir,
+        timeout, fallback_chain, batch_procs, started)
+
+
+def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
+                      workdir: Optional[str], timeout: int,
+                      fallback_chain: Optional[str],
+                      batch_procs: Optional[List["subprocess.Popen"]],
+                      started: float) -> Dict[str, Any]:
+    """The original ``omp --model m -p <prompt>`` one-shot path (B1)."""
     env = os.environ.copy()
     if fallback_chain:
         env["OMP_FALLBACK_CHAIN"] = fallback_chain

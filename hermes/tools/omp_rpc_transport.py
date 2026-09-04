@@ -41,9 +41,10 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +225,8 @@ class OmpRpcChild:
                  env: Optional[Dict[str, str]] = None,
                  approval_timeout: float = 600.0,
                  command_override: Optional[list] = None,
-                 approval_callback: Optional[Callable] = None):
+                 approval_callback: Optional[Callable] = None,
+                 startup_timeout: float = 60.0):
         self._omp_path = omp_path
         self._model = model
         self._workdir = workdir
@@ -232,9 +234,33 @@ class OmpRpcChild:
         self._approval_timeout = approval_timeout
         self._command_override = command_override
         self._approval_callback = approval_callback
+        self._startup_timeout = startup_timeout
         self._client: Any = None
         self._ui_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+
+    @property
+    def proc(self):
+        """The child's Popen handle (None before start).
+
+        Exposed so the delegation engine can register the child in its
+        batch-scoped interrupt lists — RpcClient spawns with
+        start_new_session=True, so killpg on this pid takes the whole
+        child tree, same contract as the -p one-shot path.
+        """
+        if self._client is None:
+            return None
+        return getattr(self._client, "_process", None)
+
+    @property
+    def pid(self):
+        """Popen-duck-compatible pid (None before the process spawns)."""
+        proc = self.proc
+        return getattr(proc, "pid", None)
+
+    def kill(self) -> None:
+        """Popen-duck-compatible kill — tears the RPC child down."""
+        self.stop()
 
     def start(self) -> None:
         RpcClient = _import_omp_rpc()
@@ -247,7 +273,7 @@ class OmpRpcChild:
             command=list(argv),
             cwd=self._workdir,
             env=self._env,
-            startup_timeout=60.0,
+            startup_timeout=self._startup_timeout,
         )
         self._client.start()
         self._ui_thread = threading.Thread(
@@ -279,10 +305,17 @@ class OmpRpcChild:
                 "duration_seconds": round(_time.time() - started, 2),
             }
         except Exception as exc:
+            # Timeout parity with the -p one-shot entry contract: a task that
+            # started but did not finish in time reports exit_reason=timeout,
+            # not error (delegation consumers key off this).
+            _import_omp_rpc()  # idempotent sys.path insert (done in start())
+            from omp_rpc import RpcTimeoutError
+
+            reason = "timeout" if isinstance(exc, RpcTimeoutError) else "error"
             return {
                 "status": "failed", "summary": None,
                 "error": f"omp RPC child failed: {exc}",
-                "exit_reason": "error", "truncated": False,
+                "exit_reason": reason, "truncated": False,
                 "model": self._model,
                 "duration_seconds": round(_time.time() - started, 2),
             }
@@ -298,6 +331,15 @@ class OmpRpcChild:
                 logger.exception("C1: client stop raised (ignored)")
 
 
+class OmpRpcStartError(Exception):
+    """The RPC child could not START (no ready frame, bad binary, or the
+    vendored omp_rpc client failed to import).
+
+    Raised by run_omp_task_rpc before any task was sent, so the delegation
+    engine can fail over to the ``-p`` one-shot without double-execution
+    risk: no prompt has reached the child at this point."""
+
+
 def run_omp_task_rpc(
     omp_path: str,
     model: str,
@@ -306,20 +348,50 @@ def run_omp_task_rpc(
     env: Optional[Dict[str, str]] = None,
     timeout: float = 1800.0,
     command_override: Optional[list] = None,
+    startup_timeout: float = 60.0,
+    batch_procs: Optional[list] = None,
+    rpc_procs: Optional[list] = None,
+    approval_callback: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """One-shot helper: full RPC child lifecycle around a single task.
 
     Mirrors _run_omp_task's entry contract so dispatch_omp_delegation can
     adopt it per-task without restructuring the fan-out. ``command_override``
     replaces the spawned argv entirely (test/diagnostic seam).
+    ``startup_timeout`` bounds how long we wait for the RPC ready frame —
+    the dispatch path keeps this SHORT (binary that doesn't speak RPC must
+    fail over to the -p one-shot quickly, not stall the fan-out).
+    ``batch_procs`` receives the OmpRpcChild itself (has .pid → killpg-
+    compatible with the engine's Popen-based interrupt lists);
+    ``rpc_procs`` optionally receives the inner Popen.
     """
     child = OmpRpcChild(
         omp_path=omp_path, model=model, workdir=workdir,
         env=env, approval_timeout=min(timeout, 600.0),
         command_override=command_override,
+        startup_timeout=startup_timeout,
+        approval_callback=approval_callback,
     )
+    # batch_procs tracking happens ONLY after start() returns: the engine's
+    # interrupt path does killpg(getpgid(p.pid)) and a None pid would resolve
+    # to OUR process group — suicide, not interrupt.
     try:
-        child.start()
+        try:
+            child.start()
+        except Exception as exc:
+            # Start failure only (no ready frame / bad binary / vendored
+            # client import error). Task-time failures return entries, they
+            # do not raise — so this is unambiguously "could not start".
+            raise OmpRpcStartError(f"{type(exc).__name__}: {exc}") from exc
+        if batch_procs is not None:
+            batch_procs.append(child)
+        if rpc_procs is not None and child.proc is not None:
+            rpc_procs.append(child.proc)
         return child.run_task(prompt, timeout=timeout)
     finally:
         child.stop()
+        if batch_procs is not None:
+            try:
+                batch_procs.remove(child)
+            except ValueError:
+                pass

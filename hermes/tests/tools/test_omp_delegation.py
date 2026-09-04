@@ -426,5 +426,131 @@ class TestParallelFanout(unittest.TestCase):
         self.assertLess(dt, 1.0, f"fan-out did not run in parallel (took {dt:.2f}s)")
 
 
+class TestRpcTransportSelection(unittest.TestCase):
+    """C1 slice 2: _run_omp_task prefers RPC; -p is fallback, not default.
+
+    Fake omp binaries that speak no RPC exercise the REAL failover path
+    (vendored client start fails → OmpRpcStartError → one-shot runs).
+    The RPC-success path is covered in test_omp_rpc_transport against the
+    fake RPC server; here we pin the engine-side contract.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmpdir = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        # non-RPC binary: prints nothing RPC-shaped and exits
+        self.bin = _write_fake_omp(self.tmpdir, "#!/bin/sh\necho plain-out\n")
+        self._old = (
+            os.environ.get("HERMES_OMP_BIN"),
+            os.environ.get("HERMES_OMP_TRANSPORT"),
+            os.environ.get("HERMES_OMP_RPC_STARTUP"),
+        )
+        os.environ["HERMES_OMP_BIN"] = self.bin
+        os.environ["HERMES_OMP_RPC_STARTUP"] = "2"  # fail over fast in tests
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        bin_, transport, startup = self._old
+        for key, val in (
+            ("HERMES_OMP_BIN", bin_),
+            ("HERMES_OMP_TRANSPORT", transport),
+            ("HERMES_OMP_RPC_STARTUP", startup),
+        ):
+            if val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = val
+
+    def test_non_rpc_binary_falls_back_to_oneshot(self):
+        import tools.omp_delegation as mod
+        entry = mod._run_omp_task(0, "p", "m", None, 30, None)
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["summary"], "plain-out")
+        self.assertEqual(entry["transport"], "oneshot-fallback")
+
+    def test_kill_switch_forces_oneshot(self):
+        import tools.omp_delegation as mod
+        os.environ["HERMES_OMP_TRANSPORT"] = "oneshot"
+        entry = mod._run_omp_task(0, "p", "m", None, 30, None)
+        self.assertEqual(entry["status"], "completed")
+        self.assertNotIn("transport", entry)  # one-shot never stamped
+
+    def test_failed_oneshot_after_rpc_start_failure_keeps_error(self):
+        import tools.omp_delegation as mod
+        bad = _write_fake_omp(self.tmpdir, "#!/bin/sh\necho out; echo err >&2; exit 3\n")
+        os.environ["HERMES_OMP_BIN"] = bad
+        entry = mod._run_omp_task(0, "p", "m", None, 30, None)
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "error")
+        self.assertEqual(entry["transport"], "oneshot-fallback")
+        self.assertIn("out", entry["error"])
+
+    def test_rpc_success_stamps_transport(self):
+        import tools.omp_delegation as mod
+        from tools import omp_rpc_transport
+        real = omp_rpc_transport.run_omp_task_rpc
+        with mock.patch.object(
+                omp_rpc_transport, "run_omp_task_rpc",
+                side_effect=lambda **kw: {
+                    "status": "completed", "summary": "rpc-ok",
+                    "exit_reason": "completed", "truncated": False,
+                    "model": kw.get("model", "m"),
+                    "duration_seconds": 0.01,
+                }), \
+             mock.patch.object(mod, "RPC_STARTUP_TIMEOUT", 2.0):
+            try:
+                entry = mod._run_omp_task(0, "p", "m", None, 30, "f")
+            finally:
+                omp_rpc_transport.run_omp_task_rpc = real
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["summary"], "rpc-ok")
+        self.assertEqual(entry["transport"], "rpc")
+        self.assertEqual(entry["task_index"], 0)
+
+    def test_rpc_start_failure_no_double_execution(self):
+        """Fallback fires ONLY on start failure — task never sent twice."""
+        import tools.omp_delegation as mod
+        from tools import omp_rpc_transport
+        calls = {"rpc": 0, "oneshot": 0}
+
+        def fake_rpc(**kw):
+            calls["rpc"] += 1
+            raise omp_rpc_transport.OmpRpcStartError("RpcTimeoutError: no ready frame")
+
+        def fake_oneshot(*a):
+            calls["oneshot"] += 1
+            return {"task_index": a[0], "status": "completed",
+                    "summary": "one", "exit_reason": "completed",
+                    "truncated": False, "model": "m",
+                    "duration_seconds": 0.01}
+
+        real_rpc = omp_rpc_transport.run_omp_task_rpc
+        real_os = mod._run_omp_one_shot
+        omp_rpc_transport.run_omp_task_rpc = fake_rpc
+        mod._run_omp_one_shot = fake_oneshot
+        try:
+            entry = mod._run_omp_task(7, "p", "m", None, 30, None)
+        finally:
+            omp_rpc_transport.run_omp_task_rpc = real_rpc
+            mod._run_omp_one_shot = real_os
+        self.assertEqual(calls, {"rpc": 1, "oneshot": 1})
+        self.assertEqual(entry["transport"], "oneshot-fallback")
+        self.assertEqual(entry["task_index"], 7)
+
+    def test_killprocs_skips_none_pid(self):
+        """Interrupt never resolves a None pid to our own process group."""
+        import tools.omp_delegation as mod
+
+        class _Unspawned:
+            pid = None
+
+            def kill(self):
+                raise AssertionError("kill() on unspawned child must not fire")
+
+        # must not raise / must not kill US
+        mod._kill_procs([_Unspawned()])
+
+
 if __name__ == "__main__":
     unittest.main()
