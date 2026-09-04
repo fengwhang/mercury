@@ -391,6 +391,22 @@ seed_defaults() {
 setup_path() {
     mkdir -p "$BIN_DIR"
     ln -sf "$INSTALL_ROOT/bin/mercury" "$BIN_DIR/mercury"
+    # MERCURY RULE (user directive): EVERYTHING lives under ~/.mercury —
+    # there is no other location. Any mercury executable or code tree
+    # outside it is residue from an earlier layout and is REMOVED here so
+    # PATH can never resolve a dangling or stale binary.
+    local _stale
+    for _stale in "$HOME/.local/bin/mercury" "$HOME/.local/bin/mercury-acp" "$HOME/.local/bin/mercury-agent" \
+                  "/usr/local/bin/mercury" "/usr/local/bin/mercury-acp" "/usr/local/bin/mercury-agent"; do
+        [ "$_stale" = "$BIN_DIR/mercury" ] && continue
+        if [ -e "$_stale" ] || [ -L "$_stale" ]; then
+            rm -f "$_stale" && log_info "removed stale command link: $_stale"
+        fi
+    done
+    local _stale_tree="$HOME/.local/share/mercury"
+    if [ -d "$_stale_tree" ] && [ "$INSTALL_ROOT" != "$_stale_tree" ]; then
+        rm -rf "$_stale_tree" && log_info "removed stale install tree: $_stale_tree"
+    fi
     log_success "mercury command: $BIN_DIR/mercury"
     case ":$PATH:" in *":$BIN_DIR:"*) ;;
         *) log_warn "add $BIN_DIR to PATH: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc" ;; esac
@@ -399,6 +415,7 @@ setup_path() {
 print_success() {
     echo ""
     echo -e "${GREEN}✓ Mercury installed.${NC}"
+    echo "  Command:     $BIN_DIR/mercury  (the only mercury executable)"
     echo "  First run:   mercury"
     echo "  omp engine:  mercury omp"
     echo "  Reconfigure: mercury setup   (both engines)"
