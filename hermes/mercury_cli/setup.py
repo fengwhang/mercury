@@ -212,11 +212,11 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
 
     try:
         if password:
-            value = masked_secret_prompt(color(display, Colors.YELLOW))
+            value = masked_secret_prompt(color(display, Colors.ORANGERED))
         else:
             from mercury_cli.cli_output import line_input
 
-            value = line_input(color(display, Colors.YELLOW))
+            value = line_input(color(display, Colors.ORANGERED))
 
         cleaned = _sanitize_pasted_input(value)
         return cleaned.strip() or default or ""
@@ -391,7 +391,7 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
     while True:
         try:
             value = (
-                input(color(f"{question} [{default_str}]: ", Colors.YELLOW))
+                input(color(f"{question} [{default_str}]: ", Colors.ORANGERED))
                 .strip()
                 .lower()
             )
@@ -761,10 +761,10 @@ def _print_setup_summary(config: dict, mercury_home):
     from mercury_constants import display_hermes_home as _dhh
     print(color(f"📁 All your files are in {_dhh()}/:", Colors.CYAN, Colors.BOLD))
     print()
-    print(f"   {color('Settings:', Colors.YELLOW)}  {get_config_path()}")
-    print(f"   {color('API Keys:', Colors.YELLOW)}  {get_env_path()}")
+    print(f"   {color('Settings:', Colors.ORANGERED)}  {get_config_path()}")
+    print(f"   {color('API Keys:', Colors.ORANGERED)}  {get_env_path()}")
     print(
-        f"   {color('Data:', Colors.YELLOW)}      {mercury_home}/cron/, sessions/, logs/"
+        f"   {color('Data:', Colors.ORANGERED)}      {mercury_home}/cron/, sessions/, logs/"
     )
     print()
 
@@ -998,6 +998,124 @@ def setup_model_provider(config: dict, *, quick: bool = False):
 
     # Tool Gateway prompt is already shown by _model_flow_nous() above.
     save_config(config)
+
+    # MERCURY-OMP PATCH: four-slot completion. The shared flow above
+    # configured the DEFAULT model; Mercury's fail-hard policy needs the
+    # FALLBACK slot (engine retry chain) and the two DELEGATE slots (the
+    # model omp subagents run on). Ask here, seed from the shared slots,
+    # validate, and write both the shared ``models:`` block and the omp
+    # subtree (via omp_sync at the wizard tail).
+    _prompt_mercury_slots(config)
+
+
+def _prompt_mercury_slots(config: dict) -> None:
+    """Ask for fallback/delegate model slots (Mercury fail-hard policy).
+
+    The default slot was just set by the provider flow; these prompts fill
+    the remaining three. Every answer seeds the shared ``models:`` block
+    in the unified config, which both engines read.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    def _unified_path() -> _Path:
+        return _Path(
+            _os.environ.get("MERCURY_CONFIG")
+            or (_Path(_os.environ.get("MERCURY_HOME") or _Path.home() / ".mercury") / "config.yaml")
+        )
+
+    def _read_slots() -> dict:
+        slots = {
+            "default": "",
+            "fallback": "",
+            "delegate_model": "",
+            "delegate_fallback": "",
+        }
+        path = _unified_path()
+        if not path.exists():
+            return slots
+        try:
+            import yaml as _yaml
+
+            whole = _yaml.safe_load(path.read_text()) or {}
+            models = whole.get("models") or {}
+            for key in slots:
+                value = str(models.get(key) or "").strip()
+                if value:
+                    slots[key] = value
+        except Exception:
+            pass
+        return slots
+
+    # Default from the just-saved hermes view (provider-qualified)
+    try:
+        model_cfg = (load_config() or {}).get("model") or {}
+        default = str(model_cfg.get("default") or "").strip()
+        provider = str(model_cfg.get("provider") or "").strip()
+        default_qualified = f"{provider}/{default}" if provider and default else ""
+    except Exception:
+        default_qualified = ""
+
+    slots = _read_slots()
+    if default_qualified and not slots["default"]:
+        slots["default"] = default_qualified
+
+    if not slots["default"]:
+        # Nothing configured (user skipped the provider flow) — nothing to
+        # anchor a fallback against; the omp-sync tail will say the same.
+        print_info("No default model configured — skipping slot prompts (run 'mercury setup model' later).")
+        return
+
+    print_header("Model Slots (fail-hard)")
+    print_info(f"   Default:  {slots['default']}")
+    print()
+
+    # Fallback — required by policy, must differ from default.
+    fallback = slots["fallback"]
+    while True:
+        prompt_text = "Fallback model (used when the default fails mid-turn)"
+        if fallback:
+            raw = input(color(f"{prompt_text} [{fallback}]: ", Colors.ORANGERED)).strip()
+            fallback = raw or fallback
+        else:
+            raw = input(color(f"{prompt_text}: ", Colors.ORANGERED)).strip()
+            fallback = raw
+        if not fallback:
+            print_warning("Fallback is required (fail-hard: no fallback = no start).")
+            continue
+        if fallback == slots["default"]:
+            print_warning("Fallback must differ from the default model.")
+            continue
+        break
+
+    print_info("The next two slots are for SUBAGENTS: coding tasks fan out to omp")
+    print_info("subagents, and these set which model those subagents run on.")
+    print()
+
+    # Delegate model — defaults to the default model.
+    delegate_model = slots["delegate_model"] or slots["default"]
+    raw = input(color(f"Delegate (subagent) model [{delegate_model}]: ", Colors.ORANGERED)).strip()
+    delegate_model = raw or delegate_model
+
+    # Delegate fallback — defaults to the main fallback.
+    delegate_fallback = slots["delegate_fallback"] or fallback
+    raw = input(color(f"Delegate fallback (subagent retry) [{delegate_fallback}]: ", Colors.ORANGERED)).strip()
+    delegate_fallback = raw or delegate_fallback
+
+    # Write the shared models: block (line-oriented, omp_sync-compatible).
+    from mercury_cli.omp_sync import _write_slots
+
+    _write_slots(
+        {
+            "default": slots["default"],
+            "fallback": fallback,
+            "delegate_model": delegate_model,
+            "delegate_fallback": delegate_fallback,
+        }
+    )
+    print()
+    print_success(f"Model slots written: default={slots['default']}, fallback={fallback}")
+    print_info("Subagents will run on " + delegate_model + f" (fallback {delegate_fallback}).")
 
 
 # =============================================================================

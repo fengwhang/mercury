@@ -29,6 +29,11 @@ class Colors:
     BLUE = "\033[34m"
     MAGENTA = "\033[35m"
     CYAN = "\033[36m"
+    # HERMES-OMP PATCH: Mercury identity accent — 256-color orangered
+    # (#FF4500). Falls back to plain red on 8-color terminals.
+    ORANGERED = "\033[38;5;202m"
+    # Bold orangered for headers (brighter on dark terminals).
+    ORANGERED_BOLD = "\033[1;38;5;202m"
 
 
 def color(text: str, *codes) -> str:

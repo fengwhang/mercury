@@ -35,8 +35,8 @@ def print_error(text: str) -> None:
 
 
 def print_header(text: str) -> None:
-    """Print a bold yellow header."""
-    print(color(f"\n  {text}", Colors.YELLOW))
+    """Print a bold orangered header (Mercury identity accent)."""
+    print(color(f"\n  {text}", Colors.ORANGERED_BOLD))
 
 
 # ─── Input Prompts ────────────────────────────────────────────────────────────

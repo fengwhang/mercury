@@ -301,7 +301,17 @@ run_setup_wizard() {
     log_info "starting setup wizard (configures BOTH engines: models, OAuth, tools)..."
     echo ""
     local VENV="$INSTALL_ROOT/hermes/.venv"
-    ( cd hermes && MERCURY_HOME="$MERCURY_HOME" MERCURY_CONFIG="$MERCURY_HOME/config.yaml" \
+    # Env must mirror bin/mercury EXACTLY: HERMES_HOME is the engine-private
+    # home (auth store, .env) and PI_CODING_AGENT_DIR the omp one. Without
+    # these the wizard writes credentials to the platform default home while
+    # the launcher reads $MERCURY_HOME/hermes — the "no provider configured"
+    # bug class.
+    ( cd hermes \
+        && MERCURY_HOME="$MERCURY_HOME" \
+        MERCURY_CONFIG="$MERCURY_HOME/config.yaml" \
+        MERCURY_SKILLS_DIR="$MERCURY_HOME/skills" \
+        HERMES_HOME="$MERCURY_HOME/hermes" \
+        PI_CODING_AGENT_DIR="$MERCURY_HOME/omp" \
         PYTHONPATH="$INSTALL_ROOT/hermes" \
         "$VENV/bin/python" -m mercury_cli.main setup </dev/tty ) || log_warn "setup wizard exited non-zero — run 'mercury setup' later"
 }
