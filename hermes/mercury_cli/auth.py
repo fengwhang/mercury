@@ -7733,6 +7733,7 @@ def _prompt_model_selection(
     confirm_provider: str = "",
     confirm_base_url: str = "",
     confirm_api_key: str = "",
+    title: str = "",
 ) -> Optional[str]:
     """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
 
@@ -7890,7 +7891,10 @@ def _prompt_model_selection(
     default_idx = 0
 
     # Build a pricing header hint for the menu title
-    menu_title = "Select default model:"
+    # MERCURY-OMP PATCH: callers pick which model they are selecting
+    # (default / fallback / delegate slots in setup); keep the classic
+    # wording when unspecified.
+    menu_title = title or "Select default model:"
     if has_pricing:
         # Align the header with the model column.
         # Each choice is "  {label}" (2 spaces) and we prepend
@@ -7951,7 +7955,7 @@ def _prompt_model_selection(
         model_search_labels.append("Skip (keep current)")
 
         idx = curses_radiolist(
-            "Select default model:",
+            menu_title.splitlines()[0],
             choices,
             selected=default_idx,
             cancel_returns=-1,

@@ -1088,17 +1088,18 @@ def _prompt_mercury_slots(config: dict) -> None:
     except Exception:
         pricing = None
 
-    def _pick(slot_label: str, current: str) -> str:
+    def _pick(menu_title: str, current: str) -> str:
         chosen = _prompt_model_selection(
             catalog,
             current_model=current,
             pricing=pricing,
+            title=menu_title,
         )
         return chosen or current
 
     # Fallback — required by policy, must differ from default.
     while True:
-        fallback = _pick("Fallback", slots["fallback"] or (catalog[1] if len(catalog) > 1 else ""))
+        fallback = _pick("Select fallback model (used when the default fails mid-turn):", slots["fallback"] or (catalog[1] if len(catalog) > 1 else ""))
         if not fallback:
             print_warning("Fallback is required (fail-hard: no fallback = no start).")
             continue
@@ -1113,11 +1114,11 @@ def _prompt_mercury_slots(config: dict) -> None:
     print()
 
     # Delegate model — defaults to the default model.
-    delegate_model = _pick("Delegate", slots["delegate_model"] or slots["default"])
+    delegate_model = _pick("Select delegate model (the model omp SUBAGENTS run on):", slots["delegate_model"] or slots["default"])
     delegate_model = f"{provider}/{delegate_model}" if provider and "/" not in delegate_model else delegate_model
 
     # Delegate fallback — defaults to the main fallback.
-    delegate_fallback = _pick("Delegate fallback", slots["delegate_fallback"] or fallback)
+    delegate_fallback = _pick("Select delegate fallback (subagent retry model):", slots["delegate_fallback"] or fallback)
     delegate_fallback = f"{provider}/{delegate_fallback}" if provider and "/" not in delegate_fallback else delegate_fallback
 
     # Write the shared models: block (line-oriented, omp_sync-compatible).
