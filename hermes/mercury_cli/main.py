@@ -12401,6 +12401,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "gui", "desktop", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "omp",
         "omp-sync",
+        "migrate-hermes",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
         "project", "proxy",
@@ -13295,6 +13296,36 @@ def main():
     )
     omp_sync_parser.add_argument("--quiet", action="store_true", help="Suppress output")
     omp_sync_parser.set_defaults(func=lambda args: sync_omp_from_setup(quiet=args.quiet))
+
+    # =========================================================================
+    # migrate-hermes command (MERCURY-OMP PATCH: import from stock hermes)
+    # =========================================================================
+    from mercury_cli import migrate_hermes as _mh
+
+    mh_parser = subparsers.add_parser(
+        "migrate-hermes",
+        help="Import data from an existing stock hermes install (~/.hermes)",
+        description=(
+            "Non-destructive import from ~/.hermes (or $HERMES_SOURCE): "
+            "SOUL/MEMORY/USER.md (entry-merged), config model+approvals, "
+            ".env API keys, skills, sessions, cron jobs, OAuth logins. "
+            "Dry-run by default; --apply writes (backups taken)."
+        ),
+    )
+    mh_parser.add_argument("--dry-run", action="store_true", help="Preview only (default)")
+    mh_parser.add_argument("--apply", action="store_true", help="Execute the migration")
+    mh_parser.add_argument("--include", nargs="*", help="Items: " + ", ".join(_mh.ITEMS))
+    mh_parser.add_argument("--exclude", nargs="*", help="Items to skip")
+    def _cmd_migrate_hermes(args):
+        import json as _json
+        inc = set(args.include) if args.include else None
+        exc = set(args.exclude) if args.exclude else None
+        if args.apply:
+            result = _mh.run(include=inc, exclude=exc)
+        else:
+            result = _mh.run(include=inc, exclude=exc, dry_run=True)
+        print(_json.dumps(result, indent=2))
+    mh_parser.set_defaults(func=_cmd_migrate_hermes)
 
     # =========================================================================
     # model command  (parser built in mercury_cli/subcommands/model.py)

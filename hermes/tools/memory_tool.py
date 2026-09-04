@@ -65,14 +65,26 @@ _memory_surface_flags: ContextVar[Optional[Tuple[bool, bool]]] = ContextVar(
 def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory.
 
-    MERCURY-OMP PATCH (F0): under MERCURY_HOME, the shared memory files (SOUL.md, MEMORY.md, USER.md) live
-    at the mercury home top level (~/.mercury/MEMORY.md, USER.md) — one
-    memory layer for both engines (omp reads the same files via its
-    discovery-layer patch). Without MERCURY_HOME, stock behavior.
+    MERCURY-OMP PATCH (F0 + config/ layout): under MERCURY_HOME, the shared
+    memory files (SOUL.md, MEMORY.md, USER.md) live in $MERCURY_HOME/config/
+    — mirroring the repo's config/ directory. One memory layer for both
+    engines (omp reads the same files via its discovery-layer patch).
+    Without MERCURY_HOME, stock behavior.
     """
     mercury = os.environ.get("MERCURY_HOME", "").strip()
     if mercury:
-        return Path(mercury)
+        # MERCURY LAYOUT: config/ subdir; seed top-level files once (migration)
+        cfg = Path(mercury) / "config"
+        cfg.mkdir(parents=True, exist_ok=True)
+        for _name in ("SOUL.md", "MEMORY.md", "USER.md", "AGENTS.md", "HERMES.md", "OMP.md"):
+            _old = Path(mercury) / _name
+            _new = cfg / _name
+            if _old.exists() and not _new.exists():
+                try:
+                    _old.replace(_new)
+                except OSError:
+                    pass
+        return cfg
     return get_hermes_home() / "memories"
 
 # Stable header prefixes for the system-prompt memory blocks rendered by

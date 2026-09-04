@@ -3391,6 +3391,30 @@ def _run_setup_wizard_impl(args):
         if migration_ran:
             config = load_config()
 
+        # MERCURY-OMP PATCH: offer hermes → mercury migration (stock hermes
+        # install detected at ~/.hermes). Same UX as the OpenClaw offer:
+        # dry-run preview first, explicit confirm, non-destructive.
+        try:
+            from mercury_cli.migrate_hermes import plan as hermes_plan, run as hermes_run
+            _hp = hermes_plan()
+            if _hp.get("source_exists"):
+                print()
+                print_header("Hermes Installation Detected")
+                print_info(f"Found hermes data at {_hp['source']}")
+                print_info("Mercury can import your SOUL/MEMORY/USER, config, API keys, skills,")
+                print_info("sessions, cron jobs, and OAuth logins — preview first, nothing overwritten.")
+                print()
+                if prompt_yes_no("Import from your existing hermes install?", default=True):
+                    _hr = hermes_run()
+                    for _k, _v in _hr.get("items", {}).items():
+                        print_info(f"   {_k}: {_v}")
+                    if _hr.get("backup"):
+                        print_info(f"   backup: {_hr['backup']}")
+                    print_success("Hermes data imported.")
+                    print_info("Model slots: run the wizard's model section or 'mercury omp-sync' after.")
+        except Exception as _mexc:
+            logger.debug("hermes migration offer failed: %s", _mexc, exc_info=True)
+
         setup_mode = prompt_choice(
             "How would you like to set up Mercury?",
             [

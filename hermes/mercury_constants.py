@@ -1698,6 +1698,19 @@ def get_env_path() -> Path:
 
 
 
+def get_config_dir() -> Path:
+    """MERCURY LAYOUT: all hand-editable defaults live in $MERCURY_HOME/config.
+
+    Mirrors the repo's config/ directory (SOUL.md, MEMORY.md, USER.md,
+    AGENTS.md, HERMES.md, OMP.md, config.yaml schema). Readers fall back
+    to the pre-layout top-level location for one release so existing
+    installs migrate without breakage.
+    """
+    mercury_home = os.environ.get("MERCURY_HOME", "").strip()
+    base = Path(mercury_home) if mercury_home else _get_platform_default_hermes_home()
+    return base / "config"
+
+
 def get_command_link_dir() -> Path:
     """MERCURY LAYOUT (user rule): everything lives under ~/.mercury.
 

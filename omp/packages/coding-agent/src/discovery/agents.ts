@@ -310,7 +310,11 @@ async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFil
 async function loadMercuryOmpMd(_ctx: LoadContext): Promise<LoadResult<ContextFile>> {
 	const mercuryHome = process.env.MERCURY_HOME?.trim();
 	if (!mercuryHome) return { items: [], warnings: [] };
-	const filePath = path.join(mercuryHome, "OMP.md");
+	// MERCURY LAYOUT: config/ first, top-level fallback
+	const filePath =
+		(await readFile(path.join(mercuryHome, "config", "OMP.md")))
+			? path.join(mercuryHome, "config", "OMP.md")
+			: path.join(mercuryHome, "OMP.md");
 	const content = await readFile(filePath);
 	if (!content) return { items: [], warnings: [] };
 	return {
@@ -346,10 +350,14 @@ async function loadMercurySharedMemory(_ctx: LoadContext): Promise<LoadResult<Co
 	// reached omp in one-shot runs — the shared-memory audit caught it).
 	// Fix: emit ONE composite file. Every shared layer is guaranteed to
 	// arrive; ordering is explicit (persona → state → working rules).
+	// MERCURY LAYOUT: shared .md files live in $MERCURY_HOME/config/; the
+	// top level is the pre-layout fallback (one release).
+	const sharedCfg = path.join(mercuryHome, "config");
 	const names = ["SOUL.md", "MEMORY.md", "USER.md", "AGENTS.md"] as const;
 	const parts: string[] = [];
 	for (const name of names) {
-		const content = await readFile(path.join(mercuryHome, name));
+		let content = await readFile(path.join(sharedCfg, name));
+		if (!content) content = await readFile(path.join(mercuryHome, name));
 		if (content) parts.push(content.trimEnd());
 	}
 	if (!parts.length) return { items: [], warnings: [] };
@@ -358,7 +366,7 @@ async function loadMercurySharedMemory(_ctx: LoadContext): Promise<LoadResult<Co
 		content: parts.join("\n\n---\n\n") + "\n",
 		level: "user",
 		depth: undefined,
-		_source: createSourceMeta("mercury-memory", path.join(mercuryHome, "SOUL.md"), "user"),
+		_source: createSourceMeta("mercury-memory", path.join(sharedCfg, "SOUL.md"), "user"),
 	});
 	return { items, warnings: [] };
 }
@@ -366,7 +374,7 @@ async function loadMercurySharedMemory(_ctx: LoadContext): Promise<LoadResult<Co
 registerProvider<ContextFile>(contextFileCapability.id, {
 	id: "mercury-memory",
 	displayName: "Mercury shared memory (SOUL/MEMORY/USER)",
-	description: "Read the shared hermes-owned memory files (SOUL.md, MEMORY.md, USER.md, AGENTS.md) from the Mercury home top level (omp reads; hermes writes)",
+	description: "Read the shared hermes-owned memory files (SOUL.md, MEMORY.md, USER.md, AGENTS.md) from the Mercury config dir (omp reads; hermes writes)",
 	priority: PRIORITY,
 	load: loadMercurySharedMemory,
 });

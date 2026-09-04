@@ -367,10 +367,12 @@ maybe_start_gateway() {
 # seeds + path
 # ============================================================================
 seed_defaults() {
-    log_info "seeding hand-editable defaults from config/ (never overwrites)"
-    mkdir -p "$MERCURY_HOME"
+    log_info "seeding hand-editable defaults into $MERCURY_HOME/config/ (never overwrites)"
+    mkdir -p "$MERCURY_HOME/config"
     for _seed in HERMES.md OMP.md SOUL.md MEMORY.md USER.md AGENTS.md; do
-        [ -f "$MERCURY_HOME/$_seed" ] || cp "$INSTALL_ROOT/config/$_seed" "$MERCURY_HOME/$_seed" 2>/dev/null || true
+        # MERCURY LAYOUT: config/ is THE location; migrate stray top-level files once
+        [ -f "$MERCURY_HOME/$_seed" ] && [ ! -f "$MERCURY_HOME/config/$_seed" ] && mv "$MERCURY_HOME/$_seed" "$MERCURY_HOME/config/$_seed" 2>/dev/null || true
+        [ -f "$MERCURY_HOME/config/$_seed" ] || cp "$INSTALL_ROOT/config/$_seed" "$MERCURY_HOME/config/$_seed" 2>/dev/null || true
     done
     if [ "$NO_SKILLS" = true ]; then
         log_info "--no-skills: seeding no bundled skills"

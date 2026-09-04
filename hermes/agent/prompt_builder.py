@@ -2107,7 +2107,10 @@ def load_soul_md(
         _home = Path(mercury)
     else:
         _home = get_hermes_home()
-    soul_path = _home / "SOUL.md"
+    # MERCURY LAYOUT: shared .md files live in $MERCURY_HOME/config/; the
+    # top level is the pre-layout fallback for one release.
+    _cands = [_home / "config" / "SOUL.md", _home / "SOUL.md"]
+    soul_path = next((c for c in _cands if c.exists()), _cands[0])
     if not soul_path.exists():
         return None
     try:
@@ -2200,7 +2203,9 @@ def load_agents_md_home(
     if home_override is not None and base.name != "hermes":
         # agent-home override: shared file lives at mercury top level
         base = base.parent
-    path = base / "AGENTS.md"
+    # MERCURY LAYOUT: $MERCURY_HOME/config/AGENTS.md (top-level fallback)
+    _cands = [base / "config" / "AGENTS.md", base / "AGENTS.md"]
+    path = next((c for c in _cands if c.exists()), _cands[0])
     if not path.exists():
         return None
     try:
@@ -2240,7 +2245,9 @@ def load_hermes_md_home(
     # the mercury home explicitly. MERCURY.md lives at MERCURY_HOME top level.
     if home_override is None:
         base = Path(mercury_home)
-    path = base / "HERMES.md"  # FILENAME contract: HERMES.md (user-facing), not renamed
+    # MERCURY LAYOUT: $MERCURY_HOME/config/HERMES.md (top-level fallback)
+    _cands = [base / "config" / "HERMES.md", base / "HERMES.md"]
+    path = next((c for c in _cands if c.exists()), _cands[0])
     if not path.exists():
         return None
     try:

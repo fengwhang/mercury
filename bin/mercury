@@ -85,9 +85,13 @@ fi
 # source of user-facing defaults — .example files are gone by design):
 # HERMES.md / OMP.md (per-side system prompts) land at MERCURY_HOME top
 # level only if absent; never overwrite what the user has edited.
+# MERCURY LAYOUT: hand-editable defaults live in $MERCURY_HOME/config/
+# (mirrors the repo's config/ dir). Existing top-level files migrate once.
+mkdir -p "$MERCURY_HOME/config"
 for _seed in HERMES.md OMP.md SOUL.md MEMORY.md USER.md AGENTS.md; do
-    if [ ! -f "$MERCURY_HOME/$_seed" ] && [ -f "$REPO/config/$_seed" ]; then
-        cp "$REPO/config/$_seed" "$MERCURY_HOME/$_seed" 2>/dev/null || true
+    [ -f "$MERCURY_HOME/$_seed" ] && [ ! -f "$MERCURY_HOME/config/$_seed" ] && mv "$MERCURY_HOME/$_seed" "$MERCURY_HOME/config/$_seed" 2>/dev/null || true
+    if [ ! -f "$MERCURY_HOME/config/$_seed" ] && [ -f "$REPO/config/$_seed" ]; then
+        cp "$REPO/config/$_seed" "$MERCURY_HOME/config/$_seed" 2>/dev/null || true
     fi
 done
 
