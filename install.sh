@@ -410,8 +410,47 @@ setup_path() {
         rm -rf "$_stale_tree" && log_info "removed stale install tree: $_stale_tree"
     fi
     log_success "mercury command: $BIN_DIR/mercury"
-    case ":$PATH:" in *":$BIN_DIR:"*) ;;
-        *) log_warn "add $BIN_DIR to PATH: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc" ;; esac
+    # ~/.mercury/bin is NOT on PATH by default (unlike ~/.local/bin) — the
+    # installer MUST configure PATH itself or the command is unlaunchable.
+    # Idempotent rc write with a marker comment; shell-appropriate file.
+    ensure_path_configured
+}
+
+ensure_path_configured() {
+    case ":$PATH:" in *":$BIN_DIR:"*)
+        return 0 ;;
+    esac
+    local _shell _rc
+    _shell="$(basename "${SHELL:-/bin/bash}")"
+    case "$_shell" in
+        zsh)  _rc="$HOME/.zshrc" ;;
+        *)    _rc="$HOME/.bashrc" ;;
+    esac
+    # login-shell coverage: when bash has NO rc pair at all, create the
+    # minimal pair — .bashrc holds the export, .bash_profile sources it so
+    # login shells get it too. (Writing only .profile leaves non-login
+    # interactive shells without PATH.)
+    if [ "$_shell" != "zsh" ] && [ ! -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.bash_profile" ]; then
+        touch "$HOME/.bashrc"
+        printf '[ -f ~/.bashrc ] && . ~/.bashrc\n' > "$HOME/.bash_profile"
+    fi
+    # system-wide best-effort: /etc/profile.d catches login shells that
+    # skip rc files entirely
+    if [ -d /etc/profile.d ] && [ -w /etc/profile.d ] && [ ! -f /etc/profile.d/mercury.sh ]; then
+        printf 'export PATH="%s:$PATH"\n' "$BIN_DIR" > /etc/profile.d/mercury.sh 2>/dev/null \
+            && log_success "system-wide: /etc/profile.d/mercury.sh"
+    fi
+    if ! grep -q 'MERCURY-PATH' "$_rc" 2>/dev/null; then
+        {
+            echo ''
+            echo '# MERCURY-PATH: the mercury command lives under ~/.mercury (single home)'
+            echo "export PATH="$BIN_DIR:\$PATH""
+        } >> "$_rc"
+        log_success "added $BIN_DIR to PATH ($_rc) — new terminals resolve 'mercury'"
+        log_info "current shell: run 'export PATH="$BIN_DIR:\$PATH"' or open a new terminal"
+    else
+        log_success "PATH already configured ($_rc)"
+    fi
 }
 
 print_success() {
