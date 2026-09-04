@@ -38,9 +38,22 @@ Legend: [ ] todo · [~] partial · [x] done
       test_omp_delegation + test_omp_rpc_transport; LIVE
       MERCURY-C1S2-OK (engine path, real patched binary + glm-5.3,
       approval gate APPROVED `sed -n '1p' probe.txt`, 6.43s).
-- [ ] **C1 slice 2(b)**: cron omp_direct + `mercury omp` spawn sites route
-      approvals through the same RPC path (they still render deny policy
-      pre-spawn via C2, but prompt-tier gates fail closed there).
+- [x] **C1 slice 2(b)** (fc0d6c89, 2026-09-05): cron omp_direct is
+      RPC-first — new helper `cron/omp_direct_rpc.omp_direct_rpc_attempt`
+      wraps `tools/omp_rpc_transport.run_omp_task_rpc` and returns the
+      scheduler 4-tuple; scheduler's omp_direct block calls it before the
+      `-p` one-shot. Returns None ONLY on pre-prompt start failure
+      (kill-switch / transport import / no ready frame) → one-shot
+      fallback, no double-execution hazard; a returned tuple is final.
+      `mercury omp` (TUI) examined and deliberately EXCLUDED: it
+      `os.execve`s omp's interactive TUI — approvals are attended by
+      omp's own UI, no headless fail-closed hazard exists there.
+      Tests: tests/cron/test_omp_direct_rpc.py 6/6 (fake-server E2E via
+      real vendored omp_rpc client, approve/deny gate routing,
+      kill-switch, start-failure→None, SILENT parity); 39/39 across the
+      three C-track suites; bridge 26/26. LIVE: real patched omp +
+      zai/glm-5.3 over RPC, approval-gated `sed` executed, marker
+      MERCURY-C1S2B-OK, tuple (True, doc, output, None).
 - [ ] **C3**: nested-subagent check — verify a subagent-of-subagent exec
       approval surfaces through the RPC channel on a real fan-out.
 
@@ -77,12 +90,13 @@ Legend: [ ] todo · [~] partial · [x] done
 
 ---
 
-State snapshot (2026-09-05, post-C1-slice-2a, 0c8d3812): shipped v0.0.1
-public; delegation engine RPC-first with approval routing live end-to-end
-(engine → RPC child → guard stack → verdict). Next critical path: **C1
-slice 2(b)** (cron omp_direct + `mercury omp` spawn sites adopt the RPC
-path) → **C3** nested-subagent approval check → **D3a** migration → **E3**
+State snapshot (2026-09-05, post-C1-slice-2b, fc0d6c89): shipped v0.0.1
+public; delegation engine AND cron omp_direct both RPC-first with
+approval routing live end-to-end (engine → RPC child → guard stack →
+verdict); `mercury omp` TUI excluded by design (attended). Next critical
+path: **C3** nested-subagent approval check → **D3a** migration → **E3**
 docs LAST. Run tests:
 `PYTHONPATH=<repo>/hermes /opt/hermes/.venv/bin/python -m unittest
-tests.tools.test_omp_delegation tests.tools.test_omp_rpc_transport`
-(33) + `python3 bridge/test_bridge.py` (26).
+tests.tools.test_omp_delegation tests.tools.test_omp_rpc_transport
+tests.cron.test_omp_direct_rpc` (39) + `python3 bridge/test_bridge.py`
+(26).
