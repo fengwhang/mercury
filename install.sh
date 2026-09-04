@@ -47,12 +47,15 @@ echo -e "${MAGENTA}└───────────────────�
 
 # --- config ---
 MERCURY_HOME="${MERCURY_HOME:-$HOME/.mercury}"
-# MERCURY LAYOUT: everything under one home, hermes-style.
-#   code   -> $INSTALL_ROOT  (default ~/.mercury/mercury-agent)
-#   data   -> $MERCURY_HOME  (default ~/.mercury — shared layer, seeds)
-#   cmd    -> $BIN_DIR       (default ~/.mercury/bin — the managed bin dir)
+# MERCURY LAYOUT (hermes pattern, faithful): code + state under one home;
+# the COMMAND is a tiny shim in ~/.local/bin — already on PATH by default
+# on modern distros, which is why hermes' one-liner needs zero extra steps.
+#   code+state -> $MERCURY_HOME (default ~/.mercury; code at mercury-agent/)
+#   command    -> $BIN_DIR       (default ~/.local/bin — ON PATH by default)
+#   managed bins (uv, browser-use) -> $MERCURY_HOME/bin
 INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-$HOME/.mercury/mercury-agent}"
-BIN_DIR="${MERCURY_BIN_DIR:-$HOME/.mercury/bin}"
+BIN_DIR="${MERCURY_BIN_DIR:-$HOME/.local/bin}"
+MANAGED_BIN="$MERCURY_HOME/bin"
 TARBALL_URL=""
 RUN_SETUP=true
 NON_INTERACTIVE=false
@@ -392,27 +395,31 @@ seed_defaults() {
 
 setup_path() {
     mkdir -p "$BIN_DIR"
-    ln -sf "$INSTALL_ROOT/bin/mercury" "$BIN_DIR/mercury"
-    # MERCURY RULE (user directive): EVERYTHING lives under ~/.mercury —
-    # there is no other location. Any mercury executable or code tree
-    # outside it is residue from an earlier layout and is REMOVED here so
-    # PATH can never resolve a dangling or stale binary.
-    local _stale
-    for _stale in "$HOME/.local/bin/mercury" "$HOME/.local/bin/mercury-acp" "$HOME/.local/bin/mercury-agent" \
-                  "/usr/local/bin/mercury" "/usr/local/bin/mercury-acp" "/usr/local/bin/mercury-agent"; do
-        [ "$_stale" = "$BIN_DIR/mercury" ] && continue
-        if [ -e "$_stale" ] || [ -L "$_stale" ]; then
-            rm -f "$_stale" && log_info "removed stale command link: $_stale"
+    # HERMES PATTERN (faithful): a real shim SCRIPT in the default-PATH dir —
+    # not a symlink. Clears PYTHONPATH/PYTHONHOME so an inherited env can't
+    # shadow the install; rm-first so an old symlink is never followed.
+    rm -f "$BIN_DIR/mercury"
+    cat > "$BIN_DIR/mercury" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+export MERCURY_HOME="${MERCURY_HOME:-$HOME/.mercury}"
+exec "$INSTALL_ROOT/bin/mercury" "\$@"
+EOF
+    chmod +x "$BIN_DIR/mercury"
+    log_success "mercury command → $BIN_DIR/mercury (shim; ~/.local/bin is on PATH by default)"
+
+    # Stale residue from earlier Mercury layouts (NOT the shim above):
+    for _stale in "$HOME/.mercury/bin/mercury" "/usr/local/bin/mercury" "/usr/local/bin/mercury-acp" "/usr/local/bin/mercury-agent"; do
+        if [ "$_stale" != "$BIN_DIR/mercury" ] && { [ -e "$_stale" ] || [ -L "$_stale" ]; }; then
+            rm -f "$_stale" && log_info "removed stale: $_stale"
         fi
     done
     local _stale_tree="$HOME/.local/share/mercury"
     if [ -d "$_stale_tree" ] && [ "$INSTALL_ROOT" != "$_stale_tree" ]; then
         rm -rf "$_stale_tree" && log_info "removed stale install tree: $_stale_tree"
     fi
-    log_success "mercury command: $BIN_DIR/mercury"
-    # ~/.mercury/bin is NOT on PATH by default (unlike ~/.local/bin) — the
-    # installer MUST configure PATH itself or the command is unlaunchable.
-    # Idempotent rc write with a marker comment; shell-appropriate file.
+
     ensure_path_configured
 }
 

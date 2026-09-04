@@ -13,13 +13,12 @@ and those subagents can spawn subagents of their own.
 ## Quick install (Linux / macOS / WSL2)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash -s -- https://github.com/fengwhang/mercury/releases/download/v0.0.1/mercury-0.0.1.tar.gz && source ~/.bashrc
+curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash -s -- https://github.com/fengwhang/mercury/releases/download/v0.0.1/mercury-0.0.1.tar.gz
 ```
 
-(zsh: `&& source ~/.zshrc` · fish: `&& source ~/.config/fish/config.fish`)
-
-The trailing `source` runs in YOUR shell (the pipe only covers the install),
-so `mercury` works in the current terminal immediately — no new terminal needed.
+The command installs to `~/.local/bin/mercury` — on PATH by default on
+modern Linux (and macOS) — so `mercury` works immediately after install,
+same terminal, no extra steps.
 
 One interactive session: preflight → uv + pinned venv → unpack the prebuilt
 engines (no bun, no rust needed) → **`mercury setup` — the full wizard:
@@ -32,7 +31,9 @@ engines) → optional Browser Use CLI, cua-driver, gateway → done. Then run
 ```
 ~/.mercury/                 the Mercury home (MERCURY_HOME)
 ├── mercury-agent/          the code tree (bin/, config/, hermes/, omp/, …)
-├── bin/mercury             the command (managed bin dir; uv + browser-use too)
+├── bin/                    managed tools (uv, browser-use) — not the command
+│   └── (the `mercury` command itself is a shim at ~/.local/bin/mercury,
+│      on PATH by default — hermes pattern)
 ├── config.yaml             the ONE unified config (both engines)
 ├── SOUL.md MEMORY.md USER.md AGENTS.md   shared state, both engines
 ├── skills/                 the shared skills library

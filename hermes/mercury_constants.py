@@ -1722,9 +1722,10 @@ def get_command_link_dir() -> Path:
     profile wrappers, PATH advice) resolves it HERE so the layout can
     never drift between components again.
     """
-    mercury_home = os.environ.get("MERCURY_HOME", "").strip()
-    base = Path(mercury_home) if mercury_home else _get_platform_default_hermes_home()
-    return base / "bin"
+    # HERMES PATTERN: the user-facing command shim lives in ~/.local/bin —
+    # on PATH by default on modern distros (install-one-liner-just-works).
+    # $MERCURY_HOME/bin holds managed tools (uv, browser-use), not the command.
+    return Path.home() / ".local" / "bin"
 
 
 def get_install_root() -> Path:
