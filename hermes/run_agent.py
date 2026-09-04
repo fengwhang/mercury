@@ -172,6 +172,8 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
     build_environment_hints,
     load_soul_md,
     load_hermes_md_home,
+    load_agents_md_home,
+    load_project_memory_hint,
 )
 from agent.process_bootstrap import _get_proxy_from_env  # noqa: F401
 from agent.message_sanitization import (  # noqa: F401
