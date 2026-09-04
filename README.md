@@ -10,6 +10,18 @@ and parallel subagents. In Mercury, hermes orchestrates and omp executes:
 every coding task — down to a hello world — fans out to omp subagents,
 and those subagents can spawn subagents of their own.
 
+## Quick install (Linux / macOS / WSL2)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash -s -- https://github.com/fengwhang/mercury/releases/download/v0.0.1/mercury-0.0.1.tar.gz
+```
+
+One interactive session: preflight → uv + pinned venv → unpack the prebuilt
+engines (no bun, no rust needed) → **`mercury setup` — the full wizard:
+provider OAuth / Nous Portal login, model pickers, tools** (configures BOTH
+engines) → optional Browser Use CLI, cua-driver, gateway → done. Then run
+`mercury`.
+
 | | |
 |---|---|
 | **One command** | `mercury` starts the chat; `mercury omp` drops you into the omp engine directly |
@@ -45,19 +57,26 @@ hashline edits, code review, subagents — all present, all upstream.
 
 ## Install
 
-**Linux / macOS / WSL2** (tarball URL — see [Releases](../../releases)):
+The quick-install command above is the whole story. Details:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash -s -- https://github.com/fengwhang/mercury/releases/download/v0.0.1/mercury-0.0.1.tar.gz
-```
-
-The installer runs one interactive session: preflight → uv + exact-pinned
-Python venv → unpack the prebuilt distribution → **four-slot model wizard**
-(default / fallback / delegate_model / delegate_fallback — validated
-fail-hard at the end) → provider API key (written to
-`~/.mercury/hermes/.env`, chmod 600, never in the repo) → **approval mode**
-(`smart` by default; `off` = permanent yolo with deny-rules + hardline
-floor still active) → `~/.local/bin/mercury` symlink.
+- **The wizard is `mercury setup`** — the full interactive setup (provider
+  OAuth / Nous Portal / API keys, model pickers, TTS, tools, gateway), run
+  automatically at the end of the install. It configures BOTH engines: the
+  omp side inherits your models, approval mode, and deny rules via the
+  config bridge. Re-run any time with `mercury setup`.
+- **Model slots are fail-hard**: default / fallback / delegate_model /
+  delegate_fallback in `~/.mercury/config.yaml`; no fallback configured is
+  an error, not a silent degradation. `mercury omp-sync` re-syncs the omp
+  engine after hand edits.
+- **Keys** live in `~/.mercury/hermes/.env` (chmod 600, never in the repo).
+- **Approval mode** (`manual` / `smart` / `off`) is ONE knob for both
+  engines; `off` = permanent yolo with deny-rules + the hardline floor
+  still active.
+- Flags: `--skip-setup`, `--non-interactive`, `--skip-browser`,
+  `--skip-computer-use`, `--no-skills`, `--skip-gateway`, `--dir PATH`,
+  `--ensure browser,computer-use`.
+- Updates: `mercury update` pulls the latest release tarball from this
+  repo (tarball installs) or `git pull` (dev checkouts).
 
 Manual path: clone, `bash install.sh` with no URL (works against the
 existing tree), or see `scripts/make-dist.sh` to build the tarball
