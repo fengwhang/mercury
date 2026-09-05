@@ -172,6 +172,12 @@ def _shared_env_overrides() -> Dict[str, str]:
     if not path.is_file():
         return {}
     overrides: Dict[str, str] = {}
+    # engine env parity (user bug: omp reads ONLY ZAI_API_KEY; the wizard used
+    # to save GLM_API_KEY first): mirror the alias inside the net as well.
+    try:
+        from mercury_cli.env_loader import load_hermes_dotenv  # noqa: F401
+    except Exception:
+        pass
     try:
         for line in path.read_text(encoding="utf-8").splitlines():
             line = line.strip()

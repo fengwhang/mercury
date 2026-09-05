@@ -503,6 +503,22 @@ def load_hermes_dotenv(
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
+        # MERCURY-OMP PATCH (engine env parity): hermes accepts GLM_API_KEY as
+        # a zai alias; omp's catalog reads ONLY ZAI_API_KEY. If only the GLM_
+        # alias is present, mirror it into the environment (and the file, once)
+        # so delegate children authenticate on BOTH engines.
+        try:
+            _glm = os.environ.get("GLM_API_KEY", "").strip()
+            _zai = os.environ.get("ZAI_API_KEY", "").strip()
+            if _glm and not _zai:
+                os.environ["ZAI_API_KEY"] = _glm
+                try:
+                    from mercury_cli.config import save_env_value
+                    save_env_value("ZAI_API_KEY", _glm)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # Mirror reload_env() known-key cleanup so inherited Mercury keys
         # absent from this profile's .env do not leak into the runtime.
         _clear_known_keys_missing_from_dotenv(user_env)

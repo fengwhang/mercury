@@ -318,7 +318,11 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Z.AI / GLM",
         auth_type="api_key",
         inference_base_url="https://api.z.ai/api/paas/v4",
-        api_key_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        # MERCURY-OMP PATCH (env parity): ZAI_API_KEY first — omp's catalog
+        # descriptor reads ONLY ZAI_API_KEY; hermes accepts all aliases. The
+        # wizard saves under api_key_env_vars[0], so it must save the name
+        # BOTH engines read.
+        api_key_env_vars=("ZAI_API_KEY", "GLM_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
     "kimi-coding": ProviderConfig(
