@@ -593,8 +593,22 @@ class TurnController {
     // review: duplicate-message blocker)
     const dedupeStart = payload.response_previewed ? 0 : (this.interimBoundaryIndex ?? 0)
     const finalText = finalTail(split.text, this.segmentMessages.slice(dedupeStart))
-    const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
-    const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
+    // MERCURY-OMP PATCH: reasoning hidden by default (user directive). The
+    // showReasoning toggle gates the LIVE stream (recordReasoningDelta), but
+    // the sealed final message attached the extracted <think> content (and
+    // payload.reasoning from the gateway) as a thinking segment regardless —
+    // leaking reasoning after every turn. When off, suppress every source.
+    const reasoningVisible = getUiState().showReasoning
+    if (!reasoningVisible) {
+      this.reasoningText = ''
+      this.activeReasoningText = ''
+    }
+    const existingReasoning = reasoningVisible
+      ? this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
+      : ''
+    const savedReasoning = reasoningVisible
+      ? [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
+      : ''
     const savedToolTokens = this.toolTokenAcc
     let tools = this.pendingSegmentTools
     const last = this.segmentMessages[this.segmentMessages.length - 1]
