@@ -217,7 +217,7 @@ def sync_omp_from_setup(quiet: bool = False) -> bool:
     if slots["default"] != qualified:
         update["default"] = qualified
     # If the wizard left fallback unset, keep existing slots; do NOT
-    # invent a fallback (four-slot fail-hard is the user's explicit call).
+    # invent a fallback (unset means the user chose none — never invent).
     fb = _read_fallback()
     if fb and slots["fallback"] != fb and not slots["fallback"]:
         update["fallback"] = fb

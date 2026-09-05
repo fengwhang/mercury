@@ -1000,7 +1000,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     save_config(config)
 
     # MERCURY-OMP PATCH: four-slot completion. The shared flow above
-    # configured the DEFAULT model; Mercury's fail-hard policy needs the
+    # configured the DEFAULT model; the model-slot section needs the
     # FALLBACK slot (engine retry chain) and the two DELEGATE slots (the
     # model omp subagents run on). Ask here, seed from the shared slots,
     # validate, and write both the shared ``models:`` block and the omp
@@ -1009,7 +1009,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
 
 
 def _prompt_mercury_slots(config: dict) -> None:
-    """Ask for fallback/delegate model slots (Mercury fail-hard policy).
+    """Ask for fallback/delegate model slots (fallbacks optional).
 
     The default slot was just set by the provider flow; these prompts fill
     the remaining three. Every answer seeds the shared ``models:`` block
@@ -1066,7 +1066,7 @@ def _prompt_mercury_slots(config: dict) -> None:
         print_info("No default model configured — skipping slot prompts (run 'mercury setup model' later).")
         return
 
-    print_header("Model Slots (fail-hard)")
+    print_header("Model Slots")
     print_info(f"   Default:  {slots['default']}")
     print()
 

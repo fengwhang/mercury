@@ -2,7 +2,7 @@
 """Mercury bridge v3 — unified config (~/.mercury/config.yaml), one file.
 
 Four model slots (top level): default/fallback/delegate_model/
-delegate_fallback. Fail-hard semantics unchanged. New default config path:
+delegate_fallback (fallbacks optional; chains validated). Default config path:
 ~/.mercury/config.yaml (MERCURY_CONFIG env or HERMES_OMP_CONFIG override).
 
 --render-omp now writes INTO the unified file's omp: subtree (preserving

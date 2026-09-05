@@ -50,7 +50,7 @@ engines) → optional Browser Use CLI, cua-driver, gateway → done. Then run
 |---|---|
 | **One command** | `mercury` starts the chat; `mercury omp` drops you into the omp engine directly |
 | **One config** | `~/.mercury/config.yaml` drives BOTH engines — four model slots, one approvals knob, per-engine subtrees |
-| **Fail-hard models** | a fallback slot you didn't configure is an error, not a silent degradation |
+| **Optional fallbacks** | fallbacks at every order are a user choice — skip means skip; a configured chain is validated, never silently degraded |
 | **Unified approvals** | `manual` / `smart` / `off` — one mode governs both engines; deny rules and the hardline floor survive every mode |
 | **Shared state** | SOUL/MEMORY/USER and the skills library live at `~/.mercury/` and are read by both engines |
 | **One key per capability** | `ZAI_API_KEY` serves zai search on both engines; the tool-provider union exposes all 24 omp search providers to the hermes side |
@@ -88,10 +88,12 @@ The quick-install command above is the whole story. Details:
   automatically at the end of the install. It configures BOTH engines: the
   omp side inherits your models, approval mode, and deny rules via the
   config bridge. Re-run any time with `mercury setup`.
-- **Model slots are fail-hard**: default / fallback / delegate_model /
-  delegate_fallback in `~/.mercury/config.yaml`; no fallback configured is
-  an error, not a silent degradation. `mercury omp-sync` re-syncs the omp
-  engine after hand edits.
+- **Model slots**: default / fallback / delegate_model / delegate_fallback
+  (+ optional second-order chains) in `~/.mercury/config.yaml`. Fallbacks
+  are OPTIONAL — skipping one means "no mid-turn failover", exactly as
+  chosen; a configured chain is validated (ordered, head = primary,
+  no duplicates). `mercury omp-sync` re-syncs the omp engine after hand
+  edits.
 - **Keys** live in `~/.mercury/.env` (chmod 600, never in the repo) — the ONE env file both engines read.
 - **Approval mode** (`manual` / `smart` / `off`) is ONE knob for both
   engines; `off` = permanent yolo with deny-rules + the hardline floor
@@ -141,9 +143,9 @@ config — the entire model story for both engines:
 ```yaml
 models:
   default: <provider/model>           # hermes sessions + omp main loop
-  fallback: <provider/model>          # REQUIRED — missing = hard fail, no silent fallback
+  fallback: <provider/model>          # optional — skip = no mid-turn failover (explicit user choice)
   delegate_model: <provider/model>    # what omp subagents run under
-  delegate_fallback: <provider/model> # REQUIRED for delegation — hard fail if missing
+  delegate_fallback: <provider/model> # optional — subagent retry model; skip = none
   fallback_chain: [<provider/model>, ...]          # optional ordered retry chain (head = fallback)
   delegate_fallback_chain: [<provider/model>, ...] # optional ordered subagent retry chain
 ```
@@ -262,7 +264,7 @@ bin/mercury      the launcher (env composer — sets MERCURY_HOME/CONFIG,
                  forces engine homes, self-locates its repo)
 install.sh       one-command installer (tarball URL or in-place)
 config/          shipped defaults for everything hand-editable
-bridge/          four-slot model config renderer (fail-hard)
+bridge/          model-config renderer (optional fallbacks, validated chains)
 hermes/          the hermes engine (vendored, patched, renamed modules)
 omp/             the omp engine (vendored, patched; dist/omp = release
                  binary with embedded Rust natives)
