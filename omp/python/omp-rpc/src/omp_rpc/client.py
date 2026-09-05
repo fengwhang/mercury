@@ -1147,9 +1147,11 @@ class RpcClient:
         *,
         images: Sequence[ImageContent] | None = None,
         streaming_behavior: StreamingBehavior | None = None,
+        _ack_timeout: float | None = None,
     ) -> None:
         self._request(
             "prompt",
+            _timeout=_ack_timeout,
             message=message,
             images=list(images) if images is not None else None,
             streamingBehavior=streaming_behavior,
@@ -1200,7 +1202,15 @@ class RpcClient:
         try:
             start_index = self._current_event_index()
             start_async_error_index = self._current_async_error_index()
-            self.prompt(message, images=images, streaming_behavior=streaming_behavior)
+            # HERMES-OMP PATCH (never kill a healthy child): the prompt ack
+            # is governed by the caller's TASK timeout, not the generic 30s
+            # request timeout — under cold starts + concurrency (WSL2 first
+            # native extraction, parallel delegate fan-out) the ack can
+            # legitimately exceed 30s while the child stays healthy.
+            self.prompt(
+                message, images=images, streaming_behavior=streaming_behavior,
+                _ack_timeout=timeout,
+            )
             events = self._wait_for_agent_end(
                 start_index, start_async_error_index, timeout=timeout
             )
@@ -1376,7 +1386,9 @@ class RpcClient:
                     )
                 self._event_condition.wait(remaining)
 
-    def _request(self, command_type: str, **payload: JsonValue) -> JsonObject:
+    def _request(
+        self, command_type: str, *, _timeout: float | None = None, **payload: JsonValue
+    ) -> JsonObject:
         process = self._require_process()
         request_id = self._next_request_id()
         envelope: JsonObject = {"id": request_id, "type": command_type}
@@ -1397,8 +1409,9 @@ class RpcClient:
                 self._pending.pop(request_id, None)
             raise
 
+        ack_timeout = _timeout if _timeout is not None else self._request_timeout
         try:
-            response = response_queue.get(timeout=self._request_timeout)
+            response = response_queue.get(timeout=ack_timeout)
         except queue.Empty as exc:
             with self._state_lock:
                 self._pending.pop(request_id, None)
