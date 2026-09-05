@@ -4053,14 +4053,35 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                                 if _prov and not _model_cfg.get("provider"):
                                     _model_cfg["provider"] = _prov
                                 user_config["model"] = _model_cfg
-                            _m_fb = str(_models.get("fallback") or "").strip()
-                            if _m_fb and not user_config.get("fallback_providers"):
-                                _fprov, _, _fmid = _m_fb.partition("/")
-                                user_config["fallback_providers"] = [
-                                    {"provider": _fprov, "model": _fmid or _m_fb}
-                                    if _fprov
-                                    else {"model": _fmid or _m_fb}
-                                ]
+                            # HERMES-OMP PATCH (ordered ordinary fallback):
+                            # models.fallback_chain (ordered list, head =
+                            # primary fallback) feeds the SAME ordered
+                            # fallback_providers machinery. Legacy single
+                            # models.fallback applies only when no chain is
+                            # set (and never overrides an explicit
+                            # mercury-subtree fallback_providers).
+                            _m_chain = _models.get("fallback_chain")
+                            _chain_entries = []
+                            if isinstance(_m_chain, list):
+                                for _ent in _m_chain:
+                                    _s = str(_ent or "").strip()
+                                    if not _s:
+                                        continue
+                                    _p, _, _m = _s.partition("/")
+                                    _chain_entries.append(
+                                        {"provider": _p, "model": _m or _s}
+                                        if _p else {"model": _m or _s})
+                            if _chain_entries and not user_config.get("fallback_providers"):
+                                user_config["fallback_providers"] = _chain_entries
+                            else:
+                                _m_fb = str(_models.get("fallback") or "").strip()
+                                if _m_fb and not user_config.get("fallback_providers"):
+                                    _fprov, _, _fmid = _m_fb.partition("/")
+                                    user_config["fallback_providers"] = [
+                                        {"provider": _fprov, "model": _fmid or _m_fb}
+                                        if _fprov
+                                        else {"model": _fmid or _m_fb}
+                                    ]
                         # MERCURY-OMP PATCH (unified approvals): top-level
                         # approvals: is the ONE mode knob for BOTH engines;
                         # mercury reads it here (explicit mercury-subtree

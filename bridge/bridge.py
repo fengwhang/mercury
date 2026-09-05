@@ -31,6 +31,7 @@ def parse_config(path=None):
     except FileNotFoundError:
         sys.exit(f"FATAL: {path} not found")
     chain: list[str] | None = None  # None until the key appears (block-seq guard)
+    fchain: list[str] = []
     for line in raw.splitlines():
         s = line.split("#", 1)[0].strip()
         if not s:
@@ -44,6 +45,15 @@ def parse_config(path=None):
                 k = k.strip()
                 if k in slots:
                     slots[k] = v.strip().strip("'\"")
+                elif k == "fallback_chain":
+                    raw_list = v.strip()
+                    fchain = []
+                    if raw_list.startswith("["):
+                        inner = raw_list[1:-1] if raw_list.endswith("]") else raw_list[1:]
+                        for item in inner.split(","):
+                            item = item.strip().strip("'\"")
+                            if item:
+                                fchain.append(item)
                 elif k == "delegate_fallback_chain":
                     # ordered fallback list — JSON array or YAML flow
                     # sequence (single OR double quoted items both legal)
@@ -63,6 +73,7 @@ def parse_config(path=None):
             elif not s.startswith((" ", "\t")):
                 in_models = False
     slots["delegate_fallback_chain"] = [m for m in (chain or []) if m]
+    slots["fallback_chain"] = fchain
     return slots
 
 
@@ -82,6 +93,13 @@ def validate(slots, need_delegate=False):
     if (slots["delegate_model"] and slots["delegate_fallback"]
             and slots["delegate_model"] == slots["delegate_fallback"]):
         errors.append("models.delegate_model == models.delegate_fallback — fallback must be distinct")
+    fchain = slots.get("fallback_chain") or []
+    if len(set(fchain)) != len(fchain):
+        errors.append("models.fallback_chain contains duplicates")
+    if slots["default"] and slots["default"] in fchain:
+        errors.append("models.fallback_chain must not contain the default model itself")
+    if slots["fallback"] and slots["fallback"] not in fchain:
+        errors.append("models.fallback_chain must include models.fallback as its first entry")
     chain = slots.get("delegate_fallback_chain") or []
     if len(set(chain)) != len(chain):
         errors.append("models.delegate_fallback_chain contains duplicates")
@@ -99,6 +117,9 @@ def render(slots, delegation=False):
     else:
         for s in SLOTS:
             print(f"{s.upper()}={slots[s] or '<unset>'}")
+        fchain = [m for m in (slots.get("fallback_chain") or []) if m]
+        if fchain:
+            print(f"FALLBACK_CHAIN={','.join(fchain)}")
 
 
 def _yaml_sq(s: str) -> str:

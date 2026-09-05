@@ -1112,6 +1112,22 @@ def _prompt_mercury_slots(config: dict) -> None:
         break
     fallback = f"{provider}/{fallback}" if provider and "/" not in fallback else fallback
 
+    # Ordered ordinary fallback CHAIN (user directive 2026-09-05: parity with
+    # the delegate side). After the primary fallback, offer additional retry
+    # models in order; empty selection ends. Written to models.fallback_chain
+    # (head = primary fallback) and consumed by the hermes side's ordered
+    # fallback_providers machinery (agent_init accepts a list natively).
+    fallback_chain = []
+    while True:
+        extra = _pick("Select next fallback (ORDERED chain; empty selection to finish):", "")
+        if not extra:
+            break
+        extra = f"{provider}/{extra}" if provider and "/" not in extra else extra
+        if extra in [fallback] + fallback_chain or extra == slots["default"]:
+            print_info("Already in the chain — pick a different model.")
+            continue
+        fallback_chain.append(extra)
+
     print_info("The next two slots are for SUBAGENTS: coding tasks fan out to omp")
     print_info("subagents, and these set which model those subagents run on.")
     print()
@@ -1150,12 +1166,15 @@ def _prompt_mercury_slots(config: dict) -> None:
             "delegate_model": delegate_model,
             "delegate_fallback": delegate_fallback,
             "delegate_fallback_chain": ([delegate_fallback] + delegate_chain) if delegate_chain else [],
+            "fallback_chain": ([fallback] + fallback_chain) if fallback_chain else [],
         }
     )
     print()
     print_success(f"Model slots written: default={slots['default']}, fallback={fallback}")
     chain_txt = " -> ".join([delegate_fallback] + delegate_chain) if delegate_chain else delegate_fallback
     print_info("Subagents will run on " + delegate_model + f" (fallback chain {chain_txt}).")
+    fb_txt = " -> ".join([fallback] + fallback_chain) if fallback_chain else fallback
+    print_info(f"Main model fallback chain: {fb_txt}.")
 
 
 # =============================================================================

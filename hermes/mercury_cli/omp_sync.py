@@ -142,7 +142,7 @@ def _write_slots(update: dict[str, str]) -> bool:
                     seen[k] = True
                     wrote_any = True
             in_models = False
-        m = re.match(r"^  (default|fallback|delegate_model|delegate_fallback|delegate_fallback_chain):\s*(.*)$", line) if in_models else None
+        m = re.match(r"^  (default|fallback|delegate_model|delegate_fallback|delegate_fallback_chain|fallback_chain):\s*(.*)$", line) if in_models else None
         if m and m.group(1) in update:
             v = update[m.group(1)]
             # ordered chain: write as a YAML flow sequence, single-quoted ids
