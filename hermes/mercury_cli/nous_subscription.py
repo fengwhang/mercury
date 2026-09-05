@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Set
@@ -1387,6 +1389,51 @@ def ensure_nous_portal_access(
     return False
 
 
+def _drain_stale_stdin(max_bytes: int = 64) -> None:
+    """Discard keystrokes buffered while a curses menu was tearing down.
+
+    The wizard's provider pickers run under curses; the Y/n gates that run
+    immediately after them use plain ``input()``. On some terminals the
+    committing keypress (SPACE/ENTER) or its trailing byte is still in the
+    tty buffer when ``input()`` starts, so the gate reads a stale byte as
+    its answer — most visibly the Nous Portal gate declining itself and
+    the wizard silently falling back to the default (Local Browser).
+    Non-blocking drain of any bytes already buffered fixes the class.
+    """
+    try:
+        import select
+        import termios
+        import tty as _tty
+
+        fd = sys.stdin.fileno()
+        if not sys.stdin.isatty():
+            return
+        # Drain whatever is already buffered (no wait). A stale commit is
+        # typically SPACE + trailing newline/CR — keep draining while bytes
+        # remain readable so the whole stale chunk is gone, not just byte 1.
+        drained = 0
+        while drained < max_bytes:
+            r, _, _ = select.select([fd], [], [], 0)
+            if not r:
+                break
+            chunk = os.read(fd, 32)
+            if not chunk:
+                break
+            drained += len(chunk)
+    except Exception:
+        pass
+
+
+def _prompt_yes_no_drained(prompt: str) -> str:
+    """``input()`` for Y/n gates that follow a curses menu: drains stale
+    bytes first so a buffered SPACE/ENTER cannot answer the gate."""
+    _drain_stale_stdin()
+    try:
+        return input(prompt).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+
+
 def _run_nous_portal_login_only(*, capability: str) -> bool:
     """Run the Nous Portal device-code OAuth and persist credentials only.
 
@@ -1413,7 +1460,7 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
     print()
     print(f"  {capability} requires a Nous Portal login.")
     try:
-        proceed = input("  Log in to Nous Portal now? [Y/n]: ").strip().lower()
+        proceed = _prompt_yes_no_drained("  Log in to Nous Portal now? [Y/n]: ")
     except (EOFError, KeyboardInterrupt):
         print()
         return False
@@ -1431,9 +1478,9 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
         shared = _read_shared_nous_state()
         if shared:
             try:
-                do_import = input(
+                do_import = _prompt_yes_no_drained(
                     "  Found existing Nous OAuth credentials. Import them? [Y/n]: "
-                ).strip().lower()
+                )
             except (EOFError, KeyboardInterrupt):
                 do_import = "y"
             if do_import in {"", "y", "yes"}:
