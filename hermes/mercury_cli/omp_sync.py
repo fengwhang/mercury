@@ -134,13 +134,23 @@ def _write_slots(update: dict[str, str]) -> bool:
             # leaving the block: append any never-seen slots before the next top-level key
             for k, v in update.items():
                 if not seen[k]:
-                    out.append(f"  {k}: {v}")
+                    if isinstance(v, (list, tuple)):
+                        items = ", ".join(f"'{x}'" for x in v)
+                        out.append(f"  {k}: [{items}]")
+                    else:
+                        out.append(f"  {k}: {v}")
                     seen[k] = True
                     wrote_any = True
             in_models = False
-        m = re.match(r"^  (default|fallback|delegate_model|delegate_fallback):\s*(.*)$", line) if in_models else None
+        m = re.match(r"^  (default|fallback|delegate_model|delegate_fallback|delegate_fallback_chain):\s*(.*)$", line) if in_models else None
         if m and m.group(1) in update:
-            out.append(f"  {m.group(1)}: {update[m.group(1)]}")
+            v = update[m.group(1)]
+            # ordered chain: write as a YAML flow sequence, single-quoted ids
+            if isinstance(v, (list, tuple)):
+                items = ", ".join(f"'{x}'" for x in v)
+                out.append(f"  {m.group(1)}: [{items}]")
+            else:
+                out.append(f"  {m.group(1)}: {v}")
             seen[m.group(1)] = True
             wrote_any = True
             continue
@@ -149,14 +159,22 @@ def _write_slots(update: dict[str, str]) -> bool:
         # EOF inside models: block
         for k, v in update.items():
             if not seen[k]:
-                out.append(f"  {k}: {v}")
+                if isinstance(v, (list, tuple)):
+                    items = ", ".join(f"'{x}'" for x in v)
+                    out.append(f"  {k}: [{items}]")
+                else:
+                    out.append(f"  {k}: {v}")
                 seen[k] = True
                 wrote_any = True
     if not any(re.match(r"^models:\s*$", l) for l in out):
         out.append("")
         out.append("models:")
         for k, v in update.items():
-            out.append(f"  {k}: {v}")
+            if isinstance(v, (list, tuple)):
+                items = ", ".join(f"'{x}'" for x in v)
+                out.append(f"  {k}: [{items}]")
+            else:
+                out.append(f"  {k}: {v}")
             wrote_any = True
     if wrote_any:
         path.write_text("\n".join(out).rstrip("\n") + "\n")

@@ -1125,6 +1125,21 @@ def _prompt_mercury_slots(config: dict) -> None:
     delegate_fallback = _pick("Select delegate fallback (subagent retry model):", slots["delegate_fallback"])
     delegate_fallback = f"{provider}/{delegate_fallback}" if provider and "/" not in delegate_fallback else delegate_fallback
 
+    # Ordered fallback CHAIN (user directive 2026-09-05): after the primary
+    # fallback, offer additional retry models in order. Empty selection ends
+    # the chain. The chain is written to models.delegate_fallback_chain and
+    # consumed by omp's retry.fallbackChains in ORDER.
+    delegate_chain = []
+    while True:
+        extra = _pick("Select next delegate fallback (ORDERED chain; empty selection to finish):", "")
+        if not extra:
+            break
+        extra = f"{provider}/{extra}" if provider and "/" not in extra else extra
+        if extra in [delegate_fallback] + delegate_chain or extra == delegate_model:
+            print_info("Already in the chain — pick a different model.")
+            continue
+        delegate_chain.append(extra)
+
     # Write the shared models: block (line-oriented, omp_sync-compatible).
     from mercury_cli.omp_sync import _write_slots
 
@@ -1134,11 +1149,13 @@ def _prompt_mercury_slots(config: dict) -> None:
             "fallback": fallback,
             "delegate_model": delegate_model,
             "delegate_fallback": delegate_fallback,
+            "delegate_fallback_chain": ([delegate_fallback] + delegate_chain) if delegate_chain else [],
         }
     )
     print()
     print_success(f"Model slots written: default={slots['default']}, fallback={fallback}")
-    print_info("Subagents will run on " + delegate_model + f" (fallback {delegate_fallback}).")
+    chain_txt = " -> ".join([delegate_fallback] + delegate_chain) if delegate_chain else delegate_fallback
+    print_info("Subagents will run on " + delegate_model + f" (fallback chain {chain_txt}).")
 
 
 # =============================================================================

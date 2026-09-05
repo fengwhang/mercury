@@ -8,6 +8,7 @@ delegate_fallback. Fail-hard semantics unchanged. New default config path:
 --render-omp now writes INTO the unified file's omp: subtree (preserving
 models:/hermes:), instead of a separate ~/.omp/agent/config.yml.
 """
+import json
 import os
 import re
 import sys
@@ -29,6 +30,7 @@ def parse_config(path=None):
         raw = open(path).read()
     except FileNotFoundError:
         sys.exit(f"FATAL: {path} not found")
+    chain: list[str] | None = None  # None until the key appears (block-seq guard)
     for line in raw.splitlines():
         s = line.split("#", 1)[0].strip()
         if not s:
@@ -42,8 +44,25 @@ def parse_config(path=None):
                 k = k.strip()
                 if k in slots:
                     slots[k] = v.strip().strip("'\"")
+                elif k == "delegate_fallback_chain":
+                    # ordered fallback list — JSON array or YAML flow
+                    # sequence (single OR double quoted items both legal)
+                    raw_list = v.strip()
+                    chain = []
+                    if raw_list.startswith("["):
+                        inner = raw_list[1:-1] if raw_list.endswith("]") else raw_list[1:]
+                        for item in inner.split(","):
+                            item = item.strip().strip("'\"")
+                            if item:
+                                chain.append(item)
+            elif s.startswith("-") and chain is not None:
+                # block-sequence continuation
+                item = s[1:].strip().strip("'\"")
+                if item:
+                    chain.append(item)
             elif not s.startswith((" ", "\t")):
                 in_models = False
+    slots["delegate_fallback_chain"] = [m for m in (chain or []) if m]
     return slots
 
 
@@ -63,13 +82,20 @@ def validate(slots, need_delegate=False):
     if (slots["delegate_model"] and slots["delegate_fallback"]
             and slots["delegate_model"] == slots["delegate_fallback"]):
         errors.append("models.delegate_model == models.delegate_fallback — fallback must be distinct")
+    chain = slots.get("delegate_fallback_chain") or []
+    if len(set(chain)) != len(chain):
+        errors.append("models.delegate_fallback_chain contains duplicates")
+    if slots["delegate_model"] and slots["delegate_model"] in chain:
+        errors.append("models.delegate_fallback_chain must not contain the delegate model itself")
     return errors
 
 
 def render(slots, delegation=False):
     if delegation:
         print(f"OMP_MODEL={slots['delegate_model']}")
-        print(f"OMP_FALLBACK_CHAIN={slots['delegate_fallback']}")
+        chain = [m for m in (slots.get("delegate_fallback_chain") or [])
+                 if m] or [slots["delegate_fallback"]]
+        print(f"OMP_FALLBACK_CHAIN={','.join(chain)}")
     else:
         for s in SLOTS:
             print(f"{s.upper()}={slots[s] or '<unset>'}")
@@ -234,7 +260,10 @@ def render_omp_subtree(slots, target=None):
         # Single-line flow mapping: omp's YAML parser is strict YAML 1.2 and
         # REJECTS trailing commas in block-style flow maps — verified live
         # (Settings config is invalid ... YAML Parse error: Unexpected token).
-        f'    fallbackChains: {{"{slots["delegate_model"]}": ["{slots["delegate_fallback"]}"]}}\n'
+        # HERMES-OMP PATCH (ordered delegate fallback): the user-configured
+        # chain (models.delegate_fallback_chain) is rendered in ORDER; the
+        # single legacy slot remains the default when no chain is set.
+        f'    fallbackChains: {{"{slots["delegate_model"]}": {json.dumps([m for m in (slots.get("delegate_fallback_chain") or []) if m] or [slots["delegate_fallback"]])}}}\n'
     )
     if deny_globs:
         omp_block += "  bash:\n    patterns:\n"
