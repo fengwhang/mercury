@@ -781,8 +781,26 @@ def get_config_path() -> Path:
     return get_hermes_home() / "config.yaml"
 
 def get_env_path() -> Path:
-    """Get the .env file path (for API keys)."""
-    return get_hermes_home() / ".env"
+    """Get the .env file path (API keys) — THE one env store.
+
+    MERCURY-OMP PATCH (user directive: ONE env): $MERCURY_HOME/.env, shared
+    by both engines. hermes loads it at boot (load_hermes_dotenv), omp
+    children inherit it through the launcher's environment, and the delegate
+    bridge exports it verbatim. The old engine-private ~/.mercury/hermes/.env
+    is migrated once (moved if the shared file is absent).
+    """
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if not mercury:
+        return get_hermes_home() / ".env"
+    shared = Path(mercury) / ".env"
+    legacy = get_hermes_home() / ".env"
+    if legacy.exists() and not shared.exists() and legacy.resolve() != shared.resolve():
+        try:
+            import shutil as _shutil
+            _shutil.move(str(legacy), str(shared))
+        except OSError:
+            pass
+    return shared
 
 def get_project_root() -> Path:
     """Get the project installation directory."""

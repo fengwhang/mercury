@@ -156,6 +156,38 @@ def _omp_delegate_env() -> tuple[Dict[str, str], Optional[str]]:
     return env, None
 
 
+
+def _shared_env_overrides() -> Dict[str, str]:
+    """ONE-env safety net: keys from MERCURY_HOME/.env not already in env.
+
+    The launcher sources the shared env at boot, so children normally
+    inherit everything. This net catches the cases where the parent's
+    environment predates the .env (long-running gateway, cron, IDE
+    subprocess) — reading the same single file both engines share.
+    """
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if not mercury:
+        return {}
+    path = Path(mercury) / ".env"
+    if not path.is_file():
+        return {}
+    overrides: Dict[str, str] = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k = k.strip()
+            if not k or " " in k:
+                continue
+            if k not in os.environ:
+                overrides[k] = v.strip().strip('"').strip("'")
+    except OSError:
+        return {}
+    return overrides
+
+
 def _resolve_omp_binary() -> Optional[str]:
     cand = os.environ.get("HERMES_OMP_BIN") or "omp"
     return shutil.which(cand)
@@ -269,6 +301,7 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                 "-p one-shot for task %d", exc, task_index)
         else:
             rpc_env = os.environ.copy()
+            rpc_env.update(_shared_env_overrides())
             if fallback_chain:
                 rpc_env["OMP_FALLBACK_CHAIN"] = fallback_chain
             try:
@@ -319,6 +352,7 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
                       started: float) -> Dict[str, Any]:
     """The original ``omp --model m -p <prompt>`` one-shot path (B1)."""
     env = os.environ.copy()
+    env.update(_shared_env_overrides())
     if fallback_chain:
         env["OMP_FALLBACK_CHAIN"] = fallback_chain
     # prompt as ONE argv element: verbatim by construction

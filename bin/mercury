@@ -57,6 +57,13 @@ export MERCURY_SKILLS_DIR="${MERCURY_SKILLS_DIR:-$MERCURY_HOME/skills}"
 export MERCURY_MEMORY_DIR="${MERCURY_MEMORY_DIR:-$MERCURY_HOME}"
 
 # --------------------------------------------------------------------------
+# ONE env (user directive): $MERCURY_HOME/.env is THE shared env store for
+# both engines — sourced here at boot so hermes, omp children, and delegated
+# subagents all inherit the same keys (ZAI_API_KEY et al).
+if [ -f "$MERCURY_HOME/.env" ]; then
+    set -a; . "$MERCURY_HOME/.env" 2>/dev/null; set +a
+fi
+
 # hermes half. HERMES_HOME is FORCED, not inherited: an ambient HERMES_HOME
 # (e.g. a stock install exporting it) must never point the fork at the
 # standing install's state. Same for PI_CODING_AGENT_DIR on the omp side —
@@ -75,10 +82,14 @@ export PI_CODING_AGENT_DIR="$MERCURY_HOME/omp"
 # home. D3's installer will do this same step interactively; the provider
 # block in the unified config's hermes: subtree is synthesized at load time
 # from the models: slots (already the case), so the key is the only secret.
+# First-boot migration (user directive: ONE env): any ambient/legacy
+# hermes .env seeds THE shared $MERCURY_HOME/.env once. Never overwrite.
 _INHERIT_FROM="${MERCURY_INHERIT_FROM:-$_AMBIENT_HERMES_HOME}"
-if [ ! -f "$HERMES_HOME/.env" ] && [ -f "$_INHERIT_FROM/.env" ]; then
-    cp "$_INHERIT_FROM/.env" "$HERMES_HOME/.env" 2>/dev/null || true
-    echo "mercury: inherited .env from $_INHERIT_FROM (first boot)" >&2
+if [ ! -f "$MERCURY_HOME/.env" ] && [ -f "$_INHERIT_FROM/.env" ]; then
+    cp "$_INHERIT_FROM/.env" "$MERCURY_HOME/.env" 2>/dev/null || true
+    chmod 600 "$MERCURY_HOME/.env" 2>/dev/null || true
+    set -a; . "$MERCURY_HOME/.env" 2>/dev/null; set +a
+    echo "mercury: shared .env seeded from $_INHERIT_FROM (one-env migration)" >&2
 fi
 
 # Seed hand-editable defaults from the repo's config/ directory (the ONE

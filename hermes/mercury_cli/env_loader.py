@@ -487,7 +487,11 @@ def load_hermes_dotenv(
     loaded: list[Path] = []
 
     home_path = Path(mercury_home or os.getenv("HERMES_HOME", Path.home() / ".mercury"))
-    user_env = home_path / ".env"
+    # MERCURY-OMP PATCH (ONE env): under MERCURY_HOME the shared env file
+    # lives at $MERCURY_HOME/.env (both engines); the engine-home .env is a
+    # legacy fallback for pre-unification installs.
+    _mercury = os.environ.get("MERCURY_HOME", "").strip()
+    user_env = (Path(_mercury) / ".env") if _mercury else (home_path / ".env")
     project_env_path = Path(project_env) if project_env else None
 
     # Normalize safe formatting and remove invalid NUL bytes before parsing.
