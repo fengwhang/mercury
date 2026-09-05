@@ -1440,7 +1440,10 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
     if not profiles_root.is_dir():
         return backfilled
 
-    default_env = _get_default_hermes_home() / ".env"
+    # ONE env (user rule): the default profile's env is THE shared
+    # $MERCURY_HOME/.env under Mercury — never the engine-private path.
+    _mercury = os.environ.get("MERCURY_HOME", "").strip()
+    default_env = (Path(_mercury) / ".env") if _mercury else (_get_default_hermes_home() / ".env")
 
     for entry in sorted(profiles_root.iterdir()):
         if not entry.is_dir() or not _PROFILE_ID_RE.match(entry.name):

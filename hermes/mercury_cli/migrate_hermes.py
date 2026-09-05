@@ -10,7 +10,7 @@ Migratable items:
   memory        MEMORY.md (merged, entry-level)
   user-profile  USER.md (merged, entry-level)
   config        config.yaml hermes: subtree (model/provider/approvals keys)
-  env           .env API keys (merged into ~/.mercury/hermes/.env)
+  env           .env API keys (merged into ~/.mercury/.env — the ONE shared env)
   skills        ~/.hermes/skills → shared library ~/.mercury/config-skills
   sessions      sessions/ history (copy, non-destructive)
   cron          cron/jobs.json scheduled jobs (id-preserving)
@@ -174,7 +174,7 @@ def run(include: set[str] | None = None, exclude: set[str] | None = None, dry_ru
         results["items"][key] = f"{status} (+{added} entries)"
 
     if "env" in selected:
-        s, t = src / ".env", tgt / "hermes" / ".env"
+        s, t = src / ".env", tgt / ".env"
         if s.exists():
             _backup(t, backup_root)
             existing = t.read_text(encoding="utf-8") if t.exists() else ""

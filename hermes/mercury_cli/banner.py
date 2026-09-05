@@ -814,7 +814,8 @@ def banner_snapshot_fingerprint() -> Optional[str]:
     parts = [f"v{_BANNER_SNAPSHOT_VERSION}"]
     try:
         from mercury_cli.config import get_config_path
-        for p in (get_config_path(), get_hermes_home() / ".env"):
+        _env_p = Path(os.environ.get("MERCURY_HOME", "")) / ".env" if os.environ.get("MERCURY_HOME") else get_hermes_home() / ".env"
+        for p in (get_config_path(), _env_p):
             try:
                 st = p.stat()
                 parts.append(f"{p.name}:{st.st_mtime_ns}:{st.st_size}")

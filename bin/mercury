@@ -82,14 +82,16 @@ export PI_CODING_AGENT_DIR="$MERCURY_HOME/omp"
 # home. D3's installer will do this same step interactively; the provider
 # block in the unified config's hermes: subtree is synthesized at load time
 # from the models: slots (already the case), so the key is the only secret.
-# First-boot migration (user directive: ONE env): any ambient/legacy
-# hermes .env seeds THE shared $MERCURY_HOME/.env once. Never overwrite.
+# ONE env (user rule — NO legacy paths, NO symlinks): $MERCURY_HOME/.env is
+# THE env file. The only inheritance is from the user's PRE-EXISTING stock
+# hermes install (a different product's home, not a Mercury-internal path)
+# on the very first boot when Mercury's env doesn't exist yet.
 _INHERIT_FROM="${MERCURY_INHERIT_FROM:-$_AMBIENT_HERMES_HOME}"
-if [ ! -f "$MERCURY_HOME/.env" ] && [ -f "$_INHERIT_FROM/.env" ]; then
+if [ ! -f "$MERCURY_HOME/.env" ] && [ -f "$_INHERIT_FROM/.env" ] && [ "$_INHERIT_FROM" != "$HERMES_HOME" ]; then
     cp "$_INHERIT_FROM/.env" "$MERCURY_HOME/.env" 2>/dev/null || true
     chmod 600 "$MERCURY_HOME/.env" 2>/dev/null || true
     set -a; . "$MERCURY_HOME/.env" 2>/dev/null; set +a
-    echo "mercury: shared .env seeded from $_INHERIT_FROM (one-env migration)" >&2
+    echo "mercury: seeded .env from $_INHERIT_FROM (first boot)" >&2
 fi
 
 # Seed hand-editable defaults from the repo's config/ directory (the ONE

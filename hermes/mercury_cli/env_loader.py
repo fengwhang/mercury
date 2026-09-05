@@ -487,37 +487,11 @@ def load_hermes_dotenv(
     loaded: list[Path] = []
 
     home_path = Path(mercury_home or os.getenv("HERMES_HOME", Path.home() / ".mercury"))
-    # MERCURY-OMP PATCH (ONE env): under MERCURY_HOME the shared env file
-    # lives at $MERCURY_HOME/.env (both engines); the engine-home .env is a
-    # legacy fallback for pre-unification installs.
+    # MERCURY-OMP PATCH (ONE env, user rule — NO legacy paths, NO symlinks):
+    # $MERCURY_HOME/.env is THE env file. Nothing ever reads, writes, or
+    # aliases any other location.
     _mercury = os.environ.get("MERCURY_HOME", "").strip()
     user_env = (Path(_mercury) / ".env") if _mercury else (home_path / ".env")
-    # ONE-env migration AT LOAD TIME: the pre-unification wizard wrote keys to
-    # the engine-private $MERCURY_HOME/hermes/.env. Boot must never fail to
-    # find them — if the shared file is absent and the legacy file exists,
-    # MOVE it (get_env_path's migration only fires on write; this is the read
-    # path every boot takes).
-    if _mercury and not user_env.exists():
-        _legacy = Path(_mercury) / "hermes" / ".env"
-        if _legacy.is_file() and not _legacy.is_symlink() and _legacy.resolve() != user_env.resolve():
-            try:
-                import shutil as _shutil
-                _shutil.move(str(_legacy), str(user_env))
-            except OSError:
-                # move failed (cross-device/permissions): fall back to loading
-                # the legacy file in place rather than booting keyless.
-                user_env = _legacy
-    # ONE env, both names (user directive: point at the same location): keep a
-    # compat symlink at the legacy engine path so ANY reader of the old
-    # location resolves to the shared file. One inode, two valid names.
-    if _mercury and user_env.exists():
-        _legacy = Path(_mercury) / "hermes" / ".env"
-        try:
-            if not _legacy.exists() and not _legacy.is_symlink():
-                _legacy.parent.mkdir(parents=True, exist_ok=True)
-                _legacy.symlink_to(user_env)
-        except OSError:
-            pass
     project_env_path = Path(project_env) if project_env else None
 
     # Normalize safe formatting and remove invalid NUL bytes before parsing.

@@ -338,7 +338,7 @@ run_setup_wizard() {
 # ============================================================================
 maybe_start_gateway() {
     [ "$SKIP_GATEWAY" = true ] && return 0
-    local ENV_FILE="$MERCURY_HOME/hermes/.env"
+    local ENV_FILE="$MERCURY_HOME/.env"
     [ -f "$ENV_FILE" ] || return 0
     local HAS_MESSAGING=false VAL VAR
     for VAR in TELEGRAM_BOT_TOKEN DISCORD_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN WHATSAPP_ENABLED SIMPLEX_BOT_TOKEN; do
@@ -370,6 +370,22 @@ maybe_start_gateway() {
 # seeds + path
 # ============================================================================
 seed_defaults() {
+    # ONE env (user rule — no legacy paths, no symlinks): if a PREVIOUS
+    # Mercury build left its env at the old engine path, adopt it into THE
+    # shared file once, visibly, then REMOVE the old file. The code never
+    # reads that path again; this is installer-level data placement only.
+    local _old_env="$MERCURY_HOME/hermes/.env"
+    if [ -f "$_old_env" ] && [ ! -f "$MERCURY_HOME/.env" ]; then
+        mv "$_old_env" "$MERCURY_HOME/.env" && log_success "adopted existing API keys into $MERCURY_HOME/.env"
+    elif [ -f "$_old_env" ] && [ -f "$MERCURY_HOME/.env" ]; then
+        # both exist: merge any keys the shared file lacks, then remove old
+        while IFS='=' read -r _k _v; do
+            case "$_k" in ''|'#'*) continue ;; esac
+            grep -q "^${_k}=" "$MERCURY_HOME/.env" 2>/dev/null || echo "${_k}=${_v}" >> "$MERCURY_HOME/.env"
+        done < "$_old_env"
+        rm -f "$_old_env" && log_success "merged old engine .env into $MERCURY_HOME/.env and removed it"
+    fi
+    chmod 600 "$MERCURY_HOME/.env" 2>/dev/null || true
     log_info "seeding hand-editable defaults into $MERCURY_HOME/config/ (never overwrites)"
     mkdir -p "$MERCURY_HOME/config"
     for _seed in HERMES.md OMP.md SOUL.md MEMORY.md USER.md AGENTS.md; do
