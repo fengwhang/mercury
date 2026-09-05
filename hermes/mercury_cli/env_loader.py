@@ -492,6 +492,21 @@ def load_hermes_dotenv(
     # legacy fallback for pre-unification installs.
     _mercury = os.environ.get("MERCURY_HOME", "").strip()
     user_env = (Path(_mercury) / ".env") if _mercury else (home_path / ".env")
+    # ONE-env migration AT LOAD TIME: the pre-unification wizard wrote keys to
+    # the engine-private $MERCURY_HOME/hermes/.env. Boot must never fail to
+    # find them — if the shared file is absent and the legacy file exists,
+    # MOVE it (get_env_path's migration only fires on write; this is the read
+    # path every boot takes).
+    if _mercury and not user_env.exists():
+        _legacy = Path(_mercury) / "hermes" / ".env"
+        if _legacy.is_file() and _legacy.resolve() != user_env.resolve():
+            try:
+                import shutil as _shutil
+                _shutil.move(str(_legacy), str(user_env))
+            except OSError:
+                # move failed (cross-device/permissions): fall back to loading
+                # the legacy file in place rather than booting keyless.
+                user_env = _legacy
     project_env_path = Path(project_env) if project_env else None
 
     # Normalize safe formatting and remove invalid NUL bytes before parsing.
