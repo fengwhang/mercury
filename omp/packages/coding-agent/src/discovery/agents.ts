@@ -310,11 +310,16 @@ async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFil
 async function loadMercuryOmpMd(_ctx: LoadContext): Promise<LoadResult<ContextFile>> {
 	const mercuryHome = process.env.MERCURY_HOME?.trim();
 	if (!mercuryHome) return { items: [], warnings: [] };
-	// MERCURY LAYOUT: config/ first, top-level fallback
+	// MERCURY LAYOUT: config/ first, top-level fallback.
+	// PROFILE COMPOSITION (user directive): the spawning profile's OMP.md
+	// overrides the shared one — same mechanics as the memory composite.
+	const profileHome = process.env.MERCURY_PROFILE_HOME?.trim();
 	const filePath =
-		(await readFile(path.join(mercuryHome, "config", "OMP.md")))
-			? path.join(mercuryHome, "config", "OMP.md")
-			: path.join(mercuryHome, "OMP.md");
+		(profileHome && (await readFile(path.join(profileHome, "config", "OMP.md"))))
+			? path.join(profileHome, "config", "OMP.md")
+			: (await readFile(path.join(mercuryHome, "config", "OMP.md")))
+				? path.join(mercuryHome, "config", "OMP.md")
+				: path.join(mercuryHome, "OMP.md");
 	const content = await readFile(filePath);
 	if (!content) return { items: [], warnings: [] };
 	return {
@@ -352,11 +357,22 @@ async function loadMercurySharedMemory(_ctx: LoadContext): Promise<LoadResult<Co
 	// arrive; ordering is explicit (persona → state → working rules).
 	// MERCURY LAYOUT: shared .md files live in $MERCURY_HOME/config/; the
 	// top level is the pre-layout fallback (one release).
+	// PROFILE COMPOSITION (user directive): when the spawning hermes agent
+	// ran under a secondary profile, MERCURY_PROFILE_HOME points at that
+	// profile's home — the SAME profile mechanics composed into omp's
+	// prompt. The profile's config/<name> OVERRIDES the shared file of the
+	// same name; names absent from the profile fall through to shared.
+	// Nested subagents inherit this through env passthrough.
 	const sharedCfg = path.join(mercuryHome, "config");
+	const profileCfg = process.env.MERCURY_PROFILE_HOME?.trim()
+		? path.join(process.env.MERCURY_PROFILE_HOME.trim(), "config")
+		: null;
 	const names = ["SOUL.md", "MEMORY.md", "USER.md", "AGENTS.md"] as const;
 	const parts: string[] = [];
 	for (const name of names) {
-		let content = await readFile(path.join(sharedCfg, name));
+		let content: string | undefined;
+		if (profileCfg) content = await readFile(path.join(profileCfg, name));
+		if (!content) content = await readFile(path.join(sharedCfg, name));
 		if (!content) content = await readFile(path.join(mercuryHome, name));
 		if (content) parts.push(content.trimEnd());
 	}

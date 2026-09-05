@@ -188,6 +188,40 @@ def _shared_env_overrides() -> Dict[str, str]:
     return overrides
 
 
+
+def _profile_context_env(parent_agent: Any) -> Dict[str, str]:
+    """Profile-scoped context pointer for omp children (user directive:
+    the hermes agent's profile defines where omp subagents' .md references
+    resolve — SAME profile mechanics composed into the omp prompt, nested
+    included).
+
+    Resolution mirrors the parent's own context assembly (_agent_home):
+    profile homes under $MERCURY_HOME/profiles/<name> carry their own
+    config/*.md; the shared $MERCURY_HOME/config/*.md is the base layer.
+    Children compose file-by-file: a profile file OVERRIDES the shared
+    file of the same name; names absent from the profile fall through to
+    shared. Nested subagents inherit the pointer through env — omp reads
+    MERCURY_PROFILE_HOME, and its own spawns pass the env through.
+    """
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if not mercury:
+        return {}
+    try:
+        from agent.system_prompt import _agent_home
+        home = _agent_home(parent_agent)
+    except Exception:
+        home = None
+    if home is None:
+        return {}
+    home = Path(home).resolve()
+    shared_root = Path(mercury).resolve()
+    if home == shared_root or home == (shared_root / "hermes").resolve():
+        return {}  # default profile: shared layer IS the profile layer
+    if not str(home).startswith(str(shared_root)):
+        return {}  # not a Mercury profile home; leave the shared layer
+    return {"MERCURY_PROFILE_HOME": str(home)}
+
+
 def _resolve_omp_binary() -> Optional[str]:
     cand = os.environ.get("HERMES_OMP_BIN") or "omp"
     return shutil.which(cand)
@@ -260,7 +294,8 @@ def _parent_approval_callback() -> Optional[Callable[..., Any]]:
 
 def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[str],
                   timeout: int, fallback_chain: Optional[str],
-                  batch_procs: Optional[List["subprocess.Popen"]] = None) -> Dict[str, Any]:
+                  batch_procs: Optional[List["subprocess.Popen"]] = None,
+                  profile_home: Optional[str] = None) -> Dict[str, Any]:
     """Run ONE omp child; return a result entry (old entry contract).
 
     C1 slice 2: prefer the RPC transport (approval routing live); fall
@@ -302,6 +337,8 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
         else:
             rpc_env = os.environ.copy()
             rpc_env.update(_shared_env_overrides())
+            if profile_home:
+                rpc_env["MERCURY_PROFILE_HOME"] = profile_home
             if fallback_chain:
                 rpc_env["OMP_FALLBACK_CHAIN"] = fallback_chain
             try:
@@ -353,6 +390,8 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
     """The original ``omp --model m -p <prompt>`` one-shot path (B1)."""
     env = os.environ.copy()
     env.update(_shared_env_overrides())
+    if profile_home:
+        env["MERCURY_PROFILE_HOME"] = profile_home
     if fallback_chain:
         env["OMP_FALLBACK_CHAIN"] = fallback_chain
     # prompt as ONE argv element: verbatim by construction
@@ -422,9 +461,11 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
     """Bounded-parallel run of all omp children; one entry per task."""
     started = time.time()
     if len(tasks) == 1 or max_workers <= 1:
+        _profile_home = env.get("MERCURY_PROFILE_HOME")
         results = [
             _run_omp_task(i, t["prompt"], env["OMP_MODEL"], workdir, timeout,
-                          env.get("OMP_FALLBACK_CHAIN"), batch_procs)
+                          env.get("OMP_FALLBACK_CHAIN"), batch_procs,
+                          profile_home=_profile_home)
             for i, t in enumerate(tasks)
         ]
     else:
@@ -432,7 +473,7 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
             futures = [
                 pool.submit(_run_omp_task, i, t["prompt"], env["OMP_MODEL"],
                             workdir, timeout, env.get("OMP_FALLBACK_CHAIN"),
-                            batch_procs)
+                            batch_procs, profile_home=env.get("MERCURY_PROFILE_HOME"))
                 for i, t in enumerate(tasks)
             ]
             results = [f.result() for f in futures]
@@ -510,6 +551,9 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     env, err = _omp_delegate_env()
     if err:
         return tool_error(f"delegation aborted (omp engine): {err}")
+    # Profile-composed context (user directive): point omp children at the
+    # parent's profile layer. Nested spawns inherit via env passthrough.
+    env.update(_profile_context_env(parent_agent))
     model = env["OMP_MODEL"]
     if _resolve_omp_binary() is None:
         return tool_error(
