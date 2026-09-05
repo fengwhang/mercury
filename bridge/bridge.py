@@ -94,12 +94,16 @@ def validate(slots, need_delegate=False):
             and slots["delegate_model"] == slots["delegate_fallback"]):
         errors.append("models.delegate_model == models.delegate_fallback — fallback must be distinct")
     fchain = slots.get("fallback_chain") or []
-    if len(set(fchain)) != len(fchain):
-        errors.append("models.fallback_chain contains duplicates")
-    if slots["default"] and slots["default"] in fchain:
-        errors.append("models.fallback_chain must not contain the default model itself")
-    if slots["fallback"] and slots["fallback"] not in fchain:
-        errors.append("models.fallback_chain must include models.fallback as its first entry")
+    if fchain:
+        # An EMPTY chain is valid (no second-order fallback configured — the
+        # wizard writes [] when the user skips). Invariant applies only to
+        # non-empty chains: head must be the primary fallback.
+        if len(set(fchain)) != len(fchain):
+            errors.append("models.fallback_chain contains duplicates")
+        if slots["default"] and slots["default"] in fchain:
+            errors.append("models.fallback_chain must not contain the default model itself")
+        if slots["fallback"] and fchain[0] != slots["fallback"]:
+            errors.append("models.fallback_chain must include models.fallback as its first entry")
     chain = slots.get("delegate_fallback_chain") or []
     if len(set(chain)) != len(chain):
         errors.append("models.delegate_fallback_chain contains duplicates")
