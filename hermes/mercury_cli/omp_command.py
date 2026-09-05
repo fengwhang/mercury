@@ -91,6 +91,15 @@ def cmd_omp(args) -> int:
     env = dict(os.environ)
     env.setdefault("MERCURY_CONFIG", os.path.expanduser("~/.mercury/config.yaml"))
     env.setdefault("MERCURY_HOME", os.path.expanduser("~/.mercury"))
+    # HERMES-OMP PATCH (Nous search inheritance): when hermes' web selection
+    # is the Nous-managed gateway, bridge it into omp's NATIVE firecrawl env
+    # so `mercury omp` search/scrape rides the same gateway + credentials.
+    try:
+        from tools.omp_delegation import _nous_search_env_overrides
+        for _k, _v in _nous_search_env_overrides().items():
+            env.setdefault(_k, _v)
+    except Exception:
+        pass
     for k, v in env_overrides.items():
         env.setdefault(k, v)
 

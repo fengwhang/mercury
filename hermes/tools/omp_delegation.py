@@ -171,8 +171,14 @@ def _shared_env_overrides() -> Dict[str, str]:
     if not mercury:
         return {}
     path = Path(mercury) / ".env"
+    # Nous-managed web selection -> omp-native firecrawl env bridge
+    # (gateway URL + Nous token) so omp search/scrape uses hermes' gateway.
+    try:
+        overrides.update(_nous_search_env_overrides())
+    except Exception:
+        pass
     if not path.is_file():
-        return {}
+        return overrides
     overrides: Dict[str, str] = {}
     # engine env parity (user bug: omp reads ONLY ZAI_API_KEY; the wizard used
     # to save GLM_API_KEY first): mirror the alias inside the net as well.
@@ -195,6 +201,41 @@ def _shared_env_overrides() -> Dict[str, str]:
         return {}
     return overrides
 
+
+
+def _nous_search_env_overrides() -> Dict[str, str]:
+    """HERMES-OMP PATCH (tool-call inheritance, Nous search): when hermes'
+    web selection is the Nous-managed gateway, omp has no native 'nous'
+    provider — but the gateway speaks the Firecrawl API shape. Export the
+    gateway URL + Nous token under omp's NATIVE firecrawl env names so omp's
+    own firecrawl provider (search + scrape) hits the gateway with hermes'
+    credentials. Never overrides explicit user-provided values."""
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if not mercury:
+        return {}
+    overrides: Dict[str, str] = {}
+    try:
+        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+        if read_selection("web") != NOUS_MANAGED_PROVIDER:
+            return {}
+    except Exception:
+        return {}
+    try:
+        from tools.managed_tool_gateway import (
+            build_vendor_gateway_url,
+            peek_nous_access_token,
+        )
+        url = build_vendor_gateway_url("firecrawl")
+        token = peek_nous_access_token()
+    except Exception:
+        return {}
+    if not url or not token:
+        return {}
+    if not os.environ.get("FIRECRAWL_API_URL"):
+        overrides["FIRECRAWL_API_URL"] = url
+    if not os.environ.get("FIRECRAWL_API_KEY"):
+        overrides["FIRECRAWL_API_KEY"] = token
+    return overrides
 
 
 def _profile_context_env(parent_agent: Any) -> Dict[str, str]:

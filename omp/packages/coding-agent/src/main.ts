@@ -123,6 +123,13 @@ export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string)
 }
 
 async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
+	// HERMES-OMP PATCH (Mercury embedding): no self-update checks under
+	// Mercury — the omp half updates only via 'mercury update' (tarball
+	// re-fetch that refreshes BOTH engines). A registry comparison here
+	// would advertise an update path that does not exist for Mercury.
+	if ($env.MERCURY_HOME) {
+		return;
+	}
 	if (!settings.get("startup.checkUpdate")) {
 		return;
 	}

@@ -338,6 +338,16 @@ def read_selection(section: str) -> str | None:
 
         cfg = read_raw_config_readonly() or {}
         raw = cfg.get(section) if isinstance(cfg, dict) else None
+        # MERCURY-OMP PATCH (unified config): under MERCURY_CONFIG the wizard
+        # saves mercury' normalized config NESTED under ``hermes:`` in the
+        # ONE file (config.py save path). A section written by the tools
+        # picker therefore lands at hermes.<section>, not top-level —
+        # without this probe the runtime read silently reports "never
+        # configured" right after the wizard wrote a selection.
+        if not isinstance(raw, dict):
+            hermes_sub = cfg.get("hermes") if isinstance(cfg, dict) else None
+            if isinstance(hermes_sub, dict) and isinstance(hermes_sub.get(section), dict):
+                raw = hermes_sub[section]
     except Exception:
         raw = None
     if not isinstance(raw, dict):

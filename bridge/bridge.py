@@ -221,6 +221,12 @@ _WEB_BACKEND_TO_OMP = {
     "brave": "brave", "brave_free": "brave", "ddgs": "duckduckgo",
     "keenable": "parallel", "parallel": "parallel",
     "omp": "zai",  # hermes' omp-bridge provider == omp's own zai search
+    # Nous-managed gateway: omp has no native 'nous' provider, but the
+    # gateway speaks the Firecrawl API shape. The delegation/passthrough
+    # env bridge exports FIRECRAWL_API_URL=<gateway> + FIRECRAWL_API_KEY=
+    # <nous token>, so omp's NATIVE firecrawl provider hits the gateway —
+    # order pin is firecrawl.
+    "nous": "firecrawl",
 }
 
 
@@ -251,6 +257,10 @@ def _hermes_web_omp_provider(text: str) -> str:
                 backend = v
             elif k == "search_backend":
                 search_backend = v
+            elif k == "provider":
+                # Nous-managed selection stores web.provider = nous
+                if v == "nous":
+                    backend = "nous"
     return _WEB_BACKEND_TO_OMP.get(search_backend or backend or "", "")
 
 

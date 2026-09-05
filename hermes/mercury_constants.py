@@ -71,6 +71,14 @@ def _hermes_home_from_env() -> Path:
     val = os.environ.get("HERMES_HOME", "").strip()
     if val:
         return Path(val)
+    # MERCURY-OMP PATCH (ONE home): honor MERCURY_HOME when HERMES_HOME is
+    # unset — the launcher forces HERMES_HOME=$MERCURY_HOME/hermes, but
+    # embedding/test/one-shot contexts that set only MERCURY_HOME must land
+    # in the same engine-private dir, never the platform default (~/.mercury
+    # on dev boxes may exist for unrelated reasons).
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if mercury:
+        return Path(mercury) / "hermes"
     return _get_platform_default_hermes_home()
 
 
