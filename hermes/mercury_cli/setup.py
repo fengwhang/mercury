@@ -1098,8 +1098,11 @@ def _prompt_mercury_slots(config: dict) -> None:
         return chosen or current
 
     # Fallback — required by policy, must differ from default.
+    # NO default seeding (user directive): on a fresh config the picker must
+    # show a neutral menu — nothing marked as 'already selected'. Only a
+    # genuinely configured slot may appear as current.
     while True:
-        fallback = _pick("Select fallback model (used when the default fails mid-turn):", slots["fallback"] or (catalog[1] if len(catalog) > 1 else ""))
+        fallback = _pick("Select fallback model (used when the default fails mid-turn):", slots["fallback"])
         if not fallback:
             print_warning("Fallback is required (fail-hard: no fallback = no start).")
             continue
@@ -1113,12 +1116,13 @@ def _prompt_mercury_slots(config: dict) -> None:
     print_info("subagents, and these set which model those subagents run on.")
     print()
 
-    # Delegate model — defaults to the default model.
-    delegate_model = _pick("Select delegate model (the model omp SUBAGENTS run on):", slots["delegate_model"] or slots["default"])
+    # Delegate model — NO seeding: only a genuinely configured slot is
+    # current (user directive — never pre-select a preferred model).
+    delegate_model = _pick("Select delegate model (the model omp SUBAGENTS run on):", slots["delegate_model"])
     delegate_model = f"{provider}/{delegate_model}" if provider and "/" not in delegate_model else delegate_model
 
-    # Delegate fallback — defaults to the main fallback.
-    delegate_fallback = _pick("Select delegate fallback (subagent retry model):", slots["delegate_fallback"] or fallback)
+    # Delegate fallback — NO seeding (user directive).
+    delegate_fallback = _pick("Select delegate fallback (subagent retry model):", slots["delegate_fallback"])
     delegate_fallback = f"{provider}/{delegate_fallback}" if provider and "/" not in delegate_fallback else delegate_fallback
 
     # Write the shared models: block (line-oriented, omp_sync-compatible).
