@@ -20,6 +20,11 @@ CONFIG = os.environ.get("HERMES_OMP_CONFIG", os.environ.get("MERCURY_CONFIG", DE
 
 SLOTS = ("default", "fallback", "delegate_model", "delegate_fallback")
 
+# omp interactive-onboarding version (omp/src/modes/setup-version.ts).
+# The Mercury wizard + omp-sync stamp this so `mercury omp` never demands
+# its five-scene first-run setup on an installer-configured machine.
+CURRENT_SETUP_VERSION = 2
+
 
 def parse_config(path=None):
     """Return {slot: value} from the models: block of the unified file."""
@@ -207,6 +212,48 @@ def _unified_approvals_mode(text: str) -> str:
     return _mode_under("approvals:") or _mode_under("hermes:") or "smart"
 
 
+# HERMES-OMP PATCH (tool-call inheritance, user directive): map hermes'
+# configured web backend ids to omp's provider ids so omp uses the SAME
+# search/scrape as the hermes harness (not whichever keyed provider it
+# stumbles on first — the zai-defaulting bug).
+_WEB_BACKEND_TO_OMP = {
+    "exa": "exa", "firecrawl": "firecrawl", "searxng": "searxng",
+    "brave": "brave", "brave_free": "brave", "ddgs": "duckduckgo",
+    "keenable": "parallel", "parallel": "parallel",
+    "omp": "zai",  # hermes' omp-bridge provider == omp's own zai search
+}
+
+
+def _hermes_web_omp_provider(text: str) -> str:
+    """Read hermes' effective web backend from the unified config and map it
+    to omp's provider id ('' when unset/unknown). Priority mirrors the
+    hermes side: web.search_backend > web.backend."""
+    lines = [l.split("#", 1)[0].rstrip() for l in text.splitlines()]
+    backend = search_backend = ""
+    in_web = in_hermes = False
+    for l in lines:
+        if not l.strip():
+            continue
+        indented = l[0].isspace()
+        s = l.strip()
+        if not indented:
+            in_web = s == "web:"
+            in_hermes = s == "hermes:"
+            continue
+        if in_hermes and s == "web:":
+            in_web = True
+            continue
+        if in_web and ":" in s:
+            k, _, v = s.partition(":")
+            k = k.strip()
+            v = v.strip().strip("'\"")
+            if k == "backend":
+                backend = v
+            elif k == "search_backend":
+                search_backend = v
+    return _WEB_BACKEND_TO_OMP.get(search_backend or backend or "", "")
+
+
 def _hermes_deny_globs(text: str) -> list:
     """HERMES-OMP PATCH (C2): approvals.deny globs from the hermes: subtree.
 
@@ -273,6 +320,10 @@ def render_omp_subtree(slots, target=None):
     omp_mode = mode_map.get(unified_mode, "write")
     omp_block = (
         "omp:\n"
+        f"  # setupVersion {CURRENT_SETUP_VERSION}: stamped by the Mercury wizard/omp-sync —\n"
+        "  # omp's interactive onboarding never fires for installer-configured\n"
+        "  # installs (user directive: the installer did the setup).\n"
+        f"  setupVersion: {CURRENT_SETUP_VERSION}\n"
         "  tools:\n"
         f'    approvalMode: "{omp_mode}"\n'
         "  retry:\n"
@@ -290,6 +341,13 @@ def render_omp_subtree(slots, target=None):
         # single legacy slot remains the default when no chain is set.
         f'    fallbackChains: {{"{slots["delegate_model"]}": {json.dumps([m for m in (slots.get("delegate_fallback_chain") or []) if m] or [slots["delegate_fallback"]])}}}\n'
     )
+    omp_provider = _hermes_web_omp_provider(text)
+    if omp_provider:
+        # PIN the inherited provider first; omp appends its remaining chain.
+        omp_block += (
+            "  providers:\n"
+            f'    webSearchOrder: ["{omp_provider}"]\n'
+        )
     if deny_globs:
         omp_block += "  bash:\n    patterns:\n"
         for g in deny_globs:

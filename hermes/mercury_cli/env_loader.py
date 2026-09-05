@@ -519,6 +519,23 @@ def load_hermes_dotenv(
                     pass
         except Exception:
             pass
+        # MERCURY-OMP PATCH (tool-key parity, user directive): hermes-side
+        # tool keys whose names differ from omp's readers are mirrored so
+        # omp children see every keyed tool hermes has (BRAVE_SEARCH_API_KEY
+        # is hermes' Brave id; omp reads BRAVE_API_KEY). Env + file, once.
+        for _src, _dst in (("BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"),):
+            try:
+                _s = os.environ.get(_src, "").strip()
+                _d = os.environ.get(_dst, "").strip()
+                if _s and not _d:
+                    os.environ[_dst] = _s
+                    try:
+                        from mercury_cli.config import save_env_value
+                        save_env_value(_dst, _s)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         # Mirror reload_env() known-key cleanup so inherited Mercury keys
         # absent from this profile's .env do not leak into the runtime.
         _clear_known_keys_missing_from_dotenv(user_env)
