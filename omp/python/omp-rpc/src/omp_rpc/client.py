@@ -466,7 +466,14 @@ class RpcClient:
         extra_args: Sequence[str] = (),
         startup_timeout: float = 30.0,
         request_timeout: float = 30.0,
-        max_event_history: int | None = 10_000,
+        # HERMES-OMP PATCH (user directive): UNBOUNDED by default. The old
+        # 10_000-event ring made healthy long-running delegate children FAIL
+        # ("Event history limit was exceeded while waiting for agent_end.")
+        # once their event stream outgrew the ring — a host-side memory
+        # heuristic killing tasks is exactly backwards. Memory grows only
+        # with events actually streamed; the delegation layer already bounds
+        # child runtime via its own task timeout.
+        max_event_history: int | None = None,
         max_stderr_chunks: int | None = 512,
     ) -> None:
         self._command = tuple(command) if command is not None else None
@@ -1336,16 +1343,15 @@ class RpcClient:
                     raise RpcProcessExitError(str(self._closed_error))
 
                 if start_index < self._events.offset:
-                    raise RpcError(
-                        "Event history limit was exceeded while waiting for agent_end. "
-                        "Increase max_event_history to retain more streamed events."
-                    )
+                    # HERMES-OMP PATCH: a trimmed ring must NEVER fail a
+                    # healthy child. We cannot resurrect dropped events, but
+                    # we can keep waiting for agent_end from what remains.
+                    pass
 
                 if start_async_error_index < self._async_errors.offset:
-                    raise RpcError(
-                        "Async error history limit was exceeded while waiting for agent_end. "
-                        "Increase max_event_history if your host needs to retain more background failures."
-                    )
+                    # HERMES-OMP PATCH: same never-fail rule for the async
+                    # error ring — trimmed history is not a task failure.
+                    pass
 
                 async_errors = self._async_errors.snapshot_from(start_async_error_index)
                 if len(async_errors) > 0:
