@@ -237,6 +237,18 @@ install_computer_use_driver() {
 # ============================================================================
 fetch_tarball() {
     if [ -n "$TARBALL_URL" ]; then
+        # PER-ARCH ASSETS (user directive): the release publishes one tarball
+        # per architecture; rewrite the URL so each host downloads exactly
+        # the binary it needs (no dead weight in the download).
+        if [[ "$TARBALL_URL" == http* ]] && [[ "$TARBALL_URL" != *"-arm64.tar.gz" ]] \
+            && { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; }; then
+            if curl -fsSI --connect-timeout 10 "$(echo "$TARBALL_URL" | sed 's/\.tar\.gz$/-arm64.tar.gz/')" >/dev/null 2>&1; then
+                TARBALL_URL="$(echo "$TARBALL_URL" | sed 's/\.tar\.gz$/-arm64.tar.gz/')"
+                log_info "arm64 host — using the aarch64 tarball"
+            else
+                log_warn "no -arm64 asset published; falling back to the default tarball"
+            fi
+        fi
         log_info "fetching distribution tarball"
         TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
         if [ -f "$TARBALL_URL" ]; then cp "$TARBALL_URL" "$TMP/mercury.tar.gz"
@@ -281,10 +293,11 @@ fetch_tarball() {
 
 # ============================================================================
 # omp binary: arch selection (user directive — arm64 hosts must install too).
-# The tarball ships BOTH prebuilts (x86-64 as dist/omp, arm64 as
-# dist/omp-linux-arm64). After extraction we pick the one matching the host
-# and hardlink/copy it to dist/omp — every downstream surface (launcher,
-# smoke test, delegation) only ever looks for dist/omp.
+# Primary path: per-arch tarballs (fetch already downloaded the right one;
+# dist/omp IS the host-arch binary). Legacy path: dual-binary tarballs that
+# carried both prebuilts (x86-64 as dist/omp, arm64 as dist/omp-linux-arm64)
+# — pick the one matching the host. Either way dist/omp ends up executable
+# for THIS host; every downstream surface looks for dist/omp.
 # ============================================================================
 select_omp_binary() {
     local DIST="$INSTALL_ROOT/omp/packages/coding-agent/dist"
