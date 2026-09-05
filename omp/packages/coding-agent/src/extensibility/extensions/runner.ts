@@ -1,6 +1,7 @@
 /**
  * Extension runner - executes extensions and manages their lifecycle.
  */
+import { headlessApprovalEnabled, headlessApprovalUIContext } from "../../session/headless-approval.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type {
 	AgentMessage,
@@ -698,7 +699,17 @@ export class ExtensionRunner {
 			this.#compactFn = commandContextActions.compact;
 		}
 
-		this.#uiContext = uiContext ?? noOpUIContext;
+		// HERMES-OMP PATCH (approval pass-through, user directive): in
+		// headless one-shot mode (no uiContext) spawned by a hermes
+		// delegate, route approval prompts to the hermes parent over
+		// MERCURY_APPROVAL_SOCKET — the parent surfaces them to the USER
+		// through chat and answers. Without this, print mode resolved every
+		// approval gate as 'denied by user' and the child died silently.
+		if (uiContext === undefined && headlessApprovalEnabled()) {
+			this.#uiContext = headlessApprovalUIContext as unknown as ExtensionUIContext;
+		} else {
+			this.#uiContext = uiContext ?? noOpUIContext;
+		}
 		this.#mode = mode;
 		this.#initialized = true;
 

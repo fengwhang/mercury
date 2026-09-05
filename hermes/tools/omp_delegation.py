@@ -26,6 +26,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
+import tempfile
 import shutil
 import signal
 import subprocess
@@ -269,6 +271,127 @@ def _build_task_prompt(goal: str, context: Optional[str],
     return "".join(parts).strip()
 
 
+
+
+# HERMES-OMP PATCH (approval pass-through, user directive): one-shot children
+# get the same human-in-the-loop the RPC children have. A tiny Unix-socket
+# HTTP server (one per delegation batch) receives approval requests from
+# headless omp children; each is answered by hermes' full guard stack —
+# the same stack the user's own terminal calls face, including the
+# interactive callback that surfaces the prompt in the user's chat.
+class _ApprovalBridgeServer:
+    def __init__(self, approval_callback=None):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import socketserver
+        self._cb = approval_callback
+        self._dir = tempfile.mkdtemp(prefix="mercury-approval-")
+        self._path = os.path.join(self._dir, "approval.sock")
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                if self.path != "/approve":
+                    self.send_error(404); return
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                title = str(body.get("title") or "")
+                kind = str(body.get("kind") or "select")
+                from tools.omp_rpc_transport import (
+                    extract_command_from_prompt, hermes_approval_decision,
+                )
+                # Thread-local callback propagation: HTTP handler threads do
+                # NOT inherit the delegation thread's approval callback, and
+                # without it a dangerous command would fail closed (deny)
+                # instead of surfacing to the USER. Install it per request.
+                if outer._cb is not None:
+                    try:
+                        from tools.terminal_tool import set_approval_callback
+                        set_approval_callback(outer._cb)
+                    except Exception:
+                        pass
+                command = extract_command_from_prompt(title)
+                if kind == "select" and command:
+                    # User directive: omp children inherit the hermes
+                    # agent's permission surface, and EVERY approval
+                    # roadblock reaches the USER through hermes.
+                    # 1. Guard stack first: allowlist/smart inheritance,
+                    #    hardline + user-deny stay ABSOLUTE.
+                    # 2. If the guards neither approved nor actively denied
+                    #    (pending_approval in a child that can't drain a
+                    #    gateway queue, or a fail-closed no-context deny),
+                    #    ask the user DIRECTLY through the parent's chat
+                    #    callback — that answer is final.
+                    from tools.approval import check_all_command_guards
+                    try:
+                        decision = check_all_command_guards(
+                            command, env_type="container")
+                    except Exception:
+                        decision = {"approved": False}
+                    ok = bool(decision.get("approved"))
+                    if not ok:
+                        actively_denied = (
+                            decision.get("user_consent") is False
+                            or decision.get("outcome") == "denied"
+                            or str(decision.get("message") or "").startswith(
+                                "BLOCKED (hardline)")
+                        )
+                        if not actively_denied and outer._cb is not None:
+                            try:
+                                ok = bool(outer._cb(
+                                    f"[omp subagent approval]\n{title}"))
+                            except Exception:
+                                ok = False
+                    value = "Approve" if ok else "Deny"
+                elif kind == "confirm":
+                    # Free-form confirm: route through the callback if the
+                    # user can be asked; otherwise fail closed.
+                    if outer._cb is not None:
+                        try:
+                            ok = bool(outer._cb(title))
+                        except Exception:
+                            ok = False
+                    else:
+                        ok = False
+                    value = "Approve" if ok else "Deny"
+                else:
+                    ok = False
+                    value = "Deny"
+                payload = json.dumps({"value": value, "confirmed": ok}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            def log_message(self, *a):
+                pass
+
+        class UnixHTTPServer(ThreadingHTTPServer):
+            address_family = socket.AF_UNIX
+            def get_request(self):
+                req, _ = self.socket.accept()
+                return req, ("unix", 0)
+
+        self._server = UnixHTTPServer(self._path, Handler)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, daemon=True,
+            name="mercury-approval-bridge")
+
+    def start(self) -> str:
+        os.chmod(self._path, 0o600)
+        self._thread.start()
+        return self._path
+
+    def stop(self) -> None:
+        try:
+            self._server.shutdown()
+            self._server.server_close()
+        except Exception:
+            pass
+        try:
+            shutil.rmtree(self._dir, ignore_errors=True)
+        except Exception:
+            pass
+
 # C1 slice 2: RPC-first child transport. Approval-capable (prompt-tier
 # decisions route into hermes' guard stack); the -p one-shot remains as
 # fallback ONLY for RPC start failure (binary too old / not RPC-capable /
@@ -301,7 +424,8 @@ def _parent_approval_callback() -> Optional[Callable[..., Any]]:
 def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[str],
                   timeout: int, fallback_chain: Optional[str],
                   batch_procs: Optional[List["subprocess.Popen"]] = None,
-                  profile_home: Optional[str] = None) -> Dict[str, Any]:
+                  profile_home: Optional[str] = None,
+                  extra_env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Run ONE omp child; return a result entry (old entry contract).
 
     C1 slice 2: prefer the RPC transport (approval routing live); fall
@@ -343,6 +467,8 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
         else:
             rpc_env = os.environ.copy()
             rpc_env.update(_shared_env_overrides())
+            if extra_env:
+                rpc_env.update(extra_env)
             if profile_home:
                 rpc_env["MERCURY_PROFILE_HOME"] = profile_home
             if fallback_chain:
@@ -396,6 +522,8 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
     """The original ``omp --model m -p <prompt>`` one-shot path (B1)."""
     env = os.environ.copy()
     env.update(_shared_env_overrides())
+    if extra_env:
+        env.update(extra_env)
     if profile_home:
         env["MERCURY_PROFILE_HOME"] = profile_home
     if fallback_chain:
@@ -466,20 +594,46 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
               batch_procs: Optional[List["subprocess.Popen"]] = None) -> Dict[str, Any]:
     """Bounded-parallel run of all omp children; one entry per task."""
     started = time.time()
+    # HERMES-OMP PATCH (approval pass-through): one-shot children ask the
+    # user through THIS parent. RPC children route approvals natively; the
+    # bridge covers the -p fallback (and any headless mode).
+    _bridge = None
+    if "MERCURY_APPROVAL_SOCKET" not in env:
+        try:
+            _bridge = _ApprovalBridgeServer(_parent_approval_callback())
+            env = dict(env)
+            env["MERCURY_APPROVAL_SOCKET"] = _bridge.start()
+        except Exception:
+            _bridge = None
+    try:
+        return _sync_run_inner(tasks, env, workdir, timeout, max_workers, batch_procs)
+    finally:
+        if _bridge is not None:
+            _bridge.stop()
+
+
+def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
+              workdir: Optional[str], timeout: int,
+              max_workers: int,
+              batch_procs: Optional[List["subprocess.Popen"]] = None) -> Dict[str, Any]:
+    started = time.time()
     if len(tasks) == 1 or max_workers <= 1:
         _profile_home = env.get("MERCURY_PROFILE_HOME")
+        _extra = {k: env[k] for k in ("MERCURY_APPROVAL_SOCKET",) if k in env}
         results = [
             _run_omp_task(i, t["prompt"], env["OMP_MODEL"], workdir, timeout,
                           env.get("OMP_FALLBACK_CHAIN"), batch_procs,
-                          profile_home=_profile_home)
+                          profile_home=_profile_home, extra_env=_extra or None)
             for i, t in enumerate(tasks)
         ]
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            _extra = {k: env[k] for k in ("MERCURY_APPROVAL_SOCKET",) if k in env}
             futures = [
                 pool.submit(_run_omp_task, i, t["prompt"], env["OMP_MODEL"],
                             workdir, timeout, env.get("OMP_FALLBACK_CHAIN"),
-                            batch_procs, profile_home=env.get("MERCURY_PROFILE_HOME"))
+                            batch_procs, profile_home=env.get("MERCURY_PROFILE_HOME"),
+                            extra_env=_extra or None)
                 for i, t in enumerate(tasks)
             ]
             results = [f.result() for f in futures]
