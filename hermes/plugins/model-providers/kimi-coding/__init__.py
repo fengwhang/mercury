@@ -118,7 +118,7 @@ kimi = KimiProfile(
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
     default_headers={
-        "HTTP-Referer": "https://mercury-agent.nousresearch.com",
+        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
         "X-Title": "Mercury",
         "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
     },
@@ -133,7 +133,7 @@ kimi_cn = KimiProfile(
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
     default_headers={
-        "HTTP-Referer": "https://mercury-agent.nousresearch.com",
+        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
         "X-Title": "Mercury",
         "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
     },

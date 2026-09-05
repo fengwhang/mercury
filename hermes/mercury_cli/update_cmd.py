@@ -913,7 +913,7 @@ def _print_curator_first_run_notice() -> None:
     print("  Preview now:  mercury curator run --dry-run")
     print("  Pause it:     mercury curator pause")
     print(
-        "  Docs:         https://mercury-agent.nousresearch.com/docs/user-guide/features/curator"
+        "  Docs:         https://hermes-agent.nousresearch.com/docs/user-guide/features/curator"
     )
 
 def _print_fts_optimize_available_notice() -> None:
@@ -2082,7 +2082,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         print("  Your existing install was left in place.")
         print(
             "  Re-run `mercury update` to retry; if the agent won't start, "
-            "reinstall from https://mercury-agent.nousresearch.com"
+            "reinstall from https://hermes-agent.nousresearch.com"
         )
         _m().sys.exit(1)
     finally:
@@ -9096,7 +9096,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(f"  ⚠ {failing_module} still fails to import after updating:")
             print(f"      {import_error}")
             print("    Run `mercury update` again — if it persists, reinstall:")
-            print("    https://mercury-agent.nousresearch.com")
+            print("    https://hermes-agent.nousresearch.com")
 
         node_failures = _update_node_dependencies()
         _m()._build_web_ui(_m().PROJECT_ROOT / "web")

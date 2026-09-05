@@ -4496,7 +4496,7 @@ def check_for_skill_updates(
 # Mercury centralized index source
 # ---------------------------------------------------------------------------
 
-HERMES_INDEX_URL = "https://mercury-agent.nousresearch.com/docs/api/skills-index.json"
+HERMES_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
 HERMES_INDEX_TTL = 6 * 3600  # 6 hours
 
 

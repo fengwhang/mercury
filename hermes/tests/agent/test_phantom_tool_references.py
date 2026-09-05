@@ -22,7 +22,7 @@ class TestHermesAgentHelpGuidance:
     def test_no_skills_variant_has_no_skill_view_reference(self):
         from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
         assert "skill_view" not in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
-        assert "mercury-agent.nousresearch.com/docs" in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
+        assert "hermes-agent.nousresearch.com/docs" in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
 
 
 class TestExecutionGuidanceText:

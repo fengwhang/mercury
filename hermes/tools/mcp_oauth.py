@@ -875,7 +875,7 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
                 f"         ssh -N -L {port}:127.0.0.1:{port} <user>@<this-host>\n"
                 f"       then open the URL above and let it redirect normally.\n"
                 f"\n"
-                f"  See: https://mercury-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
+                f"  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
                 file=sys.stderr,
             )
 
@@ -1304,7 +1304,7 @@ def remove_oauth_tokens(
 # deploy. The github.io origin is deliberate: an authorization server MUST NOT
 # follow HTTP redirects when fetching the document
 # (draft-ietf-oauth-client-id-metadata-document section 5), and
-# mercury-agent.nousresearch.com/docs/* 301s here.
+# hermes-agent.nousresearch.com/docs/* 301s here.
 _CIMD_CLIENT_METADATA_URL = (
     "https://nousresearch.github.io/mercury-agent/docs/oauth/client-metadata.json"
 )

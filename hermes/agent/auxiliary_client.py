@@ -1179,7 +1179,7 @@ _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
 # `X-Title` is the canonical attribution header OpenRouter's dashboard
 # reads; the previous `X-OpenRouter-Title` label was not recognized there.
 _OR_HEADERS_BASE = {
-    "HTTP-Referer": "https://mercury-agent.nousresearch.com",
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Mercury",
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
@@ -1300,7 +1300,7 @@ def build_nvidia_nim_headers(base_url: str | None) -> dict:
 from mercury_cli import __version__ as _HERMES_VERSION
 
 _AI_GATEWAY_HEADERS = {
-    "HTTP-Referer": "https://mercury-agent.nousresearch.com",
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Mercury",
     "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
 }

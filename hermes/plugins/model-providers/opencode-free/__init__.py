@@ -20,7 +20,7 @@ from providers.base import ProviderProfile
 # off the wire (the free tier 401s any unrecognized bearer).
 _KEYLESS_HEADERS = {
     "Authorization": "",
-    "HTTP-Referer": "https://mercury-agent.nousresearch.com",
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Mercury",
     "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
 }
