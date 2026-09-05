@@ -1117,14 +1117,16 @@ def _prompt_mercury_slots(config: dict) -> None:
     # models in order; empty selection ends. Written to models.fallback_chain
     # (head = primary fallback) and consumed by the hermes side's ordered
     # fallback_providers machinery (agent_init accepts a list natively).
+    # SECOND-ORDER ONLY (user directive 2026-09-05): exactly one extra
+    # fallback after the primary — no endless loop. Empty selection skips.
     fallback_chain = []
-    while True:
-        extra = _pick("Select next fallback (ORDERED chain; empty selection to finish):", "")
+    while not fallback_chain:
+        extra = _pick("Select second-order fallback (used when the MAIN fallback also fails; empty to skip):", "")
         if not extra:
             break
         extra = f"{provider}/{extra}" if provider and "/" not in extra else extra
-        if extra in [fallback] + fallback_chain or extra == slots["default"]:
-            print_info("Already in the chain — pick a different model.")
+        if extra == fallback or extra == slots["default"]:
+            print_info("Must differ from the default and the main fallback — pick again.")
             continue
         fallback_chain.append(extra)
 
@@ -1145,14 +1147,16 @@ def _prompt_mercury_slots(config: dict) -> None:
     # fallback, offer additional retry models in order. Empty selection ends
     # the chain. The chain is written to models.delegate_fallback_chain and
     # consumed by omp's retry.fallbackChains in ORDER.
+    # SECOND-ORDER ONLY (user directive 2026-09-05): exactly one extra
+    # delegate fallback — no endless loop. Empty selection skips.
     delegate_chain = []
-    while True:
-        extra = _pick("Select next delegate fallback (ORDERED chain; empty selection to finish):", "")
+    while not delegate_chain:
+        extra = _pick("Select second-order delegate fallback (used when the SUBAGENT fallback also fails; empty to skip):", "")
         if not extra:
             break
         extra = f"{provider}/{extra}" if provider and "/" not in extra else extra
-        if extra in [delegate_fallback] + delegate_chain or extra == delegate_model:
-            print_info("Already in the chain — pick a different model.")
+        if extra == delegate_fallback or extra == delegate_model:
+            print_info("Must differ from the delegate model and its fallback — pick again.")
             continue
         delegate_chain.append(extra)
 
