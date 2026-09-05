@@ -99,9 +99,12 @@ def plan(include: set[str] | None = None, exclude: set[str] | None = None) -> di
         return report
 
     cfg_dir = _target_config_dir()
-    # markdown memories
+    # markdown memories (stock layout: memories/ holds MEMORY/USER, SOUL may
+    # be top-level — probe both so the dry-run reports real counts)
     for key, name in MD_MAP.items():
         s = src / name
+        if not s.exists() and (src / "memories" / name).exists():
+            s = src / "memories" / name
         t = cfg_dir / name
         if key in selected:
             report["items"][key] = {
@@ -165,10 +168,20 @@ def run(include: set[str] | None = None, exclude: set[str] | None = None, dry_ru
     for key, name in MD_MAP.items():
         if key not in selected:
             continue
-        s, t = src / name, cfg_dir / name
+        # STOCK LAYOUT (ground truth from a live install): MEMORY.md and
+        # USER.md live under memories/; SOUL.md sits top-level (with a
+        # memories/ copy on some installs). Probe top-level first, then
+        # memories/ — the migration previously read ONLY top-level, so
+        # memories from a stock hermes silently never migrated.
+        s = src / name
+        if not s.exists():
+            _alt = src / "memories" / name
+            if _alt.exists():
+                s = _alt
         if not s.exists():
             results["items"][key] = "skipped (absent)"
             continue
+        t = cfg_dir / name
         _backup(t, backup_root)
         status, added = _merge_md(s, t)
         results["items"][key] = f"{status} (+{added} entries)"
@@ -230,23 +243,46 @@ def run(include: set[str] | None = None, exclude: set[str] | None = None, dry_ru
             results["items"]["skills"] = "skipped (absent)"
 
     if "sessions" in selected:
+        # FULL history (user directive 2026-09-05): the session store is
+        # sessions/ (sessions.json = directory->session-name mapping +
+        # request dumps) PLUS state.db at the home root (the sqlite message
+        # history the gateway actually reads). Copy both, non-destructive.
         s = src / "sessions"
+        copied = 0
         if s.is_dir():
-            dest = tgt / "hermes" / "sessions"
+            dest = tgt / "sessions"
             dest.mkdir(parents=True, exist_ok=True)
-            copied = sum(
-                1
-                for f in s.glob("*.json")
-                if not (dest / f.name).exists() and not shutil.copy2(f, dest / f.name)
-            )
-            results["items"]["sessions"] = f"copied {copied} session(s)"
+            for f in s.iterdir():
+                if f.suffix == ".json" and not (dest / f.name).exists():
+                    shutil.copy2(f, dest / f.name)
+                    copied += 1
+        # message history DB
+        db = src / "state.db"
+        db_copied = False
+        if db.exists():
+            ddest = tgt / "state.db"
+            if not ddest.exists():
+                shutil.copy2(db, ddest)
+                db_copied = True
+        if copied or db_copied or s.is_dir():
+            results["items"]["sessions"] = (
+                f"copied {copied} session file(s)"
+                + (" + state.db history" if db_copied else "")
+                or "")
         else:
             results["items"]["sessions"] = "skipped (absent)"
 
     if "cron" in selected:
+        # USER DIRECTIVE (2026-09-05): jobs.json COPIES to the Mercury
+        # top-level home (~/.mercury/cron/jobs.json) — the store the engine
+        # actually reads (get_hermes_home() -> ~/.mercury; jobs.py CRON_DIR =
+        # HERMES_DIR/cron). The old hermes/cron target was never consulted:
+        # the cron list tool "worked" only because it read the SOURCE
+        # ~/.hermes store through ambient env. Also bring the cron scripts
+        # directory (job scripts + output dirs referenced by jobs.json).
         s = src / "cron" / "jobs.json"
         if s.exists():
-            dest = tgt / "hermes" / "cron" / "jobs.json"
+            dest = tgt / "cron" / "jobs.json"
             dest.parent.mkdir(parents=True, exist_ok=True)
             _backup(dest, backup_root)
             try:
@@ -256,7 +292,20 @@ def run(include: set[str] | None = None, exclude: set[str] | None = None, dry_ru
                 added = [j for j in data.get("jobs", []) if j.get("id") not in have]
                 existing["jobs"].extend(added)
                 dest.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-                results["items"]["cron"] = f"merged (+{len(added)} job(s))"
+                # scripts referenced by cron jobs live beside the store
+                for extra in ("scripts", "output"):
+                    es = src / "cron" / extra
+                    if es.is_dir():
+                        ed = tgt / "cron" / extra
+                        ed.mkdir(parents=True, exist_ok=True)
+                        for f in es.iterdir():
+                            d = ed / f.name
+                            if not d.exists():
+                                if f.is_dir():
+                                    shutil.copytree(f, d, symlinks=True)
+                                else:
+                                    shutil.copy2(f, d)
+                results["items"]["cron"] = f"merged (+{len(added)} job(s)) -> ~/.mercury/cron/"
             except Exception as exc:
                 results["items"]["cron"] = f"error: {exc}"
         else:

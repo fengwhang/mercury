@@ -3441,8 +3441,10 @@ def _run_setup_wizard_impl(args):
                 print()
                 print_header("Hermes Installation Detected")
                 print_info(f"Found hermes data at {_hp['source']}")
-                print_info("Mercury can import your SOUL/MEMORY/USER, config, API keys, skills,")
-                print_info("sessions, cron jobs, and OAuth logins — preview first, nothing overwritten.")
+                print_info("Mercury can import your SOUL/MEMORY/USER (incl. the memories/ store),")
+                print_info("config, API keys, skills, full session history (state.db + sessions/),")
+                print_info("cron jobs (-> ~/.mercury/cron/jobs.json + scripts), and OAuth logins —")
+                print_info("preview first, nothing overwritten.")
                 print()
                 if prompt_yes_no("Import from your existing hermes install?", default=True):
                     _hr = hermes_run()
