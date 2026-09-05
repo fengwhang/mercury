@@ -8,6 +8,7 @@ import { splitComposerHighlights } from '../domain/composerHighlights.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
+import { getUiState } from '../app/uiStore.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
   boundedLiveRenderText,
@@ -73,7 +74,14 @@ export const MessageLine = memo(function MessageLine({
   const thinkingMode = sectionMode('thinking', detailsMode, sections, detailsModeCommandOverride)
   const toolsMode = sectionMode('tools', detailsMode, sections, detailsModeCommandOverride)
   const activityMode = sectionMode('activity', detailsMode, sections, detailsModeCommandOverride)
-  const thinking = msg.thinking?.trim() ?? ''
+  // MERCURY-OMP PATCH (user directive: NO reasoning by default): the
+  // legacy showReasoning toggle gates the LIVE stream, but the sealed
+  // message's thinking content rendered through sectionMode regardless.
+  // When showReasoning is off, treat thinking as hidden at the RENDER
+  // level — both the ToolTrail's Thinking panel and the assistant inline
+  // block. MoA reference blocks are exempt (opt-in process, not private
+  // reasoning). This is the one choke point for every thinking render.
+  const thinking = msg.isMoaReference || getUiState().showReasoning ? msg.thinking?.trim() ?? '' : ''
 
   // One blank line above this block iff it opens a new visual group relative
   // to the block directly above it (`prev`) — the flex-grouping rule. Applied

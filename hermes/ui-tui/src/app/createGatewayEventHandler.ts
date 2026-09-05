@@ -810,11 +810,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const text = ev.payload?.text
 
         if (text !== undefined) {
-          const value = String(text)
-          scheduleThinkingStatus(value || statusFromBusy())
+          // MERCURY-OMP PATCH (NO reasoning by default — user directive):
+          // the live thinking text used to stream into the STATUS LINE
+          // unconditionally. With showReasoning off, show only the neutral
+          // busy verb — reasoning goes to the (gated) reasoning channel.
+          if (getUiState().showReasoning) {
+            scheduleThinkingStatus(String(text) || statusFromBusy())
+          } else {
+            scheduleThinkingStatus(statusFromBusy())
+          }
 
-          if (value) {
-            turnController.recordReasoningDelta(value)
+          if (text) {
+            turnController.recordReasoningDelta(String(text))
           }
         }
 
