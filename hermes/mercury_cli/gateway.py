@@ -3993,6 +3993,18 @@ def _append_node_dir_for_service(
 
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
+    # HERMES-OMP PATCH (ONE home / ONE env): the launcher (bin/mercury)
+    # forces MERCURY_HOME + MERCURY_CONFIG; the SERVICE unit must pin the
+    # same trio or the gateway resolves env/config against HERMES_HOME
+    # alone — reading ~/.mercury/hermes/.env (never written under the
+    # ONE-env rule) instead of THE ~/.mercury/.env, and engine-local
+    # config.yaml instead of the unified file. Derived from the resolved
+    # engine home (…/hermes -> parent) so profile/custom homes keep their
+    # relative layout. Set BEFORE the branches that reassign mercury_home.
+    _trio_root = get_hermes_home()
+    _trio_mercury = _trio_root.parent if _trio_root.name == "hermes" else _trio_root
+    mercury_env_home = str(_trio_mercury)
+    mercury_env_config = str(_trio_mercury / "config.yaml")
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
@@ -4073,6 +4085,8 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={mercury_home}"
+Environment="MERCURY_HOME={mercury_env_home}"
+Environment="MERCURY_CONFIG={mercury_env_config}"
 Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
 RestartSec=5
@@ -4112,6 +4126,8 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={mercury_home}"
+Environment="MERCURY_HOME={mercury_env_home}"
+Environment="MERCURY_CONFIG={mercury_env_config}"
 Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
 RestartSec=5
