@@ -1330,7 +1330,9 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
             preview = (s.get("preview") or "").strip()
             source = s.get("source", "")[:6]
             last_active = _relative_time(s.get("last_active"))
-            sid = s["id"][:18]
+            # FULL id — truncating here made every copy-pasted id a
+            # doomed prefix for 'mercury -c <id>' (exact-match lookup miss).
+            sid = s["id"]
             status = _session_status_tag(s.get("_status"))
             msgs = s.get("message_count")
             msgs_str = str(msgs) if isinstance(msgs, int) else "-"
@@ -1820,6 +1822,24 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
         if session:
             resolved_id = session["id"]
         else:
+            # MERCURY-OMP PATCH (prefix resume): 'mercury sessions list'
+            # truncates IDs in its table (18 chars), so a copy-pasted id is
+            # a PREFIX by construction. Match any session whose id starts
+            # with the input; require uniqueness — an ambiguous prefix
+            # resolves to nothing (fall through to title matching) rather
+            # than resuming the wrong session.
+            try:
+                with db._read_ctx() as conn:
+                    rows = conn.execute(
+                        "SELECT id FROM sessions WHERE id LIKE ? || '%'",
+                        (name_or_id,),
+                    ).fetchall()
+                ids = [r[0] for r in rows]
+                if len(ids) == 1:
+                    resolved_id = ids[0]
+            except Exception:
+                pass
+        if not resolved_id:
             # Try as title (with auto-latest for lineage)
             resolved_id = db.resolve_session_by_title(name_or_id)
 
