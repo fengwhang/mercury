@@ -936,6 +936,15 @@ export function normalizeContinueSessionArgs(parsed: Args, rawArgs?: readonly st
 	parsed.messages.splice(messageIndex, 1);
 }
 
+// HERMES-OMP PATCH (Mercury embedding): the session-not-found hint must
+// reference `mercury omp --resume` when embedded (MERCURY_HOME exported by
+// the passthrough), never a bare `omp …` command the user cannot run.
+function resumeHint(): string {
+	const mercury = !!($env.MERCURY_HOME ?? "").trim();
+	const base = mercury ? "mercury omp" : "omp";
+	return `Run \`${base} --resume\` without an argument to pick from recent sessions, or \`${base}\` to start a new one.`;
+}
+
 /** Resolves CLI session flags into an existing, forked, in-memory, or cancelled session manager. */
 export async function createSessionManager(
 	parsed: Args,
@@ -955,7 +964,7 @@ export async function createSessionManager(
 		if (!match) {
 			throw new SessionResolutionError(
 				`Session "${forkSource}" not found.`,
-				"Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one.",
+				resumeHint(),
 			);
 		}
 		return await SessionManager.forkFrom(match.session.path, cwd, parsed.sessionDir);
@@ -975,7 +984,7 @@ export async function createSessionManager(
 		if (!match) {
 			throw new SessionResolutionError(
 				`Session "${sessionArg}" not found.`,
-				"Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one.",
+				resumeHint(),
 			);
 		}
 		if (match.scope === "local") {

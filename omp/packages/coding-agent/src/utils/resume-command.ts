@@ -1,4 +1,4 @@
-import { APP_NAME, getActiveProfile } from "@oh-my-pi/pi-utils";
+import { $env, APP_NAME, getActiveProfile } from "@oh-my-pi/pi-utils";
 
 /**
  * Build the shell command that resumes a session by id.
@@ -10,9 +10,16 @@ import { APP_NAME, getActiveProfile } from "@oh-my-pi/pi-utils";
  * <name>` so the emitted hint is a command the user can paste verbatim
  * (issue #9018). Profile names are validated against a strict charset
  * (`normalizeProfileName`), so no shell quoting is required.
+ *
+ * HERMES-OMP PATCH (Mercury embedding): when running inside Mercury
+ * (MERCURY_HOME set — always exported by the `mercury omp` passthrough and
+ * the delegate spawner), the user-facing command is `mercury omp …`, not a
+ * bare `omp …` the user cannot run: omp is embedded, never a peer product.
  */
 export function resumeCommand(sessionId: string): string {
+	const mercury = !!($env.MERCURY_HOME ?? "").trim();
 	const profile = getActiveProfile();
 	const profileFlag = profile ? `--profile ${profile} ` : "";
+	if (mercury) return `mercury omp ${profileFlag}--resume ${sessionId}`;
 	return `${APP_NAME} ${profileFlag}--resume ${sessionId}`;
 }
