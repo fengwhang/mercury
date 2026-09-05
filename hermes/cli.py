@@ -483,7 +483,11 @@ def load_cli_config() -> Dict[str, Any]:
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
-            "reasoning_effort": "",
+            # MERCURY-OMP PATCH (user directive: NO reasoning by default):
+            # empty = provider default, and GLM/zai thinking-mode defaults ON
+            # at the API — so the request itself must say none. Display gates
+            # alone can never fix a model that thinks by default.
+            "reasoning_effort": "none",
             "service_tier": "",
             # Built-in personalities live in mercury_cli.personality
             # (BUILTIN_PERSONALITIES) — the single owner. Entries here are
@@ -500,9 +504,12 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_max_assistant_chars": 200,
             "resume_max_assistant_lines": 3,
             "resume_skip_tool_only": True,
-            # Live reasoning display default ON — keep in sync with
-            # mercury_cli/config.py DEFAULT_CONFIG (display.show_reasoning).
-            "show_reasoning": True,
+            # MERCURY-OMP PATCH (user directive: NO reasoning by default):
+            # hermes upstream shows no reasoning by default in the classic
+            # REPL experience users expect; Mercury keeps thinking OFF until
+            # the user opts in (/reasoning or display.show_reasoning: true).
+            # Keep in sync with mercury_cli/config.py DEFAULT_CONFIG.
+            "show_reasoning": False,
             "reasoning_full": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
@@ -5259,7 +5266,7 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
-        self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", True)
+        self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         # reasoning_full: when reasoning display is on, print the post-response
         # recap box uncollapsed instead of clamping to the first 10 lines.
         self.reasoning_full = CLI_CONFIG["display"].get("reasoning_full", False)
@@ -20709,7 +20716,11 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
             'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
-            'status-bar-session-title': 'bg:#FFD700 #1a1a2e bold',
+            # MERCURY-OMP PATCH: session-title badge = Mercury pink, not gold.
+            # The classic REPL bar paints its own dark bg (light-mode remap
+            # skips explicit-bg styles), so a pink foreground is correct in
+            # both palettes. Deep-pink family matches the TUI session label.
+            'status-bar-session-title': 'bg:#1a1a2e #E91E63 bold',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges
