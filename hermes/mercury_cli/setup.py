@@ -1097,20 +1097,25 @@ def _prompt_mercury_slots(config: dict) -> None:
         )
         return chosen or current
 
-    # Fallback — required by policy, must differ from default.
+    # Fallback — OPTIONAL (user directive 2026-09-05: "i should be able to
+    # skip the first order fallback too"): cancel/skip leaves it unset; a
+    # configured fallback must differ from the default. Skipping the
+    # first-order fallback ALSO skips the second-order ask (asking for a
+    # second-order fallback with no first-order one is meaningless).
     # NO default seeding (user directive): on a fresh config the picker must
     # show a neutral menu — nothing marked as 'already selected'. Only a
     # genuinely configured slot may appear as current.
     while True:
-        fallback = _pick("Select fallback model (used when the default fails mid-turn):", slots["fallback"])
+        fallback = _pick("Select fallback model (used when the default fails mid-turn; empty to skip):", slots["fallback"])
         if not fallback:
-            print_warning("Fallback is required (fail-hard: no fallback = no start).")
-            continue
-        if f"{provider}/{fallback}" == slots["default"] or fallback == slots["default"]:
+            fallback = ""
+            print_info("Fallback skipped — no mid-turn failover will be configured.")
+            break
+        fallback = f"{provider}/{fallback}" if provider and "/" not in fallback else fallback
+        if fallback == slots["default"]:
             print_warning("Fallback must differ from the default model.")
             continue
         break
-    fallback = f"{provider}/{fallback}" if provider and "/" not in fallback else fallback
 
     # Ordered ordinary fallback CHAIN (user directive 2026-09-05: parity with
     # the delegate side). After the primary fallback, offer additional retry
@@ -1120,15 +1125,19 @@ def _prompt_mercury_slots(config: dict) -> None:
     # SECOND-ORDER ONLY (user directive 2026-09-05): exactly one extra
     # fallback after the primary — no endless loop. Empty selection skips.
     fallback_chain = []
-    while not fallback_chain:
-        extra = _pick("Select second-order fallback (used when the MAIN fallback also fails; empty to skip):", "")
-        if not extra:
-            break
-        extra = f"{provider}/{extra}" if provider and "/" not in extra else extra
-        if extra == fallback or extra == slots["default"]:
-            print_info("Must differ from the default and the main fallback — pick again.")
-            continue
-        fallback_chain.append(extra)
+    if fallback:
+        while not fallback_chain:
+            extra = _pick("Select second-order fallback (used when the MAIN fallback also fails; empty to skip):", "")
+            if not extra:
+                break
+            # prefix FIRST, THEN compare — comparing the bare id against the
+            # prefixed slot values let a duplicate slip through (reinstall
+            # artifact: 'delegate_fallback_chain contains duplicates').
+            extra = f"{provider}/{extra}" if provider and "/" not in extra else extra
+            if extra == fallback or extra == slots["default"]:
+                print_info("Must differ from the default and the main fallback — pick again.")
+                continue
+            fallback_chain.append(extra)
 
     print_info("The next two slots are for SUBAGENTS: coding tasks fan out to omp")
     print_info("subagents, and these set which model those subagents run on.")
@@ -1139,9 +1148,10 @@ def _prompt_mercury_slots(config: dict) -> None:
     delegate_model = _pick("Select delegate model (the model omp SUBAGENTS run on):", slots["delegate_model"])
     delegate_model = f"{provider}/{delegate_model}" if provider and "/" not in delegate_model else delegate_model
 
-    # Delegate fallback — NO seeding (user directive).
-    delegate_fallback = _pick("Select delegate fallback (subagent retry model):", slots["delegate_fallback"])
-    delegate_fallback = f"{provider}/{delegate_fallback}" if provider and "/" not in delegate_fallback else delegate_fallback
+    # Delegate fallback — OPTIONAL (user directive 2026-09-05); cancel/skip
+    # leaves it unset. NO seeding (user directive).
+    delegate_fallback = _pick("Select delegate fallback (subagent retry model; empty to skip):", slots["delegate_fallback"])
+    delegate_fallback = f"{provider}/{delegate_fallback}" if (delegate_fallback and provider and "/" not in delegate_fallback) else delegate_fallback
 
     # Ordered fallback CHAIN (user directive 2026-09-05): after the primary
     # fallback, offer additional retry models in order. Empty selection ends
@@ -1150,15 +1160,16 @@ def _prompt_mercury_slots(config: dict) -> None:
     # SECOND-ORDER ONLY (user directive 2026-09-05): exactly one extra
     # delegate fallback — no endless loop. Empty selection skips.
     delegate_chain = []
-    while not delegate_chain:
-        extra = _pick("Select second-order delegate fallback (used when the SUBAGENT fallback also fails; empty to skip):", "")
-        if not extra:
-            break
-        extra = f"{provider}/{extra}" if provider and "/" not in extra else extra
-        if extra == delegate_fallback or extra == delegate_model:
-            print_info("Must differ from the delegate model and its fallback — pick again.")
-            continue
-        delegate_chain.append(extra)
+    if delegate_fallback:
+        while not delegate_chain:
+            extra = _pick("Select second-order delegate fallback (used when the SUBAGENT fallback also fails; empty to skip):", "")
+            if not extra:
+                break
+            extra = f"{provider}/{extra}" if provider and "/" not in extra else extra
+            if extra == delegate_fallback or extra == delegate_model:
+                print_info("Must differ from the delegate model and its fallback — pick again.")
+                continue
+            delegate_chain.append(extra)
 
     # Write the shared models: block (line-oriented, omp_sync-compatible).
     from mercury_cli.omp_sync import _write_slots
@@ -1169,8 +1180,8 @@ def _prompt_mercury_slots(config: dict) -> None:
             "fallback": fallback,
             "delegate_model": delegate_model,
             "delegate_fallback": delegate_fallback,
-            "delegate_fallback_chain": ([delegate_fallback] + delegate_chain) if delegate_chain else [],
-            "fallback_chain": ([fallback] + fallback_chain) if fallback_chain else [],
+            "delegate_fallback_chain": ([delegate_fallback] + delegate_chain) if (delegate_fallback and delegate_chain) else [],
+            "fallback_chain": ([fallback] + fallback_chain) if (fallback and fallback_chain) else [],
         }
     )
     print()

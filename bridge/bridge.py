@@ -86,13 +86,13 @@ def validate(slots, need_delegate=False):
     errors = []
     if not slots["default"]:
         errors.append("models.default is empty — set the main session model")
-    if not slots["fallback"]:
-        errors.append("models.fallback is empty — REQUIRED; refusing to run without an explicit fallback")
+    # OPTIONAL fallbacks (user directive 2026-09-05): the wizard allows
+    # skipping the first-order fallbacks at both scopes. An unset fallback is
+    # a legitimate "no mid-turn failover configured" choice — NOT an error.
+    # The chain invariants below still fully apply when values ARE set.
     if need_delegate:
         if not slots["delegate_model"]:
             errors.append("models.delegate_model is empty — required for delegation")
-        if not slots["delegate_fallback"]:
-            errors.append("models.delegate_fallback is empty — REQUIRED for delegation")
     if slots["default"] and slots["fallback"] and slots["default"] == slots["fallback"]:
         errors.append("models.default == models.fallback — fallback must be a distinct model")
     if (slots["delegate_model"] and slots["delegate_fallback"]
@@ -110,10 +110,13 @@ def validate(slots, need_delegate=False):
         if slots["fallback"] and fchain[0] != slots["fallback"]:
             errors.append("models.fallback_chain must include models.fallback as its first entry")
     chain = slots.get("delegate_fallback_chain") or []
-    if len(set(chain)) != len(chain):
-        errors.append("models.delegate_fallback_chain contains duplicates")
-    if slots["delegate_model"] and slots["delegate_model"] in chain:
-        errors.append("models.delegate_fallback_chain must not contain the delegate model itself")
+    if chain:
+        if len(set(chain)) != len(chain):
+            errors.append("models.delegate_fallback_chain contains duplicates")
+        if slots["delegate_model"] and slots["delegate_model"] in chain:
+            errors.append("models.delegate_fallback_chain must not contain the delegate model itself")
+        if slots["delegate_fallback"] and chain[0] != slots["delegate_fallback"]:
+            errors.append("models.delegate_fallback_chain must include models.delegate_fallback as its first entry")
     return errors
 
 
