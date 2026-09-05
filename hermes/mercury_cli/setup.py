@@ -3461,6 +3461,30 @@ def _run_setup_wizard_impl(args):
         except Exception as _mexc:
             logger.debug("hermes migration offer failed: %s", _mexc, exc_info=True)
 
+        # MERCURY-OMP PATCH (omp migration offer, user directive): mirror the
+        # hermes offer for an existing stock omp install (~/.omp) — sessions,
+        # custom models, non-model settings, MCP/SSH defs, themes.
+        try:
+            from mercury_cli import migrate_omp as _mo
+            _op = _mo.plan()
+            if _op.get("source_exists"):
+                print()
+                print_header("omp Installation Detected")
+                print_info(f"Found omp data at {_op['source']}")
+                print_info("Mercury can import your omp sessions (resumable history), custom")
+                print_info("models, non-model settings (theme, web-search order — never the")
+                print_info("bridge-owned model/approval keys), MCP + SSH definitions, and themes —")
+                print_info("preview first, nothing overwritten.")
+                print()
+                if prompt_yes_no("Import from your existing omp install?", default=True):
+                    _orr = _mo.run()
+                    for _k, _v in _orr.get("items", {}).items():
+                        print_info(f"   {_k}: {_v}")
+                    print_success("omp data imported.")
+                    print_info("Resumable via 'mercury omp --resume' after setup.")
+        except Exception as _oexc:
+            logger.debug("omp migration offer failed: %s", _oexc, exc_info=True)
+
         setup_mode = prompt_choice(
             "How would you like to set up Mercury?",
             [

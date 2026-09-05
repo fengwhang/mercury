@@ -13328,6 +13328,38 @@ def main():
     mh_parser.set_defaults(func=_cmd_migrate_hermes)
 
     # =========================================================================
+    # migrate-omp command (MERCURY-OMP PATCH: import from stock omp)
+    # =========================================================================
+    from mercury_cli import migrate_omp as _mom
+
+    mo_parser = subparsers.add_parser(
+        "migrate-omp",
+        help="Import data from an existing stock omp install (~/.omp)",
+        description=(
+            "Non-destructive import from ~/.omp (or $OMP_SOURCE): omp "
+            "sessions (resumable history), custom models.yml, non-model "
+            "config.yml settings (theme, web-search order; bridge-owned "
+            "keys are never imported), mcp.json + ssh.json definitions, "
+            "custom themes. Dry-run by default; --apply writes (backups "
+            "taken)."
+        ),
+    )
+    mo_parser.add_argument("--dry-run", action="store_true", help="Preview only (default)")
+    mo_parser.add_argument("--apply", action="store_true", help="Execute the migration")
+    mo_parser.add_argument("--include", nargs="*", help="Items: " + ", ".join(_mom.ITEMS))
+    mo_parser.add_argument("--exclude", nargs="*", help="Items to skip")
+    def _cmd_migrate_omp(args):
+        import json as _json
+        inc = set(args.include) if args.include else None
+        exc = set(args.exclude) if args.exclude else None
+        if args.apply:
+            result = _mom.run(include=inc, exclude=exc)
+        else:
+            result = _mom.run(include=inc, exclude=exc, dry_run=True)
+        print(_json.dumps(result, indent=2))
+    mo_parser.set_defaults(func=_cmd_migrate_omp)
+
+    # =========================================================================
     # model command  (parser built in mercury_cli/subcommands/model.py)
     # =========================================================================
     build_model_parser(subparsers, cmd_model=cmd_model)
