@@ -69,7 +69,17 @@ def _config_path() -> Path:
     return Path.home() / ".mercury" / "config.yaml"
 
 
-DEFAULT_TIMEOUT = int(os.environ.get("HERMES_OMP_TIMEOUT", "1800"))
+# HERMES-OMP PATCH (user directive 2026-09-05: NO LIMITS): the delegation
+# task wall is REMOVED. Long coding sessions are good; a host-side clock
+# killing a working child is backwards. None = wait until the child ends
+# (its own process, its own API errors, or user interrupt all still apply).
+# HERMES_OMP_TIMEOUT remains available as an explicit opt-in for users who
+# WANT a wall on a specific box — unset means unlimited.
+DEFAULT_TIMEOUT = (
+    float(os.environ["HERMES_OMP_TIMEOUT"])
+    if os.environ.get("HERMES_OMP_TIMEOUT", "").strip()
+    else None
+)
 
 # --- process-lifetime caches -------------------------------------------------
 _env_cache: Dict[str, Any] = {"mtime": None, "env": None, "err": None}
@@ -521,7 +531,7 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                     prompt=prompt,
                     workdir=workdir,
                     env=rpc_env,
-                    timeout=float(timeout),
+                    timeout=(float(timeout) if timeout is not None else None),
                     startup_timeout=RPC_STARTUP_TIMEOUT,
                     batch_procs=batch_procs,
                     approval_callback=_parent_approval_callback(),
@@ -771,7 +781,9 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     ]
     workdir = _resolve_workspace_hint(parent_agent)
     timeout = DEFAULT_TIMEOUT
-    max_workers = max(1, min(len(tasks), _get_max_concurrent_children()))
+    # HERMES-OMP PATCH (NO LIMITS, user directive 2026-09-05): no cap on
+    # the number of concurrent subagents — every task gets its own worker.
+    max_workers = max(1, len(tasks))
     is_subagent = getattr(parent_agent, "_delegate_depth", 0) > 0
 
     if is_subagent:

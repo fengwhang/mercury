@@ -397,10 +397,18 @@ class _BoundedHistory(Generic[THistoryItem]):
     limit: int | None
     items: list[THistoryItem] = field(default_factory=list)
     offset: int = 0
+    # HERMES-OMP PATCH (O(n^2) wait loop): absolute index of the most recent
+    # terminal agent_end appended to THIS ring (reader-thread side). The
+    # waiter compares two integers instead of snapshotting + scanning the
+    # whole history per wakeup — with N streamed events the old wait loop
+    # did N full copies+scans (quadratic), which is exactly the super-linear
+    # parent CPU/RAM blowup seen at 5 concurrent thinking children.
+    terminal_agent_end_index: int = -1
 
     def clear(self) -> None:
         self.items.clear()
         self.offset = 0
+        self.terminal_agent_end_index = -1
 
     def append(self, item: THistoryItem) -> None:
         self.items.append(item)
@@ -1346,7 +1354,16 @@ class RpcClient:
         start_async_error_index: int,
         timeout: float | None = None,
     ) -> tuple[RpcAgentEvent, ...]:
-        deadline = time.monotonic() + (timeout if timeout is not None else 60.0)
+        # HERMES-OMP PATCH (NO LIMITS, user directive 2026-09-05): timeout
+        # None means NO deadline — wait for the child's terminal event
+        # however long it takes (user interrupt, process exit, and async
+        # errors all still break the wait). Only an explicit numeric
+        # timeout (user opt-in) sets a wall.
+        deadline = (
+            time.monotonic() + timeout
+            if timeout is not None
+            else None
+        )
         with self._event_condition:
             while True:
                 if self._closed_error is not None:
@@ -1367,24 +1384,29 @@ class RpcClient:
                 if len(async_errors) > 0:
                     raise async_errors[0]
 
-                event_payloads = self._events.snapshot_from(start_index)
-                if any(
-                    payload.get("type") == "agent_end"
-                    and payload.get("isTerminal") is not False
-                    for payload in event_payloads
-                ):
+                # HERMES-OMP PATCH (O(n^2) -> O(n)): per-wakeup check is ONE
+                # integer compare against the reader-maintained terminal
+                # index. The single terminal snapshot happens only when the
+                # compare says the turn is DONE — no more copy+scan of the
+                # full history on every streamed delta.
+                if self._events.terminal_agent_end_index >= start_index:
+                    event_payloads = self._events.snapshot_from(start_index)
                     events = tuple(
                         cast(RpcAgentEvent, parse_notification(payload))
                         for payload in event_payloads
                     )
                     return events
 
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise RpcTimeoutError(
-                        f"Timed out waiting for agent_end. Stderr: {self.stderr}"
-                    )
-                self._event_condition.wait(remaining)
+                if deadline is None:
+                    # No wall: sleep until the reader thread notifies.
+                    self._event_condition.wait(0.5)
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise RpcTimeoutError(
+                            f"Timed out waiting for agent_end. Stderr: {self.stderr}"
+                        )
+                    self._event_condition.wait(remaining)
 
     def _request(
         self, command_type: str, *, _timeout: float | None = None, **payload: JsonValue
@@ -2113,6 +2135,13 @@ class RpcClient:
     def _append_event(self, payload: JsonObject) -> None:
         with self._event_condition:
             self._events.append(_clone_json_object(payload))
+            # HERMES-OMP PATCH (O(n^2) wait loop): stamp terminal agent_end
+            # at append time so waiters can check one int per wakeup.
+            if (
+                payload.get("type") == "agent_end"
+                and payload.get("isTerminal") is not False
+            ):
+                self._events.terminal_agent_end_index = self._events.current_index() - 1
             self._event_condition.notify_all()
 
     def _append_async_error(self, error: BaseException) -> None:

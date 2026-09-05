@@ -367,7 +367,9 @@ def run_omp_task_rpc(
     """
     child = OmpRpcChild(
         omp_path=omp_path, model=model, workdir=workdir,
-        env=env, approval_timeout=min(timeout, 600.0),
+        # NO LIMITS: None task timeout -> no approval clock either.
+        env=env,
+        approval_timeout=(min(timeout, 600.0) if timeout is not None else None),
         command_override=command_override,
         startup_timeout=startup_timeout,
         approval_callback=approval_callback,
