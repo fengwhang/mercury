@@ -242,11 +242,21 @@ fetch_tarball() {
         # the binary it needs (no dead weight in the download).
         if [[ "$TARBALL_URL" == http* ]] && [[ "$TARBALL_URL" != *"-arm64.tar.gz" ]] \
             && { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; }; then
-            if curl -fsSI --connect-timeout 10 "$(echo "$TARBALL_URL" | sed 's/\.tar\.gz$/-arm64.tar.gz/')" >/dev/null 2>&1; then
-                TARBALL_URL="$(echo "$TARBALL_URL" | sed 's/\.tar\.gz$/-arm64.tar.gz/')"
+            # Normalize FIRST: strip any existing arch suffix (-x64) so the
+            # rewrite never stacks suffixes (the x64-arm64 404 bug), then
+            # append -arm64. Handles both X.tar.gz and X-x64.tar.gz inputs.
+            _arm64_url="$(echo "$TARBALL_URL" | sed -E 's/-x64\.tar\.gz$/.tar.gz/; s/\.tar\.gz$/-arm64.tar.gz/')"
+            # Probe robustly: a plain HEAD (-I) is flaky on some networks/
+            # proxies; fall back to a 1-byte ranged GET, which exercises the
+            # same redirect chain the real download will use.
+            if curl -fsSI --connect-timeout 10 "$_arm64_url" >/dev/null 2>&1 \
+               || curl -fsSL --connect-timeout 10 --max-time 20 -r 0-0 -o /dev/null "$_arm64_url"; then
+                TARBALL_URL="$_arm64_url"
                 log_info "arm64 host — using the aarch64 tarball"
             else
-                log_warn "no -arm64 asset published; falling back to the default tarball"
+                log_warn "could not confirm the -arm64 asset (network probe failed);"
+                log_warn "retrying with it anyway — download will fail loudly if truly absent"
+                TARBALL_URL="$_arm64_url"
             fi
         fi
         log_info "fetching distribution tarball"
