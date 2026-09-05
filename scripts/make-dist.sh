@@ -18,9 +18,17 @@ mkdir -p "$STAGE/mercury"
 git archive HEAD | tar -x -C "$STAGE/mercury"
 
 echo "== injecting prebuilt artifacts (gitignored, built by the release host)"
-# omp compiled binary (bun build + natives; 161MB)
+# omp compiled binaries (bun build + natives; ~161MB each). BOTH arches ship:
+# x86-64 (dist/omp) and arm64 (dist/omp-linux-arm64, cross-compiled with
+# CROSS_TARGET=linux-arm64 using the upstream pi-natives-linux-arm64 prebuild).
+# The installer selects per-host arch at install time.
 mkdir -p "$STAGE/mercury/omp/packages/coding-agent/dist"
 cp omp/packages/coding-agent/dist/omp "$STAGE/mercury/omp/packages/coding-agent/dist/omp"
+if [ -f omp/packages/coding-agent/dist/omp-linux-arm64 ]; then
+    cp omp/packages/coding-agent/dist/omp-linux-arm64 "$STAGE/mercury/omp/packages/coding-agent/dist/omp-linux-arm64"
+else
+    echo "WARNING: no arm64 binary found — tarball will be x86-only (arm64 hosts will need a local build)" >&2
+fi
 # ui-tui bundle (esbuild)
 mkdir -p "$STAGE/mercury/hermes/ui-tui/dist"
 cp hermes/ui-tui/dist/entry.js "$STAGE/mercury/hermes/ui-tui/dist/entry.js"

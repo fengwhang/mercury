@@ -275,8 +275,42 @@ fetch_tarball() {
     fi
     cd "$INSTALL_ROOT"
     [ -f bin/mercury ] || { log_error "distribution incomplete: bin/mercury missing"; exit 1; }
-    [ -x omp/packages/coding-agent/dist/omp ] || { log_error "incomplete: prebuilt omp binary missing"; exit 1; }
+    select_omp_binary
     [ -f hermes/ui-tui/dist/entry.js ] || { log_error "incomplete: ui-tui bundle missing"; exit 1; }
+}
+
+# ============================================================================
+# omp binary: arch selection (user directive — arm64 hosts must install too).
+# The tarball ships BOTH prebuilts (x86-64 as dist/omp, arm64 as
+# dist/omp-linux-arm64). After extraction we pick the one matching the host
+# and hardlink/copy it to dist/omp — every downstream surface (launcher,
+# smoke test, delegation) only ever looks for dist/omp.
+# ============================================================================
+select_omp_binary() {
+    local DIST="$INSTALL_ROOT/omp/packages/coding-agent/dist"
+    local BIN=""
+    case "$(uname -m)" in
+        x86_64|amd64)
+            [ -x "$DIST/omp" ] && BIN="$DIST/omp" ;;
+        arm64|aarch64)
+            if [ -x "$DIST/omp-linux-arm64" ]; then
+                BIN="$DIST/omp-linux-arm64"
+                log_info "arm64 host — using the prebuilt aarch64 omp binary"
+            elif [ -x "$DIST/omp" ] && [ "$(dd if="$DIST/omp" bs=1 skip=18 count=1 2>/dev/null | od -An -tuC | tr -d ' ')" = "183" ]; then
+                # ELF e_machine LSB at offset 18: 183 (0xB7) = EM_AARCH64 (measured)
+                BIN="$DIST/omp"   # single-arch tarball that happens to be arm64
+            fi
+            ;;
+    esac
+    if [ -z "$BIN" ]; then
+        log_error "no omp binary for $(uname -m) in this tarball"
+        log_info  "run from a checkout: cd omp/packages/coding-agent && bun install && bun run build"
+        exit 1
+    fi
+    if [ "$BIN" != "$DIST/omp" ]; then
+        ln -f "$BIN" "$DIST/omp" 2>/dev/null || cp -f "$BIN" "$DIST/omp"
+    fi
+    [ -x "$DIST/omp" ] || { log_error "incomplete: prebuilt omp binary missing"; exit 1; }
 }
 
 setup_venv() {
