@@ -483,11 +483,12 @@ def load_cli_config() -> Dict[str, Any]:
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
-            # MERCURY-OMP PATCH (user directive: NO reasoning by default):
-            # empty = provider default, and GLM/zai thinking-mode defaults ON
-            # at the API — so the request itself must say none. Display gates
-            # alone can never fix a model that thinks by default.
-            "reasoning_effort": "none",
+            # MERCURY-OMP PATCH (user directive 2026-09-05, supersedes the
+            # earlier OFF experiment — that was nullclaw, NOT Mercury):
+            # thinking must ABSOLUTELY be ON for a dev harness. Empty =
+            # provider default, which for GLM/zai means thinking enabled.
+            # Do not set "none" here again.
+            "reasoning_effort": "",
             "service_tier": "",
             # Built-in personalities live in mercury_cli.personality
             # (BUILTIN_PERSONALITIES) — the single owner. Entries here are
@@ -504,11 +505,12 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_max_assistant_chars": 200,
             "resume_max_assistant_lines": 3,
             "resume_skip_tool_only": True,
-            # MERCURY-OMP PATCH (user directive: NO reasoning by default):
-            # hermes upstream shows no reasoning by default in the classic
-            # REPL experience users expect; Mercury keeps thinking OFF until
-            # the user opts in (/reasoning or display.show_reasoning: true).
-            # Keep in sync with mercury_cli/config.py DEFAULT_CONFIG.
+            # MERCURY-OMP PATCH (display only, NOT a thinking switch):
+            # reasoning RUNS by default now (agent.reasoning_effort = ""
+            # = provider default = ON). show_reasoning only controls whether
+            # the classic REPL PRINTS the thinking; hidden thinking still
+            # executes and still costs/benefits like any turn.
+            # /reasoning or display.show_reasoning: true makes it visible.
             "show_reasoning": False,
             "reasoning_full": False,
             "streaming": True,
