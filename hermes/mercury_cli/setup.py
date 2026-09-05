@@ -3574,7 +3574,16 @@ def _run_setup_wizard_impl(args):
             migration_ran
             and _skip_configured_section(config, "tools", "Tools")
         ):
-            setup_tools(config, first_install=not is_existing)
+            # WIZARD LINEARITY (user bug report): always the first-install
+            # flow inside the wizard. `first_install=not is_existing` used to
+            # flip re-runs into tools_command's returning-user platform
+            # menu ("Select an option: Configure CLI (17/27 enabled)") —
+            # a while-True loop whose cancel path re-selects option 0, so
+            # ESC/Left bounced between the menu and the tool checklist with
+            # no path to wizard completion. That menu belongs to
+            # `mercury tools` (standalone), never to the wizard; the wizard
+            # runs deterministic linear steps with its own left-nav.
+            setup_tools(config, first_install=True)
 
     _run_setup_steps(
         [
