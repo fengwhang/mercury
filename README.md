@@ -1,6 +1,6 @@
 # Mercury 🌡️
 
-**A hybrid agent distribution: [Hermes](https://github.com/NousResearch/hermes-agent) by Nous Research + [omp](https://github.com/can1357/oh-my-pi) by can1357 — one install, one config, one agent that orchestrates and delegates.**
+**A hybrid agent distribution: [Hermes](https://github.com/NousResearch/hermes-agent) by Nous Research + [omp](https://github.com/can1357/oh-my-pi) by can1357 — one install, one config, one agent that orchestrates and executes.**
 
 Mercury glues two proven halves into a single harness. The hermes half is
 the conversation agent — memory, skills, scheduling, messaging platforms,
@@ -13,12 +13,14 @@ and those subagents can spawn subagents of their own.
 ## Quick install (Linux / macOS / WSL2)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash -s -- https://github.com/fengwhang/mercury/releases/download/v0.0.1/mercury-0.0.1.tar.gz
+curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash -s -- https://github.com/fengwhang/mercury/releases/download/v0.0.1/mercury-0.0.1-x64.tar.gz
 ```
 
-The command installs to `~/.local/bin/mercury` — on PATH by default on
+The command installs to `~/.mercury/bin/mercury` — on PATH by default on
 modern Linux (and macOS) — so `mercury` works immediately after install,
-same terminal, no extra steps.
+same terminal, no extra steps. **Per-arch tarballs**: the release ships an
+x64 and an arm64 build; the installer picks the right one for your host
+automatically (arm64 Linux incl. WSL2) — same one-liner everywhere.
 
 One interactive session: preflight → uv + pinned venv → unpack the prebuilt
 engines (no bun, no rust needed) → **`mercury setup` — the full wizard:
@@ -26,18 +28,22 @@ provider OAuth / Nous Portal login, model pickers, tools** (configures BOTH
 engines) → optional Browser Use CLI, cua-driver, gateway → done. Then run
 `mercury`.
 
-**Layout** — everything lives under one home, hermes-style:
+**Layout** — everything lives under one home:
 
 ```
 ~/.mercury/                 the Mercury home (MERCURY_HOME)
 ├── mercury-agent/          the code tree (bin/, config/, hermes/, omp/, …)
-├── bin/                    managed tools (uv, browser-use) — not the command
-│   └── (the `mercury` command itself is a shim at ~/.local/bin/mercury,
-│      on PATH by default — hermes pattern)
+├── bin/                    the `mercury` command + managed tools (uv, browser-use)
 ├── config.yaml             the ONE unified config (both engines)
-├── SOUL.md MEMORY.md USER.md AGENTS.md   shared state, both engines
+├── .env                    the ONE env file (API keys, chmod 600, both engines)
+├── config/                 shared markdown state (SOUL/MEMORY/USER/AGENTS,
+│                           HERMES/OMP supplements) — both engines read these
 ├── skills/                 the shared skills library
-└── hermes/  omp/           engine-private state (sessions, auth, omp data)
+├── memories/               the memory store (both engines, two-way)
+├── sessions/               session directory (sessions.json mapping + dumps)
+├── state.db                session history (sqlite message store)
+├── cron/                   cron jobs.json + scripts/ + output/
+└── hermes/  omp/           engine-private state (auth, caches, omp themes)
 ```
 
 | | |
@@ -86,7 +92,7 @@ The quick-install command above is the whole story. Details:
   delegate_fallback in `~/.mercury/config.yaml`; no fallback configured is
   an error, not a silent degradation. `mercury omp-sync` re-syncs the omp
   engine after hand edits.
-- **Keys** live in `~/.mercury/hermes/.env` (chmod 600, never in the repo).
+- **Keys** live in `~/.mercury/.env` (chmod 600, never in the repo) — the ONE env file both engines read.
 - **Approval mode** (`manual` / `smart` / `off`) is ONE knob for both
   engines; `off` = permanent yolo with deny-rules + the hardline floor
   still active.
@@ -100,6 +106,26 @@ Manual path: clone, `bash install.sh` with no URL (works against the
 existing tree), or see `scripts/make-dist.sh` to build the tarball
 yourself.
 
+## Migrating from a stock hermes install
+
+If `~/.hermes` exists, the setup wizard offers a one-shot import
+(`mercury migrate-hermes` to re-run — idempotent, nothing overwritten,
+automatic backups under `~/.mercury/migration-backup/`):
+
+- **SOUL / MEMORY / USER** — entry-level merge, including the `memories/`
+  store where stock hermes keeps MEMORY.md and USER.md
+- **config** — model/provider/approvals keys into the unified config
+- **API keys** — `.env` merged into `~/.mercury/.env` (the ONE env)
+- **skills** — copied into the shared library (new skills only)
+- **session history** — `sessions/` (directory mapping + dumps) AND
+  `state.db` (the sqlite message store)
+- **cron** — `jobs.json` id-preserving merge into `~/.mercury/cron/`
+  plus the `scripts/` and `output/` directories the jobs reference
+- **OAuth logins** — `auth.json` copied
+
+Dry-run preview first (`mercury migrate-hermes --dry-run`), explicit
+confirm before anything is written.
+
 Then:
 
 ```bash
@@ -109,8 +135,8 @@ mercury omp      # the omp engine as its own program (its own TUI, themes at ~/.
 
 ## The model story
 
-Four slots at the top of the unified config — the entire model story for
-both engines:
+Four slots plus two optional ordered chains at the top of the unified
+config — the entire model story for both engines:
 
 ```yaml
 models:
@@ -118,6 +144,8 @@ models:
   fallback: <provider/model>          # REQUIRED — missing = hard fail, no silent fallback
   delegate_model: <provider/model>    # what omp subagents run under
   delegate_fallback: <provider/model> # REQUIRED for delegation — hard fail if missing
+  fallback_chain: [<provider/model>, ...]          # optional ordered retry chain (head = fallback)
+  delegate_fallback_chain: [<provider/model>, ...] # optional ordered subagent retry chain
 ```
 
 - Per-request failover on both engines: hermes fails over mid-turn and
@@ -200,12 +228,15 @@ State layout at `~/.mercury/`:
 ```
 ~/.mercury/
   config.yaml     # the ONE config
-  SOUL.md         # persona (both engines read; hermes writes)
-  MEMORY.md USER.md
+  .env            # the ONE env (API keys; both engines)
+  config/         # shared markdown: SOUL MEMORY USER AGENTS (both engines)
+                  #   + HERMES.md / OMP.md per-engine supplements (edit freely)
   skills/         # shared skills library — both engines, two-way
-  HERMES.md       # hermes-only system prompt supplement (edit freely)
-  OMP.md          # omp-only system prompt supplement (edit freely)
-  hermes/         # hermes-private state (sessions, plugins, .env keys)
+  memories/       # memory store
+  sessions/       # session directory mapping + request dumps
+  state.db        # session history (sqlite)
+  cron/           # cron store (jobs.json + scripts/ + output/)
+  hermes/         # hermes-private state (auth, plugins, caches)
   omp/            # omp-private state (themes/, settings)
 ```
 
@@ -242,10 +273,11 @@ scripts/         make-dist.sh (release tarball), vm-sim.sh (fresh-python
 ### Build & release
 
 ```bash
-# one-time on the build host: bun + rust toolchain, then
-cd omp/packages/coding-agent && bun run build     # compiles dist/omp
+# one-time on the build host: bun, then
+cd omp/packages/coding-agent && bun run build     # compiles dist/omp (x64)
+CROSS_TARGET=linux-arm64 bun run build            # also compiles dist/omp-linux-arm64
 cd ../../.. && cd hermes/ui-tui && bun run build  # compiles dist/entry.js
-cd ../../.. && scripts/make-dist.sh               # -> dist/mercury-0.0.1.tar.gz + sha256
+cd ../../.. && scripts/make-dist.sh               # -> dist/mercury-<v>-{x64,arm64}.tar.gz + sha256
 
 # install from a local tree (dev loop)
 bash install.sh
