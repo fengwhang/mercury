@@ -1095,7 +1095,12 @@ def _prompt_mercury_slots(config: dict) -> None:
             pricing=pricing,
             title=menu_title,
         )
-        return chosen or current
+        # SKIP EQUALS EMPTY (user directive 2026-09-05, verbatim ×3): a skip
+        # must CLEAR the slot — never silently re-keep the previously
+        # configured value. The old `chosen or current` is exactly what
+        # wrote a stale slot back as if the user had chosen it (rerun +
+        # skip -> delegate_fallback_chain duplicates -> bridge abort).
+        return chosen if chosen is not None else ""
 
     # Fallback — OPTIONAL (user directive 2026-09-05: "i should be able to
     # skip the first order fallback too"): cancel/skip leaves it unset; a
@@ -1146,12 +1151,22 @@ def _prompt_mercury_slots(config: dict) -> None:
     # Delegate model — NO seeding: only a genuinely configured slot is
     # current (user directive — never pre-select a preferred model).
     delegate_model = _pick("Select delegate model (the model omp SUBAGENTS run on):", slots["delegate_model"])
-    delegate_model = f"{provider}/{delegate_model}" if provider and "/" not in delegate_model else delegate_model
+    delegate_model = (
+        f"{provider}/{delegate_model}"
+        if delegate_model and provider and "/" not in delegate_model
+        else delegate_model
+    )
 
     # Delegate fallback — OPTIONAL (user directive 2026-09-05); cancel/skip
     # leaves it unset. NO seeding (user directive).
     delegate_fallback = _pick("Select delegate fallback (subagent retry model; empty to skip):", slots["delegate_fallback"])
-    delegate_fallback = f"{provider}/{delegate_fallback}" if (delegate_fallback and provider and "/" not in delegate_fallback) else delegate_fallback
+    delegate_fallback = (
+        f"{provider}/{delegate_fallback}"
+        if delegate_fallback and provider and "/" not in delegate_fallback
+        else delegate_fallback
+    )
+    if not delegate_fallback:
+        print_info("Delegate fallback skipped — subagent retries will use no fallback model.")
 
     # Ordered fallback CHAIN (user directive 2026-09-05): after the primary
     # fallback, offer additional retry models in order. Empty selection ends

@@ -221,12 +221,12 @@ def sync_omp_from_setup(quiet: bool = False) -> bool:
     fb = _read_fallback()
     if fb and slots["fallback"] != fb and not slots["fallback"]:
         update["fallback"] = fb
-    # delegate slots: default to default/fallback mirrors when empty
-    if not slots["delegate_model"] and qualified:
-        update["delegate_model"] = qualified
-    fb_for_delegate = slots.get("fallback") or update.get("fallback")
-    if not slots["delegate_fallback"] and fb_for_delegate:
-        update["delegate_fallback"] = fb_for_delegate
+    # SKIP EQUALS EMPTY (user directive 2026-09-05): delegate slots are
+    # NEVER auto-filled from default/fallback mirrors. Silently writing a
+    # model the user skipped is exactly the "stale slot resurrection" that
+    # produced duplicate chains after reinstall+skip. Empty delegate_model
+    # fails loudly at the bridge ("required for delegation") instead of
+    # degrading to an unchosen model.
 
     if update:
         _write_slots(update)
