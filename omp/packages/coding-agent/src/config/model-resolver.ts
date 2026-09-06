@@ -1264,26 +1264,21 @@ interface EffectiveAgentModelSelection {
 function resolveEffectiveAgentModelSelection(
 	options: AgentModelPatternResolutionOptions,
 ): EffectiveAgentModelSelection {
-	const { requestModel, settingsOverride, agentModel, settings, activeModelPattern, fallbackModelPattern } = options;
-
-	const requestPatterns = resolveConfiguredModelPatterns(requestModel, settings);
-	if (requestPatterns.length > 0) {
-		return { source: requestModel, patterns: requestPatterns };
-	}
-
-	const overridePatterns = resolveConfiguredModelPatterns(settingsOverride, settings);
-	if (overridePatterns.length > 0) {
-		return { source: settingsOverride, patterns: overridePatterns };
-	}
+	// HERMES-OMP PATCH (no model roles): subagents run the SESSION model —
+	// the delegate model with its fallback chain — and NOTHING else. The
+	// historical per-spawn `model` argument and the task.agentModelOverrides
+	// settings record no longer reroute anything: the agent definition
+	// ("subagent", model "*") inherits the session model, full stop.
+	const { agentModel, settings, activeModelPattern, fallbackModelPattern } = options;
 
 	const normalizedAgentPatterns = normalizeModelPatternList(agentModel);
-	const configuredAgentPatterns = resolveConfiguredModelPatterns(agentModel, settings);
 	const singleAgentPattern = normalizedAgentPatterns.length === 1 ? normalizedAgentPatterns[0] : undefined;
 	const agentInheritsSessionModel = singleAgentPattern ? isSessionInheritedAgentPattern(singleAgentPattern) : false;
-	if (configuredAgentPatterns.length > 0) {
-		// HERMES-OMP PATCH (no model roles): no per-agent role special case —
-		// any concrete configured pattern is honored as-is.
-		if (!agentInheritsSessionModel) return { source: agentModel, patterns: configuredAgentPatterns };
+	if (!agentInheritsSessionModel) {
+		const configuredAgentPatterns = resolveConfiguredModelPatterns(agentModel, settings);
+		if (configuredAgentPatterns.length > 0) {
+			return { source: agentModel, patterns: configuredAgentPatterns };
+		}
 	}
 
 	const fallback =

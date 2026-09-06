@@ -279,11 +279,11 @@ export async function resolveEffectiveSubagentPolicy(
 			throw new StructuredSubagentError("preflight", `Invalid ${scope} output schema: ${error}`);
 		}
 	}
-	const agentModelOverrides = request.session.settings.get("task.agentModelOverrides");
+	// HERMES-OMP PATCH (no model roles): per-spawn model args and
+	// task.agentModelOverrides no longer participate in resolution — every
+	// subagent runs the session model (delegate model + fallback chain).
 	const parentActiveModelPattern = request.session.getActiveModelString?.();
 	const modelResolution = {
-		requestModel: request.model,
-		settingsOverride: agentModelOverrides[agentName],
 		agentModel: effectiveAgent.model,
 		settings: request.session.settings,
 		activeModelPattern: parentActiveModelPattern,

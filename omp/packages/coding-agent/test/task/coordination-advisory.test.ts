@@ -33,54 +33,52 @@ describe("buildCoordinationAdvisory", () => {
 describe("composeSpawnAdvisory", () => {
 	const worker = (): TaskItem => ({ task: "x" });
 
-	it("joins the specialization tip and the irc coordination suggestion for an async generic fanout", () => {
+	it("emits the irc coordination suggestion for an async fanout", () => {
 		const advisory = composeSpawnAdvisory({
-			agents: ["task", "task"],
+			agents: ["subagent", "subagent"],
 			items: [worker(), worker()],
 			depthCapacity: true,
 			ircEnabled: true,
 			willRunAsync: true,
 		});
-		expect(advisory).toContain("generic");
-		expect(advisory).toContain('`agent: "scout"`');
-		expect(advisory).toContain("Coordinate:");
-	});
-
-	it("drops the scout example from the specialization tip when scout is unavailable", () => {
-		const advisory = composeSpawnAdvisory({
-			agents: ["task", "task"],
-			items: [worker(), worker()],
-			depthCapacity: true,
-			ircEnabled: true,
-			willRunAsync: true,
-		});
-		expect(advisory).toContain("generic");
+		// HERMES-OMP PATCH: no specialization tip exists — one agent type.
 		expect(advisory).not.toContain("scout");
 		expect(advisory).toContain("Coordinate:");
 	});
 
-	it("drops the coordination suggestion on the sync path but keeps the specialization tip", () => {
+	it("never mentions specialist agent types", () => {
 		const advisory = composeSpawnAdvisory({
-			agents: ["task", "task"],
+			agents: ["subagent", "subagent"],
+			items: [worker(), worker()],
+			depthCapacity: true,
+			ircEnabled: true,
+			willRunAsync: true,
+		});
+		expect(advisory).not.toContain("scout");
+		expect(advisory).not.toContain("specialist");
+		expect(advisory).toContain("Coordinate:");
+	});
+
+	it("emits nothing on the sync path", () => {
+		const advisory = composeSpawnAdvisory({
+			agents: ["subagent", "subagent"],
 			items: [worker(), worker()],
 			depthCapacity: true,
 			ircEnabled: true,
 			willRunAsync: false,
 		});
-		expect(advisory).toContain("generic");
-		expect(advisory).not.toContain("Coordinate:");
+		expect(advisory).toBeUndefined();
 	});
 
 	it("omits coordination when irc is unavailable, even async", () => {
 		const advisory = composeSpawnAdvisory({
-			agents: ["task", "task"],
+			agents: ["subagent", "subagent"],
 			items: [worker(), worker()],
 			depthCapacity: true,
 			ircEnabled: false,
 			willRunAsync: true,
 		});
-		expect(advisory).toContain("generic");
-		expect(advisory).not.toContain("Coordinate:");
+		expect(advisory).toBeUndefined();
 	});
 
 	it("returns undefined for a single non-generic spawn", () => {
@@ -98,7 +96,7 @@ describe("composeSpawnAdvisory", () => {
 	it("returns undefined at max depth (no spawn capacity)", () => {
 		expect(
 			composeSpawnAdvisory({
-				agents: ["task", "task"],
+				agents: ["subagent", "subagent"],
 				items: [worker(), worker()],
 				depthCapacity: false,
 				ircEnabled: true,

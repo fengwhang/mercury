@@ -228,10 +228,9 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 	scanSettings.override("retry.modelFallback", false);
 	scanSettings.override("retry.usageAwareFallback", false);
 	scanSettings.override("retry.fallbackChains", {});
-	scanSettings.override("task.agentModelOverrides", {
-		...scanSettings.get("task.agentModelOverrides"),
-		"subagent": modelSelector,
-	});
+	// HERMES-OMP PATCH (no model roles): agentModelOverrides no longer
+	// participates in model resolution — subagents run the session model.
+
 	scanSettings.override("task.agentPrewalk", {
 		...scanSettings.get("task.agentPrewalk"),
 		"subagent": "off",
