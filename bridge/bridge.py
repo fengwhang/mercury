@@ -37,6 +37,15 @@ def parse_config(path=None):
         sys.exit(f"FATAL: {path} not found")
     chain: list[str] | None = None  # None until the key appears (block-seq guard)
     fchain: list[str] = []
+    # HERMES-OMP PATCH (fix #2, active-pointer routing — Mercury-instance
+    # diagnosis 2026-09-06): '- item' continuations must append to the list
+    # of the chain key they sit under. The old continuation routed to the
+    # DELEGATE chain unconditionally, and an empty 'fallback_chain:' value
+    # never initialized a capture target (that happened only inside the
+    # flow-syntax branch) — so a config with BOTH chains in block-sequence
+    # syntax doubled the delegate chain and emptied the ordinary one:
+    # duplicate check -> FATAL at dispatch.
+    active: list[str] | None = None
     for line in raw.splitlines():
         s = line.split("#", 1)[0].strip()
         if not s:
@@ -57,15 +66,18 @@ def parse_config(path=None):
             # Column-0 key = the models: block is over.
             if ":" in s and not s.startswith("-") and line[:1] not in (" ", "\t"):
                 in_models = False
+                active = None
                 continue
             if ":" in s and not s.startswith("-"):
                 k, _, v = s.partition(":")
                 k = k.strip()
                 if k in slots:
                     slots[k] = v.strip().strip("'\"")
+                    active = None  # scalar slot key ends chain capture
                 elif k == "fallback_chain":
                     raw_list = v.strip()
                     fchain = []
+                    active = fchain
                     if raw_list.startswith("["):
                         inner = raw_list[1:-1] if raw_list.endswith("]") else raw_list[1:]
                         for item in inner.split(","):
@@ -77,19 +89,22 @@ def parse_config(path=None):
                     # sequence (single OR double quoted items both legal)
                     raw_list = v.strip()
                     chain = []
+                    active = chain
                     if raw_list.startswith("["):
                         inner = raw_list[1:-1] if raw_list.endswith("]") else raw_list[1:]
                         for item in inner.split(","):
                             item = item.strip().strip("'\"")
                             if item:
                                 chain.append(item)
-            elif s.startswith("-") and chain is not None and line[:1] in (" ", "\t"):
-                # block-sequence continuation
+            elif s.startswith("-") and active is not None and line[:1] in (" ", "\t"):
+                # block-sequence continuation — routes to whichever chain
+                # key the items sit under (active pointer).
                 item = s[1:].strip().strip("'\"")
                 if item:
-                    chain.append(item)
+                    active.append(item)
             elif not s.startswith((" ", "\t")):
                 in_models = False
+                active = None
     slots["delegate_fallback_chain"] = [m for m in (chain or []) if m]
     slots["fallback_chain"] = fchain
     return slots

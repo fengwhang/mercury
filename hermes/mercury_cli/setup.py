@@ -1131,6 +1131,14 @@ def _prompt_mercury_slots(config: dict) -> None:
     # fallback after the primary — no endless loop. Empty selection skips.
     fallback_chain = []
     if fallback:
+        # Bounded retries: an unbounded `while not fallback_chain` re-asked
+        # FOREVER when the user re-picked the same model (easy to do — the
+        # second-order ask follows the first pick and muscle memory repeats
+        # it), and abandoning the wizard meant NO config write at all, so
+        # the file kept the PREVIOUS run's values (user saw 'i selected
+        # glm-5.3-flash but the config says glm-5.2'). One retry, then the
+        # duplicate pick is treated as skip.
+        _dup_retries = 0
         while not fallback_chain:
             extra = _pick("Select second-order fallback (used when the MAIN fallback also fails; empty to skip):", "")
             if not extra:
@@ -1140,7 +1148,11 @@ def _prompt_mercury_slots(config: dict) -> None:
             # artifact: 'delegate_fallback_chain contains duplicates').
             extra = f"{provider}/{extra}" if provider and "/" not in extra else extra
             if extra == fallback or extra == slots["default"]:
-                print_info("Must differ from the default and the main fallback — pick again.")
+                if _dup_retries >= 1:
+                    print_warning(f"Skipping second-order fallback — must differ from {fallback} and {slots['default']}.")
+                    break
+                _dup_retries += 1
+                print_warning("Must differ from the default and the main fallback — pick a DIFFERENT model or skip.")
                 continue
             fallback_chain.append(extra)
 
@@ -1158,15 +1170,32 @@ def _prompt_mercury_slots(config: dict) -> None:
     )
 
     # Delegate fallback — OPTIONAL (user directive 2026-09-05); cancel/skip
-    # leaves it unset. NO seeding (user directive).
-    delegate_fallback = _pick("Select delegate fallback (subagent retry model; empty to skip):", slots["delegate_fallback"])
-    delegate_fallback = (
-        f"{provider}/{delegate_fallback}"
-        if delegate_fallback and provider and "/" not in delegate_fallback
-        else delegate_fallback
-    )
-    if not delegate_fallback:
-        print_info("Delegate fallback skipped — subagent retries will use no fallback model.")
+    # leaves it unset. NO seeding (user directive). Bounded retries: one
+    # re-ask on an equal pick, then the duplicate means SKIP (an unbounded
+    # loop here trapped the wizard when the user picked the same model for
+    # both delegate slots).
+    _df_retries = 0
+    while True:
+        delegate_fallback = _pick("Select delegate fallback (subagent retry model; empty to skip):", slots["delegate_fallback"])
+        delegate_fallback = (
+            f"{provider}/{delegate_fallback}"
+            if delegate_fallback and provider and "/" not in delegate_fallback
+            else delegate_fallback
+        )
+        if not delegate_fallback:
+            print_info("Delegate fallback skipped — subagent retries will use no fallback model.")
+            break
+        if delegate_fallback == delegate_model:
+            # The bridge hard-rejects delegate_model == delegate_fallback;
+            # never WRITE a config the bridge will refuse to dispatch on.
+            if _df_retries >= 1:
+                print_warning("Skipping delegate fallback — it must differ from the delegate model.")
+                delegate_fallback = ""
+                break
+            _df_retries += 1
+            print_warning("Delegate fallback must differ from the delegate model — pick a different model or skip.")
+            continue
+        break
 
     # Ordered fallback CHAIN (user directive 2026-09-05): after the primary
     # fallback, offer additional retry models in order. Empty selection ends
@@ -1176,13 +1205,20 @@ def _prompt_mercury_slots(config: dict) -> None:
     # delegate fallback — no endless loop. Empty selection skips.
     delegate_chain = []
     if delegate_fallback:
+        # Bounded retries (see the ordinary second-order loop): one retry,
+        # then a repeated duplicate pick means skip.
+        _dup_retries = 0
         while not delegate_chain:
             extra = _pick("Select second-order delegate fallback (used when the SUBAGENT fallback also fails; empty to skip):", "")
             if not extra:
                 break
             extra = f"{provider}/{extra}" if provider and "/" not in extra else extra
             if extra == delegate_fallback or extra == delegate_model:
-                print_info("Must differ from the delegate model and its fallback — pick again.")
+                if _dup_retries >= 1:
+                    print_warning(f"Skipping second-order delegate fallback — must differ from {delegate_fallback} and {delegate_model}.")
+                    break
+                _dup_retries += 1
+                print_warning("Must differ from the delegate model and its fallback — pick a DIFFERENT model or skip.")
                 continue
             delegate_chain.append(extra)
 

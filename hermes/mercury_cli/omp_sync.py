@@ -111,6 +111,44 @@ def _current_slots() -> dict[str, str]:
     return slots
 
 
+def _strip_hermes_fallback_mirror(lines: list[str]) -> list[str]:
+    """Remove hermes.subtree fallback_providers (block-seq list of dicts).
+
+    Line-oriented: finds 'hermes:', then within it '  fallback_providers:'
+    and drops that key plus its indented '- ...' continuation lines. The
+    models: block stays untouched; other hermes: keys stay.
+    """
+    out: list[str] = []
+    in_hermes = False
+    skipping = False
+    for line in lines:
+        if re.match(r"^hermes:\s*$", line):
+            in_hermes = True
+            skipping = False
+            out.append(line)
+            continue
+        if in_hermes and line and not line[0].isspace():
+            in_hermes = False
+            skipping = False
+        if in_hermes and re.match(r"^\s+fallback_providers:\s*$", line):
+            skipping = True
+            continue
+        if skipping:
+            # consume the whole mirror block: '- item' entries AND their
+            # indented continuation keys (provider:/model: under a dash),
+            # plus blank lines inside it. A deeper-indented mapping line
+            # that is not a sibling key belongs to the removed block.
+            if line.strip() == "" or re.match(r"^\s+-\s", line):
+                continue
+            if re.match(r"^\s{3,}\S", line):
+                # continuation of a '- key: val' mapping (indent > the
+                # fallback_providers key's own 2 spaces)
+                continue
+            skipping = False
+        out.append(line)
+    return out
+
+
 def _write_slots(update: dict[str, str]) -> bool:
     """Merge updates into the shared models: block, preserving everything else.
 
@@ -166,6 +204,16 @@ def _write_slots(update: dict[str, str]) -> bool:
                     out.append(f"  {k}: {v}")
                 seen[k] = True
                 wrote_any = True
+    # Stale-mirror clearing (see docstring): any fallback-slot write
+    # invalidates the hermes.subtree fallback_providers mirror from a
+    # previous run — explicit subtree keys WIN at config load, so a stale
+    # mirror silently overrides the user's fresh pick.
+    _fallback_written = any(
+        k in update and update[k] is not None
+        for k in ("fallback", "fallback_chain", "delegate_fallback", "delegate_fallback_chain")
+    )
+    if _fallback_written:
+        out = _strip_hermes_fallback_mirror(out)
     if not any(re.match(r"^models:\s*$", l) for l in out):
         out.append("")
         out.append("models:")
