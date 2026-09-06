@@ -239,24 +239,33 @@ fetch_tarball() {
     if [ -n "$TARBALL_URL" ]; then
         # PER-ARCH ASSETS (user directive): the release publishes one tarball
         # per architecture; rewrite the URL so each host downloads exactly
-        # the binary it needs (no dead weight in the download).
-        if [[ "$TARBALL_URL" == http* ]] && [[ "$TARBALL_URL" != *"-arm64.tar.gz" ]] \
-            && { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; }; then
-            # Normalize FIRST: strip any existing arch suffix (-x64) so the
-            # rewrite never stacks suffixes (the x64-arm64 404 bug), then
-            # append -arm64. Handles both X.tar.gz and X-x64.tar.gz inputs.
-            _arm64_url="$(echo "$TARBALL_URL" | sed -E 's/-x64\.tar\.gz$/.tar.gz/; s/\.tar\.gz$/-arm64.tar.gz/')"
-            # Probe robustly: a plain HEAD (-I) is flaky on some networks/
-            # proxies; fall back to a 1-byte ranged GET, which exercises the
-            # same redirect chain the real download will use.
-            if curl -fsSI --connect-timeout 10 "$_arm64_url" >/dev/null 2>&1 \
-               || curl -fsSL --connect-timeout 10 --max-time 20 -r 0-0 -o /dev/null "$_arm64_url"; then
-                TARBALL_URL="$_arm64_url"
-                log_info "arm64 host — using the aarch64 tarball"
-            else
-                log_warn "could not confirm the -arm64 asset (network probe failed);"
-                log_warn "retrying with it anyway — download will fail loudly if truly absent"
-                TARBALL_URL="$_arm64_url"
+        # the binary it needs (no dead weight in the download). The rewrite
+        # is BIDIRECTIONAL (2026-09-06): a pasted -x64 URL on an arm host
+        # becomes -arm64 AND a pasted -arm64 URL on an x86 host becomes
+        # -x64. One link in the README is genuinely arch-neutral; an
+        # emulated (wrong-arch) install can no longer happen by accident.
+        _arch="$(uname -m)"
+        case "$_arch" in
+            aarch64|arm64) _arch=arm64 ;;
+            x86_64|amd64)  _arch=x64 ;;
+            *) _arch="" ;;
+        esac
+        if [[ "$TARBALL_URL" == http* ]] && [ -n "$_arch" ]; then
+            _norm="$(echo "$TARBALL_URL" | sed -E 's/-(x64|arm64)\.tar\.gz$/.tar.gz/')"
+            _want="${_norm%.tar.gz}-$_arch.tar.gz"
+            if [ "$_want" != "$TARBALL_URL" ]; then
+                # Probe robustly: a plain HEAD (-I) is flaky on some networks/
+                # proxies; fall back to a 1-byte ranged GET, which exercises
+                # the same redirect chain the real download will use.
+                if curl -fsSI --connect-timeout 10 "$_want" >/dev/null 2>&1 \
+                   || curl -fsSL --connect-timeout 10 --max-time 20 -r 0-0 -o /dev/null "$_want"; then
+                    TARBALL_URL="$_want"
+                    log_info "$_arch host — using the $_arch tarball"
+                else
+                    log_warn "could not confirm the -$_arch asset (network probe failed);"
+                    log_warn "retrying with it anyway — download will fail loudly if truly absent"
+                    TARBALL_URL="$_want"
+                fi
             fi
         fi
         log_info "fetching distribution tarball"
@@ -311,19 +320,38 @@ fetch_tarball() {
 # ============================================================================
 select_omp_binary() {
     local DIST="$INSTALL_ROOT/omp/packages/coding-agent/dist"
+    # ELF e_machine LSB at offset 18 (measured): 62 = EM_X86_64, 183 = EM_AARCH64
+    local MAGIC=""
+    [ -x "$DIST/omp" ] && MAGIC="$(dd if="$DIST/omp" bs=1 skip=18 count=1 2>/dev/null | od -An -tuC | tr -d ' ')"
     local BIN=""
     case "$(uname -m)" in
         x86_64|amd64)
-            [ -x "$DIST/omp" ] && BIN="$DIST/omp" ;;
+            # VERIFY the arch — an arm64 tarball on an x86 host used to
+            # install "successfully" and die later at exec time.
+            if [ -x "$DIST/omp" ] && [ "$MAGIC" = "62" ]; then
+                BIN="$DIST/omp"
+            elif [ -x "$DIST/omp" ] && [ "$MAGIC" = "183" ]; then
+                log_error "WRONG ARCH: this tarball's omp binary is AArch64 but the host is x86_64."
+                log_error "Install with the x64 tarball (the installer usually rewrites the URL;"
+                log_error "this one was forced past it). Re-run the README one-liner as-is."
+                exit 1
+            fi ;;
         arm64|aarch64)
             if [ -x "$DIST/omp-linux-arm64" ]; then
                 BIN="$DIST/omp-linux-arm64"
                 log_info "arm64 host — using the prebuilt aarch64 omp binary"
-            elif [ -x "$DIST/omp" ] && [ "$(dd if="$DIST/omp" bs=1 skip=18 count=1 2>/dev/null | od -An -tuC | tr -d ' ')" = "183" ]; then
-                # ELF e_machine LSB at offset 18: 183 (0xB7) = EM_AARCH64 (measured)
+            elif [ -x "$DIST/omp" ] && [ "$MAGIC" = "183" ]; then
                 BIN="$DIST/omp"   # single-arch tarball that happens to be arm64
-            fi
-            ;;
+            elif [ -x "$DIST/omp" ] && [ "$MAGIC" = "62" ]; then
+                # THE 100%-CPU KILLER: x86 binary on an arm host runs under
+                # software emulation (10-50x CPU, pegs every core). Hard-fail
+                # instead of installing an emulated binary.
+                log_error "WRONG ARCH: this tarball's omp binary is x86_64 but the host is $(uname -m)."
+                log_error "An x86 binary would run EMULATED (10-50x CPU — pegs every core)."
+                log_error "Install with the arm64 tarball: re-run the README one-liner as-is"
+                log_error "(the installer rewrites the URL for aarch64 hosts automatically)."
+                exit 1
+            fi ;;
     esac
     if [ -z "$BIN" ]; then
         log_error "no omp binary for $(uname -m) in this tarball"
