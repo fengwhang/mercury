@@ -11,22 +11,42 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 {{/if}}
 
 # Task Design
-- **Agent typing:** Pick each item's most specific available agent.task, not left for agents to negotiate.
+- **Agent typing:** `"subagent"` is the only bundled agent type. Omit `agent` when the spawn-policy default fits; otherwise pass it explicitly.
 
 # Inputs
 {{#if batchEnabled}}
 - `context`: Shared project state, constraints, and contracts. Applies to the entire batch; do not duplicate this background into individual tasks.
 - `tasks[]`: Array of subagents to spawn.
   - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
-  - `agent`: The agent type to spawn (e.g. 
+  - `agent`: The agent type to spawn. `"subagent"` is the only bundled type; omitting it selects the spawn-policy default.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
+    NEVER pass the spawn-policy default explicitly. Only omit it after checking the available agents below.
+  - `task`: Complete, self-contained instructions. One-liners or missing acceptance criteria are PROHIBITED.
+{{#if effortEnabled}}  - `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
+{{/if}}
+  - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
+  - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
+{{#if isolationEnabled}}
+{{#if applyIsolatedChanges}}
+  - `isolated`: Run in a dedicated worktree; successful changes are automatically applied to the parent checkout.
+{{else}}
   - `isolated`: Run in a dedicated worktree; changes are retained as patch or branch artifacts without modifying the parent checkout.
-
+{{/if}}
 {{/if}}
 {{else}}
 - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
-- `agent`: The agent type to spawn (e.g. 
+- `agent`: The agent type to spawn. `"subagent"` is the only bundled type; omitting it selects the spawn-policy default.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
+  NEVER pass the spawn-policy default explicitly. Only omit it after checking the available agents below.
+- `task`: Complete, self-contained instructions. One-liners or missing acceptance criteria are PROHIBITED.
+{{#if effortEnabled}}- `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
+{{/if}}
+- `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
+- `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
+{{#if isolationEnabled}}
+{{#if applyIsolatedChanges}}
+- `isolated`: Run in a dedicated worktree; successful changes are automatically applied to the parent checkout.
+{{else}}
 - `isolated`: Run in a dedicated worktree; changes are retained as patch or branch artifacts without modifying the parent checkout.
-
+{{/if}}
 {{/if}}
 {{/if}}
 

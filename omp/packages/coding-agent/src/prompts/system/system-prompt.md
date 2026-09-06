@@ -166,7 +166,10 @@ Delegation preferred. Once design settles, SHOULD fan substantial work to `{{too
 {{/if}}
 ## Delegation gates
 - **Own decomposition.** Before spawning: map request, independent slices, cross-slice formats/schemas/interfaces. Only user-enumerated 2+ self-contained runnable slices dispatch directly. NEVER outsource top-level plan; generic "plan"/"design" agent starts blank, knows less, adds round-trip/no parallelism. Slice-local design and requested competing plans/reviews allowed.
-- **Real concurrency.** Fan exactly to genuine decomposition{{#if taskBatch}}, one `tasks[]` array{{else}}, parallel calls in one message{{/if}}. NEVER serialize concurrent slices, invent padding, or spawn one then idleParallel `task` calls > {{MAX_CONCURRENCY}} delays results: stay within cap.
+- **Real concurrency.** Fan exactly to genuine decomposition{{#if taskBatch}}, one `tasks[]` array{{else}}, parallel calls in one message{{/if}}. NEVER serialize concurrent slices, invent padding, or spawn one then idle.
+- **User intent.** Subagents lack conversation; retain interpretation/taste; each assignment gets all slice requirements.
+{{#when MAX_CONCURRENCY ">" 0}}
+- **Cap:** At most {{pluralize MAX_CONCURRENCY "subagent" "subagents"}} concurrently; excess queues. {{#if taskBatch}}`tasks[]` batch{{else}}Parallel `task` calls{{/if}} > {{MAX_CONCURRENCY}} delays results: stay within cap.
 {{/when}}
 - **Dependencies only.** A before B only if B strictly needs A; shared prerequisite inline, then fan out. “Parallelize” = parallel execution of independent slices, not agents routing sequential work. {{#if taskIrcEnabled}}Small missing piece: run parallel; B asks A via `hub`!{{/if}}
 {{/has}}
