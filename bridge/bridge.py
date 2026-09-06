@@ -45,6 +45,19 @@ def parse_config(path=None):
             in_models = True
             continue
         if in_models:
+            # HERMES-OMP PATCH (bridge block-exit — user-confirmed diagnosis
+            # 2026-09-06): test the RAW line for block membership, not the
+            # stripped s. Every top-level key (e.g. `omp:`) contains a colon,
+            # so the key branch below always fired first and the block-exit
+            # elif was dead code — in_models stayed True forever and the
+            # delegate-fallback chain kept absorbing EVERY later '- item'
+            # line in the file (omp.retry.fallbackChains, omp.providers.
+            # webSearchOrder): chain became [glm-5.3-flash, firecrawl,
+            # firecrawl] -> duplicate check -> FATAL at dispatch.
+            # Column-0 key = the models: block is over.
+            if ":" in s and not s.startswith("-") and line[:1] not in (" ", "\t"):
+                in_models = False
+                continue
             if ":" in s and not s.startswith("-"):
                 k, _, v = s.partition(":")
                 k = k.strip()
@@ -70,7 +83,7 @@ def parse_config(path=None):
                             item = item.strip().strip("'\"")
                             if item:
                                 chain.append(item)
-            elif s.startswith("-") and chain is not None:
+            elif s.startswith("-") and chain is not None and line[:1] in (" ", "\t"):
                 # block-sequence continuation
                 item = s[1:].strip().strip("'\"")
                 if item:
