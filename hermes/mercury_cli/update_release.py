@@ -153,15 +153,25 @@ def update_from_release(*, assume_yes: bool = False) -> int:
     print(f"→ v{current} -> v{latest}")
 
     assets = {a.get("name", ""): a for a in rel.get("assets", [])}
-    tar_name = f"mercury-{latest}.tar.gz"
-    asset = assets.get(tar_name)
+    # MERCURY-OMP PATCH: releases publish PER-ARCH tarballs — select the one
+    # for THIS host (uname -m -> x64/arm64), with the version-less alias
+    # and single-candidate fallbacks for older release layouts.
+    _m = __import__("platform").machine().lower()
+    _arch = "arm64" if _m in ("aarch64", "arm64") else "x64" if _m in ("x86_64", "amd64") else ""
+    candidates = []
+    if _arch:
+        candidates += [f"mercury-{latest}-{_arch}.tar.gz", f"mercury-{_arch}.tar.gz"]
+    candidates += [f"mercury-{latest}.tar.gz"]
+    tar_name = next((n for n in candidates if n in assets), "")
+    asset = assets.get(tar_name) if tar_name else None
     if not asset:
-        # tolerate any single mercury-*.tar.gz asset
         cands = [a for n, a in assets.items() if re.match(r"mercury-.*\.tar\.gz$", n)]
         if len(cands) == 1:
             asset = cands[0]
+            tar_name = next(n for n, a in assets.items() if a is asset)
     if not asset:
-        print(f"✗ Release v{latest} has no '{tar_name}' asset.")
+        print(f"✗ Release v{latest} has no tarball for this host ({_m or 'unknown arch'}).")
+        print(f"  Looked for: {', '.join(candidates)}")
         return 1
     url = asset.get("browser_download_url")
     if not url:
@@ -173,6 +183,31 @@ def update_from_release(*, assume_yes: bool = False) -> int:
         print("→ Downloading tarball...")
         tar_path = tmp / tar_name
         _download(url, tar_path)
+
+        # MERCURY-OMP PATCH (arch guard — same law as install.sh): verify the
+        # packed omp binary's ELF machine byte matches the host BEFORE
+        # unpacking over the live tree. Byte 18: 62=x86_64, 183=AArch64.
+        try:
+            import tarfile as _tf
+
+            with _tf.open(tar_path, "r:gz") as _tar:
+                _member = next(
+                    (m for m in _tar.getnames()
+                     if m.endswith("omp/packages/coding-agent/dist/omp")),
+                    None,
+                )
+                if _member is not None:
+                    _f = _tar.extractfile(_member)
+                    if _f is not None:
+                        _f.read(18)
+                        _magic = _f.read(1)[0]
+                        _want = 183 if _arch == "arm64" else 62 if _arch == "x64" else None
+                        if _want is not None and _magic != _want:
+                            print(f"✗ WRONG ARCH: tarball omp is {'AArch64' if _magic == 183 else f'ELF {_magic}'}"
+                                  f" but this host is {_m} — refusing to install an emulated binary.")
+                            return 1
+        except Exception as _exc:
+            print(f"⚠ arch pre-check skipped ({_exc}) — checksum still enforced")
 
         sha_asset = assets.get(f"{tar_name}.sha256")
         if sha_asset and sha_asset.get("browser_download_url"):
