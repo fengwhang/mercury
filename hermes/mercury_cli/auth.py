@@ -7919,7 +7919,13 @@ def _prompt_model_selection(
 
         choices = [_label_segments(mid) for mid in ordered]
         choices.append("Enter custom model name")
-        choices.append("Skip (keep current)")
+        # SKIP EQUALS EMPTY (user directive 2026-09-05): in the model-slots
+        # wizard, Skip CLEARS the slot — never keeps the prior value. This
+        # shared picker also serves flows where "keep current" is the honest
+        # meaning, so the label must not promise either behavior globally.
+        # Neutral wording is correct for both; each caller decides what
+        # None means (setup.py _pick maps it to "").
+        choices.append("Skip")
 
         _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         unavailable_footer = unavailable_message.strip()
@@ -7956,7 +7962,7 @@ def _prompt_model_selection(
                 label if haystack == mid else f"{label} {haystack}"
             )
         model_search_labels.append("Enter custom model name")
-        model_search_labels.append("Skip (keep current)")
+        model_search_labels.append("Skip")
 
         idx = curses_radiolist(
             menu_title.splitlines()[0],
@@ -7996,7 +8002,7 @@ def _prompt_model_selection(
         print(f"  {i:>{num_width}}. {format_radio_item_ansi(_label_segments(mid))}")
     n = len(ordered)
     print(f"  {n + 1:>{num_width}}. Enter custom model name")
-    print(f"  {n + 2:>{num_width}}. Skip (keep current)")
+    print(f"  {n + 2:>{num_width}}. Skip")
 
     if _unavailable:
         _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
@@ -9367,7 +9373,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         inference_base_url = auth_state["inference_base_url"]
 
         # Snapshot the prior active_provider BEFORE _save_provider_state
-        # overwrites it to "nous".  If the user picks "Skip (keep current)"
+        # overwrites it to "nous".  If the user picks "Skip"
         # during model selection below, we restore this so the user's previous
         # provider (e.g. openrouter) is preserved.
         with _auth_store_lock():
@@ -9480,7 +9486,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             print(f"Login succeeded, but could not fetch available models. Reason: {message}")
 
         # Write provider + model atomically so config is never mismatched.
-        # If no model was selected (user picked "Skip (keep current)",
+        # If no model was selected (user picked "Skip",
         # model list fetch failed, or no curated models were available),
         # preserve the user's previous provider — don't silently switch
         # them to Nous with a mismatched model.  The Nous OAuth tokens
