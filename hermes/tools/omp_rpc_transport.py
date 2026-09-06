@@ -226,9 +226,14 @@ class OmpRpcChild:
                  approval_timeout: float = 600.0,
                  command_override: Optional[list] = None,
                  approval_callback: Optional[Callable] = None,
-                 startup_timeout: float = 60.0):
+                 startup_timeout: float = 60.0,
+                 thinking_level: Optional[str] = None):
         self._omp_path = omp_path
         self._model = model
+        # MERCURY-OMP PATCH (user directive): thinking level is a CONFIG
+        # parameter (models.delegate_thinking_level, default xhigh) — never
+        # agent-selected per spawn.
+        self._thinking_level = thinking_level
         self._workdir = workdir
         self._env = env or {}
         self._approval_timeout = approval_timeout
@@ -269,6 +274,8 @@ class OmpRpcChild:
         # [omp, --mode, rpc, --model, m] itself.
         argv = self._command_override or [
             self._omp_path, "--mode", "rpc", "--model", self._model]
+        if self._thinking_level and not self._command_override:
+            argv += ["--thinking", self._thinking_level]
         self._client = RpcClient(
             command=list(argv),
             cwd=self._workdir,
@@ -352,6 +359,7 @@ def run_omp_task_rpc(
     batch_procs: Optional[list] = None,
     rpc_procs: Optional[list] = None,
     approval_callback: Optional[Callable] = None,
+    thinking_level: Optional[str] = None,
 ) -> Dict[str, Any]:
     """One-shot helper: full RPC child lifecycle around a single task.
 
@@ -369,6 +377,7 @@ def run_omp_task_rpc(
         omp_path=omp_path, model=model, workdir=workdir,
         # NO LIMITS: None task timeout -> no approval clock either.
         env=env,
+        thinking_level=thinking_level,
         approval_timeout=(min(timeout, 600.0) if timeout is not None else None),
         command_override=command_override,
         startup_timeout=startup_timeout,

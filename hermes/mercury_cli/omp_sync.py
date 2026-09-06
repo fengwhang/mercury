@@ -97,7 +97,7 @@ def _read_fallback() -> str | None:
 
 def _current_slots() -> dict[str, str]:
     """Read the shared models: block as a dict (empty strings when absent)."""
-    slots: dict[str, str] = {"default": "", "fallback": "", "delegate_model": "", "delegate_fallback": ""}
+    slots: dict[str, str] = {"default": "", "fallback": "", "delegate_model": "", "delegate_fallback": "", "delegate_thinking_level": "", "orchestrator_thinking_level": ""}
     try:
         import yaml
         whole = yaml.safe_load(_unified_path().read_text()) or {}
@@ -180,7 +180,7 @@ def _write_slots(update: dict[str, str]) -> bool:
                     seen[k] = True
                     wrote_any = True
             in_models = False
-        m = re.match(r"^  (default|fallback|delegate_model|delegate_fallback|delegate_fallback_chain|fallback_chain):\s*(.*)$", line) if in_models else None
+        m = re.match(r"^  (default|fallback|delegate_model|delegate_fallback|delegate_fallback_chain|fallback_chain|delegate_thinking_level|orchestrator_thinking_level):\s*(.*)$", line) if in_models else None
         if m and m.group(1) in update:
             v = update[m.group(1)]
             # ordered chain: write as a YAML flow sequence, single-quoted ids
@@ -275,6 +275,18 @@ def sync_omp_from_setup(quiet: bool = False) -> bool:
     # produced duplicate chains after reinstall+skip. Empty delegate_model
     # fails loudly at the bridge ("required for delegation") instead of
     # degrading to an unchosen model.
+
+    # MERCURY-OMP PATCH (user directive): thinking levels are config
+    # parameters with xhigh defaults — ensure both keys exist so users can
+    # see and edit them. Never invented per-spawn.
+    _think_update: dict[str, str] = {}
+    _cur = _current_slots()
+    for _k, _v in (("delegate_thinking_level", "xhigh"),
+                   ("orchestrator_thinking_level", "xhigh")):
+        if not _cur.get(_k):
+            _think_update[_k] = _v
+    if _think_update:
+        update.update(_think_update)
 
     if update:
         _write_slots(update)

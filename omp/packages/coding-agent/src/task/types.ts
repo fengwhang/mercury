@@ -199,7 +199,9 @@ function createTaskSchema(options: {
 	effortEnabled: boolean;
 }): BaseType {
 	const agent = taskAgentSchemaRule(options.defaultAgent);
-	const effortField = options.effortEnabled ? { "effort?": effortRule } : {};
+	// HERMES-OMP PATCH: per-spawn effort param REMOVED from the tool schema —
+	// thinking level is config-pinned (models.delegate_thinking_level).
+	const effortField = {} as Record<string, never>;
 	if (options.batchEnabled) {
 		if (options.isolationEnabled) {
 			const item = type.raw({

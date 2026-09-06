@@ -169,6 +169,20 @@ def _omp_delegate_env() -> tuple[Dict[str, str], Optional[str]]:
 
 
 
+_THINKING_DEFAULT = "xhigh"
+_THINKING_LEVEL_CACHE: Dict[str, Any] = {"mtime": None, "level": None}
+
+
+def _delegate_thinking_level() -> str:
+    """Config-pinned delegate thinking level (models.delegate_thinking_level).
+
+    Default xhigh; read from the bridge's cached env so both spawn paths and
+    the RPC transport share one value. Never agent-selected.
+    """
+    env, _err = _omp_delegate_env()
+    return env.get("OMP_THINKING_LEVEL") or _THINKING_DEFAULT
+
+
 def _shared_env_overrides() -> Dict[str, str]:
     """ONE-env safety net: keys from MERCURY_HOME/.env not already in env.
 
@@ -535,6 +549,7 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                     startup_timeout=RPC_STARTUP_TIMEOUT,
                     batch_procs=batch_procs,
                     approval_callback=_parent_approval_callback(),
+                    thinking_level=_delegate_thinking_level(),
                 )
             except OmpRpcStartError as start_exc:
                 logger.warning(
@@ -584,7 +599,13 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
     if fallback_chain:
         env["OMP_FALLBACK_CHAIN"] = fallback_chain
     # prompt as ONE argv element: verbatim by construction
+    # MERCURY-OMP PATCH (user directive): thinking level is a config
+    # parameter (models.delegate_thinking_level, default xhigh) — passed
+    # explicitly, never agent-selected per spawn.
     cmd = [omp_path, "--model", model, "-p", prompt]
+    _tl = _delegate_thinking_level()
+    if _tl:
+        cmd += ["--thinking", _tl]
 
     proc = subprocess.Popen(
         cmd, cwd=workdir, env=env,

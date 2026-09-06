@@ -5056,8 +5056,11 @@ export const SETTINGS_SCHEMA = {
 			tab: "tasks",
 			group: "Subagents",
 			label: "Per-Task Effort",
+			// HERMES-OMP PATCH: dead — per-spawn effort removed; thinking is
+			// config-pinned (models.delegate_thinking_level). Kept parseable
+			// so stale configs don't break; has no effect.
 			description:
-				"Expose the optional effort parameter on task spawns, allowing callers to override each subagent's thinking level",
+				"Legacy toggle — per-task effort no longer exists; thinking level is config-pinned",
 		},
 	},
 

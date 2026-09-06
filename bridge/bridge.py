@@ -19,6 +19,9 @@ DEFAULT_CONFIG = os.path.join(MERCURY_HOME, "config.yaml")
 CONFIG = os.environ.get("HERMES_OMP_CONFIG", os.environ.get("MERCURY_CONFIG", DEFAULT_CONFIG))
 
 SLOTS = ("default", "fallback", "delegate_model", "delegate_fallback")
+# MERCURY-OMP PATCH (user directive): thinking is a config parameter, not
+# agent-selected. models.delegate_thinking_level (omp side) defaults xhigh.
+THINKING_SLOTS = ("delegate_thinking_level",)
 
 # omp interactive-onboarding version (omp/src/modes/setup-version.ts).
 # The Mercury wizard + omp-sync stamp this so `mercury omp` never demands
@@ -71,7 +74,7 @@ def parse_config(path=None):
             if ":" in s and not s.startswith("-"):
                 k, _, v = s.partition(":")
                 k = k.strip()
-                if k in slots:
+                if k in slots or k in THINKING_SLOTS:
                     slots[k] = v.strip().strip("'\"")
                     active = None  # scalar slot key ends chain capture
                 elif k == "fallback_chain":
@@ -137,6 +140,11 @@ def validate(slots, need_delegate=False):
             errors.append("models.fallback_chain must not contain the default model itself")
         if slots["fallback"] and fchain[0] != slots["fallback"]:
             errors.append("models.fallback_chain must include models.fallback as its first entry")
+    raw_level = str(slots.get("delegate_thinking_level") or "").strip().lower()
+    if raw_level and thinking_level_from_config(raw_level) is None:
+        errors.append(
+            f"models.delegate_thinking_level '{raw_level}' invalid — "
+            "expected one of: " + ", ".join(VALID_THINKING_LEVELS))
     chain = slots.get("delegate_fallback_chain") or []
     if chain:
         if len(set(chain)) != len(chain):
@@ -148,12 +156,31 @@ def validate(slots, need_delegate=False):
     return errors
 
 
+DEFAULT_THINKING_LEVEL = "xhigh"
+VALID_THINKING_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def thinking_level_from_config(raw):
+    """models.delegate_thinking_level -> validated level (default xhigh)."""
+    v = str(raw or "").strip().lower()
+    if not v:
+        return DEFAULT_THINKING_LEVEL
+    if v in VALID_THINKING_LEVELS:
+        return v
+    return None  # invalid -> caller reports
+
+
 def render(slots, delegation=False):
     if delegation:
         print(f"OMP_MODEL={slots['delegate_model']}")
         chain = [m for m in (slots.get("delegate_fallback_chain") or [])
                  if m] or [slots["delegate_fallback"]]
         print(f"OMP_FALLBACK_CHAIN={','.join(chain)}")
+        # MERCURY-OMP PATCH (user directive): delegate thinking is a CONFIG
+        # PARAMETER (models.delegate_thinking_level, default xhigh) — never
+        # agent-selected per spawn.
+        level = thinking_level_from_config(slots.get("delegate_thinking_level"))
+        print(f"OMP_THINKING_LEVEL={level or DEFAULT_THINKING_LEVEL}")
     else:
         for s in SLOTS:
             print(f"{s.upper()}={slots[s] or '<unset>'}")

@@ -51,7 +51,6 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 			// HERMES-OMP PATCH: single-class subagents — "*" = session model
 			// (= Mercury delegate model + fallback chain via retry.fallbackChains).
 			model: "*",
-			thinkingLevel: AUTO_THINKING,
 		},
 		template: subagentMd,
 	},

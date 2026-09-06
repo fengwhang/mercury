@@ -3136,11 +3136,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// through to the normal selectors below.
 			// The ceiling outlives initial resolution: it rides into the session so
 			// retry-fallback recovery can never clamp effort back up past it.
-			const spawnEffortCeiling = options.effort !== undefined ? settings.get("task.maxEffort") : undefined;
-			const effortLevel =
-				options.effort !== undefined
-					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
-					: undefined;
+			// HERMES-OMP PATCH (user directive): per-spawn caller effort is
+			// DELETED — the thinking level comes solely from the session
+			// (Mercury pins it via --thinking from
+			// models.delegate_thinking_level, default xhigh).
+			const spawnEffortCeiling = undefined;
+			const effortLevel = undefined;
 			if (model) {
 				const displayLevel = effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : undefined);
 				progress.resolvedModel =
