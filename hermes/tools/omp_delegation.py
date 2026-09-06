@@ -542,7 +542,8 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                     "one-shot for task %d", start_exc, task_index)
                 entry = _run_omp_one_shot(
                     task_index, prompt, model, omp_path, workdir,
-                    timeout, fallback_chain, batch_procs, started)
+                    timeout, fallback_chain, batch_procs, started,
+                    profile_home=profile_home, extra_env=extra_env)
                 entry["transport"] = "oneshot-fallback"
                 return entry
             except Exception as exc:  # after a good start: real failure
@@ -562,14 +563,17 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
 
     return _run_omp_one_shot(
         task_index, prompt, model, omp_path, workdir,
-        timeout, fallback_chain, batch_procs, started)
+        timeout, fallback_chain, batch_procs, started,
+        profile_home=profile_home, extra_env=extra_env)
 
 
 def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
                       workdir: Optional[str], timeout: int,
                       fallback_chain: Optional[str],
                       batch_procs: Optional[List["subprocess.Popen"]],
-                      started: float) -> Dict[str, Any]:
+                      started: float,
+                      profile_home: Optional[str] = None,
+                      extra_env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """The original ``omp --model m -p <prompt>`` one-shot path (B1)."""
     env = os.environ.copy()
     env.update(_shared_env_overrides())
