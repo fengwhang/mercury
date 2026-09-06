@@ -237,7 +237,7 @@ export interface SessionInitEntry extends SessionEntryBase {
 	task: string;
 	/** Tools available to the agent */
 	tools: string[];
-	/** Agent definition name (for example `scout` or `reviewer`). */
+	/** Agent definition name (`subagent`). */
 	agent?: string;
 	/** Semantic model role declared by the agent, retained even after concrete model resolution. */
 	modelRole?: string;

@@ -68,7 +68,7 @@ export default class Ttsr extends Command {
 		"omp ttsr test --file src/foo.ts",
 		"omp ttsr test --file src/foo.ts --source text",
 		"omp ttsr test --rule .omp/rules/no-any.md --source tool --path src/foo.ts 'const x: any = 1'",
-		"omp ttsr test --agent scout 'const x: any = 1'",
+		"omp ttsr test --agent subagent 'const x: any = 1'",
 		"echo 'Box::leak(&mut v)' | omp ttsr test --file - --path src/lib.rs",
 		"omp ttsr test --source tool --tool edit --path src/foo.ts 'const x: any = 1'",
 		"omp ttsr scan",

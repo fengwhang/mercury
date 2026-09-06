@@ -12,5 +12,5 @@ MUST hyperfocus assigned task; NEVER deviate.
 - SHOULD prefer editing existing files over creating new files.
 - NEVER create documentation files (`*.md`) unless explicitly requested.
 - MUST follow assignment and instructions.
-- `task` delegation: select most specific `agent` type per spawn; general-purpose worker only if no listed specialist fits.
+- `task` delegation: use the `subagent` agent type for every spawn (the ONLY type that exists).
 </directives>

@@ -8,7 +8,6 @@ import type { AsyncJobManager } from "../async/job-manager";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import type { ToolDefinition } from "../extensibility/extensions";
-import securityReviewerPrompt from "../prompts/agents/security-reviewer.md" with { type: "text" };
 import securityCoordinatorPrompt from "../prompts/security/scan-coordinator.md" with { type: "text" };
 import securityRequestPrompt from "../prompts/security/scan-request.md" with { type: "text" };
 import securityPublishDescription from "../prompts/tools/security-publish.md" with { type: "text" };
@@ -45,7 +44,6 @@ const SECURITY_SESSION_TOOLS = ["read", "grep", "glob", "lsp", "ast_grep", "task
 const SECURITY_WORKFLOW_FINGERPRINT = createSecurityWorkflowFingerprint([
 	securityCoordinatorPrompt,
 	securityRequestPrompt,
-	securityReviewerPrompt,
 	securityPublishDescription,
 ]);
 
@@ -232,11 +230,11 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 	scanSettings.override("retry.fallbackChains", {});
 	scanSettings.override("task.agentModelOverrides", {
 		...scanSettings.get("task.agentModelOverrides"),
-		"security-reviewer": modelSelector,
+		"subagent": modelSelector,
 	});
 	scanSettings.override("task.agentPrewalk", {
 		...scanSettings.get("task.agentPrewalk"),
-		"security-reviewer": "off",
+		"subagent": "off",
 	});
 	const { session } = await createAgentSession({
 		cwd: input.executionRoot,
@@ -254,7 +252,7 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 		toolNames: SECURITY_SESSION_TOOLS,
 		restrictToolNames: true,
 		allowRestrictedCustomTools: true,
-		spawns: "security-reviewer",
+		spawns: "subagent",
 		appendSystemPrompt: securityCoordinatorPrompt.trim(),
 		disableExtensionDiscovery: true,
 		enableMCP: false,

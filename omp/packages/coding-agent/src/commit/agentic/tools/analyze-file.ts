@@ -63,7 +63,7 @@ export function createAnalyzeFileTool(options: {
 	return {
 		name: "analyze_files",
 		label: "Analyze Files",
-		description: "Spawn sonic agents to analyze files.",
+		description: "Spawn subagents to analyze files.",
 		parameters: analyzeFileSchema,
 		async execute(toolCallId, params, _onUpdate, ctx, signal) {
 			const toolSession = buildToolSession(ctx, options);
@@ -84,7 +84,7 @@ export function createAnalyzeFileTool(options: {
 					});
 					const taskParams: TaskParams = {
 						name: `AnalyzeFile${index + 1}`,
-						agent: "sonic",
+						agent: "subagent",
 						task: assignment,
 					};
 					return taskTool.execute(`${toolCallId}-${index + 1}`, taskParams, signal);

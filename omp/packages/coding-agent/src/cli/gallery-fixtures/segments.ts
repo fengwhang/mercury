@@ -89,7 +89,7 @@ function variantsFor(id: StatusLineSegmentId): readonly SegmentVariantSpec[] {
 			return [
 				{ label: "idle", context: { turnElapsedMs: null } },
 				{ label: "active", context: { turnElapsedMs: 92_000 } },
-				{ label: "focused subagent", context: { focusedAgentId: "Scout" } },
+				{ label: "focused subagent", context: { focusedAgentId: "Subagent" } },
 			];
 		case "status":
 			return [

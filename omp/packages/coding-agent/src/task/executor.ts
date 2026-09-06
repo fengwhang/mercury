@@ -106,9 +106,8 @@ const TASK_ABORT_CLEANUP_GRACE_MS = 10_000;
  * lower an agent's budget, never raise it above its bundled entry (0 disables
  * the guard entirely).
  */
+// HERMES-OMP PATCH: one agent type — one budget.
 export const SOFT_REQUEST_BUDGET: Record<string, number> = {
-	scout: 100,
-	sonic: 100,
 	default: 200,
 };
 
@@ -2402,7 +2401,7 @@ function wakeSources(records: AgentMessage[], selfId: string): WakeSource[] {
  * did not answer them itself. A re-`yield` delivers the `<task-result>`
  * envelope (the artifact was just rewritten, so it carries the `agent://`
  * pointer); a plain turn delivers its final assistant text. Without this, a
- * recipient that lacks the `hub` tool — every read-only scout — can never get
+ * recipient that lacks the `hub` tool — every read-only subagent — can never get
  * an answer back to a `send await:true` sender, and its re-yield silently
  * updates the artifact nobody is told to re-read.
  */

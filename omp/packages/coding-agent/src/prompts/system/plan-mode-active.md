@@ -38,8 +38,7 @@ Write each section with body: `N*` requires multiline section; bare heading → 
 
 Resolve unknowns by discovery, not questions.
 
-- Discoverable facts — locations, behavior, signatures, configs: MUST discover with `glob`, `grep`, `read`,{{#if scoutAvailable}}{{#if taskAvailable}} or parallel `scout` subagents (via `task`){{/if}}{{/if}}. Every asserted path, symbol, signature, behavior: actually read this session. Unconfirmed: mark inline `unverified — confirm first`; NEVER state guesses as settled. Ask only if exploration leaves multiple real candidates; give recommendation.
-- Preferences/tradeoffs — intent, UX, scope edges, performance vs. simplicity: not code-derivable.{{#if askAvailable}} Ask early via `{{askToolName}}`: 2–4 mutually exclusive options + recommended default.{{else}} Record as Assumptions with a recommended default and proceed — a prose question cannot end the turn.{{/if}} Unanswered → use default; record under Assumptions.
+- Discoverable facts — locations, behavior, signatures, configs: MUST discover with `glob`, `grep`, `read`, Record as Assumptions with a recommended default and proceed — a prose question cannot end the turn. Unanswered → use default; record under Assumptions.
 
 Every question MUST alter plan or resolve load-bearing choice; batch. NEVER ask what exploration answers or filler.
 
@@ -70,9 +69,7 @@ New request primary; existing plan reference only. NEVER reconcile old plan whil
 ## Workflow — parallel
 
 <procedure>
-1. **Understand** — request and supporting code.{{#if scoutAvailable}}{{#if taskAvailable}} Scope spans areas → parallel `scout` subagents via `task`, distinct focuses: implementations, related components, test patterns.{{/if}}{{/if}} Find reusable code before proposing new.
-2. **Design** — draft approach from findings, briefly weigh tradeoffs, commit. Large/cross-cutting → MAY spawn critique subagent before commitment.
-3. **Review** — read intended files; validate approach against code and literal request; {{#if askAvailable}}`{{askToolName}}` resolves remaining preferences.{{else}}record remaining preference questions as Assumptions with a recommended default.{{/if}}
+1. **Understand** — request and supporting code.record remaining preference questions as Assumptions with a recommended default.
 4. **Write** — plan per **Plan contents**.
 </procedure>
 {{/if}}

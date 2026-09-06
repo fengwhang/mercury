@@ -136,7 +136,7 @@ export function createPersistedSubagentReviverFactory(
 				sessionManager: reopened,
 				agentId: ref.id,
 				agentDisplayName: ref.displayName,
-				// `agents` rule scoping keys on the durable definition name (`scout`,
+				// `agents` rule scoping keys on the durable definition name (`subagent`,
 				// `reviewer`, …), not the registry display label — cold-revived refs
 				// register with `displayName: id` (registry/persisted-agents.ts), so a
 				// generated task id would silently drop every agent-scoped rule.

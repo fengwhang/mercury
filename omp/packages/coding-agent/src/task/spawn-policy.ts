@@ -58,15 +58,15 @@ export function resolveSpawnPolicy(parentSpawns: string | boolean | null | undef
 }
 
 /**
- * Whether the `scout` agent is spawnable in a session: not disabled via
+ * Whether the `subagent` agent is spawnable in a session: not disabled via
  * `task.disabledAgents`, and permitted by the session spawn policy.
  */
-export function isScoutSpawnable(
+export function isSubagentSpawnable(
 	disabledAgents: readonly string[] | undefined,
 	spawns: string | boolean | null | undefined,
 ): boolean {
-	if (disabledAgents?.includes("scout")) return false;
+	if (disabledAgents?.includes("subagent")) return false;
 	const policy = resolveSpawnPolicy(spawns);
 	if (!policy.enabled) return false;
-	return policy.allowedAgents === null || policy.allowedAgents.includes("scout");
+	return policy.allowedAgents === null || policy.allowedAgents.includes("subagent");
 }

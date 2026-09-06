@@ -2,7 +2,7 @@
 User message contains **workflowz** → deterministic multi-subagent workflow. Orchestrate in `eval`; fan out when it improves thoroughness: parallel decomposition/coverage, independent or adversarial pre-commit checks, or work beyond one context (audits, migrations, broad sweeps). Overrides doing work inline when fan-out is more thorough.
 
 <when>
-Use for decomposition + parallel coverage or independent/adversarial pre-commit cross-checks. Quick lookup/single edit: direct; no agents. {{#if scoutAvailable}} Scout inline FIRST{{else}} Explore inline FIRST{{/if}} — list files, scope diff, find call sites — to discover work-list; know its shape before fan-out, not task start. Chain well-scoped `eval` calls across turns:
+Use for decomposition + parallel coverage or independent/adversarial pre-commit cross-checks. Quick lookup/single edit: direct; no agents.  Explore inline FIRST — list files, scope diff, find call sites — to discover work-list; know its shape before fan-out, not task start. Chain well-scoped `eval` calls across turns:
 - **Understand**: parallel subsystem readers → structured map
 - **Design**: N independent approaches, judge panel → scored synthesis
 - **Review**: dimensions → findings per dimension → adversarial verification
@@ -11,9 +11,9 @@ Use for decomposition + parallel coverage or independent/adversarial pre-commit 
 </when>
 
 <helpers>
-State persists across `eval` calls;{{#if scoutAvailable}} scout one call, fan out next.{{else}} explore one call, fan out next.{{/if}} Every call provides:
+State persists across `eval` calls; explore one call, fan out next. Every call provides:
 
-- `agent(prompt, *, agent="task", label=None, schema=None, isolated=None, apply=None, merge=None, handle=False)`: run ONE subagent; return final text, or validated object with `schema` (JSON Schema dict). `schema` forces validated structured output: branch on object, not parsed prose. `agent` selects discovered agent{{#if scoutAvailable}} (`"scout"`, `"reviewer"`, …){{/if}}; `label`: artifact name. Put shared background in `local://` file referenced by each prompt, not a parameter. Subagents' final text is return value: raw data. `agent()` blocks. Recursion: `task.maxRecursionDepth`, default 2; negative disables cap.
+- `agent(prompt, *, agent="task", label=None, schema=None, isolated=None, apply=None, merge=None, handle=False)`: run ONE subagent; return final text, or validated object with `schema` (JSON Schema dict). `schema` forces validated structured output: branch on object, not parsed prose. `agent` selects discovered agent; `label`: artifact name. Put shared background in `local://` file referenced by each prompt, not a parameter. Subagents' final text is return value: raw data. `agent()` blocks. Recursion: `task.maxRecursionDepth`, default 2; negative disables cap.
 - `parallel(thunks)`: concurrently run zero-arg callables in bounded pool; preserve input order; return after all finish. Pool: session `task` concurrency — do not hand-tune; fan out as work divides. Raised thunk propagates; risky thunk: `try/except` for partial results. Loop closures: bind default arg (`lambda d=d: …`), else all capture final value.
 - `pipeline(items, *stages)`: map items through stages left→right; BARRIER between stages — ALL items complete N before N+1. Stages: one-arg callable; stage 1 gets original item, later stages prior result. Same pool width as `parallel()`.
 - `completion(prompt, *, model="default", system=None, schema=None)`: oneshot stateless model call; no tools/history. Tiers: `"smol"`, `"default"`, `"slow"`. Use for cheap fan-out classification/scoring.

@@ -28,7 +28,7 @@ import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/hub";
 import { isReadOnlyAgent } from "./read-only-policy";
 import { formatTaskResultSummary } from "./result-summary";
-import { isScoutSpawnable, resolveSpawnPolicy } from "./spawn-policy";
+import { resolveSpawnPolicy } from "./spawn-policy";
 import {
 	type AgentDefinition,
 	type AgentProgress,
@@ -154,10 +154,8 @@ function renderDescription(options: TaskDescriptionOptions): string {
 		readOnly: isReadOnlyAgent(agent),
 		blocking: agent.blocking === true,
 	}));
-	const scoutAvailable = isScoutSpawnable(options.disabledAgents, options.parentSpawns);
 	return prompt.render(taskDescriptionTemplate, {
 		agents: renderedAgents,
-		scoutAvailable,
 		spawningDisabled,
 		defaultAgent: spawnPolicy.defaultAgent,
 		isolationEnabled: options.isolationEnabled,
@@ -356,30 +354,12 @@ function mergeSyncPayloads(
 	};
 }
 
-/** Generic worker agent types; several in one call usually means a more specific type exists. */
-const GENERIC_SPAWN_AGENTS: ReadonlySet<string> = new Set(["task", "sonic"]);
+// HERMES-OMP PATCH (user directive 2026-09-06): ONE agent type ("subagent").
+// The specialization advisory that used to live here was REMOVED — it
+// actively nudged models toward "closer specialist types", which is exactly
+// how models invented phantom roles like SpecScout/AuditScout in logs.
+const GENERIC_SPAWN_AGENTS: ReadonlySet<string> = new Set(["subagent"]);
 
-/**
- * Advisory — never a rejection — nudging the spawner toward tailored
- * specific agent types when one call resolves ≥2 items to a generic
- * `task`/`sonic` worker and the spawner still holds spawn capacity
- * (DepthCapacity: it currently has the `task` tool). `agentNames` are the
- * per-item resolved agent types. Returns undefined when no nudge applies.
- */
-export function buildSpecializationAdvisory(
-	agentNames: string[],
-	depthCapacity: boolean,
-	scoutAvailable = true,
-): string | undefined {
-	if (!depthCapacity) return undefined;
-	const generics = agentNames.filter(name => GENERIC_SPAWN_AGENTS.has(name));
-	if (generics.length < 2) return undefined;
-	const specialist = scoutAvailable
-		? `Check the agent list for a closer specialist type — e.g. read-only research belongs on ` +
-			`\`agent: "scout"\`, which runs on a faster model.`
-		: `Check the agent list for a closer specialist type.`;
-	return `Tip: this call spawned ${generics.length} generic \`${generics[0]}\` workers. ${specialist}`;
-}
 
 /**
  * Suggestion — never a rejection — nudging the spawner to coordinate via the
@@ -415,11 +395,9 @@ export function composeSpawnAdvisory(args: {
 	depthCapacity: boolean;
 	ircEnabled: boolean;
 	willRunAsync: boolean;
-	scoutAvailable?: boolean;
 }): string | undefined {
 	return (
 		[
-			buildSpecializationAdvisory(args.agents, args.depthCapacity, args.scoutAvailable),
 			args.willRunAsync ? buildCoordinationAdvisory(args.items, args.depthCapacity, args.ircEnabled) : undefined,
 		]
 			.filter(Boolean)
@@ -746,10 +724,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						depthCapacity,
 						ircEnabled,
 						willRunAsync: false,
-						scoutAvailable: isScoutSpawnable(
-							this.session.settings.get("task.disabledAgents") as string[] | undefined,
-							this.session.getSessionSpawns?.() ?? "*",
-						),
 					});
 			const result = await this.#executeSyncFanout(
 				toolCallId,
@@ -783,10 +757,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					depthCapacity,
 					ircEnabled,
 					willRunAsync: asyncItems.length > 0,
-					scoutAvailable: isScoutSpawnable(
-						this.session.settings.get("task.disabledAgents") as string[] | undefined,
-						this.session.getSessionSpawns?.() ?? "*",
-					),
 				});
 		// Returns a fresh result (copied content array, copied text part) rather
 		// than mutating the caller's — task results are short-lived here, but an

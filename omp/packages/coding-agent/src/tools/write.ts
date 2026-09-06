@@ -170,7 +170,7 @@ function throwReadSelectorMisfire(target: string, sel: string): never {
 
 /**
  * Recognize a semicolon-joined list of read-tool selectors mis-dispatched as a
- * single write target — the multi-file read expression the scout emitted in
+ * single write target — the multi-file read expression the subagent emitted in
  * issue #6809 (`a.txt:1-2;b/c.txt:3-4`). Every `;`-segment must be non-empty and
  * carry its own read selector ({@link splitPathAndSel} peels a `:N-M`, `:raw`,
  * or `:conflicts` tail). No real call targets such a list: `read` accepts one

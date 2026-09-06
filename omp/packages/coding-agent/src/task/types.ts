@@ -133,7 +133,7 @@ const taskItemSchemaIsolated = type({
 export interface TaskItem {
 	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
 	name?: string;
-	/** Agent type to run this item (e.g. "scout"). Defaults to the spawn policy's default agent. */
+	/** Agent type to run this item. "subagent" is the only bundled type. */
 	agent?: string;
 	/** The work; required by the schema. */
 	task?: string;

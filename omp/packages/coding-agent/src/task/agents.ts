@@ -8,11 +8,11 @@ import { parseFrontmatter, prompt } from "@oh-my-pi/pi-utils";
 import { parseAgentFields } from "../discovery/helpers";
 // Embed agent markdown files at build time
 import agentFrontmatterTemplate from "../prompts/agents/frontmatter.md" with { type: "text" };
-import librarianMd from "../prompts/agents/librarian.md" with { type: "text" };
-import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
-import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
-import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
-import taskMd from "../prompts/agents/task.md" with { type: "text" };
+// HERMES-OMP PATCH (user directive 2026-09-06): ONE subagent role. All
+// specialized embedded agents (scout/reviewer/security-reviewer/librarian/
+// sonic) were REMOVED — a single "subagent" definition remains, running on
+// the session model (= Mercury's delegate model + its fallback chain).
+import subagentMd from "../prompts/agents/subagent.md" with { type: "text" };
 import { AUTO_THINKING } from "../thinking";
 
 import type { AgentDefinition, AgentSource } from "./types";
@@ -42,40 +42,18 @@ function buildAgentContent(def: EmbeddedAgentDef): string {
 }
 
 const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
-	{ fileName: "scout.md", template: scoutMd },
-	{ fileName: "reviewer.md", template: reviewerMd },
-	{ fileName: "security-reviewer.md", template: securityReviewerMd },
-	{ fileName: "librarian.md", template: librarianMd },
 	{
-		fileName: "task.md",
+		fileName: "subagent.md",
 		frontmatter: {
-			name: "task",
-			description: "General-purpose subagent with full capabilities for delegated multi-step tasks",
+			name: "subagent",
+			description: "General-purpose subagent for delegated tasks (the ONLY agent type)",
 			spawns: "*",
-			// HERMES-OMP PATCH: single-class subagents. Was `model: "@task"` —
-			// role-alias resolution with auto-selection of unassigned roles.
-			// "*" = DEFAULT_MODEL_ROLE_ALIAS → resolveModelRoleValue returns no
-			// override → subagent inherits the session model. One model, one
-			// class of subagent, no routing, deterministic.
+			// HERMES-OMP PATCH: single-class subagents — "*" = session model
+			// (= Mercury delegate model + fallback chain via retry.fallbackChains).
 			model: "*",
 			thinkingLevel: AUTO_THINKING,
-			// No `prewalk` frontmatter: the generic task hand-off (strong model
-			// plans, then hands off to the smol role) is armed by the
-			// `task.prewalk` setting (default off) or per agent via /agents
-			// (task.agentPrewalk).
 		},
-		template: taskMd,
-	},
-	{
-		fileName: "sonic.md",
-		frontmatter: {
-			name: "sonic",
-			description: "Low-reasoning agent for strictly mechanical updates or data collection only",
-			// HERMES-OMP PATCH: was `model: "@smol"`. Same rationale: session model.
-			model: "*",
-			thinkingLevel: Effort.Medium,
-		},
-		template: taskMd,
+		template: subagentMd,
 	},
 ];
 

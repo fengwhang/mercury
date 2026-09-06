@@ -117,7 +117,7 @@ export class AgentProtocolHandler implements ProtocolHandler {
 			if (query) {
 				const extracted = applyQuery(jsonValue, query);
 				if (typeof extracted === "string") {
-					// A string field (e.g. a scout's markdown `report`) reads as prose,
+					// A string field (e.g. a subagent's markdown `report`) reads as prose,
 					// not as a JSON-escaped single line.
 					content = extracted;
 				} else {
