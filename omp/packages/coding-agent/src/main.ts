@@ -1269,7 +1269,7 @@ export async function buildSessionOptions(
 			: !restoringSession && activeSettings.get("prewalk.enabled");
 	if (prewalkEnabled) {
 		// HERMES-OMP PATCH: prewalk target is an explicit model or the
-		// SESSION model — no "@smol" role default (roles do not exist).
+		// SESSION model — no role defaults (roles do not exist).
 		const resolved = resolveCliModel({ cliModel: parsed.prewalkInto ?? undefined, modelRegistry, preferences: modelMatchPreferences });
 		if (resolved.warning) {
 			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);

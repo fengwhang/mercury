@@ -470,7 +470,7 @@ if "__omp_prelude_loaded__" not in globals():
     def completion(prompt, *, model="default", system=None, schema=None):
         """Oneshot, stateless completion against a model tier.
 
-        `model` selects a tier: "smol", "default" (the session's active model),
+        `model` selects the tier: "default" (the session's active model).
         or "slow". Pass `system` for a system prompt. Pass a JSON-Schema dict
         as `schema` to force a structured response; the parsed object is then
         returned instead of the completion text.

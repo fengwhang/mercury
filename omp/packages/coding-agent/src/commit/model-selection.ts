@@ -9,7 +9,6 @@ import {
 	resolveRoleSelection,
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
-import MODEL_PRIO from "../priority.json" with { type: "json" };
 import { concreteThinkingLevel } from "../thinking";
 
 export interface ResolvedCommitModel {
@@ -58,37 +57,13 @@ export async function resolvePrimaryModel(
 	};
 }
 
-export async function resolveSmolModel(
-	settings: Settings,
-	modelRegistry: CommitModelRegistry,
+export async function resolveSecondaryModel(
+	_settings: Settings,
+	_modelRegistry: CommitModelRegistry,
 	fallbackModel: Model<Api>,
 	fallbackApiKey: ApiKey,
 ): Promise<ResolvedCommitModel> {
-	const available = modelRegistry.getAvailable();
-	const resolvedSmol = resolveRoleSelection(settings, available); // HERMES-OMP PATCH: session model
-	if (resolvedSmol?.model) {
-		const apiKey = await modelRegistry.getApiKey(resolvedSmol.model);
-		if (apiKey) {
-			return {
-				model: resolvedSmol.model,
-				apiKey: modelRegistry.resolver(resolvedSmol.model),
-				thinkingLevel: concreteThinkingLevel(resolvedSmol.thinkingLevel),
-			};
-		}
-	}
-
-	const matchPreferences = getModelMatchPreferences(settings);
-	for (const pattern of MODEL_PRIO.smol) {
-		const candidate = parseModelPattern(pattern, available, matchPreferences).model;
-		if (!candidate) continue;
-		const apiKey = await modelRegistry.getApiKey(candidate);
-		if (apiKey) {
-			return {
-				model: candidate,
-				apiKey: modelRegistry.resolver(candidate),
-			};
-		}
-	}
-
-	return { model: fallbackModel, apiKey: fallbackApiKey };
+	// HERMES-OMP PATCH (no model roles): there is no "smol" tier — the
+	// secondary commit pass runs the same (session) model as the primary.
+	return { model: fallbackModel, apiKey: fallbackApiKey, thinkingLevel: undefined };
 }

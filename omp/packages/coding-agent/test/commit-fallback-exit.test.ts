@@ -27,8 +27,8 @@ function mockModelResolution() {
 		model: { name: "test-primary", provider: "test", id: "test" } as never,
 		apiKey: "test-key",
 	});
-	vi.spyOn(modelSelection, "resolveSmolModel").mockResolvedValue({
-		model: { name: "test-smol", provider: "test", id: "test" } as never,
+	vi.spyOn(modelSelection, "resolveSecondaryModel").mockResolvedValue({
+		model: { name: "test-secondary", provider: "test", id: "test" } as never,
 		apiKey: "test-key",
 		thinkingLevel: undefined,
 	});

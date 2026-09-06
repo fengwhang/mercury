@@ -6,7 +6,7 @@ import { getCommitCacheDbPath } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../../config/model-registry";
 import { Settings } from "../../config/settings";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../../sdk";
-import { resolvePrimaryModel, resolveSmolModel } from "../model-selection";
+import { resolvePrimaryModel, resolveSecondaryModel } from "../model-selection";
 import type { ConventionalCommit } from "../types";
 import { CommitInferenceCache } from "./cache";
 import { type ConventionalGenerationConfig, conventionalGenerationConfig } from "./config";
@@ -108,15 +108,15 @@ async function createOmpInference(
 		await registry.refresh();
 		await loadCliExtensionProviders(registry, settings, options.cwd);
 		const primary = await resolvePrimaryModel(options.modelOverride, settings, registry);
-		const smol = options.modelOverride
+		const secondary = options.modelOverride
 			? primary
-			: await resolveSmolModel(settings, registry, primary.model, primary.apiKey);
+			: await resolveSecondaryModel(settings, registry, primary.model, primary.apiKey);
 		const cache = config.cacheEnabled
 			? await CommitInferenceCache.open(getCommitCacheDbPath(), config.cacheTtlDays)
 			: null;
 		return new OmpCommitInference({
 			primary,
-			smol,
+			secondary, // HERMES-OMP PATCH: renamed from smol
 			forcePrimaryForEveryRole: options.modelOverride !== undefined,
 			config,
 			cache,

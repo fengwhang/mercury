@@ -552,7 +552,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Prewalk",
 			label: "Enable Prewalk",
 			description:
-				"Start on the active model, then switch to a fast/cheap model (default the 'smol' role) at the first edit/write after the plan nudge's todo list exists — the strong model plans, commits the todos, and starts the implementation before handing off. Overridable per session with --prewalk / --no-prewalk.",
+				"Start on the active model, then hand off at the first edit/write after the plan nudge's todo list exists — the strong model plans, commits the todos, and starts the implementation before handing off. Overridable per session with --prewalk / --no-prewalk.",
 		},
 	},
 	"advisor.syncBacklog": {
@@ -3040,7 +3040,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "memory",
 			group: "Sharpshooter",
 			label: "Sharpshooter Model",
-			description: "Model selector for extraction/consolidation, empty = smol role",
+			description: "Model selector for extraction/consolidation, empty = session model",
 		},
 	},
 	"sharpshooter.intervalMinutes": { type: "number", default: 5 },
@@ -3257,22 +3257,17 @@ export const SETTINGS_SCHEMA = {
 	},
 	"mnemopi.llmMode": {
 		type: "enum",
-		values: ["none", "smol", "remote"] as const,
-		default: "smol",
+		values: ["none", "remote"] as const,
+		default: "none",
 		ui: {
 			tab: "memory",
 			group: "Mnemopi",
 			label: "Mnemopi LLM Mode",
 			description:
-				"Use no LLM, the online tiny model, or a remote OpenAI-compatible endpoint",
+				"Use no LLM or a remote OpenAI-compatible endpoint",
 			condition: "mnemopiActive",
 			options: [
 				{ value: "none", label: "None", description: "Disable Mnemopi LLM-backed extraction" },
-				{
-					value: "smol",
-					label: "Online (tiny)",
-					description: "Use the online tiny model",
-				},
 				{ value: "remote", label: "Remote", description: "Use the Mnemopi remote LLM settings below" },
 			],
 		},
@@ -3682,7 +3677,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Editing",
 			label: "Auto-Repair Parse Regressions",
 			description:
-				"When an edit breaks a file's AST parse, ask the smol model to fix the broken region (validated by re-parse; falls back to a warning)",
+				"When an edit breaks a file's AST parse, ask the session model to fix the broken region (validated by re-parse; falls back to a warning)",
 		},
 	},
 
@@ -5217,7 +5212,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Subagents",
 			label: "Generic Task Prewalk",
 			description:
-				"Arm prewalk for the bundled generic `task` subagent: it starts on its resolved model, plans and begins the implementation, then hands off to the 'smol' role at its first edit/write. Per-agent overrides (task.agentPrewalk, configured from the /agents hub) and user agent `prewalk` frontmatter apply regardless of this toggle.",
+				"Arm prewalk for the bundled generic `task` subagent: it starts on its resolved model, plans and begins the implementation, then hands off at its first edit/write. Per-agent overrides (task.agentPrewalk, configured from the /agents hub) and user agent `prewalk` frontmatter apply regardless of this toggle.",
 		},
 	},
 
@@ -5572,7 +5567,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Services",
 			label: "Enhanced Speech Rewriting",
 			description:
-				"Rewrite assistant output into natural spoken prose with the tiny/smol model before synthesis (describes code, drops links and markdown). Falls back to mechanical cleanup on failure",
+				"Rewrite assistant output into natural spoken prose with the session model before synthesis (describes code, drops links and markdown). Falls back to mechanical cleanup on failure",
 		},
 	},
 	"speech.voice": {
@@ -5635,7 +5630,7 @@ export const SETTINGS_SCHEMA = {
 			group: "General",
 			label: "Memory Model",
 			description:
-				"Mnemopi LLM for fact extraction + consolidation: online (the TINY role from /models, else smol/remote) by default, or a local on-device model",
+				"Mnemopi LLM for fact extraction + consolidation: remote by default, or a local on-device model",
 			condition: "mnemopiActive",
 			options: TINY_MEMORY_MODEL_OPTIONS,
 		},
@@ -5650,7 +5645,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Thinking",
 			label: "Auto Thinking Model",
 			description:
-				"Difficulty classifier for the `auto` thinking level: online (the TINY role from /models, else smol) by default, or a local on-device model",
+				"Difficulty classifier for the `auto` thinking level: remote by default, or a local on-device model",
 			condition: "autoThinkingActive",
 			options: AUTO_THINKING_MODEL_OPTIONS,
 		},
@@ -5706,7 +5701,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Tiny Model",
 			label: "Unexpected Stop Model",
 			description:
-				"Classifier for Smart unexpected-stop detection: online (the TINY role from /models, else smol) by default, or a local on-device model.",
+				"Classifier for Smart unexpected-stop detection: remote by default, or a local on-device model.",
 			condition: "unexpectedStopSmart",
 			options: TINY_MEMORY_MODEL_OPTIONS,
 		},

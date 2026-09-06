@@ -379,7 +379,7 @@ export class ModelControls {
 	/**
 	 * Cycle through configured role models in a fixed order.
 	 * Skips missing roles and changes only the active session model.
-	 * @param roleOrder - Order of roles to cycle through (e.g., ["slow", "default", "smol"])
+	 * @param roleOrder - Order of models to cycle through
 	 * @param direction - "forward" (default) or "backward"
 	 */
 	async cycleRoleModels(

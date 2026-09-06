@@ -79,7 +79,7 @@ export interface SessionMessageEntry extends SessionEntryBase {
 export interface ModelUsageEntry extends SessionEntryBase {
 	type: "model_usage";
 	purpose: string;
-	/** Resolved model role used for the call, such as `tiny` or `smol`. */
+	/** Model selector used for the call. */
 	role?: string;
 	api: string;
 	provider: string;
@@ -104,7 +104,7 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	type: "model_change";
 	/** Model in "provider/modelId" format */
 	model: string;
-	/** Role: "default", "smol", "slow", etc. Undefined treated as "default" */
+	/** Model slot; only "default" exists. Undefined treated as "default" */
 	role?: string;
 	/** True when this transition selected a retry-fallback model rather than the configured model. */
 	resolvedModelIsFallback?: boolean;

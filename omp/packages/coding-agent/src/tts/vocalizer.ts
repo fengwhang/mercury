@@ -12,7 +12,7 @@
  * - Enhanced (`speech.enhanced`, requires a session-wired
  *   {@link SpeechEnhancer}): deltas accumulate into fence-aware markdown
  *   blocks; each block (small ones coalesced) is rewritten into natural spoken
- *   prose by the tiny/smol model — at most {@link MAX_REWRITES_IN_FLIGHT}
+ *   prose by the session model — at most {@link MAX_REWRITES_IN_FLIGHT}
  *   completions in flight, results pushed strictly in order — then segmented
  *   by the same {@link SpeakableStream} as a safety net. A failed or timed-out
  *   rewrite falls back to mechanical cleanup of the raw block, so speech never

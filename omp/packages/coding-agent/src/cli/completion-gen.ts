@@ -65,7 +65,7 @@ export interface CompletionSpec {
 // --- Flag/arg value classification (the single manual mapping) ----------------
 
 /** Single-value flags resolved against the live model catalog. */
-const MODEL_FLAGS: Record<string, true> = { model: true, smol: true, slow: true, plan: true };
+const MODEL_FLAGS: Record<string, true> = { model: true, plan: true }; // HERMES-OMP PATCH: role flags removed
 /** Single-value flags resolved against on-disk sessions. */
 const SESSION_FLAGS: Record<string, true> = { resume: true, fork: true, session: true };
 /** Flags whose value is a directory path. */

@@ -32,10 +32,8 @@ function makeModel(provider: string, id: string, extra: Partial<Model<Api>> = {}
 	} as Model<Api>;
 }
 
-const SMOL = makeModel("p", "smol");
 const DEFAULT = makeModel("p", "default");
-const SLOW = makeModel("p", "slow");
-const REASONING_SLOW = makeModel("p", "slow", {
+const REASONING = makeModel("p", "default", {
 	api: "anthropic-messages",
 	reasoning: true,
 	thinking: { efforts: [Effort.Low, Effort.Medium, Effort.High], mode: "anthropic-adaptive" },
@@ -45,18 +43,18 @@ interface SessionOptions {
 	available?: Model<Api>[];
 	apiKey?: string | null;
 	activeModel?: string;
-	roles?: Partial<Record<"smol" | "default" | "slow", string>>;
+	roles?: Partial<Record<"default", string>>;
 }
 
 function makeSession(opts: SessionOptions = {}): ToolSession {
 	const settings = Settings.isolated({ "async.enabled": false, "task.isolation.enabled": false });
-	const roles = opts.roles ?? { smol: "p/smol", slow: "p/slow" };
+	const roles = opts.roles ?? {   };
 	for (const role in roles) {
 		const value = roles[role as keyof typeof roles];
 		if (value) settings.setModelRole(role, value);
 	}
 	const modelRegistry = {
-		getAvailable: () => opts.available ?? [SMOL, DEFAULT, SLOW],
+		getAvailable: () => opts.available ?? [DEFAULT, DEFAULT, DEFAULT],
 		getApiKey: async () => (opts.apiKey === undefined ? "test-key" : opts.apiKey),
 		resolver: () => async () => (opts.apiKey === undefined ? "test-key" : opts.apiKey),
 	} as unknown as ModelRegistry;
@@ -107,7 +105,7 @@ async function runPythonCompletionsInSubprocess(tempDir: TempDir): Promise<Pytho
 	const settingsPath = path.resolve(import.meta.dir, "../../src/config/settings.ts");
 	const code = [
 		"import json",
-		'plain = completion("hi", model="smol")',
+		'plain = completion("hi", model="default")',
 		'structured = completion("hi", schema={"type": "object"})',
 		'print(json.dumps({"plain": plain, "structured": structured}))',
 	].join("\n");
@@ -119,9 +117,9 @@ import * as ai from ${JSON.stringify(aiPath)};
 import { executePython } from ${JSON.stringify(executorPath)};
 import { Settings } from ${JSON.stringify(settingsPath)};
 
-const SMOL = {
-	id: "smol",
-	name: "smol",
+const DEFAULT = {
+	id: "default",
+	name: "default",
 	api: "openai-responses",
 	provider: "p",
 	baseUrl: "https://example.test/v1",
@@ -132,23 +130,21 @@ const SMOL = {
 	maxTokens: 4096,
 };
 const settings = Settings.isolated({ "async.enabled": false, "task.isolation.enabled": false });
-settings.setModelRole("smol", "p/smol");
-settings.setModelRole("slow", "p/slow");
 const session = {
 	settings,
 	modelRegistry: {
-		getAvailable: () => [SMOL],
+		getAvailable: () => [DEFAULT],
 		getApiKey: async () => "test-key",
 		resolver: () => async () => "test-key",
 	},
-	getActiveModelString: () => "p/smol",
+	getActiveModelString: () => "p/default",
 };
 vi.spyOn(ai, "completeSimple")
 	.mockResolvedValueOnce({
 		role: "assistant",
 		api: "openai-responses",
 		provider: "p",
-		model: "smol",
+		model: "default",
 		stopReason: "stop",
 		content: [{ type: "text", text: "hello from python" }],
 	})
@@ -156,7 +152,7 @@ vi.spyOn(ai, "completeSimple")
 		role: "assistant",
 		api: "openai-responses",
 		provider: "p",
-		model: "smol",
+		model: "default",
 		stopReason: "stop",
 		content: [{ type: "toolCall", id: "tc-1", name: "respond", arguments: { ok: true } }],
 	});
@@ -188,32 +184,32 @@ describe("runEvalCompletion", () => {
 		const spy = vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "ok" }));
 		const session = makeSession();
 
-		await runEvalCompletion({ prompt: "q", model: "smol" }, { session });
 		await runEvalCompletion({ prompt: "q", model: "default" }, { session });
-		await runEvalCompletion({ prompt: "q", model: "slow" }, { session });
+		await runEvalCompletion({ prompt: "q", model: "default" }, { session });
+		await runEvalCompletion({ prompt: "q", model: "default" }, { session });
 
 		const resolved = spy.mock.calls.map(call => {
 			const model = call[0] as Model<Api>;
 			return `${model.provider}/${model.id}`;
 		});
-		expect(resolved).toEqual(["p/smol", "p/default", "p/slow"]);
+		expect(resolved).toEqual(["p/default", "p/default", "p/default"]);
 	});
 
 	it("prefers the session active model for the default tier, falling back to @default", async () => {
 		const spy = vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "ok" }));
-		const session = makeSession({ available: [SMOL, DEFAULT, SLOW], activeModel: "p/slow" });
+		const session = makeSession({ available: [DEFAULT, DEFAULT, DEFAULT], activeModel: "p/default" });
 
 		await runEvalCompletion({ prompt: "q", model: "default" }, { session });
 
 		const model = spy.mock.calls[0]?.[0] as Model<Api>;
-		expect(`${model.provider}/${model.id}`).toBe("p/slow");
+		expect(`${model.provider}/${model.id}`).toBe("p/default");
 	});
 
 	it("returns the completion text in plain mode", async () => {
 		vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "the answer" }));
-		const result = await runEvalCompletion({ prompt: "q", model: "smol" }, { session: makeSession() });
+		const result = await runEvalCompletion({ prompt: "q", model: "default" }, { session: makeSession() });
 		expect(result.text).toBe("the answer");
-		expect(result.details).toEqual({ model: "p/smol", tier: "smol", structured: false });
+		expect(result.details).toEqual({ model: "p/default", tier: "default", structured: false });
 	});
 
 	it("supplies a non-empty systemPrompt when system is omitted (codex 'Instructions are required' guard)", async () => {
@@ -222,7 +218,7 @@ describe("runEvalCompletion", () => {
 		// "Instructions are required". runEvalCompletion must always carry a non-empty
 		// systemPrompt so `completion("…")` without a `system` argument works.
 		const spy = vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "ok" }));
-		await runEvalCompletion({ prompt: "q", model: "smol" }, { session: makeSession() });
+		await runEvalCompletion({ prompt: "q", model: "default" }, { session: makeSession() });
 		const ctx = spy.mock.calls[0]?.[1] as { systemPrompt?: string[] };
 		expect(ctx.systemPrompt).toBeDefined();
 		expect(ctx.systemPrompt?.length).toBeGreaterThan(0);
@@ -231,7 +227,7 @@ describe("runEvalCompletion", () => {
 
 	it("honors an explicit system prompt instead of overriding it", async () => {
 		const spy = vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "ok" }));
-		await runEvalCompletion({ prompt: "q", model: "smol", system: "Be terse." }, { session: makeSession() });
+		await runEvalCompletion({ prompt: "q", model: "default", system: "Be terse." }, { session: makeSession() });
 		const ctx = spy.mock.calls[0]?.[1] as { systemPrompt?: string[] };
 		expect(ctx.systemPrompt).toEqual(["Be terse."]);
 	});
@@ -241,7 +237,7 @@ describe("runEvalCompletion", () => {
 			.spyOn(ai, "completeSimple")
 			.mockResolvedValue(assistant({ toolCall: { name: "respond", arguments: { answer: 42 } } }));
 		const result = await runEvalCompletion(
-			{ prompt: "q", model: "smol", schema: { type: "object", properties: { answer: { type: "number" } } } },
+			{ prompt: "q", model: "default", schema: { type: "object", properties: { answer: { type: "number" } } } },
 			{ session: makeSession() },
 		);
 
@@ -257,141 +253,10 @@ describe("runEvalCompletion", () => {
 	it("falls back to JSON embedded in text when the model skips the respond tool", async () => {
 		vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: 'here: {"answer": 7}' }));
 		const result = await runEvalCompletion(
-			{ prompt: "q", model: "smol", schema: { type: "object" } },
+			{ prompt: "q", model: "default", schema: { type: "object" } },
 			{ session: makeSession() },
 		);
 		expect(JSON.parse(result.text)).toEqual({ answer: 7 });
-	});
-
-	it("requests reasoning only for the slow tier on a reasoning-capable model", async () => {
-		const spy = vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "ok" }));
-		const session = makeSession({ available: [SMOL, DEFAULT, REASONING_SLOW] });
-
-		await runEvalCompletion({ prompt: "q", model: "smol" }, { session });
-		await runEvalCompletion({ prompt: "q", model: "slow" }, { session });
-
-		const smolOpts = spy.mock.calls[0]?.[2] as { reasoning?: unknown };
-		const slowOpts = spy.mock.calls[1]?.[2] as { reasoning?: unknown };
-		expect(smolOpts.reasoning).toBeUndefined();
-		expect(slowOpts.reasoning).toBe(Effort.High);
-	});
-
-	it("does not request reasoning for the slow tier on a non-reasoning model", async () => {
-		const spy = vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "ok" }));
-		// SLOW is reasoning:false — must not trip requireSupportedEffort downstream.
-		const result = await runEvalCompletion({ prompt: "q", model: "slow" }, { session: makeSession() });
-		expect(result.text).toBe("ok");
-		const opts = spy.mock.calls[0]?.[2] as { reasoning?: unknown };
-		expect(opts.reasoning).toBeUndefined();
-	});
-
-	it("throws ToolError on invalid arguments", async () => {
-		await expect(runEvalCompletion({ prompt: "" }, { session: makeSession() })).rejects.toBeInstanceOf(ToolError);
-		await expect(
-			runEvalCompletion({ prompt: "q", model: "huge" }, { session: makeSession() }),
-		).rejects.toBeInstanceOf(ToolError);
-	});
-
-	it("throws ToolError when no model resolves for the tier", async () => {
-		const session = makeSession({ available: [DEFAULT], roles: { smol: "missing/model" } });
-		await expect(runEvalCompletion({ prompt: "q", model: "smol" }, { session })).rejects.toBeInstanceOf(ToolError);
-	});
-
-	it("throws ToolError when the resolved model has no API key", async () => {
-		const session = makeSession({ apiKey: null });
-		await expect(runEvalCompletion({ prompt: "q", model: "smol" }, { session })).rejects.toBeInstanceOf(ToolError);
-	});
-
-	it("maps error and aborted stop reasons to ToolError", async () => {
-		vi.spyOn(ai, "completeSimple").mockResolvedValueOnce(assistant({ stopReason: "error", errorMessage: "boom" }));
-		await expect(runEvalCompletion({ prompt: "q", model: "smol" }, { session: makeSession() })).rejects.toThrow(
-			"boom",
-		);
-
-		vi.spyOn(ai, "completeSimple").mockResolvedValueOnce(assistant({ stopReason: "aborted" }));
-		await expect(
-			runEvalCompletion({ prompt: "q", model: "smol" }, { session: makeSession() }),
-		).rejects.toBeInstanceOf(ToolError);
-	});
-
-	it("throws ToolError when plain mode produces no text", async () => {
-		vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "" }));
-		await expect(
-			runEvalCompletion({ prompt: "q", model: "smol" }, { session: makeSession() }),
-		).rejects.toBeInstanceOf(ToolError);
-	});
-
-	it("pauses the idle watchdog while a slow completion() request is in flight", async () => {
-		vi.useFakeTimers();
-		try {
-			// A oneshot completion emits no status until it returns; delegated model
-			// time must be invisible to the eval timeout budget.
-			const started = Promise.withResolvers<void>();
-			vi.spyOn(ai, "completeSimple").mockImplementation(async () => {
-				started.resolve();
-				await Bun.sleep(200);
-				return assistant({ text: "the answer" });
-			});
-
-			const ops: string[] = [];
-			using idle = new IdleTimeout(60);
-			const pendingResult = runEvalCompletion(
-				{ prompt: "q", model: "smol" },
-				{
-					session: makeSession(),
-					signal: idle.signal,
-					emitStatus: event => {
-						ops.push(event.op);
-						if (event.op === EVAL_TIMEOUT_PAUSE_OP) idle.pause();
-						if (event.op === EVAL_TIMEOUT_RESUME_OP) idle.resume();
-					},
-				},
-			);
-			await started.promise;
-			vi.advanceTimersByTime(200);
-			const result = await pendingResult;
-
-			expect(result.text).toBe("the answer");
-			expect(ops).toEqual([EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP, "completion"]);
-			expect(idle.signal.aborted).toBe(false);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-});
-
-describe("completion() through eval runtimes", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
-
-	afterAll(async () => {
-		await disposeAllVmContexts();
-		await disposeAllKernelSessions();
-	});
-
-	it("exposes plain and structured completion() in the JavaScript runtime", async () => {
-		using tempDir = TempDir.createSync("@omp-eval-completion-js-");
-		const sessionFile = path.join(tempDir.path(), "session.jsonl");
-		const sessionId = `js-completion:${crypto.randomUUID()}`;
-		vi.spyOn(ai, "completeSimple")
-			.mockResolvedValueOnce(assistant({ text: "hello from smol" }))
-			.mockResolvedValueOnce(assistant({ toolCall: { name: "respond", arguments: { ok: true, n: 3 } } }));
-
-		const result = await executeJs(
-			[
-				'const plain = await completion("hi", { model: "smol" });',
-				'const structured = await completion("hi", { schema: { type: "object" } });',
-				"return JSON.stringify({ plain, structured });",
-			].join("\n"),
-			{ cwd: tempDir.path(), sessionId, session: makeSession(), sessionFile },
-		);
-
-		expect(result.exitCode).toBe(0);
-		expect(JSON.parse(result.output.trim())).toEqual({
-			plain: "hello from smol",
-			structured: { ok: true, n: 3 },
-		});
 	});
 
 	it("exposes plain and structured completion() in the Python runtime", async () => {

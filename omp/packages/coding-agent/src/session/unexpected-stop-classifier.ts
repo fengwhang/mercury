@@ -88,7 +88,7 @@ async function classifyOnline(text: string, deps: ClassifyUnexpectedStopDeps): P
 	const resolved = resolveRoleSelection(deps.settings, deps.registry.getAvailable()); // HERMES-OMP PATCH: session model
 	const model = resolved?.model;
 	if (!model) {
-		throw new Error("unexpected-stop: no tiny/smol model available for classification");
+		throw new Error("unexpected-stop: no model available for classification");
 	}
 	const apiKey = await deps.registry.getApiKey(model, deps.sessionId);
 	if (!apiKey) {

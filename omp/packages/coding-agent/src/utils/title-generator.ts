@@ -1,5 +1,5 @@
 /**
- * Generate session titles using a smol, fast model.
+ * Generate session titles using the session model.
  */
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import * as path from "node:path";
@@ -127,7 +127,7 @@ function getTitleModel(registry: ModelRegistry, settings: Settings, currentModel
  *
  * @param firstMessage The first user message
  * @param registry Model registry
- * @param settings Settings used to resolve the smol role
+ * @param settings Settings used to resolve the session model
  * @param sessionId Optional session id for sticky API key selection
  * @param currentModel Current model (used to derive title model)
  * @param metadataResolver Optional resolver evaluated after credential selection
@@ -176,7 +176,7 @@ export async function generateSessionTitle(
 	}
 
 	// User explicitly picked a local tiny model. NEVER fall back to the online
-	// smol path (issue #3187): the smol role resolves through priority.json and
+	// session-model path (issue #3187): the model resolves through the configured
 	// silently bills whatever provider holds the resolved API key — OpenRouter
 	// in the reporter's case, leaking real credits without consent. If the
 	// local worker fails (unknown key, download missing, transformers.js

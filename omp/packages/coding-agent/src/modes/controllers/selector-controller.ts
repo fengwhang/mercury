@@ -1008,7 +1008,7 @@ export class SelectorController {
 							}
 							this.ctx.showStatus(`${defaultStatusLabel} model: ${selector ?? model.id}`);
 						} else {
-							// Other roles (smol, slow, custom): update settings, not the current model.
+							// Other selectors: update settings, not the current model.
 							const modelRoleValue = formatModelSelectorValue(selectorValue, thinkingLevel);
 							if (targetScope === "project") {
 								this.ctx.settings.setProjectModelRole(role, modelRoleValue);

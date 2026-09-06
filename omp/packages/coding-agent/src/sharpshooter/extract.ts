@@ -148,7 +148,7 @@ export function buildSharpshooterEnvelope(
 	};
 }
 
-/** Resolve the configured extraction model, then fall back to the `smol` role. */
+/** Resolve the configured extraction model, then fall back to the session model. */
 export async function resolveSharpshooterModel(
 	settings: Settings,
 	modelRegistry: ModelRegistry,

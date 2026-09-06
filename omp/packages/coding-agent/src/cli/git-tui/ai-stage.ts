@@ -66,7 +66,7 @@ export interface AiStageOptions {
 }
 
 /**
- * Filter the unstaged tree against `instruction` with the tiny/smol model and
+ * Filter the unstaged tree against `instruction` with the session model and
  * stage the matching hunks. Called by the git TUI's unstaged-header wand pill.
  * @throws when no model/key resolves, git fails, or every judgement in a pass errors.
  */
@@ -85,7 +85,7 @@ export async function aiStage(options: AiStageOptions): Promise<AiStageOutcome> 
 		await registry.refresh();
 		await loadCliExtensionProviders(registry, settings, cwd);
 		const model = resolveRoleSelection(settings, registry.getAvailable())?.model; // HERMES-OMP PATCH: session model
-		if (!model) throw new Error("No tiny/smol model available for AI staging");
+		if (!model) throw new Error("No model available for AI staging");
 		const sessionId = Bun.randomUUIDv7();
 		if (!(await registry.getApiKey(model, sessionId)))
 			throw new Error(`No API key for ${model.provider}/${model.id}`);

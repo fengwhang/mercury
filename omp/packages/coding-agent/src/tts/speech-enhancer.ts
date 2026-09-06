@@ -1,6 +1,6 @@
 /**
  * Enhanced speech rewriting (`speech.enhanced`): turn assistant markdown into
- * natural spoken prose with the tiny/smol model before synthesis.
+ * natural spoken prose with the session model before synthesis.
  *
  * Two pieces:
  * - {@link BlockAccumulator} — fence-aware paragraph splitter over the raw
@@ -9,7 +9,7 @@
  *   inside a fence stays silent so half a code block is never sent to the
  *   rewriter.
  * - {@link SpeechEnhancer} — the per-session rewrite service the event
- *   controller hands to the vocalizer. Resolves the tiny/smol role (same chain
+ *   controller hands to the vocalizer. Resolves the session model (same chain
  *   as the auto-thinking classifier), sends one bounded completion per block,
  *   and returns null on any failure or timeout so the caller falls back to the
  *   mechanical {@link SpeakableStream} cleanup — speech never blocks on the
@@ -51,7 +51,7 @@ function extractText(content: AssistantMessage["content"]): string {
 }
 
 /**
- * Rewrites one markdown block into spoken prose via the tiny/smol role.
+ * Rewrites one markdown block into spoken prose via the session model.
  * Constructed per session by the event controller and handed to the vocalizer.
  */
 export class SpeechEnhancer {
@@ -71,7 +71,7 @@ export class SpeechEnhancer {
 		try {
 			const { settings, registry, sessionId } = this.#deps;
 			// `@tiny` expands a configured `modelRoles.tiny` and otherwise falls
-			// through tiny's alias to the smol priority chain — unlike bare role
+			// the session model — unlike a bare selector
 			// lookup, this resolves even with no roles configured.
 			const model = resolveModelRoleValue("@tiny", registry.getAvailable(), {
 				settings,

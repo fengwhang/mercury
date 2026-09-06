@@ -2249,7 +2249,7 @@ export class SessionMaintenance {
 		}
 		return new Error(
 			`Compaction requires usable credentials for ${currentModel.provider}/${currentModel.id}. ` +
-				`Configure ${currentModel.provider} credentials or assign an authenticated fallback role such as modelRoles.smol.`,
+				`Configure ${currentModel.provider} credentials or assign an authenticated fallback model.`,
 		);
 	}
 

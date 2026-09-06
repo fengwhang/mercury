@@ -1,5 +1,5 @@
 /**
- * Generate commit messages from diffs using a smol, fast model.
+ * Generate commit messages from diffs using the session model.
  * Follows the same pattern as title-generator.ts.
  */
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
@@ -8,9 +8,8 @@ import { completeSimple, retryTransientCompletion } from "@oh-my-pi/pi-ai";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 
 import type { ModelRegistry } from "../config/model-registry";
-import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model-resolver";
+import { resolveRoleSelection, getModelMatchPreferences, resolveModelRoleValue } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
-import MODEL_PRIO from "../priority.json" with { type: "json" };
 import commitSystemPrompt from "../prompts/system/commit-message-system.md" with { type: "text" };
 import { concreteThinkingLevel, toReasoningEffort } from "../thinking";
 
@@ -41,38 +40,14 @@ function filterDiffNoise(diff: string): string {
 	return filtered.join("\n");
 }
 
-function getSmolModelCandidates(
+function getModelCandidates(
 	registry: ModelRegistry,
 	settings: Settings,
 ): Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }> {
-	const availableModels = registry.getAvailable();
-	if (availableModels.length === 0) return [];
-
-	const candidates: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }> = [];
-	const addCandidate = (model?: Model<Api>, thinkingLevel?: ThinkingLevel): void => {
-		if (!model) return;
-		if (candidates.some(c => c.model.provider === model.provider && c.model.id === model.id)) return;
-		candidates.push({ model, thinkingLevel });
-	};
-
-	const matchPreferences = getModelMatchPreferences(settings);
-	const configuredSmol = resolveModelRoleValue(settings.getModelRole("smol"), availableModels, {
-		settings,
-		matchPreferences,
-	});
-	addCandidate(configuredSmol.model, concreteThinkingLevel(configuredSmol.thinkingLevel));
-
-	for (const pattern of MODEL_PRIO.smol) {
-		const needle = pattern.toLowerCase();
-		addCandidate(availableModels.find(m => m.id.toLowerCase() === needle));
-		addCandidate(availableModels.find(m => m.id.toLowerCase().includes(needle)));
-	}
-
-	for (const model of availableModels) {
-		addCandidate(model);
-	}
-
-	return candidates;
+	// HERMES-OMP PATCH (no model roles): the commit-message generator runs
+	// the session model — the configured default. No "smol" chain exists.
+	const resolved = resolveRoleSelection(settings, registry.getAvailable());
+	return resolved ? [{ model: resolved.model, thinkingLevel: concreteThinkingLevel(resolved.thinkingLevel) }] : [];
 }
 
 /**
@@ -85,9 +60,9 @@ export async function generateCommitMessage(
 	settings: Settings,
 	sessionId?: string,
 ): Promise<string | null> {
-	const candidates = getSmolModelCandidates(registry, settings);
+	const candidates = getModelCandidates(registry, settings);
 	if (candidates.length === 0) {
-		logger.debug("commit-msg-generator: no smol model found");
+		logger.debug("commit-msg-generator: no model available");
 		return null;
 	}
 

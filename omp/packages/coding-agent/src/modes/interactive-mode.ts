@@ -4517,7 +4517,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const keepContextDisabled = this.#isKeepContextDisabled(contextUsage);
 
 		// Model-tier slider: let the operator pick which configured role model
-		// (smol/default/slow/…) executes the approved plan. The slider always starts
+		// (a subagent) executes the approved plan. The slider always starts
 		// on the `default` tier so execution defaults to the default model no matter
 		// which model drove the planning conversation. Left/right move it from there;
 		// hidden when fewer than two role models resolve — a lone tier is no choice.

@@ -6,7 +6,7 @@ import { applyChangelogProposals } from "../../commit/changelog";
 import { detectChangelogBoundaries } from "../../commit/changelog/detect";
 import { parseUnreleasedSection } from "../../commit/changelog/parse";
 import { formatCommitMessage } from "../../commit/message";
-import { resolvePrimaryModel, resolveSmolModel } from "../../commit/model-selection";
+import { resolvePrimaryModel, resolveSecondaryModel } from "../../commit/model-selection";
 import type { CommitCommandArgs, ConventionalAnalysis, NumstatEntry } from "../../commit/types";
 import { ModelRegistry } from "../../config/model-registry";
 import { Settings } from "../../config/settings";
@@ -50,7 +50,7 @@ export async function runAgenticCommit(args: CommitCommandArgs): Promise<{ usedF
 	const { model: primaryModel, apiKey: primaryApiKey } = primaryModelResult;
 	process.stdout.write(`  └─ ${primaryModel.name}\n`);
 
-	const { model: agentModel, thinkingLevel: agentThinkingLevel } = await resolveSmolModel(
+	const { model: agentModel, thinkingLevel: agentThinkingLevel } = await resolveSecondaryModel(
 		settings,
 		modelRegistry,
 		primaryModel,

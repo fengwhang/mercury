@@ -35,19 +35,17 @@ export const EVAL_COMPLETION_BRIDGE_NAME = "__completion__";
 /** Synthetic tool the model is forced to call when a `schema` is supplied. */
 const STRUCTURED_TOOL_NAME = "respond";
 
-type CompletionTier = "smol" | "default" | "slow";
+type CompletionTier = "default"; // HERMES-OMP PATCH: one tier — the session model
 
 // HERMES-OMP PATCH: all completion tiers resolve to the session model —
 // role tiers do not exist in Mercury.
 const TIER_TO_PATTERN: Record<CompletionTier, string> = {
-	smol: "*",
 	default: "*",
-	slow: "*",
 };
 
 const completionArgsSchema = type({
 	prompt: "string>0",
-	"model?": "'smol'|'default'|'slow'",
+	"model?": "'default'",
 	"system?": "string",
 	"schema?": { "[string]": "unknown" },
 });
@@ -65,8 +63,7 @@ export interface EvalCompletionResult {
 
 /**
  * Resolve a tier to a concrete {@link Model}. `default` prefers the session's
- * active model and falls back to the `@default` role; `smol`/`slow` resolve
- * their respective role patterns. Returns `undefined` when nothing matches.
+ * active model and falls back to the `@default` role; All tiers resolve to the session model. Returns `undefined` when nothing matches.
  */
 function resolveTierModel(tier: CompletionTier, session: ToolSession): Model<Api> | undefined {
 	const modelRegistry = session.modelRegistry;
@@ -88,18 +85,6 @@ function resolveTierModel(tier: CompletionTier, session: ToolSession): Model<Api
 	return resolve(TIER_TO_PATTERN[tier]);
 }
 
-/**
- * Choose the reasoning effort for a tier. Only `slow` opts into thinking, and
- * only on reasoning-capable models — guarding against `requireSupportedEffort`
- * throwing downstream on models that cannot reason. Clamps to the highest
- * supported effort so a reasoning model without `high` does not 400.
- */
-function reasoningForTier(tier: CompletionTier, model: Model<Api>): Effort | undefined {
-	if (tier !== "slow" || !model.reasoning) return undefined;
-	const efforts = getSupportedEfforts(model);
-	if (efforts.length === 0) return undefined;
-	return efforts.includes(Effort.High) ? Effort.High : efforts[efforts.length - 1];
-}
 
 /**
  * Run a single stateless completion on behalf of an eval cell's `completion()` call.
@@ -165,7 +150,6 @@ export async function runEvalCompletion(
 			{
 				apiKey: registry.resolver(model, options.session.getSessionId?.() ?? undefined),
 				signal: options.signal,
-				reasoning: reasoningForTier(finalTier, model),
 				toolChoice: schema ? { type: "tool", name: STRUCTURED_TOOL_NAME } : undefined,
 			},
 			{ telemetry, oneshotKind: "eval_completion" },

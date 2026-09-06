@@ -399,7 +399,7 @@ export class VibeSessionRegistry {
 		}
 		const agentModelOverrides = session.settings.get("task.agentModelOverrides");
 		// Same contract as the task spawn path: the expansion discards the role
-		// alias (`@task`, `@smol`), so patterns and role identity come from one
+		// selector, so patterns and model identity come from one
 		// call — the child's inherited retry-fallback chain is keyed off the role.
 		const { patterns, role } = resolveAgentModelSelection({
 			settingsOverride: agentModelOverrides[agentName],

@@ -5,7 +5,7 @@ import type { MnemopiOptions } from "@oh-my-pi/pi-mnemopi";
 import { getMemoriesDir, logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 
-export type MnemopiLlmMode = "none" | "smol" | "remote";
+export type MnemopiLlmMode = "none" | "remote"; // HERMES-OMP PATCH: no "smol" role mode
 
 export type MnemopiScoping = "global" | "per-project" | "per-project-tagged";
 
@@ -50,7 +50,9 @@ export function loadMnemopiConfig(settings: Settings, agentDir: string): Mnemopi
 	const scope = computeMnemopiBankScope(settings.get("mnemopi.bank"), cwd, scoping);
 	const recallBanks =
 		scoping === "global" ? scope.recallBanks : extendRecallWithLegacyBanks(scope.recallBanks, dbPath, cwd);
-	const llmMode = settings.get("mnemopi.llmMode");
+	// Stored "smol" (a deleted role mode) degrades to "none".
+	const rawLlmMode = settings.get("mnemopi.llmMode");
+	const llmMode: MnemopiLlmMode = rawLlmMode === "remote" ? "remote" : "none";
 	const embeddingOverride = settings.get("mnemopi.embeddingModel");
 	const embeddingVariant = settings.get("mnemopi.embeddingVariant");
 	// Map the variant explicitly rather than indexing an object with the raw config

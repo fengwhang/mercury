@@ -54,7 +54,7 @@ export class OmpCommitInference implements CommitInference {
 
 	constructor(options: {
 		primary: ResolvedCommitModel;
-		smol: ResolvedCommitModel;
+		secondary: ResolvedCommitModel; // HERMES-OMP PATCH: was the "smol" role pass
 		forcePrimaryForEveryRole?: boolean;
 		config: ConventionalGenerationConfig;
 		cache: CommitInferenceCache | null;
@@ -63,7 +63,7 @@ export class OmpCommitInference implements CommitInference {
 		onProgress?: CommitProgress;
 		signal?: AbortSignal;
 	}) {
-		const secondary = options.forcePrimaryForEveryRole ? options.primary : options.smol;
+		const secondary = options.forcePrimaryForEveryRole ? options.primary : options.secondary;
 		this.#targets = {
 			analysis: options.primary,
 			summary: secondary,

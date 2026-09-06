@@ -5,7 +5,7 @@
  * {@link Effort}, clamped into the active model's supported range (never below
  * {@link Effort.Low}). Two backends, selected by `providers.autoThinkingModel`:
  *
- * - `online` (default): a smol model classifies into `low|medium|high|xhigh`,
+ * - `online` (default): the session model classifies into `low|medium|high|xhigh`,
  *   plus `max` when the target model exposes that tier.
  * - a local key: an on-device memory model classifies into the coarser
  *   `trivial|moderate|hard` scheme (3-class is more reliable than 4-way ordinal
@@ -133,7 +133,7 @@ async function classifyOnline(input: string, deps: ClassifyDifficultyDeps, ceili
 	const resolved = resolveRoleSelection(deps.settings, deps.registry.getAvailable()); // HERMES-OMP PATCH: session model
 	const model = resolved?.model;
 	if (!model) {
-		throw new Error("auto-thinking: no tiny/smol model available for classification");
+		throw new Error("auto-thinking: no model available for classification");
 	}
 	const apiKey = await deps.registry.getApiKey(model, deps.sessionId);
 	if (!apiKey) {

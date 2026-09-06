@@ -8,7 +8,6 @@ import type * as MnemopiDiagnoseNs from "@oh-my-pi/pi-mnemopi/diagnose";
 import type { DiagnosticSummary } from "@oh-my-pi/pi-mnemopi/diagnose";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { resolveRoleSelection } from "../config/model-resolver";
 import type {
 	MemoryBackend,
 	MemoryBackendSaveInput,
@@ -519,7 +518,7 @@ async function resolveMnemopiProviderOptions(
 
 	if (config.llmMode === "none") return base;
 
-	// A local on-device memory model (providers.memoryModel) overrides the smol/remote
+	// A local on-device memory model (providers.memoryModel) overrides the remote
 	// LLM for both consolidation and the configured extraction path. `none` still wins
 	// (the user explicitly disabled the LLM). The refined prompts feed the small local
 	// model the line-format extraction + hardened consolidation recipes from the spike.
@@ -557,54 +556,10 @@ async function resolveMnemopiProviderOptions(
 		};
 	}
 
-	try {
-		const resolved = resolveRoleSelection(settings, modelRegistry.getAvailable()); // HERMES-OMP PATCH: session model
-		const model = resolved?.model;
-		if (!model) {
-			logger.warn("Mnemopi: llmMode=smol but no tiny/smol model resolved; continuing without LLM.");
-			return base;
-		}
-		return {
-			...base,
-			llm: async (prompt, opts) => {
-				const request = resolveMemoryCompletionInput(prompt, opts);
-				const hasApiKey = await modelRegistry.getApiKey(model, sessionId);
-				if (!hasApiKey) {
-					logger.warn("Mnemopi: smol completion requested but no current API key is available.", {
-						provider: model.provider,
-						model: model.id,
-					});
-					return null;
-				}
-				const message = await retryTransientCompletion(() =>
-					completeSimple(
-						model,
-						{
-							...(request.systemPrompt ? { systemPrompt: [request.systemPrompt] } : {}),
-							messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }],
-						},
-						{
-							apiKey: modelRegistry.resolver(model, sessionId),
-							sessionId,
-							maxTokens: opts?.maxTokens,
-							temperature: opts?.temperature,
-						},
-					),
-				);
-				return message.content
-					.filter(
-						(block): block is Extract<(typeof message.content)[number], { type: "text" }> =>
-							block.type === "text",
-					)
-					.map(block => block.text)
-					.join("\n")
-					.trim();
-			},
-		};
-	} catch (error) {
-		logger.warn("Mnemopi: smol LLM resolution failed; continuing without LLM.", { error: String(error) });
-		return base;
-	}
+	// HERMES-OMP PATCH (no model roles): the "smol"/online-tiny memory LLM
+	// path was role selection — deleted. Modes are none (off) or remote
+	// (explicit endpoint). Local on-device memoryModel (above) still works.
+	return base;
 }
 
 function getMnemopiSessionStateFromParent(options: MemoryBackendStartOptions): MnemopiSessionState | undefined {

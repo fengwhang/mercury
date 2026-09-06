@@ -1103,7 +1103,7 @@ export function normalizeModelPatternList(value: string | string[] | undefined):
  * Extract the first explicit model-role alias from a raw model selection.
  *
  * This intentionally runs before role expansion so callers can retain the
- * source identity (`@smol`, `pi/slow`, or `*`) even when it resolves to a
+ * source identity (`@default`, `pi/default`, or `*`) even when it resolves to a
  * concrete provider/model or inherited fallback. Bare role names and explicit
  * provider/model selectors are not role aliases.
  */
@@ -1165,7 +1165,7 @@ function resolveDefaultInheritedPatterns(
 		);
 		const aliasRole = getModelRoleAlias(aliasCandidate, settings);
 		if (aliasRole === role) {
-			// Self-alias (e.g. modelRoles.default = "@smol") would loop back to the
+			// Self-alias (e.g. modelRoles.default = "@default") would loop back to the
 			resolved.push(
 				...(thinkingLevel
 					? roleDefaults.map(defaultPattern => `${defaultPattern}:${thinkingLevel}`)
@@ -1224,7 +1224,7 @@ function resolveConfiguredRolePattern(
 }
 
 /**
- * Expand a role alias like "@smol" to the configured model string.
+ * Expand the default-role alias (`@default`/`*`) to the configured model string.
  */
 export function expandRoleAlias(value: string, settings?: ModelRoleLookup): string {
 	const normalized = value.trim();
@@ -1720,7 +1720,7 @@ export async function resolveModelScope(
 			continue;
 		}
 
-		// Role aliases (`@smol`, `pi/slow`) resolve to the role's single concrete
+		// The default-role alias (`@default`, `pi/default`) resolves to the single concrete
 		// model — not its whole fallback chain — so a role contributes one scope
 		// entry exactly like `--model` would pick. (Bare `*` stays a match-all
 		// glob above; scope semantics, not the default-role alias.)
@@ -2251,78 +2251,4 @@ export async function restoreModelFromSession(
 	return { model: undefined, fallbackMessage: undefined };
 }
 
-/**
- * Find a smol/fast model using the priority chain.
- * Tries exact matches first, then fuzzy matches.
- *
- * @param modelRegistry The model registry to search
- * @param savedModel Optional saved model string from settings (provider/modelId)
- * @returns The best available smol model, or undefined if none found
- */
-export async function findSmolModel(
-	modelRegistry: ModelLookupRegistry,
-	savedModel?: string,
-): Promise<Model<Api> | undefined> {
-	const availableModels = modelRegistry.getAvailable();
-	if (availableModels.length === 0) return undefined;
 
-	// 1. Try saved model from settings
-	if (savedModel) {
-		const match = resolveModelFromString(savedModel, availableModels, undefined);
-		if (match) return match;
-	}
-
-	// 2. Try priority chain
-	for (const pattern of MODEL_PRIO.smol) {
-		// Try exact match with provider prefix
-		const providerMatch = availableModels.find(m => `${m.provider}/${m.id}`.toLowerCase() === pattern);
-		if (providerMatch) return providerMatch;
-
-		// Try exact match first
-		const exactMatch = parseModelPattern(pattern, availableModels, undefined).model;
-		if (exactMatch) return exactMatch;
-
-		// Try fuzzy match (substring)
-		const fuzzyMatch = availableModels.find(m => m.id.toLowerCase().includes(pattern));
-		if (fuzzyMatch) return fuzzyMatch;
-	}
-
-	// 3. Fallback to first available (same as default)
-	return availableModels[0];
-}
-
-/**
- * Find a slow/comprehensive model using the priority chain.
- * Prioritizes reasoning and codex models for thorough analysis.
- *
- * @param modelRegistry The model registry to search
- * @param savedModel Optional saved model string from settings (provider/modelId)
- * @returns The best available slow model, or undefined if none found
- */
-export async function findSlowModel(
-	modelRegistry: ModelLookupRegistry,
-	savedModel?: string,
-): Promise<Model<Api> | undefined> {
-	const availableModels = modelRegistry.getAvailable();
-	if (availableModels.length === 0) return undefined;
-
-	// 1. Try saved model from settings
-	if (savedModel) {
-		const match = resolveModelFromString(savedModel, availableModels, undefined);
-		if (match) return match;
-	}
-
-	// 2. Try priority chain
-	for (const pattern of MODEL_PRIO.slow) {
-		// Try exact match first
-		const exactMatch = parseModelPattern(pattern, availableModels, undefined).model;
-		if (exactMatch) return exactMatch;
-
-		// Try fuzzy match (substring)
-		const fuzzyMatch = availableModels.find(m => m.id.toLowerCase().includes(pattern.toLowerCase()));
-		if (fuzzyMatch) return fuzzyMatch;
-	}
-
-	// 3. Fallback to first available (same as default)
-	return availableModels[0];
-}

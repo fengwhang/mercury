@@ -517,7 +517,7 @@ async function runPhase2(options: MemoryStartupOptions): Promise<void> {
 		const phase2Model = await resolveMemoryModel({
 			modelRegistry,
 			session,
-			fallbackRole: "smol",
+			fallbackRole: "default",
 		});
 		if (!phase2Model) {
 			markPhase2FailureWithFallback(db, {

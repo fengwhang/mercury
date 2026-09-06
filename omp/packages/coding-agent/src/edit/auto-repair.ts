@@ -4,13 +4,13 @@
  * When an applied edit turns a file that parsed into one that no longer does,
  * this module localizes the breakage to the smallest hunk set whose reversion
  * restores the parse, hands that region (with its parseable pre-image as
- * reference) to the `smol` model, and accepts a candidate only when the
+ * reference) to the session model, and accepts a candidate only when the
  * repaired file re-parses and the candidate is not a plain revert of the
  * intended change.
  *
  * Sizing and acceptance rules come from a static evaluation over recorded
  * parse regressions (`edit-blackbox.jsonl`): median culprit region ~14 lines,
- * 94% under 150 lines; smol fixed 99% with one feedback retry, with ~12% of
+ * 94% under 150 lines; the model fixed 99% with one feedback retry, with ~12% of
  * raw candidates being reverts — hence the explicit revert rejection.
  */
 import { completeSimple, retryTransientCompletion } from "@oh-my-pi/pi-ai";
@@ -277,7 +277,7 @@ export interface EditAutoRepairOutcome {
 /**
  * Attempt to auto-repair a committed edit that introduced a parse failure,
  * writing the repaired content through the edit tool's LSP writethrough.
- * Gated on `edit.autoRepair.enabled` and the `smol` role resolving to an
+ * Gated on `edit.autoRepair.enabled` and the session model resolving to an
  * authenticated model. Returns `undefined` whenever repair is unavailable,
  * unsafe (file changed or recovered on its own), or rejected by validation.
  */
@@ -295,7 +295,7 @@ export async function attemptEditAutoRepair(options: {
 	if (!model) return undefined;
 	const sessionId = session.getSessionId?.() ?? undefined;
 	// Resolve the key eagerly so the session-sticky credential is recorded and
-	// an unauthenticated smol role bails before any region work.
+	// an unauthenticated model bails before any region work.
 	const apiKey = await registry.getApiKey(model, sessionId);
 	if (!apiKey) return undefined;
 
