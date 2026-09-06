@@ -64,10 +64,8 @@ import type { ModelRegistry } from "../config/model-registry";
 import {
 	formatModelString,
 	formatModelStringWithRouting,
-	resolveAdvisorRoleSelection,
 	resolveModelOverride,
 } from "../config/model-resolver";
-import { MODEL_ROLES } from "../config/model-roles";
 import { serviceTierForAllFamilies, serviceTierSettingToTier } from "../config/service-tier";
 import type { Settings } from "../config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "../cursor";
@@ -739,18 +737,19 @@ export class SessionAdvisors {
 					continue;
 				}
 			} else {
-				const sel = resolveAdvisorRoleSelection(this.#host.settings, this.#host.modelRegistry.getAvailable());
-				if (!sel) {
+				// HERMES-OMP PATCH (no model roles): the advisor has no role chain.
+				// It runs the SESSION agent's live model — same model object, same
+				// fallback chain. No role lookup, no priority list.
+				model = this.#host.agent.state.model;
+				if (!model) {
 					this.#advisorStatuses.set(slug, { name: config.name, status: "no_model" });
 					if (emitWarnings) {
-						logger.debug("advisor enabled but no model assigned to the 'advisor' role; advisor inactive", {
+						logger.debug("advisor enabled but the session has no model; advisor inactive", {
 							advisor: config.name,
 						});
 					}
 					continue;
 				}
-				model = sel.model;
-				thinkingLevel = concreteThinkingLevel(sel.thinkingLevel);
 			}
 			// Clamp the effort against the resolved model. Historically we defaulted
 			// to `ThinkingLevel.Medium` unconditionally, which threw at first stream
@@ -893,7 +892,7 @@ export class SessionAdvisors {
 						...this.#host.agent.telemetry,
 						agent: {
 							id: advisorSessionLabel,
-							name: slug ? `${MODEL_ROLES.advisor.name}: ${advisorName}` : MODEL_ROLES.advisor.name,
+							name: slug ? `Advisor: ${advisorName}` : "Advisor",
 							description: formatModelString(advisorModel),
 						},
 						conversationId: undefined,

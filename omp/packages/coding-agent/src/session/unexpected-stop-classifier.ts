@@ -85,7 +85,7 @@ export async function classifyUnexpectedStop(
 }
 
 async function classifyOnline(text: string, deps: ClassifyUnexpectedStopDeps): Promise<boolean | undefined> {
-	const resolved = resolveRoleSelection(["tiny", "smol"], deps.settings, deps.registry.getAvailable());
+	const resolved = resolveRoleSelection(deps.settings, deps.registry.getAvailable()); // HERMES-OMP PATCH: session model
 	const model = resolved?.model;
 	if (!model) {
 		throw new Error("unexpected-stop: no tiny/smol model available for classification");

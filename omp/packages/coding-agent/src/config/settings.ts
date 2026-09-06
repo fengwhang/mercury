@@ -1731,14 +1731,14 @@ export class Settings {
 		// otherwise #saveNow would treat hermes/models keys as omp settings.
 		const mercuryPath = process.env.MERCURY_CONFIG?.trim();
 		if (mercuryPath && path.resolve(filePath) === path.resolve(mercuryPath)) {
-			if (result.kind === "ok") {
+			if (result.kind === "loaded") {
 				const whole = this.#unwrapYamlLoadResult(filePath, result);
 				if (whole && typeof whole === "object") {
 					const subtree = (whole as Record<string, unknown>)["omp"];
 					result = {
 						...result,
 						// eslint-disable-next-line @typescript-eslint/no-explicit-any
-						value: subtree && typeof subtree === "object" ? subtree : {},
+						settings: subtree && typeof subtree === "object" ? (subtree as any) : {},
 					} as typeof result;
 				}
 			}

@@ -8,7 +8,6 @@ import {
 	resolveModelRoleValue,
 	resolveRoleSelection,
 } from "../config/model-resolver";
-import { MODEL_ROLE_IDS } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import { concreteThinkingLevel } from "../thinking";
@@ -43,7 +42,7 @@ export async function resolvePrimaryModel(
 	const matchPreferences = getModelMatchPreferences(settings);
 	const resolved = override
 		? resolveModelRoleValue(override, available, { settings, matchPreferences })
-		: resolveRoleSelection(["commit", "smol", ...MODEL_ROLE_IDS], settings, available);
+		: resolveRoleSelection(settings, available); // HERMES-OMP PATCH: session model
 	const model = resolved?.model;
 	if (!model) {
 		throw new Error("No model available for commit generation");
@@ -66,7 +65,7 @@ export async function resolveSmolModel(
 	fallbackApiKey: ApiKey,
 ): Promise<ResolvedCommitModel> {
 	const available = modelRegistry.getAvailable();
-	const resolvedSmol = resolveRoleSelection(["smol"], settings, available);
+	const resolvedSmol = resolveRoleSelection(settings, available); // HERMES-OMP PATCH: session model
 	if (resolvedSmol?.model) {
 		const apiKey = await modelRegistry.getApiKey(resolvedSmol.model);
 		if (apiKey) {

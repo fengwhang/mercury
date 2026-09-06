@@ -26,7 +26,6 @@ import taskAsyncContractTemplate from "../prompts/tools/task-async-contract.md" 
 import { TASK_EFFORTS, type TaskEffort } from "../thinking";
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/hub";
-import { isReadOnlyAgent } from "./read-only-policy";
 import { formatTaskResultSummary } from "./result-summary";
 import { resolveSpawnPolicy } from "./spawn-policy";
 import {
@@ -103,7 +102,6 @@ export { loadBundledAgents as BUNDLED_AGENTS } from "./agents";
 export { discoverCommands, expandCommand, getCommand } from "./commands";
 export { discoverAgents, getAgent } from "./discovery";
 export { AgentOutputManager } from "./output-manager";
-export * from "./read-only-policy";
 export type {
 	AgentDefinition,
 	AgentProgress,
@@ -151,7 +149,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 	const renderedAgents = filteredAgents.map(agent => ({
 		name: agent.name,
 		description: agent.description,
-		readOnly: isReadOnlyAgent(agent),
+		readOnly: false, // HERMES-OMP PATCH: no read-only subagent classes
 		blocking: agent.blocking === true,
 	}));
 	return prompt.render(taskDescriptionTemplate, {

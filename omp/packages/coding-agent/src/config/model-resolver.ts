@@ -1122,17 +1122,15 @@ export function resolveExplicitModelRole(
 }
 
 function isSessionInheritedAgentPattern(value: string): boolean {
-	// HERMES-OMP PATCH (no model roles): "@task"/"pi/task" in a legacy user
-	// config or agent frontmatter does NOT select a role — it is accepted
-	// as a synonym for "*": inherit the session model (delegate model +
-	// fallback chain). No role machinery runs for it.
+	// HERMES-OMP PATCH (no model roles): only the no-op aliases mean
+	// "inherit the session model". Historical role names are NOT accepted
+	// here — they match no pattern and resolve to the session model via the
+	// empty-pattern path instead.
 	return (
 		value === DEFAULT_MODEL_ROLE ||
 		value === formatModelRoleAlias(DEFAULT_MODEL_ROLE) ||
 		value === DEFAULT_MODEL_ROLE_ALIAS ||
-		value === `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}${DEFAULT_MODEL_ROLE}` ||
-		value === formatModelRoleAlias("task") ||
-		value === `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}task`
+		value === `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}${DEFAULT_MODEL_ROLE}`
 	);
 }
 
@@ -1283,12 +1281,8 @@ function resolveEffectiveAgentModelSelection(
 	const singleAgentPattern = normalizedAgentPatterns.length === 1 ? normalizedAgentPatterns[0] : undefined;
 	const agentInheritsSessionModel = singleAgentPattern ? isSessionInheritedAgentPattern(singleAgentPattern) : false;
 	if (configuredAgentPatterns.length > 0) {
-		if (
-			singleAgentPattern === formatModelRoleAlias("task") ||
-			singleAgentPattern === `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}task`
-		) {
-			return { source: agentModel, patterns: configuredAgentPatterns };
-		}
+		// HERMES-OMP PATCH (no model roles): no per-agent role special case —
+		// any concrete configured pattern is honored as-is.
 		if (!agentInheritsSessionModel) return { source: agentModel, patterns: configuredAgentPatterns };
 	}
 
@@ -1411,13 +1405,16 @@ export function resolveModelRoleValue(
 	// provider/model selectors (non-role strings, no @/* prefix) still work
 	// for --model; everything role-flavored lands on the session model.
 	const normalized = (roleValue ?? "").trim();
+	// HERMES-OMP PATCH (no model roles): NO role-name vocabulary is consulted.
+	// Only structural grammar remains: @ / pi/ prefixes and the "*" /
+	// "default" no-op aliases. Any other string is treated as a model
+	// selector; role-flavored strings match no pattern and fall through to
+	// the session model.
 	const looksLikeRole =
 		normalized.startsWith(MODEL_ROLE_ALIAS_PREFIX) ||
 		normalized.startsWith(LEGACY_MODEL_ROLE_ALIAS_PREFIX) ||
 		normalized === DEFAULT_MODEL_ROLE_ALIAS ||
-		normalized === "default" ||
-		// bare role words that used to be aliases
-		["smol", "slow", "plan", "task", "tiny", "advisor", "designer", "vision", "commit"].includes(normalized);
+		normalized === "default";
 	if (looksLikeRole || !normalized) {
 		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
 	}
@@ -1640,15 +1637,14 @@ export async function resolveModelOverrideWithAuthFallback(
 }
 
 /**
- * Resolve a list of role patterns to the first matching model.
+ * HERMES-OMP PATCH (no model roles): resolve THE model — the session's
+ * configured default (in Mercury: the delegate model + its fallback chain).
+ * There are no role lists anymore; callers pass settings and availability.
  */
 export function resolveRoleSelection(
-	roles: readonly string[],
 	settings: Settings,
 	availableModels: Model<Api>[],
 ): { role: string; model: Model<Api>; thinkingLevel?: ConfiguredThinkingLevel } | undefined {
-	// HERMES-OMP PATCH (no model roles): every historical role name is the
-	// session model. Ignore the caller's role list; resolve "default" only.
 	const matchPreferences = getModelMatchPreferences(settings);
 	for (const role of ["default"]) {
 		const resolved = resolveModelRoleValue(settings.getModelRole(role), availableModels, {
@@ -1670,16 +1666,6 @@ export function resolveRoleSelection(
  * the `slow` role itself, never inherits the primary's model. Returns undefined
  * only when no candidate in the resolved chain is available.
  */
-export function resolveAdvisorRoleSelection(
-	settings: Settings,
-	availableModels: Model<Api>[],
-): { model: Model<Api>; thinkingLevel?: ConfiguredThinkingLevel } | undefined {
-	const resolved = resolveModelRoleValue(formatModelRoleAlias("advisor"), availableModels, {
-		settings,
-		matchPreferences: getModelMatchPreferences(settings),
-	});
-	return resolved.model ? { model: resolved.model, thinkingLevel: resolved.thinkingLevel } : undefined;
-}
 
 /**
  * Resolve model patterns to actual Model objects with optional thinking levels

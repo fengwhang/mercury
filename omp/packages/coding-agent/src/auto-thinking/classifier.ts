@@ -130,7 +130,7 @@ export async function classifyDifficulty(
 }
 
 async function classifyOnline(input: string, deps: ClassifyDifficultyDeps, ceiling: Effort): Promise<Effort> {
-	const resolved = resolveRoleSelection(["tiny", "smol"], deps.settings, deps.registry.getAvailable());
+	const resolved = resolveRoleSelection(deps.settings, deps.registry.getAvailable()); // HERMES-OMP PATCH: session model
 	const model = resolved?.model;
 	if (!model) {
 		throw new Error("auto-thinking: no tiny/smol model available for classification");

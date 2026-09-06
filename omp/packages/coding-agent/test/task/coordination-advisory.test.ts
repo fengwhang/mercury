@@ -53,7 +53,6 @@ describe("composeSpawnAdvisory", () => {
 			depthCapacity: true,
 			ircEnabled: true,
 			willRunAsync: true,
-			scoutAvailable: false,
 		});
 		expect(advisory).toContain("generic");
 		expect(advisory).not.toContain("scout");

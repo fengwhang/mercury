@@ -371,9 +371,9 @@ async function loadMercurySharedMemory(_ctx: LoadContext): Promise<LoadResult<Co
 	const parts: string[] = [];
 	for (const name of names) {
 		let content: string | undefined;
-		if (profileCfg) content = await readFile(path.join(profileCfg, name));
-		if (!content) content = await readFile(path.join(sharedCfg, name));
-		if (!content) content = await readFile(path.join(mercuryHome, name));
+		if (profileCfg) content = (await readFile(path.join(profileCfg, name))) ?? undefined;
+		if (!content) content = (await readFile(path.join(sharedCfg, name))) ?? undefined;
+		if (!content) content = (await readFile(path.join(mercuryHome, name))) ?? undefined;
 		if (content) parts.push(content.trimEnd());
 	}
 	if (!parts.length) return { items: [], warnings: [] };

@@ -1101,12 +1101,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 
 		section("Changes");
 		add(
-			theme.fg(
-				"dim",
-				ref.kind === "advisor" || ref.history?.readOnly
-					? "Read-only · 0 LoC"
-					: "Shared workspace · per-agent LoC not attributable",
-			),
+			theme.fg("dim", "Shared workspace · per-agent LoC not attributable"),
 		);
 		const artifacts = ref.history;
 		if (artifacts?.outputPath) addWrapped(`Output ${shortenPath(artifacts.outputPath)}`);

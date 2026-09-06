@@ -381,7 +381,7 @@ describe("Agent hub Enter activation", () => {
 					id: "init",
 					parentId: "model",
 					timestamp: createdAt,
-					systemPrompt: `base prompt\n\nROLE\n====\n${getBundledAgent("scout")?.systemPrompt}`,
+					systemPrompt: `base prompt\n\nROLE\n====\n${getBundledAgent("subagent")!.systemPrompt}`,
 					task: "Inspect persisted telemetry.",
 					tools: ["read", "grep"],
 				}),
@@ -424,13 +424,16 @@ describe("Agent hub Enter activation", () => {
 		await hub.persistedSubagentsReady;
 
 		const workerEntry = renderedRosterEntry(hub, "Worker", 120).replace(/\s+/g, " ");
-		expect(workerEntry).toContain("SMOL");
+		// HERMES-OMP PATCH (no model roles): no per-role badge in roster rows;
+		// the row carries the worker label and its (session) model.
+		expect(workerEntry).toContain("Worker");
+		expect(workerEntry).toContain("gpt-5.6-luna");
 		expect(workerEntry).toContain("$0.123");
 		expect(workerEntry).toContain("1m30s");
 		expect(workerEntry).toContain("1 req");
 		expect(workerEntry).toContain("2 tools");
 		expect(workerEntry).toContain("135 tok");
-		expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("Read-only · 0 LoC");
+		expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("Shared workspace · per-agent LoC not attrib");
 		hub.dispose();
 	});
 	it("yields to a macrotask at the configured streaming threshold", async () => {

@@ -203,8 +203,9 @@ describe("AgentSession advisor auto-resume suppression", () => {
 			streamFn: mock.stream,
 		});
 		const sessionManager = SessionManager.inMemory();
+		// HERMES-OMP PATCH (no model roles): the advisor runs the session
+		// model; no role to configure.
 		const settings = Settings.isolated({ "compaction.enabled": false, "retry.enabled": false });
-		settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
 		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
@@ -292,7 +293,7 @@ describe("AgentSession advisor auto-resume suppression", () => {
 			"compaction.enabled": false,
 			"retry.enabled": false,
 		});
-		settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
+		// HERMES-OMP PATCH (no model roles): advisor runs the session model.
 		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
 		authStorage.setRuntimeApiKey("anthropic", "test-key");

@@ -46,7 +46,7 @@ describe("extractProfileFlags", () => {
 
 		const parsed = parseArgs(extracted.argv, new Map([["plan", { type: "boolean" }]]));
 		expect(parsed.unknownFlags.get("plan")).toBe(true);
-		expect(parsed.plan).toBeUndefined();
+		expect((parsed as unknown as Record<string, unknown>).plan).toBeUndefined();
 		expect(parsed.messages).toEqual(["follow up"]);
 	});
 
@@ -59,7 +59,7 @@ describe("extractProfileFlags", () => {
 		expect(extracted.argv).toEqual(["--plan", PROFILE_BOOTSTRAP_BOUNDARY_ARG, "follow up"]);
 
 		const parsed = parseArgs(extracted.argv);
-		expect(parsed.plan).toBeUndefined();
+		expect((parsed as unknown as Record<string, unknown>).plan).toBeUndefined();
 		expect(parsed.messages).toEqual(["follow up"]);
 	});
 

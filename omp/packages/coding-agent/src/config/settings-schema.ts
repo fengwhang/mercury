@@ -401,7 +401,9 @@ export interface ModelTagsSettings {
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_STRING_RECORD: Record<string, string> = {};
 const EMPTY_NUMBER_RECORD: Record<string, number> = {};
-const DEFAULT_CYCLE_ORDER: string[] = ["smol", "default", "slow"];
+// HERMES-OMP PATCH (no model roles): the quick-switch cycle covers the
+// single session role only.
+const DEFAULT_CYCLE_ORDER: string[] = ["default"];
 const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["hub"];
 const EMPTY_MODEL_TAGS_RECORD: ModelTagsSettings = {};
 const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
@@ -6132,11 +6134,14 @@ export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boo
 							? D
 							: Schema[P] extends { type: "record"; default: infer D }
 								? D
-								: never;
+								: Schema[P] extends { type: "model" }
+									? string | undefined
+									: never;
 
 /** Get the default value for a setting path */
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
-	return SETTINGS_SCHEMA[path].default as SettingValue<P>;
+	const def = SETTINGS_SCHEMA[path] as { default?: unknown };
+	return def.default as SettingValue<P>;
 }
 
 /** Check if a path has UI metadata (should appear in settings panel) */
@@ -6173,8 +6178,10 @@ export function getPathsForTab(tab: SettingTab): SettingPath[] {
 }
 
 /** Get the type of a setting */
-export function getType(path: SettingPath): SettingDef["type"] {
-	return SETTINGS_SCHEMA[path].type;
+export type SettingTypeTag = "boolean" | "string" | "number" | "enum" | "array" | "record" | "model";
+
+export function getType(path: SettingPath): SettingTypeTag {
+	return SETTINGS_SCHEMA[path].type as SettingTypeTag;
 }
 
 /** Get enum values for an enum setting */

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { buildSpecializationAdvisory, TaskTool } from "@oh-my-pi/pi-coding-agent/task";
+import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition, SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
@@ -14,35 +14,6 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 // (DepthCapacity). It is gated on depth so a leaf at max recursion is never
 // nagged, and a lone generic spawn is never flagged.
 
-describe("buildSpecializationAdvisory", () => {
-	it("nudges when one call spawns two generic workers with depth capacity", () => {
-		const advice = buildSpecializationAdvisory(["task", "task"], true);
-		expect(advice).toBeDefined();
-		expect(advice).toContain('`agent: "scout"`');
-	});
-
-	it("stays silent at max depth even for a generic fan-out", () => {
-		expect(buildSpecializationAdvisory(["task", "task"], false)).toBeUndefined();
-	});
-
-	it("stays silent for a single generic spawn", () => {
-		expect(buildSpecializationAdvisory(["task"], true)).toBeUndefined();
-	});
-
-	it("stays silent when the fan-out already uses specific agent types", () => {
-		expect(buildSpecializationAdvisory(["reviewer", "scout"], true)).toBeUndefined();
-	});
-
-	it("stays silent for a mixed call with only one generic worker", () => {
-		expect(buildSpecializationAdvisory(["task", "scout"], true)).toBeUndefined();
-	});
-
-	it("counts sonic as generic alongside task", () => {
-		const advice = buildSpecializationAdvisory(["sonic", "task"], true);
-		expect(advice).toBeDefined();
-		expect(advice).toContain("2 generic");
-	});
-});
 
 // Contract: the advisory rides the task-tool result for an interactive spawner,
 // but a session that opts out (`suppressSpawnAdvisory` — internal/programmatic

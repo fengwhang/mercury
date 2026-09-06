@@ -558,7 +558,7 @@ async function resolveMnemopiProviderOptions(
 	}
 
 	try {
-		const resolved = resolveRoleSelection(["tiny", "smol"], settings, modelRegistry.getAvailable());
+		const resolved = resolveRoleSelection(settings, modelRegistry.getAvailable()); // HERMES-OMP PATCH: session model
 		const model = resolved?.model;
 		if (!model) {
 			logger.warn("Mnemopi: llmMode=smol but no tiny/smol model resolved; continuing without LLM.");

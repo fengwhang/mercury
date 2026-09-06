@@ -691,7 +691,6 @@ describe("system prompt tool inventory", () => {
 				skills: [],
 				rules: [],
 				workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
-				scoutAvailable: true,
 			})
 		).systemPrompt.join("\n\n");
 		const withoutScout = (
@@ -702,7 +701,6 @@ describe("system prompt tool inventory", () => {
 				skills: [],
 				rules: [],
 				workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
-				scoutAvailable: false,
 			})
 		).systemPrompt.join("\n\n");
 

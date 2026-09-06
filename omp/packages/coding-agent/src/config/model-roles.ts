@@ -13,6 +13,7 @@
  * that reference role *names* (UI listings, help text) keep building;
  * they are inert. Sweep them at leisure (tracked in TODO A1-sweep).
  */
+import type { ThemeColor } from "../modes/theme/schema";
 import type { Settings } from "./settings";
 
 export const MODEL_ROLE_ALIAS_PREFIX = "@";
@@ -35,7 +36,9 @@ export interface ModelRoleInfo {
 	id: string;
 	tag: string;
 	name: string;
-	color: string;
+	color: ThemeColor;
+	/** Present for source-plumbing reasons; always false in the single-role world. */
+	hidden?: boolean;
 }
 
 /** The single role that exists: default. Lookups of any id return this. */

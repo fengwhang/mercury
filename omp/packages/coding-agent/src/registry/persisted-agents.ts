@@ -8,7 +8,6 @@ import { assistantTurnProducedOutput } from "../session/messages";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "../session/session-entries";
 import { visitEntriesFromFileStream } from "../session/session-loader";
 import { loadBundledAgents } from "../task/agents";
-import { isReadOnlyAgent } from "../task/read-only-policy";
 import { persistedVibeChildIds } from "../vibe/lifecycle";
 import {
 	type AgentHistorySummary,
@@ -75,7 +74,7 @@ function finiteNumber(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function inferBundledAgent(systemPrompt: string): { agent?: string; modelRole?: string; readOnly?: boolean } {
+function inferBundledAgent(systemPrompt: string): { agent?: string; modelRole?: string } {
 	const matches = loadBundledAgents().filter(agent => {
 		const rolePrompt = agent.systemPrompt.trim();
 		return rolePrompt.length > 0 && systemPrompt.includes(rolePrompt);
@@ -87,7 +86,6 @@ function inferBundledAgent(systemPrompt: string): { agent?: string; modelRole?: 
 	return {
 		agent: agent.name,
 		modelRole: resolveExplicitModelRole(agent.model),
-		readOnly: isReadOnlyAgent(agent),
 	};
 }
 
@@ -332,7 +330,7 @@ async function readPersistedAgentMetadata(sessionFile: string): Promise<Persiste
 					modelRole:
 						typeof record.modelRole === "string" ? record.modelRole : (history.modelRole ?? inferred.modelRole),
 					resolvedModel: typeof record.resolvedModel === "string" ? record.resolvedModel : history.resolvedModel,
-					readOnly: typeof record.readOnly === "boolean" ? record.readOnly : inferred.readOnly,
+					readOnly: false, // HERMES-OMP PATCH: no read-only subagent classes
 				};
 				return false;
 			},

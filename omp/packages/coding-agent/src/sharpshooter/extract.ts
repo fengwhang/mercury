@@ -163,7 +163,7 @@ export async function resolveSharpshooterModel(
 		logger.debug("Sharpshooter extraction model selector did not resolve", { selector });
 	}
 
-	const fallback = resolveRoleSelection(["smol"], settings, modelRegistry.getAvailable())?.model;
+	const fallback = resolveRoleSelection(settings, modelRegistry.getAvailable())?.model; // HERMES-OMP PATCH: session model
 	if (!fallback) logger.debug("Sharpshooter extraction skipped: no model available");
 	return fallback;
 }
