@@ -764,7 +764,14 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 					};
 				}
 				try {
-					rawOutput = JSON.stringify(completeData, null, 2) ?? "null";
+					// HERMES-OMP PATCH (quoted-reply artifact): a scalar string
+					// yield must NOT be JSON-serialized — JSON.stringify("hello")
+					// is ""hello"", and every downstream consumer reading the
+					// raw output as text saw phantom quotes. Only objects and
+					// arrays (genuine structured payloads) get serialized.
+					rawOutput = typeof completeData === "string"
+						? completeData
+						: JSON.stringify(completeData, null, 2) ?? "null";
 				} catch (err) {
 					const errorMessage = err instanceof Error ? err.message : String(err);
 					rawOutput = `{"error":"Failed to serialize fallback completion: ${errorMessage}"}`;

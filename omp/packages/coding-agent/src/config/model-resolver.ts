@@ -1122,6 +1122,10 @@ export function resolveExplicitModelRole(
 }
 
 function isSessionInheritedAgentPattern(value: string): boolean {
+	// HERMES-OMP PATCH (no model roles): "@task"/"pi/task" in a legacy user
+	// config or agent frontmatter does NOT select a role — it is accepted
+	// as a synonym for "*": inherit the session model (delegate model +
+	// fallback chain). No role machinery runs for it.
 	return (
 		value === DEFAULT_MODEL_ROLE ||
 		value === formatModelRoleAlias(DEFAULT_MODEL_ROLE) ||
@@ -1132,29 +1136,17 @@ function isSessionInheritedAgentPattern(value: string): boolean {
 	);
 }
 
-function shouldInheritDefaultBeforePriority(role: ModelRole): boolean {
-	return role === "smol" || role === "slow";
+function shouldInheritDefaultBeforePriority(_role: ModelRole): boolean {
+	// HERMES-OMP PATCH: only "default" exists; nothing inherits before
+	// priority resolution — the session model IS the resolution.
+	return false;
 }
 
-/**
- * Roles that have no priority.json chain of their own reuse another role's
- * list. The advisor — a second-opinion reviewer — defaults to the `slow`
- * reasoning chain, but (unlike the `slow` role, see
- * {@link shouldInheritDefaultBeforePriority}) never inherits the primary's
- * model, so it stays a distinct strong model out of the box. The `tiny` role —
- * the override for online title/memory/classifier tasks — reuses the `smol`
- * fast chain so an unset tiny role auto-resolves to the same fast model smol
- * would pick.
- */
-const ROLE_PRIORITY_ALIAS: Partial<Record<ModelRole, keyof typeof MODEL_PRIO>> = {
-	advisor: "slow",
-	tiny: "smol",
-};
+// HERMES-OMP PATCH: role priority aliasing removed — one role, one chain.
 
 /** Built-in priority patterns for a role, following {@link ROLE_PRIORITY_ALIAS}. */
 function rolePriorityDefaults(role: ModelRole): string[] {
-	const key = ROLE_PRIORITY_ALIAS[role] ?? (role as keyof typeof MODEL_PRIO);
-	return normalizeModelPatternList(MODEL_PRIO[key]);
+	return normalizeModelPatternList(MODEL_PRIO[role as keyof typeof MODEL_PRIO]);
 }
 
 function resolveDefaultInheritedPatterns(
@@ -1655,8 +1647,10 @@ export function resolveRoleSelection(
 	settings: Settings,
 	availableModels: Model<Api>[],
 ): { role: string; model: Model<Api>; thinkingLevel?: ConfiguredThinkingLevel } | undefined {
+	// HERMES-OMP PATCH (no model roles): every historical role name is the
+	// session model. Ignore the caller's role list; resolve "default" only.
 	const matchPreferences = getModelMatchPreferences(settings);
-	for (const role of roles) {
+	for (const role of ["default"]) {
 		const resolved = resolveModelRoleValue(settings.getModelRole(role), availableModels, {
 			settings,
 			matchPreferences,

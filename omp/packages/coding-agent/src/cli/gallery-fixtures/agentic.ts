@@ -23,13 +23,13 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		customRendered: true,
 		// Streaming: agent chosen, assignment still landing.
 		streamingArgs: {
-			agent: "task",
+			agent: "subagent",
 			id: "AuthLoader",
 			description: "Load auth middleware",
 			assignment: "Read packages/server/src/auth/*.ts and summarize the session-cookie",
 		},
 		args: {
-			agent: "task",
+			agent: "subagent",
 			id: "AuthLoader",
 			description: "Load auth middleware",
 			assignment:
@@ -50,7 +50,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					{
 						index: 0,
 						id: "AuthLoader",
-						agent: "task",
+						agent: "subagent",
 						agentSource: "bundled",
 						status: "completed",
 						task: "Read packages/server/src/auth/session.ts and middleware.ts",
@@ -75,7 +75,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					{
 						index: 0,
 						id: "AuthLoader",
-						agent: "task",
+						agent: "subagent",
 						agentSource: "bundled",
 						description: "Load auth middleware",
 						task: "Read packages/server/src/auth/session.ts and middleware.ts",
@@ -117,7 +117,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					{
 						index: 0,
 						id: "RateLimiter",
-						agent: "task",
+						agent: "subagent",
 						agentSource: "bundled",
 						description: "Audit rate limiter",
 						task: "Inspect packages/server/src/auth/rate-limit.ts",

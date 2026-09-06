@@ -23,8 +23,13 @@ export function formatModelRoleAlias(role: string): string {
 	return `${MODEL_ROLE_ALIAS_PREFIX}${role}`;
 }
 
-/** Roles exist in name only; every role IS the default (session model). */
-export type ModelRole = "default" | "smol" | "slow" | "vision" | "plan" | "commit" | "tiny" | "task" | "advisor";
+/**
+ * HERMES-OMP PATCH (no model roles): "default" is the ONLY role — the
+ * session model (Mercury: delegate model + fallback chain). Historical
+ * names are accepted as INPUT aliases (see isSessionInheritedAgentPattern)
+ * but the type no longer admits them.
+ */
+export type ModelRole = "default";
 
 export interface ModelRoleInfo {
 	id: string;

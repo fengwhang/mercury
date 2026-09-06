@@ -487,7 +487,7 @@ if "__omp_prelude_loaded__" not in globals():
     def agent(
         prompt,
         *,
-        agent="task",
+        agent="subagent",
         label=None,
         schema=None,
         schema_mode=None,

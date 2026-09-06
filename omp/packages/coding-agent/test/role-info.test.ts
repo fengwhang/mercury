@@ -1,66 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { getRoleInfo } from "@oh-my-pi/pi-coding-agent/config/model-roles";
+import { getRoleInfo, MODEL_ROLES, MODEL_ROLE_IDS } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 
-describe("getRoleInfo", () => {
-	test("returns built-in role info", () => {
+// HERMES-OMP PATCH (no model roles): every historical name maps to the one
+// role — "default", the session model.
+describe("getRoleInfo (single-role world)", () => {
+	test("exactly one role: default", () => {
+		expect(MODEL_ROLE_IDS).toEqual(["default"]);
+		expect(Object.keys(MODEL_ROLES)).toEqual(["default"]);
+	});
+
+	test("every name resolves to the session role", () => {
 		const settings = Settings.isolated({});
-
-		expect(getRoleInfo("default", settings)).toEqual({
-			name: "Default",
-			color: "success",
-			tag: "DEFAULT",
-		});
-		expect(getRoleInfo("smol", settings)).toEqual({
-			name: "Fast",
-			color: "warning",
-			tag: "SMOL",
-		});
-		expect(getRoleInfo("slow", settings)).toEqual({
-			name: "Thinking",
-			color: "accent",
-			tag: "SLOW",
-		});
-	});
-
-	test("returns custom role info from modelTags", () => {
-		const settings = Settings.isolated({
-			modelTags: {
-				custom: { name: "My Custom Tag", color: "error" },
-				another: { name: "Another Tag" },
-			},
-		});
-
-		expect(getRoleInfo("custom", settings)).toEqual({
-			name: "My Custom Tag",
-			color: "error",
-		});
-		expect(getRoleInfo("another", settings)).toEqual({
-			name: "Another Tag",
-			color: undefined,
-		});
-	});
-
-	test("returns fallback for unknown roles", () => {
-		const settings = Settings.isolated({});
-
-		expect(getRoleInfo("unknown-role", settings)).toEqual({
-			name: "unknown-role",
-			color: "muted",
-		});
-	});
-
-	test("configured metadata overrides built-in role info while keeping built-in defaults", () => {
-		const settings = Settings.isolated({
-			modelTags: {
-				smol: { name: "My Smol", color: "success" },
-			},
-		});
-
-		expect(getRoleInfo("smol", settings)).toEqual({
-			tag: "SMOL",
-			name: "My Smol",
-			color: "success",
-		});
+		for (const name of ["default", "smol", "slow", "task", "advisor", "vision", "tiny", "plan", "commit"]) {
+			expect(getRoleInfo(name, settings)).toBe(MODEL_ROLES.default);
+		}
 	});
 });

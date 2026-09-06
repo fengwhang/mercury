@@ -1,5 +1,10 @@
-/** Default agent used when a session has unrestricted spawning. */
-export const DEFAULT_SPAWN_AGENT = "task";
+/**
+ * Default agent used when a session has unrestricted spawning.
+ * HERMES-OMP PATCH: "subagent" is the ONE agent type; "task" was a
+ * deprecated model-role name that no longer resolves (child-layer
+ * preflight rejected it: 'Unknown agent "task". Available: subagent').
+ */
+export const DEFAULT_SPAWN_AGENT = "subagent";
 
 /** Spawn policy derived from a parent agent's `spawns` frontmatter. */
 export interface ResolvedSpawnPolicy {

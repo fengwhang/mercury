@@ -132,7 +132,7 @@ export async function createCleanseAgentRuntime(options: {
 				session: toolSession,
 				invocationKind: "task",
 				assignment: prompt.render(discoveryPrompt, { request }),
-				agent: "task",
+				agent: "subagent",
 				model: modelSelector,
 				outputSchema: DISCOVERY_SCHEMA,
 				identity: { label: "CleanseDiscovery" },

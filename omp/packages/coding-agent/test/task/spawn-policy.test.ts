@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Settings } from "../../src/config/settings";
 import * as taskDiscovery from "../../src/task/discovery";
 import { TaskTool } from "../../src/task/index";
-import { isScoutSpawnable } from "../../src/task/spawn-policy";
+import { isSubagentSpawnable } from "../../src/task/spawn-policy";
 import type { AgentDefinition } from "../../src/task/types";
 import { getTaskSchema } from "../../src/task/types";
 import type { ToolSession } from "../../src/tools";
@@ -62,29 +62,29 @@ describe("task spawn policy surfaces", () => {
 	});
 });
 
-describe("isScoutSpawnable", () => {
+describe("isSubagentSpawnable", () => {
 	it("is true with no disabled agents and unrestricted spawns", () => {
-		expect(isScoutSpawnable(undefined, "*")).toBe(true);
-		expect(isScoutSpawnable([], "*")).toBe(true);
+		expect(isSubagentSpawnable(undefined, "*")).toBe(true);
+		expect(isSubagentSpawnable([], "*")).toBe(true);
 	});
 
-	it("is false when scout is disabled via task.disabledAgents", () => {
-		expect(isScoutSpawnable(["scout"], "*")).toBe(false);
-		expect(isScoutSpawnable(["scout", "reviewer"], "*")).toBe(false);
+	it("is false when subagent is disabled via task.disabledAgents", () => {
+		expect(isSubagentSpawnable(["subagent"], "*")).toBe(false);
+		expect(isSubagentSpawnable(["subagent", "other"], "*")).toBe(false);
 	});
 
 	it("is false when spawning is disabled", () => {
-		expect(isScoutSpawnable(undefined, false)).toBe(false);
-		expect(isScoutSpawnable(undefined, "")).toBe(false);
+		expect(isSubagentSpawnable(undefined, false)).toBe(false);
+		expect(isSubagentSpawnable(undefined, "")).toBe(false);
 	});
 
-	it("is false when scout is not in the allowed spawn list", () => {
-		expect(isScoutSpawnable(undefined, "reviewer")).toBe(false);
+	it("is false when subagent is not in the allowed spawn list", () => {
+		expect(isSubagentSpawnable(undefined, "other")).toBe(false);
 	});
 
-	it("is true when scout is in the allowed spawn list", () => {
-		expect(isScoutSpawnable(undefined, "scout,reviewer")).toBe(true);
-		expect(isScoutSpawnable(["reviewer"], "scout")).toBe(true);
+	it("is true when subagent is in the allowed spawn list", () => {
+		expect(isSubagentSpawnable(undefined, "subagent,other")).toBe(true);
+		expect(isSubagentSpawnable(["other"], "subagent")).toBe(true);
 	});
 });
 
@@ -121,7 +121,7 @@ describe("task tool description scout gating", () => {
 		expect(await renderDescription(false)).toContain("scout");
 	});
 
-	it("omits every scout reference from the task description when scout is disabled", async () => {
+	it("omits every scout reference from the task description when subagent is disabled", async () => {
 		const description = await renderDescription(true);
 		expect(description).not.toContain("scout");
 		// The read-only agent remains listed as an available agent (the spawn

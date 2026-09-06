@@ -1243,6 +1243,11 @@ export class Settings {
 	 * Get a model role (helper for modelRoles record).
 	 */
 	getModelRole(role: ModelRole | string): string | undefined {
+		// HERMES-OMP PATCH (no model roles): stale user configs may still
+		// carry a modelRoles record from the pre-strip era. Only "default"
+		// is ever honored; every historical role key reads as unset so the
+		// session model (delegate model + fallback chain) wins.
+		if (role !== "default") return undefined;
 		const roles: unknown = this.get("modelRoles");
 		if (!isRecord(roles)) return undefined;
 		return modelRoleValueFromUnknown(roles[role]);
