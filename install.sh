@@ -236,6 +236,22 @@ install_computer_use_driver() {
 # source + python
 # ============================================================================
 fetch_tarball() {
+    # NO URL GIVEN -> construct it from the host arch against the LATEST
+    # release (GitHub's permanent releases/latest/download redirect; no API
+    # call, no rate limit). The README one-liner is therefore simply:
+    #   curl -fsSL .../install.sh | bash
+    if [ -z "$TARBALL_URL" ]; then
+        case "$(uname -m)" in
+            x86_64|amd64)  _def_arch="x64" ;;
+            aarch64|arm64) _def_arch="arm64" ;;
+            *)
+                log_error "unsupported CPU architecture: $(uname -m)"
+                log_error "supported: x86_64/amd64, aarch64/arm64"
+                exit 1 ;;
+        esac
+        TARBALL_URL="https://github.com/fengwhang/mercury/releases/latest/download/mercury-${_def_arch}.tar.gz"
+        log_info "$_def_arch host — auto-selected latest release tarball"
+    fi
     if [ -n "$TARBALL_URL" ]; then
         # PER-ARCH ASSETS (user directive): the release publishes one tarball
         # per architecture; rewrite the URL so each host downloads exactly
@@ -301,8 +317,8 @@ fetch_tarball() {
     elif [ -x "$INSTALL_ROOT/bin/mercury" ]; then
         log_info "existing tree at $INSTALL_ROOT — reinstalling in place (~/.mercury state kept)"
     else
-        log_error "no tarball URL and no existing tree at $INSTALL_ROOT"
-        log_info  "usage: install.sh <tarball-url>"; exit 1
+        log_error "no tarball URL resolved and no existing tree at $INSTALL_ROOT"
+        log_info  "usage: install.sh [tarball-url]  (no URL = latest release for this CPU)"; exit 1
     fi
     cd "$INSTALL_ROOT"
     [ -f bin/mercury ] || { log_error "distribution incomplete: bin/mercury missing"; exit 1; }

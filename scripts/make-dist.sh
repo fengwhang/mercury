@@ -66,3 +66,14 @@ if [ -x omp/packages/coding-agent/dist/omp-linux-arm64 ]; then
 else
     echo "WARNING: no arm64 binary — skipping arm64 tarball (build with CROSS_TARGET=linux-arm64)" >&2
 fi
+
+# Stable version-less aliases (hardlinks) so the one-liner never needs the
+# version in its URL: releases/latest/download/mercury-<arch>.tar.gz always
+# resolves. The installer constructs this URL itself when no URL is given.
+ln -f "dist/mercury-${VERSION}-x64.tar.gz"     "dist/mercury-x64.tar.gz"
+ln -f "dist/mercury-${VERSION}-x64.tar.gz.sha256" "dist/mercury-x64.tar.gz.sha256"
+if [ -f "dist/mercury-${VERSION}-arm64.tar.gz" ]; then
+    ln -f "dist/mercury-${VERSION}-arm64.tar.gz"     "dist/mercury-arm64.tar.gz"
+    ln -f "dist/mercury-${VERSION}-arm64.tar.gz.sha256" "dist/mercury-arm64.tar.gz.sha256"
+fi
+echo "aliases: mercury-x64.tar.gz mercury-arm64.tar.gz (version-less, latest)"

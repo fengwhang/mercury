@@ -13,22 +13,19 @@ and those subagents can spawn subagents of their own.
 ## Quick install (Linux / macOS / WSL2)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash -s -- https://github.com/fengwhang/mercury/releases/download/v0.0.1/mercury-0.0.1-x64.tar.gz
+curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash
 ```
 
 The command installs to `~/.mercury/bin/mercury` — on PATH by default on
 modern Linux (and macOS) — so `mercury` works immediately after install,
-same terminal, no extra steps. **Per-arch tarballs**: the release ships an
-x64 and an arm64 build; the installer picks the right one for your host
-automatically (arm64 Linux incl. WSL2) — same one-liner everywhere.
-A wrong-arch install is impossible: the installer verifies the omp binary's
-ELF machine byte and hard-fails rather than installing a binary that would
-run under software emulation (10-50x CPU — on WSL2/ARM this is the
-difference between idle and pegging every core).
+same terminal, no extra steps. **No arguments needed**: the installer
+detects your CPU (`uname -m`), picks the x64 or arm64 build from the latest
+release, and verifies the omp binary's ELF machine byte matches the host —
+a wrong-arch install is impossible (an emulated binary would burn 10-50x
+CPU; the installer refuses it instead).
 
-Direct links if you want them:
-`…/mercury-0.0.1-x64.tar.gz` · `…/mercury-0.0.1-arm64.tar.gz`
-(full URLs under this release's Assets).
+Pinned/manual installs still work: `… | bash -s -- <tarball-url>` (any arch
+link on any host — the URL is rewritten to match).
 
 One interactive session: preflight → uv + pinned venv → unpack the prebuilt
 engines (no bun, no rust needed) → **`mercury setup` — the full wizard:
