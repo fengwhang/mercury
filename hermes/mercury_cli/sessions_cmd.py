@@ -401,6 +401,13 @@ def cmd_sessions(args, sessions_parser=None):
                 preview = s.get("preview", "")[:44]
                 print(f"{sid:<24} {preview:<44} {last_active:<13} {s['source']:<6}")
 
+        # HERMES-OMP PATCH: teach resume right where the handles are shown —
+        # multi-word titles need quotes or the shell splits them into -c args.
+        print()
+        print(
+            "Resume with: mercury -c <id>  ·  mercury -c \"title with spaces\""
+        )
+
     elif action == "export":
         from mercury_cli.session_filters import (
             build_prune_filters,

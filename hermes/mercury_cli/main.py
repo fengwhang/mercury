@@ -1945,8 +1945,10 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
             else:
                 print(f"No session found matching '{continue_val}'.", file=sys.stderr)
                 print(
-                    "Use 'mercury sessions list' to see available sessions, or "
-                    "pass --create-if-missing to start a new session with that title.",
+                    "Try quoting the title: mercury -c \"my debugging session\" "
+                    "(multi-word titles need quotes). You can also use a full or "
+                    "partial session ID from 'mercury sessions list', or pass "
+                    "--create-if-missing to start a new session with that title.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
