@@ -3189,11 +3189,33 @@ def _prompt_toolset_checklist(
         and k not in _CONFIG_ONLY_TOOLSETS
     ]
 
+    # HERMES-OMP PATCH (checklist hang, 2026-09-06): the label loop used to
+    # call _toolset_has_keys(force_fresh=True) PER TOOLSET — 24 sequential
+    # cache-bypassing portal round trips (each holding cross-process auth
+    # locks) just to decide "[no API key]" suffixes. On a slow/unreachable
+    # portal that froze the wizard for minutes ("hanging at the tool
+    # configuration step"). Resolve entitlements ONCE per render with a
+    # shared features object; _toolset_has_keys accepts it and does zero
+    # network per toolset. The snapshot comes from the local JWT (fast
+    # path) or a single fresh fetch — never 24.
+    _shared_features = None
+    if force_fresh:
+        try:
+            from mercury_cli.nous_subscription import (
+                get_nous_subscription_features,
+            )
+
+            _shared_features = get_nous_subscription_features(
+                load_config(), force_fresh=False
+            )
+        except Exception:
+            _shared_features = None
+
     labels = []
     for ts_key, ts_label, ts_desc in effective:
         suffix = ""
         if (
-            not _toolset_has_keys(ts_key, force_fresh=force_fresh)
+            not _toolset_has_keys(ts_key, features=_shared_features)
             and (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
         ):
             suffix = "  [no API key]"
