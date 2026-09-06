@@ -362,43 +362,44 @@ def cmd_sessions(args, sessions_parser=None):
         has_titles = any(s.get("title") for s in sessions)
 
         if has_ws:
+            # HERMES-OMP PATCH: ID FIRST — as the last column on 100+-char
+            # lines, a narrow terminal clips it at the right edge and every
+            # copy-paste becomes a doomed prefix. First column = never
+            # clipped, whatever the width.
             if has_titles:
-                print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
+                print(f"{'ID':<24} {'Title':<26} {'Workspace':<16} {'Last Active':<13}")
+                print("─" * 84)
             else:
-                print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 100)
+                print(f"{'ID':<24} {'Preview':<34} {'Workspace':<16} {'Last Active':<13} {'Src':<6}")
+                print("─" * 96)
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
                 ws = _ws_label(s)[:16]
                 if has_titles:
                     title = (s.get("title") or "—")[:26]
-                    print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                    print(f"{s['id']:<24} {title:<26} {ws:<16} {last_active:<13}")
                 else:
-                    preview = s.get("preview", "")[:36]
-                    print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+                    preview = s.get("preview", "")[:34]
+                    print(f"{s['id']:<24} {preview:<34} {ws:<16} {last_active:<13} {s['source']:<6}")
             return
 
+        # HERMES-OMP PATCH: ID FIRST (see the has_ws branch above).
         if has_titles:
-            print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-            print("─" * 110)
+            print(f"{'ID':<24} {'Title':<28} {'Preview':<36} {'Last Active':<13}")
+            print("─" * 104)
         else:
-            print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-            print("─" * 95)
+            print(f"{'ID':<24} {'Preview':<44} {'Last Active':<13} {'Src':<6}")
+            print("─" * 92)
         for s in sessions:
             last_active = _relative_time(s.get("last_active"))
-            preview = (
-                s.get("preview", "")[:38]
-                if has_titles
-                else s.get("preview", "")[:48]
-            )
+            sid = s["id"]
             if has_titles:
-                title = (s.get("title") or "—")[:30]
-                sid = s["id"]
-                print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                title = (s.get("title") or "—")[:28]
+                preview = s.get("preview", "")[:36]
+                print(f"{sid:<24} {title:<28} {preview:<36} {last_active:<13}")
             else:
-                sid = s["id"]
-                print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                preview = s.get("preview", "")[:44]
+                print(f"{sid:<24} {preview:<44} {last_active:<13} {s['source']:<6}")
 
     elif action == "export":
         from mercury_cli.session_filters import (

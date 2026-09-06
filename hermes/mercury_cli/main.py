@@ -1829,10 +1829,13 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
             # resolves to nothing (fall through to title matching) rather
             # than resuming the wrong session.
             try:
+                # ESCAPE '\' — ids are full of '_' (date_time_hex) and SQL
+                # LIKE treats '_' as a single-char WILDCARD, so an unescaped
+                # prefix could match the WRONG session. Escape then anchor.
                 with db._read_ctx() as conn:
                     rows = conn.execute(
-                        "SELECT id FROM sessions WHERE id LIKE ? || '%'",
-                        (name_or_id,),
+                        "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\'",
+                        (name_or_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
                     ).fetchall()
                 ids = [r[0] for r in rows]
                 if len(ids) == 1:
