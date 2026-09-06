@@ -112,7 +112,13 @@ AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 # Nous Portal defaults
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
 DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
-DEFAULT_NOUS_CLIENT_ID = "mercury-cli"
+# MERCURY-OMP PATCH (Nous OAuth client_id — 2026-09-06): the rename swept
+# this to "mercury-cli" and the Portal 400'd every login with
+# {"error":"invalid_client"} (live-probed: mercury-cli -> 400,
+# hermes-cli -> 200). The client_id is a REGISTRATION on the server's
+# allowlist, not a display name — it stays "hermes-cli" until Nous
+# registers a mercury identity. User-visible chrome still says Mercury.
+DEFAULT_NOUS_CLIENT_ID = "hermes-cli"
 NOUS_INFERENCE_INVOKE_SCOPE = "inference:invoke"
 NOUS_BILLING_MANAGE_SCOPE = "billing:manage"
 DEFAULT_NOUS_SCOPE = NOUS_INFERENCE_INVOKE_SCOPE
@@ -6370,7 +6376,9 @@ def refresh_nous_oauth_from_state(
     return refresh_nous_oauth_pure(
         state.get("access_token", ""),
         state.get("refresh_token", ""),
-        state.get("client_id", "mercury-cli"),
+        # registered OAuth client_id (see DEFAULT_NOUS_CLIENT_ID) — NOT the
+        # product name; changing this breaks refreshes with invalid_client.
+        state.get("client_id", DEFAULT_NOUS_CLIENT_ID),
         state.get("portal_base_url", DEFAULT_NOUS_PORTAL_URL),
         state.get("inference_base_url", DEFAULT_NOUS_INFERENCE_URL),
         token_type=state.get("token_type", "Bearer"),
