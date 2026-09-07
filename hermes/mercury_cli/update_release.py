@@ -31,7 +31,7 @@ MERCURY_REPO_OWNER = "fengwhang"
 MERCURY_REPO_NAME = "mercury"
 RELEASES_API = f"https://api.github.com/repos/{MERCURY_REPO_OWNER}/{MERCURY_REPO_NAME}/releases/latest"
 
-PRESERVED_TOP_LEVEL = {".venv", "venv", ".git", ".env", "dist", "node_modules", ".mercury"}
+PRESERVED_TOP_LEVEL = {".venv", "venv", ".git", ".env", "dist", "node_modules", ".mercury", ".mercury-build-id"}
 
 
 def _project_root() -> Path:
@@ -48,6 +48,44 @@ def _installed_version() -> str:
         return str(__version__)
     except Exception:
         return "0"
+
+
+def _installed_build_id(root: Path | None = None) -> str:
+    """Sha256 of the tarball this tree was installed/updated from.
+
+    Empty when unknown (fresh pre-0.0.4 installs). MERCURY-OMP PATCH
+    (bug #5 follow-up): version tags alone proved insufficient — same-tag
+    asset re-updates made `mercury update` a silent no-op while bytes
+    drifted. The build id is the content truth.
+    """
+    f = (root or _project_root()) / ".mercury-build-id"
+    try:
+        return f.read_text().strip()
+    except Exception:
+        return ""
+
+
+def _record_build_id(root: Path, build_id: str) -> None:
+    try:
+        (root / ".mercury-build-id").write_text(build_id + "\n")
+    except Exception:
+        pass
+
+
+def _release_sha256(assets: dict, tar_name: str) -> str | None:
+    """Fetch the release's .sha256 sidecar (tiny text) — None if absent."""
+    sha_asset = assets.get(f"{tar_name}.sha256")
+    if not sha_asset or not sha_asset.get("browser_download_url"):
+        return None
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(
+            sha_asset["browser_download_url"], headers={"User-Agent": "mercury-update"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return resp.read().decode().split()[0]
+    except Exception:
+        return None
 
 
 def _normalize(v: str) -> tuple[int, ...]:
@@ -147,8 +185,25 @@ def update_from_release(*, assume_yes: bool = False) -> int:
     latest = str(rel.get("tag_name", "")).lstrip("v")
     current = _installed_version()
     if _normalize(latest) <= _normalize(current):
-        print(f"✓ Mercury is up to date (v{current}; latest release v{latest}).")
-        return 0
+        # MERCURY-OMP PATCH (bug #5 follow-up): tag equality is NOT proof of
+        # content equality. Compare the release tarball's sha256 (tiny text
+        # fetch) against the recorded build id; a mismatch (or unknown id on
+        # a fresh tree) forces the update even at the same version.
+        _assets_probe = {a.get("name", ""): a for a in rel.get("assets", [])}
+        _m = __import__("platform").machine().lower()
+        _arch = "arm64" if _m in ("aarch64", "arm64") else "x64" if _m in ("x86_64", "amd64") else ""
+        _probe_names = []
+        if _arch:
+            _probe_names += [f"mercury-{latest}-{_arch}.tar.gz", f"mercury-{_arch}.tar.gz"]
+        _probe_names += [f"mercury-{latest}.tar.gz"]
+        _probe_tar = next((n for n in _probe_names if n in _assets_probe), "")
+        _rel_sha = _release_sha256(_assets_probe, _probe_tar) if _probe_tar else None
+        _inst_sha = _installed_build_id()
+        if _rel_sha is None or (_inst_sha and _rel_sha == _inst_sha):
+            print(f"✓ Mercury is up to date (v{current}; latest release v{latest}).")
+            return 0
+        print(f"→ v{current} (build {_inst_sha[:12] or 'unknown'}) -> v{latest} "
+              f"(build {_rel_sha[:12]}) — same tag, different bytes; updating.")
 
     print(f"→ v{current} -> v{latest}")
 
@@ -249,8 +304,10 @@ def update_from_release(*, assume_yes: bool = False) -> int:
             except Exception as exc:
                 print(f"  ⚠ pip refresh failed ({exc}) — run: cd {root}/hermes && uv pip install -e .")
 
+        _new_sha = _sha256(tar_path)
+        _record_build_id(root, _new_sha)
         print()
-        print(f"✓ Mercury updated to v{latest}.")
+        print(f"✓ Mercury updated to v{latest} (build {_new_sha[:12]}).")
         print("  Restart any running sessions to pick up the new code.")
         return 0
     finally:

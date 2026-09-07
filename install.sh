@@ -309,7 +309,17 @@ fetch_tarball() {
         if [ -x "$INSTALL_ROOT/hermes/.venv" ]; then
             mv "$INSTALL_ROOT/hermes/.venv" "$TMP/venv-keep"
         fi
+        # MERCURY-OMP PATCH (bug #5 follow-up): record the installed
+        # tarball's sha256 so 'mercury update' can detect same-tag
+        # content drift instead of trusting version tags alone.
+        if [ -f "$TMP/mercury.tar.gz.sha256" ]; then
+            awk '{print $1}' "$TMP/mercury.tar.gz.sha256" > "$INSTALL_ROOT/.mercury-build-id"
+        elif [ -f "$TMP/mercury.tar.gz" ]; then
+            sha256sum "$TMP/mercury.tar.gz" | awk '{print $1}' > "$INSTALL_ROOT/.mercury-build-id"
+        fi
         rsync -a --delete "$TMP/mercury/" "$INSTALL_ROOT/" 2>/dev/null || cp -r "$TMP/mercury/." "$INSTALL_ROOT/"
+        # rsync --delete just removed the build-id we wrote; re-write it.
+        [ -f "$TMP/mercury.tar.gz" ] && { sha256sum "$TMP/mercury.tar.gz" | awk '{print $1}' > "$INSTALL_ROOT/.mercury-build-id"; }
         if [ -d "$TMP/venv-keep" ]; then
             rm -rf "$INSTALL_ROOT/hermes/.venv"
             mv "$TMP/venv-keep" "$INSTALL_ROOT/hermes/.venv"
