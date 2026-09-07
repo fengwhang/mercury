@@ -337,6 +337,29 @@ def update_from_release(*, assume_yes: bool = False) -> int:
             return 1
         print("  swap verified: omp_delegation.py matches tarball bytes")
 
+        # MERCURY-OMP PATCH (updater bootstrap hole): the pre-0.0.5 updater
+        # swapped the whole tree INTO <INSTALL>/hermes/ — leaving junk
+        # hermes/bin, hermes/omp, hermes/hermes, hermes/bridge that no
+        # legitimate install ever has (the tarball's hermes/ contains only
+        # the engine: agent/, mercury_cli/, tools/, ...; bin/omp/bridge are
+        # strictly top-level). Sweep them so a one-liner install or a fixed
+        # update leaves a clean tree — and so nothing ever resolves code
+        # from the fossil copy.
+        import shutil as _shutil_sync
+
+        for junk in ("bin", "omp", "hermes", "bridge"):
+            junk_path = root / "hermes" / junk
+            if junk_path.exists():
+                try:
+                    if junk_path.is_dir() and not junk_path.is_symlink():
+                        _shutil_sync.rmtree(junk_path)
+                    else:
+                        junk_path.unlink()
+                    print(f"  swept legacy mis-swap junk: hermes/{junk}")
+                except Exception as exc:
+                    print(f"  ⚠ could not remove hermes/{junk} ({exc}) — "
+                          "delete it manually")
+
         # refresh the editable install so entry points/scripts stay aligned
         venv = root / "hermes" / ".venv"
         if venv.exists():
