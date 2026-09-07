@@ -391,10 +391,23 @@ def update_from_release(*, assume_yes: bool = False) -> int:
                 print("  python environment refreshed"
                       + (f" ({how})" if uv_bin else ""))
             else:
-                print("  ⚠ python env refresh failed — entry points may be stale.")
+                print("  ⚠ python env refresh failed — entry points may be stale")
+                print("    AND new python dependencies from this release are NOT installed.")
                 print(f"    last command: {how}; output:\n{detail}")
                 print(f"    manual fix: cd {root}/hermes && "
                       f"uv pip install --python .venv/bin/python -e .")
+
+        # MERCURY-OMP PATCH (massive-update readiness): the git update path
+        # runs config migration on completion; the release path never did.
+        # A release that adds config keys would strand users on an old
+        # config version. Run the same check-and-apply (best-effort — never
+        # fails the update; it prints the manual command on error).
+        try:
+            from mercury_cli.update_cmd import _check_and_apply_config_migration
+
+            _check_and_apply_config_migration(assume_yes=assume_yes, gateway_mode=False)
+        except Exception as exc:
+            print(f"  ⚠ config migration check failed ({exc}) — run: mercury config migrate")
 
         _new_sha = _sha256(tar_path)
         _record_build_id(root, _new_sha)
