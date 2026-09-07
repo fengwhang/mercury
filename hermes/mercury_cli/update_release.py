@@ -340,15 +340,38 @@ def update_from_release(*, assume_yes: bool = False) -> int:
         # refresh the editable install so entry points/scripts stay aligned
         venv = root / "hermes" / ".venv"
         if venv.exists():
-            try:
-                print("→ Refreshing python environment...")
-                subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "-q", "-e",
-                     str(root / "hermes")],
-                    check=True, capture_output=True,
-                )
-            except Exception as exc:
-                print(f"  ⚠ pip refresh failed ({exc}) — run: cd {root}/hermes && uv pip install -e .")
+            # MERCURY-OMP PATCH: the install venv is UV-MANAGED (uv venv +
+            # uv pip install --python ... -e ., same as install.sh) — it has
+            # NO pip module, so `sys.executable -m pip` always exits 1 there.
+            # Refresh with uv first (targeting the venv python explicitly),
+            # fall back to pip only for pip-provisioned venvs, and surface
+            # the REAL stderr instead of a bare 'exit status 1'.
+            import shutil as _shutil
+
+            def _run_refresh(cmd: list[str]) -> tuple[bool, str]:
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                detail = ((proc.stderr or "") + (proc.stdout or "")).strip()
+                return proc.returncode == 0, detail[-600:]
+
+            ok, detail = False, ""
+            uv_bin = _shutil.which("uv")
+            py = str(venv / "bin" / "python")
+            if uv_bin:
+                ok, detail = _run_refresh(
+                    [uv_bin, "pip", "install", "--python", py, "-q", "-e", str(root / "hermes")])
+                how = "uv"
+            if not ok:
+                ok, detail = _run_refresh(
+                    [sys.executable, "-m", "pip", "install", "-q", "-e", str(root / "hermes")])
+                how = "pip"
+            if ok:
+                print("  python environment refreshed"
+                      + (f" ({how})" if uv_bin else ""))
+            else:
+                print("  ⚠ python env refresh failed — entry points may be stale.")
+                print(f"    last command: {how}; output:\n{detail}")
+                print(f"    manual fix: cd {root}/hermes && "
+                      f"uv pip install --python .venv/bin/python -e .")
 
         _new_sha = _sha256(tar_path)
         _record_build_id(root, _new_sha)
