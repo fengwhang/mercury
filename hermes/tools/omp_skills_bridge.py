@@ -1,11 +1,21 @@
-"""MERCURY-OMP PATCH (skills bridge): union both mercury skill trees for omp.
+"""MERCURY-OMP PATCH (skills bridge): union all three mercury skill trees for omp.
 
-The two mercury skill trees:
-  1. SHARED    — ``$MERCURY_HOME/skills`` (category-nested,
+The three skill sources (highest precedence first):
+  1. ENGINE ROOT — ``<omp agent dir>/skills`` (flat, ``<name>/SKILL.md``),
+                 omp-private native skills. Never touched by the bridge and
+                 always wins a name collision (no link is placed over them).
+  2. SHARED     — ``$MERCURY_HOME/skills`` (category-nested,
                  ``<category>/<name>/SKILL.md``), hermes' native layout and
-                 the ONE library both engines are supposed to read/write.
-  2. ENGINE ROOT — ``<omp agent dir>/skills`` (flat, ``<name>/SKILL.md``),
-                 omp-private native skills.
+                 the ONE user-facing library both engines read/write.
+  3. HERMES ENGINE — ``$HERMES_HOME/skills`` (same category-nested layout;
+                 under Mercury the launcher forces ``HERMES_HOME =
+                 $MERCURY_HOME/hermes``). This is the tree the hermes engine
+                 actually reads: bundled skills are seeded into it at startup
+                 (tools/skills_sync), ``hermes skills install`` targets it,
+                 and curator edits land there. Without bridging it, omp sees
+                 only the shared-library subset — the engine tree carries the
+                 full bundled set (research/, web/, software-development/,
+                 mlops/, devops/…), so a coding child lost most of it.
 
 Why a bridge at all: omp discovers user skills ONLY from its engine root —
 ``<agentDir>/skills/<name>/SKILL.md``, ONE level deep, symlinked dirs
@@ -13,20 +23,27 @@ accepted (omp/packages/coding-agent/src/discovery/builtin.ts loadSkills →
 helpers.ts scanSkillsFromDir). omp's own mercury patch scans the shared
 root too, but the compiled binary scans it the same flat way, so the
 category-nested library yields nothing there. The bridge materializes the
-shared library INTO the engine root as a flat symlink view — one
-``<name>`` symlink per skill — which the frozen binary picks up natively.
+shared library AND the hermes engine tree INTO the engine root as a flat
+symlink view — one ``<name>`` symlink per skill — which the frozen binary
+picks up natively.
 
-Union semantics (ENGINE ROOT WINS):
-  - omp sees ``engine-root skills ∪ shared-library skills``.
-  - Real dirs/files in the engine root and symlinks pointing outside the
-    mercury skills root are omp's OWN skills — never created, replaced, or
-    removed by the bridge, and they win any name collision with the shared
-    library (no link is placed over them; the shared copy is simply not
-    materialized under that name).
-  - The ``omp-managed`` category of the shared library (omp's auto-learned
-    skills, ``$MERCURY_HOME/skills/omp-managed`` per
-    omp/.../autolearn/managed-skills.ts getManagedSkillsDir) is NOT
-    materialized: omp already loads it through its dedicated managed-skills
+Union semantics (ENGINE ROOT WINS, SHARED WINS OVER HERMES ENGINE):
+  - omp sees ``engine-root skills ∪ shared-library skills ∪ hermes-engine
+    skills``.
+  - Real dirs/files in the engine root and symlinks pointing outside both
+    bridged roots are omp's OWN skills — never created, replaced, or
+    removed by the bridge, and they win any name collision with either
+    bridged tree (no link is placed over them; the bridged copy is simply
+    not materialized under that name).
+  - A name present in BOTH bridged trees resolves to the SHARED library
+    copy: the shared library is the user-facing ONE library (explicit
+    installs, omp-managed, migrate target), the engine tree is seeded
+    defaults — user intent outranks bundled defaults, mirroring how
+    hermes' own sync honors user copies over bundled ones.
+  - The ``omp-managed`` category (omp's auto-learned skills,
+    ``$MERCURY_HOME/skills/omp-managed`` per omp/.../autolearn/
+    managed-skills.ts getManagedSkillsDir) is NOT materialized from any
+    source: omp already loads it through its dedicated managed-skills
     provider at the LOWEST skill priority, so an authored skill of the same
     name wins. Bridging it would promote learned skills to engine-root
     (highest) priority and invert that design.
@@ -70,19 +87,24 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Conversation-side-only skills — the user's devices, messaging, and live
-# meetings; noise (or actively wrong) for a headless coding child. All
-# coding/research/web skills are kept. Names verified against the real
-# $MERCURY_HOME/skills tree (category in parentheses).
+# Conversation-side-only skills — the user's devices, messaging, live
+# meetings, and chat persona; noise (or actively wrong) for a headless
+# coding child. All coding/research/web skills are kept. Names verified
+# against BOTH real trees: $MERCURY_HOME/skills and $HERMES_HOME/skills
+# (category in parentheses).
 DEFAULT_EXCLUDES: frozenset = frozenset({
-    "computer-use",            # drives the user's desktop GUI (autonomous-ai-agents)
-    "imessage",                # user's messaging inbox (apple)
-    "apple-notes",             # personal Apple-device data (apple)
-    "apple-reminders",         # personal Apple-device data (apple)
-    "findmy",                  # device location lookup (apple)
-    "teams-meeting-pipeline",  # live Teams meeting capture (productivity)
-    "meeting-action-items",    # meeting transcript post-processing (productivity)
-    "weekly-review-planning",  # user's weekly-review chat flow (productivity)
+    "computer-use",               # drives the user's desktop GUI (autonomous-ai-agents)
+    "imessage",                   # user's messaging inbox (apple)
+    "apple-notes",                # personal Apple-device data (apple)
+    "apple-reminders",            # personal Apple-device data (apple)
+    "findmy",                     # device location lookup (apple)
+    "openhue",                    # user's smart-home lights (smart-home)
+    "simplex-chat",               # user's messaging bridge (devops)
+    "simplex-chat-hermes-setup",  # user's messaging bridge (devops)
+    "persona-authoring",          # chat persona/tone for the parent agent (communication)
+    "teams-meeting-pipeline",     # live Teams meeting capture (productivity)
+    "meeting-action-items",       # meeting transcript post-processing (productivity)
+    "weekly-review-planning",     # user's weekly-review chat flow (productivity)
 })
 
 # omp profile grammar (omp dirs.ts PROFILE_NAME_RE): [a-z0-9][a-z0-9._-]{0,63}
@@ -152,6 +174,26 @@ def resolve_mercury_skills_dir(home: Optional[Path] = None) -> Path:
     return base / ".mercury" / "skills"
 
 
+def resolve_hermes_engine_skills_dir(home: Optional[Path] = None) -> Path:
+    """Hermes engine tree root: ``$MERCURY_HOME/hermes/skills`` >
+    ``$HERMES_HOME/skills`` > ``~/.mercury/hermes/skills``.
+
+    Under Mercury the launcher forces ``HERMES_HOME=$MERCURY_HOME/hermes``,
+    so both env forms name the same tree — the one the hermes engine
+    actually reads. ``MERCURY_HOME`` wins so an ambient stock-hermes
+    ``HERMES_HOME`` can never leak a foreign install's tree once the
+    mercury home is known (mirrors ``resolve_mercury_skills_dir``).
+    """
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if mercury:
+        return Path(mercury) / "hermes" / "skills"
+    hermes = os.environ.get("HERMES_HOME", "").strip()
+    if hermes:
+        return Path(hermes) / "skills"
+    base = Path(home) if home is not None else Path(os.path.expanduser("~"))
+    return base / ".mercury" / "hermes" / "skills"
+
+
 def resolve_unified_config_path() -> Optional[Path]:
     """The unified config file — same resolution as omp_sync / omp_delegation."""
     value = os.environ.get("MERCURY_CONFIG", "").strip()
@@ -193,14 +235,16 @@ def load_excludes(config_path: Optional[Path] = None) -> Tuple[frozenset, str]:
     return DEFAULT_EXCLUDES, "defaults"
 
 
-def scan_mercury_skills(skills_root: Path) -> List[Tuple[str, str, Path]]:
-    """Authored skills in the category-nested library as ``(category, name, dir)``.
+def scan_category_skills(skills_root: Path) -> List[Tuple[str, str, Path]]:
+    """Authored skills in a category-nested tree (shared library or hermes
+    engine — both use hermes' native ``<category>/<name>/SKILL.md`` layout)
+    as ``(category, name, dir)``.
 
     Deterministic: categories and skill dirs in sorted order, so collision
     resolution ("first category wins") is stable across runs and machines.
-    The ``omp-managed`` category is EXCLUDED — see MANAGED_SKILLS_CATEGORY:
-    learned skills keep their own low-priority omp provider instead of
-    being promoted into the engine root.
+    The ``omp-managed`` category is EXCLUDED in every tree — see
+    MANAGED_SKILLS_CATEGORY: learned skills keep their own low-priority omp
+    provider instead of being promoted into the engine root.
     """
     found: List[Tuple[str, str, Path]] = []
     try:
@@ -229,46 +273,60 @@ def _link_target(link: Path) -> Optional[Path]:
     return target if target.is_absolute() else link.parent / target
 
 
-def _is_managed(link: Path, managed_root: Path) -> bool:
-    """True when symlink *link* points inside *managed_root* (ours to edit/remove)."""
+def _is_managed(link: Path, managed_roots) -> bool:
+    """True when symlink *link* points inside any of *managed_roots*
+    (resolved paths — ours to edit/remove). A link into EITHER bridged tree
+    (shared library or hermes engine) is bridge-owned."""
     target = _link_target(link)
     if target is None:
         return False
     try:
-        target.resolve().relative_to(managed_root)
-        return True
-    except (ValueError, OSError):
+        resolved = target.resolve()
+    except OSError:
         return False
+    for root in managed_roots:
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def reconcile_omp_skills(
     *,
     mercury_skills_dir: Optional[Path] = None,
+    hermes_skills_dir: Optional[Path] = None,
     omp_agent_dir: Optional[Path] = None,
     excludes: Optional[frozenset] = None,
     config_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Reconcile the union view: engine-root skills ∪ shared library.
+    """Reconcile the union view: engine-root ∪ shared library ∪ hermes engine.
 
-    Materializes every non-excluded shared-library skill as a flat symlink
-    in ``<omp agent dir>/skills`` — unless the engine root already owns
-    that name (real dir/file or foreign symlink), in which case the ENGINE
-    ROOT entry wins and is never touched. Never raises for a missing or
-    unusable source or target — returns a summary the CLI prints. Only
-    managed symlinks (pointing inside the skills root) are
+    Materializes every non-excluded skill from BOTH bridged trees (shared
+    library first, hermes engine tree filling remaining names) as a flat
+    symlink in ``<omp agent dir>/skills`` — unless the engine root already
+    owns that name (real dir/file or foreign symlink), in which case the
+    ENGINE ROOT entry wins and is never touched. Never raises for a missing
+    or unusable source or target — returns a summary the CLI prints. Only
+    managed symlinks (pointing inside either bridged root) are
     created/replaced/removed; real entries and foreign symlinks are
     skipped with a warning.
     """
     skills_root = Path(mercury_skills_dir) if mercury_skills_dir is not None else resolve_mercury_skills_dir()
+    hermes_root = Path(hermes_skills_dir) if hermes_skills_dir is not None else resolve_hermes_engine_skills_dir()
     agent_dir = Path(omp_agent_dir) if omp_agent_dir is not None else resolve_omp_agent_dir()
     if excludes is None:
         excludes, _exclude_source = load_excludes(config_path)
 
     summary: Dict[str, Any] = {
         "skills_dir": str(skills_root),
+        "hermes_skills_dir": str(hermes_root),
         "target_dir": str(agent_dir / "skills"),
         "excludes": sorted(excludes),
         "source_present": skills_root.is_dir(),
+        "hermes_source_present": hermes_root.is_dir(),
+        "sources": {"shared": 0, "hermes": 0},
         "created": 0,
         "updated": 0,
         "removed": 0,
@@ -278,19 +336,40 @@ def reconcile_omp_skills(
         "failed": [],
     }
 
-    # Desired flat namespace: first category in sorted order wins a name.
+    # Desired flat namespace, three sources in precedence order:
+    #   shared library (user-facing ONE library) → hermes engine tree fills
+    #   gaps. Within one tree, first category in sorted order wins a name.
+    # The omp engine root needs no entry here — real entries and foreign
+    # symlinks are skipped at materialization time, so they always win.
     desired: Dict[str, Path] = {}
-    for category, name, skill_dir in scan_mercury_skills(skills_root):
-        if name in excludes:
-            continue
-        if name in desired:
-            summary["collisions"].append(name)
-            logger.warning(
-                "omp skills bridge: name collision on %r — %s/%s kept, %s/%s skipped",
-                name, desired[name].parent.name, name, category, name,
-            )
-            continue
-        desired[name] = skill_dir
+    origin: Dict[str, str] = {}
+    collision_names: set = set()
+
+    def _absorb(root: Path, source: str) -> None:
+        for category, name, skill_dir in scan_category_skills(root):
+            if name in excludes:
+                continue
+            prior = desired.get(name)
+            if prior is not None:
+                if prior == skill_dir:
+                    continue  # same tree reached twice (roots may alias)
+                if name not in collision_names:
+                    collision_names.add(name)
+                    summary["collisions"].append(name)
+                logger.warning(
+                    "omp skills bridge: name collision on %r — %s/%s kept, %s/%s skipped",
+                    name, prior.parent.name, name, category, name,
+                )
+                continue
+            desired[name] = skill_dir
+            origin[name] = source
+
+    _absorb(skills_root, "shared")
+    _absorb(hermes_root, "hermes")
+    summary["sources"] = {
+        "shared": sum(1 for s in origin.values() if s == "shared"),
+        "hermes": sum(1 for s in origin.values() if s == "hermes"),
+    }
 
     target_dir = agent_dir / "skills"
     try:
@@ -300,7 +379,7 @@ def reconcile_omp_skills(
         logger.warning("omp skills bridge: cannot create %s (%s)", target_dir, exc)
         return summary
 
-    root_resolved = skills_root.resolve()
+    managed_roots = {root.resolve() for root in (skills_root, hermes_root)}
 
     # Create / refresh desired links.
     for name in sorted(desired):
@@ -316,10 +395,10 @@ def reconcile_omp_skills(
             current = _link_target(link)
             if current is not None and current.resolve() == src:
                 continue  # already correct — leave untouched
-            if not _is_managed(link, root_resolved):
+            if not _is_managed(link, managed_roots):
                 summary["skipped_foreign"].append(name)
                 logger.warning(
-                    "omp skills bridge: %s points outside the mercury library — not touched", link
+                    "omp skills bridge: %s points outside the bridged mercury trees — not touched", link
                 )
                 continue
             try:
@@ -347,7 +426,7 @@ def reconcile_omp_skills(
             continue
         if entry.name in desired:
             continue
-        if not _is_managed(entry, root_resolved):
+        if not _is_managed(entry, managed_roots):
             continue
         try:
             entry.unlink()
@@ -365,8 +444,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="mercury omp-sync-skills",
-        description="Symlink the shared mercury skills library into omp's user skills dir "
-                    "(flat, exclude-aware, idempotent).",
+        description="Present omp the union of its engine-root skills, the shared mercury "
+                    "library, and the hermes engine tree (flat symlinks, exclude-aware, "
+                    "idempotent).",
     )
     parser.add_argument("--json", action="store_true", help="print the reconcile summary as JSON")
     args = parser.parse_args(argv)
@@ -377,16 +457,26 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
-    if not summary["source_present"]:
-        print(f"omp skills bridge: skills dir not found: {summary['skills_dir']}", file=sys.stderr)
+    if not (summary["source_present"] or summary["hermes_source_present"]):
+        print(
+            f"omp skills bridge: no skills tree found: {summary['skills_dir']} "
+            f"or {summary['hermes_skills_dir']}",
+            file=sys.stderr,
+        )
         return 1
     print(f"omp skills dir : {summary['target_dir']}")
     print(f"mercury library: {summary['skills_dir']}")
-    print(f"created={summary['created']} updated={summary['updated']} removed={summary['removed']}")
+    print(f"hermes engine   : {summary['hermes_skills_dir']}")
+    sources = summary["sources"]
+    print(
+        f"bridged={sources['shared'] + sources['hermes']} "
+        f"(shared={sources['shared']}, hermes={sources['hermes']}) "
+        f"created={summary['created']} updated={summary['updated']} removed={summary['removed']}"
+    )
     if summary["excludes"]:
         print(f"excluded: {', '.join(summary['excludes'])}")
     for name in summary["collisions"]:
-        print(f"collision: {name} — first category in sorted order wins")
+        print(f"collision: {name} — shared library wins over the hermes engine tree")
     for name in summary["skipped_real"] + summary["skipped_foreign"]:
         print(f"skipped (not overwritten): {name}")
     for err in summary["failed"]:

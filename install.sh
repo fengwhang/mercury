@@ -554,15 +554,17 @@ seed_defaults() {
         fi
     fi
 
-    # MERCURY-OMP PATCH (skills bridge): expose the shared library to omp
-    # children as flat symlinks (omp scans its agent dir one level deep).
-    # Mirrors bin/mercury: same forced PI_CODING_AGENT_DIR, same module,
-    # best-effort — install must never die here. Re-runs later are cheap
-    # and idempotent ('mercury omp-sync-skills').
+    # MERCURY-OMP PATCH (skills bridge): expose the shared library AND the
+    # hermes engine tree to omp children as flat symlinks (omp scans its
+    # agent dir one level deep). Mirrors bin/mercury: same forced
+    # PI_CODING_AGENT_DIR + HERMES_HOME, same module, best-effort — install
+    # must never die here. Re-runs later are cheap and idempotent
+    # ('mercury omp-sync-skills').
     local _bridge_py="$INSTALL_ROOT/hermes/.venv/bin/python"
-    if [ -d "$MERCURY_HOME/skills" ] && [ -x "$_bridge_py" ]; then
+    if { [ -d "$MERCURY_HOME/skills" ] || [ -d "$MERCURY_HOME/hermes/skills" ]; } && [ -x "$_bridge_py" ]; then
         MERCURY_HOME="$MERCURY_HOME" \
         MERCURY_SKILLS_DIR="$MERCURY_HOME/skills" \
+        HERMES_HOME="$MERCURY_HOME/hermes" \
         PI_CODING_AGENT_DIR="$MERCURY_HOME/omp" \
         PYTHONPATH="$INSTALL_ROOT/hermes" \
             "$_bridge_py" -c \

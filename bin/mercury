@@ -163,13 +163,16 @@ if ! "$PY" -c 'import yaml' >/dev/null 2>&1; then
 fi
 
 # MERCURY-OMP PATCH (skills bridge): materialize omp's user-skills view of
-# the ONE library BEFORE any omp child spawns — omp scans its agent dir one
-# level deep (<agentDir>/skills/<name>/SKILL.md), mercury nests by category,
-# so nothing surfaces without the flat symlink view. Best-effort by
-# contract: startup must NEVER die here (~100 symlinks, milliseconds).
+# the THREE skill sources BEFORE any omp child spawns — omp scans its agent
+# dir one level deep (<agentDir>/skills/<name>/SKILL.md), mercury nests by
+# category, so nothing surfaces without the flat symlink view. Sources: the
+# shared library ($MERCURY_SKILLS_DIR), the hermes engine tree
+# ($HERMES_HOME/skills — bundled skills + engine-side installs), with the
+# omp engine root always winning collisions. Best-effort by contract:
+# startup must NEVER die here (~100 symlinks, milliseconds).
 # PI_CODING_AGENT_DIR was forced above, so the bridge targets the mercury
 # tree's omp half; PYTHONPATH was exported above.
-if [[ -d "$MERCURY_SKILLS_DIR" ]]; then
+if [[ -d "$MERCURY_SKILLS_DIR" || -d "$HERMES_HOME/skills" ]]; then
     "$PY" -c 'from tools.omp_skills_bridge import reconcile_omp_skills; reconcile_omp_skills()' \
         >/dev/null 2>&1 || true
 fi

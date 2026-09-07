@@ -14,15 +14,17 @@ def build_omp_sync_skills_parser(subparsers, *, cmd_omp_sync_skills: Callable) -
     """Attach the ``omp-sync-skills`` subcommand to ``subparsers``."""
     parser = subparsers.add_parser(
         "omp-sync-skills",
-        help="Reconcile omp's union of both mercury skill trees (engine root wins)",
+        help="Reconcile omp's 3-source skill union (engine root wins)",
         description=(
-            "Present omp the union of both mercury skill trees: its own engine-root "
-            "skills (<omp agent dir>/skills, never touched) plus the shared library "
-            "($MERCURY_HOME/skills/<category>/<name> → skills/<name> symlinks). "
-            "Engine root wins name collisions. Idempotent: adds new skills, removes "
-            "vanished/excluded ones, never overwrites omp's own skills. Also runs "
-            "automatically at launcher boot, at install, and before every omp spawn "
-            "(bridge.py --render-omp)."
+            "Present omp the union of three skill sources: its own engine-root "
+            "skills (<omp agent dir>/skills, never touched), the shared library "
+            "($MERCURY_HOME/skills), and the hermes engine tree "
+            "($HERMES_HOME/skills) — category-nested trees become flat "
+            "skills/<name> symlinks. Engine root wins name collisions; the "
+            "shared library wins over the hermes engine tree. Idempotent: adds "
+            "new skills, removes vanished/excluded ones, never overwrites "
+            "omp's own skills. Also runs automatically at launcher boot, at "
+            "install, and before every omp spawn (bridge.py --render-omp)."
         ),
     )
     parser.add_argument(

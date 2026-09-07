@@ -432,7 +432,8 @@ def render_omp_subtree(slots, target=None):
 
 def _refresh_omp_skills_union():
     """MERCURY-OMP PATCH (skills bridge union): refresh omp's engine-root
-    symlink view of the shared library before this spawn.
+    symlink view of the shared library AND the hermes engine tree before
+    this spawn.
 
     --render-omp runs before EVERY omp spawn (delegate RPC children via
     omp_delegation._render_omp_config_once, the /omp command, cron
@@ -441,15 +442,17 @@ def _refresh_omp_skills_union():
     skills installed or removed mid-flight reach the next child. The
     launcher hook (bin/mercury) and install.sh stay as boot/install-time
     belts. Best-effort by contract: a config render must NEVER fail here;
-    outside a mercury tree (no shared library) it is a no-op.
+    outside a mercury tree (neither bridged skills dir exists) it is a no-op.
     """
     try:
         sys.path.insert(0, os.path.join(REPO, "hermes"))
         from tools.omp_skills_bridge import (
             reconcile_omp_skills,
+            resolve_hermes_engine_skills_dir,
             resolve_mercury_skills_dir,
         )
-        if not resolve_mercury_skills_dir().is_dir():
+        if not (resolve_mercury_skills_dir().is_dir()
+                or resolve_hermes_engine_skills_dir().is_dir()):
             return
         summary = reconcile_omp_skills()
         failed = summary.get("failed") or []
