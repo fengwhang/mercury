@@ -18,6 +18,7 @@ from mercury_cli.config import (
     get_project_root,
     is_nix_install_method,
     recommended_update_command_for_method,
+    soul_md_locations,
 )
 from mercury_cli.env_loader import load_hermes_dotenv
 from mercury_constants import display_hermes_home
@@ -1993,18 +1994,27 @@ def run_doctor(args):
         else:
             check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
     
-    # Check for SOUL.md persona file
-    soul_path = mercury_home / "SOUL.md"
+    # Check for SOUL.md persona file. Resolution is shared with
+    # _ensure_default_soul_md (mercury_cli.config.soul_md_locations): under
+    # the Mercury layout config/SOUL.md is THE persona file and a top-level
+    # SOUL.md is only a pre-layout stray — checked, created, and reported
+    # here at the layout-correct location only. Profile and pure legacy
+    # hermes homes keep their top-level SOUL.md (stock behavior).
+    soul_path, stray_path = soul_md_locations(mercury_home)
+    try:
+        soul_display = f"{_DHH}/{soul_path.relative_to(mercury_home)}"
+    except ValueError:
+        soul_display = str(soul_path)
     if soul_path.exists():
         content = soul_path.read_text(encoding="utf-8").strip()
         # Check if it's just the template comments (no real content)
         lines = [l for l in content.splitlines() if l.strip() and not l.strip().startswith(("<!--", "-->", "#"))]
         if lines:
-            check_ok(f"{_DHH}/SOUL.md exists (persona configured)")
+            check_ok(f"{soul_display} exists (persona configured)")
         else:
-            check_info(f"{_DHH}/SOUL.md exists but is empty — edit it to customize personality")
+            check_info(f"{soul_display} exists but is empty — edit it to customize personality")
     else:
-        check_warn(f"{_DHH}/SOUL.md not found", "(create it to give Mercury a custom personality)")
+        check_warn(f"{soul_display} not found", "(create it to give Mercury a custom personality)")
         if should_fix:
             soul_path.parent.mkdir(parents=True, exist_ok=True)
             soul_path.write_text(
@@ -2013,8 +2023,24 @@ def run_doctor(args):
                 "You are Mercury, a helpful AI assistant.\n",
                 encoding="utf-8",
             )
-            check_ok(f"Created {_DHH}/SOUL.md with basic template")
+            check_ok(f"Created {soul_display} with basic template")
             fixed_count += 1
+    if stray_path is not None and stray_path.exists():
+        # A pre-layout top-level SOUL.md alongside the Mercury layout. It is
+        # never the canonical persona file (config/SOUL.md is). A user file
+        # — never deleted automatically, just called out for hand cleanup.
+        if soul_path.exists():
+            check_info(
+                f"legacy top-level SOUL.md at {_DHH}/SOUL.md is shadowed by "
+                f"{soul_display} and never read — safe to delete after "
+                "moving anything you want to keep"
+            )
+        else:
+            check_info(
+                f"legacy top-level SOUL.md at {_DHH}/SOUL.md found — it "
+                f"moves into {soul_display} automatically on the next "
+                "config load"
+            )
     
     # Check memory directory
     memories_dir = mercury_home / "memories"

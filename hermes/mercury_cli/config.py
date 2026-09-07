@@ -930,22 +930,76 @@ def _secure_file(path):
         pass
 
 
-def _ensure_default_soul_md(home: Path) -> None:
-    """Seed a default SOUL.md into HERMES_HOME, upgrading legacy empty templates.
+def soul_md_locations(home: Path | None = None) -> Tuple[Path, Optional[Path]]:
+    """Resolve ``(canonical, stray)`` SOUL.md paths for a hermes home.
 
-    First run: write DEFAULT_SOUL_MD. Existing installs whose SOUL.md is still
-    the old comment-only scaffold (seeded by older install.sh / install.ps1 /
-    docker images, which shadowed the runtime default) get upgraded in place to
-    DEFAULT_SOUL_MD. A SOUL.md the user actually customized is never touched.
+    THE persona location under the Mercury layout is ``<root>/config/SOUL.md``
+    — exactly the candidate order ``agent.prompt_builder.load_soul_md`` reads
+    and the path install.sh / bin/mercury seed. ``root`` is ``$MERCURY_HOME``
+    when set, else ``home`` itself when ``home`` IS the Mercury root
+    (detected via the platform-default path or an existing ``config/`` dir).
+    This helper is the single source of truth shared by every writer
+    (``_ensure_default_soul_md``, ``mercury doctor``) so no code path can
+    seed a second, shadowing top-level copy (#1 drive-finding).
+
+    Returns:
+      - Mercury layout: ``(<root>/config/SOUL.md, <root>/SOUL.md)`` — the
+        top-level path is the pre-layout *stray*, handed back so callers can
+        migrate it or explicitly ignore it (it is never the persona file).
+      - Per-profile homes (``…/profiles/<name>`` — persona at the profile
+        root by design, seeded by ``mercury profile create``) and pure legacy
+        hermes homes (no ``$MERCURY_HOME``, not the platform-default root,
+        no ``config/`` dir): ``(<home>/SOUL.md, None)`` — stock behavior.
     """
-    # HERMES-OMP PATCH (config/ reorg): under MERCURY_HOME the SOUL.md
-    # default ships as config/SOUL.md and the launcher seeds it at the
-    # mercury home top level — never seed a second copy into the hermes
-    # private home (it would shadow the shared trio, drive-finding #1).
-    import os as _os
-    if _os.environ.get("MERCURY_HOME", "").strip():
-        return
-    soul_path = home / "SOUL.md"
+    if home is None:
+        home = get_hermes_home()
+    home = Path(home)
+    # Profile homes own a top-level SOUL.md by design; never re-point them
+    # at a shared config/ dir.
+    if home.parent.name == "profiles":
+        return home / "SOUL.md", None
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if mercury:
+        root = Path(mercury)
+    else:
+        from mercury_constants import _get_platform_default_hermes_home
+        if (home / "config").is_dir() or home == _get_platform_default_hermes_home():
+            root = home
+        else:
+            # Pure legacy hermes home: stock top-level persona.
+            return home / "SOUL.md", None
+    return root / "config" / "SOUL.md", root / "SOUL.md"
+
+
+def _ensure_default_soul_md(home: Path) -> None:
+    """Seed a default SOUL.md, upgrading legacy empty templates in place.
+
+    First run: write DEFAULT_SOUL_MD at the layout-correct location from
+    ``soul_md_locations`` — ``<root>/config/SOUL.md`` under the Mercury
+    layout, ``<home>/SOUL.md`` for profile and pure legacy hermes homes.
+    Existing installs whose SOUL.md is still the old comment-only scaffold
+    (seeded by older install.sh / install.ps1 / docker images, which shadowed
+    the runtime default) get upgraded in place to DEFAULT_SOUL_MD. A SOUL.md
+    the user actually customized is never touched.
+
+    Stray cleanup (mirror of install.sh / bin/mercury): under the Mercury
+    layout a pre-layout top-level ``<root>/SOUL.md`` is moved into
+    ``config/`` exactly once — only when ``config/SOUL.md`` does not exist.
+    When both exist the stray is left alone (never delete user files
+    automatically) and never read: the loader prefers ``config/``.
+    """
+    soul_path, stray_path = soul_md_locations(home)
+    if (
+        stray_path is not None
+        and stray_path.exists()
+        and not soul_path.exists()
+    ):
+        # One-time migration of a pre-layout stray into config/.
+        try:
+            soul_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(stray_path), str(soul_path))
+        except (OSError, shutil.Error):
+            pass  # best-effort — the seed below still gives the layout a file
     if soul_path.exists():
         try:
             existing = soul_path.read_text(encoding="utf-8")
@@ -954,6 +1008,8 @@ def _ensure_default_soul_md(home: Path) -> None:
         if not is_legacy_template_soul(existing):
             return
         # Legacy empty template -> upgrade to the real default in place.
+    else:
+        soul_path.parent.mkdir(parents=True, exist_ok=True)
     soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
     _secure_file(soul_path)
 

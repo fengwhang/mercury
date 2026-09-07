@@ -319,6 +319,13 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # lineage marker must not make parent-state tests run as delegated
     # children; tests that exercise child behavior set it explicitly.
     "HERMES_DELEGATED_CHILD_CONTEXT",
+    # The Mercury launcher exports these into every child (gateway, omp,
+    # delegated workers), so a test run launched FROM a Mercury session
+    # inherits them — and mercury_constants home resolution honors
+    # MERCURY_HOME over the platform default. Tests that need the Mercury
+    # layout set them explicitly.
+    "MERCURY_HOME",
+    "MERCURY_CONFIG",
     "HERMES_TENANT",
     # Honcho host selection changes which nested config block wins. A local
     # shell override leaked "myhost" into the full suite and flipped 20
