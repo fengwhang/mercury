@@ -716,8 +716,15 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 					exitCode = outcome.exitCode;
 				} else {
 					try {
+						// HERMES-OMP PATCH (bug #5 artifact 2, the REAL site): a
+						// terminal STRING yield is delivered RAW — whether it
+						// came from use_last_turn or explicit data. The old
+						// 'assembled.rawText &&' precondition only covered
+						// use_last_turn; explicit yield(data="hello") fell
+						// through to JSON.stringify("hello") and downstream
+						// consumers saw phantom quotes (7 bytes, not 5).
 						rawOutput =
-							assembled.rawText && typeof completeData === "string"
+							typeof completeData === "string"
 								? completeData
 								: (JSON.stringify(completeData, null, 2) ?? "null");
 					} catch (err) {
