@@ -609,17 +609,36 @@ def _resolve_backend_cdp(
     # Browser Use direct-API configs: the CLI talks to Browser Use cloud
     # natively (BU_AUTOSPAWN / auth login) — routing through the legacy
     # provider here would just create a second, redundant session. The
-    # Nous-gateway variant (use_gateway: true) DOES resolve through the
-    # provider: the gateway provisions the cloud browser server-side and
-    # returns its CDP URL, giving subscribers CLI mode with no raw key.
+    # Nous-gateway variant DOES resolve through the provider: the gateway
+    # provisions the cloud browser server-side and returns its CDP URL,
+    # giving subscribers CLI mode with no raw key.
+    # MERCURY-OMP PATCH (bug report: managed route skipped): the managed
+    # variant is selected via read_selection("browser") == "nous" (the
+    # modern picker writes cloud_provider: nous and POPS use_gateway — the
+    # old use_gateway key is legacy and never written anymore). Deciding
+    # "direct config" by use_gateway alone made every managed selection
+    # early-return WITHOUT provisioning, so the harness silently fell back
+    # to local Chrome. Detect the managed route the same way the provider's
+    # own config resolver does: selection "nous" (or legacy use_gateway).
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
-    if provider_key == _BACKEND_KEY and not is_truthy_value(
-        _read_browser_cfg().get("use_gateway"), default=False
-    ):
-        # Named BU cloud browsers are exclusive to their daemon — no shared
-        # tab to isolate from.
-        env[_PRIVATE_BROWSER_SENTINEL] = "1"
-        return None
+    if provider_key == _BACKEND_KEY:
+        try:
+            from tools.tool_backend_helpers import (
+                NOUS_MANAGED_PROVIDER,
+                read_selection,
+            )
+
+            managed_selected = read_selection("browser") == NOUS_MANAGED_PROVIDER
+        except Exception as e:
+            logger.debug("browser selection read failed: %s", e)
+            managed_selected = False
+        if not managed_selected and not is_truthy_value(
+            _read_browser_cfg().get("use_gateway"), default=False
+        ):
+            # Named BU cloud browsers are exclusive to their daemon — no shared
+            # tab to isolate from.
+            env[_PRIVATE_BROWSER_SENTINEL] = "1"
+            return None
 
     try:
         # Named sessions get their OWN provider browser, keyed by name so the
