@@ -1,22 +1,43 @@
-"""MERCURY-OMP PATCH (skills bridge): expose the shared library to omp children.
+"""MERCURY-OMP PATCH (skills bridge): union both mercury skill trees for omp.
 
-Why: omp discovers user skills ONLY from its agent dir —
+The two mercury skill trees:
+  1. SHARED    — ``$MERCURY_HOME/skills`` (category-nested,
+                 ``<category>/<name>/SKILL.md``), hermes' native layout and
+                 the ONE library both engines are supposed to read/write.
+  2. ENGINE ROOT — ``<omp agent dir>/skills`` (flat, ``<name>/SKILL.md``),
+                 omp-private native skills.
+
+Why a bridge at all: omp discovers user skills ONLY from its engine root —
 ``<agentDir>/skills/<name>/SKILL.md``, ONE level deep, symlinked dirs
 accepted (omp/packages/coding-agent/src/discovery/builtin.ts loadSkills →
-helpers.ts scanSkillsFromDir). Mercury's shared library is category-nested
-(``$MERCURY_HOME/skills/<category>/<name>/SKILL.md``), so omp's scan of the
-shared root sees only categories (no SKILL.md) and omp children get zero
-mercury skills on a machine without a ``~/.claude`` dir.
+helpers.ts scanSkillsFromDir). omp's own mercury patch scans the shared
+root too, but the compiled binary scans it the same flat way, so the
+category-nested library yields nothing there. The bridge materializes the
+shared library INTO the engine root as a flat symlink view — one
+``<name>`` symlink per skill — which the frozen binary picks up natively.
 
-Fix: reconcile ``<omp agent dir>/skills`` to a FLAT symlink view of the
-library — one ``<name>`` symlink per skill. Idempotent and incremental:
-re-running adds new skills, replaces repointed links, removes links whose
-source vanished or became excluded, and leaves everything else (including
-anything the user put there) untouched.
+Union semantics (ENGINE ROOT WINS):
+  - omp sees ``engine-root skills ∪ shared-library skills``.
+  - Real dirs/files in the engine root and symlinks pointing outside the
+    mercury skills root are omp's OWN skills — never created, replaced, or
+    removed by the bridge, and they win any name collision with the shared
+    library (no link is placed over them; the shared copy is simply not
+    materialized under that name).
+  - The ``omp-managed`` category of the shared library (omp's auto-learned
+    skills, ``$MERCURY_HOME/skills/omp-managed`` per
+    omp/.../autolearn/managed-skills.ts getManagedSkillsDir) is NOT
+    materialized: omp already loads it through its dedicated managed-skills
+    provider at the LOWEST skill priority, so an authored skill of the same
+    name wins. Bridging it would promote learned skills to engine-root
+    (highest) priority and invert that design.
 
-Ownership rule: a symlink in the target dir is "managed" iff it points
-inside the mercury skills root. Real dirs/files and symlinks to elsewhere
-are the user's own omp skills — NEVER overwritten, only warned about.
+Reconcile is idempotent and incremental: re-running adds new skills,
+replaces repointed links, removes links whose source vanished or became
+excluded (including any pre-fix ``omp-managed`` links — self-healing), and
+leaves everything else untouched. It runs at launcher boot, at install,
+and — via bridge.py ``--render-omp`` — before every omp spawn (delegate
+RPC children, ``/omp``, cron omp_direct, post-setup sync), so a
+long-running gateway converges without a reboot.
 
 omp agent-dir resolution mirrors omp/packages/utils/src/dirs.ts
 (getConfigDirName / getConfigAgentDirName / DirResolver):
@@ -66,6 +87,15 @@ DEFAULT_EXCLUDES: frozenset = frozenset({
 
 # omp profile grammar (omp dirs.ts PROFILE_NAME_RE): [a-z0-9][a-z0-9._-]{0,63}
 _PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+# omp's auto-learned skills live in the SHARED library as their own
+# category ($MERCURY_HOME/skills/omp-managed — omp autolearn/managed-skills.ts
+# getManagedSkillsDir under MERCURY_HOME) but must NOT be materialized into
+# the engine root: omp loads them through its dedicated managed-skills
+# provider at the LOWEST skill priority (an authored same-name skill wins).
+# Bridging them would promote learned skills to engine-root priority and
+# invert omp's authored-beats-managed design.
+MANAGED_SKILLS_CATEGORY = "omp-managed"
 
 
 def _normalize_profile_name(value: str) -> Optional[str]:
@@ -164,15 +194,19 @@ def load_excludes(config_path: Optional[Path] = None) -> Tuple[frozenset, str]:
 
 
 def scan_mercury_skills(skills_root: Path) -> List[Tuple[str, str, Path]]:
-    """All skills in the category-nested library as ``(category, name, dir)``.
+    """Authored skills in the category-nested library as ``(category, name, dir)``.
 
     Deterministic: categories and skill dirs in sorted order, so collision
     resolution ("first category wins") is stable across runs and machines.
+    The ``omp-managed`` category is EXCLUDED — see MANAGED_SKILLS_CATEGORY:
+    learned skills keep their own low-priority omp provider instead of
+    being promoted into the engine root.
     """
     found: List[Tuple[str, str, Path]] = []
     try:
         categories = sorted(p for p in skills_root.iterdir()
-                            if not p.name.startswith(".") and p.is_dir())
+                            if not p.name.startswith(".") and p.is_dir()
+                            and p.name != MANAGED_SKILLS_CATEGORY)
     except OSError:
         return found
     for cat in categories:
@@ -214,11 +248,15 @@ def reconcile_omp_skills(
     excludes: Optional[frozenset] = None,
     config_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Reconcile ``<omp agent dir>/skills`` to the flat symlink view.
+    """Reconcile the union view: engine-root skills ∪ shared library.
 
-    Never raises for a missing/unusable source or target — returns a summary
-    the CLI prints. Only managed symlinks (pointing inside the skills root)
-    are created/replaced/removed; real entries and foreign symlinks are
+    Materializes every non-excluded shared-library skill as a flat symlink
+    in ``<omp agent dir>/skills`` — unless the engine root already owns
+    that name (real dir/file or foreign symlink), in which case the ENGINE
+    ROOT entry wins and is never touched. Never raises for a missing or
+    unusable source or target — returns a summary the CLI prints. Only
+    managed symlinks (pointing inside the skills root) are
+    created/replaced/removed; real entries and foreign symlinks are
     skipped with a warning.
     """
     skills_root = Path(mercury_skills_dir) if mercury_skills_dir is not None else resolve_mercury_skills_dir()

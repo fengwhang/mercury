@@ -430,6 +430,38 @@ def render_omp_subtree(slots, target=None):
     return target
 
 
+def _refresh_omp_skills_union():
+    """MERCURY-OMP PATCH (skills bridge union): refresh omp's engine-root
+    symlink view of the shared library before this spawn.
+
+    --render-omp runs before EVERY omp spawn (delegate RPC children via
+    omp_delegation._render_omp_config_once, the /omp command, cron
+    omp_direct, post-setup omp_sync), so hanging the skills union off it
+    makes a long-running gateway converge without a launcher reboot —
+    skills installed or removed mid-flight reach the next child. The
+    launcher hook (bin/mercury) and install.sh stay as boot/install-time
+    belts. Best-effort by contract: a config render must NEVER fail here;
+    outside a mercury tree (no shared library) it is a no-op.
+    """
+    try:
+        sys.path.insert(0, os.path.join(REPO, "hermes"))
+        from tools.omp_skills_bridge import (
+            reconcile_omp_skills,
+            resolve_mercury_skills_dir,
+        )
+        if not resolve_mercury_skills_dir().is_dir():
+            return
+        summary = reconcile_omp_skills()
+        failed = summary.get("failed") or []
+        if failed:
+            print(
+                f"omp skills bridge: {len(failed)} failure(s) — run 'mercury omp-sync-skills'",
+                file=sys.stderr,
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"omp skills bridge skipped: {exc}", file=sys.stderr)
+
+
 def main():
     args = sys.argv[1:]
     delegation = "--delegate" in args
@@ -444,6 +476,7 @@ def main():
     if render_omp:
         target = render_omp_subtree(slots)
         print(f"rendered omp: subtree in {target}")
+        _refresh_omp_skills_union()
         return
     if not check_only:
         render(slots, delegation=delegation)

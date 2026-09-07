@@ -1,27 +1,39 @@
-"""Tests for tools/omp_skills_bridge — flat symlink view of the shared library.
+"""Tests for tools/omp_skills_bridge — union of both mercury skill trees.
 
-Pinned contract:
+Pinned contract (ENGINE ROOT WINS):
 - omp children discover user skills ONLY as ``<agentDir>/skills/<name>/SKILL.md``
   (one level, symlinked dirs accepted), so the bridge must produce a FLAT
   namespace regardless of mercury's category nesting.
-- First category in sorted order wins a name collision (deterministic); the
-  loser is never linked.
-- Real dirs/files at the target are the user's own omp skills — skipped and
-  NEVER overwritten; foreign symlinks (outside the mercury root) likewise.
+- omp's view is the UNION of its own engine-root skills and the shared
+  library: real dirs/files and foreign symlinks in the engine root are
+  omp's own — skipped and NEVER overwritten — and they WIN any name
+  collision with the shared library (the shared copy is not linked).
+- First category in sorted order wins a name collision inside the shared
+  library (deterministic); the loser is never linked.
+- The ``omp-managed`` category is never materialized (omp loads it via its
+  own low-priority managed provider; bridging it would invert
+  authored-beats-managed). Pre-fix managed links self-heal away.
 - Idempotent: a no-change re-run creates/updates/removes nothing.
 - Stale managed links (source vanished or newly excluded) are removed;
   managed-ness = link target resolves inside the mercury skills root.
 - ``hermes.omp_skills_exclude`` in the unified config REPLACES the default
   exclude list when present.
+- bridge.py ``--render-omp`` (the per-spawn path: delegate RPC children,
+  /omp, cron omp_direct, post-setup sync) refreshes the union too.
 """
 
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from tools import omp_skills_bridge as bridge
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_BRIDGE_PY = _REPO_ROOT / "bridge" / "bridge.py"
 
 
 def _make_skill(category_dir: Path, name: str, body: str = "skill") -> Path:
@@ -269,3 +281,114 @@ class TestEnvResolution:
         assert bridge.resolve_unified_config_path() == tmp_path / "config.yaml"
         monkeypatch.setenv("MERCURY_CONFIG", str(tmp_path / "c.yaml"))
         assert bridge.resolve_unified_config_path() == tmp_path / "c.yaml"
+
+
+class TestUnionSemantics:
+    """omp's view = engine-root skills ∪ shared library; engine root wins."""
+
+    def test_union_engine_root_real_dir_wins_and_both_visible(self, library, agent_home):
+        # omp's own engine-root skill at a name mercury also has.
+        own = agent_home / "skills" / "coder"
+        own.mkdir()
+        (own / "SKILL.md").write_text("---\nname: coder\n---\nmine\n", encoding="utf-8")
+
+        _reconcile(library, agent_home)
+
+        skills = agent_home / "skills"
+        # UNION: omp sees BOTH trees — its own engine-root skill ...
+        assert (skills / "coder").is_dir() and not (skills / "coder").is_symlink()
+        assert (skills / "coder" / "SKILL.md").read_text(encoding="utf-8").endswith("mine\n")
+        # ... and every shared skill it does not shadow.
+        assert (skills / "shared").is_symlink()
+        assert (skills / "websearch").is_symlink()
+        # ENGINE ROOT WINS: the shared copy of "coder" is NOT linked over it.
+        assert (skills / "coder").resolve() != (library / "skills/alpha/coder").resolve()
+
+    def test_managed_category_never_bridged(self, library, agent_home):
+        _make_skill(library / "skills" / "omp-managed", "learned")
+
+        summary = _reconcile(library, agent_home)
+
+        assert not (agent_home / "skills/learned").exists()
+        assert summary["created"] == 3  # coder, shared, websearch — not "learned"
+
+    def test_pre_fix_managed_link_self_heals(self, library, agent_home):
+        # A link the pre-managed-exclusion bridge created into omp-managed.
+        learned = _make_skill(library / "skills" / "omp-managed", "learned")
+        link = agent_home / "skills" / "learned"
+        link.symlink_to(learned, target_is_directory=True)
+
+        summary = _reconcile(library, agent_home)
+
+        # Points inside the mercury root → managed → no longer desired → removed.
+        assert not link.exists()
+        assert summary["removed"] == 1
+
+
+class TestRenderOmpPath:
+    """bridge.py --render-omp (per-spawn) refreshes the union, fail-soft."""
+
+    @pytest.fixture(autouse=True)
+    def _layout(self, tmp_path):
+        mercury = tmp_path / "mercury"
+        alpha = mercury / "skills" / "alpha"
+        _make_skill(alpha, "coder")
+        _make_skill(alpha, "shared")
+        _make_skill(mercury / "skills" / "omp-managed", "learned")
+        config = mercury / "config.yaml"
+        config.write_text(
+            "models:\n"
+            "  default: prov/m-1\n"
+            "  fallback: prov/m-2\n"
+            "  delegate_model: prov/m-1\n"
+            "  delegate_fallback: prov/m-2\n",
+            encoding="utf-8",
+        )
+        agent = tmp_path / "omp-agent"
+        own = agent / "skills" / "coder"  # engine-root native skill
+        own.mkdir(parents=True)
+        (own / "SKILL.md").write_text("---\nname: coder\n---\nmine\n", encoding="utf-8")
+        self.env = {
+            **os.environ,
+            "HERMES_OMP_CONFIG": str(config),
+            "MERCURY_CONFIG": str(config),
+            "MERCURY_HOME": str(mercury),
+            "MERCURY_SKILLS_DIR": str(mercury / "skills"),
+            "PI_CODING_AGENT_DIR": str(agent),
+            "OMP_PROFILE": "",
+            "PI_PROFILE": "",
+            "PI_CONFIG_DIR": "",
+        }
+        self.mercury = mercury
+        self.agent = agent
+        yield self
+
+    def test_render_omp_refreshes_union(self):
+        result = subprocess.run(
+            [sys.executable, str(_BRIDGE_PY), "--render-omp"],
+            capture_output=True, text=True, timeout=60, env=self.env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        skills = self.agent / "skills"
+        # Config render still happened.
+        assert "rendered omp: subtree" in result.stdout
+        # Union: engine-root native skill intact + shared skill linked.
+        assert (skills / "coder").is_dir() and not (skills / "coder").is_symlink()
+        assert (skills / "shared").is_symlink()
+        # Managed category not promoted.
+        assert not (skills / "learned").exists()
+
+    def test_render_survives_broken_skills_tree(self):
+        # A trashed skills root must never fail the config render.
+        shutil.rmtree(self.mercury / "skills")
+
+        result = subprocess.run(
+            [sys.executable, str(_BRIDGE_PY), "--render-omp"],
+            capture_output=True, text=True, timeout=60, env=self.env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "rendered omp: subtree" in result.stdout
+        # The engine-root native skill was never touched.
+        assert (self.agent / "skills/coder/SKILL.md").read_text(encoding="utf-8").endswith("mine\n")
