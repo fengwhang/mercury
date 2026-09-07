@@ -35,11 +35,33 @@ PRESERVED_TOP_LEVEL = {".venv", "venv", ".git", ".env", "dist", "node_modules", 
 
 
 def _project_root() -> Path:
-    try:
-        from mercury_cli._repo_paths import PROJECT_ROOT  # type: ignore[attr-defined]
-        return Path(PROJECT_ROOT)
-    except Exception:
-        return Path(__file__).resolve().parents[1]
+    """The Mercury INSTALL ROOT (the dir containing bin/, hermes/, omp/).
+
+    MERCURY-OMP PATCH (bug #5 follow-up, THE root cause): upstream's
+    fallback `Path(__file__).resolve().parents[1]` assumes the repo layout
+    (mercury_cli at <root>/hermes/mercury_cli). In the Mercury TARBALL
+    layout that resolves to <INSTALL>/hermes — one level too deep. The
+    updater then swapped the whole new tree INTO hermes/, creating
+    hermes/bin, hermes/omp, hermes/hermes junk, never touching the real
+    <INSTALL>/omp or <INSTALL>/hermes/tools/*, and printed success while
+    every byte the engine runs stayed stale. Detect the install root by
+    structure: walk up until a dir contains BOTH bin/mercury and hermes/;
+    require it, never guess silently.
+    """
+    here = Path(__file__).resolve()
+    for cand in (here.parents[1], here.parents[2], here.parents[3]):
+        if (cand / "bin" / "mercury").exists() and (cand / "hermes").is_dir():
+            return cand
+    # Last-resort sanity check: if the fallback would point at a dir that
+    # ALREADY contains a nested 'mercury' layout (hermes/omp inside hermes/),
+    # refuse loudly rather than corrupting the tree again.
+    fallback = here.parents[1]
+    if (fallback / "bin" / "mercury").exists() and (fallback / "hermes").is_dir():
+        return fallback
+    print("✗ Cannot locate the Mercury install root "
+          f"(looked above {here}; no parent has bin/mercury + hermes/).")
+    print("  Refusing to swap files into a guessed location. Aborting.")
+    raise SystemExit(1)
 
 
 def _installed_version() -> str:
@@ -290,6 +312,30 @@ def update_from_release(*, assume_yes: bool = False) -> int:
         root = _project_root()
         print(f"→ Swapping code tree at {root} (state in ~/.mercury preserved)...")
         _swap_tree(src, root)
+
+        # MERCURY-OMP PATCH (bug #5 follow-up): PROVE the swap landed. The
+        # tarball's own omp binary must be at the install root's omp/ path,
+        # byte-identical to what we unpacked. A wrong root (the historic
+        # <INSTALL>/hermes mis-swap) fails HERE instead of reporting success.
+        _tar_omp_rel = "omp/packages/coding-agent/dist/omp"
+        _want = src / _tar_omp_rel
+        _got = root / _tar_omp_rel
+        if _want.exists():
+            if not _got.exists() or _sha256(_want) != _sha256(_got):
+                print("✗ Update verification FAILED: swapped omp binary does not "
+                      f"match the tarball at {_got}. The swap wrote the wrong "
+                      "location — no files were (correctly) updated.")
+                return 1
+            print("  swap verified: omp binary matches tarball bytes")
+        # and the delegation module the engine imports
+        _tar_del = src / "hermes" / "tools" / "omp_delegation.py"
+        _got_del = root / "hermes" / "tools" / "omp_delegation.py"
+        if _tar_del.exists() and (
+                not _got_del.exists() or _sha256(_tar_del) != _sha256(_got_del)):
+            print("✗ Update verification FAILED: hermes/tools/omp_delegation.py "
+                  "does not match the tarball after the swap.")
+            return 1
+        print("  swap verified: omp_delegation.py matches tarball bytes")
 
         # refresh the editable install so entry points/scripts stay aligned
         venv = root / "hermes" / ".venv"
