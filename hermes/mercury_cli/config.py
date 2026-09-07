@@ -3783,6 +3783,43 @@ def _load_user_config_for_mutation(config_path: Path) -> Dict[str, Any]:
     return loaded
 
 
+def _guard_test_write_target(target: Path, kind: str) -> None:
+    """Test-safety guard: refuse real-home ``.env`` / ``config.yaml`` writes.
+
+    2026-09-07 incident: a Mercury-session pytest run patched only
+    ``HERMES_HOME`` while the launcher-exported ``MERCURY_HOME`` stayed live;
+    ``get_env_path()`` keys on ``MERCURY_HOME``, so a fixture token overwrote
+    the operator's real ``~/.mercury/.env`` ``GITHUB_TOKEN`` (a sibling test
+    also briefly corrupted the real ``config.yaml``). The test conftest
+    scrubs ``MERCURY_HOME``/``MERCURY_CONFIG`` per test (704a3c67); this
+    guard is the independent second layer — a bypassed fixture, a rebuilt
+    subprocess env, or a future env-keyed resolution path must fail LOUD
+    here instead of writing.
+
+    Active only in a pytest context (``PYTEST_CURRENT_TEST`` /
+    ``PYTEST_VERSION`` / ``HERMES_TEST_ISOLATION`` — the same marker trio as
+    ``mercury_state._running_under_pytest``, so subprocess children that
+    strip pytest's own vars stay covered), and only when the resolved
+    target is NOT under ``tempfile.gettempdir()``. Real processes never
+    take this branch.
+    """
+    if not (
+        os.environ.get("PYTEST_CURRENT_TEST")
+        or os.environ.get("PYTEST_VERSION")
+        or os.environ.get("HERMES_TEST_ISOLATION")
+    ):
+        return
+    resolved = Path(target).resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    if resolved.is_relative_to(temp_root):
+        return
+    raise RuntimeError(
+        f"test-safety guard: refusing to write {kind} outside the test "
+        f"tempdir (resolved target {resolved} is not under {temp_root}). "
+        f"A pytest-context write aimed at a real home — patch "
+        f"HERMES_HOME/MERCURY_HOME/MERCURY_CONFIG into a tmp_path in the test."
+    )
+
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """Fail-closed atomic write for ``config.yaml``.
 
@@ -3806,6 +3843,7 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """
     from utils import atomic_yaml_write
 
+    _guard_test_write_target(config_path, "config.yaml")
     require_readable_config_before_write(config_path)
     atomic_yaml_write(config_path, data, **kwargs)
 
@@ -4365,8 +4403,9 @@ def save_config(
                 )
         from utils import atomic_yaml_write
 
-        ensure_hermes_home()
         config_path = get_config_path()
+        _guard_test_write_target(config_path, "config.yaml")
+        ensure_hermes_home()
         require_readable_config_before_write(config_path)
         # Compute explicit user paths BEFORE any normalisation --------
         # _normalize_max_turns_config may inject agent.max_turns from
@@ -4587,6 +4626,7 @@ def sanitize_env_file() -> int:
     0 when no changes are needed.
     """
     env_path = get_env_path()
+    _guard_test_write_target(env_path, ".env")
     if not env_path.exists():
         return 0
 
@@ -4737,8 +4777,9 @@ def save_env_value(key: str, value: str):
     value = value.replace("\n", "").replace("\r", "")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
-    ensure_hermes_home()
     env_path = get_env_path()
+    _guard_test_write_target(env_path, ".env")
+    ensure_hermes_home()
 
     # On Windows, open() defaults to the system locale (cp1252) which can
     # cause OSError errno 22 on UTF-8 .env files.
@@ -4849,6 +4890,7 @@ def remove_env_value(key: str) -> bool:
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     env_path = get_env_path()
+    _guard_test_write_target(env_path, ".env")
     if not env_path.exists():
         os.environ.pop(key, None)
         return False
@@ -6118,6 +6160,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
+    _guard_test_write_target(config_path, "config.yaml")
     from utils import atomic_yaml_write
     atomic_yaml_write(config_path, user_config, sort_keys=False)
     
@@ -6234,6 +6277,7 @@ def unset_config_value(key: str):
         sys.exit(1)
 
     ensure_hermes_home()
+    _guard_test_write_target(config_path, "config.yaml")
     from utils import atomic_yaml_write
     atomic_yaml_write(config_path, user_config, sort_keys=False)
     print(f"✓ Unset {key} from {config_path}")

@@ -121,11 +121,11 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
     """
     if not old_value:
         return []
-    from utils import atomic_yaml_write, fast_safe_load
+    from utils import fast_safe_load
 
     from mercury_cli.config import (
+        atomic_config_write,
         get_config_path,
-        require_readable_config_before_write,
     )
 
     config_path = get_config_path()
@@ -189,8 +189,10 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
             _fix(entry, f"providers.{provider_id}", fields=("api_key",))
 
     if touched:
-        require_readable_config_before_write(config_path)
-        atomic_yaml_write(config_path, user_config, sort_keys=False)
+        # atomic_config_write = require-readable-before-write + atomic write,
+        # and carries the test-safety guard against real-home config.yaml
+        # writes under pytest — this mirror write must not bypass it.
+        atomic_config_write(config_path, user_config, sort_keys=False)
     return touched
 
 
