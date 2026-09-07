@@ -482,6 +482,7 @@ from mercury_cli.subcommands.tools import build_tools_parser
 from mercury_cli.subcommands.insights import build_insights_parser
 from mercury_cli.subcommands.monitoring import build_monitoring_parser
 from mercury_cli.subcommands.skills import build_skills_parser
+from mercury_cli.subcommands.omp_skills_sync import build_omp_sync_skills_parser
 from mercury_cli.subcommands.pairing import build_pairing_parser
 from mercury_cli.subcommands.plugins import build_plugins_parser
 from mercury_cli.subcommands.mcp import build_mcp_parser
@@ -13051,6 +13052,17 @@ def cmd_skills(args):
         skills_command(args)
 
 
+def cmd_omp_sync_skills(args):
+    """``mercury omp-sync-skills`` — reconcile omp's user skills dir.
+
+    Thin dispatch: all logic lives in ``tools/omp_skills_bridge`` so the
+    launcher and install.sh share the exact same code path.
+    """
+    from tools.omp_skills_bridge import main as _bridge_main
+
+    return _bridge_main(["--json"] if getattr(args, "json", False) else [])
+
+
 def _cmd_skills_trust(args):
     """``mercury skills trust [path]`` / ``mercury skills untrust [path]``.
 
@@ -13878,6 +13890,10 @@ def main():
     # =========================================================================
     build_skills_parser(subparsers, cmd_skills=cmd_skills)
 
+    # =========================================================================
+    # omp-sync-skills command  (parser built in mercury_cli/subcommands/omp_skills_sync.py)
+    # =========================================================================
+    build_omp_sync_skills_parser(subparsers, cmd_omp_sync_skills=cmd_omp_sync_skills)
     # =========================================================================
     # bundles command — skill bundles (alias /<name> for multiple skills)
     # =========================================================================
