@@ -1,8 +1,4 @@
 # OMP.md — omp-only system prompt context
-# Lives at $MERCURY_HOME/OMP.md. Loaded ONLY into omp's context
-# (discovery-layer context-file provider). hermes never sees this file.
-# Use for: coding-agent conventions, repo workflow rules, standing
-# instructions for the fan-out half of Mercury. Edit freely.
 
 # omp in Mercury — what you are
 
@@ -18,8 +14,8 @@ hermes half orchestrates you; you execute.
   independent subtasks (one child per concern).
 - Session model = the configured delegate slot; model selection is
   explicit or session-wide (there is no role system).
-- Shared state: SOUL.md, MEMORY.md, USER.md, and AGENTS.md at ~/.mercury/
+- Shared state: SOUL.md, MEMORY.md, USER.md, and AGENTS.md at ~/.mercury/config
   are readable by both engines, as is the skills library. The memory files
   are hermes-owned (read them, don't write them).
 - Approvals: your tool-approval mode comes from Mercury's unified
-  `approvals:` knob (manual/smart/off); deny rules are absolute.
+  `approvals:` knob (manual/smart/off).

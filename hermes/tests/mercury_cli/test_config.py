@@ -1743,20 +1743,13 @@ class TestProviderEnabledRuntimeGate:
 
 
 # ---------------------------------------------------------------------------
-# DEFAULT_CONFIG must not carry a duplicate "kanban" key
+# Kanban was REMOVED in the fork (B2, TODO.md): omp is the subagent engine,
+# the hermes kanban subsystem is gone. Assert it stays gone.
 # ---------------------------------------------------------------------------
 
-def test_default_config_kanban_block_not_dropped_by_duplicate_key():
-    """DEFAULT_CONFIG previously declared ``"kanban"`` twice, so Python kept
-    only the second literal and silently dropped the first — losing the
-    ``auto_subscribe_on_create`` default. Both sets of defaults must survive.
-    """
-    kanban = DEFAULT_CONFIG["kanban"]
-    # From the first (dropped) block:
-    assert kanban.get("auto_subscribe_on_create") is True
-    # From the second block:
-    assert "dispatch_in_gateway" in kanban
-    assert "auto_decompose" in kanban
+def test_default_config_has_no_kanban_block():
+    """Kanban removal (B2) must be complete: no kanban defaults may return."""
+    assert "kanban" not in DEFAULT_CONFIG
 
 
 def test_default_config_has_no_duplicate_top_level_keys():
