@@ -109,6 +109,15 @@ def realized(plan: tree.SpacePlan, snap: dict) -> tree.SpacePlan:
     return realize(plan)
 
 
+def _label(intent) -> tuple[str, str | None]:
+    """Human key for an intent: attach ops carry parent/child keys, not a
+    single ``key`` (``getattr(i, 'key')`` reads None for them)."""
+    if isinstance(intent, AttachSpace):
+        return (type(intent).__name__, intent.child_key)
+    if isinstance(intent, AttachRoom):
+        return (type(intent).__name__, intent.room_key)
+    return (type(intent).__name__, getattr(intent, "key", None))
+
 # --- §3 provisioning ---------------------------------------------------------------
 
 
@@ -117,11 +126,15 @@ class TestPlanProvision:
         plan = renderer.build_plan(host="gatehost")
         intents = renderer.plan_provision(EMPTY_SNAPSHOT, plan)
 
-        kinds = [(type(i).__name__, getattr(i, "key", None)) for i in intents]
-        # §3 order inside the gateway space: gateway room, directives, cron
-        # rooms, orchestrator subspaces — op order IS the m.space.child order.
+        kinds = [_label(i) for i in intents]
+        # §3 order inside the gateway space: gateway agent subspace first,
+        # then directives, cron rooms, orchestrator subspaces — op order IS
+        # the m.space.child order. The gateway agent is a full 0-agent
+        # (gw-space parity): its room nests in its own subspace.
         assert kinds == [
             ("CreateSpace", GW),
+            ("CreateSpace", "gw-agent"),
+            ("AttachSpace", "gw-agent"),   # child_key; parent = gateway space
             ("CreateRoom", GW),            # gateway agent room
             ("AttachRoom", GW),
             ("CreateRoom", "directives"),
@@ -171,8 +184,16 @@ class TestPlanProvision:
             "rooms": {f"!r-gw:{SERVER}": {"name": "y"}},
         }
         intents = renderer.plan_provision(snap, plan)
-        kinds = [(type(i).__name__, getattr(i, "key", None)) for i in intents]
-        assert kinds == [
+        # §3 nests the gateway room inside the gw-agent subspace, so the
+        # stale direct child (!r-gw under !s-gw) is detached first; the
+        # known gw space/room themselves are never recreated.
+        detach, rest = intents[0], intents[1:]
+        assert isinstance(detach, DetachChild)
+        assert (detach.space_id, detach.child_id) == (f"!s-gw:{SERVER}", f"!r-gw:{SERVER}")
+        assert [_label(i) for i in rest] == [
+            ("CreateSpace", "gw-agent"),
+            ("AttachSpace", "gw-agent"),
+            ("AttachRoom", GW),
             ("CreateRoom", "directives"),
             ("AttachRoom", "directives"),
             ("CreateRoom", CRON),
@@ -292,9 +313,6 @@ class TestRendererEvents:
         assert msg.formatted_body.startswith("<blockquote>")
 
 
-# --- D8 death ---------------------------------------------------------------------------
-
-
 class TestPlanDeath:
     def _with_ids(self, state: ObservatoryState) -> None:
         for node in (GW, ORCH, SA, SSA):
@@ -307,18 +325,19 @@ class TestPlanDeath:
         sends = [i for i in intents if isinstance(i, SendMessage)]
         purges = [i.room_id for i in intents if isinstance(i, PurgeRoom)]
 
-        # summary to the PARENT's room ONLY (its own room is being purged)
+        # summary to the PARENT's room ONLY (its own room is being purged),
+        # spoken by the PARENT's voice (the dying agent is no member there)
         assert len(sends) == 1
         assert sends[0].room_key == ORCH
-        assert sends[0].sender == state.get(SA)["mxid"]
+        assert sends[0].sender == state.get(ORCH)["mxid"]
         assert "3 tests green" in sends[0].body
         assert SETTLED_MARKER not in sends[0].body
 
         # instant purge of SA room+space; D8 cascade takes the live SSA child
-        assert set(purges) == {"!r-sa:x", "!s-sa:x", "!r-ssa:x", "!s-ssa:x"}
+        assert set(purges) == {f"!r-{SA}:x", f"!s-{SA}:x", f"!r-{SSA}:x", f"!s-{SSA}:x"}
         detach = next(i for i in intents if isinstance(i, DetachChild))
-        assert (detach.space_id, detach.child_id) == ("!s-orch:x", "!s-sa:x")
-        assert purges.index("!r-sa:x") < purges.index("!r-ssa:x")  # top-down
+        assert (detach.space_id, detach.child_id) == ("!s-orch:x", f"!s-{SA}:x")
+        assert purges.index(f"!r-{SA}:x") < purges.index(f"!r-{SSA}:x")  # top-down
 
     def test_depth2_death_settles_and_survives(self, state, renderer):
         self._with_ids(state)
@@ -338,8 +357,8 @@ class TestPlanDeath:
 
         # roots summarize to the GATEWAY room; gateway artifacts untouched
         assert len(sends) == 1 and sends[0].room_key == GW
-        assert purges == {"!r-orch:x", "!s-orch:x", "!r-sa:x", "!s-sa:x",
-                          "!r-ssa:x", "!s-ssa:x"}
+        assert purges == {f"!r-{ORCH}:x", f"!s-{ORCH}:x", f"!r-{SA}:x", f"!s-{SA}:x",
+                          f"!r-{SSA}:x", f"!s-{SSA}:x"}
         assert "!s-gw:x" not in purges and "!r-gw:x" not in purges
 
     def test_death_purge_set_by_depth(self, state, renderer):
@@ -406,6 +425,7 @@ class TestSnapshot:
 class FakeClient:
     calls: list = field(default_factory=list)
     next_id: int = 0
+    rooms: dict = field(default_factory=dict)  # room_id -> {"name", "space"}
 
     def _id(self, prefix: str) -> str:
         self.next_id += 1
@@ -413,7 +433,28 @@ class FakeClient:
 
     async def create_room(self, *, name, sender, preset, invite, space=False):
         self.calls.append(("create_room", name, sender, preset, tuple(invite), space))
-        return self._id("!room")
+        rid = self._id("!room")
+        self.rooms[rid] = {"name": name, "space": space}
+        return rid
+
+    async def room_hierarchy(self, space_id, *, sender=None):
+        """Minimal /hierarchy shaped from created rooms + child attaches,
+        so apply_plan's snapshot() sees what execute() built."""
+        children: dict[str, list] = {}
+        for c in self.calls:
+            if c[0] == "child" and not c[5]:
+                children.setdefault(c[1], []).append(c[2])
+        out = []
+        for rid, info in self.rooms.items():
+            entry: dict = {"room_id": rid, "name": info["name"]}
+            if info["space"]:
+                entry["room_type"] = "m.space"
+                entry["children_state"] = [
+                    {"type": "m.space.child", "state_key": ch}
+                    for ch in children.get(rid, [])
+                ]
+            out.append(entry)
+        return {"rooms": out}
 
     async def set_power_levels(self, room_id, users, *, sender):
         self.calls.append(("power", room_id, dict(users), sender))
@@ -519,7 +560,7 @@ class TestIntentExecutor:
 
         assert fake.calls[0][0] == "send" and fake.calls[0][1] == "!r-orch:x"
         deletes = [c[1] for c in fake.calls if c[0] == "delete"]
-        assert set(deletes) == {"!r-sa:x", "!s-sa:x", "!r-ssa:x", "!s-ssa:x"}
+        assert set(deletes) == {f"!r-{SA}:x", f"!s-{SA}:x", f"!r-{SSA}:x", f"!s-{SSA}:x"}
         # D17: no tombstone rows survive the purge
         with pytest.raises(StateError):
             state.get(SA)

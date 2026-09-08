@@ -80,6 +80,7 @@ OMPC = "ompc-lint"   # omp delegate_task child — MAIN session of its omp proce
 GC = "gc-lint"       # omp in-process grandchild under OMPC
 DEADGC = "dead-gc"   # settled depth-2 room (survives until parent dies)
 MANUAL = "manual:fix"  # manual TUI run — observe-only (D14)
+GW_SIM = "sim-gw"
 
 
 def room_of(node_id: str) -> str:
@@ -196,7 +197,8 @@ class TestParseIntent:
     )
     def test_sidecar_verbs_both_prefixes(self, prefix, body_tmpl, verb, args):
         intent = parse_intent(body_tmpl.format(p=prefix))
-        assert intent == SidecarVerb(verb, args, prefix, body_tmpl.format(p=prefix))
+        # parse strips the body (raw) and splits args on runs of whitespace.
+        assert intent == SidecarVerb(verb, args, prefix, body_tmpl.format(p=prefix).strip())
 
     def test_verb_match_is_case_insensitive(self):
         assert parse_intent("/Stop now").verb == "stop"
@@ -527,7 +529,9 @@ class TestPowerLevels:
         outcome = readonly_router.route(msg(SA, "steer me", sender=READER))
         assert outcome.disposition == "notice:read-only"
         assert outcome.notices[0].body == READ_ONLY_NOTICE
-        assert outcome.notices[0].reply_to == "$e1"
+        # notices echo the incoming m.relates_to chain, not the event id —
+        # this message was no reply, so there is nothing to thread under.
+        assert outcome.notices[0].reply_to is None
         assert outcome.actions == ()
         assert [p for p in readonly_router.pending_steers if p.node_id == SA] == []
 
@@ -751,13 +755,14 @@ class TestSimTimeline:
 
     @pytest.fixture
     def sim_router(self, sim_state) -> ControlRouter:
+        # The sim story steers/stops as the owner; every sim room grants
+        # owner write (a missing snapshot would fail closed and route
+        # nothing — PowerLevelSnapshot documents the fail-closed law).
         return ControlRouter(
             sim_state,
             gateway_node_id=GW_SIM,
-            pl_provider=PowerLevelSnapshot({}),
+            pl_provider=lambda room_id: RoomPowerLevels(users={OWNER: 100}),
         )
-
-    GW_SIM = "sim-gw"
 
     @staticmethod
     def discovery_map() -> dict[tuple[str, int], str]:
@@ -809,8 +814,7 @@ class TestSimTimeline:
             sim.gc_death(seq=1, status="aborted"),
         ]
         collected: list = []
-        sim.drive([(sim.TimedEvent(t=0.0, event=b)) for b in beats] and beats_as_timed(beats),
-                  self.feed_glue(sim_router, collected))
+        sim.drive(beats_as_timed(beats), self.feed_glue(sim_router, collected))
         assert [n.body for n in collected] == [
             STOP_CONFIRMED_NOTICE.format(status="aborted")
         ]

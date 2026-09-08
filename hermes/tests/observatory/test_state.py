@@ -5,7 +5,6 @@ Filesystem is tmp_path-only; no live matrix, no real $MERCURY_HOME.
 """
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -67,8 +66,13 @@ class TestSchema:
             ObservatoryState(db)
 
     def test_engine_check_constraint(self, store: ObservatoryState):
-        with pytest.raises(sqlite3.IntegrityError):
+        # Spec §4: the sidecar mirrors hermes + omp only — anything else is
+        # rejected fail-fast (ValueError in add_node, backed by a SQL CHECK).
+        with pytest.raises(ValueError, match="engine must be one of"):
             store.add_node("x", **_node("x", engine="telegram"))
+        for engine in ("hermes", "omp"):
+            row = store.add_node(f"ok-{engine}", **_node(f"ok-{engine}", engine=engine))
+            assert row["engine"] == engine
 
     def test_default_path_lives_under_mercury_home(self, tmp_path: Path):
         # explicit home > env > engine home — same law as provision.
