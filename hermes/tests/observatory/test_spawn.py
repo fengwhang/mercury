@@ -8,18 +8,27 @@ IntentExecutor against a recording fake client — no homeserver.
 """
 from __future__ import annotations
 
-import json
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from observatory import spawn as spawn_mod
 from observatory.identity import assign_slug, virtual_mxid
-from observatory.renderer import IntentExecutor, Renderer
+from observatory.matrix_client import MatrixError
+from observatory.renderer import (
+    DetachChild,
+    IntentExecutor,
+    PurgeRoom,
+    Renderer,
+    SendMessage,
+)
 from observatory.spawn import (
+    OrchestratorHandle,
     OrchestratorRegistry,
+    begin_exit,
+    deserialize_intents,
     exit_orchestrator,
     finish_exit,
     omp_session_file,
@@ -31,17 +40,13 @@ from observatory.spawn import (
 )
 from observatory.state import ObservatoryState, StateError
 
-
 # pytest-asyncio strict mode: every async test below carries the marker.
 SERVER = "mercury.local"
 OWNER = "@owner:mercury.local"
-
-# pytest-asyncio strict mode: every async test below carries the marker.
+GW = "gw"
 pytestmark = pytest.mark.asyncio
 
-SERVER = "mercury.local"
-OWNER = "@owner:mercury.local"
-pytestmark = pytest.mark.asyncio
+
 # ---------------------------------------------------------------------------
 # Harness: seeded state + fake engines + fake matrix client
 # ---------------------------------------------------------------------------
@@ -66,7 +71,6 @@ def seed_gateway(state: ObservatoryState) -> str:
     return GW
 
 
-
 def make_renderer(state: ObservatoryState, client=None) -> Renderer:
     executor = IntentExecutor(
         client, state, owner_mxid=OWNER, server_name=SERVER
@@ -79,28 +83,6 @@ def make_renderer(state: ObservatoryState, client=None) -> Renderer:
         executor=executor,
     )
 
-
-class FakeHermesAgent:
-    # executor, so it must resolve.
-    state.set_space_id(GW, "!space-gw")
-    state.set_room_id(GW, "!room-gw")
-    return GW
-    return Renderer(
-        state,
-        gateway_node_id=GW,
-        server_name=SERVER,
-    def __init__(self, session_file: str):
-        self.session_file = session_file
-        self.stopped = False
-        self._client = SimpleNamespace(
-            get_state=lambda: SimpleNamespace(session_file=session_file)
-        )
-
-    def stop(self) -> None:
-        self.stopped = True
-
-
-def _matrix_error(status: int, message: str):
 
 class FakeHermesAgent:
     """Started-hermes-orchestrator double: has a session_id, closes."""
@@ -118,12 +100,30 @@ class FakeOmpChild:
     (stop(), _client.get_state().session_file)."""
 
     def __init__(self, session_file: str):
-    def __init__(self) -> None:
-        self.calls: list[tuple] = []
-        self.next_id = 0
-        self.existing_rooms: set[str] = set()
-        self.deleted_rooms: set[str] = set()
-        self.fail_purge: dict[str, int] = {}
+        self.session_file = session_file
+        self.stopped = False
+        self._client = SimpleNamespace(
+            get_state=lambda: SimpleNamespace(session_file=session_file)
+        )
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+def _matrix_error(status: int, message: str) -> MatrixError:
+    return MatrixError(
+        "DELETE", "/_synapse/admin/v2/rooms/x",
+        status, {"errcode": "M_UNKNOWN", "error": message},
+    )
+
+
+@dataclass
+class FakeClient:
+    """Recording matrix client (test_renderer pattern) + wedged-purge faults."""
+
+    calls: list = field(default_factory=list)
+    next_id: int = 0
+    fail_purge: dict = field(default_factory=dict)
 
     def _id(self, prefix: str) -> str:
         self.next_id += 1
@@ -133,6 +133,24 @@ class FakeOmpChild:
         self.calls.append(("hierarchy", room_id, sender))
         return {"rooms": [{"room_id": room_id, "room_type": "m.space",
                            "children_state": []}]}
+
+    async def create_room(self, *, name, sender, preset, invite, space=False):
+        self.calls.append(("create_room", name, sender, preset, tuple(invite), space))
+        return self._id("!space" if space else "!room")
+
+    async def set_power_levels(self, room_id, users, *, sender):
+        self.calls.append(("power", room_id, dict(users), sender))
+
+    async def set_space_child(self, space_id, child_id, *, sender, via=(), remove=False):
+        self.calls.append(("child", space_id, child_id, sender, tuple(via), remove))
+
+    async def send_message(self, room_id, body, *, sender, formatted_body=None):
+        self.calls.append(("send", room_id, body, sender, formatted_body))
+        return self._id("$ev")
+
+    async def edit_message(self, room_id, event_id, body, *, sender, formatted_body=None):
+        self.calls.append(("edit", room_id, event_id, body, sender, formatted_body))
+        return self._id("$ev")
 
     async def invite(self, room_id: str, user_id: str, *, sender):
         self.calls.append(("invite", room_id, user_id, sender))
@@ -144,13 +162,22 @@ class FakeOmpChild:
     async def leave_room(self, room_id: str, *, sender):
         self.calls.append(("leave", room_id, sender))
 
+    async def delete_room(self, room_id: str, *, block=False, purge=True):
+        self.calls.append(("delete", room_id, block, purge))
+        if room_id in self.fail_purge:
+            raise _matrix_error(self.fail_purge[room_id], f"wedged {room_id}")
+
+
+def purge_ids(client: FakeClient) -> set[str]:
+    return {c[1] for c in client.calls if c[0] == "delete"}
+
 
 @dataclass
 class Engines:
     """Injected engine doubles + their bookkeeping."""
 
-    agents: list[FakeHermesAgent] = field(default_factory=list)
-    omps: list[FakeOmpChild] = field(default_factory=list)
+    agents: list = field(default_factory=list)
+    omps: list = field(default_factory=list)
 
     def hermes_factory(self):
         def build():
@@ -164,7 +191,6 @@ class Engines:
         def build():
             n = len(self.omps) + 1
             child = FakeOmpChild(str(session_dir / f"session-{n}.jsonl"))
-            child.session_dir_argv = True
             self.omps.append(child)
             return child
 
@@ -185,7 +211,10 @@ def registry() -> OrchestratorRegistry:
 
 
 @pytest.fixture()
-def engines(tmp_path: Path) -> Engines:
+def engines() -> Engines:
+    return Engines()
+
+
 # ---------------------------------------------------------------------------
 # spawn (D9)
 # ---------------------------------------------------------------------------
@@ -203,19 +232,25 @@ class TestSpawn:
         assert row["depth"] == 0
         assert row["parent_node_id"] is None
         assert row["status"] == "live"
-        assert row["extra"]["kind"] == ORCHESTRATOR_KIND
+        assert row["engine"] == "hermes"
+        assert row["name"] == "auth-refactor"
         assert row["session_ref"] == "sess-1"
-            n = len(self.omps) + 1
-            child = FakeOmpChild(str(session_dir / f"session-{n}.jsonl"))
-            self.omps.append(child)
-            return child
+        assert "kind" not in row["extra"]  # plain agent node (tree convention)
+        handle = registry.get(row["node_id"])
+        assert handle is not None
+        assert handle.agent is engines.agents[0]
+        assert handle.engine == "hermes"
+
+    async def test_spawn_omp_registers_session_file(self, state, registry, engines, tmp_path):
+        row = await spawn_orchestrator(
+            "docs-sweep",
             "omp",
             state=state,
-            child = FakeOmpChild(str(session_dir / f"session-{n}.jsonl"))
-            self.omps.append(child)
-            return child
+            registry=registry,
             omp_child_factory=engines.omp_factory(tmp_path / "omp-sessions"),
         )
+        assert row["depth"] == 0
+        assert row["parent_node_id"] is None
         assert row["engine"] == "omp"
         assert row["session_ref"].endswith(".jsonl")
         assert str(tmp_path / "omp-sessions") in row["session_ref"]
@@ -223,7 +258,7 @@ class TestSpawn:
         assert handle.rpc is engines.omps[0]
 
     async def test_spawn_gets_space_and_room_via_renderer_intents(
-        self, state, registry, engines, tmp_path
+        self, state, registry, engines
     ):
         client = FakeClient()
         renderer = make_renderer(state, client)
@@ -237,10 +272,9 @@ class TestSpawn:
         )
         fresh = state.get(row["node_id"])
         assert fresh["space_id"] and fresh["room_id"]
-        # the orchestrator subspace nests under the gateway space
-        assert ("space_child", state.get(GW)["space_id"], fresh["space_id"], False) in [
-            (c[0], c[1], c[2], c[4]) for c in client.calls if c[0] == "space_child"
-        ]
+        # the orchestrator subspace is attached under matrix (non-remove child op)
+        children = [(c[1], c[2]) for c in client.calls if c[0] == "child" and not c[5]]
+        assert any(child == fresh["space_id"] for _, child in children)
         assert "kind" not in row["extra"]  # plain agent node (tree convention)
         # lifecycle message rendered into the new room
         assert any(
@@ -248,7 +282,9 @@ class TestSpawn:
             for c in client.calls
         )
 
-    async def test_spawn_reuses_slug_only_when_predecessor_dead(self, state, registry, engines):
+    async def test_spawn_slug_reuse_only_when_predecessor_dead(
+        self, state, registry, engines
+    ):
         first = await spawn_orchestrator(
             "auth", "hermes", state=state, registry=registry,
             agent_factory=engines.hermes_factory(),
@@ -259,6 +295,14 @@ class TestSpawn:
         )
         # both live → D17 collision suffix
         assert first["slug"] == "auth" and second["slug"] == "auth-2"
+        # predecessor dead → invisible to collisions (D17)
+        state.mark_dead(second["node_id"])
+        third = await spawn_orchestrator(
+            "auth", "hermes", state=state, registry=registry,
+            agent_factory=engines.hermes_factory(),
+        )
+        assert third["slug"] == "auth-2"
+        assert third["mxid"] == second["mxid"]  # MXID inherited, nothing else
 
     async def test_spawn_validates_name_and_engine(self, state, registry):
         with pytest.raises(ValueError, match="name"):
@@ -290,8 +334,6 @@ class TestSpawn:
 
 class TestJournalSerialization:
     def test_serialize_deserialize_round_trip(self):
-        from observatory.renderer import DetachChild, PurgeRoom, SendMessage
-
         intents = (
             SendMessage("gw", "@merc_gw:x", "bye", "<b>bye</b>"),
             DetachChild("!space", "!child", "@merc_gw:x"),
@@ -305,28 +347,6 @@ class TestJournalSerialization:
         with pytest.raises(TypeError):
             serialize_intents([object()])
 
-    async def test_spawn_slug_reuse_only_when_predecessor_dead(
-        self, state, registry, engines
-    ):
-        first = await spawn_orchestrator(
-            "auth", "hermes", state=state, registry=registry,
-            agent_factory=engines.hermes_factory(),
-        )
-        second = await spawn_orchestrator(
-            "auth", "hermes", state=state, registry=registry,
-            agent_factory=engines.hermes_factory(),
-        )
-        # both live → D17 collision suffix
-        assert first["slug"] == "auth" and second["slug"] == "auth-2"
-        # predecessor dead → invisible to collisions (D17)
-        state.mark_dead(second["node_id"])
-        third = await spawn_orchestrator(
-            "auth", "hermes", state=state, registry=registry,
-            agent_factory=engines.hermes_factory(),
-        )
-        assert third["slug"] == "auth-2"
-        assert third["mxid"] == second["mxid"]  # MXID inherited, nothing else
-
     def test_deserialize_skips_unknown_op(self):
         assert deserialize_intents([{"op": "laser"}]) == ()
 
@@ -338,7 +358,7 @@ class TestJournalSerialization:
 
 def seed_orchestrator_with_children(state: ObservatoryState, engines_like="hermes"):
     """gw -> orch (0) -> sa (1) -> ssa (2), with matrix ids on every row."""
-    def add(node_id, name, *, engine, parent, kind=None):
+    def add(node_id, name, *, engine, parent):
         slug = assign_slug(name, state)
         row = state.add_node(
             node_id,
@@ -348,13 +368,13 @@ def seed_orchestrator_with_children(state: ObservatoryState, engines_like="herme
             mxid=virtual_mxid(slug),
             session_ref=f"session:{node_id}",
             parent_node_id=parent,
-            extra={"kind": kind} if kind else None,
+            extra=None,  # plain agent nodes (tree convention — no kind)
         )
         state.set_space_id(node_id, f"!space-{node_id}")
         state.set_room_id(node_id, f"!room-{node_id}")
         return row
 
-    add("orch", "auth-refactor", engine=engines_like, parent=None, kind=ORCHESTRATOR_KIND)
+    add("orch", "auth-refactor", engine=engines_like, parent=None)
     add("sa", "test-sweep", engine="omp", parent="orch")
     add("ssa", "lint-fix", engine="omp", parent="sa")
     return "orch"
@@ -365,48 +385,10 @@ class TestExit:
         self, state, registry, engines
     ):
         seed_orchestrator_with_children(state)
-        registry.register(spawn_mod.OrchestratorHandle(
+        registry.register(OrchestratorHandle(
             node_id="orch", engine="hermes", name="auth-refactor",
             session_ref="session:orch", agent=FakeHermesAgent("session:orch"),
         ))
-        handle = registry.get("orch")
-        client = FakeClient()
-        out = await exit_orchestrator(
-            "orch", state=state, registry=registry, renderer=make_renderer(state, client),
-            summary="branch merged",
-        )
-        # whole subtree purged: every space + room of orch/sa/ssa
-        assert purge_ids(client) == {
-            "!room-orch", "!space-orch", "!room-sa", "!space-sa",
-            "!room-ssa", "!space-ssa",
-        }
-        for node in ("orch", "sa", "ssa"):
-            with pytest.raises(StateError):
-                state.get(node)
-        assert read_purge_journal(state) == []
-        assert registry.get("orch") is None
-        assert handle.agent.closed  # engine killed
-        assert out["deferred"] == []
-
-    async def test_exit_rejects_nonzero_depth(self, state, registry):
-        seed_orchestrator_with_children(state)
-        with pytest.raises(ValueError, match="depth"):
-    add("orch", "auth-refactor", engine=engines_like, parent=None)
-                "sa", state=state, registry=registry,
-    add("orch", "auth-refactor", engine=engines_like, parent=None)
-            )
-
-    async def test_begin_exit_is_one_atomic_commit(self, state):
-        seed_orchestrator_with_children(state)
-        commits: list[str] = []
-class TestExit:
-    async def test_exit_purges_whole_subtree_and_drops_rows(
-        self, state, registry, engines
-    ):
-        seed_orchestrator_with_children(state)
-        registry.register(spawn_mod.OrchestratorHandle(
-            node_id="orch", engine="hermes", name="auth-refactor",
-            session_ref="session:orch", agent=FakeHermesAgent("session:orch"),
         handle = registry.get("orch")
         agent = handle.agent  # stop() nulls the handle's engine ref
         client = FakeClient()
@@ -426,7 +408,43 @@ class TestExit:
         assert registry.get("orch") is None
         assert agent.closed  # engine killed after the durable mark
         assert out["deferred"] == []
-        # 'live' under a journaled exit are purged anyway.
+
+    async def test_exit_rejects_nonzero_depth(self, state, registry):
+        seed_orchestrator_with_children(state)
+        with pytest.raises(ValueError, match="depth"):
+            await exit_orchestrator(
+                "sa", state=state, registry=registry,
+                renderer=make_renderer(state),
+            )
+        # rejected before durability: nothing dead-marked, nothing journaled
+        assert state.get("sa")["status"] == "live"
+        assert read_purge_journal(state) == []
+
+    async def test_begin_exit_is_one_atomic_commit(self, state):
+        seed_orchestrator_with_children(state)
+        commits: list[str] = []
+
+        def trace(statement: str) -> None:
+            if statement.split(None, 1)[0].upper() in (
+                "BEGIN", "COMMIT", "ROLLBACK"
+            ):
+                commits.append(statement.split(None, 1)[0].upper())
+
+        state._db.set_trace_callback(trace)
+        try:
+            record = begin_exit(state, "orch", renderer=make_renderer(state))
+        finally:
+            state._db.set_trace_callback(None)
+        assert commits.count("COMMIT") == 1
+        # journal entry + every subtree row dead in that one commit
+        assert len(read_purge_journal(state)) == 1
+        for node in ("orch", "sa", "ssa"):
+            assert state.get(node)["status"] == "dead"
+        assert record.node_id == "orch"
+
+    async def test_replay_completes_journaled_exit_even_if_marked_live(self, state):
+        # A journaled exit is dead-or-deleted in every observable state: even
+        # if the rows are flipped back to 'live' under it, replay still purges.
         seed_orchestrator_with_children(state)
         record = begin_exit(state, "orch", renderer=make_renderer(state))
         state._db.execute("UPDATE nodes SET status='live' WHERE node_id='orch'")
@@ -500,9 +518,9 @@ class TestRegistry:
         registry = OrchestratorRegistry()
         agent = FakeHermesAgent("s1")
         omp = FakeOmpChild("/tmp/x.jsonl")
-        registry.register(spawn_mod.OrchestratorHandle(
+        registry.register(OrchestratorHandle(
             node_id="a", engine="hermes", name="a", session_ref="s1", agent=agent))
-        registry.register(spawn_mod.OrchestratorHandle(
+        registry.register(OrchestratorHandle(
             node_id="b", engine="omp", name="b", session_ref="/tmp/x.jsonl", rpc=omp))
         registry.stop_all()
         assert agent.closed and omp.stopped
@@ -516,7 +534,7 @@ class TestRegistry:
             try:
                 for j in range(50):
                     nid = f"n-{i}-{j}"
-                    registry.register(spawn_mod.OrchestratorHandle(
+                    registry.register(OrchestratorHandle(
                         node_id=nid, engine="hermes", name=nid, session_ref=nid))
                     registry.get(nid)
                     registry.unregister(nid)
