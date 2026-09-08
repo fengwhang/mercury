@@ -39,7 +39,7 @@ APPSERVICE_NAMESPACE_REGEX = "^@merc_.*$"
 APPSERVICE_REGISTRATION_FILENAME = "merc-observatory.yaml"
 
 #: First registered user becomes admin (owner bootstrap, spec §4).
-OWNER_LOCALPART_DEFAULT = "owner"
+OWNER_LOCALPART_DEFAULT = "merc-owner"
 
 HOMESERVER_UNIT_NAME = "mercury-observatory-homeserver.service"
 HOMESERVER_UNIT_DESCRIPTION = "Mercury Observatory homeserver (Tuwunel)"

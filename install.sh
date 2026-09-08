@@ -20,6 +20,7 @@
 #   --non-interactive|--yes   Non-interactive: no wizard, no questions
 #   --skip-browser       Skip Browser Use CLI + Chromium (browser tools off)
 #   --skip-computer-use  Skip the cua-driver (desktop control off)
+#   --skip-observatory   Skip the Matrix Observatory homeserver (Tuwunel)
 #   --no-skills          Blank slate — seed no bundled skills
 #   --skip-gateway       Skip the gateway install question
 #   --ensure DEPS        Install only these deps: browser,computer-use,ripgrep,ffmpeg
@@ -60,7 +61,7 @@ TARBALL_URL=""
 RUN_SETUP=true
 NON_INTERACTIVE=false
 SKIP_BROWSER=false
-SKIP_COMPUTER_USE=false
+SKIP_OBSERVATORY=false
 SKIP_GATEWAY=false
 NO_SKILLS=false
 ENSURE_DEPS=""
@@ -77,11 +78,11 @@ while [[ $# -gt 0 ]]; do
         --skip-setup) RUN_SETUP=false; shift ;;
         --non-interactive|--yes|-y) NON_INTERACTIVE=true; RUN_SETUP=false; shift ;;
         --skip-browser|--no-playwright) SKIP_BROWSER=true; shift ;;
-        --skip-computer-use) SKIP_COMPUTER_USE=true; shift ;;
+        --skip-observatory) SKIP_OBSERVATORY=true; shift ;;
         --skip-gateway) SKIP_GATEWAY=true; shift ;;
         --no-skills) NO_SKILLS=true; shift ;;
         --ensure) ENSURE_DEPS="$2"; shift 2 ;;
-        -h|--help) sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '3,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)
             if [ -z "$TARBALL_URL" ] && { [[ "$1" == http* ]] || [ -f "$1" ]; }; then TARBALL_URL="$1"; shift
             else echo "Unknown option: $1"; exit 1; fi ;;
@@ -231,6 +232,69 @@ install_computer_use_driver() {
     fi
     rm -f "$cua_log"
 }
+
+# ============================================================================
+# Matrix Observatory homeserver — Tuwunel (fetch-at-install, NOT vendored;
+# docs/design/matrix-observatory.md §2/D16). The shared python module does
+# the work so install.sh, the future first-gateway-start hook and
+# `mercury update` all run the SAME code: latest STABLE release from the
+# GitHub API with a hard >=1.8.1 gate, static binary to
+# $MERCURY_HOME/observatory/bin/tuwunel + version file, closed tuwunel.toml
+# (localhost, no federation, no registration, registration_token), sidecar
+# appservice registration YAML, owner bootstrap, systemd user unit
+# mercury-observatory-homeserver.service. Fail-hard, idempotent.
+# ============================================================================
+install_observatory() {
+    if [ "$SKIP_OBSERVATORY" = true ]; then
+        log_info "skipping observatory homeserver (--skip-observatory)"
+        return 0
+    fi
+    log_info "Matrix Observatory homeserver (Tuwunel — fetched from upstream)"
+    local VENV_PY="$INSTALL_ROOT/hermes/.venv/bin/python"
+    [ -x "$VENV_PY" ] || { log_error "venv python missing — cannot provision the observatory"; exit 1; }
+    # registration_token entropy per spec: openssl rand when present; the
+    # provisioner's stdlib secrets (same CSPRNG class) when a minimal host
+    # ships without the openssl binary. The generated tuwunel.toml keeps
+    # the token forever and is never overwritten.
+    local _obs_token="" _obs_args=()
+    if command -v openssl >/dev/null 2>&1; then
+        _obs_token="$(openssl rand -hex 32)" \
+            || { log_error "openssl rand failed — cannot generate the registration_token"; exit 1; }
+        _obs_args=(--registration-token "$_obs_token")
+    else
+        log_info "openssl not found — provisioner draws the registration_token itself"
+    fi
+    # E2EE crypto stack (mautrix[encryption] + python-olm). python-olm has
+    # NO cp313 wheel on PyPI — make-dist bundles the built wheel set under
+    # wheels/ in the tarball. Parity with the `mercury update` tail
+    # (update_release): bundled wheels first (offline-friendly), the
+    # network [matrix] extra only when the tarball shipped none. The
+    # network path is warn-not-die: the homeserver itself still provisions;
+    # only E2EE is degraded until the stack lands (py<3.13 hosts: the
+    # plain network install works; py3.13 without wheels: build it with
+    # hermes/observatory/scripts/build_python_olm_wheel.sh).
+    local WHEELS_DIR="$INSTALL_ROOT/wheels"
+    if compgen -G "$WHEELS_DIR"/*.whl >/dev/null; then
+        log_info "observatory crypto stack: bundled wheels (no network needed)"
+        "$UV_CMD" pip install --python "$VENV_PY" -q "$WHEELS_DIR"/*.whl \
+            || { log_error "bundled-wheels install failed (corrupt tarball?)"; exit 1; }
+        log_success "observatory crypto stack installed from bundled wheels"
+    else
+        log_info "observatory crypto stack ([matrix] extra, from network)"
+        if ( cd hermes && "$UV_CMD" pip install --python "$VENV_PY" -q -e ".[matrix]" ); then
+            log_success "observatory crypto stack installed"
+        else
+            log_warn "matrix extra install failed — the observatory homeserver still works,"
+            log_warn "E2EE needs it: cd $INSTALL_ROOT/hermes && $UV_CMD pip install --python .venv/bin/python -e '.[matrix]'"
+            log_warn "(python 3.13 without bundled wheels: hermes/observatory/scripts/build_python_olm_wheel.sh)"
+        fi
+    fi
+    MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
+        "$VENV_PY" -m observatory.provision "${_obs_args[@]}" \
+        || { log_error "observatory provisioning failed (see output above)"; exit 1; }
+    log_success "observatory ready: $MERCURY_HOME/observatory/"
+}
+
 
 # ============================================================================
 # source + python
@@ -709,7 +773,7 @@ main() {
                           # leave an installed-but-unlaunchable system
     install_system_packages
     install_browser_use_cli
-    install_computer_use_driver
+    install_observatory
     seed_defaults
     run_setup_wizard
     maybe_start_gateway

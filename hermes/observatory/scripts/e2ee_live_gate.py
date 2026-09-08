@@ -286,9 +286,9 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
         # --- the ONE manual verify step, scripted ----------------------------
         # What a human does in Element: compare the device key the SERVER
         # publishes against the key the sidecar displays locally.
-        from mautrix.types import QueryKeysRequest
-        published = await o1_client.query_keys(QueryKeysRequest(
-            device_keys={gw_mxid: []}, timeout=0))
+        # mautrix 0.21.1 has no QueryKeysRequest — the gate client's
+        # query_keys(users) posts the device_keys map itself.
+        published = await o1_client.query_keys([gw_mxid])
         server_keys = ((published.device_keys or {}).get(gw_mxid) or {})
         gate.check("gateway device key published on the server",
                    gw_crypto.device_id in server_keys,

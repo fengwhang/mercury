@@ -15,6 +15,20 @@ OWN branch — never in the shared checkout's working tree.**
    first step) creates a worktree:
    `git worktree add ../mercury-worktrees/<wave>-<area> -b agent/<wave>-<area>`
    (e.g. `agent/m4-approvals`). The subagent's cwd IS its worktree.
+   **Branch lineage mirrors the delegation tree:**
+   - A subagent's branch branches off its PARENT's current branch (the
+     branch the parent itself is working on). Grandchildren branch off
+     children's branches, and so on — so a parent integrates its own
+     children before presenting its branch upward.
+   - SIBLINGS branch from the same base point (their common parent's
+     branch as of wave dispatch) — never from each other. Sibling B must
+     not silently build on unverified sibling A work; the orchestrator
+     keeps the ability to reject A's branch independently.
+   - **Never branch from stale `main` when an integration branch is
+     active**: if the wave's integration branch is
+     `recovery/matrix-observatory` (or any `agent/`-integration branch),
+     worktrees branch from THAT branch's head, not from `main`. Check
+     `git branch --show-current` in the shared checkout if unsure.
 2. **Commit early, commit often** in your own branch — after every
    verified slice (tests green), not at the end. Uncommitted work does
    not exist.

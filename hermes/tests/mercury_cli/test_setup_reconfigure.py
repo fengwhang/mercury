@@ -113,6 +113,7 @@ class TestExistingInstallDefault:
                 terminal="mercury_cli.setup.setup_terminal_backend",
                 agent="mercury_cli.setup.setup_agent_settings",
                 gateway="mercury_cli.setup.setup_gateway",
+                observatory="mercury_cli.setup.setup_observatory",
                 tools="mercury_cli.setup.setup_tools",
             )
             from mercury_cli.setup import run_setup_wizard
@@ -122,12 +123,14 @@ class TestExistingInstallDefault:
         m["prompt_choice"].assert_not_called()
         # Quick-setup path NOT taken.
         m["quick"].assert_not_called()
-        # Model/terminal/gateway/tools run; agent settings are no longer
-        # prompted on existing installs (they keep their tuned values).
+        # Model/terminal/gateway/observatory/tools run in sequence; agent
+        # settings are no longer prompted on existing installs (they keep
+        # their tuned values).
         m["model"].assert_called_once()
         m["terminal"].assert_called_once()
         m["agent"].assert_not_called()
         m["gateway"].assert_called_once()
+        m["observatory"].assert_called_once()
         m["tools"].assert_called_once()
 
 

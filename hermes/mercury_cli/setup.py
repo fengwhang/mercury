@@ -6,6 +6,7 @@ Modular wizard with independently-runnable sections:
   2. Terminal Backend — where your agent runs commands
   3. Agent Settings — iterations, compression, session reset
   4. Messaging Platforms — connect Telegram, Discord, etc.
+  4b. Matrix Observatory — bundled homeserver: status, install, first login
   5. Tools — configure TTS, web search, image generation, etc.
 
 Config files are stored in ~/.mercury/ for easy access.
@@ -2687,6 +2688,229 @@ def setup_gateway(config: dict):
 
     print_info("━" * 50)
 
+# =============================================================================
+# Section 4b: Matrix Observatory (bundled homeserver)
+# =============================================================================
+
+_OBSERVATORY_DOCS_URL = f"{_DOCS_BASE}/user-guide/messaging/matrix-observatory"
+
+
+def _load_observatory_provision():
+    """Import ``observatory.provision`` lazily; None when the bundled
+    package is unavailable. A missing optional section must never kill the
+    wizard — callers degrade to a printed hint."""
+    try:
+        from observatory import provision
+
+        return provision
+    except Exception as exc:
+        logger.debug("observatory.provision unavailable to setup: %s", exc)
+        return None
+
+
+def _observatory_state_lines(status: dict) -> None:
+    """Render the current-state block (section + non-interactive path)."""
+    yn = lambda flag: "yes" if flag else "no"  # noqa: E731
+    print_info(f"Provisioned:          {yn(status['provisioned'])}")
+    print_info(
+        f"Homeserver reachable: {yn(status['homeserver_reachable'])}"
+        f"  ({status['homeserver_url']})"
+    )
+    print_info(f"Unit active:          {yn(status['unit_active'])}  ({status['unit_name']})")
+    print_info(f"observatory.enabled:  {yn(status['enabled'])}  (config.yaml)")
+
+
+def _prompt_observatory_enabled_toggle(config: dict) -> None:
+    """Offer flipping ``observatory.enabled`` — the D1 kill switch.
+
+    Writes through the standard save_config helper into config.yaml (the
+    gate is config, never env). Unset means the default (on); answering the
+    default keeps the config file untouched.
+    """
+    current = bool(cfg_get(config, "observatory", "enabled", default=True))
+    want = prompt_yes_no(
+        "Enable the Matrix observatory? (observatory.enabled — false freezes "
+        "it, nothing is deleted)",
+        default=current,
+    )
+    if want == current:
+        print_info(f"Keeping observatory.enabled = {str(current).lower()}")
+        return
+    obs = config.get("observatory")
+    if not isinstance(obs, dict):
+        obs = {}
+        config["observatory"] = obs
+    obs["enabled"] = want
+    save_config(config)
+    print_success(
+        f"observatory.enabled = {str(want).lower()} written to {get_config_path()}"
+    )
+
+
+def _print_observatory_setup_card(status: dict) -> None:
+    """First-login card (docs §'First login on Element X').
+
+    Shows the homeserver URL, the VPN/Tailscale hint, the owner MXID and
+    the credentials file LOCATION — the password itself is printed only
+    after an explicit reveal prompt (default no; it is a secret).
+    """
+    creds_path = status["owner_credentials_path"]
+    try:
+        from observatory.config_gen import OWNER_LOCALPART_DEFAULT, SERVER_NAME_DEFAULT
+
+        owner_mxid = f"@{OWNER_LOCALPART_DEFAULT}:{SERVER_NAME_DEFAULT}"
+    except Exception:
+        owner_mxid = "@owner:mercury.local"
+    creds = None
+    try:
+        creds = json.loads(Path(creds_path).read_text(encoding="utf-8"))
+        owner_mxid = str(creds.get("user_id") or owner_mxid)
+    except Exception as exc:
+        logger.debug("could not read observatory owner credentials: %s", exc)
+
+    password_line = f"owner password:      {creds_path} (mode 0600)"
+    if creds is not None and prompt_yes_no(
+        "Reveal the owner password on screen?", default=False
+    ):
+        password_line = (
+            f"owner password:      {creds.get('password', '')}"
+            f"   (also kept in {creds_path}, 0600)"
+        )
+
+    e2ee_on = bool(status.get("e2ee"))
+    e2ee_line = (
+        "E2EE:                on (observatory.e2ee: true) — rooms are "
+        "end-to-end encrypted"
+        if e2ee_on
+        else "E2EE:                off (observatory.e2ee: false) — rooms become "
+        "end-to-end encrypted once enabled"
+    )
+    lines = [
+        "Matrix Observatory — first login (Element X)",
+        "",
+        f"homeserver URL:      {status['homeserver_url']}",
+        "on your phone:       reach it over your VPN/Tailscale (e.g.",
+        "                     `tailscale serve` proxying :18008) or edit `address`",
+        "                     in tuwunel.toml — never expose it beyond the VPN",
+        f"owner account:       {owner_mxid}",
+        password_line,
+        "in Element X:        sign in → 'Use account instead' → 'Enter",
+        "                     homeserver manually' → paste the URL above",
+        "                     (the QR code does NOT work self-hosted)",
+        e2ee_line,
+        "space tree:          appears on the first gateway start",
+    ]
+    width = max(len(ln) for ln in lines) + 2
+    print()
+    print(color("┌" + "─" * width + "┐", Colors.CYAN))
+    for ln in lines:
+        print(color("│ " + ln.ljust(width - 2) + " │", Colors.CYAN))
+    print(color("└" + "─" * width + "┘", Colors.CYAN))
+    print()
+    print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+
+
+def setup_observatory(config: dict, *, quick: bool = False):
+    """Wizard section: the bundled Matrix observatory (Tuwunel homeserver
+    + sidecar). Spec D1/D2 — default on, closed registration, localhost.
+
+    Shows current state, offers idempotent install/repair (in-process via
+    ``provision_in_wizard``) or skip (the --skip-observatory equivalent),
+    offers the ``observatory.enabled`` toggle, and prints the first-login
+    card when provisioned. Never gates the rest of the wizard: every
+    failure degrades to a printed hint and the section returns.
+    """
+    print_header("Matrix Observatory (bundled)")
+    print_info("A private Matrix homeserver + sidecar that mirrors every live agent")
+    print_info("session as a tree of rooms you can watch, steer and approve from")
+    print_info("Element X. Localhost-only, registration closed, federation off.")
+
+    obs = _load_observatory_provision()
+    if obs is None:
+        print_warning("Bundled observatory package not found in this install.")
+        print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+        return
+
+    try:
+        status = obs.status_summary()
+    except Exception as exc:
+        print_warning(f"Could not read observatory state: {exc}")
+        print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+        return
+
+    _observatory_state_lines(status)
+    print()
+
+    choice = prompt_choice(
+        "Set up the Matrix observatory now?",
+        [
+            "Install / repair now (idempotent; downloads the Tuwunel homeserver on first run)",
+            "Skip — leave it as is",
+        ],
+        0 if not status["provisioned"] else 1,
+    )
+
+    if choice == 0:
+        try:
+            obs.provision_in_wizard()
+            status = obs.status_summary()
+            print_success("Observatory provisioning complete.")
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            print_error(f"Observatory provisioning failed: {exc}")
+            print_info("Nothing else was changed — the wizard continues.")
+            print_info("Retry any time with: mercury setup observatory")
+    else:
+        print_info("Skipped — same as installing with --skip-observatory.")
+        print_info("Provision later with: mercury setup observatory")
+
+    _prompt_observatory_enabled_toggle(config)
+
+    if status.get("provisioned"):
+        _print_observatory_setup_card(status)
+    else:
+        print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+
+
+def print_noninteractive_observatory_guidance() -> None:
+    """Headless counterpart of the observatory section (no TTY).
+
+    Prints the state summary plus the exact provision command — there is
+    no ``mercury observatory`` CLI wrapper, so the ``python -m`` form
+    install.sh itself uses is the copy-pasteable truth. Conventions mirror
+    :func:`print_noninteractive_setup_guidance`.
+    """
+    obs = _load_observatory_provision()
+    if obs is None:
+        return
+    try:
+        status = obs.status_summary()
+    except Exception as exc:
+        logger.debug("observatory status unavailable headlessly: %s", exc)
+        return
+    print()
+    print(color("🔭 Matrix Observatory (bundled)", Colors.CYAN, Colors.BOLD))
+    print()
+    yn = lambda flag: "yes" if flag else "no"  # noqa: E731
+    print_info(
+        f"Provisioned: {yn(status['provisioned'])} | "
+        f"homeserver reachable: {yn(status['homeserver_reachable'])} "
+        f"({status['homeserver_url']})"
+    )
+    print_info(
+        f"Unit active: {yn(status['unit_active'])} ({status['unit_name']}) | "
+        f"observatory.enabled: {yn(status['enabled'])} (config.yaml)"
+    )
+    print_info("Provision / repair it headlessly (idempotent, fail-hard):")
+    print_info(
+        f"  PYTHONPATH={PROJECT_ROOT} {sys.executable} -m observatory.provision"
+    )
+    print_info("Disable instead (freezes, never deletes):")
+    print_info("  mercury config set observatory.enabled false")
+    print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+    print()
+
 
 # =============================================================================
 # Section 5: Tool Configuration (delegates to unified tools_config.py)
@@ -3146,6 +3370,7 @@ SETUP_SECTIONS = [
     ("tts", "Text-to-Speech", setup_tts),
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
+    ("observatory", "Matrix Observatory (bundled)", setup_observatory),
     ("tools", "Tools", setup_tools),
     ("telemetry", "Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
@@ -3372,6 +3597,7 @@ def _run_setup_wizard_impl(args):
       mercury setup tts       — just text-to-speech
       mercury setup terminal  — just terminal backend
       mercury setup gateway   — just messaging platforms
+      mercury setup observatory — just the matrix observatory (bundled)
       mercury setup tools     — just tool configuration
       mercury setup telemetry — just local shared metrics
       mercury setup agent     — just agent settings
@@ -3417,6 +3643,7 @@ def _run_setup_wizard_impl(args):
         print_noninteractive_setup_guidance(
             "Running in a non-interactive environment (no TTY detected)."
         )
+        print_noninteractive_observatory_guidance()
         return
 
     # --portal: one-shot Nous Portal setup. Skips the rest of the wizard.
@@ -3695,6 +3922,11 @@ def _run_setup_wizard_impl(args):
             ("Model & Provider", _model_step),
             ("Terminal Backend", _terminal_step),
             ("Messaging Platforms", _gateway_step),
+            # After the messaging platforms and before tools: the bundled
+            # observatory is a messaging-adjacent surface, and it must never
+            # gate model setup (it runs after every model-config section and
+            # degrades to a hint on any failure).
+            ("Matrix Observatory", lambda: setup_observatory(config)),
             ("Tools", _tools_step),
         ]
     )

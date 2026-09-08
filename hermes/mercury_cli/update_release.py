@@ -191,6 +191,80 @@ def _swap_tree(src: Path, dst: Path) -> None:
             shutil.copy2(entry, target)
 
 
+def _pip_install(venv: Path, args: list[str]) -> tuple[bool, str]:
+    """Install into the install venv: uv first (the install venv is
+    UV-MANAGED and has no pip module), pip fallback. Returns (ok, detail);
+    never raises — callers own the warn-only contract."""
+    def _run(cmd: list[str]) -> tuple[bool, str]:
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        except (OSError, ValueError) as exc:
+            return False, str(exc)
+        detail = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        return proc.returncode == 0, detail[-600:]
+
+    py = str(venv / "bin" / "python")
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        ok, detail = _run([uv_bin, "pip", "install", "--python", py, *args])
+        if ok:
+            return True, ""
+    else:
+        ok, detail = False, "uv not found"
+    if not ok:
+        ok, detail = _run([sys.executable, "-m", "pip", "install", "-q", *args])
+    return ok, detail
+
+
+def _install_bundled_wheels(root: Path, venv: Path) -> None:
+    """(update-completeness) Install the tarball-bundled crypto-stack
+    wheels (``wheels/`` staged by make-dist: mautrix[encryption] pinned
+    set + the cp313 python-olm wheel that does not exist on PyPI).
+    Offline-friendly — no network. Best-effort: warns, never blocks."""
+    wheels_dir = root / "wheels"
+    if not wheels_dir.is_dir():
+        return
+    whls = sorted(p for p in wheels_dir.glob("*.whl") if p.is_file())
+    if not whls:
+        return
+    ok, detail = _pip_install(venv, [str(p) for p in whls])
+    if ok:
+        print(f"  🌡️ observatory crypto stack: installed {len(whls)} bundled wheel(s)")
+    else:
+        print("  ⚠ bundled-wheels install failed — observatory E2EE may be broken")
+        print(f"    output:\n{detail}")
+        print(f"    manual fix: uv pip install --python {venv}/bin/python "
+              f"{wheels_dir}/*.whl")
+
+
+def _ensure_matrix_extra(root: Path, venv: Path) -> None:
+    """(update-completeness) Ensure the [matrix] extra deps (the mautrix
+    crypto stack, deliberately NOT in [all] — pyproject [matrix]) on
+    installs where the observatory is enabled (config default governs).
+    After bundled wheels this is usually a satisfied-requirements no-op;
+    without wheels it pulls the set from the network. Best-effort: warns
+    (with the cp313 olm remediation), never blocks."""
+    try:
+        from observatory.provision import observatory_enabled
+
+        if not observatory_enabled():
+            return
+    except Exception as exc:
+        print(f"  ⚠ matrix-extra gate skipped ({exc})")
+        return
+    ok, detail = _pip_install(venv, ["-q", "-e", f"{root / 'hermes'}[matrix]"])
+    if ok:
+        print("  🌡️ observatory [matrix] extra ensured")
+    else:
+        print("  ⚠ [matrix] extra (mautrix crypto stack) not installed — "
+              "observatory E2EE will fail until it is")
+        print(f"    output:\n{detail}")
+        print(f"    manual fix: cd {root}/hermes && "
+              "uv pip install --python .venv/bin/python -e '.[matrix]'")
+        print("    (py3.13 without bundled wheels: build python-olm with "
+              "hermes/observatory/scripts/build_python_olm_wheel.sh)")
+
+
 def update_from_release(*, assume_yes: bool = False) -> int:
     """Run the release update. Returns a process exit code."""
     print("🌡️ Updating Mercury (release channel: "
@@ -397,6 +471,17 @@ def update_from_release(*, assume_yes: bool = False) -> int:
                 print(f"    manual fix: cd {root}/hermes && "
                       f"uv pip install --python .venv/bin/python -e .")
 
+            # MERCURY-OMP PATCH (observatory update-completeness): the
+            # release tarball bundles the E2EE crypto stack as wheels/
+            # (python-olm has NO cp313 wheel on PyPI, so a plain network
+            # resolve would build the C extension and fail on most hosts),
+            # and the [matrix] extra (mautrix crypto stack, deliberately
+            # NOT in [all]) was never installed on pre-observatory
+            # installs. Both AFTER the venv refresh; both best-effort: a
+            # failure warns with the manual fix, never blocks the update.
+            _install_bundled_wheels(root, venv)
+            _ensure_matrix_extra(root, venv)
+
         # MERCURY-OMP PATCH (massive-update readiness): the git update path
         # runs config migration on completion; the release path never did.
         # A release that adds config keys would strand users on an old
@@ -408,6 +493,36 @@ def update_from_release(*, assume_yes: bool = False) -> int:
             _check_and_apply_config_migration(assume_yes=assume_yes, gateway_mode=False)
         except Exception as exc:
             print(f"  ⚠ config migration check failed ({exc}) — run: mercury config migrate")
+
+        # MERCURY-OMP PATCH (observatory D16 + update-completeness): the
+        # /update slash command refreshes the bundled Tuwunel homeserver
+        # via observatory.provision.refresh_for_update — this shell
+        # `mercury update` path never did, leaving the two update surfaces
+        # out of lockstep. BEFORE the refresh, first-time provision: an
+        # existing install that predates the observatory has no
+        # tuwunel.version file, and a binary swap alone would leave it with
+        # no toml/appservice/owner/unit. Same contract as the /update hook:
+        # silent no-op when the observatory is disabled (or offline) in
+        # config; a failure warns but never blocks the update. Runs at the
+        # tail, after the tree swap, so the imports resolve against the
+        # freshly-installed observatory package.
+        try:
+            from observatory.provision import provision_if_missing
+
+            _first = provision_if_missing()
+            if _first is not None:
+                print("  🌡️ observatory provisioned for the first time — "
+                      "run mercury setup for the login card")
+        except Exception as _obs_exc:
+            print(f"  ⚠ observatory first-time provision skipped: {_obs_exc}")
+        try:
+            from observatory.provision import refresh_for_update
+
+            _obs_line = refresh_for_update()
+            if _obs_line:
+                print(f"  🌡️ {_obs_line}")
+        except Exception as _obs_exc:
+            print(f"  ⚠ observatory refresh skipped: {_obs_exc}")
 
         _new_sha = _sha256(tar_path)
         _record_build_id(root, _new_sha)
