@@ -3991,20 +3991,41 @@ def _append_node_dir_for_service(
     if resolved_node_dir not in path_entries:
         path_entries.append(resolved_node_dir)
 
+def _launcher_env_pins(hermes_home: Path) -> tuple[str, str, str]:
+    """Return the launcher's forced env (MERCURY_HOME, MERCURY_CONFIG,
+    PI_CODING_AGENT_DIR) derived from a resolved engine home.
+
+    bin/mercury forces ``HERMES_HOME=$MERCURY_HOME/hermes`` and exports
+    ``MERCURY_CONFIG=$MERCURY_HOME/config.yaml`` (bin/mercury:54) plus
+    ``PI_CODING_AGENT_DIR=$MERCURY_HOME/omp`` (bin/mercury:76) so omp
+    children keep their state (sessions, agent.db) inside the ONE mercury
+    tree instead of the platform default ``~/.omp/agent``. The engine home
+    carries the ``…/hermes`` suffix only when the launcher forced it; the
+    platform default (``~/.mercury``), per-profile homes, and custom homes
+    ARE the mercury root already — hence "parent when suffixed, else self".
+    """
+    mercury_root = hermes_home.parent if hermes_home.name == "hermes" else hermes_home
+    return (
+        str(mercury_root),
+        str(mercury_root / "config.yaml"),
+        str(mercury_root / "omp"),
+    )
+
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     # HERMES-OMP PATCH (ONE home / ONE env): the launcher (bin/mercury)
-    # forces MERCURY_HOME + MERCURY_CONFIG; the SERVICE unit must pin the
-    # same trio or the gateway resolves env/config against HERMES_HOME
-    # alone — reading ~/.mercury/hermes/.env (never written under the
-    # ONE-env rule) instead of THE ~/.mercury/.env, and engine-local
-    # config.yaml instead of the unified file. Derived from the resolved
-    # engine home (…/hermes -> parent) so profile/custom homes keep their
-    # relative layout. Set BEFORE the branches that reassign mercury_home.
-    _trio_root = get_hermes_home()
-    _trio_mercury = _trio_root.parent if _trio_root.name == "hermes" else _trio_root
-    mercury_env_home = str(_trio_mercury)
-    mercury_env_config = str(_trio_mercury / "config.yaml")
+    # forces MERCURY_HOME + MERCURY_CONFIG + PI_CODING_AGENT_DIR; the
+    # SERVICE unit must pin the same env or the gateway resolves
+    # env/config against HERMES_HOME alone — reading ~/.mercury/hermes/.env
+    # (never written under the ONE-env rule) instead of THE ~/.mercury/.env,
+    # engine-local config.yaml instead of the unified file, and omp children
+    # fall back to the platform default ~/.omp/agent. Derived from the
+    # resolved engine home (…/hermes -> parent) so profile/custom homes keep
+    # their relative layout. The system branch below RE-derives all three
+    # from the target user's remapped home.
+    mercury_env_home, mercury_env_config, mercury_env_agent_dir = (
+        _launcher_env_pins(get_hermes_home())
+    )
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
@@ -4038,6 +4059,13 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         mercury_home = _hermes_home_for_target_user(home_dir)
+        # The launcher env pins must describe the TARGET user's tree, not
+        # the sudo caller's: deriving them from the caller's home bakes
+        # /root/.mercury into alice's unit (MERCURY_HOME/MERCURY_CONFIG/
+        # PI_CODING_AGENT_DIR pointing at a home the service cannot read).
+        mercury_env_home, mercury_env_config, mercury_env_agent_dir = (
+            _launcher_env_pins(Path(mercury_home))
+        )
         systemd_type, systemd_watchdog_directives = _systemd_watchdog_service_fields(
             mercury_home
         )
@@ -4087,6 +4115,7 @@ Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={mercury_home}"
 Environment="MERCURY_HOME={mercury_env_home}"
 Environment="MERCURY_CONFIG={mercury_env_config}"
+Environment="PI_CODING_AGENT_DIR={mercury_env_agent_dir}"
 Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
 RestartSec=5
@@ -4128,6 +4157,7 @@ Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={mercury_home}"
 Environment="MERCURY_HOME={mercury_env_home}"
 Environment="MERCURY_CONFIG={mercury_env_config}"
+Environment="PI_CODING_AGENT_DIR={mercury_env_agent_dir}"
 Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
 RestartSec=5
