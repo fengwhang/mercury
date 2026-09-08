@@ -20,7 +20,7 @@ from omp_rpc import (
     RpcError,
     host_tool,
 )
-from omp_rpc.client import _RpcFrameDecoder
+from omp_rpc.client import _BoundedHistory, _RpcFrameDecoder
 
 
 FAKE_SERVER = textwrap.dedent(
@@ -793,6 +793,159 @@ STDERR_SERVER = textwrap.dedent(
     """
 )
 
+# HERMES-OMP PATCH (unbounded event ring): multi-turn fake server. Each
+# prompt emits a full turn (agent_start ... agent_end) with a
+# per-turn-suffixed assistant message; "slow" pauses before the terminal
+# agent_end so an async run stays in flight; "burst" emits enough deltas
+# to exercise a small max_event_ring_ceiling.
+MULTI_TURN_SERVER = textwrap.dedent(
+    """
+    import json
+    import sys
+    import threading
+    import time
+
+    turn_count = 0
+
+    def usage():
+        return {
+            "input": 1,
+            "output": 1,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 2,
+            "cost": {
+                "input": 0.0,
+                "output": 0.0,
+                "cacheRead": 0.0,
+                "cacheWrite": 0.0,
+                "total": 0.0,
+            },
+        }
+
+    def assistant_message(text):
+        return {
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5",
+            "usage": usage(),
+            "stopReason": "stop",
+            "timestamp": 1,
+        }
+
+    def emit(payload):
+        print(json.dumps(payload), flush=True)
+
+    def respond(request_id, command, data=None):
+        payload = {
+            "id": request_id,
+            "type": "response",
+            "command": command,
+            "success": True,
+        }
+        if data is not None:
+            payload["data"] = data
+        emit(payload)
+
+    def emit_turn(prefix, deltas, pre_terminal_delay=0.0):
+        global turn_count
+        turn_count += 1
+        final_text = f"{prefix}-{turn_count}"
+        emit({"type": "agent_start"})
+        emit({"type": "turn_start"})
+        partial = assistant_message("")
+        emit({"type": "message_start", "message": partial})
+        for index in range(deltas):
+            emit(
+                {
+                    "type": "message_update",
+                    "message": partial,
+                    "assistantMessageEvent": {
+                        "type": "text_delta",
+                        "contentIndex": 0,
+                        "delta": f"{final_text}:{index}",
+                        "partial": partial,
+                    },
+                }
+            )
+        if pre_terminal_delay:
+            time.sleep(pre_terminal_delay)
+        assistant = assistant_message(final_text)
+        emit({"type": "message_end", "message": assistant})
+        emit({"type": "turn_end", "message": assistant, "toolResults": []})
+        emit({"type": "agent_end", "messages": [assistant]})
+
+    emit({"type": "ready"})
+
+    for raw_line in sys.stdin:
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        command = json.loads(raw_line)
+        command_type = command["type"]
+        request_id = command.get("id")
+        if command_type == "set_host_tools":
+            respond(
+                request_id,
+                "set_host_tools",
+                {"toolNames": []},
+            )
+            continue
+        if command_type in {"prompt", "abort_and_prompt"}:
+            respond(request_id, command_type)
+            message = command["message"]
+            if message == "burst":
+                emit_turn("pong", deltas=40)
+            elif message == "slow":
+                # Emit the slow turn from a thread so a concurrently
+                # prompted "quick" run genuinely overlaps it (a sequential
+                # handler can never produce in-flight overlap).
+                threading.Thread(
+                    target=emit_turn,
+                    args=("slow", 6),
+                    kwargs={"pre_terminal_delay": 0.6},
+                    daemon=True,
+                ).start()
+            else:
+                emit_turn("pong", deltas=6)
+    """
+)
+
+# HERMES-OMP PATCH (unbounded event ring): 300 stderr chunks to prove the
+# default max_stderr_chunks=256 cap without an explicit kwarg.
+STDERR_SPAM_SERVER = textwrap.dedent(
+    """
+    import json
+    import sys
+
+    for index in range(300):
+        sys.stderr.write(f"chunk-{index}\\n")
+    sys.stderr.flush()
+    print(json.dumps({"type": "ready"}), flush=True)
+
+    for raw_line in sys.stdin:
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        command = json.loads(raw_line)
+        if command["type"] == "set_host_tools":
+            print(
+                json.dumps(
+                    {
+                        "id": command.get("id"),
+                        "type": "response",
+                        "command": "set_host_tools",
+                        "success": True,
+                        "data": {"toolNames": []},
+                    }
+                ),
+                flush=True,
+            )
+    """
+)
+
 INVALID_JSON_SERVER = textwrap.dedent(
     """
     import sys
@@ -1499,12 +1652,16 @@ class RpcClientTests(unittest.TestCase):
 
         self.assertIn("Frame: 'not-json'", str(ctx.exception))
 
-    def test_event_history_limit_reports_overflow(self) -> None:
+    def test_event_history_limit_trims_without_failing_child(self) -> None:
+        """HERMES-OMP PATCH (unbounded event ring): a trimmed ring must
+        NEVER fail a healthy child. A small max_event_history degrades
+        turn.events to the retained tail while the terminal agent_end
+        still carries the final messages."""
         with self.make_client(max_event_history=2) as client:
-            with self.assertRaises(RpcError) as ctx:
-                client.prompt_and_wait("say hello", timeout=2.0)
+            turn = client.prompt_and_wait("say hello", timeout=2.0)
 
-        self.assertIn("max_event_history", str(ctx.exception))
+        self.assertEqual(turn.require_assistant_text(), "pong")
+        self.assertLessEqual(len(turn.events), 2)
 
 
 HANGING_SERVER = textwrap.dedent(
@@ -1685,6 +1842,163 @@ class TerminatesProcessGroupTests(unittest.TestCase):
             first,
             "grandchild kept running after stop() — process group leaked",
         )
+
+
+class BoundedHistoryValveTests(unittest.TestCase):
+    """HERMES-OMP PATCH (unbounded event ring): unit contract for the
+    mid-turn safety valve and absolute-index trimming."""
+
+    def test_valve_drops_oldest_half_and_counts(self) -> None:
+        history = _BoundedHistory[str](None, hard_limit=8)
+        for index in range(9):
+            history.append(f"e{index}")
+
+        self.assertEqual(history.overflow_count, 1)
+        self.assertEqual(history.snapshot(), tuple(f"e{i}" for i in range(5, 9)))
+        self.assertEqual(history.offset, 5)
+        self.assertEqual(history.current_index(), 9)
+        # Absolute-index reads survive the valve.
+        self.assertEqual(history.snapshot_from(0), history.snapshot())
+        self.assertEqual(history.snapshot_from(7), ("e7", "e8"))
+        history.clear()
+        # clear() resets contents, not the cumulative degradation signal.
+        self.assertEqual(history.overflow_count, 1)
+        self.assertEqual(history.current_index(), 0)
+
+    def test_soft_limit_still_trims_without_overflow_count(self) -> None:
+        history = _BoundedHistory[str](2)
+        for index in range(5):
+            history.append(f"e{index}")
+
+        self.assertEqual(history.overflow_count, 0)
+        self.assertEqual(history.snapshot(), ("e3", "e4"))
+
+    def test_trim_to_keeps_absolute_indices_and_clamps(self) -> None:
+        history = _BoundedHistory[str](None)
+        for index in range(10):
+            history.append(f"e{index}")
+        history.terminal_agent_end_index = 9
+
+        history.trim_to(4)
+        self.assertEqual(history.snapshot(), tuple(f"e{i}" for i in range(4, 10)))
+        self.assertEqual(history.offset, 4)
+        self.assertEqual(history.terminal_agent_end_index, 9)
+
+        history.trim_to(2)  # below offset: no-op
+        self.assertEqual(history.offset, 4)
+
+        history.trim_to(10_000)  # above current index: clamps to empty
+        self.assertEqual(history.snapshot(), ())
+        self.assertEqual(history.current_index(), 10)
+
+
+class EventRingMemoryContractTests(unittest.TestCase):
+    """HERMES-OMP PATCH (unbounded event ring): multi-turn memory contract.
+
+    Within a turn the event ring must stay complete (reconstruction needs
+    every event between agent_start and the terminal agent_end); across
+    turns it must reset so parent RAM is bounded by the largest single
+    turn, not the child's lifetime.
+    """
+
+    def make_client(
+        self, server: str = MULTI_TURN_SERVER, **kwargs: object
+    ) -> RpcClient:
+        return RpcClient(
+            command=[sys.executable, "-u", "-c", server],
+            startup_timeout=2.0,
+            request_timeout=2.0,
+            **kwargs,
+        )
+
+    def test_ring_resets_each_turn_and_messages_stay_correct(self) -> None:
+        deltas = 6  # per-turn message_update count emitted by the server
+        update_types: list[str] = []
+        message_end_texts: list[str] = []
+        with self.make_client() as client:
+            client.on_message_update(lambda event: update_types.append(event.type))
+            client.on_message_end(
+                lambda event: message_end_texts.append(
+                    event.message["content"][0]["text"]
+                )
+            )
+            for turn_number in range(1, 5):
+                turn = client.prompt_and_wait(f"turn {turn_number}", timeout=5.0)
+                # Final messages remain correct across turns.
+                self.assertEqual(turn.require_assistant_text(), f"pong-{turn_number}")
+                self.assertEqual(len(turn.messages), 1)
+                # Within-turn completeness: full turn from agent_start to
+                # the terminal agent_end — 6 framing events + deltas.
+                self.assertEqual(turn.events[0].type, "agent_start")
+                self.assertEqual(turn.events[-1].type, "agent_end")
+                self.assertEqual(len(turn.events), deltas + 6)
+                self.assertEqual(len(client._events.items), 0)
+                self.assertEqual(client._events.offset, 0)
+                self.assertEqual(client._events.terminal_agent_end_index, -1)
+                self.assertEqual(client.ring_overflow, 0)
+        # Listener replay within each turn still delivered every delta.
+        self.assertEqual(update_types, ["message_update"] * (4 * deltas))
+        self.assertEqual(message_end_texts, [f"pong-{n}" for n in range(1, 5)])
+
+    def test_release_during_async_overlap_retains_inflight_run_events(self) -> None:
+        message_end_texts: list[str] = []
+        with self.make_client() as client:
+            client.on_message_end(
+                lambda event: message_end_texts.append(
+                    event.message["content"][0]["text"]
+                )
+            )
+            # Async run A ("slow"): emits its deltas, then pauses before
+            # its terminal agent_end — genuinely still in flight.
+            client.prompt("slow")
+            time.sleep(0.25)
+            # Run B completes while A is mid-flight; the waiter consumes
+            # B's terminal agent_end and the turn-scoped release runs.
+            turn = client.prompt_and_wait("quick", timeout=5.0)
+            self.assertEqual(turn.events[-1].type, "agent_end")
+            self.assertIn(turn.require_assistant_text(), {"pong-2", "slow-1"})
+            # The release must NOT clear the ring: run A is still in
+            # flight, so everything from A's scheduling index (0) is
+            # retained for its reconstruction.
+            self.assertGreater(len(client._events.items), 0)
+            self.assertEqual(client._events.offset, 0)
+            # Run A finishes; once idle, the next release fully clears.
+            client.wait_for_idle(timeout=5.0)
+            self.assertEqual(len(client._events.items), 0)
+            self.assertEqual(client._events.offset, 0)
+            self.assertEqual(client._events.terminal_agent_end_index, -1)
+        # Both runs' final messages were dispatched to live listeners.
+        self.assertIn("slow-1", message_end_texts)
+        self.assertIn("pong-2", message_end_texts)
+
+    def test_ring_overflow_valve_drops_oldest_half_and_counts(self) -> None:
+        with self.make_client(max_event_ring_ceiling=8) as client:
+            self.assertEqual(client.ring_overflow, 0)
+            turn = client.prompt_and_wait("burst", timeout=5.0)
+
+            self.assertEqual(turn.require_assistant_text(), "pong-1")
+            self.assertGreaterEqual(client.ring_overflow, 1)
+            # Degradation is visible: the valve dropped the oldest events
+            # (no agent_start prefix), but the terminal agent_end still
+            # carries the correct final message.
+            self.assertEqual(turn.events[-1].type, "agent_end")
+            self.assertEqual(len(client._events.items), 0)  # released after turn
+            self.assertLess(len(turn.events), 46)  # 40 deltas + 6 framing events
+
+    def test_stderr_ring_respects_default_256_cap(self) -> None:
+        client = self.make_client(server=STDERR_SPAM_SERVER)
+        try:
+            client.start()
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                with client._state_lock:
+                    if len(client._stderr_chunks.items) >= 256:
+                        break
+                time.sleep(0.01)
+        finally:
+            client.stop()
+
+        self.assertEqual(len(client._stderr_chunks.items), 256)
 
 
 if __name__ == "__main__":

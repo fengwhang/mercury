@@ -123,6 +123,24 @@ _RPC_MESSAGES_PAGE_BUSY_ERROR = "Cannot page messages while the session is chang
 _RPC_MESSAGES_PAGE_STALE_ERROR = "RPC message cursor is stale"
 _RPC_MESSAGES_PAGE_FALLBACK_CODES = frozenset({"session_busy", "stale_cursor"})
 
+# HERMES-OMP PATCH (unbounded event ring): hard mid-turn ceiling for the
+# agent event ring. Within a turn the ring must stay complete — turn
+# reconstruction (_complete_agent_end_messages) needs every event between
+# an agent_start and its terminal agent_end — so the default
+# max_event_history=None must stay unbounded and the valve only engages on
+# pathological turns. Ceiling choice: an xhigh-thinking turn streams
+# ~50k message_update deltas, so 2_000_000 items is ~40 such turns of
+# headroom WITHIN one turn before the valve even fires — far above any
+# legitimate single turn, yet it caps parent RAM at a finite bound (a few
+# GB of small JSON dicts at absolute worst) instead of the unbounded
+# parent RSS growth (17GB observed) this patch fixes. On breach the OLDEST
+# half is dropped and RpcClient.ring_overflow increments, so reconstruction
+# degrades visibly (missing prefix events / compacted-end RpcError) instead
+# of OOM-ing the parent. Config-not-env: overridable per client via the
+# max_event_ring_ceiling constructor kwarg, never an environment variable.
+_MAX_EVENT_RING_CEILING = 2_000_000
+_DEFAULT_MAX_STDERR_CHUNKS = 256
+
 
 @dataclass(slots=True)
 class _PendingRpcChunks:
@@ -391,6 +409,17 @@ class _PendingHostToolCall:
 class _PendingHostUriRequest:
     cancel_event: threading.Event
 
+# HERMES-OMP PATCH (unbounded event ring): identity handle for one
+# scheduled agent run, enrolled BEFORE its prompt is written so the
+# completion (terminal agent_end) always finds its owner's entry present —
+# the reader thread can otherwise process the whole turn before the
+# requester thread finishes bookkeeping.
+@dataclass(slots=True)
+class _ScheduledRun:
+    # Ring index captured before the prompt was written: a lower bound for
+    # every event this run can emit.
+    start_index: int
+
 
 @dataclass(slots=True)
 class _BoundedHistory(Generic[THistoryItem]):
@@ -404,6 +433,15 @@ class _BoundedHistory(Generic[THistoryItem]):
     # did N full copies+scans (quadratic), which is exactly the super-linear
     # parent CPU/RAM blowup seen at 5 concurrent thinking children.
     terminal_agent_end_index: int = -1
+    # HERMES-OMP PATCH (unbounded event ring): optional hard ceiling above
+    # the soft `limit`. When len(items) exceeds it (only possible when the
+    # soft limit is None — i.e. the agent event ring mid-turn), the OLDEST
+    # half is dropped and overflow_count increments so the client can
+    # surface visible degradation (RpcClient.ring_overflow) instead of
+    # letting the parent OOM. Cumulative for the ring's lifetime: clear()
+    # resets contents, not the degradation signal.
+    hard_limit: int | None = None
+    overflow_count: int = 0
 
     def clear(self) -> None:
         self.items.clear()
@@ -412,10 +450,29 @@ class _BoundedHistory(Generic[THistoryItem]):
 
     def append(self, item: THistoryItem) -> None:
         self.items.append(item)
-        if self.limit is not None and len(self.items) > self.limit:
+        if (
+            self.hard_limit is not None
+            and len(self.items) > self.hard_limit
+        ):
+            retained = self.hard_limit // 2
+            trim = len(self.items) - retained
+            del self.items[:trim]
+            self.offset += trim
+            self.overflow_count += 1
+        elif self.limit is not None and len(self.items) > self.limit:
             trim = len(self.items) - self.limit
             del self.items[:trim]
             self.offset += trim
+
+    def trim_to(self, index: int) -> None:
+        """HERMES-OMP PATCH (unbounded event ring): drop items whose
+        absolute index is below `index` (no-op when nothing qualifies).
+        Absolute indices stay stable, so waiters and
+        terminal_agent_end_index remain valid across trims."""
+        drop = min(index, self.offset + len(self.items)) - self.offset
+        if drop > 0:
+            del self.items[:drop]
+            self.offset += drop
 
     def current_index(self) -> int:
         return self.offset + len(self.items)
@@ -482,8 +539,40 @@ class RpcClient:
         # with events actually streamed; the delegation layer already bounds
         # child runtime via its own task timeout.
         max_event_history: int | None = None,
-        max_stderr_chunks: int | None = 512,
+        # HERMES-OMP PATCH (unbounded event ring): stderr is a diagnostic
+        # tail only — it is never needed for turn reconstruction — so it
+        # now gets a real default cap (256 chunks) instead of quietly
+        # growing for the child's lifetime. Pass None to keep it unbounded.
+        max_stderr_chunks: int | None = _DEFAULT_MAX_STDERR_CHUNKS,
+        # HERMES-OMP PATCH (unbounded event ring): mid-turn safety valve
+        # for the (within-turn unbounded) event ring. Config-not-env: a
+        # constructor kwarg, never an environment variable. See
+        # _MAX_EVENT_RING_CEILING for the ceiling rationale.
+        max_event_ring_ceiling: int | None = _MAX_EVENT_RING_CEILING,
     ) -> None:
+        """Typed client for an ``omp --mode rpc`` child process.
+
+        HERMES-OMP PATCH (unbounded event ring) — event memory contract:
+
+        - ``max_event_history`` (default ``None``): the agent event ring is
+          UNBOUNDED within a turn. Turn reconstruction
+          (``_build_prompt_turn`` / ``_complete_agent_end_messages``) needs
+          every event between an ``AgentStartEvent`` and its terminal
+          ``AgentEndEvent``, so trimming mid-turn can corrupt messages.
+          Boundedness comes from turn scope instead: the ring is released
+          once a consumed turn's waiters have been served (see
+          ``_release_consumed_turn_events``), so parent RAM grows with the
+          largest single turn, not with the child's lifetime.
+        - ``max_stderr_chunks`` (default ``256``): stderr chunks are a
+          diagnostic tail (troubleshooting dead children) and are never
+          used for turn reconstruction, so they are capped by default.
+          ``None`` keeps them unbounded.
+        - ``max_event_ring_ceiling`` (default ``2_000_000``): hard mid-turn
+          safety valve — if a pathological turn exceeds it, the oldest
+          half of the ring is dropped and ``RpcClient.ring_overflow``
+          increments, so reconstruction degrades visibly instead of
+          OOM-ing the parent. ``None`` disables the valve.
+        """
         self._command = tuple(command) if command is not None else None
         self._executable = executable
         self._provider = provider
@@ -514,7 +603,9 @@ class RpcClient:
         self._max_stderr_chunks = self._validate_history_limit(
             "max_stderr_chunks", max_stderr_chunks
         )
-
+        self._max_event_ring_ceiling = self._validate_history_limit(
+            "max_event_ring_ceiling", max_event_ring_ceiling
+        )
         self._process: subprocess.Popen[str] | None = None
         self._pgid: int | None = None
         self._stdout_thread: threading.Thread | None = None
@@ -528,12 +619,19 @@ class RpcClient:
         self._host_tool_dispatch_names: dict[str, str] = {}
         self._pending_host_uri_requests: dict[str, _PendingHostUriRequest] = {}
         self._request_id = 0
-        self._events = _BoundedHistory[JsonObject](self._max_event_history)
+        self._events = _BoundedHistory[JsonObject](
+            self._max_event_history, hard_limit=self._max_event_ring_ceiling
+        )
         self._async_errors = _BoundedHistory[BaseException](
             _DEFAULT_ERROR_HISTORY_LIMIT
         )
         self._scheduled_agent_runs = 0
         self._completed_agent_runs = 0
+        # HERMES-OMP PATCH (unbounded event ring): runs enrolled but not
+        # yet completed. Each entry's start_index is a lower bound for its
+        # run's events; the turn-scoped release guard trims only below the
+        # OLDEST in-flight start (see _release_consumed_turn_events).
+        self._inflight_runs: list[_ScheduledRun] = []
         self._last_schedule_async_error_index = 0
         self._ui_requests: queue.Queue[ExtensionUiRequest] = queue.Queue()
         self._stderr_chunks = _BoundedHistory[str](self._max_stderr_chunks)
@@ -587,6 +685,16 @@ class RpcClient:
         with self._state_lock:
             return self._listener_errors.snapshot()
 
+    @property
+    def ring_overflow(self) -> int:
+        """HERMES-OMP PATCH (unbounded event ring): number of times the
+        agent event ring breached its hard mid-turn ceiling and dropped its
+        oldest half (see ``_MAX_EVENT_RING_CEILING``). Cumulative for the
+        client's lifetime — a nonzero value means turn reconstruction
+        degraded (prefix events missing) rather than the parent OOM-ing."""
+        with self._event_condition:
+            return self._events.overflow_count
+
     def start(self) -> RpcClient:
         if self._process is not None:
             raise RpcError("RPC client is already started")
@@ -603,6 +711,9 @@ class RpcClient:
         self._async_errors.clear()
         self._scheduled_agent_runs = 0
         self._completed_agent_runs = 0
+        # HERMES-OMP PATCH (unbounded event ring): fresh child process —
+        # no run enrolled against the (cleared) ring can still be flying.
+        self._inflight_runs.clear()
         self._last_schedule_async_error_index = 0
         self._ui_requests = queue.Queue()
         with self._state_lock:
@@ -1157,14 +1268,25 @@ class RpcClient:
         streaming_behavior: StreamingBehavior | None = None,
         _ack_timeout: float | None = None,
     ) -> None:
-        self._request(
-            "prompt",
-            _timeout=_ack_timeout,
-            message=message,
-            images=list(images) if images is not None else None,
-            streamingBehavior=streaming_behavior,
-        )
-        self._mark_agent_run_scheduled()
+        # HERMES-OMP PATCH (unbounded event ring): enroll BEFORE writing
+        # the prompt. The reader thread can append this run's whole turn
+        # (terminal agent_end included) before the requester thread
+        # resumes after the ack, so the in-flight entry must already
+        # exist when the completion fires — otherwise completion pairing
+        # could retire the wrong run's entry and let the release trim
+        # into a genuinely flying run. A failed request rolls back.
+        run = self._enroll_agent_run()
+        try:
+            self._request(
+                "prompt",
+                _timeout=_ack_timeout,
+                message=message,
+                images=list(images) if images is not None else None,
+                streamingBehavior=streaming_behavior,
+            )
+        except BaseException:
+            self._unenroll_agent_run(run)
+            raise
 
     def steer(
         self, message: str, *, images: Sequence[ImageContent] | None = None
@@ -1190,12 +1312,18 @@ class RpcClient:
     def abort_and_prompt(
         self, message: str, *, images: Sequence[ImageContent] | None = None
     ) -> None:
-        self._request(
-            "abort_and_prompt",
-            message=message,
-            images=list(images) if images is not None else None,
-        )
-        self._mark_agent_run_scheduled()
+        # HERMES-OMP PATCH (unbounded event ring): same enroll-before-send
+        # pattern as prompt() — see the comment there.
+        run = self._enroll_agent_run()
+        try:
+            self._request(
+                "abort_and_prompt",
+                message=message,
+                images=list(images) if images is not None else None,
+            )
+        except BaseException:
+            self._unenroll_agent_run(run)
+            raise
 
     def prompt_and_wait(
         self,
@@ -1222,7 +1350,14 @@ class RpcClient:
             events = self._wait_for_agent_end(
                 start_index, start_async_error_index, timeout=timeout
             )
-            return self._build_prompt_turn(events)
+            turn = self._build_prompt_turn(events)
+            # HERMES-OMP PATCH (unbounded event ring): THE turn-scoped
+            # reset point. The final PromptTurn is built and the prompt
+            # lifecycle coordinator guarantees no other waiter can still
+            # need pre-turn ring history, so bounded-within-turn memory
+            # semantics release the ring here.
+            self._release_consumed_turn_events()
+            return turn
         finally:
             self._prompt_lifecycle.release(operation)
 
@@ -1232,12 +1367,23 @@ class RpcClient:
         try:
             if self._is_agent_idle():
                 self._check_async_errors()
+                # HERMES-OMP PATCH (unbounded event ring): idle at entry —
+                # a completed-but-unconsumed turn's events are dead weight
+                # (live listeners were dispatched at stream time; future
+                # waiters capture start indices at call time), so release
+                # them here too. This is what bounds listener-driven
+                # streaming usage that never calls prompt_and_wait.
+                self._release_consumed_turn_events()
                 return
             start_index = self._current_event_index()
             start_async_error_index = self._current_async_error_index()
             self._wait_for_agent_end(
                 start_index, start_async_error_index, timeout=timeout
             )
+            # HERMES-OMP PATCH (unbounded event ring): terminal agent_end
+            # consumed under the coordinator — same served-waiter
+            # condition as prompt_and_wait.
+            self._release_consumed_turn_events()
         finally:
             self._prompt_lifecycle.release(operation)
 
@@ -1247,9 +1393,13 @@ class RpcClient:
         try:
             start_index = self._current_event_index()
             start_async_error_index = self._current_async_error_index()
-            return self._wait_for_agent_end(
+            events = self._wait_for_agent_end(
                 start_index, start_async_error_index, timeout=timeout
             )
+            # HERMES-OMP PATCH (unbounded event ring): the collector holds
+            # its event tuple; release the ring for the next turn.
+            self._release_consumed_turn_events()
+            return events
         finally:
             self._prompt_lifecycle.release(operation)
 
@@ -1264,15 +1414,104 @@ class RpcClient:
         with self._event_condition:
             return self._async_errors.current_index()
 
-    def _mark_agent_run_scheduled(self) -> None:
+    def _enroll_agent_run(self) -> _ScheduledRun:
         with self._event_condition:
             self._scheduled_agent_runs += 1
+            # HERMES-OMP PATCH (unbounded event ring): the start index is
+            # captured before the prompt is written, so it is a lower
+            # bound for every event the run can emit — the turn-scoped
+            # release never trims below an in-flight run's enrollment.
+            run = _ScheduledRun(start_index=self._events.current_index())
+            self._inflight_runs.append(run)
             self._last_schedule_async_error_index = self._async_errors.current_index()
+            return run
+
+    def _unenroll_agent_run(self, run: _ScheduledRun) -> None:
+        with self._event_condition:
+            self._scheduled_agent_runs -= 1
+            # HERMES-OMP PATCH (unbounded event ring): rollback for a
+            # prompt that never started a run. If a stray completion
+            # already consumed this exact entry, removing it is a no-op —
+            # keeping another run's entry only retains more history.
+            try:
+                self._inflight_runs.remove(run)
+            except ValueError:
+                pass
+            self._event_condition.notify_all()
 
     def _mark_agent_run_completed(self) -> None:
+        # HERMES-OMP PATCH (unbounded event ring): completion with no ring
+        # index (async prompt error responses, terminal agent_end parse
+        # failures) — retire the oldest enrollment, the most conservative
+        # guess (keeps every younger in-flight lower bound).
         with self._event_condition:
             self._completed_agent_runs += 1
+            if self._inflight_runs:
+                self._inflight_runs.pop(
+                    min(
+                        range(len(self._inflight_runs)),
+                        key=lambda index: self._inflight_runs[index].start_index,
+                    )
+                )
             self._event_condition.notify_all()
+
+    def _complete_agent_run(self, terminal_index: int) -> None:
+        with self._event_condition:
+            self._completed_agent_runs += 1
+            # HERMES-OMP PATCH (unbounded event ring): retire the LATEST
+            # enrollment at or below the terminal event's ring index.
+            # Enrollment happens before the prompt is written, so the
+            # completing run's own entry is always present; picking the
+            # latest qualifying entry pairs serialized runs exactly, and
+            # under interleaved overlap it can only retire a run whose
+            # events all precede the terminal index — so the release
+            # guard's min() never loses a still-flying run's lower bound.
+            candidates = [
+                index
+                for index, run in enumerate(self._inflight_runs)
+                if run.start_index <= terminal_index
+            ]
+            if candidates:
+                position = max(
+                    candidates,
+                    key=lambda index: self._inflight_runs[index].start_index,
+                )
+                self._inflight_runs.pop(position)
+            self._event_condition.notify_all()
+
+    def _release_consumed_turn_events(self) -> None:
+        """HERMES-OMP PATCH (unbounded event ring): turn-scoped ring reset.
+
+        Called on prompt-lifecycle exits — prompt_and_wait after the final
+        PromptTurn is built, collect_events / wait_for_idle after the
+        terminal agent_end is consumed — i.e. the points where the turn is
+        complete and the lifecycle coordinator guarantees all waiters have
+        been served. Nothing can still need pre-turn ring history: future
+        waiters capture their start index at call time, and live listeners
+        received events at dispatch time.
+
+        Overlap guard: the client can schedule async runs (prompt /
+        abort_and_prompt) that may still be in flight when a DIFFERENT
+        run's turn is consumed. Events carry no run id, so per-run
+        clearing is impossible; the correct conservative rule from this
+        code's data model is: clear the whole ring only when no run is in
+        flight, otherwise trim only below the OLDEST in-flight run's
+        scheduling index — the lowest index any future reconstruction can
+        need. That preserves async-run reconstruction while still bounding
+        memory turn over turn (the retained span is at most the oldest
+        in-flight run's own lifetime).
+        """
+        with self._event_condition:
+            if self._inflight_runs:
+                # The OLDEST in-flight enrollment is the lowest index any
+                # future reconstruction can need; entries can be appended
+                # out of index order under concurrent prompting, so take
+                # the minimum — always the most conservative bound.
+                self._events.trim_to(
+                    min(run.start_index for run in self._inflight_runs)
+                )
+            else:
+                self._events.clear()
 
     def _is_agent_idle(self) -> bool:
         with self._event_condition:
@@ -2006,12 +2245,19 @@ class RpcClient:
                     continue
 
                 event = cast(RpcAgentEvent, notification)
-                self._append_event(payload)
-                if (
-                    isinstance(event, AgentEndEvent)
-                    and event.is_terminal is not False
-                ):
-                    self._mark_agent_run_completed()
+                # HERMES-OMP PATCH (unbounded event ring): append and run
+                # completion are now ATOMIC under _event_condition. The
+                # old two-step (append+notify, then re-acquire to complete)
+                # let a waiter wake, consume the turn, and release ring
+                # memory before the completion bookkeeping settled, which
+                # would have made the release guard racy.
+                self._append_event(
+                    payload,
+                    completes_run=(
+                        isinstance(event, AgentEndEvent)
+                        and event.is_terminal is not False
+                    ),
+                )
                 self._dispatch_listeners(
                     "event", event.type, self._event_listeners, event
                 )
@@ -2132,16 +2378,27 @@ class RpcClient:
             return None
         return RpcProtocolError(_clone_json_object(payload))
 
-    def _append_event(self, payload: JsonObject) -> None:
+    def _append_event(
+        self, payload: JsonObject, *, completes_run: bool = False
+    ) -> None:
         with self._event_condition:
             self._events.append(_clone_json_object(payload))
             # HERMES-OMP PATCH (O(n^2) wait loop): stamp terminal agent_end
             # at append time so waiters can check one int per wakeup.
-            if (
+            terminal = (
                 payload.get("type") == "agent_end"
                 and payload.get("isTerminal") is not False
-            ):
+            )
+            if terminal:
                 self._events.terminal_agent_end_index = self._events.current_index() - 1
+            if completes_run:
+                # HERMES-OMP PATCH (unbounded event ring): run completion
+                # shares this critical section (the condition's lock is
+                # reentrant) so a waiter that wakes on the terminal stamp
+                # sees settled in-flight bookkeeping before it releases
+                # ring memory — see _release_consumed_turn_events.
+                self._complete_agent_run(self._events.terminal_agent_end_index)
+                return  # _complete_agent_run already notified
             self._event_condition.notify_all()
 
     def _append_async_error(self, error: BaseException) -> None:
