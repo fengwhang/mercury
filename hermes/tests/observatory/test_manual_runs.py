@@ -14,6 +14,7 @@ files themselves.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -345,10 +346,10 @@ class TestTailing:
             f.write(json.dumps(user_msg("good")) + "\n")
         events = watcher.poll().events[MANUAL_NODE_PREFIX + UUID]
         assert [e.text for e in events] == ["good"]
-
-    def test_render_poll_sends_tool_thinking_and_messages(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_render_poll_sends_tool_thinking_and_messages(self, tmp_path):
         agent = tmp_path / "omp"
-        write_session(agent, lines=[
+        path = write_session(agent, lines=[
             user_msg("do it"),
             assistant_msg(
                 {"type": "thinking", "thinking": "hmm"},
@@ -358,40 +359,26 @@ class TestTailing:
         ])
         watcher, state, client = make_watcher(tmp_path, agent, executor=True)
         node = MANUAL_NODE_PREFIX + UUID
-        state.set_room_id(node, "!r-manual:x")
-        result = watcher.poll()
-        watcher.plan_events(node, result.events[node])
-        # plan_events is pure; render through the watcher's live path:
-        watcher2, _, client2 = make_watcher(tmp_path, agent, executor=True)
-        state2 = watcher2.renderer.state
-        state2.set_room_id(node, "!r-manual:x")
-        # reset tails by re-polling fresh watcher over the same files
-        result2 = watcher2.poll()
-        await_result = None
-        import asyncio
-
-        async def run():
-            return await watcher2.render_poll()
-
-        await_result = asyncio.get_event_loop().run_until_complete(run()) \
-            if False else None  # placeholder; real run below
-
-        # direct async execution (pytest-asyncio not needed for this helper)
-        loop = asyncio.new_event_loop()
-        try:
-            out = loop.run_until_complete(watcher2.render_poll())
-        finally:
-            loop.close()
-        sends = [c for c in client2.calls if c[0] == "send"]
+        # First live pass: discovery + room creation + notice/topic + backlog.
+        out1 = await watcher.render_poll()
+        assert [r["node_id"] for r in out1.new_nodes] == [node]
+        room = state.get(node)["room_id"]
+        assert room
+        # Second pass: appended content streams as new messages.
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(assistant_msg({"type": "text", "text": "later"})) + "\n")
+        out2 = await watcher.render_poll()
+        assert node in out2.events
+        sends = [c for c in client.calls if c[0] == "send"]
         bodies = [s[2] for s in sends]
         assert any("» do it" in b for b in bodies)          # user quote
         assert any("edit" in b for b in bodies)             # tool call message
         assert any("hmm" in b for b in bodies)              # thinking message
         assert any(b == "done" for b in bodies)             # assistant text
-        topics = [c for c in client2.calls if c[0] == "state"]
-        assert topics and topics[0][1] == "!r-manual:x" and topics[0][2] == "m.room.topic"
+        assert any(b == "later" for b in bodies)            # second-pass message
+        topics = [c for c in client.calls if c[0] == "state"]
+        assert topics and topics[0][1] == room and topics[0][2] == "m.room.topic"
         assert topics[0][3] == {"topic": READONLY_TOPIC}
-
 
 # --- read-only + reaping ---------------------------------------------------------------------
 
@@ -410,8 +397,9 @@ class TestReadOnlyAndReaping:
 
     def test_quiet_and_process_gone_reaps(self, tmp_path):
         agent = tmp_path / "omp"
-        write_session(agent)
+        path = write_session(agent)
         t0 = 1_000_000.0
+        os.utime(path, (t0, t0))  # discovery ages from the file's mtime
         clock = {"now": t0}
         watcher, state, _ = make_watcher(
             tmp_path, agent, clock=lambda: clock["now"], process_probe=lambda p: False
@@ -430,7 +418,6 @@ class TestReadOnlyAndReaping:
             ),
             PurgeRoom("!r-manual:x"),
         )
-
     def test_live_process_keeps_quiet_room_alive(self, tmp_path):
         agent = tmp_path / "omp"
         write_session(agent)
@@ -467,12 +454,12 @@ class TestReadOnlyAndReaping:
         path.unlink()
         result = watcher.poll()
         assert result.reaped == [MANUAL_NODE_PREFIX + UUID]
-
     @pytest.mark.asyncio
     async def test_render_poll_reap_executes_delete_and_drops_row(self, tmp_path):
         agent = tmp_path / "omp"
-        write_session(agent)
+        path = write_session(agent)
         t0 = 1_000_000.0
+        os.utime(path, (t0, t0))  # discovery ages from the file's mtime
         clock = {"now": t0}
         watcher, state, client = make_watcher(
             tmp_path, agent, executor=True, clock=lambda: clock["now"],
@@ -491,13 +478,15 @@ class TestReadOnlyAndReaping:
     def test_preexisting_quiet_session_ages_from_mtime(self, tmp_path):
         agent = tmp_path / "omp"
         path = write_session(agent)
-        old = time.time() - DEFAULT_QUIET_WINDOW - 3600
-        import os
-
+        t0 = 1_000_000.0
+        old = t0 - DEFAULT_QUIET_WINDOW - 3600
         os.utime(path, (old, old))
-        watcher, _, _ = make_watcher(tmp_path, agent, process_probe=lambda p: False)
+        watcher, _, _ = make_watcher(
+            tmp_path, agent, clock=lambda: t0, process_probe=lambda p: False
+        )
         result = watcher.poll()
         assert result.reaped == [MANUAL_NODE_PREFIX + UUID]
+
 
 
 # --- process probe ----------------------------------------------------------------------------

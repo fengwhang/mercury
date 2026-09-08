@@ -45,10 +45,21 @@ KIND_MANUAL_RUN = "manual-run"
 
 def _extra(node: dict[str, Any]) -> dict[str, Any]:
     extra = node.get("extra")
-    if extra is None and "extra_json" in node:
-        import json
+    if isinstance(extra, dict):
+        return extra
+    if "extra_json" in node:
+        raw = node["extra_json"]
+        if isinstance(raw, dict):
+            # Already parsed (e.g. raw sqlite rows materialized by a caller).
+            return raw
+        if isinstance(raw, str):
+            import json
 
-        extra = json.loads(node["extra_json"] or "{}")
+            try:
+                parsed = json.loads(raw or "{}")
+            except ValueError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
     return extra or {}
 
 
