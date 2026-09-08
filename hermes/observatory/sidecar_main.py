@@ -91,7 +91,7 @@ from observatory.config_gen import (
     ObservatoryPaths,
 )
 from observatory.identity import assign_slug, virtual_mxid
-from observatory.matrix_client import MatrixError, MatrixClient
+from observatory.matrix_client import CLIENT_V3, MatrixError, MatrixClient
 from observatory.renderer import IntentExecutor, Renderer, SendMessage
 from observatory.state import ObservatoryState, StateError
 from observatory.tree import DIRECTIVES_ROOM_KEY
@@ -357,6 +357,8 @@ class SidecarDaemon:
 
         # 6. converge the space tree (virtual users + plan)
         await self._ensure_virtual_users()
+        await self.verify_gateway_ghost()
+        report["gateway_ghost"] = "verified"
         applied = await self.renderer.apply_plan(
             self.renderer.build_plan(host=socket.gethostname())
         )
@@ -447,6 +449,93 @@ class SidecarDaemon:
                     "register %s: %s (continuing — ghost may auto-provision)",
                     localpart, exc,
                 )
+
+    # --- gateway ghost verification (VM-feedback: never serve a dead tree) ----
+
+    async def ghost_exists(self, mxid: str) -> bool:
+        """True when the homeserver knows this ghost.
+
+        Contract: ``GET /_matrix/client/v3/profile/{userId}`` → 200 means
+        the ghost exists; 404/``M_NOT_FOUND`` means it does not. Any other
+        :class:`MatrixError` propagates — a sick homeserver must not read
+        as "ghost missing".
+        """
+        assert self.client is not None
+        from urllib.parse import quote
+
+        try:
+            await self.client.client_api(
+                "GET", f"{CLIENT_V3}/profile/{quote(mxid, safe='')}"
+            )
+        except MatrixError as exc:
+            if exc.status == 404 or exc.errcode == "M_NOT_FOUND":
+                return False
+            raise
+        return True
+
+    async def verify_ghost(self, mxid: str) -> None:
+        """Register-once-then-verify one ghost; FAIL LOUDLY when still missing.
+
+        The ``_ensure_virtual_users`` pass stays best-effort (a ghost may
+        legitimately auto-provision on its first masqueraded call), but a
+        ghost that is still unknown after an explicit re-register means
+        boot would serve a dead tree — raise :class:`ProvisionError`
+        instead. Repair path: :meth:`repair_ghosts` /
+        ``--repair-ghosts``.
+        """
+        assert self.client is not None
+        if await self.ghost_exists(mxid):
+            return
+        localpart = mxid.lstrip("@").split(":", 1)[0]
+        try:
+            await self.client.register_virtual_user(localpart)
+        except MatrixError as exc:
+            log.warning("ghost re-register %s failed: %s", localpart, exc)
+        if not await self.ghost_exists(mxid):
+            raise provision.ProvisionError(
+                f"ghost {mxid} missing on the homeserver after re-register — "
+                "refusing to serve a dead tree. Re-run the repair path "
+                "(`mercury setup observatory`, Install/repair) or "
+                "`python -m observatory.sidecar_main --repair-ghosts`, "
+                "then restart the sidecar."
+            )
+
+    async def verify_gateway_ghost(self) -> None:
+        """Boot gate: the gateway ghost MUST exist before traffic is served."""
+        if not self.gateway_mxid:
+            raise provision.ProvisionError(
+                "gateway mxid unset at ghost-verify time — refusing to boot"
+            )
+        await self.verify_ghost(self.gateway_mxid)
+
+    async def repair_ghosts(self) -> dict[str, str]:
+        """Re-register every live ghost and verify each (repair path).
+
+        Returns ``{mxid: status}`` with status ``"verified"``,
+        ``"missing"`` (register accepted but the ghost is still unknown),
+        ``"register-failed: ..."`` or ``"verify-failed: ..."``. Never
+        raises per-ghost — the caller decides (boot fails loudly via
+        :meth:`verify_gateway_ghost`; ``--repair-ghosts`` exits non-zero
+        unless every ghost verifies).
+        """
+        assert self.client is not None and self.state is not None
+        results: dict[str, str] = {}
+        for row in self.state.get_live():
+            mxid = str(row["mxid"])
+            localpart = mxid.lstrip("@").split(":", 1)[0]
+            try:
+                await self.client.register_virtual_user(localpart)
+            except Exception as exc:  # noqa: BLE001 — repair reports, never crashes per-ghost
+                log.warning("ghost repair register %s failed: %s", localpart, exc)
+                results[mxid] = f"register-failed: {exc}"
+                continue
+            try:
+                exists = await self.ghost_exists(mxid)
+            except MatrixError as exc:
+                results[mxid] = f"verify-failed: {exc}"
+                continue
+            results[mxid] = "verified" if exists else "missing"
+        return results
 
     async def _serve_intake(self) -> None:
         assert self.client is not None
@@ -1082,6 +1171,55 @@ def run_once_smoke(home: Path, *, fresh: bool = True) -> int:
     return 0 if marker in (SMOKE_MARKER, SMOKE_E2EE_MARKER) else 1
 
 
+def run_repair_ghosts(home: Path | None) -> int:
+    """Repair path (``mercury setup observatory`` → Install/repair, or this
+    CLI): re-register every live ghost, verify each, exit non-zero unless
+    all verify (gateway included)."""
+    from observatory.provision import _mercury_home
+
+    resolved = Path(home) if home is not None else _mercury_home(None)
+
+    async def _repair() -> int:
+        daemon = SidecarDaemon(resolved)
+        try:
+            import tomllib
+
+            with open(daemon.paths.toml, "rb") as f:
+                cfg = tomllib.load(f)["global"]
+            address = cfg.get("address", HOMESERVER_ADDRESS)
+            if isinstance(address, list):
+                address = address[0]
+            port = int(cfg.get("port", 18008))
+            daemon.base_url = daemon.paths.homeserver_url(address=address, port=port)
+            daemon.server_name = str(cfg.get("server_name", "mercury.local"))
+            await daemon._ensure_homeserver()
+            daemon.state = ObservatoryState(daemon.paths.root / "state.db")
+            daemon.owner_mxid, daemon.admin_token = daemon._load_owner()
+            daemon.gateway_mxid = daemon.ensure_gateway_node()
+            daemon.client = MatrixClient(
+                daemon.base_url,
+                as_token_from_registration(daemon.paths.appservice_registration),
+                server_name=daemon.server_name,
+                admin_token=daemon.admin_token,
+            )
+            results = await daemon.repair_ghosts()
+            for mxid, status in results.items():
+                print(f"[{status.upper()}] {mxid}")
+            bad = {m: s for m, s in results.items() if s != "verified"}
+            if bad:
+                print(
+                    f"{len(bad)}/{len(results)} ghost(s) still unverified",
+                    file=sys.stderr,
+                )
+                return 1
+            print(f"all {len(results)} ghost(s) verified")
+            return 0
+        finally:
+            await daemon.shutdown()
+
+    return asyncio.run(_repair())
+
+
 # ============================================================================
 # CLI
 # ============================================================================
@@ -1097,6 +1235,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="boot against a throwaway testhome, verify, exit")
     parser.add_argument("--smoke-home", type=Path, default=DEFAULT_SMOKE_HOME,
                         help="testhome for --once-smoke (default: %(default)s)")
+    parser.add_argument("--repair-ghosts", action="store_true",
+                        help="re-register all live ghosts, verify, exit")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
 
@@ -1107,6 +1247,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.once_smoke:
         return run_once_smoke(args.smoke_home)
+    if args.repair_ghosts:
+        return run_repair_ghosts(args.home)
 
     from observatory.provision import _mercury_home
 
