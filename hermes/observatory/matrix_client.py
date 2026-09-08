@@ -316,7 +316,9 @@ class MatrixClient:
         content: dict[str, Any] = {} if remove else {"via": list(via) or [self.server_name]}
         return await self.send_state_event(space_id, "m.space.child", child_id, content, sender=sender)
 
-    async def get_power_levels(self, room_id: str, *, sender: str) -> dict[str, Any]:
+    async def get_power_levels(self, room_id: str, *, sender: str | None = None) -> dict[str, Any]:
+        """Power-level content (empty state key). ``sender=None`` omits the
+        ``?user_id=`` masquerade — same omission rule as :meth:`client_api`."""
         path = f"{CLIENT_V3}/rooms/{_q(room_id)}/state/m.room.power_levels/"
         return await self.client_api("GET", path, sender=sender) or {}
 
