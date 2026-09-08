@@ -251,7 +251,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
     task_payload = {
         key: record.get(key)
         for key in (
-            "goal", "goals", "context", "toolsets", "role", "model", "is_batch",
+            "goal", "goals", "names", "context", "toolsets", "role", "model", "is_batch",
             # Routing origin (scope_id/user_id/user_name): persisted so a
             # restart-recovered completion can reconstruct a full
             # SessionSource — see _capture_routing_origin.
@@ -1036,6 +1036,7 @@ def dispatch_async_delegation_batch(
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    names: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -1068,6 +1069,7 @@ def dispatch_async_delegation_batch(
         "delegation_id": delegation_id,
         "goal": combined_goal,
         "goals": list(goals),
+        "names": list(names) if names is not None else None,
         "context": context,
         "toolsets": list(toolsets) if toolsets else None,
         "role": role,
