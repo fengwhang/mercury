@@ -14280,6 +14280,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # confirmed-delivered has its answer in the ledger — redelivering it
         # is strictly cheaper and more correct than re-running the whole turn.
         self._schedule_resume_pending_sessions()
+        # M5a observatory seam (spec §2 component 3): fire-and-forget
+        # sidecar boot on a daemon thread; never raises, never blocks.
+        try:
+            from observatory.platform_hook import try_boot_sidecar
+            try_boot_sidecar()
+        except ImportError:
+            pass
+
         await self._finish_startup_restore()
 
         # Surface state.db init failures to the user's messaging platforms
