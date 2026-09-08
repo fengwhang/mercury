@@ -47,7 +47,13 @@ export type RpcCommand =
 	| { id?: string; type: "set_subagent_subscription"; level: RpcSubagentSubscriptionLevel }
 	| { id?: string; type: "get_subagents" }
 	| { id?: string; type: "get_subagent_messages"; subagentId?: string; sessionFile?: string; fromByte?: number }
-
+	// HERMES-OMP PATCH (matrix observatory §8.2): drive an in-process subagent
+	// (grandchild, any depth) by registry id — the RPC twin of the collab host's
+	// agent "chat"/"kill" and the TUI Agent Hub actions, so an external host can
+	// steer or stop subagents mid-run. Isolated children are included: steer and
+	// abort work while live, but a parked isolated ref can never be revived.
+	| { id?: string; type: "subagent_steer"; subagentId: string; text: string }
+	| { id?: string; type: "subagent_abort"; subagentId: string; reason?: string }
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
 	| { id?: string; type: "cycle_model" }
@@ -251,6 +257,11 @@ export type RpcResponse =
 			success: true;
 			data: RpcSubagentMessagesResult;
 	  }
+	// HERMES-OMP PATCH (matrix observatory §8.2): subagent control responses.
+	// Failures carry `code`: "unknown_subagent" | "advisor_readonly" |
+	// "main_session" | "steer_failed" | "abort_failed" (see docs/rpc.md).
+	| { id?: string; type: "response"; command: "subagent_steer"; success: true }
+	| { id?: string; type: "response"; command: "subagent_abort"; success: true; data: { aborted: boolean } }
 
 	// Model
 	| {

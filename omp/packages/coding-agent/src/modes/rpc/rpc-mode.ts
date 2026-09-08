@@ -31,6 +31,8 @@ import {
 } from "../../extensibility/skills";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { type Theme, theme } from "../../modes/theme/theme";
+import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
+import { AgentRegistry } from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
@@ -564,6 +566,118 @@ export async function handleRpcSessionChange(
 		}
 	}
 	throw new Error("Unsupported RPC session change command");
+}
+
+// HERMES-OMP PATCH (matrix observatory §8.2): subagent control — steer or
+// abort an in-process subagent (grandchild, any depth) by registry id. Mirrors
+// the proven control paths: collab host agent "chat"/"kill"
+// (src/collab/host.ts) and the TUI Agent Hub (src/modes/components/agent-hub.ts)
+// — `ensureLive` + `prompt({ streamingBehavior: "steer" })` for steering,
+// `session.abort` + lifecycle `release({ tombstone: true })` for kills.
+// Isolated children included: steer/abort work while live, but a parked
+// isolated ref can never be revived (the release/ensureLive errors say so).
+
+/** `subagent_steer` / `subagent_abort` commands. */
+export type RpcSubagentControlCommand = Extract<RpcCommand, { type: "subagent_steer" | "subagent_abort" }>;
+
+/** Lifecycle/registry surface the subagent control path needs (injectable for tests). */
+export interface RpcSubagentControlDeps {
+	lifecycle: Pick<AgentLifecycleManager, "ensureLive" | "release">;
+	registry: Pick<AgentRegistry, "get">;
+	/** Sink for late failures of the fire-and-forget steer prompt. */
+	onSteerError: (response: RpcResponse) => void;
+}
+
+/**
+ * Describe a subagent control failure, keeping the lifecycle manager's precise
+ * reason and adding the isolated-subagent explanation where it applies.
+ */
+function describeSubagentControlFailure(
+	command: RpcSubagentControlCommand,
+	subagentId: string,
+	error: unknown,
+	code: string,
+): RpcResponse {
+	const message = error instanceof Error ? error.message : String(error);
+	if (message.includes("no reviver registered")) {
+		return {
+			id: command.id,
+			type: "response",
+			command: command.type,
+			success: false,
+			error: `Agent "${subagentId}" is parked and cannot be revived — isolated subagents are terminal once their worktree is merged and cleaned; steer or abort while the agent is live (transcript stays readable at history://${subagentId}).`,
+			code,
+		};
+	}
+	return { id: command.id, type: "response", command: command.type, success: false, error: message, code };
+}
+
+/**
+ * Dispatch `subagent_steer` / `subagent_abort` against the in-process
+ * subagent machinery. Steering resolves the live session (reviving a parked,
+ * revivable agent) and queues the text as a steering prompt without blocking
+ * the serialized command queue; aborting stops a running turn and releases
+ * the agent through the lifecycle owner with a tombstone so a restart cannot
+ * rediscover the transcript as a revivable parked agent.
+ */
+export async function dispatchRpcSubagentControl(
+	command: RpcSubagentControlCommand,
+	deps: RpcSubagentControlDeps,
+): Promise<RpcResponse> {
+	const { id } = command;
+	const failure = (error: string, code: string): RpcResponse => ({
+		id,
+		type: "response",
+		command: command.type,
+		success: false,
+		error,
+		code,
+	});
+
+	const ref = deps.registry.get(command.subagentId);
+	if (!ref) {
+		return failure(
+			`Unknown subagent "${command.subagentId}" — it was never registered or has been released. If a transcript exists, read history://${command.subagentId}.`,
+			"unknown_subagent",
+		);
+	}
+	// Advisor transcripts are read-only observability; reject control by id even
+	// though snapshots exclude them (mirrors the collab host's defensive gate).
+	if (ref.kind === "advisor") {
+		return failure(`"${command.subagentId}" is a read-only advisor transcript — it cannot be steered or aborted.`, "advisor_readonly");
+	}
+	// The main session already has first-class steer/abort commands.
+	if (ref.kind === "main") {
+		return failure(`"${command.subagentId}" is the main session — use the steer/abort commands for it.`, "main_session");
+	}
+
+	if (command.type === "subagent_steer") {
+		const text = command.text?.trim();
+		if (!text) {
+			return failure("Steer text cannot be empty", "empty_text");
+		}
+		// The collab host's agent "chat" path: revive if parked, steer if mid-turn.
+		// Fire-and-forget so the serial queue never blocks on a subagent turn; a
+		// scheduling failure answers with this command's id via onSteerError.
+		deps.lifecycle
+			.ensureLive(command.subagentId)
+			.then(subagent => subagent.prompt(text, { streamingBehavior: "steer" }))
+			.catch(error => {
+				deps.onSteerError(describeSubagentControlFailure(command, command.subagentId, error, "steer_failed"));
+			});
+		return { id, type: "response", command: "subagent_steer", success: true };
+	}
+
+	// subagent_abort — the Agent Hub kill path.
+	try {
+		if (ref.status === "running" && ref.session) {
+			await ref.session.abort({ reason: command.reason?.trim() || USER_INTERRUPT_LABEL });
+		}
+		await deps.lifecycle.release(command.subagentId, ref, { tombstone: true });
+		return { id, type: "response", command: "subagent_abort", success: true, data: { aborted: true } };
+	} catch (error) {
+		return describeSubagentControlFailure(command, command.subagentId, error, "abort_failed");
+	}
 }
 
 function normalizeHostToolDefinitions(tools: RpcHostToolDefinition[]): RpcHostToolDefinition[] {
@@ -1292,6 +1406,22 @@ export async function runRpcMode(
 				} catch (err) {
 					return error(id, "get_subagent_messages", err instanceof Error ? err.message : String(err));
 				}
+			}
+
+			// =================================================================
+			// Subagent control (HERMES-OMP PATCH — matrix observatory §8.2)
+			// =================================================================
+
+			case "subagent_steer":
+			case "subagent_abort": {
+				// Deliberately independent of `subagentRegistry` (the RPC event-bus
+				// view): control rides the process-global registry + lifecycle owner,
+				// so it works even when the event bus was never subscribed.
+				return dispatchRpcSubagentControl(command, {
+					lifecycle: AgentLifecycleManager.global(),
+					registry: AgentRegistry.global(),
+					onSteerError: steerError => output(steerError),
+				});
 			}
 
 			// =================================================================

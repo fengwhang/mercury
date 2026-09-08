@@ -132,6 +132,17 @@ Important edge behavior from runtime:
 - `{ id?, type: "set_subagent_subscription", level: "off" | "progress" | "events" }`
 - `{ id?, type: "get_subagents" }`
 - `{ id?, type: "get_subagent_messages", subagentId?: string, sessionFile?: string, fromByte?: number }`
+- `{ id?, type: "subagent_steer", subagentId: string, text: string }`
+- `{ id?, type: "subagent_abort", subagentId: string, reason?: string }`
+
+#### Subagent control (Mercury fork — HERMES-OMP PATCH, matrix observatory §8.2)
+
+`subagent_steer` and `subagent_abort` drive an **in-process subagent** (any depth — children and grandchildren of the RPC session's task fan-outs) by registry id, the ids surfaced by `get_subagents` / `subagent_lifecycle` frames. They are the RPC twin of the collab host's agent `chat`/`kill` and the TUI Agent Hub actions:
+
+- `subagent_steer`: resolves the live session through the agent lifecycle manager — reviving a parked, revivable agent, or steering one that is mid-turn — then queues `text` as a steering prompt. The response acknowledges scheduling immediately; the subagent's events stream through the normal session/subagent frames. If reviving or scheduling fails after acknowledgement, a failure response with the **same** `id` follows (same contract as `prompt`).
+- `subagent_abort`: aborts a running turn (`reason` defaults to the user-interrupt label) and releases the agent through the lifecycle owner with a kill tombstone, so a later restart cannot rediscover the transcript as a revivable parked agent. Response data: `{ aborted: true }`.
+
+Error codes (on the `code` field of the failure response): `unknown_subagent` (never registered or released), `advisor_readonly` (advisor transcripts are observability-only), `main_session` (use `steer`/`abort` for the main session), `empty_text`, `steer_failed`, `abort_failed`. Isolated subagents are steerable/killable while live but are terminal once parked — their worktree is merged and cleaned, so no reviver exists; `steer_failed` then explains that the agent must be driven while live (transcript stays readable via `get_subagent_messages` / `history://<id>`).
 
 ### Model
 
