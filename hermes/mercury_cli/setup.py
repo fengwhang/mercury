@@ -2747,12 +2747,126 @@ def _prompt_observatory_enabled_toggle(config: dict) -> None:
     )
 
 
-def _print_observatory_setup_card(status: dict) -> None:
+def _tailscale_down() -> dict:
+    """Fresh absent/down detection dict (never share mutable state)."""
+    return {"available": False, "up": False, "ip": None, "dns_name": None}
+
+
+def _tailscale_status(obs=None) -> dict:
+    """Best-effort Tailscale detection for the observatory wizard.
+
+    Prefers ``obs.detect_tailscale`` (the provision module the section
+    already holds, fake-friendly in tests); falls back to importing the
+    real helper. NEVER raises, NEVER installs — down/absent on any error.
+    """
+    try:
+        fn = getattr(obs, "detect_tailscale", None) if obs is not None else None
+        if fn is None:
+            from observatory.provision import detect_tailscale as _detect
+
+            fn = _detect
+        d = fn()
+        if not isinstance(d, dict):
+            return _tailscale_down()
+        ip = d.get("ip")
+        dns = d.get("dns_name")
+        return {
+            "available": bool(d.get("available")),
+            "up": bool(d.get("up")),
+            "ip": ip if isinstance(ip, str) and ip.strip() else None,
+            "dns_name": dns if isinstance(dns, str) and dns.strip() else None,
+        }
+    except Exception:  # noqa: BLE001 — display probe, never kills the wizard
+        return _tailscale_down()
+
+
+def _tailscale_phone_url(ts: dict | None, homeserver_url: str) -> str | None:
+    """Phone homeserver URL: MagicDNS preferred, tailnet IPv4 fallback.
+
+    Keeps the port from ``homeserver_url`` (default 18008). None unless
+    the tailnet is up with a host. Pure — never touches the network.
+    """
+    try:
+        if not isinstance(ts, dict) or not ts.get("up"):
+            return None
+        host = ts.get("dns_name") or ts.get("ip")
+        if not host or not str(host).strip():
+            return None
+        host = str(host).strip()
+        try:
+            from observatory.config_gen import HOMESERVER_PORT_DEFAULT as _defport
+
+            port = int(_defport)
+        except Exception:  # noqa: BLE001
+            port = 18008
+        try:
+            tail = str(homeserver_url or "").rsplit(":", 1)[-1].rstrip("/")
+            port = int(tail)
+        except Exception:  # noqa: BLE001 — keep the default port
+            pass
+        return f"http://{host}:{port}"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _offer_tailscale_bind(obs, ts: dict | None) -> None:
+    """Offer binding the homeserver to the Tailscale interface only.
+
+    Runs only when the tailnet is up with an IPv4. Delegates the toml
+    rewrite to ``provision.set_tuwunel_bind`` (never starts/stops the
+    server here); every failure degrades to a hand-edit hint. The new
+    bind needs a homeserver restart to take effect.
+    """
+    try:
+        if not isinstance(ts, dict) or not ts.get("up"):
+            return
+        ip = ts.get("ip")
+        if not ip or not str(ip).strip():
+            return
+        ip = str(ip).strip()
+        want = prompt_yes_no(
+            "Bind homeserver to the Tailscale interface only?"
+            " (unreachable from LAN/internet)",
+            default=False,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception:  # noqa: BLE001 — a bind offer never kills the wizard
+        return
+    if not want:
+        print_info("Keeping the homeserver on its current address.")
+        return
+    try:
+        obs.set_tuwunel_bind(ip)
+    except AttributeError:
+        try:
+            from observatory.provision import set_tuwunel_bind as _bind
+
+            _bind(ip)
+        except Exception as exc:  # noqa: BLE001
+            print_warning(f"Could not bind the homeserver to {ip}: {exc}")
+            print_info("Edit `address` in tuwunel.toml by hand instead.")
+            return
+    except Exception as exc:  # noqa: BLE001
+        print_warning(f"Could not bind the homeserver to {ip}: {exc}")
+        print_info("Edit `address` in tuwunel.toml by hand instead.")
+        return
+    try:
+        from observatory.config_gen import HOMESERVER_UNIT_NAME as _unit
+    except Exception:  # noqa: BLE001
+        _unit = "mercury-observatory-homeserver.service"
+    print_success(f"Homeserver will bind to {ip} on next restart.")
+    print_info(f"Restart the homeserver to apply: systemctl --user restart {_unit}")
+
+
+def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
     """First-login card (docs §'First login on Element X').
 
-    Shows the homeserver URL, the VPN/Tailscale hint, the owner MXID and
-    the credentials file LOCATION — the password itself is printed only
-    after an explicit reveal prompt (default no; it is a secret).
+    Shows the homeserver URL (localhost for desktop, tailnet URL for the
+    phone when Tailscale is up), the owner MXID and the credentials file
+    LOCATION — the password itself is printed only after an explicit
+    reveal prompt (default no; it is a secret). Detect-and-assist only:
+    never installs Tailscale here.
     """
     creds_path = status["owner_credentials_path"]
     try:
@@ -2777,6 +2891,9 @@ def _print_observatory_setup_card(status: dict) -> None:
             f"   (also kept in {creds_path}, 0600)"
         )
 
+    if tailscale is None:
+        tailscale = _tailscale_status(_load_observatory_provision())
+    phone_url = _tailscale_phone_url(tailscale, str(status.get("homeserver_url", "")))
     e2ee_on = bool(status.get("e2ee"))
     e2ee_line = (
         "E2EE:                on (observatory.e2ee: true) — rooms are "
@@ -2789,17 +2906,36 @@ def _print_observatory_setup_card(status: dict) -> None:
         "Matrix Observatory — first login (Element X)",
         "",
         f"homeserver URL:      {status['homeserver_url']}",
-        "on your phone:       reach it over your VPN/Tailscale (e.g.",
-        "                     `tailscale serve` proxying :18008) or edit `address`",
-        "                     in tuwunel.toml — never expose it beyond the VPN",
-        f"owner account:       {owner_mxid}",
-        password_line,
-        "in Element X:        sign in → 'Use account instead' → 'Enter",
-        "                     homeserver manually' → paste the URL above",
-        "                     (the QR code does NOT work self-hosted)",
-        e2ee_line,
-        "space tree:          appears on the first gateway start",
+        "on this machine:     paste the URL above (desktop)",
     ]
+    if phone_url:
+        lines.append(f"on your phone:       {phone_url}  (over Tailscale)")
+    elif bool((tailscale or {}).get("available")):
+        lines.append(
+            "on your phone:       Tailscale installed but not connected"
+            " — run `tailscale up`, then re-run setup"
+        )
+    else:
+        lines.append(
+            "on your phone:       Tailscale not detected"
+            " — install from https://tailscale.com (or headscale)"
+        )
+        lines.append(
+            "                     for phone access without port forwarding"
+        )
+    lines.extend(
+        [
+            "local network:       or edit `address` in tuwunel.toml"
+            " — never expose it beyond the VPN",
+            f"owner account:       {owner_mxid}",
+            password_line,
+            "in Element X:        sign in → 'Use account instead' → 'Enter",
+            "                     homeserver manually' → paste the URL above",
+            "                     (the QR code does NOT work self-hosted)",
+            e2ee_line,
+            "space tree:          appears on the first gateway start",
+        ]
+    )
     width = max(len(ln) for ln in lines) + 2
     print()
     print(color("┌" + "─" * width + "┐", Colors.CYAN))
@@ -2868,7 +3004,9 @@ def setup_observatory(config: dict, *, quick: bool = False):
     _prompt_observatory_enabled_toggle(config)
 
     if status.get("provisioned"):
-        _print_observatory_setup_card(status)
+        ts = _tailscale_status(obs)
+        _print_observatory_setup_card(status, ts)
+        _offer_tailscale_bind(obs, ts)
     else:
         print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
 
@@ -2902,6 +3040,17 @@ def print_noninteractive_observatory_guidance() -> None:
         f"Unit active: {yn(status['unit_active'])} ({status['unit_name']}) | "
         f"observatory.enabled: {yn(status['enabled'])} (config.yaml)"
     )
+    ts = _tailscale_status(obs)
+    phone = _tailscale_phone_url(ts, str(status["homeserver_url"]))
+    if phone:
+        print_info(f"Tailscale: up — phone homeserver URL {phone}")
+    elif bool(ts.get("available")):
+        print_info("Tailscale: installed but not connected — run `tailscale up`")
+    else:
+        print_info(
+            "Tailscale: not detected — install from https://tailscale.com"
+            " (or headscale) for phone access without port forwarding"
+        )
     print_info("Provision / repair it headlessly (idempotent, fail-hard):")
     print_info(
         f"  PYTHONPATH={PROJECT_ROOT} {sys.executable} -m observatory.provision"
