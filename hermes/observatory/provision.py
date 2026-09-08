@@ -541,6 +541,132 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
         "observatory_dir": str(paths.root),
     }
 
+def detect_tailscale() -> dict:
+    """Best-effort Tailscale tailnet detection for the wizard phone card.
+
+    Detect-and-assist only: ``shutil.which('tailscale')`` + read-only
+    ``tailscale status`` / ``tailscale ip -4`` / ``tailscale status --json``
+    probes. NEVER installs, NEVER authenticates, NEVER raises — every
+    failure degrades to ``up=False`` (absent/down) so callers render
+    unconditionally. Shape: ``{"available", "up", "ip", "dns_name"}``
+    where ``ip`` is the tailnet IPv4 and ``dns_name`` the MagicDNS name
+    (trailing dot stripped) when the daemon reports them.
+    """
+    down = {"available": False, "up": False, "ip": None, "dns_name": None}
+    try:
+        if shutil.which("tailscale") is None:
+            return dict(down)
+    except Exception:  # noqa: BLE001 — display probe, never raises
+        return dict(down)
+    found: dict = {"available": True, "up": False, "ip": None, "dns_name": None}
+    try:
+        proc = subprocess.run(
+            ["tailscale", "status"], capture_output=True, text=True, timeout=10
+        )
+    except Exception:  # noqa: BLE001
+        return found
+    if proc.returncode != 0:
+        return found
+    found["up"] = True
+    try:
+        ip_proc = subprocess.run(
+            ["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=10
+        )
+        if ip_proc.returncode == 0:
+            for line in (ip_proc.stdout or "").splitlines():
+                cand = line.strip()
+                if cand:
+                    found["ip"] = cand
+                    break
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        js_proc = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if js_proc.returncode == 0 and js_proc.stdout:
+            data = json.loads(js_proc.stdout)
+            self_node = data.get("Self") if isinstance(data, dict) else None
+            if isinstance(self_node, dict):
+                dns = self_node.get("DNSName")
+                if isinstance(dns, str) and dns.strip():
+                    found["dns_name"] = dns.strip().rstrip(".")
+                if found["ip"] is None:
+                    ips = self_node.get("TailscaleIPs")
+                    if isinstance(ips, list):
+                        for cand_ip in ips:
+                            text = str(cand_ip).strip()
+                            if text and ":" not in text:
+                                found["ip"] = text
+                                break
+    except Exception:  # noqa: BLE001
+        pass
+    return found
+
+
+def tailscale_phone_url(detection: dict | None, port: int = config_gen.HOMESERVER_PORT_DEFAULT) -> str | None:
+    """Phone homeserver URL for the wizard card: MagicDNS preferred,
+    tailnet IPv4 fallback. None unless the tailnet is up with a host.
+    Pure function — never touches the network."""
+    try:
+        if not isinstance(detection, dict) or not detection.get("up"):
+            return None
+        host = detection.get("dns_name") or detection.get("ip")
+        if not host or not str(host).strip():
+            return None
+        return f"http://{str(host).strip()}:{int(port)}"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def set_tuwunel_bind(ip: str, mercury_home: str | Path | None = None) -> str:
+    """Bind the homeserver to one interface address (Tailscale-only offer).
+
+    Rewrites the ``address = "..."`` line in the EXISTING tuwunel.toml and
+    returns the new address. Fails with a ProvisionError carrying guidance
+    when unprovisioned (missing tuwunel.toml) or when no address line is
+    found — never creates config. Never starts/stops the server itself:
+    the caller must restart ``mercury-observatory-homeserver.service``
+    for the new bind to take effect.
+    """
+    if not isinstance(ip, str) or not ip.strip():
+        raise ProvisionError("set_tuwunel_bind needs a non-empty tailnet IP")
+    target = ip.strip()
+    try:
+        import ipaddress as _ipaddress
+
+        _ipaddress.ip_address(target)
+    except Exception as exc:
+        raise ProvisionError(f"refusing to bind to {target!r}: not an IP address ({exc})") from exc
+    paths = ObservatoryPaths(_mercury_home(mercury_home))
+    if not paths.toml.is_file():
+        raise ProvisionError(
+            f"observatory not provisioned (tuwunel.toml missing at {paths.toml}) — "
+            "run 'mercury setup observatory' install first; refusing to create "
+            "config via bind"
+        )
+    try:
+        text = paths.toml.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise ProvisionError(f"could not read {paths.toml}: {exc}") from exc
+    import re as _re
+
+    pattern = _re.compile(r'(?m)^address\s*=\s*".*"\s*$')
+    if not pattern.search(text):
+        raise ProvisionError(
+            f"could not find the address line in {paths.toml} — hand-edit "
+            '`address = "..."` under [global] instead'
+        )
+    paths.toml.write_text(
+        pattern.sub(f'address = "{target}"', text, count=1), encoding="utf-8"
+    )
+    try:
+        paths.toml.chmod(0o600)
+    except Exception:  # noqa: BLE001 — perms best-effort on odd filesystems
+        pass
+    return target
+
 
 def _print_summary(summary: dict) -> None:
     """Render the provision summary — CLI and wizard share these EXACT
