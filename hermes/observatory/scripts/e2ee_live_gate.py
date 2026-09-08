@@ -54,6 +54,7 @@ from observatory.e2ee import (
     E2EEManager,
     crypto_dir_for,
     e2ee_available,
+    wire_encrypted_event,
 )
 from observatory.identity import assign_slug, virtual_mxid
 from observatory.matrix_client import MatrixClient
@@ -125,7 +126,17 @@ class _OwnerDeviceClient:
             return await self._client._request(  # noqa: SLF001
                 method, path, token=self._token, params=params, json_body=json_body)
 
+    @property
+    def token(self) -> str:
+        assert self._token is not None, "login() first"
+        return self._token
+
     async def upload_keys(self, one_time_keys=None, device_keys=None) -> dict:
+        # Same contract as e2ee._SidecarCryptoClient.upload_keys: the
+        # machine .get()s the no-arg result with an EncryptionKeyAlgorithm
+        # member, so keys MUST be enum members, not strings.
+        from mautrix.types import EncryptionKeyAlgorithm
+
         body: dict = {}
         if device_keys is not None:
             body["device_keys"] = (device_keys.serialize()
@@ -133,15 +144,27 @@ class _OwnerDeviceClient:
         if one_time_keys is not None:
             body["one_time_keys"] = dict(one_time_keys)
         out = await self._api("POST", f"{CLIENT_V3}/keys/upload", json_body=body)
-        return dict((out or {}).get("one_time_key_counts", {}))
+        counts = (out or {}).get("one_time_key_counts", {})
+        keyed: dict = {}
+        for alg, count in (counts or {}).items():
+            try:
+                keyed[EncryptionKeyAlgorithm.deserialize(alg)] = count
+            except Exception:  # noqa: BLE001 — unknown algorithm: keep raw key
+                keyed[alg] = count
+        return keyed
 
     async def query_keys(self, users, token=None):
         from mautrix.types import QueryKeysResponse
 
-        out = await self._api("POST", f"{CLIENT_V3}/keys/query", json_body={
-            "device_keys": {str(u): [] for u in users},
-            "timeout": 0,
-        })
+        if isinstance(users, dict):
+            device_keys = {str(u): [str(d) for d in (devs or [])]
+                           for u, devs in users.items()}
+        else:
+            device_keys = {str(u): [] for u in users}
+        body: dict = {"device_keys": device_keys, "timeout": 0}
+        if token:
+            body["token"] = str(token)
+        out = await self._api("POST", f"{CLIENT_V3}/keys/query", json_body=body)
         return QueryKeysResponse.deserialize(out)
 
     async def claim_keys(self, request):
@@ -149,7 +172,8 @@ class _OwnerDeviceClient:
 
         out = await self._api("POST", f"{CLIENT_V3}/keys/claim", json_body={
             "one_time_keys": {
-                str(user): {str(dev): (alg.value if hasattr(alg, "value") else str(alg))
+                str(user): {str(dev): (alg.serialize() if hasattr(alg, "serialize")
+                                       else str(alg))
                             for dev, alg in (devs or {}).items()}
                 for user, devs in (request or {}).items()},
             "timeout": 0,
@@ -157,10 +181,21 @@ class _OwnerDeviceClient:
         return ClaimKeysResponse.deserialize(out)
 
     async def get_state_event(self, room_id, event_type):
+        from mautrix.errors import MForbidden, MNotFound
         from mautrix.types import RoomEncryptionStateEventContent
+        from observatory.matrix_client import MatrixError
 
         et = event_type.serialize() if hasattr(event_type, "serialize") else event_type
-        out = await self._api("GET", f"{CLIENT_V3}/rooms/{room_id}/state/{et}")
+        try:
+            out = await self._api("GET", f"{CLIENT_V3}/rooms/{room_id}/state/{et}")
+        except MatrixError as exc:
+            # Same law as e2ee._SidecarCryptoClient.get_state_event:
+            # mautrix only catches its own MNotFound/MForbidden.
+            if exc.status == 404:
+                raise MNotFound(404, f"room state not found: {room_id}") from exc
+            if exc.status == 403:
+                raise MForbidden(403, f"room state forbidden: {room_id}") from exc
+            raise
         if not isinstance(out, dict):
             return None
         return RoomEncryptionStateEventContent.deserialize(out)
@@ -199,14 +234,17 @@ class _OwnerStateStore:
 
 
 async def owner_receive_to_device(client: MatrixClient, owner_mxid: str,
-                                  owner_device: str, machine) -> int:
+                                  owner_device: str, machine, *, token: str) -> int:
     """Pull O1's to-device queue with one real /sync and feed every event
     into its machine (exactly what the appservice intake will do via
-    ``E2EEManager.handle_as_transaction``)."""
+    ``E2EEManager.handle_as_transaction``). The /sync MUST run as O1's
+    own device token: to-device queues are per-device, so syncing as the
+    owner's original login token would read the WRONG queue (empty)."""
     from mautrix.types import ASToDeviceEvent
 
-    out = await client.admin_api("GET", f"{CLIENT_V3}/sync",
-                                 params={"timeout": "0", "filter": '{"room":{"timeline":{"limit":1}}}'})
+    out = await client._request(  # noqa: SLF001 — same-package transport
+        "GET", f"{CLIENT_V3}/sync", token=token,
+        params={"timeout": "0", "filter": '{"room":{"timeline":{"limit":1}}}'})
     events = ((out or {}).get("to_device") or {}).get("events") or []
     delivered = 0
     for raw in events:
@@ -218,6 +256,38 @@ async def owner_receive_to_device(client: MatrixClient, owner_mxid: str,
         except Exception:  # noqa: BLE001 — one bad event never kills delivery
             log.warning("owner to-device delivery failed: %s", raw, exc_info=True)
     return delivered
+
+
+async def room_wire_messages(client: MatrixClient, room_id: str,
+                             *, sender: str, limit: int = 10) -> list:
+    """Server-stored timeline read AS A JOINED MEMBER (the gateway) via
+    plain client ``/messages``. The Synapse-style admin endpoint needs no
+    membership but is not a tuwunel-core path; this asserts the same
+    server-persisted events through the membership-honest channel."""
+    from urllib.parse import quote
+
+    out = await client.client_api(
+        "GET", f"{CLIENT_V3}/rooms/{quote(room_id, safe='')}/messages",
+        sender=sender, params={"dir": "b", "limit": str(limit)})
+    chunk = (out or {}).get("chunk", []) if isinstance(out, dict) else []
+    return list(chunk)
+
+
+_OPEN_MANAGERS: list = []
+"""Every E2EEManager the scenario constructs. ``main``'s finally stops
+them all: each open SQLiteCryptoStore owns a NON-DAEMON aiosqlite worker
+thread, so any FATAL exit that skips the explicit ``stop()`` calls would
+otherwise hang the gate process forever AFTER printing the verdict."""
+
+
+async def _stop_open_managers() -> None:
+    while _OPEN_MANAGERS:
+        manager = _OPEN_MANAGERS.pop()
+        try:
+            await manager.stop()
+        except Exception:  # noqa: BLE001 — teardown must not raise
+            log.warning("manager stop failed", exc_info=True)
+
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +336,7 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
             client, state, crypto_dir=crypto_dir_for(paths.root.parent),
             owner_mxid=owner_mxid, gateway_mxid=gw_mxid,
         )
+        _OPEN_MANAGERS.append(e2ee)
         await e2ee.start(enabled=True)
         gw_crypto = e2ee.machine_for(gw_mxid)
         await gw_crypto.load()
@@ -277,8 +348,8 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
                                        password=owner["password"])
         await o1_client.login()
         o1_state = _OwnerStateStore(client, reader_mxid=owner_mxid)
-        o1 = OlmMachine(o1_client, MemoryCryptoStore(UserID(owner_mxid),
-                                                     DeviceID(OWNER_DEVICE)), o1_state)
+        o1 = OlmMachine(o1_client, MemoryCryptoStore(
+            UserID(owner_mxid), f"e2ee-gate-pickle:{owner_mxid}:{OWNER_DEVICE}"), o1_state)
         await o1.load()
         await o1.share_keys()
         gate.line(f"owner device {OWNER_DEVICE} up "
@@ -296,9 +367,11 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
         published_ed = ""
         if gw_crypto.device_id in server_keys:
             dev_keys = server_keys[gw_crypto.device_id]
-            key_map = dev_keys.get("keys") if isinstance(dev_keys, dict) else getattr(
-                dev_keys, "keys", {}) or {}
-            published_ed = key_map.get(f"ed25519:{gw_crypto.device_id}", "")
+            if isinstance(dev_keys, dict):  # raw shape — string key ids
+                published_ed = str((dev_keys.get("keys") or {}).get(
+                    f"ed25519:{gw_crypto.device_id}", "") or "")
+            else:  # DeviceKeys attrs: .keys is KeyID-keyed — use .ed25519
+                published_ed = str(getattr(dev_keys, "ed25519", "") or "")
         gate.check("manual verify: server key == sidecar-displayed fingerprint",
                    bool(published_ed) and published_ed == gw_fingerprint.replace(" ", ""),
                    f"server={published_ed[:24]}… local={gw_fingerprint.replace(' ', '')[:24]}…")
@@ -315,7 +388,9 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
             signing_key=gw_crypto.machine.account.signing_key,
             trust=TrustState.VERIFIED, deleted=False, name="gateway",
         )
-        await o1.crypto_store.put_device(gw_mxid, o1_gw_device)
+        # MemoryCryptoStore has no put_device (singular) — replace-set API only.
+        await o1.crypto_store.put_devices(
+            UserID(gw_mxid), {DeviceID(gw_crypto.device_id): o1_gw_device})
 
         # --- encrypted room via the executor ----------------------------------
         executor = EncryptedIntentExecutor(
@@ -330,8 +405,11 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
         gate.check("encrypted executor created the room",
                    bool(room_id) and records[-1].get("encrypted") is True,
                    f"room={room_id} records={records[-1]}")
-        enc_state = await client.admin_api(
-            "GET", f"{CLIENT_V3}/rooms/{room_id}/state/m.room.encryption/")
+        # Read state AS THE GATEWAY (a joined member): the owner is only
+        # INVITED at creation, and tuwunel correctly 404s non-member reads.
+        enc_state = await client.client_api(
+            "GET", f"{CLIENT_V3}/rooms/{room_id}/state/m.room.encryption/",
+            sender=gw_mxid)
         gate.check("m.room.encryption state on the wire (megolm v1)",
                    (enc_state or {}).get("algorithm") == "m.megolm.v1.aes-sha2",
                    f"state={enc_state}")
@@ -347,7 +425,7 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
                    send_records[0].get("encrypted") is True and bool(event_id),
                    f"event={event_id}")
 
-        wire = await client.admin_room_messages(room_id, direction="b", limit=10)
+        wire = await room_wire_messages(client, room_id, sender=gw_mxid)
         enc_events = [e for e in wire if e.get("type") == "m.room.encrypted"]
         ours = next((e for e in enc_events
                      if e.get("event_id") == event_id or e.get("content", {}).get(
@@ -359,19 +437,15 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
         wire_event = ours
 
         # O1 receives the room key (real /sync queue) and decrypts
-        delivered = await owner_receive_to_device(client, owner_mxid, OWNER_DEVICE, o1)
+        delivered = await owner_receive_to_device(
+            client, owner_mxid, OWNER_DEVICE, o1, token=o1_client.token)
         gate.check("owner device received to-device key material via /sync",
                    delivered >= 1, f"to_device events={delivered}")
 
-        from mautrix.types import EncryptedEvent
         decrypted = None
         try:
-            decrypted = await o1.decrypt_megolm_event(EncryptedEvent.deserialize({
-                "event_id": wire_event["event_id"], "room_id": room_id,
-                "sender": wire_event.get("sender") or gw_mxid,
-                "timestamp": wire_event.get("origin_server_ts", 0),
-                "content": wire_event["content"],
-            }))
+            decrypted = await o1.decrypt_megolm_event(
+                wire_encrypted_event(dict(wire_event)))
         except Exception as exc:  # noqa: BLE001 — report, not crash
             gate.line(f"[INFO] O1 decrypt failed: {type(exc).__name__}: {exc}")
         o1_body = (decrypted.content.body if decrypted is not None else None)
@@ -387,28 +461,31 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
         gate.check("edit sent encrypted", edit_records[0].get("encrypted") is True,
                    f"event={edit_records[0]['event_id']}")
 
-        wire2 = await client.admin_room_messages(room_id, direction="b", limit=10)
+        wire2 = await room_wire_messages(client, room_id, sender=gw_mxid)
         edit_wire = next((e for e in wire2 if e.get("event_id")
                           == edit_records[0]["event_id"]), None)
         gate.check("edit on the wire is m.room.encrypted too",
                    edit_wire is not None and edit_wire.get("type") == "m.room.encrypted",
                    f"type={(edit_wire or {}).get('type')}")
-        dec_edit = await o1.decrypt_megolm_event(EncryptedEvent.deserialize({
-            "event_id": edit_wire["event_id"], "room_id": room_id,
-            "sender": edit_wire.get("sender") or gw_mxid,
-            "timestamp": edit_wire.get("origin_server_ts", 0),
-            "content": edit_wire["content"],
-        }))
+        dec_edit = await o1.decrypt_megolm_event(
+            wire_encrypted_event(dict(edit_wire)))
         c = dec_edit.content
         rel = getattr(c, "relates_to", None)
+        rel_type = getattr(rel, "rel_type", None)
+        # RelationType is an ExtensibleEnum (hash/eq UNEQUAL to its
+        # string, live-gate proven) — coerce before comparing.
+        rel_type_s = (rel_type.serialize() if hasattr(rel_type, "serialize")
+                      else str(rel_type) if rel_type is not None else None)
         gate.check("decrypted edit is m.replace of the original",
-                   getattr(rel, "rel_type", None) == "m.replace"
+                   rel_type_s == "m.replace"
                    and getattr(rel, "event_id", None) == event_id,
                    f"rel={rel!r}")
+        # mautrix promotes m.new_content INTO the content on decrypt
+        # (MessageEvent.deserialize_content) — there is no .new_content
+        # wrapper post-decrypt; the replacement body IS c.body.
         gate.check("decrypted m.new_content body matches",
-                   getattr(c, "new_content", None) is not None
-                   and c.new_content.body == f"* {edited}",
-                   f"new_body={getattr(getattr(c, 'new_content', None), 'body', None)!r}")
+                   getattr(c, "body", None) == f"* {edited}",
+                   f"body={getattr(c, 'body', None)!r}")
 
         # --- restart persistence (fresh manager over the same crypto dir) --------
         await e2ee.stop()
@@ -416,6 +493,7 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
             client, state, crypto_dir=crypto_dir_for(paths.root.parent),
             owner_mxid=owner_mxid, gateway_mxid=gw_mxid,
         )
+        _OPEN_MANAGERS.append(e2ee2)
         await e2ee2.start(enabled=True)
         gw2 = e2ee2.machine_for(gw_mxid)
         await gw2.load()
@@ -459,8 +537,31 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.fresh:
         import shutil
+        import tempfile
 
-        shutil.rmtree(home, ignore_errors=True)
+        # The tuwunel binary is an immutable fetched artifact (~100MB),
+        # not gate state: stage it outside the home so --fresh stays
+        # offline-clean. Without this, offline provision would fail
+        # post-wipe AND a reused server DB would invalidate O1's fresh
+        # device keys (same device id, new account = signing-key
+        # rotation the gateway correctly refuses to trust).
+        bin_dir = home / "observatory" / "bin"
+        stage = Path(tempfile.mkdtemp(prefix="e2ee-gate-bin-"))
+        try:
+            for name in ("tuwunel", "tuwunel.version"):
+                src = bin_dir / name
+                if src.is_file():
+                    shutil.copy2(src, stage / name)
+            shutil.rmtree(home, ignore_errors=True)
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("tuwunel", "tuwunel.version"):
+                staged = stage / name
+                if staged.is_file():
+                    shutil.copy2(staged, bin_dir / name)
+            if (bin_dir / "tuwunel").is_file():
+                (bin_dir / "tuwunel").chmod(0o755)
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     home.mkdir(parents=True, exist_ok=True)
@@ -492,6 +593,7 @@ def main(argv: list[str] | None = None) -> int:
 
         gate.line(traceback.format_exc())
     finally:
+        asyncio.run(_stop_open_managers())
         proc.terminate()
         try:
             proc.wait(timeout=15)
