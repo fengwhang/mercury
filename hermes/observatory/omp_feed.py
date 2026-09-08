@@ -125,12 +125,13 @@ class _SubagentState:
 class OmpFeed:
     """Typed event stream for the subagents of one live omp RPC child.
 
-    The ``child`` must expose the M1 observer surface —
-    ``set_subagent_subscription(level)`` and
-    ``get_subagent_messages(subagent_id=..., from_byte=...)`` — plus a
-    frame source: either an ``on_unknown_notification(listener)`` method
-    itself (the vendored ``RpcClient`` / a wrapper re-exporting it) or a
-    private ``_client`` attribute carrying one (``OmpRpcChild``).
+    The ``child`` exposes the subagent surface directly
+    (``set_subagent_subscription(level)`` /
+    ``get_subagent_messages(subagent_id=..., from_byte=...)``) or carries
+    the vendored ``RpcClient`` as ``_client`` — commands then go as raw
+    frames with wire keys — plus a frame source: either an
+    ``on_unknown_notification(listener)`` method itself or a private
+    ``_client`` attribute carrying one (``OmpRpcChild``).
 
     Lifecycle::
         feed = OmpFeed(child)
@@ -168,6 +169,32 @@ class OmpFeed:
             f"{type(child).__name__}"
         )
 
+    def _child_rpc(self, command: str, direct_kwargs: Dict[str, Any],
+                   wire_kwargs: Dict[str, Any]) -> Any:
+        """Invoke a subagent RPC command on the child.
+
+        A double exposing ``command`` directly (the M1 observer surface)
+        takes it with ``direct_kwargs``; otherwise the command goes over
+        the vendored RpcClient as a raw frame (``child._client.request_raw``)
+        with wire (camelCase) keys — ``OmpRpcChild`` itself exposes no
+        subagent methods (spec §7: the transport is extended separately).
+        """
+        direct = getattr(self._child, command, None)
+        if callable(direct):
+            return direct(**direct_kwargs)
+        inner = getattr(self._child, "_client", None)
+        request_raw = getattr(inner, "request_raw", None)
+        if callable(request_raw):
+            return request_raw(command, **wire_kwargs)
+        method = getattr(inner, command, None)
+        if callable(method):
+            return method(**direct_kwargs)
+        raise TypeError(
+            f"OmpFeed needs a child exposing {command} "
+            "(directly or via _client.request_raw) — got "
+            f"{type(self._child).__name__}"
+        )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -186,7 +213,7 @@ class OmpFeed:
         # frames don't exist (the level gates them server-side).
         source = self._frame_source(self._child)
         self._dispose_listener = source.on_unknown_notification(self._on_notification)
-        self._child.set_subagent_subscription(level)
+        self._child_rpc("set_subagent_subscription", {"level": level}, {"level": level})
 
     async def stop(self) -> None:
         """Detach the listener (subscription level left as-is)."""
@@ -249,10 +276,12 @@ class OmpFeed:
         the raw server result (``entries``/``messages`` for the renderer).
         """
         state = self._state(subagent_id)
-        result = self._child.get_subagent_messages(
-            subagent_id=subagent_id,
-            session_file=state.session_file,
-            from_byte=state.next_byte,
+        result = self._child_rpc(
+            "get_subagent_messages",
+            {"subagent_id": subagent_id, "session_file": state.session_file,
+             "from_byte": state.next_byte},
+            {"subagentId": subagent_id, "sessionFile": state.session_file,
+             "fromByte": state.next_byte},
         )
         nxt = result.get("nextByte")
         if isinstance(nxt, int):

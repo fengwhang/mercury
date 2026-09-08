@@ -257,7 +257,7 @@ class TestOmpFeedFrames(unittest.TestCase):
             events = []
             async for event in feed.events():
                 events.append(event)
-                if len(events) == 8:
+                if len(events) == 9:
                     break
             await feed.stop()
             return feed, events
@@ -295,13 +295,20 @@ class TestOmpFeedFrames(unittest.TestCase):
         self.assertEqual((death.kind, death.subagent_id, death.status),
                          ("death", "gc-2", "aborted"))
 
+        # gc-1's normal end also lands as a death (completed is terminal).
+        gc1_death = events[6]
+        self.assertIsInstance(gc1_death, NodeEvent)
+        self.assertEqual((gc1_death.kind, gc1_death.subagent_id, gc1_death.status),
+                         ("death", "gc-1", "completed"))
+
         # Emission order is wire order; seq is monotonic.
         seqs = [e.seq for e in events]
         self.assertEqual(seqs, sorted(seqs))
         self.assertEqual(
             [type(e).__name__ for e in events],
             ["NodeEvent", "ToolEvent", "ToolEvent", "ThoughtEvent",
-             "ThoughtEvent", "MessageEvent", "NodeEvent", "NodeEvent"],
+             "ThoughtEvent", "MessageEvent", "NodeEvent", "NodeEvent",
+             "NodeEvent"],
         )
 
     def test_byte_offset_catch_up_and_restore(self):
@@ -317,7 +324,7 @@ class TestOmpFeedFrames(unittest.TestCase):
             got = []
             async for event in feed.events():
                 got.append(event)
-                if len(got) == 8:
+                if len(got) == 9:
                     break
             await feed.stop()
             return feed, got

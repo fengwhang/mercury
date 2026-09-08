@@ -48,8 +48,12 @@ class MockHomeserver:
         for method, path in [
             ("POST", r"/_matrix/client/v3/createRoom"),
             ("POST", r"/_matrix/client/v3/register"),
-            ("POST", r"/_matrix/client/v3/rooms/{rid}/send/m.room.message"),
+            ("PUT", r"/_matrix/client/v3/rooms/{rid}/send/m.room.message/{txn}"),
             ("GET", r"/_matrix/client/v3/rooms/{rid}/state/{etype}/{skey}"),
+            # Power levels use an empty state key (trailing slash): aiohttp
+            # {skey} requires a non-empty segment, so this needs its own route.
+            ("GET", r"/_matrix/client/v3/rooms/{rid}/state/m.room.power_levels/"),
+            ("PUT", r"/_matrix/client/v3/rooms/{rid}/state/m.room.power_levels/"),
             ("PUT", r"/_matrix/client/v3/rooms/{rid}/state/{etype}/{skey}"),
             ("POST", r"/_matrix/client/v3/rooms/{rid}/invite"),
             ("POST", r"/_matrix/client/v3/rooms/{rid}/leave"),
@@ -130,7 +134,11 @@ class TestMasqueradeAndAuth:
     async def test_client_api_masquerades_user_id_param(self, client, mock):
         server, _ = mock
         await client.send_message(ROOM_ID, "hi", sender=AGENT)
-        req = server.find("POST", "/send/m.room.message")
+        # txnId-suffixed PUT path (idempotent send): match by infix.
+        req = next(
+            r for r in server.requests
+            if r["method"] == "PUT" and "/send/m.room.message/" in r["path"]
+        )
         assert req["query"]["user_id"] == AGENT
         assert req["auth"] == f"Bearer {AS_TOKEN}"
 
@@ -198,7 +206,10 @@ class TestMessages:
             ROOM_ID, "plain", sender=AGENT, formatted_body="<em>plain</em>"
         )
         assert event == EVENT_ID
-        body = server.find("POST", "/send/m.room.message")["body"]
+        body = next(
+            r for r in server.requests
+            if r["method"] == "PUT" and "/send/m.room.message/" in r["path"]
+        )["body"]
         assert body["msgtype"] == "m.text"
         assert body["body"] == "plain"
         assert body["format"] == "org.matrix.custom.html"
@@ -208,7 +219,10 @@ class TestMessages:
     async def test_send_message_without_format(self, client, mock):
         server, _ = mock
         await client.send_message(ROOM_ID, "plain", sender=AGENT)
-        body = server.find("POST", "/send/m.room.message")["body"]
+        body = next(
+            r for r in server.requests
+            if r["method"] == "PUT" and "/send/m.room.message/" in r["path"]
+        )["body"]
         assert "format" not in body
         assert "formatted_body" not in body
 
@@ -218,7 +232,10 @@ class TestMessages:
         await client.edit_message(
             ROOM_ID, "$orig", "rev2", sender=AGENT, formatted_body="<p>rev2</p>"
         )
-        body = server.find("POST", "/send/m.room.message")["body"]
+        body = next(
+            r for r in server.requests
+            if r["method"] == "PUT" and "/send/m.room.message/" in r["path"]
+        )["body"]
         assert body["m.relates_to"] == {"rel_type": "m.replace", "event_id": "$orig"}
         assert body["m.new_content"]["body"] == "rev2"
         assert body["m.new_content"]["formatted_body"] == "<p>rev2</p>"
@@ -234,9 +251,9 @@ class TestStateEvents:
         server, _ = mock
         await client.set_space_child("!sp:a", "!ch:a", sender=AGENT, via=(SERVER,))
         req = server.find(
-            "PUT", "/state/m.space.child/%21ch%3Aa"
+            "PUT", "/state/m.space.child/!ch:a"
         )
-        assert req["path"].startswith("/_matrix/client/v3/rooms/%21sp%3Aa/state/")
+        assert req["path"].startswith("/_matrix/client/v3/rooms/!sp:a/state/")
         assert req["body"] == {"via": [SERVER]}
         assert req["query"]["user_id"] == AGENT
 
@@ -244,7 +261,7 @@ class TestStateEvents:
     async def test_set_space_child_remove_sends_empty_content(self, client, mock):
         server, _ = mock
         await client.set_space_child("!sp:a", "!ch:a", sender=AGENT, remove=True)
-        assert server.find("PUT", "/state/m.space.child/%21ch%3Aa")["body"] == {}
+        assert server.find("PUT", "/state/m.space.child/!ch:a")["body"] == {}
 
     @pytest.mark.asyncio
     async def test_set_power_levels_read_modify_write(self, client, mock):
@@ -314,37 +331,44 @@ class TestAdminPurge:
         assert out["kicked_users"] == []
 
     @pytest.mark.asyncio
-    async def test_room_alive_404_false(self, mock):
-        server, tc = mock
+    async def test_room_alive_404_false(self):
+        # Dedicated app: the shared mock's router is frozen once served,
+        # so the 404 shape gets its own server.
+        async def _handler(request: web.Request) -> web.Response:
+            if request.path.endswith("/!gone:x"):
+                return web.json_response(
+                    {"errcode": "M_NOT_FOUND", "error": "not found"}, status=404
+                )
+            return web.json_response({"room_id": ROOM_ID, "name": "x"})
 
-        async def _gone(request: web.Request) -> web.Response:
-            return web.json_response({"errcode": "M_NOT_FOUND", "error": "not found"}, status=404)
-
-        server.app.router.add_get(r"/_synapse/admin/v1/rooms/{rid}/gone", _gone)
-        async with MatrixClient(str(tc.make_url("")), AS_TOKEN, admin_token=ADMIN_TOKEN) as c:
-            assert await c.admin_room_alive(ROOM_ID) is True
-
-
-# --- errors -------------------------------------------------------------------------------
+        app = web.Application()
+        app.router.add_get(r"/_synapse/admin/v1/rooms/{rid}", _handler)
+        async with TestClient(TestServer(app)) as tc:
+            async with MatrixClient(
+                str(tc.make_url("")), AS_TOKEN, admin_token=ADMIN_TOKEN
+            ) as c:
+                assert await c.admin_room_alive("!gone:x") is False
+                assert await c.admin_room_alive(ROOM_ID) is True
 
 
 class TestErrors:
     @pytest.mark.asyncio
-    async def test_matrix_error_carries_status_and_errcode(self, mock):
-        server, tc = mock
-
+    async def test_matrix_error_carries_status_and_errcode(self):
+        # Dedicated app (see above): no mutating the shared frozen router.
         async def _forbidden(request: web.Request) -> web.Response:
             await request.read()
             return web.json_response(
                 {"errcode": "M_FORBIDDEN", "error": "nope"}, status=403
             )
 
-        server.app.router.add_post(r"/_matrix/client/v3/forbidden", _forbidden)
-        async with MatrixClient(str(tc.make_url("")), AS_TOKEN) as c:
-            with pytest.raises(MatrixError) as exc:
-                await c.client_api("POST", "/_matrix/client/v3/forbidden")
-            assert exc.value.status == 403
-            assert exc.value.errcode == "M_FORBIDDEN"
+        app = web.Application()
+        app.router.add_post(r"/_matrix/client/v3/forbidden", _forbidden)
+        async with TestClient(TestServer(app)) as tc:
+            async with MatrixClient(str(tc.make_url("")), AS_TOKEN) as c:
+                with pytest.raises(MatrixError) as exc:
+                    await c.client_api("POST", "/_matrix/client/v3/forbidden")
+                assert exc.value.status == 403
+                assert exc.value.errcode == "M_FORBIDDEN"
 
 
 class TestFromRegistration:

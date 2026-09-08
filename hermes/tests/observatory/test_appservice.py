@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 from aiohttp.test_utils import TestClient, TestServer
 
 from observatory.appservice import (
@@ -34,7 +35,7 @@ def _body(*events: dict) -> str:
     return json.dumps({"events": list(events)})
 
 
-@pytest.fixture()
+@pytest_asyncio.fixture
 async def client():
     """Unauthenticated TestClient over a fresh intake app."""
     intake = TransactionIntake(as_token=TOKEN)
@@ -124,7 +125,7 @@ class TestTransactions:
 
 
 class TestDedupAndDispatch:
-    @pytest.fixture()
+    @pytest_asyncio.fixture
     async def wired(self):
         """Intake with a recording handler + running consumer."""
         seen: list[tuple[str, list[dict]]] = []

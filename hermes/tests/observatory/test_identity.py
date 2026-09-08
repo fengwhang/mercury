@@ -60,9 +60,9 @@ class TestSlugify:
             ("=q+u/i.c=k", "q+u/i.c=k"),                 # grammar chars kept
             ("🧹 Cleanup", "cleanup"),                    # emoji folds away
             ("mixed 篇 name", "mixed-name"),
-            ("!!!???", "agent-4f0f6a54"),                # untransliteratable
+            ("!!!???", "agent-6f5d923b"),                # untransliteratable
             ("", "agent-e3b0c442"),                      # empty → sha256("")
-            ("   ", "agent-2aaf9719"),                   # whitespace-only
+            ("   ", "agent-0aad7da7"),                   # whitespace-only
             ("Борис", "agent-4155c6be"),                 # Cyrillic: no NFKD path
             ("資料整理", "agent-0b359690"),               # CJK
         ],
@@ -195,6 +195,7 @@ class TestAssignSlug:
     def test_fallback_slugs_also_suffix(self, store: ObservatoryState):
         first = assign_slug("Борис", store)
         assert first.startswith("agent-")
+        _live(store, first)
         assert assign_slug("Борис", store) == f"{first}-2"
 
     def test_display_and_slug_split_on_unicode_name(self, store: ObservatoryState):

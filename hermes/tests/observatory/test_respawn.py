@@ -120,11 +120,13 @@ def make_renderer(state: ObservatoryState, client=None) -> Renderer:
 
 
 class TestRespawnPass:
-    async def test_resumes_hermes_and_omp_zero_agents(self, state, registry):
+    async def test_resumes_hermes_and_omp_zero_agents(self, state, registry, tmp_path):
+        session_file = tmp_path / "o.jsonl"
+        session_file.write_text("{}\n")
         add_node(state, "orch-h", "auth-refactor", engine="hermes",
                  session_ref="sess-h")
         add_node(state, "orch-o", "docs-sweep", engine="omp",
-                 session_ref="/tmp/obs/sessions/o.jsonl")
+                 session_ref=str(session_file))
         seen_h: list[str] = []
         seen_o: list[str] = []
 
@@ -136,9 +138,9 @@ class TestRespawnPass:
         )
         assert report.resumed == ["orch-h", "orch-o"]  # state order
         assert seen_h == ["sess-h"]
-        assert seen_o == ["/tmp/obs/sessions/o.jsonl"]
+        assert seen_o == [str(session_file)]
         assert registry.get("orch-h").agent.session_id == "sess-h"
-        assert registry.get("orch-o").rpc.session_file == "/tmp/obs/sessions/o.jsonl"
+        assert registry.get("orch-o").rpc.session_file == str(session_file)
         assert report.failed == []
 
     async def test_gateway_and_manual_runs_skipped_not_resumed(self, state, registry):
@@ -199,6 +201,7 @@ class TestRespawnPass:
         assert first.resumed == ["orch-h"]
         assert second.resumed == []
         assert second.skipped == [
+            {"node_id": "gw", "reason": "gateway node"},
             {"node_id": "orch-h", "reason": "already resumed"},
         ]
 

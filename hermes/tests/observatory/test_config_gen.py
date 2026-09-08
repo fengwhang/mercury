@@ -220,6 +220,7 @@ class TestWriteOnceIdempotence:
     def test_installed_version_requires_binary_and_file(self, tmp_path: Path):
         paths = ObservatoryPaths(tmp_path)
         assert tuwunel.installed_version(paths) is None
+        paths.bin_dir.mkdir(parents=True, exist_ok=True)
         paths.version_file.write_text("1.9.0\n")
         assert tuwunel.installed_version(paths) is None  # binary missing
         paths.binary.write_bytes(b"fake")

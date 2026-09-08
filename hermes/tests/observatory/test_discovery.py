@@ -406,6 +406,7 @@ class TestHookDedupe:
             engine.on_subagent_start(
                 start_payload(child_session_id="sess-late", child_goal="orphan")
             )
+            await asyncio.sleep(0.05)  # let the hook land before ticking
             engine._tick()  # parked, not expired yet
             clock.advance(1000.0)  # past the grace
             engine._tick()  # expires → synthetic add
@@ -452,16 +453,19 @@ class TestHookDedupe:
 # ---------------------------------------------------------------------------
 
 
-class TestDeathRaces:
     def test_stop_before_start_buffers_then_adds_and_kills(self, tmp_path):
         db = Db(tmp_path)
-        engine = fresh_engine(db, FakeClock())
+        clock = FakeClock()
+        engine = fresh_engine(db, clock)
 
         async def main():
             await engine.start()
             engine.on_subagent_stop(stop_payload())  # child not seen yet
             await asyncio.sleep(0.05)
             engine.on_subagent_start(start_payload())
+            await asyncio.sleep(0.05)  # start parks; nothing emitted yet
+            clock.advance(1000.0)  # past the grace
+            engine._tick()  # expires → synthetic add, buffered stop kills it
             events = await drain(engine, expect=2)
             await engine.stop()
             return events
@@ -592,6 +596,7 @@ class TestEngineLifecycle:
             engine.on_subagent_start(
                 start_payload(child_session_id="sess-sync", delegation_id=None)
             )
+            await asyncio.sleep(0.05)  # let the hook park before ticking
             clock.advance(1000.0)
             engine._tick()  # expire → synthetic add
             await drain(engine, expect=1)
