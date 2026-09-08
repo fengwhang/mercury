@@ -2967,7 +2967,7 @@ def _maybe_print_bind_mismatch_action(obs, ts: dict | None) -> None:
 
 
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
-    """First-login card (docs §'First login on Element X').
+    """First-login card (docs §'First login with FluffyChat').
 
     Shows the homeserver URL (localhost for desktop, tailnet URL for the
     phone when Tailscale is up), the owner MXID and where the password
@@ -2989,11 +2989,11 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         logger.debug("could not read observatory owner credentials: %s", exc)
 
     # Never printed: the owner password lives only in $MERCURY_HOME/.env
-    # (MATRIX_OBS_OWNER_PASSWORD, 0600 — paste it into Element X) and
+    # (MATRIX_OBS_OWNER_PASSWORD, 0600 — paste it into FluffyChat) and
     # owner-credentials.json.
     password_lines = [
         "owner password:      your .env file (MATRIX_OBS_OWNER_PASSWORD,",
-        "                     mode 0600 — paste it into Element X) and",
+        "                     mode 0600 — paste it into FluffyChat) and",
         f"                     {creds_path} — never printed here.",
     ]
 
@@ -3009,7 +3009,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         "end-to-end encrypted once enabled"
     )
     lines = [
-        "Matrix Observatory — first login (Element X)",
+        "Matrix Observatory — first login (FluffyChat)",
         "",
         f"homeserver URL:      {status['homeserver_url']}",
         "on this machine:     paste the URL above (desktop)",
@@ -3035,9 +3035,9 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
             " — never expose it beyond the VPN",
             f"owner account:       {owner_mxid}",
             *password_lines,
-            "in Element X:        sign in → 'Use account instead' → 'Enter",
-            "                     homeserver manually' → paste the URL above",
-            "                     (the QR code does NOT work self-hosted)",
+            "in FluffyChat:       add account → enter the homeserver URL",
+            "                     manually → paste the URL above",
+            "                     (use your own server, not matrix.org)",
             e2ee_line,
             "space tree:          appears on the first gateway start",
         ]
@@ -3065,7 +3065,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
     print_header("Matrix Observatory (bundled)")
     print_info("A private Matrix homeserver + sidecar that mirrors every live agent")
     print_info("session as a tree of rooms you can watch, steer and approve from")
-    print_info("Element X. Localhost-only, registration closed, federation off.")
+    print_info("FluffyChat. Localhost-only, registration closed, federation off.")
 
     obs = _load_observatory_provision()
     if obs is None:

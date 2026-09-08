@@ -213,7 +213,7 @@ def test_section_install_calls_provision_then_card(monkeypatch, capsys, tmp_path
     assert "→ Matrix Observatory provisioning (Tuwunel)" in out
     assert "✓ tuwunel: current v1.9.0" in out
     # card printed after provisioning
-    assert "Matrix Observatory — first login (Element X)" in out
+    assert "Matrix Observatory — first login (FluffyChat)" in out
     assert f"homeserver URL:      {HOMESERVER_URL}" in out
     assert f"owner account:       {MXID}" in out
     assert str(creds) in out
@@ -243,13 +243,13 @@ def test_section_provisioned_enabled_state_and_card(monkeypatch, capsys, tmp_pat
     assert "Homeserver reachable: yes" in out
     assert "Unit active:          yes" in out
     assert "observatory.enabled:  yes  (config.yaml)" in out
-    assert "Matrix Observatory — first login (Element X)" in out
+    assert "Matrix Observatory — first login (FluffyChat)" in out
     assert "Tailscale not detected" in out
     assert "https://tailscale.com" in out
     assert "headscale" in out
     assert "on this machine:" in out  # localhost line kept for desktop
     assert fake.calls["bind"] == 0  # absent tailnet: no bind offer, no prompt
-    assert "QR code does NOT work" in out
+    assert "in FluffyChat:" in out and "add account" in out
     assert "E2EE:                off" in out
     assert "end-to-end encrypted once enabled" in out
     assert PASSWORD not in out
@@ -1189,7 +1189,7 @@ def test_reprint_card_after_summary_when_provisioned(
     setup_mod._reprint_observatory_login_card()
     out = capsys.readouterr().out
     assert "Save this — Matrix login" in out
-    assert "Matrix Observatory — first login (Element X)" in out
+    assert "Matrix Observatory — first login (FluffyChat)" in out
     assert f"homeserver URL:      {HOMESERVER_URL}" in out
     assert PASSWORD not in out
 
@@ -1315,3 +1315,60 @@ def test_setup_telemetry_persistent_failure_degrades_to_env_line(
     out = capsys.readouterr().out
     assert "Could not persistently disable" in out
     assert "on every cua-driver invocation" in out
+
+
+# ---------------------------------------------------------------------------
+# recommended client: FluffyChat (VM-feedback — Element X broken on the VM)
+# ---------------------------------------------------------------------------
+
+
+def test_card_renders_fluffychat_flow(capsys, tmp_path):
+    """First-login card names FluffyChat with its generic add-account flow —
+    no Element-specific labels anywhere in the output."""
+    creds = _write_credentials(tmp_path)
+    setup_mod._print_observatory_setup_card(
+        {
+            "owner_credentials_path": str(creds),
+            "homeserver_url": HOMESERVER_URL,
+            "e2ee": False,
+        },
+        dict(_TS_ABSENT),
+    )
+    out = capsys.readouterr().out
+    assert "Matrix Observatory — first login (FluffyChat)" in out
+    assert "in FluffyChat:" in out
+    assert "add account" in out
+    assert "homeserver URL" in out
+    assert "Element X" not in out
+    assert "Element Classic" not in out
+    assert "Use account instead" not in out
+    assert PASSWORD not in out
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize("rel", [
+    "hermes/mercury_cli/setup.py",
+    "hermes/observatory/provision.py",
+    "hermes/observatory/e2ee.py",
+    "website/docs/user-guide/messaging/matrix-observatory.md",
+])
+def test_no_user_facing_string_recommends_element(rel):
+    """Source guard: Element X / Element Classic must not be named as the
+    recommendation in any user-facing string (FluffyChat is)."""
+    text = (_repo_root() / rel).read_text(encoding="utf-8")
+    assert "Element X" not in text
+    assert "Element Classic" not in text
+
+
+def test_user_guide_recommends_fluffychat():
+    """The user guide names FluffyChat the tested recommendation and keeps
+    the honest line that other clients work for reading."""
+    text = (
+        _repo_root() / "website/docs/user-guide/messaging/matrix-observatory.md"
+    ).read_text(encoding="utf-8")
+    assert "FluffyChat" in text
+    assert "Other" in text and "work for reading" in text
+    assert "First login with FluffyChat" in text
