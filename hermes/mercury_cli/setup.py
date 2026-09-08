@@ -2978,7 +2978,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
     print()
 
     choice = prompt_choice(
-        "Set up the Matrix observatory now?",
+        "Set up the Matrix observatory now (RECOMMENDED)?",
         [
             "Install / repair now (idempotent; downloads the Tuwunel homeserver on first run)",
             "Skip — leave it as is",
@@ -3518,8 +3518,8 @@ SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
     ("tts", "Text-to-Speech", setup_tts),
     ("terminal", "Terminal Backend", setup_terminal_backend),
-    ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("observatory", "Matrix Observatory (bundled)", setup_observatory),
+    ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("telemetry", "Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
@@ -4070,12 +4070,12 @@ def _run_setup_wizard_impl(args):
         [
             ("Model & Provider", _model_step),
             ("Terminal Backend", _terminal_step),
-            ("Messaging Platforms", _gateway_step),
-            # After the messaging platforms and before tools: the bundled
-            # observatory is a messaging-adjacent surface, and it must never
+            # Before the messaging platforms and tools: the bundled
+            # observatory is the primary chat surface, and it must never
             # gate model setup (it runs after every model-config section and
             # degrades to a hint on any failure).
             ("Matrix Observatory", lambda: setup_observatory(config)),
+            ("Messaging Platforms", _gateway_step),
             ("Tools", _tools_step),
         ]
     )

@@ -374,13 +374,28 @@ def test_unreadable_state_degrades_to_hint(monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_section_registered_after_gateway_in_registry():
+def test_section_registered_before_gateway_in_registry():
+    """Observatory is the primary chat: it runs before gateway platforms."""
     keys = [k for k, _label, _fn in setup_mod.SETUP_SECTIONS]
     assert "observatory" in keys
     assert keys.index("model") < keys.index("observatory")
     assert keys.index("tts") < keys.index("observatory")
-    assert keys.index("gateway") < keys.index("observatory")
+    assert keys.index("observatory") < keys.index("gateway")
     assert keys.index("observatory") < keys.index("tools")
+
+
+def test_section_choice_prompt_marks_recommended(monkeypatch, capsys):
+    """The observatory install question carries the RECOMMENDED tag."""
+    fake = _FakeProvision([_status()])
+    monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
+    seen: list = []
+    monkeypatch.setattr(
+        setup_mod, "prompt_choice",
+        lambda q, c, d=0, description=None: seen.append(q) or 1,
+    )
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
+    setup_mod.setup_observatory({})
+    assert seen == ["Set up the Matrix observatory now (RECOMMENDED)?"]
 
 
 def test_setup_parser_accepts_observatory_section():
