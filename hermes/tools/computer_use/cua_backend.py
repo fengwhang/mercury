@@ -367,6 +367,38 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
     return env
 
+def cua_driver_telemetry_disable_persistent(*, timeout: float = 30.0) -> bool:
+    """Persistently disable cua-driver telemetry via ``telemetry disable``.
+
+    ``CuaDriverBackend.set_config`` has no telemetry key (it covers
+    capture_mode / max_image_dimension / experimental_pip only — see
+    ``cua-driver describe set_config``), and ``cua_driver_child_env`` only
+    covers Mercury-spawned children. The driver's own persistent default
+    stays telemetry-on (its installer/startup message says so), so the
+    setup wizard flips it here with the driver's ``telemetry disable``
+    verb and prints confirmation. Idempotent; best-effort — False when
+    the binary is missing or the verb fails. Never raises.
+    """
+    try:
+        cmd = resolve_cua_driver_cmd()
+        if not cmd:
+            return False
+        import subprocess
+
+        proc = subprocess.run(
+            [cmd, "telemetry", "disable"],
+            env=cua_driver_child_env(),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 — best-effort only, never raises
+        logger.debug(
+            "persistent cua-driver telemetry disable failed", exc_info=True
+        )
+        return False
+    return proc.returncode == 0
+
 
 def _linux_session_locked() -> Optional[bool]:
     """Best-effort: is the graphical session locked? (Linux only.)

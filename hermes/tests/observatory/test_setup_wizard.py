@@ -859,23 +859,97 @@ def test_bind_offer_uses_exact_prompt_text(monkeypatch):
     ]
 
 
-def test_bind_offer_yes_calls_helper_and_notes_restart(
+def test_bind_offer_yes_restart_yes_restarts_unit(monkeypatch, capsys, tmp_path):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
+    )
+    calls: list = []
+
+    def _run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", _run)
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True]
+    )
+    assert fake.calls["bind"] == 1
+    assert fake.bind_ips == ["100.89.0.5"]
+    assert calls == [["systemctl", "--user", "restart", HOMESERVER_UNIT_NAME]]
+    assert "100.89.0.5" in out
+    assert HOMESERVER_UNIT_NAME in out
+    assert remaining == []
+
+
+def test_bind_offer_yes_restart_no_keeps_manual_line(
     monkeypatch, capsys, tmp_path
 ):
     creds = _write_credentials(tmp_path)
     fake = _FakeProvision(
         [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
     )
+
+    def _boom(argv, **kwargs):
+        raise AssertionError("restart must not be attempted on 'no'")
+
+    monkeypatch.setattr("subprocess.run", _boom)
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, False]
     )
     assert fake.calls["bind"] == 1
-    assert fake.bind_ips == ["100.89.0.5"]
     assert "100.89.0.5" in out
-    assert "restart" in out.lower()  # required restart note
-    assert HOMESERVER_UNIT_NAME in out
-    assert "systemctl --user restart" in out
+    assert (
+        "Restart the homeserver to apply:"
+        f" systemctl --user restart {HOMESERVER_UNIT_NAME}" in out
+    )
     assert remaining == []
+
+
+def test_bind_offer_restart_failure_warns_with_manual_command(
+    monkeypatch, capsys, tmp_path
+):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
+    )
+
+    def _boom(argv, **kwargs):
+        raise OSError("systemd not running")
+
+    monkeypatch.setattr("subprocess.run", _boom)
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True]
+    )
+    assert fake.calls["bind"] == 1
+    assert "Could not restart" in out
+    assert f"systemctl --user restart {HOMESERVER_UNIT_NAME}" in out
+    assert remaining == []
+
+
+def test_bind_restart_offer_uses_exact_prompt_text(monkeypatch):
+    seen: list = []
+
+    def _ask(question, default=True):
+        seen.append((question, default))
+        return "Bind homeserver" in question
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", _ask)
+    setup_mod._offer_tailscale_bind(
+        SimpleNamespace(set_tuwunel_bind=lambda ip: ip), dict(_TS_UP_IP)
+    )
+    assert seen == [
+        (
+            "Bind homeserver to the Tailscale interface only?"
+            " (unreachable from LAN/internet)",
+            False,
+        ),
+        (
+            "Restart the homeserver now?"
+            " (necessary to apply the new bind address)",
+            True,
+        ),
+    ]
 
 
 def test_bind_offer_no_keeps_address(monkeypatch, capsys, tmp_path):
@@ -1140,3 +1214,104 @@ def test_reprint_card_never_raises(monkeypatch, capsys):
     )
     setup_mod._reprint_observatory_login_card()
     assert capsys.readouterr().out == ""
+
+
+# ---------------------------------------------------------------------------
+# observatory Guide pointer (in-repo until the docs site publishes the page)
+# ---------------------------------------------------------------------------
+
+
+def test_observatory_guide_lines_never_link_the_unpublished_page():
+    """No Guide: line may print the fictitious docs-site matrix-observatory URL."""
+    import inspect as _inspect
+
+    src = _inspect.getsource(setup_mod)
+    assert "_OBSERVATORY_DOCS_URL" not in src
+    for line in src.splitlines():
+        if "Guide:" in line:
+            assert "hermes-agent.nousresearch.com" not in line
+
+
+def test_observatory_section_prints_in_repo_guide(monkeypatch, capsys, tmp_path):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)], tailscale=dict(_TS_ABSENT)
+    )
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True]
+    )
+    assert "Guide: docs/design/matrix-observatory.md" in out
+    assert "website/docs/user-guide/messaging/matrix-observatory.md" in out
+    assert "hermes-agent.nousresearch.com" not in out
+    assert remaining == []
+
+
+def test_noninteractive_observatory_prints_in_repo_guide(monkeypatch, capsys):
+    fake = _FakeProvision([_status(provisioned=True)])
+    monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
+    setup_mod.print_noninteractive_observatory_guidance()
+    out = capsys.readouterr().out
+    assert "Guide: docs/design/matrix-observatory.md" in out
+    assert "website/docs/user-guide/messaging/matrix-observatory.md" in out
+    assert "hermes-agent.nousresearch.com" not in out
+
+
+# ---------------------------------------------------------------------------
+# cua-driver persistent telemetry-off (setup_telemetry tail)
+# ---------------------------------------------------------------------------
+
+_CUA_PERSISTENT_HELPER = (
+    "tools.computer_use.cua_backend.cua_driver_telemetry_disable_persistent"
+)
+
+
+def test_setup_telemetry_disables_cua_telemetry_persistently_once(
+    monkeypatch, capsys
+):
+    """Default policy flips the driver's persistent switch exactly once."""
+    calls: list = []
+
+    def _off(**kwargs):
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(_CUA_PERSISTENT_HELPER, _off)
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no", lambda q, default=True: default
+    )
+    setup_mod.setup_telemetry({})
+    out = capsys.readouterr().out
+    assert len(calls) == 1
+    assert "persistently" in out  # printed confirmation
+    assert "CUA_DRIVER_RS_TELEMETRY_ENABLED=0" in out  # env line kept
+
+
+def test_setup_telemetry_skips_persistent_disable_on_opt_in(
+    monkeypatch, capsys
+):
+    """computer_use.cua_telemetry opt-in leaves the driver default alone."""
+
+    def _boom(**kwargs):
+        raise AssertionError("persistent off-switch must not run on opt-in")
+
+    monkeypatch.setattr(_CUA_PERSISTENT_HELPER, _boom)
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no", lambda q, default=True: default
+    )
+    setup_mod.setup_telemetry({"computer_use": {"cua_telemetry": True}})
+    out = capsys.readouterr().out
+    assert "opt-in" in out
+
+
+def test_setup_telemetry_persistent_failure_degrades_to_env_line(
+    monkeypatch, capsys
+):
+    """A failed persistent flip warns but keeps the per-invocation env line."""
+    monkeypatch.setattr(_CUA_PERSISTENT_HELPER, lambda **kwargs: False)
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no", lambda q, default=True: default
+    )
+    setup_mod.setup_telemetry({})
+    out = capsys.readouterr().out
+    assert "Could not persistently disable" in out
+    assert "on every cua-driver invocation" in out

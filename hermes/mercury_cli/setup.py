@@ -2722,7 +2722,12 @@ def setup_gateway(config: dict):
 # Section 4b: Matrix Observatory (bundled homeserver)
 # =============================================================================
 
-_OBSERVATORY_DOCS_URL = f"{_DOCS_BASE}/user-guide/messaging/matrix-observatory"
+# The matrix-observatory docs page is not published on the docs site yet —
+# never print a URL that 404s. Point at the in-repo copies instead.
+_OBSERVATORY_GUIDE_LINE = (
+    "Guide: docs/design/matrix-observatory.md + "
+    "website/docs/user-guide/messaging/matrix-observatory.md (ships with the repo)"
+)
 
 
 def _load_observatory_provision():
@@ -2886,7 +2891,34 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
     except Exception:  # noqa: BLE001
         _unit = "mercury-observatory-homeserver.service"
     print_success(f"Homeserver will bind to {ip} on next restart.")
-    print_info(f"Restart the homeserver to apply: systemctl --user restart {_unit}")
+    try:
+        restart_now = prompt_yes_no(
+            "Restart the homeserver now? (necessary to apply the new bind address)",
+            default=True,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception:  # noqa: BLE001 — a restart offer never kills the wizard
+        print_info(f"Restart the homeserver to apply: systemctl --user restart {_unit}")
+        return
+    if not restart_now:
+        print_info(f"Restart the homeserver to apply: systemctl --user restart {_unit}")
+        return
+    try:
+        import subprocess
+
+        subprocess.run(
+            ["systemctl", "--user", "restart", _unit],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort restart, never raises
+        print_warning(f"Could not restart {_unit}: {exc}")
+        print_info(f"Restart it manually: systemctl --user restart {_unit}")
+        return
+    print_success(f"Homeserver restarted ({_unit}).")
 
 
 _LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
@@ -3017,7 +3049,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         print(color("│ " + ln.ljust(width - 2) + " │", Colors.CYAN))
     print(color("└" + "─" * width + "┘", Colors.CYAN))
     print()
-    print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+    print_info(_OBSERVATORY_GUIDE_LINE)
 
 
 def setup_observatory(config: dict, *, quick: bool = False):
@@ -3038,14 +3070,14 @@ def setup_observatory(config: dict, *, quick: bool = False):
     obs = _load_observatory_provision()
     if obs is None:
         print_warning("Bundled observatory package not found in this install.")
-        print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+        print_info(_OBSERVATORY_GUIDE_LINE)
         return
 
     try:
         status = obs.status_summary()
     except Exception as exc:
         print_warning(f"Could not read observatory state: {exc}")
-        print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+        print_info(_OBSERVATORY_GUIDE_LINE)
         return
 
     _observatory_state_lines(status)
@@ -3086,7 +3118,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
         # localhost-only tuwunel — say so explicitly.
         _maybe_print_bind_mismatch_action(obs, ts)
     else:
-        print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+        print_info(_OBSERVATORY_GUIDE_LINE)
 
 
 def print_noninteractive_observatory_guidance() -> None:
@@ -3138,7 +3170,7 @@ def print_noninteractive_observatory_guidance() -> None:
     )
     print_info("Disable instead (freezes, never deletes):")
     print_info("  mercury config set observatory.enabled false")
-    print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+    print_info(_OBSERVATORY_GUIDE_LINE)
     print()
 
 
@@ -3199,6 +3231,59 @@ def setup_telemetry(config: dict):
         "(CUA_DRIVER_RS_TELEMETRY_ENABLED=0) unless you opt in via "
         "computer_use.cua_telemetry."
     )
+    _persist_cua_driver_telemetry_off(config)
+
+
+def _persist_cua_driver_telemetry_off(config: dict) -> None:
+    """Best-effort persistent cua-driver telemetry-off (setup_telemetry tail).
+
+    The env var covers every Mercury-spawned driver, but the driver's own
+    installer/startup message advertises telemetry-on (its persistent
+    default). ``set_config`` has no telemetry key, so ``telemetry disable``
+    is the only persistent switch — flip it here with printed
+    confirmation. Skipped on ``computer_use.cua_telemetry`` opt-in.
+    Never raises; every failure degrades to the env-var line above.
+    """
+    try:
+        cu = config.get("computer_use") if isinstance(config, dict) else None
+        if isinstance(cu, dict) and bool(cu.get("cua_telemetry", False)):
+            print_info(
+                "cua-driver telemetry left enabled"
+                " (computer_use.cua_telemetry opt-in)."
+            )
+            return
+    except Exception:  # noqa: BLE001 — unreadable config falls safe (disable)
+        pass
+    try:
+        from tools.computer_use.cua_backend import (
+            cua_driver_telemetry_disable_persistent as _persistent_off,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("cua persistent telemetry helper unavailable: %s", exc)
+        print_info(
+            "Mercury sets CUA_DRIVER_RS_TELEMETRY_ENABLED=0"
+            " on every cua-driver invocation."
+        )
+        return
+    try:
+        disabled = bool(_persistent_off())
+    except Exception as exc:  # noqa: BLE001 — never kills the wizard
+        logger.debug("persistent cua telemetry disable failed: %s", exc)
+        disabled = False
+    if disabled:
+        print_success(
+            "cua-driver telemetry disabled persistently"
+            " (`cua-driver telemetry disable`)."
+        )
+    else:
+        print_warning(
+            "Could not persistently disable cua-driver telemetry"
+            " (driver missing or `telemetry disable` failed)."
+        )
+        print_info(
+            "Mercury still sets CUA_DRIVER_RS_TELEMETRY_ENABLED=0"
+            " on every cua-driver invocation."
+        )
 
 
 # =============================================================================

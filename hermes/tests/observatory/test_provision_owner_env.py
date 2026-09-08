@@ -9,9 +9,11 @@ Laws: create-if-missing, replace-in-place with neighbors kept, heal-only
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from observatory import provision as provision_mod
 from observatory.config_gen import ObservatoryPaths
+from tools.computer_use import cua_backend as cua_backend_mod
 
 
 MXID = "@owner:mercury.local"
@@ -82,3 +84,68 @@ def test_ensure_owner_account_exists_heals_missing_env_keys(tmp_path):
     text = (home / ".env").read_text(encoding="utf-8")
     assert "MATRIX_OBS_OWNER_PASSWORD=keepme" in text
     assert f"MATRIX_OBS_OWNER_USER_ID={MXID}" in text
+
+
+# ---------------------------------------------------------------------------
+# cua-driver persistent telemetry-off helper + env injection guard
+# ---------------------------------------------------------------------------
+
+
+def test_cua_persistent_disable_runs_telemetry_disable_verb(monkeypatch):
+    monkeypatch.setattr(
+        cua_backend_mod, "resolve_cua_driver_cmd",
+        lambda *a, **k: "/fake/cua-driver",
+    )
+    calls: list = []
+
+    def _run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", _run)
+    assert cua_backend_mod.cua_driver_telemetry_disable_persistent() is True
+    assert calls == [["/fake/cua-driver", "telemetry", "disable"]]
+
+
+def test_cua_persistent_disable_false_when_binary_missing(monkeypatch):
+    monkeypatch.setattr(
+        cua_backend_mod, "resolve_cua_driver_cmd",
+        lambda *a, **k: None,
+    )
+
+    def _boom(*a, **k):
+        raise AssertionError("must not spawn without a binary")
+
+    monkeypatch.setattr("subprocess.run", _boom)
+    assert cua_backend_mod.cua_driver_telemetry_disable_persistent() is False
+
+
+def test_cua_persistent_disable_never_raises(monkeypatch):
+    monkeypatch.setattr(
+        cua_backend_mod, "resolve_cua_driver_cmd",
+        lambda *a, **k: "/fake/cua-driver",
+    )
+
+    def _boom(*a, **k):
+        raise OSError("cannot execute")
+
+    monkeypatch.setattr("subprocess.run", _boom)
+    assert cua_backend_mod.cua_driver_telemetry_disable_persistent() is False
+
+
+def test_cua_child_env_still_injects_telemetry_off_by_default(monkeypatch):
+    """The additive helper leaves the per-invocation env injection untouched."""
+    monkeypatch.setattr(cua_backend_mod, "_computer_use_cfg", lambda: {})
+    base = {"PATH": "/usr/bin"}
+    env = cua_backend_mod.cua_driver_child_env(dict(base))
+    assert env["CUA_DRIVER_RS_TELEMETRY_ENABLED"] == "0"
+    assert base == {"PATH": "/usr/bin"}  # no in-place mutation
+
+
+def test_cua_child_env_leaves_telemetry_alone_on_opt_in(monkeypatch):
+    monkeypatch.setattr(
+        cua_backend_mod, "_computer_use_cfg",
+        lambda: {"cua_telemetry": True},
+    )
+    env = cua_backend_mod.cua_driver_child_env({"PATH": "/usr/bin"})
+    assert "CUA_DRIVER_RS_TELEMETRY_ENABLED" not in env
