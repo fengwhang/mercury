@@ -325,6 +325,18 @@ markers in TODO.md for each phase gate.
   and bidi/zwj sanity rules at render time (room names), decided at
   Phase 0 implementation.
 
+Pre-release status (2026-09-08, final-sweep):
+- E2EE gate: FAIL — `~/.mercury/observatory-build/gate-e2ee.log` reports
+  MERCURY-E2EE-FAIL (M_UNKNOWN_TOKEN on login, 1/1 checks); O3's Phase-3
+  proof still open, owned by the e2ee-gate2 agent. Blocks release.
+- Remote reachability: D2 stands — homeserver bound to localhost/LAN,
+  mobile over the owner's Tailscale/existing VPN; no dedicated VPN
+  shipped, no further decision taken.
+- User→running-batch steering UX: see
+  `docs/design/midflight-steering.md` (investigation, no code changes) —
+  the observatory room verbs (§5) are the matrix-surface counterpart of
+  the chat-surface wiring it proposes.
+
 ## 12. Fact appendix (key citations)
 
 - hermes delegate_task schema/handler: `hermes/tools/delegate_tool.py:5081-5185`
