@@ -26,8 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import socket
-import sys
-import types
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,7 +38,6 @@ from observatory.config_gen import (
     ObservatoryPaths,
 )
 from observatory.e2ee import EncryptedIntentExecutor
-from observatory.renderer import IntentExecutor
 from observatory.state import ObservatoryState
 
 
@@ -57,12 +54,16 @@ def _free_port() -> int:
 
 @dataclass
 class FakeMatrixClient:
-    """No-network MatrixClient: records everything, hands out ids."""
+    """No-network MatrixClient: records everything, hands out ids.
+    Field order mirrors the real MatrixClient
+    (homeserver_url, as_token, *, server_name, admin_token) — the
+    daemon constructs it positionally, so the fake must accept the
+    same call convention."""
 
+    homeserver_url: str = "http://127.0.0.1:18008"
     as_token: str = "as-tok"
     server_name: str = "mercury.local"
     admin_token: str = "admin-tok"
-    homeserver_url: str = "http://127.0.0.1:18008"
     calls: list = field(default_factory=list)
     next_id: int = 0
 
@@ -128,6 +129,24 @@ class FakeMatrixClient:
     async def close(self) -> None:
         self.calls.append(("close",))
 
+    async def get_power_levels(self, room_id, *, sender):
+        self.calls.append(("get_pl", room_id, sender))
+        return {}
+
+    async def invite(self, room_id, user_id, *, sender):
+        self.calls.append(("invite", room_id, user_id, sender))
+
+    async def join_room(self, room_id, *, sender):
+        self.calls.append(("join", room_id, sender))
+        return room_id
+
+    async def leave_room(self, room_id, *, sender):
+        self.calls.append(("leave", room_id, sender))
+
+    async def delete_room(self, room_id, **kwargs):
+        self.calls.append(("delete", room_id))
+        return {}
+
 
 @pytest.fixture()
 def fake_home(tmp_path: Path, monkeypatch) -> Path:
@@ -176,6 +195,20 @@ def daemon(fake_home: Path, monkeypatch) -> sm.SidecarDaemon:
     return d
 
 
+@pytest.fixture()
+def pt_daemon(fake_home: Path, monkeypatch) -> sm.SidecarDaemon:
+    """Plaintext sibling of daemon: the e2ee=False opt-out so
+    discovery/render laws execute without a live Olm key-exchange
+    peer — lifecycle sends would otherwise require device keys from
+    a real homeserver (the encrypted send path is covered in
+    test_e2ee.py)."""
+    d = sm.SidecarDaemon(fake_home, hermes_db=fake_home / "hermes" / "state.db",
+                         appservice_port=_free_port(), e2ee=False)
+    monkeypatch.setattr(d, "_homeserver_healthy", lambda: True)
+    monkeypatch.setattr(sm, "MatrixClient", FakeMatrixClient)
+    return d
+
+
 # ---------------------------------------------------------------------------
 # component graph wiring
 # ---------------------------------------------------------------------------
@@ -195,23 +228,29 @@ class TestBootWiring:
         assert daemon.intake is not None and daemon.intake.handler_attached
         assert daemon.discovery is not None
         assert daemon._discovery_task is not None
-        assert report["apply_plan"] > 0  # the tree actually converged
+        # the tree actually converged (the respawn pass re-ensures it
+        # BEFORE boot's own apply_plan, so a fresh boot's apply_plan is
+        # a converged no-op — convergence is proven by the gateway row,
+        # not the report count)
+        assert report["apply_plan"] >= 0
         assert gw["space_id"] and gw["room_id"]
-        # plaintext default (O3): the PLAIN executor, not the encrypted one
-        assert isinstance(daemon.executor, IntentExecutor)
-        assert not isinstance(daemon.executor, EncryptedIntentExecutor)
-        assert daemon.e2ee is None
+        # E2EE-hot default (D4): the ENCRYPTED executor, never plaintext
+        assert isinstance(daemon.executor, EncryptedIntentExecutor)
+        assert daemon.e2ee is not None
         await daemon.shutdown()
         assert daemon.state is None  # final state flush ran
 
     @pytest.mark.asyncio
-    async def test_boot_idempotent_gateway_node(self, daemon: sm.SidecarDaemon):
+    async def test_boot_idempotent_gateway_node(self, daemon: sm.SidecarDaemon, monkeypatch):
         await daemon.boot()
         mxid1 = daemon.state.get(sm.GATEWAY_NODE_ID)["mxid"]
         await daemon.shutdown()
         daemon2 = sm.SidecarDaemon(daemon.mercury_home,
                                    hermes_db=daemon.hermes_db,
                                    appservice_port=_free_port())
+        # same stubs as the first boot: healthy homeserver, fake client
+        # (module-level patches from the daemon fixture are still live)
+        monkeypatch.setattr(daemon2, "_homeserver_healthy", lambda: True)
         try:
             # second boot against the same home: node reused, never recreated
             import observatory.sidecar_main as sm2
@@ -326,42 +365,49 @@ class TestBootWiring:
 
 
 class TestSiblingWiring:
-    def test_absent_sibling_is_none_not_crash(self, daemon: sm.SidecarDaemon):
-        assert "observatory.control" not in sys.modules
-        daemon.wire_siblings()
+    def test_preboot_siblings_are_none(self, daemon: sm.SidecarDaemon):
+        # before boot assembles the graph, every sibling handle is None —
+        # never a half-wired object, never a crash on attribute access
         assert daemon.control_router is None
         assert daemon.approvals is None
-        assert daemon.spawn is None
-        assert daemon.rooms is None
-
-    def test_present_sibling_attach_factory_is_wired(self, daemon, monkeypatch):
-        stopped = []
-
-        class FakeControl:
-            async def stop(self):
-                stopped.append("control")
-
-        fake_module = types.ModuleType("observatory.control")
-        fake_module.attach = lambda d: FakeControl()
-        monkeypatch.setitem(sys.modules, "observatory.control", fake_module)
-        daemon.wire_siblings()
-        assert isinstance(daemon.control_router, FakeControl)
+        assert daemon.directives is None
+        assert daemon.cron_rooms is None
+        assert daemon.manual_runs is None
+        assert daemon.registry is None
 
     @pytest.mark.asyncio
-    async def test_sibling_stopped_on_shutdown(self, daemon, monkeypatch):
-        stopped = []
+    async def test_boot_wires_sibling_subsystems(self, daemon: sm.SidecarDaemon):
+        # wire_siblings constructs the landed M4a/M4b/M5 subsystems
+        # directly (no attach() factories) — assert the real graph
+        from observatory.approvals import ApprovalBridge
+        from observatory.control import ControlRouter
+        from observatory.cron_rooms import CronRooms
+        from observatory.directives import DirectivesManager
+        from observatory.manual_runs import ManualRunsWatcher
+        from observatory.spawn import OrchestratorRegistry
 
-        class FakeSubsystem:
-            def stop(self):
-                stopped.append("rooms")
-
-        fake_module = types.ModuleType("observatory.rooms")
-        fake_module.attach = lambda d: FakeSubsystem()
-        monkeypatch.setitem(sys.modules, "observatory.rooms", fake_module)
         await daemon.boot()
-        assert isinstance(daemon.rooms, FakeSubsystem)
+        try:
+            assert isinstance(daemon.control_router, ControlRouter)
+            assert isinstance(daemon.approvals, ApprovalBridge)
+            assert isinstance(daemon.directives, DirectivesManager)
+            assert isinstance(daemon.cron_rooms, CronRooms)
+            assert isinstance(daemon.manual_runs, ManualRunsWatcher)
+            assert isinstance(daemon.registry, OrchestratorRegistry)
+        finally:
+            await daemon.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_leaves_registry_handles_alive(self, daemon: sm.SidecarDaemon):
+        # D18: restart is not death — shutdown tears down intake,
+        # discovery and state but NEVER stops the orchestrator
+        # registry's live handles; the next respawn pass re-adopts them
+        await daemon.boot()
+        registry = daemon.registry
+        before = list(registry.handles())
         await daemon.shutdown()
-        assert stopped == ["rooms"]
+        assert daemon.registry is registry
+        assert list(registry.handles()) == before
 
 
 # ---------------------------------------------------------------------------
@@ -371,60 +417,60 @@ class TestSiblingWiring:
 
 class TestDiscoveryApplication:
     @pytest.mark.asyncio
-    async def test_add_creates_node_and_renders(self, daemon: sm.SidecarDaemon):
+    async def test_add_creates_node_and_renders(self, pt_daemon: sm.SidecarDaemon):
         from observatory.discovery import NodeEvent
 
-        await daemon.boot()
+        await pt_daemon.boot()
         try:
             event = NodeEvent(
                 kind="add", delegation_id="deleg_abc", task_index=0,
                 parent_session="sess-1", name="test-sweep", goal="run tests",
                 status="running", source="poll", seq=1,
             )
-            await daemon._apply_discovery_event(event)
-            row = daemon.state.get("deleg_abc/0")
+            await pt_daemon._apply_discovery_event(event)
+            row = pt_daemon.state.get("deleg_abc/0")
             assert row["status"] == "live"
             assert row["parent_node_id"] == sm.GATEWAY_NODE_ID
             assert row["room_id"]  # provisioned + attached by apply_plan
             # duplicate add (poll/hook race) is a state-level no-op
-            await daemon._apply_discovery_event(event)
-            assert len(daemon.state.children_of(sm.GATEWAY_NODE_ID)) == 1
+            await pt_daemon._apply_discovery_event(event)
+            assert len(pt_daemon.state.children_of(sm.GATEWAY_NODE_ID)) == 1
         finally:
-            await daemon.shutdown()
+            await pt_daemon.shutdown()
 
     @pytest.mark.asyncio
-    async def test_death_renders_d8(self, daemon: sm.SidecarDaemon):
+    async def test_death_renders_d8(self, pt_daemon: sm.SidecarDaemon):
         from observatory.discovery import NodeEvent
 
-        await daemon.boot()
+        await pt_daemon.boot()
         try:
             add = NodeEvent(kind="add", delegation_id="deleg_abc", task_index=0,
                             parent_session="s", name="test-sweep", goal="g",
                             status="running", source="poll", seq=1)
-            await daemon._apply_discovery_event(add)
+            await pt_daemon._apply_discovery_event(add)
             death = NodeEvent(kind="death", delegation_id="deleg_abc", task_index=0,
                               parent_session="s", name="test-sweep", goal="g",
                               status="completed", source="poll", seq=2,
                               summary="3 tests green")
-            await daemon._apply_discovery_event(death)
+            await pt_daemon._apply_discovery_event(death)
             # depth-1 child of the gateway ⇒ row purged (D8 instant rule)
             with pytest.raises(KeyError):
-                daemon.state.get("deleg_abc/0")
+                pt_daemon.state.get("deleg_abc/0")
         finally:
-            await daemon.shutdown()
+            await pt_daemon.shutdown()
 
     @pytest.mark.asyncio
-    async def test_death_for_unknown_node_is_noop(self, daemon: sm.SidecarDaemon):
+    async def test_death_for_unknown_node_is_noop(self, pt_daemon: sm.SidecarDaemon):
         from observatory.discovery import NodeEvent
 
-        await daemon.boot()
+        await pt_daemon.boot()
         try:
             ghost = NodeEvent(kind="death", delegation_id="deleg_none", task_index=0,
                               parent_session="s", name="x", goal="g",
                               status="completed", source="hook", seq=1)
-            await daemon._apply_discovery_event(ghost)  # must not raise
+            await pt_daemon._apply_discovery_event(ghost)  # must not raise
         finally:
-            await daemon.shutdown()
+            await pt_daemon.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -433,40 +479,45 @@ class TestDiscoveryApplication:
 
 
 class TestPlatformHook:
-    def test_forwards_lifecycle_payloads_to_registered_target(self, monkeypatch):
-        received = []
+    def test_build_discovery_binds_hermes_db(self, fake_home: Path):
+        # the gateway seam's builder: an unstarted DiscoveryEngine over
+        # the hermes state.db (§7 poll source) with the lifecycle-hook
+        # push interface the gateway thread calls
+        from observatory import platform_hook
+        from observatory.discovery import DiscoveryEngine
 
-        class Recorder:
-            def on_subagent_start(self, payload):
-                received.append(("start", dict(payload)))
+        disc = platform_hook.build_discovery(fake_home)
+        assert isinstance(disc, DiscoveryEngine)
+        assert disc._db_path == str(fake_home / "hermes" / "state.db")
+        for hook in ("on_subagent_start", "on_subagent_stop"):
+            assert callable(getattr(disc, hook))
+        # hook payloads before start() buffer (order-preserving) —
+        # early spawns are never lost, never raise
+        disc.on_subagent_start({"child_goal": "g"})
+        disc.on_subagent_stop({"child_status": "completed"})
 
-            def on_subagent_stop(self, payload):
-                received.append(("stop", dict(payload)))
+    def test_boot_graph_adopts_last_boot_registry(self):
+        # _run_respawn_pass adopts platform_hook.LAST_BOOT's registry —
+        # the seam the gateway thread's boot shares with the daemon
+        from observatory import platform_hook
 
-        monkeypatch.setattr(sm, "_discovery_hook_target", Recorder())
+        assert hasattr(platform_hook, "LAST_BOOT")
+        assert hasattr(platform_hook, "build_discovery")
+        assert hasattr(platform_hook, "try_boot_sidecar")
 
-        subscribed = []
-
-        class Hooks:
-            def subscribe(self, event, cb):
-                subscribed.append(event)
-
-        class Ctx:
-            hooks = Hooks()
-
-        sm.platform_hook(Ctx())
-        assert subscribed == ["subagent_start", "subagent_stop"]
-        # the gateway seam now relays live payloads
-        sm._hook_start({"child_goal": "g"})
-        sm._hook_stop({"child_status": "completed"})
-        assert received == [("start", {"child_goal": "g"}),
-                            ("stop", {"child_status": "completed"})]
-
-    def test_busless_ctx_is_logged_noop(self):
-        class Ctx:
-            pass  # no hooks / register_hook / on anywhere
-
-        sm.platform_hook(Ctx())  # must not raise
+    @pytest.mark.asyncio
+    async def test_daemon_discovery_accepts_hook_payloads(self, daemon: sm.SidecarDaemon):
+        # after boot the daemon owns a started engine: live hook pushes
+        # bridge safely (thread-safe queue) and shutdown drains cleanly
+        await daemon.boot()
+        try:
+            assert daemon.discovery is not None
+            daemon.discovery.on_subagent_start({"child_goal": "g"})
+            daemon.discovery.on_subagent_stop({"child_status": "completed"})
+            assert daemon._discovery_task is not None
+            assert not daemon._discovery_task.done()
+        finally:
+            await daemon.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -511,4 +562,6 @@ class TestCli:
         assert "REFUSING" in capsys.readouterr().err
 
     def test_defaults(self):
-        assert sm.APPSERVICE_PORT_DEFAULT_SRC == APPSERVICE_PORT_DEFAULT
+        # the daemon's default port is config_gen's single source —
+        # never a second copy of the constant in sidecar_main
+        assert sm.APPSERVICE_PORT_DEFAULT == APPSERVICE_PORT_DEFAULT

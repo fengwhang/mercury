@@ -193,6 +193,7 @@ class SidecarDaemon:
         self.approvals: Any | None = None
         self.directives: Any | None = None
         self.manual_runs: Any | None = None
+        self.cron_rooms: Any | None = None
         #: D7 power-level snapshot cache (sync provider for the router).
         self._pl_cache: dict[str, Any] = {}
         self.omp_feeds: dict[str, Any] = {}  # node_id -> OmpFeed
@@ -922,6 +923,11 @@ class SidecarDaemon:
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
+        if self.e2ee is not None:
+            # release the crypto SQLite handles (aiosqlite worker threads
+            # block interpreter shutdown while a store stays open)
+            await self.e2ee.stop()
+            self.e2ee = None
         if self.client is not None:
             await self.client.close()
         if self._homeserver_proc is not None:
