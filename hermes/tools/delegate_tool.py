@@ -557,6 +557,33 @@ def _handle_control_action(
                     "live_transcript": getattr(agent, "_live_transcript_path", None),
                 }
             )
+        # M0A (matrix observatory §8.1 item 2): Mercury's children are omp
+        # children — merge the omp engine's live registry (owned only) so
+        # one action='list' sees the whole spawn tree.
+        try:
+            from tools.omp_delegation import _live_children, _live_children_lock, _owns_live_child
+
+            with _live_children_lock:
+                omp_records = list(_live_children.values())
+            for r in omp_records:
+                if not _owns_live_child(r, parent_agent):
+                    continue
+                entries.append(
+                    {
+                        "subagent_id": r.get("child_id"),
+                        "engine": "omp",
+                        "name": r.get("name"),
+                        "delegation_id": r.get("delegation_id"),
+                        "goal": r.get("goal"),
+                        "model": r.get("model"),
+                        "transport": r.get("transport_kind"),
+                        "running_seconds": round(
+                            time.time() - r.get("started_at", time.time()), 1),
+                        "accepting_steer": bool(r.get("steerable")),
+                    }
+                )
+        except Exception:
+            logger.debug("control list: omp registry unavailable", exc_info=True)
         payload: Dict[str, Any] = {
             "action": "list",
             "count": len(entries),
@@ -577,9 +604,16 @@ def _handle_control_action(
             f"action='{action}' requires subagent_id (from the spawn dispatch "
             "response or action='list')."
         )
+    # M0A (§8.1 item 2): steer/stop over live omp children. The hermes-side
+    # registry is empty in Mercury (children are omp processes) — fall
+    # through to the omp engine's control plane on a miss.
     with _active_subagents_lock:
         record = _active_subagents.get(sid)
-    if record is None or not _owns_subagent_record(record, parent_agent):
+    if record is None:
+        from tools.omp_delegation import handle_omp_control_action
+
+        return handle_omp_control_action(action, sid, message, parent_agent)
+    if not _owns_subagent_record(record, parent_agent):
         return tool_error(
             f"No live subagent '{sid}' in this conversation's spawn tree. It "
             "may have already finished (its result arrives as a normal "
@@ -3814,6 +3848,24 @@ def _validate_batch_tasks(task_list: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
+def normalize_delegation_names(task_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Stamp a per-task ``name`` on every task (M0A, matrix observatory §8.1).
+
+    Rule (D6): the name is the child's identity in delegation listings,
+    steer/stop targeting, and the observatory UI — model-facing schema
+    hard-requires it. Here, at the handler seam, a missing/blank name gets
+    the derived fallback ``task-<n>`` (1-based) so legacy single-goal
+    callers, cron paths, and direct python callers keep working unchanged.
+    Whitespace is collapsed (display hygiene); the text is otherwise taken
+    verbatim (unicode OK).
+    """
+    for i, task in enumerate(task_list):
+        raw = task.get("name")
+        name = " ".join(str(raw or "").split()) if raw is not None else ""
+        task["name"] = name or f"task-{i + 1}"
+    return task_list
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -3991,6 +4043,11 @@ def delegate_task(
         batch_error = _validate_batch_tasks(task_list)
         if batch_error:
             return tool_error(batch_error)
+
+    # M0A (§8.1 item 1): every task gets a name — provided or derived
+    # (task-<n>) — so downstream consumers (omp engine registry, live
+    # transcripts, listings) are always name-addressable.
+    normalize_delegation_names(task_list)
 
     # T1-24: coerce/validate optional per-task output_schema up front so a
     # malformed schema fails the whole call loudly instead of spawning
@@ -4985,16 +5042,15 @@ def _build_top_level_description() -> str:
         "specialist — they can write, edit, build, and test code, and can "
         "spawn subagents of their own.\n\n"
         "CODING TASKS ALWAYS DELEGATE: any task that produces or modifies "
-        "code, scripts, or config — even a simple one like hello world — "
-        "goes to at least one subagent (you orchestrate; omp executes). "
-        "Write code yourself only when delegation is impossible (subagent "
-        "engine down mid-task), and say so when you do.\n\n"
+        "code, scripts, or config goes to at least one subagent (you "
+        "orchestrate; omp executes). Write code yourself only when "
+        "delegation is impossible (subagent engine down mid-task), and say "
+        "so when you do.\n\n"
         "Runs in the background: dispatch returns immediately with live "
-        "transcript paths, and the completed result (one consolidated message, "
-        "results in task order) re-enters the conversation on its own. Do NOT "
-        "wait or poll; continue other work. While children run, `action` "
-        "(list/steer/stop) controls them live — steer when a transcript shows "
-        "a child drifting.\n\n"
+        "transcript paths, and the consolidated result re-enters the "
+        "conversation on its own. Do NOT wait or poll; continue other "
+        "work. While children run, `action` (list/steer/stop) controls "
+        "them live — steer when a transcript shows a child drifting.\n\n"
         "USE FOR: ALL coding work (see above), reasoning-heavy subtasks, "
         "work that would flood your context with intermediate data, or "
         "independent parallel workstreams.\n"
@@ -5016,8 +5072,10 @@ def _build_top_level_description() -> str:
         "require a verifiable handle (URL, ID, absolute path) and verify it "
         "yourself before telling the user the operation succeeded.\n"
         + restrictions_rule +
-        "- Children run on the delegate slots (delegate_model / "
-        "delegate_fallback) unless pinned otherwise in config."
+        "- Every task also carries a short `name` (2-4 words) — the "
+        "child's identity in listings, steering, and the observatory.\n"
+        "- Children run on the delegate slots unless pinned otherwise in "
+        "config."
     )
 
 
@@ -5031,7 +5089,10 @@ def _build_tasks_param_description() -> str:
         f"The task(s), up to {max_children} in parallel for this user (set "
         "via delegation.max_concurrent_children). Each entry spawns one "
         "subagent with isolated context and terminal session; a single task "
-        "is a one-entry array. Required when spawning."
+        "is a one-entry array. Required when spawning. EVERY entry needs "
+        "both `goal` and a short task-relevant `name` (2-4 words, unique in "
+        "the batch) — the name becomes that child's identity in delegation "
+        "listings, steering, and the observatory UI."
     )
 
 
@@ -5070,7 +5131,17 @@ def _build_dynamic_schema_overrides() -> dict:
     overrides_params["properties"] = {
         k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()
     }
-    overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
+    # M0A (matrix observatory §8.1 item 1 / D6): mirror the static schema —
+    # `name` is hard-required in tasks.items model-facing; the handler
+    # derives task-<n> fallbacks for non-model callers (legacy single-goal
+    # shape, cron, direct python).
+    _tasks_override = dict(overrides_params["properties"]["tasks"])
+    _tasks_override["items"] = {
+        **_tasks_override["items"],
+        "required": ["goal", "name"],
+    }
+    _tasks_override["description"] = _build_tasks_param_description()
+    overrides_params["properties"]["tasks"] = _tasks_override
 
     return {
         "description": _build_top_level_description(),
@@ -5115,6 +5186,18 @@ DELEGATE_TASK_SCHEMA = {
                                 "nothing about your conversation history."
                             ),
                         },
+                        "name": {
+                            "type": "string",
+                            "description": (
+                                "SHORT task-relevant name for this subagent "
+                                "(2-4 words, unique within the batch). It is "
+                                "the child's identity in delegation listings, "
+                                "steering targets, and the observatory UI — "
+                                "not shown to the child. Unicode allowed; "
+                                "lowercase-kebab recommended (e.g. "
+                                "'auth-refactor', '修复测试')."
+                            ),
+                        },
                         "context": {
                             "type": "string",
                             "description": (
@@ -5137,7 +5220,13 @@ DELEGATE_TASK_SCHEMA = {
                             ),
                         },
                     },
-                    "required": ["goal"],
+                    # M0A (matrix observatory §8.1 item 1 / D6): `name` is
+                    # hard-required in the MODEL-FACING schema. The handler
+                    # still derives fallback names for non-model callers
+                    # (legacy single-goal shape, cron, direct python) so
+                    # nothing breaks — the schema is the mandate, the
+                    # fallback is the compat seam.
+                    "required": ["goal", "name"],
                 },
                 # No maxItems — the runtime limit is configurable via
                 # delegation.max_concurrent_children (default 3) and

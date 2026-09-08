@@ -35,6 +35,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -129,6 +130,220 @@ def _kill_procs(procs: List[Any]) -> None:
                 p.kill()
             except OSError:
                 pass
+
+
+# HERMES-OMP PATCH (matrix observatory §8.1 item 2): live-child registry.
+# Maps a steer/stop address to the child's LIVE transport handle so
+# delegate_task(action='steer'/'stop') can be forwarded into the running
+# omp process instead of being rejected. Entries hold the OmpRpcChild
+# transport (steerable) or the -p one-shot Popen (kill-only).
+_live_children: Dict[str, Dict[str, Any]] = {}
+_live_children_lock = threading.Lock()
+
+
+def _live_child_id(delegation_id: Optional[str], task_index: int) -> str:
+    """Addressable id: ``<delegation_id>/<task_index>``."""
+    base = delegation_id or f"local-{uuid.uuid4().hex[:8]}"
+    return f"{base}/{task_index}"
+
+
+def _register_live_child(meta: Dict[str, Any], transport: Any) -> None:
+    with _live_children_lock:
+        _live_children[meta["child_id"]] = {
+            **meta, "transport": transport,
+            "started_at": time.time(), "stop_requested": False,
+        }
+    # Keep the legacy process list in sync (counts + _kill_live_children).
+    with _live_procs_lock:
+        _live_procs.append(transport)
+
+
+def _unregister_live_child(child_id: str, transport: Any) -> None:
+    with _live_children_lock:
+        _live_children.pop(child_id, None)
+    with _live_procs_lock:
+        try:
+            _live_procs.remove(transport)
+        except ValueError:
+            pass
+
+
+def _resolve_live_child(subagent_id: str) -> "tuple[Optional[Dict[str, Any]], Optional[str]]":
+    """Resolve a steer/stop target id to its live-child record.
+
+    Accepts the full ``<delegation_id>/<task_index>`` id, or a bare
+    ``<delegation_id>`` when exactly one child of that batch is live
+    (single-task fan-outs — the common case).
+    """
+    sid = (subagent_id or "").strip()
+    if not sid:
+        return None, "no subagent_id given"
+    with _live_children_lock:
+        rec = _live_children.get(sid)
+        if rec is not None:
+            return rec, None
+        candidates = [
+            (cid, c) for cid, c in _live_children.items()
+            if cid.startswith(sid + "/")
+        ]
+    if len(candidates) == 1:
+        return candidates[0][1], None
+    if len(candidates) > 1:
+        ids = ", ".join(sorted(cid for cid, _ in candidates))
+        return None, (
+            f"'{sid}' has multiple live children — target one explicitly: {ids}"
+        )
+    return None, "not in the live-child registry"
+
+
+def _owns_live_child(rec: Dict[str, Any], parent_agent: Any) -> bool:
+    """Durable-session ownership: only the spawning conversation steers.
+
+    Same spine as delegate_tool._owns_subagent_record tier 2: the record
+    is stamped with the spawning parent's durable session id; a caller
+    with a DIFFERENT session id is refused. Empty owner (direct python
+    callers / tests) stays permissive.
+    """
+    owner = str(rec.get("owner_session_id") or "")
+    if not owner:
+        return True
+    caller = str(getattr(parent_agent, "session_id", "") or "")
+    return not caller or caller == owner
+
+
+def handle_omp_control_action(
+    action: str,
+    subagent_id: Optional[str],
+    message: Optional[str],
+    parent_agent: Any = None,
+) -> str:
+    """delegate_task control plane over live omp children (§8.1 item 2).
+
+    - list: live children (id, name, goal, transport, running seconds).
+    - steer: forward to the child's RPC connection (``steer``) — one-shot
+      children answer honestly that they cannot be steered.
+    - stop: RPC ``abort`` first (graceful boundary), SIGKILL of the child's
+      process group when the connection is lost or the child is one-shot.
+
+    Returns the same JSON/tool_error shapes delegate_task's hermes-side
+    control plane uses, so the model sees one contract.
+    """
+    from tools.registry import tool_error
+
+    if action == "list":
+        caller_sid = str(getattr(parent_agent, "session_id", "") or "")
+        with _live_children_lock:
+            records = [
+                rec for rec in _live_children.values()
+                if not caller_sid or _owns_live_child(rec, parent_agent)
+            ]
+        entries = []
+        for r in records:
+            entries.append({
+                "subagent_id": r.get("child_id"),
+                "delegation_id": r.get("delegation_id"),
+                "task_index": r.get("task_index"),
+                "name": r.get("name"),
+                "goal": r.get("goal"),
+                "model": r.get("model"),
+                "transport": r.get("transport_kind"),
+                "steerable": bool(r.get("steerable")),
+                "running_seconds": round(time.time() - r.get("started_at", time.time()), 1),
+            })
+        payload: Dict[str, Any] = {
+            "action": "list",
+            "engine": "omp",
+            "count": len(entries),
+            "subagents": entries,
+        }
+        if not entries:
+            payload["note"] = (
+                "No live omp children right now. Finished children have "
+                "delivered (or will deliver) their results as completion "
+                "messages."
+            )
+        return json.dumps(payload, ensure_ascii=False)
+
+    rec, resolve_err = _resolve_live_child(subagent_id or "")
+    child_id = (subagent_id or "").strip()
+    if rec is not None and not _owns_live_child(rec, parent_agent):
+        return tool_error(
+            f"No live child '{child_id}' in this conversation's spawn tree. "
+            "Use action='list' to see the children you own."
+        )
+    if rec is None:
+        return tool_error(
+            f"No live omp child '{child_id}' ({resolve_err}). It may have "
+            "already finished — its result arrives as a normal completion "
+            "message. Use action='list' to see live children."
+        )
+
+    transport = rec.get("transport")
+    child_id = rec.get("child_id") or child_id
+
+    if action == "steer":
+        text = str(message or "").strip()
+        if not text:
+            return tool_error(
+                "action='steer' requires a non-empty 'message' describing "
+                "the course correction."
+            )
+        if not rec.get("steerable"):
+            return tool_error(
+                f"Child '{child_id}' runs on the one-shot transport and "
+                "cannot be steered mid-run. It finishes on its own and its "
+                "result re-enters the conversation."
+            )
+        try:
+            transport.steer(text)
+        except Exception as exc:
+            logger.warning(
+                "M0A: steer to %s failed (%s)", child_id, exc)
+            return tool_error(
+                f"Steering '{child_id}' failed: {exc}. If the child died, "
+                "its result (or failure) arrives as a completion message."
+            )
+        return json.dumps({
+            "action": "steer",
+            "subagent_id": child_id,
+            "status": "queued",
+            "note": (
+                "Steer forwarded to the omp child over RPC — it is injected "
+                "at the next safe boundary; the in-flight tool call is "
+                "never cut."
+            ),
+        }, ensure_ascii=False)
+
+    if action == "stop":
+        with _live_children_lock:
+            rec["stop_requested"] = True
+        aborted_cleanly = False
+        if rec.get("steerable"):
+            try:
+                transport.abort(reason="delegate_task stop by parent")
+                aborted_cleanly = True
+            except Exception as exc:
+                # Connection loss: fall through to the SIGKILL fallback.
+                logger.warning(
+                    "M0A: RPC abort of %s failed (%s) — falling back to "
+                    "SIGKILL", child_id, exc)
+        if not aborted_cleanly:
+            _kill_procs([transport])
+        return json.dumps({
+            "action": "stop",
+            "subagent_id": child_id,
+            "status": "interrupt_requested",
+            "note": (
+                "Stop forwarded to the omp child (graceful abort; hard kill "
+                "on connection loss). Its partial result still re-enters "
+                "the conversation as a completion message — do not wait or "
+                "poll."
+            ),
+        }, ensure_ascii=False)
+
+    return tool_error(
+        f"Unknown action '{action}'. Use spawn (default), list, steer, or stop."
+    )
 
 
 def _omp_delegate_env() -> tuple[Dict[str, str], Optional[str]]:
@@ -432,6 +647,16 @@ class _ApprovalBridgeServer:
 
         class UnixHTTPServer(ThreadingHTTPServer):
             address_family = socket.AF_UNIX
+            def server_bind(self):
+                # HTTPServer.server_bind() calls socket.getfqdn() — a
+                # multi-SECOND DNS stall on resolver-less boxes (measured
+                # ~3.5s here, paid by EVERY sync delegation batch) — and
+                # unpacks a unix PATH as (host, port). Bind plainly and use
+                # static names; nothing reads server_name on this socket.
+                import socketserver
+                socketserver.TCPServer.server_bind(self)
+                self.server_name = "mercury-approval-bridge"
+                self.server_port = 0
             def get_request(self):
                 req, _ = self.socket.accept()
                 return req, ("unix", 0)
@@ -490,7 +715,11 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                   timeout: int, fallback_chain: Optional[str],
                   batch_procs: Optional[List["subprocess.Popen"]] = None,
                   profile_home: Optional[str] = None,
-                  extra_env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                  extra_env: Optional[Dict[str, str]] = None,
+                  delegation_id: Optional[str] = None,
+                  name: Optional[str] = None,
+                  goal: Optional[str] = None,
+                  owner_session_id: str = "") -> Dict[str, Any]:
     """Run ONE omp child; return a result entry (old entry contract).
 
     C1 slice 2: prefer the RPC transport (approval routing live); fall
@@ -499,14 +728,32 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
     re-run on the other transport (double-execution hazard for
     side-effecting tasks).
 
+    M0A (matrix observatory §8.1): every live child registers in the
+    steer/stop registry under ``<delegation_id>/<task_index>`` while it
+    runs, and its result entry carries the task ``name`` so delegation
+    records/completions stay name-addressable.
+
     status ∈ {completed, failed, interrupted}; exit_reason ∈ {completed,
     error, timeout, interrupted}; truncated is always False.
     """
     omp_path = _resolve_omp_binary()
     started = time.time()
+    child_name = str(name or "").strip() or f"task-{task_index}"
+    # M0A: registry meta — the steer/stop address of this child while it
+    # runs. Registered/unregistered by whichever transport owns the run.
+    meta = {
+        "child_id": _live_child_id(delegation_id, task_index),
+        "delegation_id": delegation_id,
+        "task_index": task_index,
+        "name": child_name,
+        "goal": goal,
+        "model": model,
+        "owner_session_id": owner_session_id or "",
+    }
     if omp_path is None:
         return {
             "task_index": task_index,
+            "name": child_name,
             "status": "failed",
             "summary": None,
             "error": (
@@ -550,6 +797,11 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                     batch_procs=batch_procs,
                     approval_callback=_parent_approval_callback(),
                     thinking_level=_delegate_thinking_level(),
+                    # M0A: live-child registry (steer/stop) for the run
+                    child_started=lambda c: _register_live_child(
+                        {**meta, "transport_kind": "rpc", "steerable": True}, c),
+                    child_finished=lambda c: _unregister_live_child(
+                        meta["child_id"], c),
                 )
             except OmpRpcStartError as start_exc:
                 logger.warning(
@@ -558,12 +810,14 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                 entry = _run_omp_one_shot(
                     task_index, prompt, model, omp_path, workdir,
                     timeout, fallback_chain, batch_procs, started,
-                    profile_home=profile_home, extra_env=extra_env)
+                    profile_home=profile_home, extra_env=extra_env,
+                    meta={**meta, "transport_kind": "oneshot-fallback"})
                 entry["transport"] = "oneshot-fallback"
                 return entry
             except Exception as exc:  # after a good start: real failure
                 return {
                     "task_index": task_index,
+                    "name": child_name,
                     "status": "failed",
                     "summary": None,
                     "error": f"omp RPC child failed: {exc}",
@@ -573,13 +827,15 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                     "duration_seconds": round(time.time() - started, 2),
                 }
             entry["task_index"] = task_index
+            entry["name"] = child_name
             entry["transport"] = "rpc"
             return entry
 
     return _run_omp_one_shot(
         task_index, prompt, model, omp_path, workdir,
         timeout, fallback_chain, batch_procs, started,
-        profile_home=profile_home, extra_env=extra_env)
+        profile_home=profile_home, extra_env=extra_env,
+        meta={**meta, "transport_kind": "oneshot"})
 
 
 def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
@@ -588,8 +844,13 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
                       batch_procs: Optional[List["subprocess.Popen"]],
                       started: float,
                       profile_home: Optional[str] = None,
-                      extra_env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    """The original ``omp --model m -p <prompt>`` one-shot path (B1)."""
+                      extra_env: Optional[Dict[str, str]] = None,
+                      meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The original ``omp --model m -p <prompt>`` one-shot path (B1).
+
+    ``meta`` (M0A): live-child registry record — one-shot children are
+    listed and stoppable (SIGKILL), but never steerable.
+    """
     env = os.environ.copy()
     env.update(_shared_env_overrides())
     if extra_env:
@@ -613,8 +874,13 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
         start_new_session=True,  # own process group → clean kill of omp's tree
     )
     _track_proc(proc, batch_procs)
+    if meta is not None:
+        _register_live_child(
+            {**meta, "transport_kind": meta.get("transport_kind") or "oneshot",
+             "steerable": False}, proc)
     entry: Dict[str, Any] = {
         "task_index": task_index,
+        "name": (meta or {}).get("name") or f"task-{task_index}",
         "model": model,
         "truncated": False,
     }
@@ -655,6 +921,8 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
         )
     finally:
         _untrack_proc(proc, batch_procs)
+        if meta is not None:
+            _unregister_live_child(meta["child_id"], proc)
     return entry
 
 
@@ -667,8 +935,15 @@ def _kill_live_children() -> None:
 def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
               workdir: Optional[str], timeout: int,
               max_workers: int,
-              batch_procs: Optional[List["subprocess.Popen"]] = None) -> Dict[str, Any]:
-    """Bounded-parallel run of all omp children; one entry per task."""
+              batch_procs: Optional[List["subprocess.Popen"]] = None,
+              delegation_id: Optional[str] = None,
+              owner_session_id: str = "") -> Dict[str, Any]:
+    """Bounded-parallel run of all omp children; one entry per task.
+
+    ``delegation_id``/``owner_session_id`` (M0A): registry spine so each
+    child registers under ``<delegation_id>/<task_index>`` owned by the
+    dispatching conversation (steer/stop addressing).
+    """
     started = time.time()
     # HERMES-OMP PATCH (approval pass-through): one-shot children ask the
     # user through THIS parent. RPC children route approvals natively; the
@@ -682,7 +957,8 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
         except Exception:
             _bridge = None
     try:
-        return _sync_run_inner(tasks, env, workdir, timeout, max_workers, batch_procs)
+        return _sync_run_inner(tasks, env, workdir, timeout, max_workers,
+                               batch_procs, delegation_id, owner_session_id)
     finally:
         if _bridge is not None:
             _bridge.stop()
@@ -691,7 +967,9 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
 def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
               workdir: Optional[str], timeout: int,
               max_workers: int,
-              batch_procs: Optional[List["subprocess.Popen"]] = None) -> Dict[str, Any]:
+              batch_procs: Optional[List["subprocess.Popen"]] = None,
+              delegation_id: Optional[str] = None,
+              owner_session_id: str = "") -> Dict[str, Any]:
     started = time.time()
     if len(tasks) == 1 or max_workers <= 1:
         _profile_home = env.get("MERCURY_PROFILE_HOME")
@@ -699,7 +977,10 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
         results = [
             _run_omp_task(i, t["prompt"], env["OMP_MODEL"], workdir, timeout,
                           env.get("OMP_FALLBACK_CHAIN"), batch_procs,
-                          profile_home=_profile_home, extra_env=_extra or None)
+                          profile_home=_profile_home, extra_env=_extra or None,
+                          delegation_id=delegation_id, name=t.get("name"),
+                          goal=t.get("goal"),
+                          owner_session_id=owner_session_id)
             for i, t in enumerate(tasks)
         ]
     else:
@@ -709,7 +990,10 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
                 pool.submit(_run_omp_task, i, t["prompt"], env["OMP_MODEL"],
                             workdir, timeout, env.get("OMP_FALLBACK_CHAIN"),
                             batch_procs, profile_home=env.get("MERCURY_PROFILE_HOME"),
-                            extra_env=_extra or None)
+                            extra_env=_extra or None,
+                            delegation_id=delegation_id, name=t.get("name"),
+                            goal=t.get("goal"),
+                            owner_session_id=owner_session_id)
                 for i, t in enumerate(tasks)
             ]
             results = [f.result() for f in futures]
@@ -723,30 +1007,20 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
 def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) -> str:
     """B1 entry point — replaces Mercury-child spawn for delegate_task.
 
-    Control actions (list/steer/stop) answer honestly: omp one-shot children
-    are not steerable mid-run; results arrive as completion messages.
+    Control actions (list/steer/stop) forward into the live-child registry
+    (M0A, matrix observatory §8.1): RPC children are steered over their
+    connection and stopped via graceful abort + SIGKILL fallback; one-shot
+    children are listed/stoppable but not steerable.
     """
     from tools.registry import tool_error
 
     action = str(function_args.get("action") or "").strip().lower()
     if action in ("list", "steer", "stop"):
-        if action == "list":
-            with _live_procs_lock:
-                n = len(_live_procs)
-            return json.dumps({
-                "action": "list",
-                "engine": "omp",
-                "running_children": n,
-                "note": (
-                    "omp one-shot children are not steerable mid-run. Each "
-                    "batch delivers its consolidated summaries as one "
-                    "completion message when every child finishes."
-                ),
-            }, ensure_ascii=False)
-        return tool_error(
-            f"action='{action}' is not supported for omp delegation children "
-            "(one-shot processes, no live steering). They finish on their "
-            "own and their results re-enter the conversation."
+        return handle_omp_control_action(
+            action,
+            function_args.get("subagent_id"),
+            function_args.get("message"),
+            parent_agent,
         )
 
     # --- spawn path -----------------------------------------------------------
@@ -755,10 +1029,11 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
         _get_max_concurrent_children,
         _resolve_workspace_hint,
         _strip_model_hidden_task_fields,
+        normalize_delegation_names,
     )
 
     raw_tasks = _strip_model_hidden_task_fields(function_args.get("tasks"))
-    goals: List[Dict[str, Any]] = []
+    task_dicts: List[Dict[str, Any]] = []
     if isinstance(raw_tasks, list) and raw_tasks:
         for t in raw_tasks:
             if not isinstance(t, dict):
@@ -766,23 +1041,30 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
             g = str(t.get("goal") or "").strip()
             if not g:
                 continue
-            goals.append({
+            task_dicts.append({
                 "goal": g,
                 "context": t.get("context"),
                 "output_schema": t.get("output_schema"),
+                "name": t.get("name"),
             })
-    if not goals:
+    if not task_dicts:
         g = str(function_args.get("goal") or "").strip()
         if not g:
             return tool_error(
                 "delegate_task needs task text: tasks[].goal (preferred) or "
                 "the legacy top-level goal."
             )
-        goals.append({
+        task_dicts.append({
             "goal": g,
             "context": function_args.get("context"),
             "output_schema": function_args.get("output_schema"),
+            "name": None,  # legacy single-goal shape → fallback task-0
         })
+    # M0A (§8.1 item 1): `name` is hard-required in the model-facing schema;
+    # every other caller shape (legacy goal, cron, direct python) gets a
+    # derived fallback here so nothing breaks.
+    normalize_delegation_names(task_dicts)
+    goals: List[Dict[str, Any]] = task_dicts
 
     env, err = _omp_delegate_env()
     if err:
@@ -801,7 +1083,8 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     _render_omp_config_once()
 
     tasks = [
-        {"prompt": _build_task_prompt(g["goal"], g["context"], g["output_schema"])}
+        {"prompt": _build_task_prompt(g["goal"], g["context"], g["output_schema"]),
+         "name": g["name"], "goal": g["goal"]}
         for g in goals
     ]
     workdir = _resolve_workspace_hint(parent_agent)
@@ -810,11 +1093,18 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     # the number of concurrent subagents — every task gets its own worker.
     max_workers = max(1, len(tasks))
     is_subagent = getattr(parent_agent, "_delegate_depth", 0) > 0
+    # M0A: registry spine — generated HERE so the id is known before the
+    # runner starts (children register under <delegation_id>/<task_index>
+    # the moment they spawn) and can be passed to the async registry.
+    delegation_id = f"deleg_{uuid.uuid4().hex[:8]}"
+    owner_session_id = str(getattr(parent_agent, "session_id", "") or "")
 
     if is_subagent:
         # Orchestrator children need results within their own turn.
         return json.dumps(
-            _sync_run(tasks, env, workdir, timeout, max_workers),
+            _sync_run(tasks, env, workdir, timeout, max_workers,
+                      delegation_id=delegation_id,
+                      owner_session_id=owner_session_id),
             ensure_ascii=False,
         )
 
@@ -839,7 +1129,9 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     origin_session_id = _current_origin_session_id()
     if not async_ok and not origin_session_id:
         # Finite session, no wake id: run in-turn so the result is not lost.
-        result = _sync_run(tasks, env, workdir, timeout, max_workers, batch_procs)
+        result = _sync_run(tasks, env, workdir, timeout, max_workers, batch_procs,
+                           delegation_id=delegation_id,
+                           owner_session_id=owner_session_id)
         result["note"] = (
             "background delivery is unavailable in this session (one-shot "
             "runner); the omp children ran SYNCHRONOUSLY and their results "
@@ -870,22 +1162,29 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
         session_key=session_key,
         parent_session_id=parent_session_id,
         runner=lambda: _sync_run(tasks, env, workdir, timeout, max_workers,
-                                 batch_procs),
+                                 batch_procs,
+                                 delegation_id=delegation_id,
+                                 owner_session_id=owner_session_id),
+        delegation_id=delegation_id,
         origin_ui_session_id=origin_ui_session_id,
         origin_session_id=origin_session_id,
         interrupt_fn=_interrupt_batch,
         max_async_children=_get_max_async_children(),
+        names=[g["name"] for g in goals],
     )
     if dispatch.get("status") == "dispatched":
         n = len(tasks)
         note = (
             "omp is running the task in the background. Keep working; its "
             "result re-enters the conversation as a new message. Do not wait "
-            "or poll." if n == 1 else
+            "or poll. While it runs you can steer it (action='steer' + "
+            "subagent_id + message) or stop it early (action='stop')."
+            if n == 1 else
             f"{n} omp children are running in parallel in the background. "
             "Keep working; their consolidated results re-enter the "
             "conversation as a single message once ALL finish. Do not wait "
-            "or poll."
+            "or poll. While they run you can steer or stop individual "
+            "children (action='steer'/'stop' + subagent_id)."
         )
         return json.dumps({
             "status": "dispatched",
@@ -895,6 +1194,15 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
             "delegation_id": dispatch["delegation_id"],
             "model": model,
             "goals": [g["goal"] for g in goals],
+            # M0A: name-addressable children — subagent_id for steer/stop.
+            "children": [
+                {
+                    "subagent_id": f"{delegation_id}/{i}",
+                    "name": g["name"],
+                    "goal": g["goal"],
+                }
+                for i, g in enumerate(goals)
+            ],
             "note": note,
         }, ensure_ascii=False)
     return tool_error(f"delegation rejected: {dispatch.get('error')}")

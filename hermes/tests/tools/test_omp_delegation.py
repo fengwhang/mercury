@@ -19,6 +19,8 @@ import threading
 import time
 import unittest
 import unittest.mock as mock
+
+import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -172,15 +174,23 @@ class TestTaskCollectionAndValidation(unittest.TestCase):
         out = self._dispatch({"goal": "x"}, parent=_make_parent(depth=1))
         self.assertIn("omp binary not found", out)
 
-    def test_control_actions_answer_honestly(self):
-        out = self._dispatch({"action": "list"})
-        payload = json.loads(out)
-        self.assertEqual(payload["engine"], "omp")
-        out = self._dispatch({"action": "steer", "subagent_id": "x",
-                              "message": "y"})
-        self.assertIn("not supported", out)
-        out = self._dispatch({"action": "stop", "subagent_id": "x"})
-        self.assertIn("not supported", out)
+    def test_control_actions_over_live_registry(self):
+        # M0A: control actions now answer over the live-child registry —
+        # empty list is honest, unknown steer/stop targets are errors
+        # (no more blanket 'not supported').
+        import tools.omp_delegation as mod
+        # isolate from any leaked registry state
+        with mock.patch.object(mod, "_live_children", {}):
+            out = self._dispatch({"action": "list"})
+            payload = json.loads(out)
+            self.assertEqual(payload["engine"], "omp")
+            self.assertEqual(payload["count"], 0)
+            self.assertIn("subagents", payload)
+            out = self._dispatch({"action": "steer", "subagent_id": "x",
+                                  "message": "y"})
+            self.assertIn("No live omp child 'x'", out)
+            out = self._dispatch({"action": "stop", "subagent_id": "x"})
+            self.assertIn("No live omp child 'x'", out)
 
     def test_acp_transport_args_stripped_before_prompt(self):
         # hidden ACP fields must never reach the omp prompt (strip invariant
@@ -208,12 +218,16 @@ class TestPromptVerbatim(unittest.TestCase):
         captured = {}
 
         def fake_run(task_index, prompt, model, workdir, timeout,
-                     fallback_chain, batch_procs=None):
+                     fallback_chain, batch_procs=None,
+                     profile_home=None, extra_env=None,
+                     delegation_id=None, name=None, goal=None,
+                     owner_session_id=""):
             captured["prompt"] = prompt
             captured["model"] = model
             captured["fallback"] = fallback_chain
+            captured["name"] = name
             return {"task_index": task_index, "status": "completed",
-                    "summary": "s", "exit_reason": "completed"}
+                    "name": name, "summary": "s", "exit_reason": "completed"}
 
         with mock.patch.object(mod, "_run_omp_task", side_effect=fake_run):
             res = mod._sync_run(
@@ -223,6 +237,8 @@ class TestPromptVerbatim(unittest.TestCase):
         self.assertEqual(captured["prompt"], "line1\nline2; rm -rf / --faked")
         self.assertEqual(captured["model"], "m")
         self.assertEqual(captured["fallback"], "f")
+        # tasks without a name pass None through (fallback is the runner's job)
+        self.assertIsNone(captured["name"])
         self.assertEqual(res["engine"], "omp")
         self.assertEqual(res["results"][0]["summary"], "s")
 
@@ -266,6 +282,7 @@ class TestEntryContract(unittest.TestCase):
         self.assertEqual(entry["task_index"], 0)
         self.assertEqual(entry["model"], "m")
 
+    @pytest.mark.live_system_guard_bypass
     def test_timeout_kills_group(self):
         import tools.omp_delegation as mod
         bin2 = _write_fake_omp(
@@ -408,18 +425,26 @@ class TestParallelFanout(unittest.TestCase):
         bin_path = _write_fake_omp(
             Path(bin_path).parent,
             "#!/bin/sh\nsleep 0.3\necho done\n")
-        old = os.environ.get("HERMES_OMP_BIN")
+        old_bin = os.environ.get("HERMES_OMP_BIN")
+        # Force the -p one-shot engine: this test measures ONE-SHOT
+        # parallelism; a non-RPC binary would add a per-task RPC
+        # probe+failover (~0.7s each) to the wall clock without testing
+        # anything new (failover is covered in TestRpcTransportSelection).
+        old_transport = os.environ.get("HERMES_OMP_TRANSPORT")
         os.environ["HERMES_OMP_BIN"] = bin_path
+        os.environ["HERMES_OMP_TRANSPORT"] = "oneshot"
         try:
             tasks = [{"prompt": f"t{i}"} for i in range(4)]
             t0 = time.monotonic()
             res = mod._sync_run(tasks, {"OMP_MODEL": "m"}, None, 60, 4)
             dt = time.monotonic() - t0
         finally:
-            if old is None:
-                os.environ.pop("HERMES_OMP_BIN", None)
-            else:
-                os.environ["HERMES_OMP_BIN"] = old
+            for key, val in (("HERMES_OMP_BIN", old_bin),
+                             ("HERMES_OMP_TRANSPORT", old_transport)):
+                if val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = val
         self.assertEqual(len(res["results"]), 4)
         self.assertEqual([r["task_index"] for r in res["results"]], [0, 1, 2, 3])
         # 4 tasks × 0.3s at width 4 ≈ 0.3s total; serial would be ≥ 1.2s
@@ -518,7 +543,7 @@ class TestRpcTransportSelection(unittest.TestCase):
             calls["rpc"] += 1
             raise omp_rpc_transport.OmpRpcStartError("RpcTimeoutError: no ready frame")
 
-        def fake_oneshot(*a):
+        def fake_oneshot(*a, **kw):
             calls["oneshot"] += 1
             return {"task_index": a[0], "status": "completed",
                     "summary": "one", "exit_reason": "completed",
@@ -551,6 +576,347 @@ class TestRpcTransportSelection(unittest.TestCase):
         # must not raise / must not kill US
         mod._kill_procs([_Unspawned()])
 
+
+
+class TestDelegationNames(unittest.TestCase):
+    """M0A §8.1 item 1: `name` is schema-required and flows everywhere."""
+
+    def test_model_schema_hard_requires_name(self):
+        from tools.delegate_tool import (
+            DELEGATE_TASK_SCHEMA,
+            _build_dynamic_schema_overrides,
+        )
+        for schema in (DELEGATE_TASK_SCHEMA, _build_dynamic_schema_overrides()):
+            items = schema["parameters"]["properties"]["tasks"]["items"]
+            self.assertEqual(items["required"], ["goal", "name"])
+            self.assertEqual(items["properties"]["name"]["type"], "string")
+        # the dynamic description text mandates the name too
+        dyn = _build_dynamic_schema_overrides()
+        self.assertIn("name", dyn["parameters"]["properties"]["tasks"]["description"])
+        self.assertIn("name", dyn["description"])
+
+    def test_normalize_fallback_and_collapsing(self):
+        from tools.delegate_tool import normalize_delegation_names
+        tasks = normalize_delegation_names([
+            {"goal": "a"},                       # no name → task-0
+            {"goal": "b", "name": "  fix \n auth "},  # whitespace collapsed
+            {"goal": "c", "name": ""},           # blank → task-2
+        ])
+        self.assertEqual([t["name"] for t in tasks],
+                         ["task-1", "fix auth", "task-3"])
+
+    def test_names_flow_to_dispatch_response_and_registry_id(self):
+        import tools.omp_delegation as mod
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        tmpdir = Path(self._tmp.name)
+        fx = _EnvFixture(tmpdir)
+        fx.__enter__()
+        self.addCleanup(fx.__exit__)
+        bin_ = _write_fake_omp(tmpdir, "#!/bin/sh\necho bg-ok\n")
+        old_bin = os.environ.get("HERMES_OMP_BIN")
+        os.environ["HERMES_OMP_BIN"] = bin_
+        self.addCleanup(lambda: os.environ.pop("HERMES_OMP_BIN", None)
+                        if old_bin is None else os.environ.__setitem__(
+                            "HERMES_OMP_BIN", old_bin))
+        captured = {}
+
+        def fake_dispatch(**kwargs):
+            captured.update(kwargs)
+            return {"status": "dispatched",
+                    "delegation_id": kwargs["delegation_id"]}
+
+        with mock.patch("tools.async_delegation.dispatch_async_delegation_batch",
+                        side_effect=fake_dispatch), \
+             mock.patch("tools.approval.get_current_session_key",
+                        return_value="agent:main:test"), \
+             mock.patch("gateway.session_context.async_delivery_supported",
+                        return_value=True), \
+             mock.patch("gateway.session_context.get_session_env",
+                        return_value=""), \
+             mock.patch.object(mod, "_render_omp_config_once"):
+            out = mod.dispatch_omp_delegation(
+                _make_parent(depth=0),
+                {"tasks": [{"goal": "g1", "name": "auth-refactor"},
+                           {"goal": "g2", "name": "修复测试"}]})
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "dispatched")
+        children = payload["children"]
+        self.assertEqual([c["name"] for c in children],
+                         ["auth-refactor", "修复测试"])
+        self.assertEqual([c["subagent_id"] for c in children],
+                         [f"{payload['delegation_id']}/0",
+                          f"{payload['delegation_id']}/1"])
+        # our pre-generated id is the one the async registry received
+        self.assertEqual(captured["delegation_id"], payload["delegation_id"])
+
+    def test_missing_names_get_derived_fallback_sync(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        tmpdir = Path(self._tmp.name)
+        fx = _EnvFixture(tmpdir)
+        fx.__enter__()
+        self.addCleanup(fx.__exit__)
+        bin_ = _write_fake_omp(tmpdir, "#!/bin/sh\necho ok\n")
+        old_bin = os.environ.get("HERMES_OMP_BIN")
+        os.environ["HERMES_OMP_BIN"] = bin_
+        self.addCleanup(lambda: os.environ.pop("HERMES_OMP_BIN", None)
+                        if old_bin is None else os.environ.__setitem__(
+                            "HERMES_OMP_BIN", old_bin))
+        import tools.omp_delegation as mod
+        with mock.patch.object(mod, "_render_omp_config_once"), \
+             mock.patch.object(mod, "_rpc_disabled", return_value=True):
+            out = mod.dispatch_omp_delegation(
+                _make_parent(depth=1),
+                {"tasks": [{"goal": "alpha"}, {"goal": "beta", "name": ""}]})
+        payload = json.loads(out)
+        self.assertEqual([r["name"] for r in payload["results"]],
+                         ["task-1", "task-2"])
+        with mock.patch.object(mod, "_render_omp_config_once"), \
+             mock.patch.object(mod, "_rpc_disabled", return_value=True):
+            out = mod.dispatch_omp_delegation(
+                _make_parent(depth=1), {"goal": "legacy"})
+        payload = json.loads(out)
+        self.assertEqual(payload["results"][0]["name"], "task-1")
+
+
+class _FakeRpcTransport:
+    """RPC-transport duck for control-plane tests (steer/abort/kills)."""
+
+    def __init__(self, fail_abort=False, pid=None):
+        self.steer_calls = []
+        self.abort_calls = []
+        self.fail_abort = fail_abort
+        self.pid = pid
+        self.killed = False
+
+    def steer(self, text):
+        self.steer_calls.append(text)
+
+    def abort(self, reason=None):
+        self.abort_calls.append(reason)
+        if self.fail_abort:
+            raise RuntimeError("connection lost")
+
+    def kill(self):
+        self.killed = True
+
+
+class TestSteerStopForwarding(unittest.TestCase):
+    """M0A §8.1 item 2: steer/stop forward to live children."""
+
+    def setUp(self):
+        import tools.omp_delegation as mod
+        self.mod = mod
+        # each test starts from an empty registry
+        self._real_registry = dict(mod._live_children)
+        mod._live_children.clear()
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        self.mod._live_children.clear()
+        self.mod._live_children.update(self._real_registry)
+
+    def _register(self, child_id, transport, *, owner="sess-b1-test",
+                  steerable=True, name="probe", batch="deleg_aaa", index=0):
+        self.mod._register_live_child({
+            "child_id": child_id,
+            "delegation_id": batch,
+            "task_index": index,
+            "name": name,
+            "goal": "probe goal",
+            "model": "prov/m",
+            "owner_session_id": owner,
+            "transport_kind": "rpc" if steerable else "oneshot",
+            "steerable": steerable,
+        }, transport)
+        self.addCleanup(lambda: self.mod._unregister_live_child(
+            child_id, transport))
+        return transport
+
+    def _dispatch_control(self, args, parent=None):
+        with mock.patch.object(self.mod, "_render_omp_config_once"):
+            return self.mod.dispatch_omp_delegation(
+                parent or _make_parent(), args)
+
+    def test_steer_forwards_over_rpc(self):
+        transport = self._register("deleg_aaa/0", _FakeRpcTransport())
+        out = self._dispatch_control(
+            {"action": "steer", "subagent_id": "deleg_aaa/0",
+             "message": "switch to plan B"})
+        payload = json.loads(out)
+        self.assertEqual(payload["action"], "steer")
+        self.assertEqual(payload["status"], "queued")
+        self.assertEqual(transport.steer_calls, ["switch to plan B"])
+
+    def test_steer_resolves_bare_delegation_id_single_child(self):
+        transport = self._register("deleg_bbb/0", _FakeRpcTransport(),
+                                   batch="deleg_bbb")
+        out = self._dispatch_control(
+            {"action": "steer", "subagent_id": "deleg_bbb",
+             "message": "go"})
+        self.assertEqual(json.loads(out)["status"], "queued")
+        self.assertEqual(transport.steer_calls, ["go"])
+
+    def test_steer_ambiguous_batch_is_rejected_with_candidates(self):
+        self._register("deleg_ccc/0", _FakeRpcTransport(), batch="deleg_ccc")
+        self._register("deleg_ccc/1", _FakeRpcTransport(), batch="deleg_ccc",
+                       index=1)
+        out = self._dispatch_control(
+            {"action": "steer", "subagent_id": "deleg_ccc",
+             "message": "go"})
+        self.assertIn("multiple live children", out)
+        self.assertIn("deleg_ccc/0", out)
+        self.assertIn("deleg_ccc/1", out)
+
+    def test_steer_oneshot_child_rejected(self):
+        self._register("deleg_ddd/0", _FakeRpcTransport(),
+                       steerable=False, batch="deleg_ddd")
+        out = self._dispatch_control(
+            {"action": "steer", "subagent_id": "deleg_ddd/0",
+             "message": "go"})
+        self.assertIn("one-shot transport", out)
+
+    def test_steer_requires_message(self):
+        self._register("deleg_eee/0", _FakeRpcTransport(), batch="deleg_eee")
+        out = self._dispatch_control(
+            {"action": "steer", "subagent_id": "deleg_eee/0", "message": "  "})
+        self.assertIn("non-empty 'message'", out)
+
+    def test_steer_transport_failure_is_error(self):
+        class _Boom:
+            def steer(self, text):
+                raise RuntimeError("RpcProcessExitError: child died")
+        self._register("deleg_fff/0", _Boom(), batch="deleg_fff")
+        out = self._dispatch_control(
+            {"action": "steer", "subagent_id": "deleg_fff/0",
+             "message": "go"})
+        self.assertIn("child died", out)
+
+    @pytest.mark.live_system_guard_bypass
+    def test_stop_rpc_aborts_gracefully(self):
+        import subprocess as sp
+        sleeper = sp.Popen(["sleep", "60"], start_new_session=True)
+        self.addCleanup(lambda: sleeper.poll() is None and sleeper.kill())
+        transport = _FakeRpcTransport(pid=sleeper.pid)
+        self._register("deleg_ggg/0", transport, batch="deleg_ggg")
+        out = self._dispatch_control(
+            {"action": "stop", "subagent_id": "deleg_ggg/0"})
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "interrupt_requested")
+        self.assertEqual(len(transport.abort_calls), 1)
+        # graceful: the process itself is still alive (abort, not SIGKILL)
+        self.assertIsNone(sleeper.poll())
+
+    @pytest.mark.live_system_guard_bypass
+    def test_stop_connection_loss_falls_back_to_sigkill(self):
+        import subprocess as sp
+        sleeper = sp.Popen(["sleep", "60"], start_new_session=True)
+        self.addCleanup(lambda: sleeper.poll() is None and sleeper.kill())
+        transport = _FakeRpcTransport(fail_abort=True, pid=sleeper.pid)
+        self._register("deleg_hhh/0", transport, batch="deleg_hhh")
+        out = self._dispatch_control(
+            {"action": "stop", "subagent_id": "deleg_hhh/0"})
+        self.assertEqual(json.loads(out)["status"], "interrupt_requested")
+        # abort raised → process group SIGKILLed as the fallback
+        deadline = time.time() + 5
+        while time.time() < deadline and sleeper.poll() is None:
+            time.sleep(0.05)
+        self.assertIsNotNone(sleeper.poll())
+
+    @pytest.mark.live_system_guard_bypass
+    def test_stop_oneshot_kills_process(self):
+        import subprocess as sp
+        sleeper = sp.Popen(["sleep", "60"], start_new_session=True)
+        self.addCleanup(lambda: sleeper.poll() is None and sleeper.kill())
+        self._register("deleg_iii/0", sleeper, steerable=False,
+                       batch="deleg_iii")
+        out = self._dispatch_control(
+            {"action": "stop", "subagent_id": "deleg_iii/0"})
+        self.assertEqual(json.loads(out)["status"], "interrupt_requested")
+        deadline = time.time() + 5
+        while time.time() < deadline and sleeper.poll() is None:
+            time.sleep(0.05)
+        self.assertIsNotNone(sleeper.poll())
+
+    def test_list_shows_children_with_names(self):
+        self._register("deleg_jjj/0", _FakeRpcTransport(), batch="deleg_jjj",
+                       name="auth-refactor")
+        self._register("deleg_jjj/1", _FakeRpcTransport(), batch="deleg_jjj",
+                       name="docs-sweep", index=1)
+        out = self._dispatch_control({"action": "list"})
+        payload = json.loads(out)
+        self.assertEqual(payload["count"], 2)
+        by_id = {e["subagent_id"]: e for e in payload["subagents"]}
+        self.assertEqual(by_id["deleg_jjj/0"]["name"], "auth-refactor")
+        self.assertEqual(by_id["deleg_jjj/1"]["name"], "docs-sweep")
+        self.assertTrue(by_id["deleg_jjj/0"]["steerable"])
+
+    def test_ownership_mismatch_denied(self):
+        self._register("deleg_kkk/0", _FakeRpcTransport(),
+                       owner="sess-OTHER", batch="deleg_kkk")
+        out = self._dispatch_control(
+            {"action": "steer", "subagent_id": "deleg_kkk/0",
+             "message": "go"})
+        self.assertIn("spawn tree", out)
+        # ...and the child was NOT steered
+        # (checked implicitly: no queued status)
+        self.assertNotIn("queued", out)
+
+    def test_delegate_tool_control_fallthrough(self):
+        """delegate_tool._handle_control_action reaches the omp registry."""
+        from tools import delegate_tool
+        transport = self._register("deleg_lll/0", _FakeRpcTransport(),
+                                   batch="deleg_lll")
+        with mock.patch.object(delegate_tool, "_active_subagents", {}):
+            out = delegate_tool._handle_control_action(
+                "steer", "deleg_lll/0", "redirect now", _make_parent())
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "queued")
+        self.assertEqual(transport.steer_calls, ["redirect now"])
+        # list merges omp children even with an empty hermes registry
+        with mock.patch.object(delegate_tool, "_active_subagents", {}):
+            out = delegate_tool._handle_control_action(
+                "list", None, None, _make_parent())
+        payload = json.loads(out)
+        ids = [e["subagent_id"] for e in payload["subagents"]]
+        self.assertIn("deleg_lll/0", ids)
+
+    def test_registry_empties_after_sync_run(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        tmpdir = Path(self._tmp.name)
+        bin_ = _write_fake_omp(tmpdir, "#!/bin/sh\necho done\n")
+        old_bin = os.environ.get("HERMES_OMP_BIN")
+        os.environ["HERMES_OMP_BIN"] = bin_
+        old_transport = os.environ.get("HERMES_OMP_TRANSPORT")
+        os.environ["HERMES_OMP_TRANSPORT"] = "oneshot"
+        self.addCleanup(lambda: (
+            os.environ.pop("HERMES_OMP_BIN", None) if old_bin is None
+            else os.environ.__setitem__("HERMES_OMP_BIN", old_bin),
+            os.environ.pop("HERMES_OMP_TRANSPORT", None) if old_transport is None
+            else os.environ.__setitem__("HERMES_OMP_TRANSPORT", old_transport)))
+        with mock.patch.object(self.mod, "_rpc_disabled", return_value=True):
+            self.mod._sync_run(
+                [{"prompt": "p", "name": "probe", "goal": "probe"}],
+                {"OMP_MODEL": "m"}, None, 30, 1,
+                delegation_id="deleg_mmm", owner_session_id="sess-b1-test")
+        self.assertEqual(self.mod._live_children, {})
+
+    def test_approval_bridge_bind_never_calls_getfqdn(self):
+        """HTTPServer.server_bind's getfqdn() is a multi-second DNS stall
+        on resolver-less boxes — the bridge must bind without it."""
+        import socket as _socket
+        with mock.patch.object(_socket, "getfqdn",
+                               side_effect=AssertionError("getfqdn called")):
+            bridge = self.mod._ApprovalBridgeServer(None)
+        try:
+            path = bridge.start()
+            self.assertTrue(os.path.exists(path))
+            self.assertEqual(bridge._server.server_name,
+                             "mercury-approval-bridge")
+        finally:
+            bridge.stop()
 
 if __name__ == "__main__":
     unittest.main()
