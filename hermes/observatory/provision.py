@@ -15,8 +15,10 @@ D16. What 'provision' means here, in order:
    has been disabled"), so this boots a THROWAWAY config with
    ``allow_registration = true`` on the SAME database/port, registers the
    owner via ``m.login.registration_token``, then removes it. Credentials
-   land in ``owner-credentials.json`` (0600) — the Phase 3 setup card's
-   source. Skipped entirely when the credentials file already exists.
+   land in ``owner-credentials.json`` (0600) and are mirrored into
+   ``$MERCURY_HOME/.env`` as ``MATRIX_OBS_OWNER_*`` (0600) — the Phase 3
+   setup card's sources. Skipped entirely when the credentials file exists
+   (the 'exists' path only fills .env keys a pre-mirror install missed).
 5. ``ensure_systemd_unit`` — user unit ``mercury-observatory-homeserver.service``
    (ExecStart the binary with the toml, Restart=on-failure, logs under
    ``$MERCURY_HOME/observatory/logs``), mirroring how the gateway unit is
@@ -94,6 +96,79 @@ def _write_secret_file(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     path.chmod(0o600)
+
+
+#: $MERCURY_HOME/.env keys mirroring the observatory owner credentials, so
+#: the Element X password survives outside owner-credentials.json (the setup
+#: card points here; NEVER printed to the terminal).
+ENV_OWNER_USER_ID = "MATRIX_OBS_OWNER_USER_ID"
+ENV_OWNER_PASSWORD = "MATRIX_OBS_OWNER_PASSWORD"
+
+
+def _quote_env_value(value: str) -> str:
+    """Quote a .env value only when it carries dotenv-special characters.
+
+    Same rule as mercury_cli.config._quote_env_value (kept local so this
+    module stays importable from install.sh without the CLI package).
+    """
+    if value == "":
+        return value
+    needs_quoting = (
+        "#" in value
+        or '"' in value
+        or "'" in value
+        or value != value.strip()
+        or any(c.isspace() for c in value)
+    )
+    if not needs_quoting:
+        return value
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _env_line_defines_key(line: str, key: str) -> bool:
+    """True when a .env line assigns *key* (plain or ``export``-prefixed)."""
+    stripped = line.strip()
+    if stripped.startswith("export "):
+        stripped = stripped[7:].lstrip()
+    name, sep, _ = stripped.partition("=")
+    return bool(sep) and name.strip() == key
+
+
+def mirror_owner_env(mercury_home: str | Path | None, user_id: str,
+                     password: str, *, only_missing: bool = False) -> None:
+    """Mirror the owner credentials into ``$MERCURY_HOME/.env`` (0600).
+
+    Upserts :data:`ENV_OWNER_USER_ID` / :data:`ENV_OWNER_PASSWORD`: existing
+    assignments are replaced in place, missing ones appended (creating the
+    file when absent). With ``only_missing=True`` pre-existing values are
+    left untouched — the idempotent heal path for installs provisioned
+    before the mirror existed. NEVER logs the values.
+    """
+    home = _mercury_home(mercury_home)
+    env_path = home / ".env"
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        lines: list[str] = []
+        if env_path.exists():
+            lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        wanted = {ENV_OWNER_USER_ID: user_id, ENV_OWNER_PASSWORD: password}
+        pending = dict(wanted)
+        for i, line in enumerate(lines):
+            for key in list(pending):
+                if _env_line_defines_key(line, key):
+                    if only_missing:
+                        del pending[key]
+                    else:
+                        lines[i] = f"{key}={_quote_env_value(pending.pop(key))}\n"
+                    break
+        if lines and pending and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        for key, value in pending.items():
+            lines.append(f"{key}={_quote_env_value(value)}\n")
+        env_path.write_text("".join(lines), encoding="utf-8")
+        env_path.chmod(0o600)
+    except OSError as exc:
+        raise ProvisionError(f"could not mirror owner credentials to {env_path}: {exc}") from exc
 
 
 def _load_toml(path: Path) -> dict:
@@ -186,6 +261,25 @@ def _wait_for_homeserver(base_url: str, timeout: float = 120.0) -> None:
     )
 
 
+def _heal_owner_env_best_effort(paths: ObservatoryPaths) -> None:
+    """Fill .env owner keys missing on pre-mirror installs; never raises.
+
+    The 'exists' path means provisioning already succeeded, so a broken
+    mirror must not fail the run — and a present value is never overwritten
+    (the credentials file stays the source of truth).
+    """
+    try:
+        creds = json.loads(paths.owner_credentials.read_text(encoding="utf-8"))
+        mirror_owner_env(
+            paths.root.parent,
+            str(creds.get("user_id") or ""),
+            str(creds.get("password") or ""),
+            only_missing=True,
+        )
+    except Exception:  # noqa: BLE001 — heal-only; provisioning already done
+        pass
+
+
 def ensure_owner_account(paths: ObservatoryPaths,
                          owner_localpart: str = OWNER_LOCALPART_DEFAULT) -> str:
     """Bootstrap the owner (admin) account; 'exists' when already provisioned.
@@ -195,8 +289,13 @@ def ensure_owner_account(paths: ObservatoryPaths,
     port, registers via the registration token, then tears both down. The
     running systemd unit, if any, is stopped first and restarted by the
     caller's unit step.
+
+    Fresh credentials are mirrored into ``$MERCURY_HOME/.env`` as
+    ``MATRIX_OBS_OWNER_USER_ID`` / ``MATRIX_OBS_OWNER_PASSWORD`` (0600);
+    the 'exists' path only fills keys a pre-mirror install never wrote.
     """
     if paths.owner_credentials.exists():
+        _heal_owner_env_best_effort(paths)
         return "exists"
     if not paths.binary.is_file():
         raise ProvisionError(
@@ -267,6 +366,9 @@ def ensure_owner_account(paths: ObservatoryPaths,
                 indent=2,
             ) + "\n",
         )
+        # Same password also lives in $MERCURY_HOME/.env (0600) for Element X
+        # paste-in. Fail-hard like every other step here — never log it.
+        mirror_owner_env(paths.root.parent, str(body["user_id"]), password)
     finally:
         proc.terminate()
         try:
@@ -666,6 +768,26 @@ def set_tuwunel_bind(ip: str, mercury_home: str | Path | None = None) -> str:
     except Exception:  # noqa: BLE001 — perms best-effort on odd filesystems
         pass
     return target
+
+
+def current_bind_address(mercury_home: str | Path | None = None) -> str | None:
+    """Current tuwunel ``address`` (first entry when bound to a list).
+
+    None when unprovisioned or unreadable — never raises. The wizard uses
+    this to detect the localhost-only trap (tailnet up, toml still on
+    127.0.0.1, so phones cannot reach the homeserver).
+    """
+    try:
+        paths = ObservatoryPaths(_mercury_home(mercury_home))
+        if not paths.toml.is_file():
+            return None
+        address = _load_toml(paths.toml).get("global", {}).get("address")
+        if isinstance(address, list):
+            address = address[0] if address else None
+        text = str(address or "").strip()
+        return text or None
+    except Exception:  # noqa: BLE001 — display probe, never raises
+        return None
 
 
 def _print_summary(summary: dict) -> None:

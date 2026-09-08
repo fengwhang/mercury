@@ -799,6 +799,36 @@ def _print_setup_summary(config: dict, mercury_home):
     print(f"   {color('mercury gateway', Colors.GREEN)}      Start messaging gateway")
     print(f"   {color('mercury doctor', Colors.GREEN)}       Check for issues")
     print()
+    _reprint_observatory_login_card()
+
+
+def _reprint_observatory_login_card() -> None:
+    """Re-print the Matrix first-login card after the setup summary.
+
+    The fullscreen pickers scroll the section card away; the homeserver URL
+    and credential locations are needed after setup, so they are repeated
+    here under a 'Save this' header. Guarded: provisioned-only, never
+    raises — a missing package or unreadable state stays silent.
+    """
+    try:
+        obs = _load_observatory_provision()
+        if obs is None:
+            return
+        try:
+            status = obs.status_summary()
+        except Exception:
+            return
+        if not isinstance(status, dict) or not status.get("provisioned"):
+            return
+        print()
+        print_header("Save this — Matrix login")
+        try:
+            tailscale = _tailscale_status(obs)
+        except Exception:  # noqa: BLE001 — display probe, never blocks reprint
+            tailscale = None
+        _print_observatory_setup_card(status, tailscale)
+    except Exception:  # noqa: BLE001 — summary addon, never kills setup
+        logger.debug("observatory login card reprint skipped", exc_info=True)
 
 
 def _prompt_container_resources(config: dict):
@@ -2859,14 +2889,58 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
     print_info(f"Restart the homeserver to apply: systemctl --user restart {_unit}")
 
 
+_LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _bind_mismatch_action_line(address: str | None, ts: dict | None) -> str | None:
+    """ACTION text when the tailnet is up but tuwunel still binds localhost.
+
+    Pure: returns the line, or None when there is nothing to act on
+    (tailnet down, address unknown, or already bound off localhost).
+    """
+    try:
+        if not isinstance(ts, dict) or not ts.get("up"):
+            return None
+        if address is None or str(address).strip() not in _LOOPBACK_BINDS:
+            return None
+        try:
+            from observatory.config_gen import HOMESERVER_UNIT_NAME as _unit
+        except Exception:  # noqa: BLE001
+            _unit = "mercury-observatory-homeserver.service"
+        return (
+            "ACTION: Your homeserver only listens on localhost"
+            " — phones cannot reach it. Bind it with: mercury setup"
+            " observatory (answer Yes at the bind prompt), then:"
+            f" systemctl --user restart {_unit}"
+        )
+    except Exception:  # noqa: BLE001 — display helper, never raises
+        return None
+
+
+def _maybe_print_bind_mismatch_action(obs, ts: dict | None) -> None:
+    """Print the localhost-bind ACTION line when the trap is detected.
+
+    Degrades to silence when unprovisioned, unreadable, or already bound —
+    a display hint, never a wizard gate.
+    """
+    try:
+        fn = getattr(obs, "current_bind_address", None)
+        if fn is None:
+            from observatory.provision import current_bind_address as fn
+        line = _bind_mismatch_action_line(fn(), ts)
+    except Exception:  # noqa: BLE001 — display probe, never kills the wizard
+        return
+    if line:
+        print_warning(line)
+
+
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
     """First-login card (docs §'First login on Element X').
 
     Shows the homeserver URL (localhost for desktop, tailnet URL for the
-    phone when Tailscale is up), the owner MXID and the credentials file
-    LOCATION — the password itself is printed only after an explicit
-    reveal prompt (default no; it is a secret). Detect-and-assist only:
-    never installs Tailscale here.
+    phone when Tailscale is up), the owner MXID and where the password
+    lives — the password itself is NEVER printed here (it is a secret).
+    Detect-and-assist only: never installs Tailscale here.
     """
     creds_path = status["owner_credentials_path"]
     try:
@@ -2882,14 +2956,14 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     except Exception as exc:
         logger.debug("could not read observatory owner credentials: %s", exc)
 
-    password_line = f"owner password:      {creds_path} (mode 0600)"
-    if creds is not None and prompt_yes_no(
-        "Reveal the owner password on screen?", default=False
-    ):
-        password_line = (
-            f"owner password:      {creds.get('password', '')}"
-            f"   (also kept in {creds_path}, 0600)"
-        )
+    # Never printed: the owner password lives only in $MERCURY_HOME/.env
+    # (MATRIX_OBS_OWNER_PASSWORD, 0600 — paste it into Element X) and
+    # owner-credentials.json.
+    password_lines = [
+        "owner password:      your .env file (MATRIX_OBS_OWNER_PASSWORD,",
+        "                     mode 0600 — paste it into Element X) and",
+        f"                     {creds_path} — never printed here.",
+    ]
 
     if tailscale is None:
         tailscale = _tailscale_status(_load_observatory_provision())
@@ -2928,7 +3002,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
             "local network:       or edit `address` in tuwunel.toml"
             " — never expose it beyond the VPN",
             f"owner account:       {owner_mxid}",
-            password_line,
+            *password_lines,
             "in Element X:        sign in → 'Use account instead' → 'Enter",
             "                     homeserver manually' → paste the URL above",
             "                     (the QR code does NOT work self-hosted)",
@@ -3007,6 +3081,10 @@ def setup_observatory(config: dict, *, quick: bool = False):
         ts = _tailscale_status(obs)
         _print_observatory_setup_card(status, ts)
         _offer_tailscale_bind(obs, ts)
+        # Post-offer re-check: a declined/failed bind (or a standalone
+        # `mercury setup observatory` re-run) still strands phones on a
+        # localhost-only tuwunel — say so explicitly.
+        _maybe_print_bind_mismatch_action(obs, ts)
     else:
         print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
 
@@ -3044,6 +3122,9 @@ def print_noninteractive_observatory_guidance() -> None:
     phone = _tailscale_phone_url(ts, str(status["homeserver_url"]))
     if phone:
         print_info(f"Tailscale: up — phone homeserver URL {phone}")
+        # Headless runs cannot take the bind offer: print the recovery line
+        # here so the localhost-only trap is actionable without a TTY.
+        _maybe_print_bind_mismatch_action(obs, ts)
     elif bool(ts.get("available")):
         print_info("Tailscale: installed but not connected — run `tailscale up`")
     else:
