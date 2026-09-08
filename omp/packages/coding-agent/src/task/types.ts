@@ -110,9 +110,17 @@ export const LABEL_MAX = 80;
 const outputSchemaInputSchema = type("object | boolean | string | null");
 // Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
 const effortRule = '"lo" | "med" | "hi"' as const;
+// HERMES-OMP PATCH (spec §8.2 / D6): `name` is HARD-REQUIRED at every task
+// spawn surface (hermes `delegate_task` and this tool) so the matrix
+// observatory can derive a stable per-agent identity (MXID slug, room,
+// registry id) at spawn time. This applies to all four exported schemas AND
+// the four dynamic shapes in `createTaskSchema` below. The TS types
+// (`TaskItem.name`, `TaskParams.name`) stay optional defensively — args
+// stream in token by token and internal callers / stale transcripts bypass
+// wire validation; the runtime keeps the generated-name fallback there.
 
 export const taskItemSchema = type({
-	"name?": "string",
+	name: "string",
 	agent: "string = 'task'",
 	task: "string",
 	"outputSchema?": outputSchemaInputSchema,
@@ -120,7 +128,7 @@ export const taskItemSchema = type({
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
-	"name?": "string",
+	name: "string",
 	agent: "string = 'task'",
 	task: "string",
 	"outputSchema?": outputSchemaInputSchema,
@@ -131,7 +139,7 @@ const taskItemSchemaIsolated = type({
 
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
-	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
+	/** Stable agent name; becomes the registry/IRC id. Required by the wire schema (HERMES-OMP PATCH); the TS type stays optional defensively — internal callers and lenient-arg fallback keep the generated AdjectiveNoun default. */
 	name?: string;
 	/** Agent type to run this item. "subagent" is the only bundled type. */
 	agent?: string;
@@ -148,7 +156,7 @@ export interface TaskItem {
 }
 
 export const taskSchema = type({
-	"name?": "string",
+	name: "string",
 	agent: "string = 'task'",
 	task: "string",
 	"outputSchema?": outputSchemaInputSchema,
@@ -157,7 +165,7 @@ export const taskSchema = type({
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
-	"name?": "string",
+	name: "string",
 	agent: "string = 'task'",
 	task: "string",
 	"outputSchema?": outputSchemaInputSchema,
@@ -205,7 +213,7 @@ function createTaskSchema(options: {
 	if (options.batchEnabled) {
 		if (options.isolationEnabled) {
 			const item = type.raw({
-				"name?": "string",
+				name: "string",
 				agent,
 				task: "string",
 				...effortField,
@@ -221,7 +229,7 @@ function createTaskSchema(options: {
 			});
 		}
 		const item = type.raw({
-			"name?": "string",
+			name: "string",
 			agent,
 			task: "string",
 			...effortField,
@@ -237,7 +245,7 @@ function createTaskSchema(options: {
 	}
 	if (options.isolationEnabled) {
 		return type.raw({
-			"name?": "string",
+			name: "string",
 			agent,
 			task: "string",
 			...effortField,
@@ -248,7 +256,7 @@ function createTaskSchema(options: {
 		});
 	}
 	return type.raw({
-		"name?": "string",
+		name: "string",
 		agent,
 		task: "string",
 		...effortField,
