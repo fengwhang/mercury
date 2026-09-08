@@ -92,13 +92,26 @@ def _write_credentials(home: Path, *, password: str = PASSWORD,
     return creds
 
 
+_TS_ABSENT = {"available": False, "up": False, "ip": None, "dns_name": None}
+_TS_DOWN = {"available": True, "up": False, "ip": None, "dns_name": None}
+_TS_UP_IP = {"available": True, "up": True, "ip": "100.89.0.5", "dns_name": None}
+_TS_UP_DNS = {
+    "available": True, "up": True,
+    "ip": "100.89.0.5", "dns_name": "box.tail.ts.net",
+}
+
+
 class _FakeProvision:
     """observatory.provision stand-in for the section (records calls)."""
 
-    def __init__(self, statuses, *, provision_error=None):
+    def __init__(self, statuses, *, provision_error=None, tailscale=None,
+                 bind_error=None):
         self._statuses = list(statuses)
         self._provision_error = provision_error
-        self.calls = {"provision": 0, "status": 0}
+        self._tailscale = dict(tailscale) if tailscale is not None else dict(_TS_ABSENT)
+        self._bind_error = bind_error
+        self.calls = {"provision": 0, "status": 0, "bind": 0}
+        self.bind_ips: list = []
 
     def status_summary(self, *a, **k):
         idx = min(self.calls["status"], len(self._statuses) - 1)
@@ -118,6 +131,16 @@ class _FakeProvision:
                 "binary": "/fake/bin/tuwunel",
             }
         }
+
+    def detect_tailscale(self, *a, **k):
+        return dict(self._tailscale)
+
+    def set_tuwunel_bind(self, ip, *a, **k):
+        self.calls["bind"] += 1
+        self.bind_ips.append(ip)
+        if self._bind_error is not None:
+            raise self._bind_error
+        return ip
 
 
 def _run_section(monkeypatch, capsys, fake, *, choice, yes_no):
@@ -216,7 +239,11 @@ def test_section_provisioned_enabled_state_and_card(monkeypatch, capsys, tmp_pat
     assert "Unit active:          yes" in out
     assert "observatory.enabled:  yes  (config.yaml)" in out
     assert "Matrix Observatory — first login (Element X)" in out
-    assert "tailscale serve" in out
+    assert "Tailscale not detected" in out
+    assert "https://tailscale.com" in out
+    assert "headscale" in out
+    assert "on this machine:" in out  # localhost line kept for desktop
+    assert fake.calls["bind"] == 0  # absent tailnet: no bind offer, no prompt
     assert "QR code does NOT work" in out
     assert "E2EE:                off" in out
     assert "end-to-end encrypted once enabled" in out
@@ -575,3 +602,349 @@ def test_cli_main_skipped_unit_and_failure_paths(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(provision_mod, "provision", boom)
     assert provision_mod.main([]) == 1
     assert "✗ observatory provisioning failed: nope" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# tailscale detect-and-assist (detect → card → bind → headless)
+# ---------------------------------------------------------------------------
+
+
+def _mock_tailscale_run(*, status_rc=0, ip_out="100.89.0.5\n", json_out="",
+                        calls=None):
+    """A subprocess.run stand-in serving the three detect_tailscale probes."""
+    import subprocess as _sp
+
+    def _run(argv, **kwargs):
+        if calls is not None:
+            calls.append(list(argv))
+        if list(argv[:2]) == ["tailscale", "status"] and list(argv[2:]) == ["--json"]:
+            return _sp.CompletedProcess(argv, 0, json_out, "")
+        if list(argv[:2]) == ["tailscale", "status"]:
+            return _sp.CompletedProcess(argv, status_rc, "", "")
+        if list(argv) == ["tailscale", "ip", "-4"]:
+            return _sp.CompletedProcess(argv, 0, ip_out, "")
+        raise AssertionError(f"unexpected tailscale argv: {argv!r}")
+
+    return _run
+
+
+def _provisioned_status(creds, **over):
+    st = _status(
+        provisioned=True,
+        config_exists=True,
+        binary_installed=True,
+        owner_credentials_exist=True,
+        owner_credentials_path=str(creds),
+    )
+    st.update(over)
+    return st
+
+
+def test_detect_tailscale_absent_never_probes(monkeypatch):
+    monkeypatch.setattr(provision_mod.shutil, "which", lambda _name: None)
+
+    def _fail(*a, **k):
+        raise AssertionError("absent tailscale must not shell out")
+
+    monkeypatch.setattr(provision_mod.subprocess, "run", _fail)
+    assert provision_mod.detect_tailscale() == dict(_TS_ABSENT)
+
+
+def test_detect_tailscale_present_up_captures_ip_and_dns(monkeypatch):
+    import json as _json
+
+    monkeypatch.setattr(
+        provision_mod.shutil, "which", lambda _name: "/usr/bin/tailscale"
+    )
+    payload = _json.dumps({
+        "Self": {
+            "DNSName": "box.tail.ts.net.",
+            "TailscaleIPs": ["100.89.0.5", "fd7a:dead:beef::1"],
+        }
+    })
+    calls: list = []
+    monkeypatch.setattr(
+        provision_mod.subprocess, "run",
+        _mock_tailscale_run(json_out=payload, calls=calls),
+    )
+    d = provision_mod.detect_tailscale()
+    assert d == {
+        "available": True, "up": True,
+        "ip": "100.89.0.5", "dns_name": "box.tail.ts.net",
+    }
+    assert calls and all(c[0] == "tailscale" for c in calls)
+
+
+def test_detect_tailscale_present_down(monkeypatch):
+    monkeypatch.setattr(
+        provision_mod.shutil, "which", lambda _name: "/usr/bin/tailscale"
+    )
+    calls: list = []
+    monkeypatch.setattr(
+        provision_mod.subprocess, "run",
+        _mock_tailscale_run(status_rc=1, calls=calls),
+    )
+    d = provision_mod.detect_tailscale()
+    assert d["available"] is True
+    assert d["up"] is False
+    assert d["ip"] is None and d["dns_name"] is None
+
+
+def test_detect_tailscale_never_raises(monkeypatch):
+    monkeypatch.setattr(
+        provision_mod.shutil, "which",
+        lambda _name: (_ for _ in ()).throw(OSError("no which")),
+    )
+    assert provision_mod.detect_tailscale()["up"] is False
+
+    monkeypatch.setattr(
+        provision_mod.shutil, "which", lambda _name: "/usr/bin/tailscale"
+    )
+
+    def _boom(*a, **k):
+        raise OSError("no daemon")
+
+    monkeypatch.setattr(provision_mod.subprocess, "run", _boom)
+    assert provision_mod.detect_tailscale() == {
+        "available": True, "up": False, "ip": None, "dns_name": None,
+    }
+
+
+def test_detect_only_invokes_tailscale_binary(monkeypatch):
+    import json as _json
+
+    monkeypatch.setattr(
+        provision_mod.shutil, "which", lambda _name: "/usr/bin/tailscale"
+    )
+    payload = _json.dumps({"Self": {"DNSName": "box.tail.ts.net"}})
+    calls: list = []
+    monkeypatch.setattr(
+        provision_mod.subprocess, "run",
+        _mock_tailscale_run(json_out=payload, calls=calls),
+    )
+    provision_mod.detect_tailscale()
+    assert calls, "detection must probe the tailnet when present"
+    for argv in calls:
+        assert argv[0] == "tailscale"
+        assert argv[1] in {"status", "ip"}  # never install/login/up
+
+
+def test_tailscale_phone_url_selection():
+    assert provision_mod.tailscale_phone_url(
+        dict(_TS_UP_DNS), HOMESERVER_PORT_DEFAULT
+    ) == f"http://box.tail.ts.net:{HOMESERVER_PORT_DEFAULT}"
+    assert provision_mod.tailscale_phone_url(
+        dict(_TS_UP_IP), HOMESERVER_PORT_DEFAULT
+    ) == f"http://100.89.0.5:{HOMESERVER_PORT_DEFAULT}"
+    assert provision_mod.tailscale_phone_url(dict(_TS_DOWN)) is None
+    assert provision_mod.tailscale_phone_url(dict(_TS_ABSENT)) is None
+    assert provision_mod.tailscale_phone_url(
+        {"available": True, "up": True, "ip": None, "dns_name": None}
+    ) is None
+
+
+def test_setup_phone_url_prefers_dns_keeps_port():
+    assert setup_mod._tailscale_phone_url(
+        dict(_TS_UP_DNS), HOMESERVER_URL
+    ) == f"http://box.tail.ts.net:{HOMESERVER_PORT_DEFAULT}"
+    assert setup_mod._tailscale_phone_url(
+        dict(_TS_UP_IP), HOMESERVER_URL
+    ) == f"http://100.89.0.5:{HOMESERVER_PORT_DEFAULT}"
+    assert setup_mod._tailscale_phone_url(dict(_TS_ABSENT), HOMESERVER_URL) is None
+
+
+def test_card_detected_shows_phone_url_keeps_localhost(
+    monkeypatch, capsys, tmp_path
+):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds, homeserver_reachable=True, unit_active=True)],
+        tailscale=dict(_TS_UP_DNS),
+    )
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, False, False]
+    )
+    assert f"homeserver URL:      {HOMESERVER_URL}" in out
+    assert f"http://box.tail.ts.net:{HOMESERVER_PORT_DEFAULT}" in out
+    assert "over Tailscale" in out
+    assert "on this machine:" in out
+    assert "Tailscale not detected" not in out
+    assert PASSWORD not in out
+    assert fake.calls["bind"] == 0
+    assert "Keeping the homeserver on its current address." in out
+    assert remaining == []
+
+
+def test_card_falls_back_to_tailnet_ip(monkeypatch, capsys, tmp_path):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
+    )
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, False, False]
+    )
+    assert f"http://100.89.0.5:{HOMESERVER_PORT_DEFAULT}" in out
+    assert "over Tailscale" in out
+    assert remaining == []
+
+
+def test_card_down_shows_reconnect_hint_no_bind(monkeypatch, capsys, tmp_path):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)], tailscale=dict(_TS_DOWN)
+    )
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
+    )
+    assert "not connected" in out
+    assert "tailscale up" in out
+    assert fake.calls["bind"] == 0
+    assert remaining == []
+
+
+def test_bind_offer_uses_exact_prompt_text(monkeypatch):
+    seen: list = []
+
+    def _ask(question, default=False):
+        seen.append(question)
+        return False
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", _ask)
+    setup_mod._offer_tailscale_bind(
+        SimpleNamespace(set_tuwunel_bind=lambda ip: ip), dict(_TS_UP_IP)
+    )
+    assert seen == [
+        "Bind homeserver to the Tailscale interface only?"
+        " (unreachable from LAN/internet)"
+    ]
+
+
+def test_bind_offer_yes_calls_helper_and_notes_restart(
+    monkeypatch, capsys, tmp_path
+):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
+    )
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, False, True]
+    )
+    assert fake.calls["bind"] == 1
+    assert fake.bind_ips == ["100.89.0.5"]
+    assert "100.89.0.5" in out
+    assert "restart" in out.lower()  # required restart note
+    assert HOMESERVER_UNIT_NAME in out
+    assert "systemctl --user restart" in out
+    assert remaining == []
+
+
+def test_bind_offer_no_keeps_address(monkeypatch, capsys, tmp_path):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
+    )
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, False, False]
+    )
+    assert fake.calls["bind"] == 0
+    assert "Keeping the homeserver on its current address." in out
+    assert remaining == []
+
+
+def test_bind_failure_degrades_to_hand_edit_hint(monkeypatch, capsys, tmp_path):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)],
+        tailscale=dict(_TS_UP_IP),
+        bind_error=provision_mod.ProvisionError("disk on fire"),
+    )
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, False, True]
+    )
+    assert fake.calls["bind"] == 1
+    assert "Could not bind the homeserver to 100.89.0.5" in out
+    assert "by hand" in out
+    assert "tuwunel.toml" in out
+    assert "the wizard continues" in out or "Guide:" in out
+    assert remaining == []
+
+
+def test_set_tuwunel_bind_rewrites_address_line(tmp_path):
+    home = tmp_path / "mhome"
+    obs = home / "observatory"
+    obs.mkdir(parents=True)
+    (obs / "tuwunel.toml").write_text(
+        '[global]\nserver_name = "mercury.local"\n'
+        'address = "127.0.0.1"\nport = 18008\n',
+        encoding="utf-8",
+    )
+    got = provision_mod.set_tuwunel_bind("100.89.0.5", home)
+    assert got == "100.89.0.5"
+    text = (obs / "tuwunel.toml").read_text(encoding="utf-8")
+    assert 'address = "100.89.0.5"' in text
+    assert 'server_name = "mercury.local"' in text
+    assert "port = 18008" in text
+
+
+def test_set_tuwunel_bind_fails_when_unprovisioned(tmp_path):
+    with pytest.raises(
+        provision_mod.ProvisionError, match="not provisioned"
+    ):
+        provision_mod.set_tuwunel_bind("100.89.0.5", tmp_path / "empty-home")
+
+
+def test_set_tuwunel_bind_rejects_non_ip(tmp_path):
+    with pytest.raises(provision_mod.ProvisionError):
+        provision_mod.set_tuwunel_bind("not-an-ip", tmp_path)
+    with pytest.raises(provision_mod.ProvisionError):
+        provision_mod.set_tuwunel_bind("   ", tmp_path)
+
+
+def test_set_tuwunel_bind_never_touches_the_server():
+    import inspect as _inspect
+
+    src = _inspect.getsource(provision_mod.set_tuwunel_bind)
+    assert "systemctl" not in src
+    assert "subprocess" not in src
+    assert "restart" in provision_mod.set_tuwunel_bind.__doc__
+
+
+def test_noninteractive_includes_tailscale_up(monkeypatch, capsys):
+    fake = _FakeProvision(
+        [_status(provisioned=True)], tailscale=dict(_TS_UP_DNS)
+    )
+    monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
+    setup_mod.print_noninteractive_observatory_guidance()
+    out = capsys.readouterr().out
+    assert "Tailscale: up" in out
+    assert f"http://box.tail.ts.net:{HOMESERVER_PORT_DEFAULT}" in out
+
+
+def test_noninteractive_includes_tailscale_absent(monkeypatch, capsys):
+    fake = _FakeProvision([_status()])
+    monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
+    setup_mod.print_noninteractive_observatory_guidance()
+    out = capsys.readouterr().out
+    assert "Tailscale: not detected" in out
+    assert "https://tailscale.com" in out
+
+
+def test_no_tailscale_auto_install():
+    """Detect-and-assist law: the wizard never installs Tailscale itself."""
+    import inspect as _inspect
+
+    src = "".join([
+        _inspect.getsource(provision_mod.detect_tailscale),
+        _inspect.getsource(provision_mod.set_tuwunel_bind),
+        _inspect.getsource(setup_mod._tailscale_status),
+        _inspect.getsource(setup_mod._offer_tailscale_bind),
+        _inspect.getsource(setup_mod._print_observatory_setup_card),
+    ])
+    for token in (
+        "apt-get", "apt install", "dnf install", "yum install",
+        "brew install", "pacman -S", "snap install", "choco install",
+        "pip install", "curl -", "wget http",
+        "systemctl start", "systemctl restart", "service tailscale",
+    ):
+        assert token not in src, f"auto-install risk: {token!r} in tailscale path"
+    assert "shutil.which" in _inspect.getsource(provision_mod.detect_tailscale)
