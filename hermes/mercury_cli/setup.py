@@ -2553,7 +2553,7 @@ def setup_gateway(config: dict):
     from mercury_cli.gateway import _all_platforms, _platform_status, _configure_platform
 
     print_header("Messaging Platforms")
-    print_info("Connect to messaging platforms to chat with Mercury from anywhere.")
+    print_info("The Matrix observatory is your primary chat. These secondary platforms are optional extras.")
     print_info("Toggle with Space, confirm with Enter.")
     print()
 
@@ -2568,7 +2568,7 @@ def setup_gateway(config: dict):
         if status == "configured":
             pre_selected.append(i)
 
-    selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
+    selected = prompt_checklist("Select secondary chat platforms to configure:", items, pre_selected)
 
     if not selected:
         print_info("No platforms selected. Run 'mercury setup gateway' later to configure.")

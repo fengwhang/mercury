@@ -30,7 +30,7 @@ PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
     ("email",          PlatformInfo(label="📧 Email",           default_toolset="mercury-email")),
     ("homeassistant",  PlatformInfo(label="🏠 Home Assistant",  default_toolset="mercury-homeassistant")),
     ("mattermost",     PlatformInfo(label="💬 Mattermost",      default_toolset="mercury-mattermost")),
-    ("matrix",         PlatformInfo(label="💬 Secondary chat (Matrix)", default_toolset="mercury-matrix")),
+    ("matrix",         PlatformInfo(label="💬 Matrix", default_toolset="mercury-matrix")),
     ("dingtalk",       PlatformInfo(label="💬 DingTalk",        default_toolset="mercury-dingtalk")),
     ("feishu",         PlatformInfo(label="🪽 Feishu",          default_toolset="mercury-feishu")),
     ("wecom",          PlatformInfo(label="💬 WeCom",           default_toolset="mercury-wecom")),
