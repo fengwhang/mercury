@@ -192,3 +192,159 @@ class TestDelegationProvider:
             setup_mod._prompt_mercury_slots({})
 
         assert written["delegate_model"] == "myprov/mymodel"
+
+
+# ---------------------------------------------------------------------------
+# Slice B — wizard-once + tools single-pass
+# ---------------------------------------------------------------------------
+
+
+def _wizard_args(**overrides):
+    return Namespace(
+        section=overrides.get("section", None),
+        reset=overrides.get("reset", False),
+        reconfigure=overrides.get("reconfigure", False),
+        quick=overrides.get("quick", False),
+        portal=overrides.get("portal", False),
+        non_interactive=overrides.get("non_interactive", False),
+    )
+
+
+def _enter_wizard_patches(stack, **extra):
+    """Standard full-wizard mocks (existing install). Returns named mocks."""
+    for target, kwargs in [
+        ("mercury_cli.setup.ensure_hermes_home", {}),
+        ("mercury_cli.setup.is_interactive_stdin", {"return_value": True}),
+        ("mercury_cli.config.is_managed", {"return_value": False}),
+        ("mercury_cli.setup.load_config", {"return_value": {}}),
+        ("mercury_cli.setup.save_config", {}),
+        ("mercury_cli.setup.get_env_value", {"return_value": None}),
+        ("mercury_cli.auth.get_active_provider", {"return_value": "openrouter"}),
+        ("mercury_cli.setup._print_setup_summary", {}),
+        ("mercury_cli.setup._offer_openclaw_migration", {"return_value": False}),
+    ]:
+        stack.enter_context(patch(target, **kwargs))
+    named = {}
+    for name, target in extra.items():
+        if isinstance(target, tuple):
+            target, kwargs = target
+            named[name] = stack.enter_context(patch(target, **kwargs))
+        else:
+            named[name] = stack.enter_context(patch(target))
+    return named
+
+
+class TestWizardSectionsRunOnce:
+    """Full wizard run invokes each section fn exactly once (mock sections)."""
+
+    def test_existing_install_full_wizard(self, tmp_path, monkeypatch):
+        """Bare `mercury setup` on an existing install: each section once."""
+        home = tmp_path / ".mercury"
+        home.mkdir()
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        with ExitStack() as stack:
+            m = _enter_wizard_patches(
+                stack,
+                model="mercury_cli.setup.setup_model_provider",
+                terminal="mercury_cli.setup.setup_terminal_backend",
+                gateway="mercury_cli.setup.setup_gateway",
+                tools="mercury_cli.setup.setup_tools",
+            )
+            setup_mod.run_setup_wizard(_wizard_args())
+        m["model"].assert_called_once()
+        m["terminal"].assert_called_once()
+        m["gateway"].assert_called_once()
+        m["tools"].assert_called_once()
+        # Standalone dispatch + linear flow preserved: the wizard step still
+        # routes through setup_tools with the first-install linear flow.
+        assert m["tools"].call_args.kwargs.get("first_install") is True
+
+    def test_fresh_install_full_setup(self, tmp_path, monkeypatch):
+        """Fresh install + Full setup choice: each section once, no quick/blank."""
+        home = tmp_path / ".mercury"
+        home.mkdir()
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        with ExitStack() as stack:
+            m = _enter_wizard_patches(
+                stack,
+                prompt=("mercury_cli.setup.prompt_choice", {"return_value": 1}),
+                model="mercury_cli.setup.setup_model_provider",
+                terminal="mercury_cli.setup.setup_terminal_backend",
+                gateway="mercury_cli.setup.setup_gateway",
+                tools="mercury_cli.setup.setup_tools",
+                first="mercury_cli.setup._run_first_time_quick_setup",
+                blank="mercury_cli.setup._run_blank_slate_setup",
+                quick="mercury_cli.setup._run_quick_setup",
+                defaults="mercury_cli.setup._apply_default_agent_settings",
+            )
+            # Fresh install: no active provider.
+            with patch("mercury_cli.auth.get_active_provider", return_value=None):
+                setup_mod.run_setup_wizard(_wizard_args())
+        m["model"].assert_called_once()
+        m["terminal"].assert_called_once()
+        m["gateway"].assert_called_once()
+        m["tools"].assert_called_once()
+        m["first"].assert_not_called()
+        m["blank"].assert_not_called()
+        m["quick"].assert_not_called()
+
+
+class TestWizardToolsSinglePass:
+    """The wizard's tools step runs ONE linear checklist pass (double fix)."""
+
+    def test_tools_step_single_checklist_with_messenger_enabled(
+        self, tmp_path, monkeypatch
+    ):
+        """With a messenger token set, the tools flow must not repeat per platform."""
+        import mercury_cli.tools_config as tools_config_mod
+
+        home = tmp_path / ".mercury"
+        home.mkdir()
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        # Deterministic two-platform scenario on any machine: only telegram
+        # enabled (neutralizes live TELEGRAM/DISCORD/SLACK/... env leakage).
+        for var in (
+            "TELEGRAM_BOT_TOKEN",
+            "DISCORD_BOT_TOKEN",
+            "SLACK_BOT_TOKEN",
+            "WHATSAPP_ENABLED",
+            "QQ_APP_ID",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "dummy-token-for-test")
+
+        checklist_calls = []
+
+        def fake_checklist(label, enabled, platform="cli", **kwargs):
+            checklist_calls.append(platform)
+            return set()
+
+        with ExitStack() as stack:
+            m = _enter_wizard_patches(
+                stack,
+                model="mercury_cli.setup.setup_model_provider",
+                terminal="mercury_cli.setup.setup_terminal_backend",
+                gateway="mercury_cli.setup.setup_gateway",
+            )
+            # REAL tools step (the reported double lives inside it).
+            stack.enter_context(
+                patch.object(
+                    tools_config_mod, "_prompt_toolset_checklist",
+                    side_effect=fake_checklist,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    tools_config_mod, "apply_nous_managed_defaults",
+                    return_value=set(),
+                )
+            )
+            stack.enter_context(patch.object(tools_config_mod, "save_config"))
+            setup_mod.run_setup_wizard(_wizard_args())
+
+        m["gateway"].assert_called_once()
+        # One linear pass — not once per enabled platform (cli + telegram).
+        assert checklist_calls == ["cli"]
