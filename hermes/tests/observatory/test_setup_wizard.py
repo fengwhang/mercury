@@ -859,23 +859,97 @@ def test_bind_offer_uses_exact_prompt_text(monkeypatch):
     ]
 
 
-def test_bind_offer_yes_calls_helper_and_notes_restart(
+def test_bind_offer_yes_restart_yes_restarts_unit(monkeypatch, capsys, tmp_path):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
+    )
+    calls: list = []
+
+    def _run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", _run)
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True]
+    )
+    assert fake.calls["bind"] == 1
+    assert fake.bind_ips == ["100.89.0.5"]
+    assert calls == [["systemctl", "--user", "restart", HOMESERVER_UNIT_NAME]]
+    assert "100.89.0.5" in out
+    assert HOMESERVER_UNIT_NAME in out
+    assert remaining == []
+
+
+def test_bind_offer_yes_restart_no_keeps_manual_line(
     monkeypatch, capsys, tmp_path
 ):
     creds = _write_credentials(tmp_path)
     fake = _FakeProvision(
         [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
     )
+
+    def _boom(argv, **kwargs):
+        raise AssertionError("restart must not be attempted on 'no'")
+
+    monkeypatch.setattr("subprocess.run", _boom)
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, False]
     )
     assert fake.calls["bind"] == 1
-    assert fake.bind_ips == ["100.89.0.5"]
     assert "100.89.0.5" in out
-    assert "restart" in out.lower()  # required restart note
-    assert HOMESERVER_UNIT_NAME in out
-    assert "systemctl --user restart" in out
+    assert (
+        "Restart the homeserver to apply:"
+        f" systemctl --user restart {HOMESERVER_UNIT_NAME}" in out
+    )
     assert remaining == []
+
+
+def test_bind_offer_restart_failure_warns_with_manual_command(
+    monkeypatch, capsys, tmp_path
+):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
+    )
+
+    def _boom(argv, **kwargs):
+        raise OSError("systemd not running")
+
+    monkeypatch.setattr("subprocess.run", _boom)
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True]
+    )
+    assert fake.calls["bind"] == 1
+    assert "Could not restart" in out
+    assert f"systemctl --user restart {HOMESERVER_UNIT_NAME}" in out
+    assert remaining == []
+
+
+def test_bind_restart_offer_uses_exact_prompt_text(monkeypatch):
+    seen: list = []
+
+    def _ask(question, default=True):
+        seen.append((question, default))
+        return "Bind homeserver" in question
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", _ask)
+    setup_mod._offer_tailscale_bind(
+        SimpleNamespace(set_tuwunel_bind=lambda ip: ip), dict(_TS_UP_IP)
+    )
+    assert seen == [
+        (
+            "Bind homeserver to the Tailscale interface only?"
+            " (unreachable from LAN/internet)",
+            False,
+        ),
+        (
+            "Restart the homeserver now?"
+            " (necessary to apply the new bind address)",
+            True,
+        ),
+    ]
 
 
 def test_bind_offer_no_keeps_address(monkeypatch, capsys, tmp_path):

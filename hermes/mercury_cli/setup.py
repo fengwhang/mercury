@@ -2891,7 +2891,34 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
     except Exception:  # noqa: BLE001
         _unit = "mercury-observatory-homeserver.service"
     print_success(f"Homeserver will bind to {ip} on next restart.")
-    print_info(f"Restart the homeserver to apply: systemctl --user restart {_unit}")
+    try:
+        restart_now = prompt_yes_no(
+            "Restart the homeserver now? (necessary to apply the new bind address)",
+            default=True,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception:  # noqa: BLE001 — a restart offer never kills the wizard
+        print_info(f"Restart the homeserver to apply: systemctl --user restart {_unit}")
+        return
+    if not restart_now:
+        print_info(f"Restart the homeserver to apply: systemctl --user restart {_unit}")
+        return
+    try:
+        import subprocess
+
+        subprocess.run(
+            ["systemctl", "--user", "restart", _unit],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort restart, never raises
+        print_warning(f"Could not restart {_unit}: {exc}")
+        print_info(f"Restart it manually: systemctl --user restart {_unit}")
+        return
+    print_success(f"Homeserver restarted ({_unit}).")
 
 
 _LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
