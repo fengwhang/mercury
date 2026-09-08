@@ -7,8 +7,8 @@ Laws under test:
 - **section rendering per state** — fresh/unprovisioned, provisioned+
   enabled, provisioned+disabled each render their state lines and the
   skip/install outcomes;
-- **no secret leaks** — the owner password never appears unless the
-  explicit reveal prompt is answered yes (default no);
+- **no secret leaks** — the owner password never appears on screen (no
+  reveal prompt exists; it lives in $MERCURY_HOME/.env + credentials file);
 - **non-interactive path** — state summary + the exact
   ``python -m observatory.provision`` command (no ``mercury observatory``
   wrapper exists), following print_noninteractive_setup_guidance
@@ -105,11 +105,12 @@ class _FakeProvision:
     """observatory.provision stand-in for the section (records calls)."""
 
     def __init__(self, statuses, *, provision_error=None, tailscale=None,
-                 bind_error=None):
+                 bind_error=None, bind_address=None):
         self._statuses = list(statuses)
         self._provision_error = provision_error
         self._tailscale = dict(tailscale) if tailscale is not None else dict(_TS_ABSENT)
         self._bind_error = bind_error
+        self._bind_address = bind_address
         self.calls = {"provision": 0, "status": 0, "bind": 0}
         self.bind_ips: list = []
 
@@ -141,6 +142,9 @@ class _FakeProvision:
         if self._bind_error is not None:
             raise self._bind_error
         return ip
+
+    def current_bind_address(self, *a, **k):
+        return self._bind_address
 
 
 def _run_section(monkeypatch, capsys, fake, *, choice, yes_no):
@@ -201,7 +205,7 @@ def test_section_install_calls_provision_then_card(monkeypatch, capsys, tmp_path
         )]
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=0, yes_no=[True, False]
+        monkeypatch, capsys, fake, choice=0, yes_no=[True]
     )
 
     assert fake.calls["provision"] == 1
@@ -214,9 +218,10 @@ def test_section_install_calls_provision_then_card(monkeypatch, capsys, tmp_path
     assert f"owner account:       {MXID}" in out
     assert str(creds) in out
     assert "first gateway start" in out
-    # reveal prompt answered no → password stays hidden
+    # no reveal prompt exists anymore — the password is never printed
     assert PASSWORD not in out
-    assert remaining == []  # toggle + reveal both ran
+    assert "MATRIX_OBS_OWNER_PASSWORD" in out
+    assert remaining == []  # only the toggle prompt ran
 
 
 def test_section_provisioned_enabled_state_and_card(monkeypatch, capsys, tmp_path):
@@ -231,7 +236,7 @@ def test_section_provisioned_enabled_state_and_card(monkeypatch, capsys, tmp_pat
         unit_active=True,
     )])
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True]
     )
 
     assert "Provisioned:          yes" in out
@@ -262,7 +267,7 @@ def test_section_provisioned_disabled_state(monkeypatch, capsys, tmp_path):
         e2ee=True,
     )])
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[False, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[False]
     )
 
     assert "observatory.enabled:  no  (config.yaml)" in out
@@ -272,20 +277,40 @@ def test_section_provisioned_disabled_state(monkeypatch, capsys, tmp_path):
     assert remaining == []
 
 
-def test_card_reveals_password_only_on_explicit_yes(monkeypatch, capsys, tmp_path):
+def test_card_never_prints_password(monkeypatch, capsys, tmp_path):
+    """The owner password is never printed — no reveal branch exists."""
     creds = _write_credentials(tmp_path)
     fake = _FakeProvision([_status(
         provisioned=True,
         owner_credentials_exist=True,
         owner_credentials_path=str(creds),
     )])
-    out, _config, _remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, True]
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True]
     )
 
-    assert PASSWORD in out  # explicit reveal
-    assert str(creds) in out  # path is always shown too
+    assert PASSWORD not in out
+    assert str(creds) in out  # path is shown, value never is
+    assert "MATRIX_OBS_OWNER_PASSWORD" in out
+    assert "never printed here" in out
     assert "0600" in out
+    assert remaining == []
+
+
+def test_card_asks_no_password_question(monkeypatch, capsys, tmp_path):
+    """The card itself runs zero prompts (reveal branch deleted)."""
+    creds = _write_credentials(tmp_path)
+    status = _provisioned_status(creds)
+
+    def _boom(question, default=True):
+        raise AssertionError(f"card must not prompt: {question!r}")
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", _boom)
+    setup_mod._print_observatory_setup_card(status, dict(_TS_ABSENT))
+    out = capsys.readouterr().out
+
+    assert PASSWORD not in out
+    assert "MATRIX_OBS_OWNER_PASSWORD" in out
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +327,7 @@ def test_toggle_writes_observatory_enabled_to_config(monkeypatch, capsys, tmp_pa
         owner_credentials_path=str(creds),
     )])
     out, _config, _remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[False, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[False]
     )
 
     assert f"observatory.enabled = false written to {get_config_path()}" in out
@@ -374,13 +399,28 @@ def test_unreadable_state_degrades_to_hint(monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_section_registered_after_gateway_in_registry():
+def test_section_registered_before_gateway_in_registry():
+    """Observatory is the primary chat: it runs before gateway platforms."""
     keys = [k for k, _label, _fn in setup_mod.SETUP_SECTIONS]
     assert "observatory" in keys
     assert keys.index("model") < keys.index("observatory")
     assert keys.index("tts") < keys.index("observatory")
-    assert keys.index("gateway") < keys.index("observatory")
+    assert keys.index("observatory") < keys.index("gateway")
     assert keys.index("observatory") < keys.index("tools")
+
+
+def test_section_choice_prompt_marks_recommended(monkeypatch, capsys):
+    """The observatory install question carries the RECOMMENDED tag."""
+    fake = _FakeProvision([_status()])
+    monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
+    seen: list = []
+    monkeypatch.setattr(
+        setup_mod, "prompt_choice",
+        lambda q, c, d=0, description=None: seen.append(q) or 1,
+    )
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
+    setup_mod.setup_observatory({})
+    assert seen == ["Set up the Matrix observatory now (RECOMMENDED)?"]
 
 
 def test_setup_parser_accepts_observatory_section():
@@ -762,7 +802,7 @@ def test_card_detected_shows_phone_url_keeps_localhost(
         tailscale=dict(_TS_UP_DNS),
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
     )
     assert f"homeserver URL:      {HOMESERVER_URL}" in out
     assert f"http://box.tail.ts.net:{HOMESERVER_PORT_DEFAULT}" in out
@@ -781,7 +821,7 @@ def test_card_falls_back_to_tailnet_ip(monkeypatch, capsys, tmp_path):
         [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
     )
     assert f"http://100.89.0.5:{HOMESERVER_PORT_DEFAULT}" in out
     assert "over Tailscale" in out
@@ -794,7 +834,7 @@ def test_card_down_shows_reconnect_hint_no_bind(monkeypatch, capsys, tmp_path):
         [_provisioned_status(creds)], tailscale=dict(_TS_DOWN)
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True]
     )
     assert "not connected" in out
     assert "tailscale up" in out
@@ -827,7 +867,7 @@ def test_bind_offer_yes_calls_helper_and_notes_restart(
         [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False, True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True]
     )
     assert fake.calls["bind"] == 1
     assert fake.bind_ips == ["100.89.0.5"]
@@ -844,7 +884,7 @@ def test_bind_offer_no_keeps_address(monkeypatch, capsys, tmp_path):
         [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
     )
     assert fake.calls["bind"] == 0
     assert "Keeping the homeserver on its current address." in out
@@ -859,7 +899,7 @@ def test_bind_failure_degrades_to_hand_edit_hint(monkeypatch, capsys, tmp_path):
         bind_error=provision_mod.ProvisionError("disk on fire"),
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False, True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True]
     )
     assert fake.calls["bind"] == 1
     assert "Could not bind the homeserver to 100.89.0.5" in out
@@ -948,3 +988,155 @@ def test_no_tailscale_auto_install():
     ):
         assert token not in src, f"auto-install risk: {token!r} in tailscale path"
     assert "shutil.which" in _inspect.getsource(provision_mod.detect_tailscale)
+
+
+# ---------------------------------------------------------------------------
+# localhost-bind mismatch ACTION (tailnet up, tuwunel still on 127.0.0.1)
+# ---------------------------------------------------------------------------
+
+
+def test_bind_mismatch_line_when_loopback_and_up():
+    line = setup_mod._bind_mismatch_action_line("127.0.0.1", dict(_TS_UP_IP))
+    assert line is not None
+    assert "only listens on localhost" in line
+    assert "phones cannot reach it" in line
+    assert "mercury setup observatory" in line
+    assert "systemctl --user restart" in line
+    assert HOMESERVER_UNIT_NAME in line
+
+
+def test_bind_mismatch_line_covers_ipv6_loopback():
+    line = setup_mod._bind_mismatch_action_line("::1", dict(_TS_UP_DNS))
+    assert line is not None and "only listens on localhost" in line
+
+
+@pytest.mark.parametrize("address", ["100.89.0.5", "0.0.0.0", None])
+def test_bind_mismatch_absent_when_bound_or_unknown(address):
+    assert setup_mod._bind_mismatch_action_line(address, dict(_TS_UP_IP)) is None
+
+
+@pytest.mark.parametrize("ts", [dict(_TS_ABSENT), dict(_TS_DOWN), None])
+def test_bind_mismatch_absent_when_tailnet_down(ts):
+    assert setup_mod._bind_mismatch_action_line("127.0.0.1", ts) is None
+
+
+def test_section_prints_mismatch_action_on_declined_bind(
+    monkeypatch, capsys, tmp_path
+):
+    """Tailnet up + toml still localhost after a declined bind → ACTION."""
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)],
+        tailscale=dict(_TS_UP_IP),
+        bind_address="127.0.0.1",
+    )
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
+    )
+    assert "only listens on localhost" in out
+    assert "mercury setup observatory" in out
+    assert "systemctl --user restart" in out
+    assert HOMESERVER_UNIT_NAME in out
+    assert remaining == []
+
+
+def test_section_hides_mismatch_action_once_bound(
+    monkeypatch, capsys, tmp_path
+):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)],
+        tailscale=dict(_TS_UP_IP),
+        bind_address="100.89.0.5",
+    )
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
+    )
+    assert "only listens on localhost" not in out
+    assert remaining == []
+
+
+def test_noninteractive_prints_mismatch_action_via_toml_fallback(
+    monkeypatch, capsys, tmp_path
+):
+    """Headless guidance reads the real toml when obs lacks the helper."""
+    home = tmp_path / "mhome"
+    obs_dir = home / "observatory"
+    obs_dir.mkdir(parents=True)
+    (obs_dir / "tuwunel.toml").write_text(
+        '[global]\nserver_name = "mercury.local"\n'
+        'address = "127.0.0.1"\nport = 18008\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    status = _status(provisioned=True)
+    bare = SimpleNamespace(
+        status_summary=lambda: dict(status),
+        detect_tailscale=lambda: dict(_TS_UP_DNS),
+    )
+    assert not hasattr(bare, "current_bind_address")
+    monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: bare)
+    setup_mod.print_noninteractive_observatory_guidance()
+    out = capsys.readouterr().out
+    assert "only listens on localhost" in out
+    assert "systemctl --user restart" in out
+
+
+def test_current_bind_address_reads_toml_and_list_forms(tmp_path):
+    home = tmp_path / "mhome"
+    obs_dir = home / "observatory"
+    obs_dir.mkdir(parents=True)
+    toml = obs_dir / "tuwunel.toml"
+    toml.write_text(
+        '[global]\naddress = "127.0.0.1"\nport = 18008\n', encoding="utf-8"
+    )
+    assert provision_mod.current_bind_address(home) == "127.0.0.1"
+    toml.write_text(
+        '[global]\naddress = ["100.89.0.5", "127.0.0.1"]\nport = 18008\n',
+        encoding="utf-8",
+    )
+    assert provision_mod.current_bind_address(home) == "100.89.0.5"
+    assert provision_mod.current_bind_address(tmp_path / "empty-home") is None
+
+
+# ---------------------------------------------------------------------------
+# end-of-setup login card reprint
+# ---------------------------------------------------------------------------
+
+
+def test_reprint_card_after_summary_when_provisioned(
+    monkeypatch, capsys, tmp_path
+):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)], tailscale=dict(_TS_ABSENT)
+    )
+    monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
+    setup_mod._reprint_observatory_login_card()
+    out = capsys.readouterr().out
+    assert "Save this — Matrix login" in out
+    assert "Matrix Observatory — first login (Element X)" in out
+    assert f"homeserver URL:      {HOMESERVER_URL}" in out
+    assert PASSWORD not in out
+
+
+def test_reprint_card_silent_when_unprovisioned(monkeypatch, capsys):
+    fake = _FakeProvision([_status()])
+    monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
+    setup_mod._reprint_observatory_login_card()
+    assert capsys.readouterr().out == ""
+
+
+def test_reprint_card_never_raises(monkeypatch, capsys):
+    monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: None)
+    setup_mod._reprint_observatory_login_card()
+
+    def _boom(*a, **k):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(
+        setup_mod, "_load_observatory_provision",
+        lambda: SimpleNamespace(status_summary=_boom),
+    )
+    setup_mod._reprint_observatory_login_card()
+    assert capsys.readouterr().out == ""

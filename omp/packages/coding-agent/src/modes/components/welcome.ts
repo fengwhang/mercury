@@ -7,9 +7,16 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
-import { APP_NAME } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
 import tipsText from "./tips.txt" with { type: "text" };
+
+/**
+ * HERMES-OMP PATCH (Mercury title): the welcome border carries the Mercury
+ * product name. APP_NAME itself stays "omp" — it names the on-disk binary
+ * (dist/omp) plus process/help/update self-references, log filenames, and
+ * glob patterns that must keep resolving to the real binary.
+ */
+const WELCOME_APP_NAME = "mercury";
 
 /** Tips embedded at build time, one per line; blanks dropped. */
 const TIPS: readonly string[] = tipsText
@@ -386,7 +393,7 @@ export class WelcomeComponent implements Component {
 		const lines: string[] = [];
 
 		// Top border with embedded title
-		const title = ` ${APP_NAME} v${this.version} `;
+		const title = ` ${WELCOME_APP_NAME} v${this.version} `;
 		const titlePrefixRaw = hChar.repeat(3);
 		const titleStyled = theme.fg("dim", titlePrefixRaw) + theme.fg("muted", title);
 		const titleVisLen = visibleWidth(titlePrefixRaw) + visibleWidth(title);

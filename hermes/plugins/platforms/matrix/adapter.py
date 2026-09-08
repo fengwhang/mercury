@@ -5445,7 +5445,7 @@ def register(ctx) -> None:
     """Plugin entry point — called by the Mercury plugin system."""
     ctx.register_platform(
         name="matrix",
-        label="Secondary chat (Matrix)",
+        label="Matrix",
         adapter_factory=_build_adapter,
         check_fn=matrix_deps_present,
         ensure_deps_fn=ensure_matrix_deps,
