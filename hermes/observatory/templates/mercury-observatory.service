@@ -1,0 +1,29 @@
+# Mercury Observatory sidecar — systemd USER unit template.
+# Rendered by observatory.sidecar_main.render_sidecar_unit (pure string
+# templating, same law as config_gen.render_homeserver_unit). Placeholders:
+#   {description} {python_bin} {hermes_root} {mercury_home} {log_dir}
+# Installed as ~/.config/systemd/user/mercury-observatory.service; the
+# homeserver has its own unit (mercury-observatory-homeserver.service,
+# config_gen.render_homeserver_unit) which this one orders after.
+[Unit]
+Description={description}
+Requires=mercury-observatory-homeserver.service
+After=mercury-observatory-homeserver.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# The sidecar owns ALL matrix I/O (spec D3) — one process, its own venv
+# interpreter, PYTHONPATH at the hermes engine root.
+ExecStart={python_bin} -m observatory.sidecar_main --home {mercury_home}
+WorkingDirectory={hermes_root}
+Environment=PYTHONPATH={hermes_root}
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=60
+StandardOutput=append:{log_dir}/sidecar.log
+StandardError=append:{log_dir}/sidecar.log
+
+[Install]
+WantedBy=default.target
