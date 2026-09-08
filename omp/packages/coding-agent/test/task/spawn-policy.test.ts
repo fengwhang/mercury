@@ -43,9 +43,9 @@ describe("task spawn policy surfaces", () => {
 
 	it("uses the first allowed spawn as the schema default", () => {
 		const schema = getTaskSchema({ isolationEnabled: false, batchEnabled: false, defaultAgent: "fact-finder" });
-		const parsed = schema({ task: "check" });
+		const parsed = schema({ name: "Check", task: "check" });
 
-		expect(parsed).toEqual({ agent: "fact-finder", task: "check" });
+		expect(parsed).toEqual({ name: "Check", agent: "fact-finder", task: "check" });
 	});
 
 	it("filters the agent list to the restricted spawn policy in the description", async () => {

@@ -6,8 +6,9 @@ import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { getTaskSchema, oneLineLabel } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
-// Contract: the task tool's wire shape is flat `{ name?, agent?, task, isolated? }`
-// (batch: `{ context, tasks[] }` of the same items). `agent` defaults to the
+// Contract: the task tool's wire shape is flat `{ name, agent?, task, isolated? }`
+// (batch: `{ context, tasks[] }` of the same items) — `name` is hard-required
+// (HERMES-OMP PATCH, matrix observatory D6). `agent` defaults to the
 // schema's spawn-policy default, and unknown keys sent by stale callers (`role`,
 // `description`) are stripped by the schema's `+: "delete"` — never rejected.
 
@@ -59,15 +60,23 @@ describe("task wire schema", () => {
 	});
 
 	it("defaults a missing agent to 'task'", () => {
-		const parsed = taskSchema({ task: "x" });
+		const parsed = taskSchema({ name: "Solo", task: "x" });
 		expect(parsed instanceof type.errors).toBe(false);
 		if (!(parsed instanceof type.errors)) {
 			expect(parsed.agent).toBe("task");
 		}
 	});
 
+	it("rejects a missing name (flat and batch items, static and dynamic shapes)", () => {
+		expect(taskSchema({ task: "x" }) instanceof type.errors).toBe(true);
+		const batch = getTaskSchema({ isolationEnabled: false, batchEnabled: true });
+		expect(batch({ context: "ctx", tasks: [{ task: "x" }] }) instanceof type.errors).toBe(true);
+		const dynamic = getTaskSchema({ isolationEnabled: false, batchEnabled: false, defaultAgent: "scout" });
+		expect(dynamic({ task: "x" }) instanceof type.errors).toBe(true);
+	});
+
 	it("deletes stale caller keys (role, description) instead of rejecting", () => {
-		const parsed = taskSchema({ agent: "task", task: "x", role: "Rust specialist", description: "stale ui label" });
+		const parsed = taskSchema({ name: "StaleKeys", agent: "task", task: "x", role: "Rust specialist", description: "stale ui label" });
 		expect(parsed instanceof type.errors).toBe(false);
 		if (!(parsed instanceof type.errors)) {
 			expect("role" in parsed).toBe(false);
@@ -85,14 +94,14 @@ describe("task wire schema", () => {
 
 	it("defaults batch item agents to the schema's defaultAgent", () => {
 		const batch = getTaskSchema({ isolationEnabled: false, batchEnabled: true, defaultAgent: "scout" });
-		const items = parsedItems(batch({ context: "ctx", tasks: [{ task: "x" }, { agent: "reviewer", task: "y" }] }));
+		const items = parsedItems(batch({ context: "ctx", tasks: [{ name: "First", task: "x" }, { name: "Second", agent: "reviewer", task: "y" }] }));
 		expect(items[0]?.agent).toBe("scout");
 		expect(items[1]?.agent).toBe("reviewer");
 	});
 
 	it("deletes stale keys from batch items", () => {
 		const batch = getTaskSchema({ isolationEnabled: false, batchEnabled: true });
-		const items = parsedItems(batch({ context: "ctx", tasks: [{ task: "x", role: "DB migration specialist" }] }));
+		const items = parsedItems(batch({ context: "ctx", tasks: [{ name: "DbWork", task: "x", role: "DB migration specialist" }] }));
 		const item = items[0] ?? {};
 		expect("role" in item).toBe(false);
 		expect(item.task).toBe("x");
