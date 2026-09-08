@@ -191,7 +191,8 @@ def result_message(
     icon = {"completed": "✅", "failed": "❌"}.get(status, "❓")
     src = f"{icon} **{job_name}** {status}"
     if error:
-        first, _ = truncate(error.strip().replace("\n", " "), 160)
+        first_line = error.strip().splitlines()[0] if error.strip() else ""
+        first, _ = truncate(first_line, 160)
         src += f" — {first}"
     if excerpt:
         src += f"\n> {excerpt}"
@@ -435,16 +436,21 @@ class CronRooms:
                 is_new = claimed is not None and (last_ts is None or claimed > last_ts)
                 if claimed is None and exec_id not in pending:
                     is_new = True
-
                 if first_attach:
                     # First sight of this job: terminal history is a
                     # BASELINE (a fresh room must not replay old fires);
                     # executions still claimed/running are genuinely in
-                    # flight — announce and track them.
+                    # flight — announce and track them. Exception: a fire
+                    # that already landed while the job HAS a room is
+                    # genuinely new to the owner — report it as a single
+                    # result (no fired notice). Room-less nodes stay
+                    # silent so history never replays into a late room.
                     if status not in _TERMINAL_STATUSES:
                         if node is not None:
                             intents.append(self._fired_intent(node, jobs_by_id.get(job_id)))
                         pending[exec_id] = str(row.get("claimed_at") or "")
+                    elif node is not None and node.get("room_id"):
+                        intents.append(self._result_intent(node, row))
                 elif exec_id in pending:
                     # Announced while in flight → summary on landing.
                     if status in _TERMINAL_STATUSES:

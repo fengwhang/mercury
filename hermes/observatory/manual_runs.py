@@ -238,16 +238,32 @@ class _Tail:
         self.path = path
         self.offset = 0
         self._buf = b""
+        self._mtime: float | None = None
 
     def read_new_entries(self) -> list[Any]:
         """Complete JSON entries appended since the last call; a partial
         trailing line is buffered until its newline arrives. Truncation
-        (size < offset) resets to 0 — a rewritten file replays cleanly."""
+        (size < offset) resets to 0 — a rewritten file replays cleanly.
+        Same-size rewrites are detected via mtime (size alone cannot see
+        them); idle files keep their offset so nothing ever replays."""
+        try:
+            mtime = self.path.stat().st_mtime
+        except OSError:
+            mtime = None
         try:
             with self.path.open("rb") as f:
                 f.seek(0, os.SEEK_END)
                 size = f.tell()
                 if size < self.offset:
+                    self.offset = 0
+                    self._buf = b""
+                elif (
+                    self.offset > 0
+                    and mtime is not None
+                    and self._mtime is not None
+                    and mtime != self._mtime
+                    and size <= self.offset
+                ):
                     self.offset = 0
                     self._buf = b""
                 f.seek(self.offset)
@@ -256,6 +272,7 @@ class _Tail:
             return []
         except OSError:
             return []
+        self._mtime = mtime
         self.offset += len(chunk)
         data = self._buf + chunk
         *lines, self._buf = data.split(b"\n")

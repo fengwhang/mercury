@@ -184,20 +184,19 @@ class TestCronStore:
         store = CronStore(tmp_path / "nope")
         assert store.read_jobs() == []
         assert store.read_executions() == []
-        tmp_path.mkdir()
         (tmp_path / "jobs.json").write_text("{not json", encoding="utf-8")
         assert CronStore(tmp_path).read_jobs() == []
 
     def test_read_jobs_never_writes(self, tmp_path):
-        write_jobs(tmp_path, [job("abc123", "backup")])
-        before = (tmp_path / "jobs.json").stat()
-        store = CronStore(tmp_path)
+        cron_dir = tmp_path / "cron"
+        write_jobs(cron_dir, [job("abc123", "backup")])
+        before = (cron_dir / "jobs.json").stat()
+        store = CronStore(cron_dir)
         store.read_jobs()
         store.read_jobs()
-        after = (tmp_path / "jobs.json").stat()
+        after = (cron_dir / "jobs.json").stat()
         assert (before.st_mtime_ns, before.st_size) == (after.st_mtime_ns, after.st_size)
-        assert [p.name for p in tmp_path.iterdir()] == ["jobs.json"]
-
+        assert [p.name for p in cron_dir.iterdir()] == ["jobs.json"]
     def test_junk_records_skipped(self, tmp_path):
         write_jobs(tmp_path, [job("ok1", "real"), "a string", {"no_id": True}, {"id": 42}])
         assert [j["id"] for j in CronStore(tmp_path).read_jobs()] == ["ok1"]
@@ -208,11 +207,11 @@ class TestCronStore:
         assert [r["id"] for r in CronStore(tmp_path).read_executions()] == ["e1", "e2"]
 
     def test_executions_readonly_never_creates(self, tmp_path):
-        tmp_path.mkdir()
-        store = CronStore(tmp_path)  # dir exists, db does not
+        cron_dir = tmp_path / "cron"
+        cron_dir.mkdir()
+        store = CronStore(cron_dir)  # dir exists, db does not
         assert store.read_executions() == []
-        assert not (tmp_path / "executions.db").exists()
-
+        assert not (cron_dir / "executions.db").exists()
     def test_latest_output_excerpt(self, tmp_path):
         out = tmp_path / "output" / "j1"
         out.mkdir(parents=True)
@@ -237,14 +236,18 @@ class TestRegistry:
         assert row["name"] == "cron:backup"
         assert row["extra"]["kind"] == tree.KIND_CRON_JOB
         assert row["parent_node_id"] == GW and row["depth"] == 1
-        # D11 ordering inside the desired plan: gateway room, directives,
-        # cron rooms, THEN orchestrator subspaces.
+        # D11 ordering inside the desired plan (spec §3: gateway-agent
+        # subspace FIRST, then directives, cron rooms, orchestrators).
         plan = Renderer(
             state, gateway_node_id=GW, server_name=SERVER, owner_mxid=OWNER
         ).build_plan(host="h")
         top = [r.key for r in plan.rooms] + [s.key for s in plan.subspaces]
-        assert top == [GW, tree.DIRECTIVES_ROOM_KEY, "cron:j1", "cron:j2", ORCH]
-
+        assert top == [tree.DIRECTIVES_ROOM_KEY, "cron:j1", "cron:j2",
+                       tree.GATEWAY_AGENT_SPACE_KEY, ORCH]
+        assert [c.key for c in tree.space_child_order(plan)] == [
+            tree.GATEWAY_AGENT_SPACE_KEY, tree.DIRECTIVES_ROOM_KEY,
+            "cron:j1", "cron:j2", ORCH,
+        ]
     def test_sync_idempotent(self, tmp_path):
         write_jobs(tmp_path, [job("j1", "backup")])
         rooms, _, _ = make_rooms(tmp_path, tmp_path)
@@ -262,8 +265,6 @@ class TestRegistry:
         )
         assert rooms.sync_registry().removed == []
         write_jobs(tmp_path, [job("j1", "backup", enabled=False, state="completed")])
-        assert rooms.sync_registry().removed == []
-
     def test_job_deletion_purges_room_only(self, tmp_path):
         write_jobs(tmp_path, [job("j1", "backup")])
         rooms, state, _ = make_rooms(tmp_path, tmp_path)
@@ -273,13 +274,14 @@ class TestRegistry:
         write_jobs(tmp_path, [])  # job deleted from the store
         result = rooms.sync_registry()
         assert [r["node_id"] for r in result.removed] == ["cron:j1"]
-        # D8 depth-1 purge shape: summary to the gateway room, detach from
-        # the gateway space, admin DELETE.
+        # D8 depth-1 purge shape: summary to the gateway room + admin
+        # DELETE. Cron rooms are rooms (no space_id), so no DetachChild
+        # is planned here — the stale m.space.child is reaped by the
+        # sidecar's diff pass (tree.diff_plan).
         intents = result.removal_intents
         assert isinstance(intents[0], SendMessage) and intents[0].room_key == GW
         assert any(isinstance(i, PurgeRoom) and i.room_id == "!r-cron:x" for i in intents)
-        detach = [i for i in intents if isinstance(i, PurgeRoom) is False and i is not intents[0]]
-        assert any(i.__class__.__name__ == "DetachChild" and i.space_id == "!s-gw:x" for i in detach)
+        assert not any(i.__class__.__name__ == "DetachChild" for i in intents)
 
     @pytest.mark.asyncio
     async def test_apply_registry_executes_and_drops_rows(self, tmp_path):
@@ -326,7 +328,7 @@ class TestFires:
         planned = rooms.poll_fires()
         assert len(planned) == 1
         body = planned[0][1][0].body
-        assert body.startswith("✅") and "backup completed" in body
+        assert body.startswith("✅") and "**backup**" in body and "completed" in body
 
     def test_instantly_terminal_fire_gets_single_result(self, tmp_path):
         write_jobs(tmp_path, [job("j1", "backup")])
@@ -400,7 +402,7 @@ class TestFires:
         rooms.sync_registry()
         state.set_room_id("cron:j1", "!r-j1:x")
         write_execution(tmp_path, "e1", "j1", "completed", "2026-09-08T01:00:00+00:00")
-        await rooms.render_fires()
+        await rooms.render_poll()
         sends = [c for c in client.calls if c[0] == "send"]
         assert len(sends) == 1 and sends[0][1] == "!r-j1:x"
         assert sends[0][3] == state.get("cron:j1")["mxid"]

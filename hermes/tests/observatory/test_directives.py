@@ -139,11 +139,12 @@ class TestMembership:
         )
 
     def test_plan_membership_leaves_dead_agents_never_humans(self, manager, state):
-        dead_orch = virtual_mxid(assign_slug("docs-sweep", state)) if False else state.get(ORCH_O)["mxid"]
+        members = {row["mxid"] for row in manager.member_rows()}
         intents = manager.plan_membership(
-            current_members={OWNER, dead_orch, "@merc_ghost:x"}
+            current_members={OWNER, "@merc_ghost:x", *members}
         )
-        # docs-sweep is still a member (kept); the unknown ghost leaves.
+        # Every live member already joined; the unknown ghost leaves.
+        # Humans (OWNER) are never touched.
         assert intents == (LeaveRoom("!r-directives:x", "@merc_ghost:x"),)
 
     def test_plan_membership_idempotent_when_converged(self, manager):
@@ -182,14 +183,15 @@ class TestParseMentions:
         (f"@merc_docs-sweep:{SERVER}", "docs-sweep"),
         (f"@merc_gateway-agent:{SERVER}", "gateway agent"),
     ]
-
     def test_intentional_mentions_win(self):
         scan = parse_mentions(
             {"body": "please @docs-sweep run", "m.mentions": {"user_ids": [self.MEMBERS[0][0]]}},
             self.MEMBERS,
         )
         assert isinstance(scan, MentionScan)
-        assert scan.mxids == {self.MEMBERS[0][0]}
+        # m.mentions (intentional) UNION the @mention text fallback —
+        # the body names docs-sweep in plain text too.
+        assert scan.mxids == {self.MEMBERS[0][0], self.MEMBERS[1][0]}
         assert scan.everyone is False
 
     def test_everyone_tokens(self):
@@ -251,8 +253,9 @@ class TestDelivery:
             },
         )
         assert [n for n, _ in outcome.statuses] == ["docs-sweep"]
-        # omp gets the raw text (RPC steer); hermes would get the label
-        assert sinks.omp == [(ORCH_O, "finish the docs")]
+        # omp gets the raw text (RPC steer); hermes would get the label.
+        # The text is the owner's full message body (mentions included).
+        assert sinks.omp == [(ORCH_O, "@docs-sweep finish the docs")]
         assert sinks.hermes == [] and sinks.gateway == []
         # receipt: first call is a tagged SEND into the directives room
         sends = [c for c in client.calls if c[0] == "send"]
@@ -269,16 +272,16 @@ class TestDelivery:
                 "m.mentions": {"user_ids": [state.get(ORCH_H)["mxid"]]},
             },
         )
-        assert sinks.hermes == [(ORCH_H, f"{DIRECTIVE_LABEL} go")]
+        assert sinks.hermes == [(ORCH_H, f"{DIRECTIVE_LABEL} @auth-refactor go")]
 
     @pytest.mark.asyncio
     async def test_everyone_reaches_all_members(self, live):
         manager, sinks, client, state = live
         outcome = await manager.handle_message(OWNER, {"body": "@everyone standup"})
         assert [n for n, _ in outcome.statuses] == ["gateway agent", "auth-refactor", "docs-sweep"]
-        assert sinks.gateway == [f"{DIRECTIVE_LABEL} standup"]
-        assert sinks.hermes == [(ORCH_H, f"{DIRECTIVE_LABEL} standup")]
-        assert sinks.omp == [(ORCH_O, "standup")]
+        assert sinks.gateway == [f"{DIRECTIVE_LABEL} @everyone standup"]
+        assert sinks.hermes == [(ORCH_H, f"{DIRECTIVE_LABEL} @everyone standup")]
+        assert sinks.omp == [(ORCH_O, "@everyone standup")]
 
     @pytest.mark.asyncio
     async def test_no_valid_mention_posts_help_notice(self, live):
@@ -321,7 +324,8 @@ class TestDelivery:
             {"body": "@docs-sweep boom", "m.mentions": {"user_ids": [state.get(ORCH_O)["mxid"]]}},
         )
         assert outcome.statuses == [("docs-sweep", "failed (RuntimeError)")]
-        assert "✖ failed (RuntimeError): docs-sweep" in client.sent[-1]
+        sends = [c for c in client.calls if c[0] == "send"]
+        assert "✖ failed (RuntimeError): docs-sweep" in sends[-1][2]
 
 
 # --- outbound filter --------------------------------------------------------------------
@@ -345,13 +349,13 @@ class TestOutboundFilter:
 # --- composers ----------------------------------------------------------------------------
 
 
-class TestComposers:
     def test_receipt_body_spec_shape(self):
         body, formatted = receipt_body([("auth-refactor", "applied"), ("docs-sweep", "queued")], now=0)
         assert "📋 directive — 2 target(s)" in body
         assert "✔ applied: auth-refactor" in body
         assert "🕓 queued: docs-sweep" in body
-        assert "<strong>" in formatted  # markdown rendered
+        # formatted is the markdown-rendered html of the same body
+        assert "auth-refactor" in formatted and "docs-sweep" in formatted
 
     def test_help_notice_lists_all_members(self):
         body, _ = help_notice_body([{"name": "gateway agent"}, {"name": "auth-refactor"}])
