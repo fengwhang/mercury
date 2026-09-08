@@ -1140,3 +1140,43 @@ def test_reprint_card_never_raises(monkeypatch, capsys):
     )
     setup_mod._reprint_observatory_login_card()
     assert capsys.readouterr().out == ""
+
+
+# ---------------------------------------------------------------------------
+# observatory Guide pointer (in-repo until the docs site publishes the page)
+# ---------------------------------------------------------------------------
+
+
+def test_observatory_guide_lines_never_link_the_unpublished_page():
+    """No Guide: line may print the fictitious docs-site matrix-observatory URL."""
+    import inspect as _inspect
+
+    src = _inspect.getsource(setup_mod)
+    assert "_OBSERVATORY_DOCS_URL" not in src
+    for line in src.splitlines():
+        if "Guide:" in line:
+            assert "hermes-agent.nousresearch.com" not in line
+
+
+def test_observatory_section_prints_in_repo_guide(monkeypatch, capsys, tmp_path):
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)], tailscale=dict(_TS_ABSENT)
+    )
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True]
+    )
+    assert "Guide: docs/design/matrix-observatory.md" in out
+    assert "website/docs/user-guide/messaging/matrix-observatory.md" in out
+    assert "hermes-agent.nousresearch.com" not in out
+    assert remaining == []
+
+
+def test_noninteractive_observatory_prints_in_repo_guide(monkeypatch, capsys):
+    fake = _FakeProvision([_status(provisioned=True)])
+    monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
+    setup_mod.print_noninteractive_observatory_guidance()
+    out = capsys.readouterr().out
+    assert "Guide: docs/design/matrix-observatory.md" in out
+    assert "website/docs/user-guide/messaging/matrix-observatory.md" in out
+    assert "hermes-agent.nousresearch.com" not in out

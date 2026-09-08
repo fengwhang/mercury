@@ -2722,7 +2722,12 @@ def setup_gateway(config: dict):
 # Section 4b: Matrix Observatory (bundled homeserver)
 # =============================================================================
 
-_OBSERVATORY_DOCS_URL = f"{_DOCS_BASE}/user-guide/messaging/matrix-observatory"
+# The matrix-observatory docs page is not published on the docs site yet —
+# never print a URL that 404s. Point at the in-repo copies instead.
+_OBSERVATORY_GUIDE_LINE = (
+    "Guide: docs/design/matrix-observatory.md + "
+    "website/docs/user-guide/messaging/matrix-observatory.md (ships with the repo)"
+)
 
 
 def _load_observatory_provision():
@@ -3017,7 +3022,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         print(color("│ " + ln.ljust(width - 2) + " │", Colors.CYAN))
     print(color("└" + "─" * width + "┘", Colors.CYAN))
     print()
-    print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+    print_info(_OBSERVATORY_GUIDE_LINE)
 
 
 def setup_observatory(config: dict, *, quick: bool = False):
@@ -3038,14 +3043,14 @@ def setup_observatory(config: dict, *, quick: bool = False):
     obs = _load_observatory_provision()
     if obs is None:
         print_warning("Bundled observatory package not found in this install.")
-        print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+        print_info(_OBSERVATORY_GUIDE_LINE)
         return
 
     try:
         status = obs.status_summary()
     except Exception as exc:
         print_warning(f"Could not read observatory state: {exc}")
-        print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+        print_info(_OBSERVATORY_GUIDE_LINE)
         return
 
     _observatory_state_lines(status)
@@ -3086,7 +3091,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
         # localhost-only tuwunel — say so explicitly.
         _maybe_print_bind_mismatch_action(obs, ts)
     else:
-        print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+        print_info(_OBSERVATORY_GUIDE_LINE)
 
 
 def print_noninteractive_observatory_guidance() -> None:
@@ -3138,7 +3143,7 @@ def print_noninteractive_observatory_guidance() -> None:
     )
     print_info("Disable instead (freezes, never deletes):")
     print_info("  mercury config set observatory.enabled false")
-    print_info(f"Guide: {_OBSERVATORY_DOCS_URL}")
+    print_info(_OBSERVATORY_GUIDE_LINE)
     print()
 
 
