@@ -4,12 +4,12 @@ The Matrix Observatory is Mercury's built-in Matrix UI: a small homeserver
 that ships with Mercury and a sidecar that mirrors every live agent session
 on your machine as a tree of Matrix rooms. You watch each agent work —
 every tool call, streamed as it happens — and you can talk to any agent,
-stop it, approve its tool use, or spawn new ones, all from the Element X
+stop it, approve its tool use, or spawn new ones, all from the FluffyChat
 app on your phone. Nothing leaves your machine: the homeserver is local,
 registration is closed, and federation is off.
 
-The reference client is **Element X** (iOS/Android). Any Matrix client
-works for reading; the guide assumes Element X.
+The tested recommendation is **FluffyChat** (iOS/Android/desktop). Other
+Matrix clients work for reading; this guide assumes FluffyChat.
 
 > **Status at time of writing.** The homeserver side is live: install-time
 > provisioning, the Tuwunel binary, the owner account, and the
@@ -42,16 +42,15 @@ and fail-hard — re-running it never breaks an existing setup:
 Everything lives under `~/.mercury/observatory/` (binary, database,
 config, credentials, logs) — nothing is written into the engine tree.
 
-## First login on Element X
+## First login with FluffyChat
 
 You log in **once**, as the owner, with a manual homeserver URL:
 
 1. Get your credentials:
    `cat ~/.mercury/observatory/owner-credentials.json`
-2. In Element X, choose **Use account instead** → **Enter homeserver
-   manually** (the QR code does **not** work here — QR transfer only
-   scans from an already-logged-in Element Web session, which a
-   self-hosted server never has).
+2. In FluffyChat, add an account and enter the homeserver URL manually
+   (choose the custom-homeserver option — not matrix.org — and paste
+   the URL from step 3).
 3. Homeserver URL: `http://127.0.0.1:18008` when the app runs on the
    same machine. From your phone, reach the server through your existing
    VPN (e.g. `tailscale serve` proxying port 18008), or edit `address`

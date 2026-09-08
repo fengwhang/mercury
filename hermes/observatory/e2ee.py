@@ -39,7 +39,8 @@ wheel land under ``observatory/scripts/{logs,dist}/``.
 
 **Key bootstrap — the manual verify step (documented, D4 bridge pattern):**
 
-1. The owner logs in on Element X (device O1) and — once — verifies the
+1. The owner logs in on a second device (device O1 — FluffyChat is the
+   tested client) and — once — verifies the
    gateway agent's device in the gateway room ("Verify manually" /
    emoji/SAS or key-pin): display the gateway machine's ed25519 key from
    ``observatory crypto-key @merc_gateway:<server>`` output. This pins

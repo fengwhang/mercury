@@ -99,7 +99,7 @@ def _write_secret_file(path: Path, content: str) -> None:
 
 
 #: $MERCURY_HOME/.env keys mirroring the observatory owner credentials, so
-#: the Element X password survives outside owner-credentials.json (the setup
+#: the FluffyChat password survives outside owner-credentials.json (the setup
 #: card points here; NEVER printed to the terminal).
 ENV_OWNER_USER_ID = "MATRIX_OBS_OWNER_USER_ID"
 ENV_OWNER_PASSWORD = "MATRIX_OBS_OWNER_PASSWORD"
@@ -366,7 +366,7 @@ def ensure_owner_account(paths: ObservatoryPaths,
                 indent=2,
             ) + "\n",
         )
-        # Same password also lives in $MERCURY_HOME/.env (0600) for Element X
+        # Same password also lives in $MERCURY_HOME/.env (0600) for FluffyChat
         # paste-in. Fail-hard like every other step here — never log it.
         mirror_owner_env(paths.root.parent, str(body["user_id"]), password)
     finally:

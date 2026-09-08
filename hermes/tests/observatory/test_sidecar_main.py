@@ -28,6 +28,7 @@ import asyncio
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 
@@ -38,6 +39,7 @@ from observatory.config_gen import (
     ObservatoryPaths,
 )
 from observatory.e2ee import EncryptedIntentExecutor
+from observatory.matrix_client import MatrixError
 from observatory.state import ObservatoryState
 
 
@@ -565,3 +567,181 @@ class TestCli:
         # the daemon's default port is config_gen's single source —
         # never a second copy of the constant in sidecar_main
         assert sm.APPSERVICE_PORT_DEFAULT == APPSERVICE_PORT_DEFAULT
+
+
+# ---------------------------------------------------------------------------
+# gateway ghost verification (VM-feedback: never serve a dead tree)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GhostFakeClient(FakeMatrixClient):
+    """FakeMatrixClient with a controllable profile directory: ``present``
+    is the set of mxids the homeserver knows. A successful
+    ``register_virtual_user`` provisions the ghost from the
+    ``provision_on_call``-th call on (default 1); ``fail_register`` makes
+    every register raise (the VM 0.0.17 case: registration failing at
+    boot while the row exists)."""
+
+    present: set = field(default_factory=set)
+    fail_register: bool = False
+    provision_on_call: int = 1
+    register_count: int = 0
+
+    async def register_virtual_user(self, localpart: str) -> str:
+        self.calls.append(("register", localpart))
+        self.register_count += 1
+        if self.fail_register:
+            raise MatrixError(
+                "POST", "/_matrix/client/v3/register", 403,
+                {"errcode": "M_FORBIDDEN", "error": "registration denied"},
+            )
+        mxid = f"@{localpart}:{self.server_name}"
+        if self.register_count >= self.provision_on_call:
+            self.present.add(mxid)
+        return mxid
+
+    async def client_api(self, method, path, *, sender=None, params=None, json_body=None):
+        if method == "GET" and "/profile/" in path:
+            self.calls.append(("client_api", method, path, sender, json_body))
+            mxid = unquote(path.rsplit("/profile/", 1)[1])
+            if mxid not in self.present:
+                raise MatrixError(
+                    "GET", path, 404,
+                    {"errcode": "M_NOT_FOUND", "error": "User not found"},
+                )
+            return {"displayname": mxid}
+        return await super().client_api(
+            method, path, sender=sender, params=params, json_body=json_body
+        )
+
+
+def _ghost_daemon(fake_home: Path, monkeypatch, client: GhostFakeClient) -> sm.SidecarDaemon:
+    d = sm.SidecarDaemon(fake_home, hermes_db=fake_home / "hermes" / "state.db",
+                         appservice_port=_free_port())
+    monkeypatch.setattr(d, "_homeserver_healthy", lambda: True)
+    monkeypatch.setattr(sm, "MatrixClient", lambda *a, **k: client)
+    return d
+
+
+class TestGatewayGhostVerify:
+    @pytest.mark.asyncio
+    async def test_boot_fails_loudly_when_gateway_ghost_missing(
+        self, fake_home: Path, monkeypatch
+    ):
+        """The 0.0.17 VM case: register fails AND the ghost is unknown —
+        boot must FAIL LOUDLY, never serve a dead tree (no intake)."""
+        client = GhostFakeClient(fail_register=True)
+        daemon = _ghost_daemon(fake_home, monkeypatch, client)
+        try:
+            with pytest.raises(sm.provision.ProvisionError):
+                await daemon.boot()
+            assert daemon.intake is None  # dead tree never served
+            assert daemon.gateway_mxid  # the row exists — the GHOST does not
+            assert daemon.gateway_mxid not in client.present
+        finally:
+            await daemon.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_boot_verifies_gateway_ghost_when_register_succeeds(
+        self, fake_home: Path, monkeypatch
+    ):
+        """Happy path: ghost unknown at first probe, re-register provisions
+        it, boot continues and reports the gate."""
+        client = GhostFakeClient(provision_on_call=2)
+        daemon = _ghost_daemon(fake_home, monkeypatch, client)
+        try:
+            report = await daemon.boot()
+            assert report["gateway_ghost"] == "verified"
+            assert daemon.gateway_mxid in client.present
+            gw_local = daemon.gateway_mxid.lstrip("@").split(":", 1)[0]
+            registers = [c for c in client.calls
+                         if c[0] == "register" and c[1] == gw_local]
+            assert len(registers) == 2  # _ensure once + verify retry once
+        finally:
+            await daemon.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_boot_skips_reregister_when_ghost_already_known(
+        self, fake_home: Path, monkeypatch
+    ):
+        """Ghost already on the server (M_USER_IN_USE-as-existing): verify
+        is a pure probe, no extra register."""
+        client = GhostFakeClient()
+        daemon = _ghost_daemon(fake_home, monkeypatch, client)
+        try:
+            report = await daemon.boot()
+            assert report["gateway_ghost"] == "verified"
+            # second verify pass over the same state: probe only
+            calls_before = len(client.calls)
+            await daemon.verify_gateway_ghost()
+            probes = [c for c in client.calls[calls_before:] if c[0] == "client_api"]
+            registers = [c for c in client.calls[calls_before:] if c[0] == "register"]
+            assert len(probes) == 1 and not registers
+        finally:
+            await daemon.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_ghost_exists_contract(self, fake_home: Path, monkeypatch):
+        """Profile 200 → True; 404/M_NOT_FOUND → False; any other error
+        propagates (a sick homeserver is not 'ghost missing')."""
+        client = GhostFakeClient()
+        daemon = _ghost_daemon(fake_home, monkeypatch, client)
+        daemon.state = ObservatoryState(daemon.paths.root / "state.db")
+        daemon.client = client  # type: ignore[assignment]
+        try:
+            assert await daemon.ghost_exists("@nobody:mercury.local") is False
+            client.present.add("@ghost:mercury.local")
+            assert await daemon.ghost_exists("@ghost:mercury.local") is True
+
+            async def sick(method, path, *, sender=None, params=None, json_body=None):
+                raise MatrixError(
+                    "GET", path, 500, {"errcode": "M_UNKNOWN", "error": "boom"}
+                )
+
+            monkeypatch.setattr(client, "client_api", sick)
+            with pytest.raises(MatrixError):
+                await daemon.ghost_exists("@ghost:mercury.local")
+        finally:
+            daemon.state.close()
+
+    @pytest.mark.asyncio
+    async def test_repair_ghosts_reregisters_all_live(
+        self, fake_home: Path, monkeypatch
+    ):
+        """Repair path: every live ghost re-registered + verified, gateway
+        included; a ghost whose register fails is reported, not raised."""
+        client = GhostFakeClient()
+        daemon = _ghost_daemon(fake_home, monkeypatch, client)
+        daemon.state = ObservatoryState(daemon.paths.root / "state.db")
+        daemon.client = client  # type: ignore[assignment]
+        daemon.server_name = "mercury.local"
+        try:
+            daemon.gateway_mxid = daemon.ensure_gateway_node()
+            daemon.state.add_node(
+                "n-agent-1", engine="hermes", name="agent one",
+                slug="agent-one", mxid="@merc_agent_one:mercury.local",
+                session_ref="session:a1", parent_node_id=sm.GATEWAY_NODE_ID,
+                extra={},
+            )
+            results = await daemon.repair_ghosts()
+            assert results == {
+                daemon.gateway_mxid: "verified",
+                "@merc_agent_one:mercury.local": "verified",
+            }
+            registered = {c[1] for c in client.calls if c[0] == "register"}
+            assert daemon.gateway_mxid.lstrip("@").split(":", 1)[0] in registered
+            assert "merc_agent_one" in registered
+
+            # failing register is a per-ghost report, never a crash
+            client2 = GhostFakeClient(fail_register=True)
+            daemon.client = client2  # type: ignore[assignment]
+            results2 = await daemon.repair_ghosts()
+            assert set(results2) == set(results)
+            assert all(v.startswith("register-failed") for v in results2.values())
+        finally:
+            daemon.state.close()
+    def test_repair_ghosts_cli_flag_parses(self):
+        """--repair-ghosts is a real CLI flag (wired to run_repair_ghosts)."""
+        with pytest.raises(FileNotFoundError):  # nonexistent home: no tuwunel.toml
+            sm.main(["--repair-ghosts", "--home", "/nonexistent-home-xyz"])
