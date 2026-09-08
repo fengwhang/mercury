@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-
 import pytest
 
 from observatory import e2ee as e2ee_mod
@@ -34,6 +33,8 @@ from observatory.e2ee import (
     E2EEManager,
     e2ee_available,
     e2ee_enabled,
+    message_content,
+    wire_encrypted_event,
 )
 from observatory.renderer import CreateRoom, CreateSpace, EditMessage, SendMessage
 from observatory.state import ObservatoryState
@@ -342,6 +343,68 @@ class TestInboundPipeline:
         decrypted = await daemon.e2ee.decrypt_event(event)
         # a broken ciphertext still yields a body — intake continues
         assert decrypted is not None
+
+class TestWireEncryptedEvent:
+    """``wire_encrypted_event``: raw wire dicts (``/messages`` chunks,
+    appservice transactions) use JSON names — the live gate proved the
+    attr name ``timestamp`` does NOT deserialize and ``type`` is
+    required (``SerializerError`` → intake/decrypt FATAL)."""
+
+    @staticmethod
+    def _wire(**over):
+        base = {
+            "event_id": "$e", "room_id": "!r:example", "sender": "@a:example",
+            "type": "m.room.encrypted", "origin_server_ts": 123,
+            "content": {"algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "C",
+                        "sender_key": "K", "session_id": "S", "device_id": "D"},
+        }
+        base.update(over)
+        return base
+
+    def test_wire_dict_deserializes_with_json_names(self):
+        from mautrix.types import EventType
+
+        evt = wire_encrypted_event(self._wire())
+        assert evt.event_id == "$e" and evt.room_id == "!r:example"
+        assert evt.timestamp == 123
+        assert evt.type == EventType.ROOM_ENCRYPTED
+        assert evt.content.ciphertext == "C"
+
+    def test_missing_type_defaults_to_encrypted(self):
+        from mautrix.types import EventType
+
+        wire = self._wire()
+        del wire["type"]
+        assert wire_encrypted_event(wire).type == EventType.ROOM_ENCRYPTED
+
+class TestMessageContent:
+    """``message_content``: spec ``m.replace`` law — an edit carries
+    ``m.relates_to`` AND a mirrored ``m.new_content`` (mautrix parses
+    the replacement from ``m.new_content``; without it O1 sees
+    ``new_content=None``). Plain messages carry neither key."""
+
+    def test_plain_message_has_no_relation_keys(self):
+        from observatory.e2ee import message_content as mc
+
+        assert mc("hi") == {"msgtype": "m.text", "body": "hi"}
+
+    def test_replace_carries_new_content_mirror(self):
+        from observatory.e2ee import message_content as mc
+
+        content = mc("* fixed", relates_to={"rel_type": "m.replace",
+                                            "event_id": "$orig"})
+        assert content["m.relates_to"] == {"rel_type": "m.replace",
+                                           "event_id": "$orig"}
+        assert content["m.new_content"] == {"msgtype": "m.text",
+                                            "body": "* fixed"}
+
+    def test_replace_mirrors_format_when_present(self):
+        from observatory.e2ee import message_content as mc
+
+        content = mc("* <b>f</b>", formatted_body="<b>f</b>",
+                     relates_to={"rel_type": "m.replace", "event_id": "$o"})
+        assert content["m.new_content"]["formatted_body"] == "<b>f</b>"
+        assert content["m.new_content"]["format"] == "org.matrix.custom.html"
 
 
 # ---------------------------------------------------------------------------

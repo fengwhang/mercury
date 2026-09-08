@@ -288,14 +288,21 @@ class _SidecarCryptoClient:
             }},
         )
 
-    async def send_to_one_device(self, user_id, device_id, event_type, content) -> None:
-        await self.send_to_device(event_type, {user_id: {device_id: content}})
+    async def send_to_one_device(self, event_type, user_id, device_id, message) -> None:
+        """mautrix canonical order (client/api/modules/crypto.py): event
+        type FIRST — ``encrypt_olm``/``key_share`` call positionally."""
+        await self.send_to_device(event_type, {user_id: {device_id: message}})
 
-    async def upload_keys(self, one_time_keys=None, device_keys=None) -> dict[str, int]:
+    async def upload_keys(self, one_time_keys=None, device_keys=None) -> dict:
         """mautrix 0.21.1 contract (crypto/machine.py:310/:327): the
         no-arg call returns an algorithm→count mapping the machine
-        ``.get()``s directly; the upload call's response object is never
-        read by the machine."""
+        ``.get()``s with an ``EncryptionKeyAlgorithm`` member directly;
+        the upload call's response object is never read by the machine.
+        Keys are enum members (canonical client shape) — ExtensibleEnum
+        members hash UNEQUAL to their strings, so string keys would make
+        every lookup miss and re-upload keys each cycle."""
+        from mautrix.types import EncryptionKeyAlgorithm
+
         body: dict[str, Any] = {}
         if device_keys is not None:
             body["device_keys"] = (
@@ -312,26 +319,36 @@ class _SidecarCryptoClient:
             merged: dict[str, int] = {}
             for per_user in counts.values():
                 merged.update(per_user)
-            return merged
-        return dict(counts)
+            counts = merged
+        keyed: dict[Any, int] = {}
+        for alg, count in (counts or {}).items():
+            try:
+                keyed[EncryptionKeyAlgorithm.deserialize(alg)] = count
+            except Exception:  # noqa: BLE001 — unknown algorithm: keep raw key
+                keyed[alg] = count
+        return keyed
     async def query_keys(self, users, token=None) -> Any:
-        """mautrix canonical call (device_lists.py:53):
-        ``query_keys(users, token=since)`` — a user set, NOT a request
-        object."""
+        """mautrix canonical call (device_lists.py:53, :242):
+        ``query_keys(users, token=since)`` — a user SET, or a
+        ``{user: [devices]}`` map (``_get_full_device_keys``) — never a
+        request object. Dict input passes device lists through."""
         from mautrix.types import QueryKeysResponse
 
-        out = await self._token_api(
-            "POST", f"{CLIENT_V3}/keys/query",
-            json_body={
-                "device_keys": {str(u): [] for u in users},
-                "timeout": 0,
-            },
-        )
+        if isinstance(users, dict):
+            device_keys = {str(u): [str(d) for d in (devs or [])]
+                           for u, devs in users.items()}
+        else:
+            device_keys = {str(u): [] for u in users}
+        body: dict[str, Any] = {"device_keys": device_keys, "timeout": 0}
+        if token:
+            body["token"] = str(token)
+        out = await self._token_api("POST", f"{CLIENT_V3}/keys/query", json_body=body)
         return QueryKeysResponse.deserialize(out)
 
     async def claim_keys(self, request) -> Any:
         """mautrix canonical call (encrypt_olm.py:78): plain
-        ``{user: {device: EncryptionKeyAlgorithm}}`` dict."""
+        ``{user: {device: EncryptionKeyAlgorithm}}`` dict; algorithms
+        serialize like the canonical client (``alg.serialize()``)."""
         from mautrix.types import ClaimKeysResponse
 
         out = await self._token_api(
@@ -339,7 +356,8 @@ class _SidecarCryptoClient:
             json_body={
                 "one_time_keys": {
                     str(user): {
-                        str(dev): (alg.value if hasattr(alg, "value") else str(alg))
+                        str(dev): (alg.serialize() if hasattr(alg, "serialize")
+                                   else str(alg))
                         for dev, alg in (devs or {}).items()
                     }
                     for user, devs in (request or {}).items()
@@ -350,15 +368,26 @@ class _SidecarCryptoClient:
         return ClaimKeysResponse.deserialize(out)
 
     async def get_state_event(self, room_id, event_type) -> Any:
+        from mautrix.errors import MForbidden, MNotFound
         from mautrix.types import RoomEncryptionStateEventContent
+        from observatory.matrix_client import MatrixError
 
         et = event_type.serialize() if hasattr(event_type, "serialize") else event_type
         path = f"{CLIENT_V3}/rooms/{room_id}/state/{et}"
-        out = await self._token_api("GET", path)
+        try:
+            out = await self._token_api("GET", path)
+        except MatrixError as exc:
+            # mautrix's room-key intake (base.py ``_fill_encryption_info``)
+            # catches its OWN MNotFound/MForbidden for the defaults
+            # fallback — a foreign error type would drop the room key.
+            if exc.status == 404:
+                raise MNotFound(404, f"room state not found: {path}") from exc
+            if exc.status == 403:
+                raise MForbidden(403, f"room state forbidden: {path}") from exc
+            raise
         if not isinstance(out, dict):
             return None
         return RoomEncryptionStateEventContent.deserialize(out)
-        return ClaimKeysResponse.deserialize(out)
 
 
     # -- cross-signing paths (SSSS bootstrap) — the sidecar never drives
@@ -909,6 +938,52 @@ class VirtualUserCrypto:
             self._loaded = True
 
 
+def wire_encrypted_event(event: dict[str, Any]) -> Any:
+    """Build a mautrix ``EncryptedEvent`` from a raw wire dict (a
+    ``/messages`` chunk entry or appservice transaction event).
+    mautrix 0.21.1 ``deserialize`` needs the JSON names — ``type``
+    (``m.room.encrypted``) and ``origin_server_ts``; the attr name
+    ``timestamp`` does NOT map and omitting ``type`` raises
+    ``SerializerError`` (live-gate proven)."""
+    from mautrix.types import EncryptedEvent
+
+    return EncryptedEvent.deserialize(
+        {
+            "event_id": event.get("event_id"),
+            "room_id": event.get("room_id"),
+            "sender": event.get("sender"),
+            "type": event.get("type") or "m.room.encrypted",
+            "origin_server_ts": event.get("origin_server_ts", 0),
+            "content": event.get("content") or {},
+        }
+    )
+
+
+def message_content(
+    body: str,
+    formatted_body: str | None = None,
+    relates_to: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Plain ``m.room.message`` content dict for the encrypted send path.
+    Spec ``m.replace`` law (live-gate proven: O1's mautrix parses the
+    replacement from ``m.new_content``, not ``body``): an edit carries
+    ``m.relates_to`` AND a mirrored ``m.new_content``; ``body`` stays
+    the ``* ...`` fallback. Plain messages carry neither key."""
+    content: dict[str, Any] = {"msgtype": "m.text", "body": body}
+    if formatted_body is not None:
+        content["format"] = "org.matrix.custom.html"
+        content["formatted_body"] = formatted_body
+    if relates_to is not None:
+        content["m.relates_to"] = relates_to
+        if relates_to.get("rel_type") == "m.replace":
+            new_content: dict[str, Any] = {"msgtype": "m.text", "body": body}
+            if formatted_body is not None:
+                new_content["format"] = "org.matrix.custom.html"
+                new_content["formatted_body"] = formatted_body
+            content["m.new_content"] = new_content
+    return content
+
+
 class E2EEManager:
     """Sidecar-wide E2EE facade (D4). Owns one :class:`VirtualUserCrypto`
     per virtual user, the encrypted-room registry, and the plaintext
@@ -1111,10 +1186,11 @@ class E2EEManager:
             await machine.share_group_session(RoomID(room_id), list(members))
         return (
             await machine.encrypt_megolm_event(
-                RoomID(room_id), EventType(event_type), content
+                # mautrix 0.21.1 EventType takes (type, t_class) — .find()
+                # is the string lookup (direct construction TypeErrors).
+                RoomID(room_id), EventType.find(event_type), content
             )
         ).serialize()
-
     async def send_encrypted_message(
         self,
         room_id: str,
@@ -1129,12 +1205,7 @@ class E2EEManager:
         ``matrix_client.MatrixClient._send_event``)."""
         from urllib.parse import quote
 
-        content: dict[str, Any] = {"msgtype": "m.text", "body": body}
-        if formatted_body is not None:
-            content["format"] = "org.matrix.custom.html"
-            content["formatted_body"] = formatted_body
-        if relates_to is not None:
-            content["m.relates_to"] = relates_to
+        content = message_content(body, formatted_body, relates_to)
         encrypted = await self.encrypt_megolm(room_id, sender, "m.room.message", content)
         txn = uuid.uuid4().hex
         path = f"{CLIENT_V3}/rooms/{quote(room_id, safe='')}/send/m.room.encrypted/{txn}"
@@ -1162,7 +1233,6 @@ class E2EEManager:
         ]
 
     # -- inbound decryption (appservice transaction pipeline) ----------------------
-
     async def decrypt_event(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """Decrypt one ``m.room.encrypted`` room event via the gateway
         agent's machine (any member machine decrypts — we hold every
@@ -1173,15 +1243,7 @@ class E2EEManager:
 
             if event.get("type") != EventType.ROOM_ENCRYPTED.serialize():
                 return None
-            evt = EncryptedEvent.deserialize(
-                {
-                    "event_id": event.get("event_id"),
-                    "room_id": event.get("room_id"),
-                    "sender": event.get("sender"),
-                    "timestamp": event.get("origin_server_ts", 0),
-                    "content": event.get("content") or {},
-                }
-            )
+            evt = wire_encrypted_event(event)
             crypto = self.machine_for(self.gateway_mxid or self._first_machine_mxid())
             decrypted = await crypto.machine.decrypt_megolm_event(evt)
             content = decrypted.content
