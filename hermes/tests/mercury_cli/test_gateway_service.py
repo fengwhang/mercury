@@ -1190,6 +1190,83 @@ class TestDetectVenvDir:
         assert result is None
 
 
+class TestUnitPinsOmpAgentDir:
+    """PI_CODING_AGENT_DIR in generated units must mirror bin/mercury:76.
+
+    The launcher exports ``PI_CODING_AGENT_DIR=$MERCURY_HOME/omp`` so omp
+    children (delegation, cron omp_direct) keep sessions/agent.db inside
+    the ONE mercury tree. Without the unit-side pin, gateway-spawned omp
+    children resolve the platform default ``~/.omp/agent`` instead — a
+    second, divergent state root (spec §7 / §8.1 item 4). Contract test on
+    the bin/mercury↔unit relationship, not a snapshot: the agent-dir line
+    must equal the unit's own MERCURY_HOME value + "/omp", however that
+    root was resolved (launcher-suffixed, default, profile, custom,
+    target-user remap).
+    """
+
+    @staticmethod
+    def _env_value(unit: str, key: str) -> str:
+        prefix = f'Environment="{key}='
+        for line in unit.splitlines():
+            if line.startswith(prefix) and line.endswith('"'):
+                return line[len(prefix) : -1]
+        raise AssertionError(f"no Environment line for {key} in unit:\n{unit}")
+
+    def test_user_unit_agent_dir_equals_mercury_home_slash_omp(
+        self, tmp_path, monkeypatch
+    ):
+        # bin/mercury:76 contract: PI_CODING_AGENT_DIR="$MERCURY_HOME/omp".
+        # Both values parsed from the generated text, so the assertion is
+        # the relationship, not a snapshot of either path.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "anywhere" / ".mercury"))
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        mercury_home = self._env_value(unit, "MERCURY_HOME")
+        assert self._env_value(unit, "PI_CODING_AGENT_DIR") == f"{mercury_home}/omp"
+
+    def test_user_unit_agent_dir_resolves_from_launcher_shaped_home(
+        self, tmp_path, monkeypatch
+    ):
+        # Launcher-shaped HERMES_HOME ($MERCURY_HOME/hermes): the …/hermes
+        # suffix must be stripped before appending /omp.
+        root = tmp_path / "state" / ".mercury"
+        monkeypatch.setenv("HERMES_HOME", str(root / "hermes"))
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert self._env_value(unit, "PI_CODING_AGENT_DIR") == str(root / "omp")
+
+    def test_user_unit_agent_dir_follows_platform_default_home(
+        self, tmp_path, monkeypatch
+    ):
+        # HERMES_HOME unset: the root is Path.home()/.mercury — proof the
+        # line is resolved, never a hardcoded absolute path.
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("MERCURY_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert self._env_value(unit, "PI_CODING_AGENT_DIR") == str(
+            tmp_path / ".mercury" / "omp"
+        )
+
+    def test_system_unit_agent_dir_targets_service_user(self, monkeypatch):
+        # sudo --system install for alice: the whole launcher env quartet
+        # must reference alice's tree, not the calling root's.
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("MERCURY_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_build_user_local_paths",
+            lambda home, existing: [],
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert self._env_value(unit, "PI_CODING_AGENT_DIR") == "/home/alice/.mercury/omp"
+        assert "/root/.mercury" not in unit
+
+
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
 
