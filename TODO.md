@@ -88,6 +88,39 @@ Legend: [ ] todo · [~] partial · [x] done
       NB-6d pyproject console-script NAME `hermes =` → decide alongside
       D3 install layout.
 
+## Track M — matrix observatory (pre-release, integration branch recovery/matrix-observatory)
+
+Truth doc: `docs/design/matrix-observatory.md` (§3 layout verified against
+`hermes/observatory/tree.py` `desired_plan`/`space_child_order` 2026-09-08 —
+no drift). Code: `hermes/observatory/`. Midflight-steering counterpart:
+`docs/design/midflight-steering.md`.
+- [~] **M0/M1** (22acd41f): hermes delegation control plane (name schema,
+      steer/stop forwarding, RPC methods, names persistence). Code in tree;
+      suite proof: test_omp_delegation + test_omp_rpc_transport fully green
+      in the final-sweep delegation run below.
+- [~] **M2–M6** (ac974016): observatory package + gw-parity +
+      e2ee-default-true code-side. Code in tree; suite proof: observatory
+      597 green below; LIVE gates further below open.
+- [x] **M-tests** (final-sweep 2026-09-08): hermes tests/observatory 597
+      passed, 1 skipped, 4 xpassed; omp rpc-subagent-control bun 11/11;
+      tsgo --noEmit clean (exit 0); bridge script 2 FAILED =
+      {missing-fallback exit 1, missing-delegate_fallback exit 1} (known
+      pre-existing, file untouched since e952cd5d); delegation+transport
+      subset 436 passed, 1 skipped, 23 failed — 11 env-missing-module
+      (httpx x10, openai x1), 2 collection errors
+      (mercury_tools_mcp_server absent), 10 hermes/mercury rename +
+      description drift — ALL pre-existing at HEAD 3a05be10, zero caused
+      by this branch (touches docs only).
+- [ ] **M-LIVE1**: real 3-deep fan-out renders on Element X (spec Phase 3 gate).
+- [ ] **M-LIVE2**: LIVE steer/stop of a running child from its room
+      (spec Phase 4 gate).
+- [ ] **M-E2EE gate**: FAIL 2026-09-08 (`gate-e2ee.log`
+      MERCURY-E2EE-FAIL, M_UNKNOWN_TOKEN on login, 1/1 checks; owner:
+      e2ee-gate2 agent). BLOCKS release.
+- [ ] **M-omp-swap**: installed-binary swap SKIPPED 2026-09-08 (2 live
+      `omp --mode rpc` children; kill forbidden). Installed sha bda272dd
+      vs tree 28073b1f — swap + `--version` check deferred until children exit.
+
 ---
 
 State snapshot (2026-09-05, post-C1-slice-2b, fc0d6c89): shipped v0.0.1
