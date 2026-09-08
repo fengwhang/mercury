@@ -57,6 +57,10 @@ _COMMAND_LINE_RE = re.compile(r"^Command:\s*(.+)$", re.MULTILINE | re.DOTALL)
 
 # How long the dedicated UI thread waits between queue polls (seconds).
 _UI_POLL_INTERVAL = 0.5
+# MERCURY-OMP PATCH (matrix observatory §8.2): subagent frame subscription
+# levels the omp RPC server accepts (RpcSubagentSubscriptionLevel).
+_SUBAGENT_SUBSCRIPTION_LEVELS = ("off", "progress", "events")
+
 
 
 def _import_omp_rpc():
@@ -163,6 +167,47 @@ def _approve_command_select(client: Any, request: Any) -> None:
     client.send_ui_value(request.id, "Approve" if approved else "Deny")
 
 
+# M4b (matrix observatory §5/D10): optional approval-frame observer. The
+# observatory sidecar registers ONE process-global callback to mirror omp
+# RPC approval gates into the child's Matrix room while the guard stack
+# below still owns the decision. Purely additive: with no callback
+# registered (the default) this module behaves exactly as before.
+ApprovalFrameHook = Callable[[str, str, str, tuple], None]
+_approval_frame_hook: Optional[ApprovalFrameHook] = None
+
+
+def set_approval_frame_hook(cb: Optional[ApprovalFrameHook]) -> Optional[ApprovalFrameHook]:
+    """Register/replace (``None`` unregisters) the approval-frame observer.
+
+    The hook is called with ``(request_id, method, title, options)``
+    whenever the responder thread sees a UI request that
+    ``looks_like_approval_select`` matches, BEFORE the guard stack is
+    consulted. Observational only: return values are ignored, exceptions
+    are swallowed, and the guard decision below is unchanged. Returns the
+    previously registered hook (for restore-on-unregister).
+    """
+    global _approval_frame_hook
+    previous = _approval_frame_hook
+    _approval_frame_hook = cb
+    return previous
+
+
+def _notify_approval_frame(request: Any) -> None:
+    """Fire the M4b hook for one approval select — never affects the decision."""
+    hook = _approval_frame_hook
+    if hook is None:
+        return
+    try:
+        hook(
+            str(getattr(request, "id", "") or ""),
+            str(getattr(request, "method", "") or ""),
+            str(getattr(request, "title", None) or getattr(request, "message", None) or ""),
+            tuple(getattr(request, "options", None) or ()),
+        )
+    except Exception:
+        logger.exception("M4b: approval-frame hook raised (ignored)")
+
+
 def serve_approvals(client: Any, stop: threading.Event,
                     approval_callback: Optional[Callable] = None) -> None:
     """Dedicated approval-responder thread body.
@@ -196,6 +241,7 @@ def serve_approvals(client: Any, stop: threading.Event,
             continue  # queue timeout — loop and re-check stop
         try:
             if looks_like_approval_select(request.options, request.method):
+                _notify_approval_frame(request)  # M4b observatory mirror
                 _approve_command_select(client, request)
             elif request.method in ("cancel",) or request.is_passive():
                 continue  # passive frames are not answered
@@ -210,6 +256,12 @@ def serve_approvals(client: Any, stop: threading.Event,
                 _deny(client, request.id)
         except Exception:
             logger.exception("C1: UI request handler error (request %s)", request.id)
+
+
+class OmpRpcControlError(Exception):
+    """A control-plane call (steer/abort/observe) hit a dead or unborn
+    child connection. Callers treat this as 'connection lost' and fall
+    back to process-level signals."""
 
 
 class OmpRpcChild:
@@ -327,6 +379,110 @@ class OmpRpcChild:
                 "duration_seconds": round(_time.time() - started, 2),
             }
 
+    # ------------------------------------------------------------------
+    # MERCURY-OMP PATCH (matrix observatory §8.1/§8.2): live control +
+    # subagent-observer surface. The delegated task IS this child's main
+    # omp session, so steer/abort address the main session; the
+    # subagent_* methods address omp's IN-PROCESS subagents (children of
+    # this child — grandchildren of the delegating agent), matching the
+    # server commands in omp rpc-types.ts.
+    # ------------------------------------------------------------------
+
+    def _require_client(self) -> Any:
+        client = self._client
+        if client is None:
+            raise OmpRpcControlError("omp RPC child not started")
+        proc = getattr(client, "_process", None)
+        if proc is None or proc.poll() is not None:
+            raise OmpRpcControlError("omp RPC child connection lost")
+        return client
+
+    def steer(self, text: str) -> None:
+        """Queue steering text into the child's MAIN session mid-run.
+
+        omp's steer semantics: the text is injected as a steering prompt at
+        the next safe boundary — the in-flight tool call is never cut.
+        """
+        self._require_client().steer(text)
+
+    def abort(self, reason: Optional[str] = None) -> None:
+        """Ask the child's main session to stop at its next boundary.
+
+        ``reason`` is host-side bookkeeping only — the wire ``abort``
+        command carries no reason field (rpc-types.ts); subagent_abort
+        does, and takes it verbatim.
+        """
+        client = self._require_client()
+        if reason:
+            logger.info("C1: aborting omp RPC child (reason: %s)", reason[:200])
+        client.abort()
+
+    def get_subagents(self) -> Dict[str, Any]:
+        """Snapshot of omp's in-process AgentRegistry (AgentRef records)."""
+        return dict(self._require_client().request_raw("get_subagents"))
+
+    def set_subagent_subscription(self, level: str) -> Dict[str, Any]:
+        """Set subagent frame subscription: 'off' | 'progress' | 'events'."""
+        if level not in _SUBAGENT_SUBSCRIPTION_LEVELS:
+            raise ValueError(
+                f"subscription level must be one of "
+                f"{_SUBAGENT_SUBSCRIPTION_LEVELS}, got {level!r}"
+            )
+        return dict(self._require_client().request_raw(
+            "set_subagent_subscription", level=level))
+
+    def get_subagent_messages(
+        self,
+        subagent_id: Optional[str] = None,
+        session_file: Optional[str] = None,
+        from_byte: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Read a subagent transcript by registry id or session file path.
+
+        Returns ``{sessionFile, fromByte, nextByte, reset, entries,
+        messages}`` — poll with ``fromByte=nextByte`` for incremental
+        tailing (server contract: rpc-types.ts RpcSubagentMessagesResult).
+        """
+        if not subagent_id and not session_file:
+            raise ValueError(
+                "get_subagent_messages needs subagent_id or session_file"
+            )
+        return dict(self._require_client().request_raw(
+            "get_subagent_messages",
+            subagentId=subagent_id,
+            sessionFile=session_file,
+            fromByte=from_byte,
+        ))
+
+    def subagent_steer(self, subagent_id: str, text: str) -> None:
+        """Steer one of omp's in-process subagents by registry id.
+
+        Wire shape ``{subagentId, text}`` (rpc-types.ts, HERMES-OMP PATCH
+        matrix observatory §8.2). Works while the subagent is live;
+        parked isolated subagents cannot be revived (server-side rule).
+        """
+        if not str(subagent_id or "").strip():
+            raise ValueError("subagent_steer needs a subagent_id")
+        if not str(text or "").strip():
+            raise ValueError("subagent_steer needs non-empty text")
+        self._require_client().request_raw(
+            "subagent_steer",
+            subagentId=str(subagent_id),
+            text=str(text),
+        )
+
+    def subagent_abort(
+        self, subagent_id: str, reason: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Abort one of omp's in-process subagents by registry id."""
+        if not str(subagent_id or "").strip():
+            raise ValueError("subagent_abort needs a subagent_id")
+        return dict(self._require_client().request_raw(
+            "subagent_abort",
+            subagentId=str(subagent_id),
+            reason=(str(reason) if reason else None),
+        ))
+
     def stop(self) -> None:
         self._stop.set()
         if self._ui_thread is not None:
@@ -360,6 +516,8 @@ def run_omp_task_rpc(
     rpc_procs: Optional[list] = None,
     approval_callback: Optional[Callable] = None,
     thinking_level: Optional[str] = None,
+    child_started: Optional[Callable[["OmpRpcChild"], None]] = None,
+    child_finished: Optional[Callable[["OmpRpcChild"], None]] = None,
 ) -> Dict[str, Any]:
     """One-shot helper: full RPC child lifecycle around a single task.
 
@@ -372,6 +530,10 @@ def run_omp_task_rpc(
     ``batch_procs`` receives the OmpRpcChild itself (has .pid → killpg-
     compatible with the engine's Popen-based interrupt lists);
     ``rpc_procs`` optionally receives the inner Popen.
+    ``child_started``/``child_finished`` (matrix observatory §8.1): the
+    delegation engine registers the live OmpRpcChild in its steer/stop
+    registry the moment the RPC connection is up (and deregisters it when
+    the run ends), so control actions can reach the child mid-task.
     """
     child = OmpRpcChild(
         omp_path=omp_path, model=model, workdir=workdir,
@@ -398,9 +560,19 @@ def run_omp_task_rpc(
             batch_procs.append(child)
         if rpc_procs is not None and child.proc is not None:
             rpc_procs.append(child.proc)
+        if child_started is not None:
+            try:
+                child_started(child)
+            except Exception:
+                logger.exception("C1: child_started hook raised (ignored)")
         return child.run_task(prompt, timeout=timeout)
     finally:
         child.stop()
+        if child_finished is not None:
+            try:
+                child_finished(child)
+            except Exception:
+                logger.exception("C1: child_finished hook raised (ignored)")
         if batch_procs is not None:
             try:
                 batch_procs.remove(child)
