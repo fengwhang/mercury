@@ -1254,3 +1254,64 @@ def test_noninteractive_observatory_prints_in_repo_guide(monkeypatch, capsys):
     assert "Guide: docs/design/matrix-observatory.md" in out
     assert "website/docs/user-guide/messaging/matrix-observatory.md" in out
     assert "hermes-agent.nousresearch.com" not in out
+
+
+# ---------------------------------------------------------------------------
+# cua-driver persistent telemetry-off (setup_telemetry tail)
+# ---------------------------------------------------------------------------
+
+_CUA_PERSISTENT_HELPER = (
+    "tools.computer_use.cua_backend.cua_driver_telemetry_disable_persistent"
+)
+
+
+def test_setup_telemetry_disables_cua_telemetry_persistently_once(
+    monkeypatch, capsys
+):
+    """Default policy flips the driver's persistent switch exactly once."""
+    calls: list = []
+
+    def _off(**kwargs):
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(_CUA_PERSISTENT_HELPER, _off)
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no", lambda q, default=True: default
+    )
+    setup_mod.setup_telemetry({})
+    out = capsys.readouterr().out
+    assert len(calls) == 1
+    assert "persistently" in out  # printed confirmation
+    assert "CUA_DRIVER_RS_TELEMETRY_ENABLED=0" in out  # env line kept
+
+
+def test_setup_telemetry_skips_persistent_disable_on_opt_in(
+    monkeypatch, capsys
+):
+    """computer_use.cua_telemetry opt-in leaves the driver default alone."""
+
+    def _boom(**kwargs):
+        raise AssertionError("persistent off-switch must not run on opt-in")
+
+    monkeypatch.setattr(_CUA_PERSISTENT_HELPER, _boom)
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no", lambda q, default=True: default
+    )
+    setup_mod.setup_telemetry({"computer_use": {"cua_telemetry": True}})
+    out = capsys.readouterr().out
+    assert "opt-in" in out
+
+
+def test_setup_telemetry_persistent_failure_degrades_to_env_line(
+    monkeypatch, capsys
+):
+    """A failed persistent flip warns but keeps the per-invocation env line."""
+    monkeypatch.setattr(_CUA_PERSISTENT_HELPER, lambda **kwargs: False)
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no", lambda q, default=True: default
+    )
+    setup_mod.setup_telemetry({})
+    out = capsys.readouterr().out
+    assert "Could not persistently disable" in out
+    assert "on every cua-driver invocation" in out
