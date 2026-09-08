@@ -2,7 +2,7 @@
 
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { compileCodingAgent } from "./compile-binary";
+import { compileCodingAgent, resolveMercuryVersion } from "./compile-binary";
 
 const packageDir = path.join(import.meta.dir, "..");
 const repoRoot = path.join(packageDir, "..", "..");
@@ -71,6 +71,11 @@ async function runCommand(
 }
 
 async function main(): Promise<void> {
+	// HERMES-OMP PATCH (Mercury version): bake the Mercury release into the
+	// binary so `omp --version`, the startup notice, and User-Agent headers
+	// report it instead of the forked omp package.json version.
+	const mercuryVersion = resolveMercuryVersion(repoRoot);
+	console.log(`Baking Mercury version ${mercuryVersion} (omp --version, startup notice, User-Agent)`);
 	const crossBuild = resolveCrossBuild(Bun.env.CROSS_TARGET);
 	const shouldAdhocSign = process.platform === "darwin" && !crossBuild && Bun.env.BUN_NO_CODESIGN_MACHO_BINARY !== "1";
 	const outName = crossBuild ? `omp-${crossBuild.id}` : "omp";
@@ -94,6 +99,7 @@ async function main(): Promise<void> {
 				entrypoint: path.join(packageDir, "src", "cli.ts"),
 				outfile: outputPath,
 				transformersVersion,
+				mercuryVersion,
 				target: crossBuild?.target,
 				executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH || undefined,
 				skipBuiltinCodesign: shouldAdhocSign,

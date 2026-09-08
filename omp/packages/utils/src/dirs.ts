@@ -26,11 +26,25 @@ export const CONFIG_DIR_NAME: string = ".omp";
 /** Ordered main settings filenames: canonical write target first, legacy-compatible YAML fallback second. */
 export const MAIN_CONFIG_FILENAMES = ["config.yml", "config.yaml"] as const;
 
-/** Version (e.g. "1.0.0") */
-export const VERSION: string = version;
+/**
+HERMES-OMP PATCH (Mercury version): Mercury release builds inject
+`process.env.MERCURY_VERSION` via the Bun.build `define` block in
+`packages/coding-agent/scripts/compile-binary.ts` (same mechanism as
+`PI_COMPILED`), so the compiled binary reports the Mercury release
+(e.g. "0.0.15") instead of the forked omp version (e.g. "18.1.6").
+Unset in upstream dev/test, where the package.json version applies.
+ */
+const mercuryVersion = process.env.MERCURY_VERSION?.trim() || undefined;
 
-/** Default User-Agent header string (e.g. "omp/17.2.12") */
-export const USER_AGENT = `omp/${VERSION}`;
+/** Version: Mercury release in Mercury builds, fork version in upstream dev (e.g. "0.0.15"). */
+export const VERSION: string = mercuryVersion ?? version;
+
+/**
+Default User-Agent header string (e.g. "omp/0.0.15-mercury").
+Keeps the `omp/` prefix for server compat; the `-mercury` suffix marks
+Mercury builds. Upstream dev keeps the plain `omp/<version>` form.
+ */
+export const USER_AGENT = mercuryVersion ? `omp/${mercuryVersion}-mercury` : `omp/${VERSION}`;
 
 /** Minimum Bun version */
 export const MIN_BUN_VERSION: string = engines.bun.replace(/[^0-9.]/g, "");
