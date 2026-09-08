@@ -3191,6 +3191,14 @@ def setup_telemetry(config: dict):
         print_success("Local shared metrics enabled.")
     else:
         print_info("Local shared metrics disabled.")
+    # The "Telemetry defaults to enabled" line users see comes from
+    # cua-driver's own upstream installer, not Mercury: Mercury's own
+    # shared metrics default off (above), and cua-driver telemetry too.
+    print_info(
+        "Mercury disables cua-driver telemetry "
+        "(CUA_DRIVER_RS_TELEMETRY_ENABLED=0) unless you opt in via "
+        "computer_use.cua_telemetry."
+    )
 
 
 # =============================================================================
