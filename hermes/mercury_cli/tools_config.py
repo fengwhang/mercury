@@ -5688,9 +5688,29 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
     # ── First-time install: linear flow, no platform menu ──
     if first_install:
-        for pkey in enabled_platforms:
+        # WIZARD SINGLE-PASS (double-tools fix): the loop below used to run
+        # the FULL checklist + per-tool configuration once per enabled
+        # platform. The offerings are platform-independent, so with a
+        # messenger configured (e.g. Telegram from the wizard's own gateway
+        # step) the user answered the identical 25-tool flow twice in one
+        # `mercury setup` run. The first platform (always cli) runs the full
+        # interactive body; a later platform whose pre-pass state matches the
+        # reference gets the same picks saved silently instead of re-prompted
+        # (per-tool config writes are platform-independent globals, already
+        # handled by the reference pass). A platform the user customized
+        # separately (diverged state) keeps the full per-platform treatment.
+        _ref_key = enabled_platforms[0] if enabled_platforms else "cli"
+        _ref_pre = None
+        _ref_new = None
+        for _pidx, pkey in enumerate(enabled_platforms):
             pinfo = PLATFORMS[pkey]
             current_enabled = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
+            if _pidx > 0 and _ref_pre is not None and _ref_new is not None and set(current_enabled) == _ref_pre:
+                _save_platform_tools(config, pkey, _ref_new)
+                save_config(config)
+                print(color(f"  ✓ Saved {pinfo['label']} tool configuration (same as {PLATFORMS[_ref_key]['label']})", Colors.GREEN))
+                print()
+                continue
 
             # Uncheck toolsets that should be off by default
             checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
@@ -5750,6 +5770,9 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             save_config(config)
             print(color(f"  ✓ Saved {pinfo['label']} tool configuration", Colors.GREEN))
             print()
+            if _pidx == 0:
+                _ref_pre = set(current_enabled)
+                _ref_new = set(new_enabled)
 
         return
 
