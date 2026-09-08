@@ -1,0 +1,8 @@
+Mercury distribution
+version:    0.0.15
+arch:       x64
+built:      2026-09-07T17:11:47Z
+built-on:   Linux 7.1.5-101.fc43.x86_64 x86_64
+hermes pin: hermes: NousResearch/hermes-agent v2026.8.31 (v0.21.0) commit 29112be
+omp pin:    omp:    can1357/oh-my-pi v18.1.6 commit d2d2c17
+components: source (git archive 4d187358) + omp binary (x64) + ui-tui bundle + natives
