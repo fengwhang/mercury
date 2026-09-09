@@ -973,6 +973,67 @@ def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
 # between `mercury tools` and `mercury setup tools`).
 
 
+def _read_model_slots() -> dict:
+    """Read the shared four-slot ``models:`` block from the unified config.
+
+    Hoisted from ``_prompt_mercury_slots`` so the delegate reconfigure gate
+    reuses the exact same probe (no new detection). A missing file or a
+    parse error degrades to empty slots (unconfigured → no gate).
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    slots = {
+        "default": "",
+        "fallback": "",
+        "delegate_model": "",
+        "delegate_fallback": "",
+    }
+
+    def _unified_path() -> _Path:
+        return _Path(
+            _os.environ.get("MERCURY_CONFIG")
+            or (_Path(_os.environ.get("MERCURY_HOME") or _Path.home() / ".mercury") / "config.yaml")
+        )
+
+    path = _unified_path()
+    if not path.exists():
+        return slots
+    try:
+        import yaml as _yaml
+
+        whole = _yaml.safe_load(path.read_text()) or {}
+        models = whole.get("models") or {}
+        for key in slots:
+            value = str(models.get(key) or "").strip()
+            if value:
+                slots[key] = value
+    except Exception:
+        pass
+    return slots
+
+
+def _ask_reconfigure(label: str, summary: str) -> bool:
+    """Shared section-entry gate: True = run the section, False = skip it.
+
+    Headless/non-interactive callers run straight through with no prompt —
+    ``prompt_yes_no``'s headless default (False) would otherwise wrongly
+    skip sections, so headless behavior stays exactly as before.
+    Configured + interactive prints the one-line current-values summary
+    and asks; default NO keeps everything (re-runs are safe and fast).
+    Navigation control flow (``_SetupGoBack``/``_SetupCancelled``) is
+    never caught here, so left-arrow/Escape keep working.
+    """
+    if is_noninteractive() or not is_interactive_stdin():
+        return True
+    print()
+    print_success(f"  {label}: {summary}")
+    if prompt_yes_no(f"  Reconfigure {label.lower()}?", default=False):
+        return True
+    print_info("  Keeping current configuration.")
+    return False
+
+
 # =============================================================================
 # Section 1: Model & Provider Configuration
 # =============================================================================
@@ -991,6 +1052,13 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     configuration — used by the streamlined first-time quick setup.
     """
     from mercury_cli.config import load_config, save_config
+
+    # Reconfigure gate: an already-configured install prints current values
+    # and opts in (default NO = safe, fast re-run). The delegate slots have
+    # their own gate, so answering "no" here still offers them below.
+    if _skip_configured_section(config, "model", "Model & Provider"):
+        _prompt_mercury_slots(config)
+        return
 
     print_header("Inference Provider")
     print_info("Choose how to connect to your main chat model.")
@@ -1046,38 +1114,9 @@ def _prompt_mercury_slots(config: dict) -> None:
     the remaining three. Every answer seeds the shared ``models:`` block
     in the unified config, which both engines read.
     """
-    import os as _os
     from mercury_cli.omp_sync import qualify_omp_model as _qualify_omp_model
-    from pathlib import Path as _Path
 
-    def _unified_path() -> _Path:
-        return _Path(
-            _os.environ.get("MERCURY_CONFIG")
-            or (_Path(_os.environ.get("MERCURY_HOME") or _Path.home() / ".mercury") / "config.yaml")
-        )
-
-    def _read_slots() -> dict:
-        slots = {
-            "default": "",
-            "fallback": "",
-            "delegate_model": "",
-            "delegate_fallback": "",
-        }
-        path = _unified_path()
-        if not path.exists():
-            return slots
-        try:
-            import yaml as _yaml
-
-            whole = _yaml.safe_load(path.read_text()) or {}
-            models = whole.get("models") or {}
-            for key in slots:
-                value = str(models.get(key) or "").strip()
-                if value:
-                    slots[key] = value
-        except Exception:
-            pass
-        return slots
+    slots = _read_model_slots()
 
     # Default from the just-saved hermes view (provider-qualified)
     try:
@@ -1088,7 +1127,6 @@ def _prompt_mercury_slots(config: dict) -> None:
     except Exception:
         default_qualified = ""
 
-    slots = _read_slots()
     if default_qualified and not slots["default"]:
         slots["default"] = default_qualified
 
@@ -1097,6 +1135,17 @@ def _prompt_mercury_slots(config: dict) -> None:
         # anchor a fallback against; the omp-sync tail will say the same.
         print_info("No default model configured — skipping slot prompts (run 'mercury setup model' later).")
         return
+
+    # Reconfigure gate: delegate slots already set → print current values
+    # and ask (default NO keeps them and writes nothing). Unset slots fall
+    # straight through to the pickers below.
+    if slots["delegate_model"] or slots["delegate_fallback"]:
+        if not _ask_reconfigure(
+            "Delegate models",
+            f"model={slots['delegate_model'] or 'none'}, "
+            f"fallback={slots['delegate_fallback'] or 'none'}",
+        ):
+            return
 
     print_header("Model Slots")
     print_info(f"   Default:  {slots['default']}")
@@ -3289,6 +3338,19 @@ def setup_observatory(config: dict, *, quick: bool = False):
     _observatory_state_lines(status)
     print()
 
+    # Reconfigure gate: already provisioned → one-line summary + ask
+    # (default NO keeps everything, fast re-run). Fresh installs fall
+    # straight through to the Install/Skip choice below.
+    if status.get("provisioned"):
+        yn = lambda flag: "yes" if flag else "no"  # noqa: E731
+        if not _ask_reconfigure(
+            "Observatory",
+            f"provisioned, reachable={yn(status.get('homeserver_reachable'))} "
+            f"({status.get('homeserver_url')}), "
+            f"enabled={yn(status.get('enabled'))}",
+        ):
+            return
+
     choice = prompt_choice(
         "Set up the Matrix observatory now (RECOMMENDED)?",
         [
@@ -3443,6 +3505,11 @@ def setup_tools(config: dict, first_install: bool = False):
             (no platform menu, prompts for all unconfigured API keys).
     """
     from mercury_cli.tools_config import tools_command
+
+    # Reconfigure gate: tools previously configured → print current values
+    # and ask (default NO keeps them, fast re-run).
+    if _skip_configured_section(config, "tools", "Tools"):
+        return
 
     tools_command(first_install=first_install, config=config)
 
@@ -3673,13 +3740,14 @@ def _skip_configured_section(
     """Show an already-configured section summary and offer to skip.
 
     Returns True if the user chose to skip, False if the section should run.
+    Unconfigured sections and headless callers never prompt (False) — the
+    shared gate runs the section unchanged headlessly instead of skipping
+    on ``prompt_yes_no``'s False default.
     """
     summary = _get_section_config_summary(config, section_key)
     if not summary:
         return False
-    print()
-    print_success(f"  {label}: {summary}")
-    return not prompt_yes_no(f"  Reconfigure {label.lower()}?", default=False)
+    return not _ask_reconfigure(label, summary)
 
 
 # =============================================================================
