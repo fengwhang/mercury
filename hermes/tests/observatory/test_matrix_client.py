@@ -386,3 +386,71 @@ class TestFromRegistration:
         c = MatrixClient.from_registration(reg, "http://127.0.0.1:18008")
         assert c.as_token == AS_TOKEN
         assert c.homeserver_url == "http://127.0.0.1:18008"
+
+
+    def _flaky_client(self, tc, hook):
+        return MatrixClient(str(tc.make_url("")), AS_TOKEN,
+                            server_name=SERVER, admin_token="stale-tok",
+                            on_admin_401=hook)
+
+    @pytest.mark.asyncio
+    async def test_purge_401_refreshes_and_retries(self):
+        seen: list[str] = []
+
+        async def _admin(request: web.Request) -> web.Response:
+            seen.append(request.headers.get("Authorization", ""))
+            if len(seen) == 1:
+                return web.json_response(
+                    {"errcode": "M_UNKNOWN_TOKEN", "error": "stale"},
+                    status=401)
+            return web.json_response({"kicked_users": []})
+
+        async def _hook():
+            return "fresh-tok"
+
+        app = web.Application()
+        app.router.add_route("DELETE", r"/_synapse/admin/v1/rooms/{rid}", _admin)
+        async with TestClient(TestServer(app)) as tc:
+            c = await self._flaky_client(tc, _hook).__aenter__()
+            try:
+                out = await c.delete_room("!r:x")
+            finally:
+                await c.__aexit__()
+            assert out == {"kicked_users": []}
+            assert seen == ["Bearer stale-tok", "Bearer fresh-tok"]
+            assert c.admin_token == "fresh-tok"
+
+    @pytest.mark.asyncio
+    async def test_purge_401_without_hook_raises(self):
+        async def _admin(request: web.Request) -> web.Response:
+            return web.json_response(
+                {"errcode": "M_UNKNOWN_TOKEN", "error": "stale"}, status=401)
+
+        app = web.Application()
+        app.router.add_route("DELETE", r"/_synapse/admin/v1/rooms/{rid}", _admin)
+        async with TestClient(TestServer(app)) as tc:
+            async with MatrixClient(str(tc.make_url("")), AS_TOKEN,
+                                    admin_token="stale-tok") as c:
+                with pytest.raises(MatrixError) as exc:
+                    await c.delete_room("!r:x")
+                assert exc.value.status == 401
+
+    @pytest.mark.asyncio
+    async def test_purge_401_failed_refresh_raises_original(self):
+        async def _admin(request: web.Request) -> web.Response:
+            return web.json_response(
+                {"errcode": "M_UNKNOWN_TOKEN", "error": "stale"}, status=401)
+
+        async def _hook():
+            return None
+
+        app = web.Application()
+        app.router.add_route("DELETE", r"/_synapse/admin/v1/rooms/{rid}", _admin)
+        async with TestClient(TestServer(app)) as tc:
+            c = await self._flaky_client(tc, _hook).__aenter__()
+            try:
+                with pytest.raises(MatrixError) as exc:
+                    await c.delete_room("!r:x")
+                assert exc.value.status == 401
+            finally:
+                await c.__aexit__()

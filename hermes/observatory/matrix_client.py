@@ -66,7 +66,6 @@ def _q(value: str) -> str:
 class MatrixClient:
     """Outbound Matrix I/O for the sidecar. One aiohttp session, optional
     ownership (``async with`` closes a session it created)."""
-
     def __init__(
         self,
         homeserver_url: str,
@@ -76,6 +75,7 @@ class MatrixClient:
         admin_token: str | None = None,
         session: aiohttp.ClientSession | None = None,
         timeout: float = 30.0,
+        on_admin_401: Any | None = None,
     ):
         self.homeserver_url = homeserver_url.rstrip("/")
         self.as_token = as_token
@@ -84,6 +84,10 @@ class MatrixClient:
         self._session = session
         self._owns_session = session is None
         self._timeout = aiohttp.ClientTimeout(total=timeout)
+        #: Async ``() -> fresh admin token | None`` (defect vi): on a
+        #: 401/M_UNKNOWN_TOKEN the admin call re-logs-in once and retries
+        #: with the fresh token instead of failing the purge.
+        self.on_admin_401 = on_admin_401
 
     # --- construction ------------------------------------------------------
 
@@ -179,13 +183,30 @@ class MatrixClient:
         params: dict[str, str] | None = None,
         json_body: Any = None,
     ) -> Any:
-        """Synapse-compatible admin API as the OWNER (D16)."""
+        """Synapse-compatible admin API as the OWNER (D16). On
+        401/M_UNKNOWN_TOKEN with ``on_admin_401`` set, re-logs-in once
+        and retries with the fresh token (defect vi) — a stale token
+        fails the purge exactly once, never in a loop."""
         if not self.admin_token:
             raise MatrixError(method, path, 0, {"errcode": "M_NO_ADMIN_TOKEN",
                                                 "error": "admin_token not configured"})
-        return await self._request(method, path, token=self.admin_token, params=params, json_body=json_body)
-
-    # --- virtual users ---------------------------------------------------------
+        try:
+            return await self._request(method, path, token=self.admin_token,
+                                       params=params, json_body=json_body)
+        except MatrixError as exc:
+            if (exc.status != 401
+                    or exc.errcode not in ("M_UNKNOWN_TOKEN", "M_MISSING_TOKEN")
+                    or self.on_admin_401 is None):
+                raise
+            try:
+                fresh = await self.on_admin_401()
+            except Exception:  # noqa: BLE001 — refresher failure = original error
+                raise exc from None
+            if not fresh:
+                raise
+            self.admin_token = str(fresh)
+            return await self._request(method, path, token=self.admin_token,
+                                       params=params, json_body=json_body)
 
     async def register_virtual_user(self, localpart: str) -> str:
         """Provision a namespace ghost up-front (``m.login.application_service``).

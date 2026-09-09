@@ -123,7 +123,9 @@ GATEWAY_NODE_NAME = "gateway agent"
 APPROVALS_EXPIRY_INTERVAL = 5.0
 CRON_POLL_INTERVAL = 5.0
 MANUAL_POLL_INTERVAL = 5.0
-
+#: Admin-token self-heal cadence (defect vi): re-validate the owner admin
+#: token and re-login when stale, so purges never 401 mid-operation.
+ADMIN_TOKEN_HEAL_INTERVAL = 15.0 * 60.0
 #: Gateway-room prompt delivery is prompt-only: plain text starts a turn
 #: on the live gateway session (there is no busy run to steer into), so
 #: the router's "queued steer" honesty notice never applies there — the
@@ -372,6 +374,7 @@ class SidecarDaemon:
             as_token_from_registration(self.paths.appservice_registration),
             server_name=self.server_name,
             admin_token=self.admin_token,
+            on_admin_401=self._refresh_admin_token_now,
         )
         self.executor = await self._build_executor()
         self.renderer = Renderer(
@@ -476,6 +479,30 @@ class SidecarDaemon:
     def _load_owner(self) -> tuple[str, str]:
         doc = json.loads(self.paths.owner_credentials.read_text(encoding="utf-8"))
         return str(doc["user_id"]), str(doc.get("access_token") or "")
+
+    async def _refresh_admin_token_now(self) -> str | None:
+        """Re-login the owner admin token NOW (defect vi re-login path).
+
+        Returns the fresh token (also reloaded into self + client) or
+        None when the heal is unavailable/failed — the caller's original
+        401 then stands. Never raises."""
+        try:
+            from observatory.provision import heal_owner_admin_token
+
+            outcome = heal_owner_admin_token(self.paths)
+            owner_mxid, admin_token = self._load_owner()
+            self.owner_mxid, self.admin_token = owner_mxid, admin_token
+            if self.client is not None:
+                self.client.admin_token = admin_token
+            log.info("admin token self-heal: %s", outcome)
+            return admin_token or None
+        except Exception:  # noqa: BLE001 — heal failure = original error stands
+            log.exception("admin token self-heal failed")
+            return None
+
+    async def _admin_token_tick(self) -> None:
+        """Periodic self-heal (defect vi): validate + refresh on stale."""
+        await self._refresh_admin_token_now()
 
     async def _ensure_virtual_users(self) -> None:
         assert self.client is not None and self.state is not None
@@ -771,8 +798,6 @@ class SidecarDaemon:
                     return row["node_id"]
         return GATEWAY_NODE_ID
 
-    # --- background loops ----------------------------------------------------------
-
     def _start_loops(self) -> None:
         self._loops.append(
             asyncio.create_task(self._loop("approvals-expiry", APPROVALS_EXPIRY_INTERVAL,
@@ -785,6 +810,10 @@ class SidecarDaemon:
         self._loops.append(
             asyncio.create_task(self._loop("manual-poll", MANUAL_POLL_INTERVAL,
                                            self._manual_tick), name="observatory-manual")
+        )
+        self._loops.append(
+            asyncio.create_task(self._loop("admin-token-heal", ADMIN_TOKEN_HEAL_INTERVAL,
+                                           self._admin_token_tick), name="observatory-admin-heal")
         )
 
     async def _loop(self, name: str, interval: float, tick) -> None:
