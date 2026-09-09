@@ -36,6 +36,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 import uuid
+from tools import wave_mem_profiler as _wave_mem_profiler
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -778,6 +779,12 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
     omp_path = _resolve_omp_binary()
     started = time.time()
     child_name = str(name or "").strip() or f"task-{task_index}"
+    # Wave-mem profiler: stamp delegation identity on the child env so the
+    # sampler can attribute RSS per wave. Self-gating ({} when off).
+    _wave_overlay = _wave_mem_profiler.child_env_overlay(
+        delegation_id or "", child_name, task_index)
+    if _wave_overlay:
+        extra_env = {**(extra_env or {}), **_wave_overlay}
     # M0A: registry meta — the steer/stop address of this child while it
     # runs. Registered/unregistered by whichever transport owns the run.
     meta = {
@@ -991,7 +998,8 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
               max_workers: int,
               batch_procs: Optional[List["subprocess.Popen"]] = None,
               delegation_id: Optional[str] = None,
-              owner_session_id: str = "") -> Dict[str, Any]:
+              owner_session_id: str = "",
+              prof: Optional["_wave_mem_profiler.WaveProfiler"] = None) -> Dict[str, Any]:
     """Run all omp children; one entry per task.
 
     ``delegation_id``/``owner_session_id`` (M0A): registry spine so each
@@ -1020,7 +1028,7 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
         base_env = _delegate_batch_base_env()
         return _sync_run_inner(tasks, env, workdir, timeout, max_workers,
                                batch_procs, delegation_id, owner_session_id,
-                               base_env=base_env)
+                               base_env=base_env, prof=prof)
     finally:
         if _bridge is not None:
             _bridge.stop()
@@ -1032,7 +1040,8 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
               batch_procs: Optional[List["subprocess.Popen"]] = None,
               delegation_id: Optional[str] = None,
               owner_session_id: str = "",
-              base_env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+              base_env: Optional[Dict[str, str]] = None,
+              prof: Optional["_wave_mem_profiler.WaveProfiler"] = None) -> Dict[str, Any]:
     # Direct-caller path (tests, diagnostics): no batch base supplied, so
     # build it once here — still exactly once per batch, never per child.
     if base_env is None:
@@ -1066,6 +1075,11 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
                 for i, t in enumerate(tasks)
             ]
             results = [f.result() for f in futures]
+    if prof is not None:
+        for i, entry in enumerate(results):
+            _wave_mem_profiler.note_result(
+                prof, f"{delegation_id}/{i}",
+                (entry or {}).get("summary") or (entry or {}).get("error"))
     return {
         "results": results,
         "total_duration_seconds": round(time.time() - started, 2),
@@ -1167,13 +1181,33 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     # the moment they spawn) and can be passed to the async registry.
     delegation_id = f"deleg_{uuid.uuid4().hex[:8]}"
     owner_session_id = str(getattr(parent_agent, "session_id", "") or "")
+    # Wave-mem profiler (default off): when MERCURY_WAVE_MEM_PROFILE=1 (or
+    # delegation.wave_mem_profile) a background sampler attributes
+    # per-process RSS to parent/children/grandchildren for this wave and
+    # spills to $MERCURY_HOME/logs/wave-mem/. None when off: zero overhead.
+    _prof = _wave_mem_profiler.maybe_start(delegation_id, owner_session_id)
+
+    def _stop_prof() -> None:
+        _prof_path = _wave_mem_profiler.stop(_prof)
+        if _prof_path is not None:
+            logger.info("wave-mem profile for %s → %s", delegation_id, _prof_path)
+
+    def _run_profiled_batch(
+            batch_procs_arg: Optional[List["subprocess.Popen"]] = None,
+    ) -> Dict[str, Any]:
+        try:
+            return _sync_run(tasks, env, workdir, timeout, max_workers,
+                             batch_procs_arg,
+                             delegation_id=delegation_id,
+                             owner_session_id=owner_session_id,
+                             prof=_prof)
+        finally:
+            _stop_prof()
 
     if is_subagent:
         # Orchestrator children need results within their own turn.
         return json.dumps(
-            _sync_run(tasks, env, workdir, timeout, max_workers,
-                      delegation_id=delegation_id,
-                      owner_session_id=owner_session_id),
+            _run_profiled_batch(),
             ensure_ascii=False,
         )
 
@@ -1198,9 +1232,7 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     origin_session_id = _current_origin_session_id()
     if not async_ok and not origin_session_id:
         # Finite session, no wake id: run in-turn so the result is not lost.
-        result = _sync_run(tasks, env, workdir, timeout, max_workers, batch_procs,
-                           delegation_id=delegation_id,
-                           owner_session_id=owner_session_id)
+        result = _run_profiled_batch(batch_procs)
         result["note"] = (
             "background delivery is unavailable in this session (one-shot "
             "runner); the omp children ran SYNCHRONOUSLY and their results "
@@ -1230,10 +1262,7 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
         model=model,
         session_key=session_key,
         parent_session_id=parent_session_id,
-        runner=lambda: _sync_run(tasks, env, workdir, timeout, max_workers,
-                                 batch_procs,
-                                 delegation_id=delegation_id,
-                                 owner_session_id=owner_session_id),
+        runner=lambda: _run_profiled_batch(batch_procs),
         delegation_id=delegation_id,
         origin_ui_session_id=origin_ui_session_id,
         origin_session_id=origin_session_id,
