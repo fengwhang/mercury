@@ -863,7 +863,16 @@ def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
     try:
         from mercury_cli.config import read_raw_config
         cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {})
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg:
+            # Unified-config fallback (mirrors read_selection): a section
+            # saved nested under hermes: is honored when no top-level
+            # section carries the selection, so the pick is what runs
+            # regardless of which raw reader shape populated the cache.
+            hermes_sub = cfg.get("hermes") if isinstance(cfg, dict) else None
+            nested = hermes_sub.get("browser") if isinstance(hermes_sub, dict) else None
+            if isinstance(nested, dict) and "cloud_provider" in nested:
+                browser_cfg = nested
         if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
             provider_key = normalize_browser_cloud_provider(
                 browser_cfg.get("cloud_provider")
