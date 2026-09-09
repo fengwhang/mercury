@@ -258,6 +258,9 @@ class TestSkipConfiguredSection:
 
         with (
             patch.object(setup_mod, "get_env_value", side_effect=env_side),
+            # Gates only prompt on an interactive terminal; headless
+            # callers run the section instead of skipping.
+            patch.object(setup_mod, "is_interactive_stdin", return_value=True),
             patch.object(setup_mod, "prompt_yes_no", return_value=False),
         ):
             result = setup_mod._skip_configured_section(
