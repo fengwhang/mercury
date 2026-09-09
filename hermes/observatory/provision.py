@@ -502,6 +502,130 @@ def verify_owner_login(
     return body
 
 
+def _refresh_owner_admin_token(
+    resolved: ObservatoryPaths,
+    stored: dict,
+    *,
+    http: Any | None = None,
+) -> str:
+    """Re-login with the STORED user_id+password; persist the fresh token.
+
+    Self-heal for a stale ``access_token`` (server DB recreated, token
+    revoked): the password still authenticates, so mint a new token and
+    rewrite owner-credentials.json (password untouched). Returns the fresh
+    token. Raises ProvisionError when the stored password no longer logs in.
+    """
+    base_url = str(stored.get("homeserver_url") or "")
+    user_id = str(stored.get("user_id") or "")
+    password = str(stored.get("password") or "")
+    if not password:
+        raise ProvisionError(
+            "owner credentials carry no password — cannot refresh the admin "
+            "token (delete owner-credentials.json and tuwunel-db to re-provision)"
+        )
+    try:
+        body = verify_owner_login(base_url, user_id, password, http=http)
+    except ProvisionError as exc:
+        raise ProvisionError(
+            f"admin token refresh failed (stored password rejected): {exc}"
+        ) from exc
+    stored["access_token"] = str(body.get("access_token") or "")
+    if body.get("device_id"):
+        stored["device_id"] = str(body["device_id"])
+    _atomic_write_secret_file(
+        resolved.owner_credentials, json.dumps(stored, indent=2) + "\n")
+    return str(stored["access_token"])
+
+
+def heal_owner_admin_token(
+    paths: ObservatoryPaths | None = None,
+    *,
+    http: Any | None = None,
+) -> str:
+    """Validate the stored admin token; re-login when it is stale.
+
+    Returns ``"valid"`` (whoami accepted the token), ``"refreshed"`` (401 /
+    M_UNKNOWN_TOKEN → re-login with the stored password succeeded and the
+    fresh token was persisted), or raises ProvisionError. Setup calls this
+    before any admin surface (purge, rotation); the sidecar calls it
+    periodically (self-heal). Never logs secrets.
+    """
+    resolved = paths if paths is not None else ObservatoryPaths(_mercury_home(None))
+    stored = read_owner_credentials(resolved)
+    if stored is None:
+        raise ProvisionError(
+            "owner is not provisioned — run the observatory install first"
+        )
+    base_url = str(stored.get("homeserver_url") or "")
+    token = str(stored.get("access_token") or "")
+    if not base_url or not token:
+        raise ProvisionError(
+            "owner credentials carry no homeserver_url/access_token — "
+            "re-provision to repair (delete owner-credentials.json and tuwunel-db)"
+        )
+    call = http or _http_json
+    try:
+        status, body = call(
+            "GET", f"{base_url}/_matrix/client/v3/account/whoami", token=token)
+    except ProvisionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — network failure is a hard error here
+        raise ProvisionError(f"admin token validation failed: {exc}") from exc
+    if status == 200:
+        return "valid"
+    if status == 401 or (isinstance(body, dict)
+                         and body.get("errcode") == "M_UNKNOWN_TOKEN"):
+        _refresh_owner_admin_token(resolved, stored, http=call)
+        return "refreshed"
+    raise ProvisionError(
+        "admin token validation failed "
+        f"(HTTP {status}): {json.dumps(body)[:200]}"
+    )
+
+
+def _client_password_change(
+    base_url: str,
+    user_id: str,
+    old_password: str,
+    new_password: str,
+    token: str,
+    *,
+    http: Any | None = None,
+) -> tuple[int, dict]:
+    """Client-API password change (Tuwunel fallback for the Synapse admin PUT).
+
+    ``POST /_matrix/client/v3/account/password`` authenticated with the
+    current access token + UIAA ``m.login.password`` (the stored password).
+    Retries once with the server's UIAA ``session`` when the first attempt
+    answers 401-with-flows. Returns the final (status, body).
+    """
+    call = http or _http_json
+    auth = {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": user_id},
+        "password": old_password,
+    }
+    try:
+        status, body = call(
+            "POST", f"{base_url}/_matrix/client/v3/account/password",
+            payload={"new_password": new_password, "auth": auth}, token=token)
+    except ProvisionError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ProvisionError(f"password change failed: {exc}") from exc
+    if status == 401 and isinstance(body, dict) and body.get("session"):
+        auth = {**auth, "session": body["session"]}
+        try:
+            status, body = call(
+                "POST", f"{base_url}/_matrix/client/v3/account/password",
+                payload={"new_password": new_password, "auth": auth}, token=token)
+        except ProvisionError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ProvisionError(f"password change failed: {exc}") from exc
+    return status, body
+
+
 def rotate_owner_password(
     new_password: str,
     paths: ObservatoryPaths | None = None,
@@ -511,11 +635,14 @@ def rotate_owner_password(
     """Rotate the owner password on the live homeserver + both mirrors.
 
     ``http(method, url, payload, token)`` replaces :func:`_http_json`
-    (tests inject a fake). Flow: admin PUT then login probe with the NEW
+    (tests inject a fake). Flow: Synapse admin PUT (401/M_UNKNOWN_TOKEN →
+    re-login with the stored password + one retry), Tuwunel fallback to
+    the client ``/account/password`` UIAA change when the admin surface is
+    absent (404/405/M_UNRECOGNIZED), then login probe with the NEW
     password, then the atomic dual-write (``_atomic_write_secret_file`` +
     atomic ``mirror_owner_env``). Mirrors move ONLY after the server both
-    accepts the PUT and proves the new password logs in — a failed rotation
-    or probe never diverges local state. Returns 'rotated'.
+    accepts the change and proves the new password logs in — a failed
+    rotation or probe never diverges local state. Returns 'rotated'.
     """
     resolved = paths if paths is not None else ObservatoryPaths(_mercury_home(None))
     stored = read_owner_credentials(resolved)
@@ -551,6 +678,31 @@ def rotate_owner_password(
         raise
     except Exception as exc:  # noqa: BLE001 — network failure is a hard error here
         raise ProvisionError(f"password rotation failed: {exc}") from exc
+    if status == 401 or (isinstance(body, dict)
+                         and body.get("errcode") == "M_UNKNOWN_TOKEN"):
+        # Stale admin token (server DB recreated, token revoked): the stored
+        # password still authenticates — refresh and retry the PUT once.
+        admin_token = _refresh_owner_admin_token(resolved, stored, http=call)
+        try:
+            status, body = call(
+                "PUT",
+                f"{base_url}/_synapse/admin/v2/users/"
+                f"{urllib.parse.quote(user_id, safe='')}",
+                payload={"password": password, "logout_devices": False},
+                token=admin_token,
+            )
+        except ProvisionError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ProvisionError(f"password rotation failed: {exc}") from exc
+    if status in (404, 405) or (isinstance(body, dict)
+                                and body.get("errcode") in ("M_UNRECOGNIZED", "M_NOT_FOUND")
+                                and status != 200):
+        # Tuwunel does not implement the Synapse admin user surface: change
+        # the password through the client API (UIAA with the stored password).
+        old_password = str(stored.get("password") or "")
+        status, body = _client_password_change(
+            base_url, user_id, old_password, password, admin_token, http=call)
     if status != 200:
         raise ProvisionError(
             f"password rotation failed (HTTP {status}): "
