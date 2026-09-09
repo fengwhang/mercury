@@ -582,8 +582,9 @@ def _verified_vendored_wheel(cand: Path) -> Path:
 def set_observatory_e2ee(enabled: bool, mercury_home: str | Path | None = None) -> None:
     """Write ``observatory.e2ee`` in ``$MERCURY_HOME/config.yaml`` (creates
     the mapping when absent, preserves every other key). Raises
-    ProvisionError when the file cannot be read/written — callers
-    (ensure_crypto_stack) catch and degrade to a printed warning."""
+    ProvisionError when the file cannot be read/written. Manual operator
+    use only — the automatic crypto path NEVER calls this (it fails
+    CLOSED instead of downgrading to plaintext)."""
     home = _mercury_home(mercury_home)
     cfg_path = home / "config.yaml"
     try:
@@ -635,32 +636,29 @@ def _crypto_pip_install(python_bin: str, args: list[str]) -> tuple[bool, str]:
     return ok, detail
 
 
-def _crypto_fallback(reason: str, mercury_home: str | Path | None) -> str:
-    """Plaintext fallback: auto-set ``observatory.e2ee: false`` (best
-    effort) with a loud line. Never raises."""
-    try:
-        set_observatory_e2ee(False, mercury_home)
-    except Exception as exc:  # noqa: BLE001 — fallback write best-effort
-        print(f"  ⚠ crypto stack unrestorable ({reason}) — could not auto-set "
-              f"observatory.e2ee:false ({exc}); rooms will fail at sidecar "
-              f"boot until you set it.")
-        return "fallback-disabled"
-    print(f"  ⚠ crypto stack unrestorable ({reason}) — auto-set "
-          f"observatory.e2ee:false (plaintext path, no manual edit needed).")
-    return "fallback-disabled"
+def _crypto_fail_closed(reason: str) -> str:
+    """Fail CLOSED: E2EE stays on, nothing is written to config.yaml.
+
+    Prints an actionable line (what failed + the exact retry command) and
+    returns ``"failed: <reason>"``. Never raises and NEVER touches
+    ``observatory.e2ee`` — a missing/unimportable stack must never silently
+    downgrade rooms to plaintext."""
+    print(f"  ✗ crypto stack unrestorable ({reason}) — E2EE stays ON; "
+          f"rooms will fail at sidecar boot until the stack imports. "
+          f"Retry with: mercury setup observatory --install-sidecar")
+    return f"failed: {reason}"
 
 
 def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
-    """Ensure the compiled crypto stack from the vendored wheels, or
-    auto-fallback to plaintext.
+    """Ensure the compiled crypto stack from the vendored wheels, or fail CLOSED.
 
     Returns one of ``"ready"`` (stack already imports),
-    ``"disabled-already"`` (``observatory.e2ee: false`` — nothing to do),
-    ``"installed"`` (vendored/index wheel restored the stack), or
-    ``"fallback-disabled"`` (no usable wheel, hash mismatch, or the
-    install failed → ``observatory.e2ee`` auto-set to ``false`` with a
-    clear printed line). NEVER raises and NEVER crashes the wizard:
-    every failure degrades to the fallback path. Installs into
+    ``"disabled-already"`` (``observatory.e2ee: false`` set EXPLICITLY by
+    the operator — nothing to do), ``"installed"`` (vendored/index wheel
+    restored the stack), or ``"failed: <reason>"`` (no usable wheel, hash
+    mismatch, or the install failed — E2EE stays ON, config.yaml untouched,
+    retry command printed). NEVER raises and NEVER crashes the wizard:
+    every failure degrades to the fail-closed status. Installs into
     ``sys.executable``'s environment (the same venv that runs the
     sidecar); needs no compiler and no container runtime."""
     try:
@@ -684,40 +682,178 @@ def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
         try:
             cand = _vendored_olm_wheel()
         except Exception as exc:  # noqa: BLE001 — selection failure = no wheel
-            return _crypto_fallback(f"wheel selection failed ({exc})", mercury_home)
+            return _crypto_fail_closed(f"wheel selection failed ({exc})")
         if cand is None:
-            return _crypto_fallback(
+            return _crypto_fail_closed(
                 "no vendored python-olm wheel for this machine in "
-                "hermes/observatory/wheels", mercury_home)
+                "hermes/observatory/wheels")
         try:
             wheel = _verified_vendored_wheel(cand)
         except ProvisionError as exc:
-            return _crypto_fallback(str(exc), mercury_home)
+            return _crypto_fail_closed(str(exc))
         print(f"  → crypto stack missing — installing vendored {wheel.name} …")
         ok, detail = _crypto_pip_install(
             python_bin, ["-q", str(wheel), *_CRYPTO_PY_DEPS])
         if not ok:
             tail = detail.strip().replace("\n", " ")
-            return _crypto_fallback(
-                f"vendored install failed{': ' + tail[-300:] if tail else ''}",
-                mercury_home)
+            return _crypto_fail_closed(
+                f"vendored install failed{': ' + tail[-300:] if tail else ''}")
     else:
         print("  → crypto stack missing — installing python-olm from the index …")
         ok, detail = _crypto_pip_install(
             python_bin, ["-q", f"python-olm=={PYTHON_OLM_VERSION}", *_CRYPTO_PY_DEPS])
         if not ok:
             tail = detail.strip().replace("\n", " ")
-            return _crypto_fallback(
-                f"index install failed{': ' + tail[-300:] if tail else ''}",
-                mercury_home)
+            return _crypto_fail_closed(
+                f"index install failed{': ' + tail[-300:] if tail else ''}")
     sys.modules.pop("olm", None)
     try:
         import olm  # noqa: F401
     except Exception:  # noqa: BLE001 — installed but still unimportable
-        return _crypto_fallback(
-            "python-olm installed but does not import", mercury_home)
+        return _crypto_fail_closed(
+            "python-olm installed but does not import")
     print("  ✓ crypto stack ready (python-olm installed, no build needed).")
     return "installed"
+
+
+#
+# --- setup-auto orchestration (heal / converge) ----------------------------------
+# `mercury setup observatory` calls these automatically after provisioning so
+# the gateway room appears with zero manual follow-ups. Every helper here is
+# best-effort and NEVER raises: failures degrade to a printed line + a
+# "deferred" status string the wizard surfaces. Idempotent by
+# construction (re-runs are no-ops when already converged).
+#
+
+def heal_owner_url(mercury_home: str | Path | None = None) -> str | None:
+    """Rewrite owner-credentials.json homeserver_url to the toml bind.
+
+    Best-effort wrapper over :func:`sync_owner_homeserver_url` for the
+    setup wizard: returns the bound URL, or None when unprovisioned /
+    unreadable. NEVER raises."""
+    try:
+        paths = ObservatoryPaths(_mercury_home(mercury_home))
+        return sync_owner_homeserver_url(paths)
+    except Exception:  # noqa: BLE001 — heal is best-effort
+        return None
+
+
+def verify_and_converge_gateway(mercury_home: str | Path | None = None) -> str:
+    """Heal the owner URL, ensure the gateway node, verify its ghost and
+    converge the space tree so the gateway room exists without further
+    commands. Best-effort: returns ``"converged-N"`` (N applied intents),
+    ``"verified-ghost-only"``, or ``"deferred: <reason>"`` (sidecar boot
+    retries on its next start). NEVER raises."""
+    healed = heal_owner_url(mercury_home)
+    home = _mercury_home(mercury_home)
+    paths = ObservatoryPaths(home)
+    if not paths.toml.is_file() or not paths.owner_credentials.is_file():
+        return "deferred: unprovisioned (tuwunel.toml or owner-credentials.json missing)"
+    try:
+        from observatory.state import ObservatoryState, StateError
+    except Exception as exc:  # noqa: BLE001
+        return f"deferred: state store unavailable ({exc})"
+    try:
+        state = ObservatoryState(paths.root / "state.db")
+    except Exception as exc:  # noqa: BLE001
+        return f"deferred: could not open state.db ({exc})"
+    try:
+        try:
+            gateway_mxid = str(state.get("gw")["mxid"])
+        except StateError:
+            from observatory.identity import assign_slug, virtual_mxid
+            cfg = _load_toml(paths.toml).get("global", {})
+            server_name = str(cfg.get("server_name", config_gen.SERVER_NAME_DEFAULT))
+            slug = assign_slug("gateway agent", state)
+            gateway_mxid = virtual_mxid(slug, server_name=server_name)
+            state.add_node(
+                "gw", engine="hermes", name="gateway agent", slug=slug,
+                mxid=gateway_mxid, session_ref="session:gateway",
+                parent_node_id=None, extra={"kind": "gateway"},
+            )
+    except Exception as exc:  # noqa: BLE001
+        try:
+            state.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return f"deferred: gateway node ensure failed ({exc})"
+    _ = healed
+    bound = _bound_base_url(paths)
+    if not _homeserver_reachable(bound):
+        try:
+            state.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return ("deferred: homeserver not reachable "
+                "(sidecar converges the tree on its next start)")
+    try:
+        import asyncio as _asyncio
+        from observatory.appservice import as_token_from_registration
+        from observatory.matrix_client import MatrixClient
+        from observatory.renderer import IntentExecutor, Renderer
+        try:
+            from observatory.e2ee import e2ee_enabled as _flag
+            want_e2ee = bool(_flag(home))
+        except Exception:  # noqa: BLE001
+            want_e2ee = True
+        doc = json.loads(paths.owner_credentials.read_text(encoding="utf-8"))
+        owner_mxid, admin_token = str(doc["user_id"]), str(doc.get("access_token") or "")
+        cfg = _load_toml(paths.toml).get("global", {})
+        server_name = str(cfg.get("server_name", config_gen.SERVER_NAME_DEFAULT))
+        as_token = as_token_from_registration(paths.appservice_registration)
+
+        async def _converge() -> str:
+            client = MatrixClient(bound, as_token, server_name=server_name,
+                                  admin_token=admin_token)
+            for row in state.get_live():
+                localpart = str(row["mxid"]).lstrip("@").split(":", 1)[0]
+                try:
+                    await client.register_virtual_user(localpart)
+                except Exception:  # noqa: BLE001 — best-effort per ghost
+                    pass
+            try:
+                profile = await client.get_profile(gateway_mxid)
+                ghost_ok = bool(profile)
+            except Exception:  # noqa: BLE001
+                ghost_ok = False
+            if not ghost_ok:
+                return "verified-ghost-only"
+            executor: object = IntentExecutor(client, state, owner_mxid=owner_mxid,
+                                             server_name=server_name)
+            if want_e2ee:
+                try:
+                    from observatory import e2ee as _e2ee
+                    if _e2ee.e2ee_available():
+                        mgr = _e2ee.E2EEManager(
+                            client, state,
+                            crypto_dir=_e2ee.crypto_dir_for(home),
+                            owner_mxid=owner_mxid, gateway_mxid=gateway_mxid)
+                        await mgr.start(enabled=True)
+                        executor = _e2ee.EncryptedIntentExecutor(
+                            client, state, owner_mxid=owner_mxid,
+                            server_name=server_name, e2ee=mgr)
+                except Exception:  # noqa: BLE001 — plaintext converge beats no converge
+                    pass
+            renderer = Renderer(state, gateway_node_id="gw",
+                                server_name=server_name, owner_mxid=owner_mxid,
+                                executor=executor)  # type: ignore[arg-type]
+            import socket as _socket
+            applied = await renderer.apply_plan(
+                renderer.build_plan(host=_socket.gethostname()))
+            return f"converged-{len(applied)}"
+
+        result = _asyncio.run(_converge())
+        try:
+            state.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return result
+    except Exception as exc:  # noqa: BLE001 — sidecar boot retries
+        try:
+            state.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return f"deferred: converge failed ({exc} — sidecar retries on start)"
 
 
 # --- orchestration ---------------------------------------------------------------

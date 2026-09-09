@@ -9,10 +9,9 @@ Laws under test:
   skip/install outcomes;
 - **no secret leaks** — the owner password never appears on screen (no
   reveal prompt exists; it lives in $MERCURY_HOME/.env + credentials file);
-- **non-interactive path** — state summary + the exact
-  ``python -m observatory.provision`` command (no ``mercury observatory``
-  wrapper exists), following print_noninteractive_setup_guidance
-  conventions;
+:- **non-interactive path** — state summary + the headless auto command
+  (``mercury setup observatory --non-interactive``), following
+  print_noninteractive_setup_guidance conventions;
 - **config toggle** — ``observatory.enabled`` is written to config.yaml
   through the standard save_config helper (config, never env);
 - **provision helper contract** — status_summary carries booleans/paths
@@ -26,7 +25,6 @@ throwaway home; the homeserver/unit probes are patched.
 from __future__ import annotations
 
 import json
-import sys
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
@@ -105,13 +103,23 @@ class _FakeProvision:
     """observatory.provision stand-in for the section (records calls)."""
 
     def __init__(self, statuses, *, provision_error=None, tailscale=None,
-                 bind_error=None, bind_address=None):
+                 bind_error=None, bind_address=None, crypto="ready",
+                 sidecar="installed", healed=None, tree="converged-3",
+                 crypto_error=None, sidecar_error=None, tree_error=None):
         self._statuses = list(statuses)
         self._provision_error = provision_error
         self._tailscale = dict(tailscale) if tailscale is not None else dict(_TS_ABSENT)
         self._bind_error = bind_error
         self._bind_address = bind_address
-        self.calls = {"provision": 0, "status": 0, "bind": 0}
+        self._crypto = crypto
+        self._sidecar = sidecar
+        self._healed = healed
+        self._tree = tree
+        self._crypto_error = crypto_error
+        self._sidecar_error = sidecar_error
+        self._tree_error = tree_error
+        self.calls = {"provision": 0, "status": 0, "bind": 0,
+                      "crypto": 0, "sidecar": 0, "heal": 0, "tree": 0}
         self.bind_ips: list = []
 
     def status_summary(self, *a, **k):
@@ -132,6 +140,28 @@ class _FakeProvision:
                 "binary": "/fake/bin/tuwunel",
             }
         }
+
+    def ensure_crypto_stack(self, *a, **k):
+        self.calls["crypto"] += 1
+        if self._crypto_error is not None:
+            raise self._crypto_error
+        return self._crypto
+
+    def ensure_sidecar_unit(self, *a, **k):
+        self.calls["sidecar"] += 1
+        if self._sidecar_error is not None:
+            raise self._sidecar_error
+        return self._sidecar
+
+    def heal_owner_url(self, *a, **k):
+        self.calls["heal"] += 1
+        return self._healed
+
+    def verify_and_converge_gateway(self, *a, **k):
+        self.calls["tree"] += 1
+        if self._tree_error is not None:
+            raise self._tree_error
+        return self._tree
 
     def detect_tailscale(self, *a, **k):
         return dict(self._tailscale)
@@ -176,7 +206,6 @@ def test_section_fresh_unprovisioned_skip(monkeypatch, capsys):
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=1, yes_no=[True]
     )
-
     assert "Matrix Observatory (bundled)" in out
     assert "Provisioned:          no" in out
     assert f"Homeserver reachable: no  ({HOMESERVER_URL})" in out
@@ -189,7 +218,6 @@ def test_section_fresh_unprovisioned_skip(monkeypatch, capsys):
     assert "first login" not in out
     assert PASSWORD not in out
     assert remaining == []  # only the toggle prompt ran
-
 
 def test_section_install_calls_provision_then_card(monkeypatch, capsys, tmp_path):
     creds = _write_credentials(tmp_path)
@@ -209,20 +237,30 @@ def test_section_install_calls_provision_then_card(monkeypatch, capsys, tmp_path
     )
 
     assert fake.calls["provision"] == 1
+    # auto steps run without further commands: crypto + sidecar + heal/converge
+    assert fake.calls["crypto"] == 1
+    assert fake.calls["sidecar"] == 1
+    assert fake.calls["heal"] == 1
+    assert fake.calls["tree"] == 1
+    assert "Sidecar unit installed" in out
+    assert "Gateway tree converged-3" in out
     # provision output is shown
     assert "→ Matrix Observatory provisioning (Tuwunel)" in out
     assert "✓ tuwunel: current v1.9.0" in out
-    # card printed after provisioning
+    # manual-only card printed after provisioning
     assert "Matrix Observatory — first login (FluffyChat)" in out
     assert f"homeserver URL:      {HOMESERVER_URL}" in out
     assert f"owner account:       {MXID}" in out
     assert str(creds) in out
-    assert "first gateway start" in out
+    # everything else is automatic — never a manual TODO on the card
+    assert "first gateway start" not in out
+    assert "E2EE:" not in out
+    assert "local network:" not in out
+    assert "space tree:" not in out
     # no reveal prompt exists anymore — the password is never printed
     assert PASSWORD not in out
     assert "MATRIX_OBS_OWNER_PASSWORD" in out
     assert remaining == []  # only the toggle prompt ran
-
 
 def test_section_provisioned_enabled_state_and_card(monkeypatch, capsys, tmp_path):
     creds = _write_credentials(tmp_path)
@@ -238,7 +276,6 @@ def test_section_provisioned_enabled_state_and_card(monkeypatch, capsys, tmp_pat
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=1, yes_no=[True]
     )
-
     assert "Provisioned:          yes" in out
     assert "Homeserver reachable: yes" in out
     assert "Unit active:          yes" in out
@@ -250,10 +287,16 @@ def test_section_provisioned_enabled_state_and_card(monkeypatch, capsys, tmp_pat
     assert "on this machine:" in out  # localhost line kept for desktop
     assert fake.calls["bind"] == 0  # absent tailnet: no bind offer, no prompt
     assert "in FluffyChat:" in out and "add account" in out
-    assert "E2EE:                off" in out
-    assert "end-to-end encrypted once enabled" in out
+    # manual-only card: E2EE/tree/network lines never print
+    assert "E2EE:" not in out
+    assert "space tree:" not in out
+    assert "local network:" not in out
     assert PASSWORD not in out
     assert fake.calls["provision"] == 0
+    # skip leaves everything alone — no auto steps either
+    assert fake.calls["crypto"] == 0
+    assert fake.calls["sidecar"] == 0
+    assert fake.calls["tree"] == 0
     assert remaining == []
 
 
@@ -271,8 +314,9 @@ def test_section_provisioned_disabled_state(monkeypatch, capsys, tmp_path):
     )
 
     assert "observatory.enabled:  no  (config.yaml)" in out
-    assert "E2EE:                on" in out
-    assert "rooms are end-to-end encrypted" in out
+    # manual-only card: no E2EE status line even when the flag is on
+    assert "E2EE:" not in out
+    assert "space tree:" not in out
     assert PASSWORD not in out
     assert remaining == []
 
@@ -451,11 +495,8 @@ def test_noninteractive_guidance_state_and_exact_command(monkeypatch, capsys):
     assert "Provisioned: no" in out
     assert f"homeserver reachable: no ({HOMESERVER_URL})" in out
     assert f"observatory.enabled: yes (config.yaml)" in out
-    # exact headless command: no `mercury observatory` wrapper exists
-    assert (
-        f"  PYTHONPATH={setup_mod.PROJECT_ROOT} "
-        f"{sys.executable} -m observatory.provision" in out
-    )
+    # headless auto command (no manual python -m step remains)
+    assert "mercury setup observatory --non-interactive" in out
     assert "mercury config set observatory.enabled false" in out
     assert "user-guide/messaging/matrix-observatory" in out
 
@@ -476,7 +517,7 @@ def test_run_setup_wizard_noninteractive_prints_observatory_block(
     monkeypatch, capsys, tmp_path
 ):
     """End-to-end wiring: a headless `mercury setup` prints the observatory
-    state summary + provision command alongside the generic guidance."""
+    state summary + auto command alongside the generic guidance."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
         provision_mod, "_homeserver_reachable",
@@ -493,8 +534,7 @@ def test_run_setup_wizard_noninteractive_prints_observatory_block(
 
     assert "Mercury Setup — Non-interactive mode" in out  # generic guidance first
     assert "Matrix Observatory (bundled)" in out
-    assert "-m observatory.provision" in out
-    assert f"  PYTHONPATH={setup_mod.PROJECT_ROOT} {sys.executable}" in out
+    assert "mercury setup observatory --non-interactive" in out
 
 
 # ---------------------------------------------------------------------------
