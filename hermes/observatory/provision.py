@@ -1714,7 +1714,7 @@ def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
     except Exception:  # noqa: BLE001 — unreadable config means default-on
         pass
     try:
-        legacy_ok = bool(e2ee_available())
+        legacy_ok = bool(e2ee_available()) and bool(_aiohttp_available())
     except Exception:  # noqa: BLE001 — probe failure = unavailable
         legacy_ok = False
     try:

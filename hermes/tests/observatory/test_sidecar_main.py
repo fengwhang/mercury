@@ -28,6 +28,7 @@ import asyncio
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote
 
 import pytest
@@ -66,6 +67,7 @@ class FakeMatrixClient:
     as_token: str = "as-tok"
     server_name: str = "mercury.local"
     admin_token: str = "admin-tok"
+    on_admin_401: Any = None
     calls: list = field(default_factory=list)
     next_id: int = 0
 
@@ -77,9 +79,11 @@ class FakeMatrixClient:
         self.calls.append(("register", localpart))
         return f"@{localpart}:{self.server_name}"
 
-    async def create_room(self, *, name, sender, preset, invite, space=False, topic=None):
+    async def create_room(self, *, name, sender, preset, invite, space=False,
+                          topic=None, initial_state=None):
         rid = self._id("!space" if space else "!room")
-        self.calls.append(("create_room", name, sender, preset, tuple(invite), space, rid))
+        self.calls.append(("create_room", name, sender, preset, tuple(invite),
+                           space, rid, initial_state))
         return rid
 
     async def set_power_levels(self, room_id, users, *, sender):
