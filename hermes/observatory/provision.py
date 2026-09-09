@@ -7,7 +7,7 @@ D16. What 'provision' means here, in order:
    gate) at ``$MERCURY_HOME/observatory/bin/tuwunel`` with its version
    file. Boot/provision NEVER touches the network; the online
    latest-stable check lives ONLY behind explicit user actions
-   (install.sh's CLI call, `mercury update`'s ``refresh_for_update`` /
+   (the bare provision CLI, `mercury update`'s ``refresh_for_update`` /
    ``provision_if_missing``).
 2. ``ensure_config``    — write ``tuwunel.toml`` ONCE (closed form:
    localhost, no federation, no registration, registration_token). Never
@@ -30,8 +30,10 @@ D16. What 'provision' means here, in order:
    when systemd is absent (containers/CI) — everything else fails hard.
 
 Entry points:
-  ``python -m observatory.provision``          — install.sh (explicit
-      install with network: online unless ``--offline``).
+  ``python -m observatory.provision``          — install.sh passes
+      ``--offline`` (trust the installed binary, zero GitHub requests);
+      the bare CLI stays online (explicit operator action) with an
+      installed-binary fallback when the fetch fails.
   ``observatory.provision.refresh_for_update`` — `mercury update` (D16).
   ``observatory.provision.provision_in_wizard`` — the setup wizard's
       'Matrix Observatory' section (same steps/summary, never exits).
@@ -893,9 +895,14 @@ def provision(mercury_home: str | Path | None = None,
 
     ``offline``: None/True = offline (default); False = online
     latest-stable check+upgrade via the GitHub release API. False is
-    reserved for explicit user actions with network (install.sh's CLI
-    call, the `mercury update` first-time-provision gate) — boot/sidecar
-    paths never pass it. ``fetch`` is only used on the online path.
+    reserved for explicit user actions with network (the bare provision
+    CLI, the `mercury update` first-time-provision gate) — boot/sidecar
+    paths and install.sh never pass it. ``fetch`` is only used on the
+    online path. Install law: when the online refresh fails (GitHub 403
+    rate-limit, outage) but a usable installed binary is present
+    (>= MIN_VERSION gate), provision keeps it (action ``"kept"``) with a
+    warning and continues — a rate limit never fails an install. With
+    nothing usable installed the original fetch error still raises.
     """
     paths = ObservatoryPaths(_mercury_home(mercury_home))
     for d in (paths.root, paths.bin_dir, paths.db_dir, paths.appservices_dir, paths.logs_dir):
@@ -903,7 +910,10 @@ def provision(mercury_home: str | Path | None = None,
 
     online = offline is False
     if online:
-        action, version = tuwunel.refresh_tuwunel(paths, fetch=fetch)
+        try:
+            action, version = tuwunel.refresh_tuwunel(paths, fetch=fetch)
+        except tuwunel.TuwunelError as exc:
+            action, version = _kept_installed_or_raise(paths, exc)
     else:
         action, version = _refresh_tuwunel_offline(paths)
     summary = {
@@ -980,6 +990,31 @@ def _refresh_tuwunel_offline(paths: ObservatoryPaths) -> tuple[str, str]:
         ) from None
     return "current", current
 
+def _kept_installed_or_raise(
+    paths: ObservatoryPaths, exc: tuwunel.TuwunelError
+) -> tuple[str, str]:
+    """Online-path fallback (install law): keep the installed binary.
+
+    A fetch failure (GitHub 403 rate-limit, outage, corrupt download)
+    must never fail an install when a usable binary is already installed:
+    trust it behind the same >= MIN_VERSION gate as the offline path,
+    warn, and let provisioning continue (action ``"kept"``). With nothing
+    usable installed (missing binary or stale version) the ORIGINAL fetch
+    error propagates — there is nothing to fall back to.
+    """
+    current = tuwunel.installed_version(paths)
+    if current is not None:
+        try:
+            tuwunel.check_min_version(f"v{current}")
+        except tuwunel.TuwunelError:
+            current = None
+    if current is None:
+        raise exc
+    print(
+        f"⚠ tuwunel latest-check failed ({exc}); keeping installed "
+        f"v{current} — run `mercury update` with network to upgrade"
+    )
+    return "kept", current
 
 
 def refresh_for_update() -> str | None:
@@ -1300,7 +1335,7 @@ def provision_in_wizard(mercury_home: str | Path | None = None) -> dict:
     """In-process provisioning entry for the setup wizard's 'Matrix
     Observatory' section: same steps, same summary, same output lines as
     the ``python -m observatory.provision`` CLI. Boot-law offline: trusts
-    the binary install.sh already fetched (a missing/stale binary raises
+    the installed binary behind the min-version gate (a missing/stale binary raises
     TuwunelError with the `mercury update` remediation). Raises
     TuwunelError/ProvisionError on failure — the wizard section catches
     and shows the message — and never ``sys.exit()``s: the wizard must
@@ -1338,8 +1373,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--offline", action="store_true",
         help="trust the installed tuwunel.version file instead of querying "
-             "the GitHub release API (the library default is offline; this "
-             "CLI stays online for explicit installs such as install.sh)",
+             "the GitHub release API (the library default is offline; "
+             "install.sh passes this — the bare CLI stays online for "
+             "explicit operator fetches)",
     )
     args = parser.parse_args(argv)
 
