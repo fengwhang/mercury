@@ -3691,6 +3691,17 @@ def read_raw_config_readonly() -> Dict[str, Any]:
 
         if not isinstance(data, dict):
             data = {}
+        # MERCURY-OMP PATCH (unified config): same hermes:-subtree contract
+        # as read_raw_config() above. Both readers share _RAW_CONFIG_CACHE
+        # under one path key — without this unwrap a readonly-first call
+        # poisons the cache with the whole-file shape and every later
+        # read_raw_config().get(<section>) misses (a saved browser
+        # selection "does not stick" and the runtime silently falls back
+        # to local). YAML key stays "hermes" (unified-file contract).
+        if os.environ.get("MERCURY_CONFIG", "").strip():
+            if isinstance(data, dict):
+                subtree = data.get("hermes")
+                data = subtree if isinstance(subtree, dict) else {}
         # Store and return THE SAME object (identity invariant): the first
         # caller must see the exact dict later cache hits return, so a test
         # asserting ``ro1 is ro2`` holds from the very first call.

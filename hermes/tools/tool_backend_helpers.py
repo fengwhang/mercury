@@ -405,6 +405,12 @@ def selection_exists(section: str) -> bool:
 
         cfg = read_raw_config_readonly() or {}
         raw = cfg.get(section) if isinstance(cfg, dict) else None
+        # Unified-config fallback (mirrors read_selection above): probe
+        # hermes.<section> when no top-level section is present.
+        if not isinstance(raw, dict):
+            hermes_sub = cfg.get("hermes") if isinstance(cfg, dict) else None
+            if isinstance(hermes_sub, dict) and isinstance(hermes_sub.get(section), dict):
+                raw = hermes_sub[section]
     except Exception:
         return False
     if not isinstance(raw, dict):
