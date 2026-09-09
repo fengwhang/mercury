@@ -216,6 +216,29 @@ def _pip_install(venv: Path, args: list[str]) -> tuple[bool, str]:
     return ok, detail
 
 
+def _split_bundled_wheels(whls: list[Path]) -> tuple[list[Path], list[Path]]:
+    """Split staged wheels into (install, skipped-foreign-olm).
+
+    make-dist stages BOTH arch python-olm wheels; pip fails when handed two
+    conflicting python-olm URLs, so only this host's arch wheel — plus every
+    non-olm wheel — is installed. Unknown arch: every olm wheel is foreign.
+    Selection mirrors observatory.provision._vendored_olm_wheel."""
+    from observatory.provision import _host_olm_arch  # noqa: PLC0415 — update path only
+
+    arch = _host_olm_arch()
+    keep: list[Path] = []
+    skipped: list[Path] = []
+    for p in whls:
+        if p.name.startswith("python_olm-") and p.suffix == ".whl":
+            if arch is not None and f"linux_{arch}" in p.name:
+                keep.append(p)
+            else:
+                skipped.append(p)
+        else:
+            keep.append(p)
+    return keep, skipped
+
+
 def _install_bundled_wheels(root: Path, venv: Path) -> None:
     """(update-completeness) Install the tarball-bundled crypto-stack
     wheels (``wheels/`` staged by make-dist: mautrix[encryption] pinned
@@ -233,10 +256,13 @@ def _install_bundled_wheels(root: Path, venv: Path) -> None:
     wheels_dir = root / "wheels"
     whls = sorted(p for p in wheels_dir.glob("*.whl")) if wheels_dir.is_dir() else []
     whls = [p for p in whls if p.is_file()]
-    if whls:
-        ok, detail = _pip_install(venv, [str(p) for p in whls])
+    keep, skipped = _split_bundled_wheels(whls)
+    for p in skipped:
+        print(f"  ℹ bundled wheel skipped (foreign arch): {p.name}")
+    if keep:
+        ok, detail = _pip_install(venv, [str(p) for p in keep])
         if ok:
-            print(f"  🌡️ observatory crypto stack: installed {len(whls)} bundled wheel(s)")
+            print(f"  🌡️ observatory crypto stack: installed {len(keep)} bundled wheel(s)")
         else:
             print("  ⚠ bundled-wheels install failed — observatory E2EE may be broken")
             print(f"    output:\n{detail}")

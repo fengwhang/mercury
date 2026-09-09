@@ -519,6 +519,21 @@ def _vendored_wheels_dir() -> Path:
     return Path(__file__).resolve().parent / "wheels"
 
 
+def _host_olm_arch() -> str | None:
+    """This host's python-olm wheel arch tag (``x86_64`` | ``aarch64``).
+
+    Single source of truth for the uname-machine mapping, shared by the
+    vendored-wheel selector below, the ``mercury update`` bundled-wheels
+    filter, and install.sh ``_select_vendored_olm_wheel`` (same mapping in
+    shell). None when the machine is unknown — callers then install no
+    olm wheel rather than handing pip a conflicting set."""
+    import platform as _platform
+
+    return {"x86_64": "x86_64", "amd64": "x86_64",
+            "aarch64": "aarch64", "arm64": "aarch64"}.get(
+        _platform.machine().lower())
+
+
 def _vendored_olm_wheel() -> Path | None:
     """Vendored python-olm wheel for THIS interpreter + platform, or None.
 
@@ -528,11 +543,7 @@ def _vendored_olm_wheel() -> Path | None:
     the checkout (e.g. a partial tree)."""
     if sys.platform != "linux" or sys.version_info[:2] != (3, 13):
         return None
-    import platform as _platform
-
-    arch = {"x86_64": "x86_64", "amd64": "x86_64",
-            "aarch64": "aarch64", "arm64": "aarch64"}.get(
-        _platform.machine().lower())
+    arch = _host_olm_arch()
     if arch is None:
         return None
     cand = (_vendored_wheels_dir()
