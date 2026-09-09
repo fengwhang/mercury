@@ -2960,12 +2960,13 @@ def _maybe_print_bind_mismatch_action(obs, ts: dict | None) -> None:
 
 
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
-    """First-login card (docs §'First login with FluffyChat').
+    """First-login card — ONLY what remains truly manual (FluffyChat login).
 
-    Shows the homeserver URL (localhost for desktop, tailnet URL for the
-    phone when Tailscale is up), the owner MXID and where the password
-    lives — the password itself is NEVER printed here (it is a secret).
-    Detect-and-assist only: never installs Tailscale here.
+    Everything else (provision, crypto stack, sidecar unit, owner-URL heal,
+    gateway ghost + tree converge) already ran automatically by the time
+    this prints — so this card names just the homeserver URL, the owner
+    account, where the password lives (NEVER the password itself), and the
+    FluffyChat add-account steps. Detect-and-assist only for Tailscale.
     """
     creds_path = status["owner_credentials_path"]
     try:
@@ -2993,14 +2994,6 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     if tailscale is None:
         tailscale = _tailscale_status(_load_observatory_provision())
     phone_url = _tailscale_phone_url(tailscale, str(status.get("homeserver_url", "")))
-    e2ee_on = bool(status.get("e2ee"))
-    e2ee_line = (
-        "E2EE:                on (observatory.e2ee: true) — rooms are "
-        "end-to-end encrypted"
-        if e2ee_on
-        else "E2EE:                off (observatory.e2ee: false) — rooms become "
-        "end-to-end encrypted once enabled"
-    )
     lines = [
         "Matrix Observatory — first login (FluffyChat)",
         "",
@@ -3024,15 +3017,11 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         )
     lines.extend(
         [
-            "local network:       or edit `address` in tuwunel.toml"
-            " — never expose it beyond the VPN",
             f"owner account:       {owner_mxid}",
             *password_lines,
             "in FluffyChat:       add account → enter the homeserver URL",
             "                     manually → paste the URL above",
             "                     (use your own server, not matrix.org)",
-            e2ee_line,
-            "space tree:          appears on the first gateway start",
         ]
     )
     width = max(len(ln) for ln in lines) + 2
@@ -3055,47 +3044,33 @@ def _auto_ensure_crypto(obs) -> str:
     if fn is None:
         return "skipped-unavailable"
     try:
-        return str(fn())
+        result = str(fn())
     except KeyboardInterrupt:
         raise
     except Exception as exc:  # noqa: BLE001 — auto step never kills setup
         print_warning(f"Crypto auto-setup skipped: {exc}")
         return "skipped-error"
+    if result.startswith("failed:"):
+        # Fail CLOSED: E2EE stays on, config.yaml untouched — surface the
+        # provision-layer line as a wizard warning, never a silent status.
+        print_warning(f"Crypto stack not ready ({result}) — E2EE stays ON; "
+                      f"rooms will fail at sidecar boot until the stack imports.")
+    return result
 
 
-def _run_observatory_sidecar_repair() -> None:
-    """Non-interactive repair: provision, then install/enable/start the
-    sidecar unit (``mercury setup observatory --install-sidecar``).
-
-    Never prompts; every failure degrades to a printed hint and the
-    wizard returns. provision() itself never touches the sidecar unit
-    (the daemon boots provision(), so auto-installing there would
-    restart its own unit mid-boot) — this explicit path is the only
-    installer."""
+def _auto_ensure_sidecar_unit(obs) -> str:
+    """Auto sidecar step: install/enable/restart the sidecar unit (the old
+    ``--install-sidecar`` flag path, now automatic). Never prompts, never
+    raises — failures degrade to a manual hint."""
     try:
         from observatory.config_gen import SIDECAR_UNIT_NAME as _sidecar_unit
     except Exception:  # noqa: BLE001 — display fallback, never kills setup
         _sidecar_unit = "mercury-observatory.service"
-    obs = _load_observatory_provision()
-    if obs is None:
-        print_warning("Bundled observatory package not found in this install.")
-        print_info(_OBSERVATORY_GUIDE_LINE)
-        return
-    try:
-        obs.provision_in_wizard()
-        _auto_ensure_crypto(obs)
-        print_success("Observatory provisioning complete.")
-    except KeyboardInterrupt:
-        raise
-    except Exception as exc:
-        print_error(f"Observatory provisioning failed: {exc}")
-        print_info("Retry any time with: mercury setup observatory --install-sidecar")
-        return
     install = getattr(obs, "ensure_sidecar_unit", None)
     if install is None:
         print_warning("Sidecar unit installer unavailable in this install.")
         print_info(f"Start it by hand: systemctl --user start {_sidecar_unit}")
-        return
+        return "skipped-unavailable"
     try:
         result = install()
     except KeyboardInterrupt:
@@ -3103,25 +3078,101 @@ def _run_observatory_sidecar_repair() -> None:
     except SystemExit as exc:
         # sidecar_main requires aiohttp (matrix extra): its import raises
         # SystemExit, not Exception, when the dep is missing.
-        print_error(f"Sidecar unit install failed: {exc}")
-        print_info("The sidecar needs the matrix extra, then retry this command.")
-        return
-    except Exception as exc:  # noqa: BLE001 — repair never kills setup
-        print_error(f"Sidecar unit install failed: {exc}")
+        print_warning(f"Sidecar unit install skipped: {exc}")
+        print_info("The sidecar needs the matrix extra, then re-run setup.")
+        return "skipped-error"
+    except Exception as exc:  # noqa: BLE001 — auto step never kills setup
+        print_warning(f"Sidecar unit install skipped: {exc}")
         print_info(f"Start it by hand: systemctl --user start {_sidecar_unit}")
-        return
+        return "skipped-error"
+    if result == "skipped":
+        print_info("Sidecar unit skipped (no systemd) — start the sidecar manually "
+                   "outside containers.")
+        return result
     print_success(f"Sidecar unit {result} ({_sidecar_unit}) — enabled and started.")
+    return result
+
+
+def _auto_heal_and_converge(obs) -> str:
+    """Auto heal+converge step: owner-URL heal, gateway ghost verify, tree
+    converge. Never prompts, never raises — a deferred tree converges on
+    the sidecar's next start with no further command."""
+    heal = getattr(obs, "heal_owner_url", None)
+    if heal is not None:
+        try:
+            healed = heal()
+        except KeyboardInterrupt:
+            raise
+        except Exception:  # noqa: BLE001 — heal is best-effort
+            healed = None
+        if healed:
+            print_success(f"Owner homeserver URL healed ({healed}).")
+    converge = getattr(obs, "verify_and_converge_gateway", None)
+    if converge is None:
+        return "skipped-unavailable"
+    try:
+        result = str(converge())
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # noqa: BLE001 — auto step never kills setup
+        print_warning(f"Gateway tree converge skipped: {exc}")
+        return "skipped-error"
+    if result.startswith("converged-"):
+        print_success(f"Gateway tree {result} — gateway room ready in FluffyChat.")
+    elif result == "verified-ghost-only":
+        print_success("Gateway ghost verified — tree converges on sidecar start.")
+    else:
+        print_info(f"Gateway tree {result}; sidecar converges it on start — no action needed.")
+    return result
+
+
+def _run_observatory_auto_steps(obs) -> dict:
+    """Run every post-provision auto step in order: crypto → sidecar →
+    heal+converge. Idempotent; each step degrades independently so one
+    skip never blocks the next. Returns ``{"crypto", "sidecar", "tree"}``."""
+    crypto = _auto_ensure_crypto(obs)
+    sidecar = _auto_ensure_sidecar_unit(obs)
+    tree = _auto_heal_and_converge(obs)
+    return {"crypto": crypto, "sidecar": sidecar, "tree": tree}
+
+
+def _run_observatory_sidecar_repair() -> None:
+    """Non-interactive repair: provision + crypto + sidecar + heal/converge
+    (``mercury setup observatory --install-sidecar`` — kept as an alias for
+    the now-automatic path).
+
+    Never prompts; every failure degrades to a printed hint and the
+    wizard returns. provision() itself never touches the sidecar unit
+    (the daemon boots provision(), so auto-installing there would
+    restart its own unit mid-boot) — this explicit path is the only
+    installer."""
+    obs = _load_observatory_provision()
+    if obs is None:
+        print_warning("Bundled observatory package not found in this install.")
+        print_info(_OBSERVATORY_GUIDE_LINE)
+        return
+    try:
+        obs.provision_in_wizard()
+        print_success("Observatory provisioning complete.")
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        print_error(f"Observatory provisioning failed: {exc}")
+        print_info("Retry any time with: mercury setup observatory --install-sidecar")
+        return
+    _run_observatory_auto_steps(obs)
 
 
 def setup_observatory(config: dict, *, quick: bool = False):
     """Wizard section: the bundled Matrix observatory (Tuwunel homeserver
     + sidecar). Spec D1/D2 — default on, closed registration, localhost.
 
-    Shows current state, offers idempotent install/repair (in-process via
-    ``provision_in_wizard``) or skip (the --skip-observatory equivalent),
-    offers the ``observatory.enabled`` toggle, and prints the first-login
-    card when provisioned. Never gates the rest of the wizard: every
-    failure degrades to a printed hint and the section returns.
+    Shows current state, offers idempotent install/repair (provision +
+    crypto + sidecar + heal/converge, all automatic) or skip (the
+    --skip-observatory equivalent), offers the ``observatory.enabled``
+    toggle, and prints the manual-only first-login card when provisioned.
+    Never gates the rest of the wizard: every failure degrades to a
+    printed hint and the section returns.
     """
     print_header("Matrix Observatory (bundled)")
     print_info("A private Matrix homeserver + sidecar that mirrors every live agent")
@@ -3156,7 +3207,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
     if choice == 0:
         try:
             obs.provision_in_wizard()
-            _auto_ensure_crypto(obs)
+            _run_observatory_auto_steps(obs)
             status = obs.status_summary()
             print_success("Observatory provisioning complete.")
         except KeyboardInterrupt:
@@ -3226,9 +3277,9 @@ def print_noninteractive_observatory_guidance() -> None:
             "Tailscale: not detected — install from https://tailscale.com"
             " (or headscale) for phone access without port forwarding"
         )
-    print_info("Provision / repair it headlessly (idempotent, fail-hard):")
+    print_info("Provision / repair it headlessly (automatic, no prompts):")
     print_info(
-        f"  PYTHONPATH={PROJECT_ROOT} {sys.executable} -m observatory.provision"
+        "  mercury setup observatory --non-interactive"
     )
     print_info("Disable instead (freezes, never deletes):")
     print_info("  mercury config set observatory.enabled false")
@@ -3237,12 +3288,12 @@ def print_noninteractive_observatory_guidance() -> None:
 
 
 def run_headless_observatory_setup() -> None:
-    """Headless `mercury setup observatory`: provision + vendored crypto
-    install with zero prompts, then the manual-only login card.
+    """Headless `mercury setup observatory`: provision + crypto + sidecar +
+    heal/converge with zero prompts, then the manual-only login card.
 
-    Same crypto step as the wizard Install path, minus every prompt
-    (enabled toggle, Tailscale bind offer). Failures degrade to printed
-    hints — never raises, never exits."""
+    Same auto steps as the wizard Install path, minus every prompt (enabled
+    toggle, Tailscale bind offer). Failures degrade to printed hints —
+    never raises, never exits."""
     obs = _load_observatory_provision()
     if obs is None:
         print_warning("Bundled observatory package not found in this install.")
@@ -3250,6 +3301,7 @@ def run_headless_observatory_setup() -> None:
         return
     try:
         obs.provision_in_wizard()
+        _run_observatory_auto_steps(obs)
         print_success("Observatory provisioning complete.")
     except KeyboardInterrupt:
         raise
@@ -3257,7 +3309,6 @@ def run_headless_observatory_setup() -> None:
         print_error(f"Observatory provisioning failed: {exc}")
         print_info("Retry any time with: mercury setup observatory --install-sidecar")
         return
-    _auto_ensure_crypto(obs)
     try:
         status = obs.status_summary()
     except Exception as exc:

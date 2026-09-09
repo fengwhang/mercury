@@ -7,11 +7,13 @@ never a container build, never a host compiler.
 """
 from __future__ import annotations
 
+import builtins
 import hashlib
 import inspect
 import shutil
 import subprocess
 import sys
+import types
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -162,6 +164,13 @@ class TestEnsureCryptoStack:
             calls.append((python_bin, list(args)))
             return True, ""
         monkeypatch.setattr(provision_mod, "_crypto_pip_install", _fake_install)
+        real_import = builtins.__import__
+
+        def _fake_import(name, *a, **k):
+            if name == "olm":
+                return types.ModuleType("olm")
+            return real_import(name, *a, **k)
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
         assert provision_mod.ensure_crypto_stack() == "installed"
         assert len(calls) == 1
         python_bin, args = calls[0]
@@ -172,24 +181,29 @@ class TestEnsureCryptoStack:
         assert "mautrix[encryption]==0.21.1" in args
         assert "aiosqlite==0.22.1" in args
 
-    def test_install_failure_falls_back_and_disables(self, tmp_path, monkeypatch):
+    def test_install_failure_fails_closed(self, tmp_path, monkeypatch, capsys):
+        """Install failure: E2EE stays ON — no e2ee:false write, ever."""
         monkeypatch.setattr(e2ee_mod, "e2ee_enabled", lambda home=None: True)
         monkeypatch.setattr(e2ee_mod, "e2ee_available", lambda: False)
         monkeypatch.setattr(
             provision_mod, "_crypto_pip_install", lambda *a, **k: (False, "boom"))
         home = tmp_path / "home"
-        assert provision_mod.ensure_crypto_stack(home) == "fallback-disabled"
-        assert "e2ee: false" in (home / "config.yaml").read_text(encoding="utf-8")
+        result = provision_mod.ensure_crypto_stack(home)
+        assert result.startswith("failed:")
+        assert "E2EE stays ON" in capsys.readouterr().out
+        assert not (home / "config.yaml").exists()
 
-    def test_missing_wheel_falls_back(self, tmp_path, monkeypatch):
+    def test_missing_wheel_fails_closed(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(e2ee_mod, "e2ee_enabled", lambda home=None: True)
         monkeypatch.setattr(e2ee_mod, "e2ee_available", lambda: False)
         monkeypatch.setattr(provision_mod, "_vendored_olm_wheel", lambda: None)
         home = tmp_path / "home"
-        assert provision_mod.ensure_crypto_stack(home) == "fallback-disabled"
-        assert "e2ee: false" in (home / "config.yaml").read_text(encoding="utf-8")
+        result = provision_mod.ensure_crypto_stack(home)
+        assert result.startswith("failed:")
+        assert "E2EE stays ON" in capsys.readouterr().out
+        assert not (home / "config.yaml").exists()
 
-    def test_unverified_wheel_falls_back(self, tmp_path, monkeypatch):
+    def test_unverified_wheel_fails_closed(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(e2ee_mod, "e2ee_enabled", lambda home=None: True)
         monkeypatch.setattr(e2ee_mod, "e2ee_available", lambda: False)
 
@@ -197,12 +211,14 @@ class TestEnsureCryptoStack:
             raise provision_mod.ProvisionError("hash mismatch")
         monkeypatch.setattr(provision_mod, "_verified_vendored_wheel", _raise)
         home = tmp_path / "home"
-        assert provision_mod.ensure_crypto_stack(home) == "fallback-disabled"
-        assert "e2ee: false" in (home / "config.yaml").read_text(encoding="utf-8")
+        result = provision_mod.ensure_crypto_stack(home)
+        assert result.startswith("failed:")
+        assert "E2EE stays ON" in capsys.readouterr().out
+        assert not (home / "config.yaml").exists()
 
     def test_never_raises(self, tmp_path, monkeypatch):
-        """Every probe/helper exploding still degrades to the fallback —
-        the wizard must survive."""
+        """Every probe/helper exploding still degrades to fail-closed —
+        the wizard must survive, and E2EE must stay on."""
         monkeypatch.setattr(
             e2ee_mod, "e2ee_enabled",
             lambda home=None: (_ for _ in ()).throw(RuntimeError("cfg")))
@@ -212,8 +228,11 @@ class TestEnsureCryptoStack:
         monkeypatch.setattr(
             provision_mod, "_vendored_olm_wheel",
             lambda: (_ for _ in ()).throw(RuntimeError("sel")))
+        monkeypatch.setattr(
+            provision_mod, "_crypto_pip_install", lambda *a, **k: (False, "boom"))
         home = tmp_path / "home"
-        assert provision_mod.ensure_crypto_stack(home) == "fallback-disabled"
+        assert provision_mod.ensure_crypto_stack(home).startswith("failed:")
+        assert not (home / "config.yaml").exists()
 
     def test_set_e2ee_preserves_other_keys(self, tmp_path):
         home = tmp_path / "home"
