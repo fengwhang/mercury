@@ -79,6 +79,16 @@ class _FakeProvision:
         self._bind_address = kw.get("bind_address")
         self.calls = {"provision": 0, "status": 0, "crypto": 0,
                       "sidecar": 0, "heal": 0, "tree": 0, "bind": 0}
+        self.provision_kwargs: dict = {}
+        self.rotated: list = []
+        # Identity surface mirrors observatory.provision (real validators).
+        self.validate_server_name = provision_mod.validate_server_name
+        self.validate_owner_localpart = provision_mod.validate_owner_localpart
+        self.validate_owner_password = provision_mod.validate_owner_password
+
+    def rotate_owner_password(self, new_password, *a, **k):
+        self.rotated.append(new_password)
+        return "rotated"
 
     def status_summary(self, *a, **k):
         idx = min(self.calls["status"], len(self._statuses) - 1)
@@ -86,6 +96,7 @@ class _FakeProvision:
         return dict(self._statuses[idx])
 
     def provision_in_wizard(self, *a, **k):
+        self.provision_kwargs = dict(k)
         self.calls["provision"] += 1
         if self._provision_error is not None:
             raise self._provision_error
@@ -121,7 +132,7 @@ class _FakeProvision:
         return self._bind_address
 
 
-def _run_install(monkeypatch, capsys, fake, *, yes_no=(True,)):
+def _run_install(monkeypatch, capsys, fake, *, yes_no=(True,), texts=("", "")):
     monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
     monkeypatch.setattr(setup_mod, "prompt_choice", lambda q, c, d=0, description=None: 0)
     remaining = list(yes_no)
@@ -131,7 +142,17 @@ def _run_install(monkeypatch, capsys, fake, *, yes_no=(True,)):
         return remaining.pop(0)
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", fake_yes_no)
+    pending_texts = list(texts)
+
+    def fake_prompt(question, default=None, password=False):
+        # Mirrors setup.prompt: empty input selects the default.
+        assert pending_texts, f"unexpected extra prompt: {question!r}"
+        answer = pending_texts.pop(0)
+        return answer if answer else (default or "")
+
+    monkeypatch.setattr(setup_mod, "prompt", fake_prompt)
     setup_mod.setup_observatory(load_config())
+    assert not pending_texts, f"unconsumed prompt answers: {pending_texts!r}"
     return capsys.readouterr().out, remaining
 
 
@@ -151,9 +172,15 @@ def test_wizard_install_runs_full_auto_path(monkeypatch, capsys, tmp_path):
                             homeserver_reachable=True, unit_active=True)],
         healed=HOMESERVER_URL,
     )
-    out, remaining = _run_install(monkeypatch, capsys, fake)
+    out, remaining = _run_install(monkeypatch, capsys, fake, yes_no=(True, True))
     assert fake.calls == {"provision": 1, "status": 2, "crypto": 1,
                           "sidecar": 1, "heal": 1, "tree": 1, "bind": 0}
+    # fresh install: prompted identity (defaults) reaches provisioning
+    assert fake.provision_kwargs == {
+        "server_name": "mercury.local",
+        "owner_localpart": "merc-owner",
+        "owner_password": None,
+    }
     assert "Sidecar unit installed" in out
     assert "Owner homeserver URL healed" in out
     assert "Gateway tree converged-3" in out
@@ -170,7 +197,7 @@ def test_wizard_install_failed_crypto_warns_and_keeps_e2ee(monkeypatch, capsys, 
                             owner_credentials_path=str(creds))],
         crypto="failed: no vendored python-olm wheel for this machine",
     )
-    out, _ = _run_install(monkeypatch, capsys, fake)
+    out, _ = _run_install(monkeypatch, capsys, fake, yes_no=(True, True))
     assert "Crypto stack not ready" in out
     assert "E2EE stays ON" in out
     assert "e2ee:false" not in out and "e2ee: false" not in out
@@ -187,7 +214,7 @@ def test_wizard_install_each_auto_failure_degrades_independently(monkeypatch, ca
         sidecar_error=RuntimeError("boom-sidecar"),
         tree_error=RuntimeError("boom-tree"),
     )
-    out, remaining = _run_install(monkeypatch, capsys, fake)
+    out, remaining = _run_install(monkeypatch, capsys, fake, yes_no=(True, True))
     assert "Crypto auto-setup skipped" in out
     assert "Sidecar unit install skipped" in out
     assert "Gateway tree converge skipped" in out
@@ -201,8 +228,15 @@ def test_wizard_install_idempotent_double_run(monkeypatch, capsys, tmp_path):
     st = _status(provisioned=True, owner_credentials_exist=True,
                  owner_credentials_path=str(creds))
     fake = _FakeProvision([st, st, st])
-    _run_install(monkeypatch, capsys, fake)
-    _run_install(monkeypatch, capsys, fake)
+    out, remaining = _run_install(
+        monkeypatch, capsys, fake, yes_no=(False, True), texts=())
+    assert remaining == []
+    out, remaining = _run_install(
+        monkeypatch, capsys, fake, yes_no=(False, True), texts=())
+    assert remaining == []
+    # re-runs pass no identity (stored credentials kept) and rotate declined
+    assert fake.provision_kwargs == {}
+    assert fake.rotated == []
     assert fake.calls["provision"] == 2
     assert fake.calls["crypto"] == 2
     assert fake.calls["sidecar"] == 2

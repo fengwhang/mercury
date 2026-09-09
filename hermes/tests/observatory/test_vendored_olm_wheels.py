@@ -342,10 +342,16 @@ class TestSetupAutoCrypto:
             },
             provision_in_wizard=lambda *a, **k: seen.setdefault("provisioned", True),
             ensure_crypto_stack=lambda *a, **k: seen.setdefault("crypto", "installed"),
+            validate_server_name=provision_mod.validate_server_name,
+            validate_owner_localpart=provision_mod.validate_owner_localpart,
+            validate_owner_password=provision_mod.validate_owner_password,
+            rotate_owner_password=lambda *a, **k: "rotated",
         )
         monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
         monkeypatch.setattr(setup_mod, "prompt_choice", lambda *a, **k: 0)
         monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
+        monkeypatch.setattr(
+            setup_mod, "prompt", lambda q, default=None, password=False: default or "")
         setup_mod.setup_observatory({})
         assert seen.get("provisioned") is True
         assert seen.get("crypto") == "installed"

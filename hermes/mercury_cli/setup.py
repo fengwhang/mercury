@@ -3163,6 +3163,100 @@ def _run_observatory_sidecar_repair() -> None:
     _run_observatory_auto_steps(obs)
 
 
+def _prompt_validated(question: str, *, default: str | None, validate, password: bool = False):
+    """Free-text prompt with a validation loop (ValueError → reason + retry)."""
+    while True:
+        value = prompt(question, default, password=password)
+        try:
+            return validate(value)
+        except ValueError as exc:
+            print_error(str(exc))
+
+
+def _prompt_observatory_identity(obs) -> dict:
+    """Prompt the observatory identity triple for a FRESH install.
+
+    Server name and owner localpart default to the shipped constants;
+    the password defaults to generated (never displayed — it lands
+    straight in owner-credentials.json + the .env mirror). Every custom
+    value loops until the provision-layer validator accepts it. Returns
+    kwargs for ``obs.provision_in_wizard`` (password None = generate).
+    """
+    try:
+        from observatory.config_gen import OWNER_LOCALPART_DEFAULT as _def_local
+        from observatory.config_gen import SERVER_NAME_DEFAULT as _def_server
+    except Exception:  # noqa: BLE001 — display fallback, never kills setup
+        _def_local, _def_server = "merc-owner", "mercury.local"
+    server_name = _prompt_validated(
+        "Homeserver name (the part after @user: — immutable once provisioned)",
+        default=_def_server,
+        validate=obs.validate_server_name,
+    )
+    localpart = _prompt_validated(
+        "Owner username (the FluffyChat login)",
+        default=_def_local,
+        validate=obs.validate_owner_localpart,
+    )
+    if prompt_yes_no(
+        "Generate a random owner password? (recommended — never displayed)",
+        default=True,
+    ):
+        owner_password = None
+    else:
+        owner_password = _prompt_validated(
+            "Owner password (at least 12 characters, hidden)",
+            default=None,
+            password=True,
+            validate=lambda v: obs.validate_owner_password(v, localpart=localpart),
+        )
+    print_info(f"Owner account will be @{localpart}:{server_name}.")
+    return {
+        "server_name": server_name,
+        "owner_localpart": localpart,
+        "owner_password": owner_password,
+    }
+
+
+def _offer_owner_password_rotate(obs) -> None:
+    """Opt-in password rotation on already-provisioned homes (never default).
+
+    Idempotent re-runs keep existing credentials unless the user says yes
+    here. Failures degrade to a printed hint — the wizard continues.
+    """
+    rotate = getattr(obs, "rotate_owner_password", None)
+    if rotate is None:
+        return
+    try:
+        want = prompt_yes_no(
+            "Rotate the observatory owner password? (existing logins keep working)",
+            default=False,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception:  # noqa: BLE001 — a rotate offer never kills the wizard
+        return
+    if not want:
+        print_info("Keeping the existing owner credentials.")
+        return
+    validate = getattr(obs, "validate_owner_password", None)
+    while True:
+        new = prompt("New owner password (at least 12 characters, hidden)", None, password=True)
+        try:
+            (validate or (lambda v, **k: v))(new)
+            break
+        except ValueError as exc:
+            print_error(str(exc))
+    try:
+        rotate(new)
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # noqa: BLE001 — auto step never kills setup
+        print_error(f"Password rotation failed: {exc}")
+        print_info("Retry any time with: mercury setup observatory")
+        return
+    print_success("Owner password rotated (mirrored to .env — paste it into FluffyChat).")
+
+
 def setup_observatory(config: dict, *, quick: bool = False):
     """Wizard section: the bundled Matrix observatory (Tuwunel homeserver
     + sidecar). Spec D1/D2 — default on, closed registration, localhost.
@@ -3205,8 +3299,14 @@ def setup_observatory(config: dict, *, quick: bool = False):
     )
 
     if choice == 0:
+        was_provisioned = bool(status.get("provisioned"))
+        identity: dict = {}
+        if not was_provisioned:
+            # Fresh install: the user chooses the identity (safe defaults,
+            # validated in a loop); re-runs keep stored credentials.
+            identity = _prompt_observatory_identity(obs)
         try:
-            obs.provision_in_wizard()
+            obs.provision_in_wizard(**identity)
             _run_observatory_auto_steps(obs)
             status = obs.status_summary()
             print_success("Observatory provisioning complete.")
@@ -3216,6 +3316,11 @@ def setup_observatory(config: dict, *, quick: bool = False):
             print_error(f"Observatory provisioning failed: {exc}")
             print_info("Nothing else was changed — the wizard continues.")
             print_info("Retry any time with: mercury setup observatory")
+        else:
+            if was_provisioned:
+                # Repair re-run: credentials stay untouched unless the
+                # user explicitly opts into a rotation.
+                _offer_owner_password_rotate(obs)
     else:
         print_info("Skipped — same as installing with --skip-observatory.")
         print_info("Provision later with: mercury setup observatory")
