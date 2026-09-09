@@ -121,6 +121,12 @@ registration_token = "{registration_token}"
 # Appservice registration YAMLs (sidecar) are dropped here;
 # tuwunel loads them at startup.
 appservice_dir = "{appservice_dir}"
+
+# RocksDB WAL preallocation (fallocate) balloons archived WALs to their
+# full preallocated size on CoW filesystems (btrfs: 602-byte logical WALs
+# kept 20-70MB physical each) — disabling it only turns off preallocation
+# and is safe on all filesystems, so it ships unconditionally.
+rocksdb_allow_fallocate = false
 """
 
 

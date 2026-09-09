@@ -48,6 +48,12 @@ class TestTuwunelToml:
         assert cfg["port"] == config_gen.HOMESERVER_PORT_DEFAULT
         assert cfg["server_name"] == config_gen.SERVER_NAME_DEFAULT
 
+    def test_fallocate_disabled_for_cow_filesystems(self):
+        """Field bug: btrfs CoW + RocksDB WAL preallocation archived every
+        WAL at full preallocated size (89GB lost). The flag only disables
+        preallocation, so it ships unconditionally — safe on all filesystems."""
+        assert self.render()["rocksdb_allow_fallocate"] is False
+
     def test_bootstrap_form_opens_registration_only(self):
         raw = config_gen.render_tuwunel_toml(**self.TOML_KWARGS, allow_registration=True)
         cfg = tomllib.loads(raw)["global"]
@@ -202,6 +208,68 @@ class TestWriteOnceIdempotence:
         first = paths.toml.read_text()
         assert provision.ensure_config(paths, "token-two") == "kept"
         assert paths.toml.read_text() == first  # never overwritten
+
+
+class TestFallocateHeal:
+    #: Pre-flag file shape: exactly what render_tuwunel_toml emitted before
+    #: the fix, plus a user edit (custom port) and a hand-written comment.
+    FLAGLESS = (
+        "# hand-tuned comment the heal must keep\n"
+        "[global]\n"
+        'server_name = "mercury.local"\n'
+        'database_path = "/home/x/.mercury/observatory/tuwunel-db"\n'
+        'address = "127.0.0.1"\n'
+        "port = 18009\n"
+        "allow_federation = false\n"
+        "allow_registration = false\n"
+        'registration_token = "tok-keep-me"\n'
+        'appservice_dir = "/home/x/.mercury/observatory/appservices"\n'
+    )
+
+    def test_heal_adds_flag_preserving_other_keys(self, tmp_path: Path):
+        import tomllib
+
+        paths = ObservatoryPaths(tmp_path)
+        paths.toml.parent.mkdir(parents=True, exist_ok=True)
+        paths.toml.write_text(self.FLAGLESS, encoding="utf-8")
+        assert provision.ensure_config(paths, "token-two") == "healed"
+        cfg = tomllib.loads(paths.toml.read_text())["global"]
+        assert cfg["rocksdb_allow_fallocate"] is False
+        assert cfg["port"] == 18009  # user edit untouched
+        assert cfg["registration_token"] == "tok-keep-me"
+        assert cfg["server_name"] == "mercury.local"
+        raw = paths.toml.read_text()
+        assert "# hand-tuned comment the heal must keep" in raw
+
+    def test_heal_is_idempotent(self, tmp_path: Path):
+        paths = ObservatoryPaths(tmp_path)
+        paths.toml.parent.mkdir(parents=True, exist_ok=True)
+        paths.toml.write_text(self.FLAGLESS, encoding="utf-8")
+        assert provision.ensure_config(paths) == "healed"
+        healed = paths.toml.read_text()
+        assert healed.count("rocksdb_allow_fallocate") == 1
+        assert provision.ensure_config(paths) == "kept"
+        assert paths.toml.read_text() == healed  # second run is a no-op
+
+    def test_heal_respects_explicit_user_value(self, tmp_path: Path):
+        import tomllib
+
+        paths = ObservatoryPaths(tmp_path)
+        paths.toml.parent.mkdir(parents=True, exist_ok=True)
+        paths.toml.write_text(
+            self.FLAGLESS + "rocksdb_allow_fallocate = true\n", encoding="utf-8"
+        )
+        assert provision.ensure_config(paths) == "kept"
+        cfg = tomllib.loads(paths.toml.read_text())["global"]
+        assert cfg["rocksdb_allow_fallocate"] is True
+
+    def test_fresh_provision_carries_flag(self, tmp_path: Path):
+        import tomllib
+
+        paths = ObservatoryPaths(tmp_path)
+        assert provision.ensure_config(paths, "tok") == "created"
+        cfg = tomllib.loads(paths.toml.read_text())["global"]
+        assert cfg["rocksdb_allow_fallocate"] is False
 
     def test_ensure_appservice_registration_stable(self, tmp_path: Path):
         paths = ObservatoryPaths(tmp_path)

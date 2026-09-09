@@ -10,8 +10,10 @@ D16. What 'provision' means here, in order:
    (the bare provision CLI, `mercury update`'s ``refresh_for_update`` /
    ``provision_if_missing``).
 2. ``ensure_config``    — write ``tuwunel.toml`` ONCE (closed form:
-   localhost, no federation, no registration, registration_token). Never
-   overwritten; delete the file to re-provision.
+   localhost, no federation, no registration, registration_token,
+   ``rocksdb_allow_fallocate = false``). Never overwritten — except the
+   one-key heal: an existing file missing ``rocksdb_allow_fallocate``
+   gains it in place; delete the file to re-provision.
 3. ``ensure_appservice_registration`` — write the sidecar registration YAML
    ONCE (random as/hs tokens, exclusive ``^@merc_.*$`` namespace).
 4. ``ensure_owner_account`` — first registered user becomes admin. The
@@ -303,17 +305,64 @@ def _aiohttp_available() -> bool:
 
 def ensure_config(paths: ObservatoryPaths, registration_token: str | None = None) -> str:
     """Write the closed tuwunel.toml if absent; NEVER overwrite. Returns
-    'kept' when an existing file was preserved, 'created' otherwise."""
-    if paths.toml.exists():
+    'created' for a fresh file, 'healed' when an existing file was missing
+    ``rocksdb_allow_fallocate`` and gained it in place (every other byte
+    preserved), 'kept' otherwise."""
+    if not paths.toml.exists():
+        token = registration_token or config_gen.new_secret(32)
+        content = config_gen.render_tuwunel_toml(
+            database_path=str(paths.db_dir),
+            appservice_dir=str(paths.appservices_dir),
+            registration_token=token,
+        )
+        _write_secret_file(paths.toml, content)
+        return "created"
+    return _heal_fallocate_flag(paths)
+
+
+#: Lines appended under ``[global]`` by the heal path when an existing
+#: tuwunel.toml predates the flag. Comment mirrors render_tuwunel_toml.
+_FALLOCATE_HEAL_BLOCK = (
+    "# RocksDB WAL preallocation (fallocate) balloons archived WALs to their\n"
+    "# full preallocated size on CoW filesystems (btrfs) — disabling it only\n"
+    "# turns off preallocation and is safe on all filesystems.\n"
+    "rocksdb_allow_fallocate = false\n"
+)
+
+
+def _heal_fallocate_flag(paths: ObservatoryPaths) -> str:
+    """Add ``rocksdb_allow_fallocate = false`` to an existing tuwunel.toml
+    that lacks it (pre-flag installs); 'kept' when already present.
+
+    Text-level patch: every other byte (user edits, comments, ordering) is
+    preserved. An explicit user value (even ``true``) is respected — only
+    an absent key is patched. Best-effort: any read/write failure leaves
+    the file untouched and reports 'kept' so provision never fails here.
+    """
+    import re as _re
+
+    try:
+        text = paths.toml.read_text(encoding="utf-8")
+    except OSError:
         return "kept"
-    token = registration_token or config_gen.new_secret(32)
-    content = config_gen.render_tuwunel_toml(
-        database_path=str(paths.db_dir),
-        appservice_dir=str(paths.appservices_dir),
-        registration_token=token,
-    )
-    _write_secret_file(paths.toml, content)
-    return "created"
+    if _re.search(r"(?m)^\s*rocksdb_allow_fallocate\s*=", text):
+        return "kept"
+    header = _re.search(r"(?m)^\[global\]\s*$", text)
+    if header:
+        patched = text[: header.end()] + "\n" + _FALLOCATE_HEAL_BLOCK + text[header.end():]
+    else:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        patched = text + "\n[global]\n" + _FALLOCATE_HEAL_BLOCK
+    try:
+        paths.toml.write_text(patched, encoding="utf-8")
+    except OSError:
+        return "kept"
+    try:
+        paths.toml.chmod(0o600)
+    except Exception:  # noqa: BLE001 — perms best-effort on odd filesystems
+        pass
+    return "healed"
 
 
 def ensure_appservice_registration(paths: ObservatoryPaths) -> str:
