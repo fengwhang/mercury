@@ -1783,6 +1783,37 @@ def observatory_offline() -> bool:
         return False
     return bool(obs.get("offline", False))
 
+#: CLI/TUI session mirror modes (``observatory.mirror_cli``): ``off``
+#: (default — CLI/manual TUI sessions never get rooms), ``observe``
+#: (read-only presence rooms, no transcript content), ``full`` (rooms +
+#: live transcript forwarding). Unknown values fail closed to ``off``.
+MIRROR_CLI_MODES = ("off", "observe", "full")
+
+
+def mirror_cli_mode(mercury_home: str | Path | None = None) -> str:
+    """Config gate: ``observatory.mirror_cli`` in config.yaml, default OFF.
+
+    Reads the given Mercury home's config.yaml directly (same pattern as
+    ``e2ee.e2ee_enabled`` — safe from the sidecar boot path, hermetic in
+    tests). Unreadable/missing config or an unknown value never silently
+    enables mirroring: both degrade to ``"off"``.
+    """
+    try:
+        import yaml
+
+        cfg_path = _mercury_home(mercury_home) / "config.yaml"
+        with open(cfg_path, encoding="utf-8") as f:
+            doc = yaml.safe_load(f) or {}
+    except Exception:  # noqa: BLE001 — unreadable config means no mirroring
+        return "off"
+    if not isinstance(doc, dict):
+        return "off"
+    obs = doc.get("observatory")
+    if not isinstance(obs, dict):
+        return "off"
+    mode = str(obs.get("mirror_cli", "off") or "off").strip().lower()
+    return mode if mode in MIRROR_CLI_MODES else "off"
+
 
 def _refresh_tuwunel_offline(paths: ObservatoryPaths) -> tuple[str, str]:
     """Boot-path binary step: trust the installed binary, never the network.

@@ -648,10 +648,11 @@ class SidecarDaemon:
             store=CronStore.for_hermes_home(self.mercury_home / "hermes"),
         )
         self.manual_runs = ManualRunsWatcher(
-            self.renderer, agent_dir=self.mercury_home / "omp"
+            self.renderer, agent_dir=self.mercury_home / "omp",
+            # observatory.mirror_cli (default off): CLI/manual TUI sessions
+            # never get rooms unless the operator opts into observe/full.
+            mode=provision.mirror_cli_mode(self.mercury_home),
         )
-        self._attach_omp_feeds()
-
     def _attach_omp_feeds(self) -> None:
         """One OmpFeed per live spawned omp RPC child (registry handles).
         Grandchildren render into their own rooms; the subagent→node map

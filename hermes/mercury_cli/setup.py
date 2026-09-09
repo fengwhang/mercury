@@ -3019,6 +3019,20 @@ def _maybe_print_bind_mismatch_action(obs, ts: dict | None) -> None:
         print_warning(line)
 
 
+def _mirror_cli_card_line() -> str:
+    """One-line mirror_cli status for the setup card (never raises)."""
+    try:
+        from observatory.provision import mirror_cli_mode
+        mode = mirror_cli_mode()
+    except Exception:  # noqa: BLE001 — display probe, never kills setup
+        mode = "off"
+    if mode == "full":
+        return "full (CLI/TUI sessions get rooms + transcripts)"
+    if mode == "observe":
+        return "observe (CLI/TUI sessions get presence rooms, no transcripts)"
+    return "off (CLI/TUI sessions never get rooms — opt in: mercury config set observatory.mirror_cli observe|full)"
+
+
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
     """First-login card — ONLY what remains truly manual (FluffyChat login).
 
@@ -3079,6 +3093,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         [
             f"owner account:       {owner_mxid}",
             *password_lines,
+            f"CLI/TUI mirror:      {_mirror_cli_card_line()}",
             "in FluffyChat:       add account → enter the homeserver URL",
             "                     manually → paste the URL above",
             "                     (use your own server, not matrix.org)",

@@ -143,6 +143,9 @@ def make_watcher(
     clock=None,
     process_probe=None,
     quiet_window: float = DEFAULT_QUIET_WINDOW,
+    # This file suites the OPTED-IN mirroring behavior (the constructor
+    # defaults to off); mirroring-off is covered by test_mirror_cli.py.
+    mode: str = "full",
 ):
     state = seed_state(tmp_path)
     client = FakeClient()
@@ -161,6 +164,7 @@ def make_watcher(
             clock=clock or (lambda: 1_000_000.0),
             process_probe=process_probe,
             quiet_window=quiet_window,
+            mode=mode,
         ),
         state,
         client,
