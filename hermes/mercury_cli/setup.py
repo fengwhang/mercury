@@ -3689,6 +3689,243 @@ def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
         return status
 
 
+def _self_test_model() -> tuple[str, str]:
+    """Setup self-test (defect i): resolve the effective model with the
+    exact precedence the observatory path uses (explicit env →
+    model.default/model → dict split) and prove it routes to a configured
+    provider. Returns ``(model, provider)``; raises with the
+    ``mercury model`` remedy when nothing resolves — the silent glm
+    fallback can never pass as configured."""
+    import os as _os
+
+    from mercury_cli.config import split_model_config_default
+    from mercury_cli.runtime_provider import resolve_runtime_provider
+
+    cfg = load_config() or {}
+    model_cfg = cfg.get("model") or {}
+    if isinstance(model_cfg, str):
+        cfg_model = model_cfg
+    else:
+        _raw = model_cfg.get("default") or model_cfg.get("model") or ""
+        if isinstance(_raw, dict):
+            cfg_model, _ = split_model_config_default(_raw)
+        else:
+            cfg_model = str(_raw or "")
+    env_model = _os.environ.get("HERMES_INFERENCE_MODEL", "").strip()
+    effective = env_model or cfg_model.strip()
+    if not effective:
+        raise ValueError(
+            "no model configured (model.default empty and "
+            "HERMES_INFERENCE_MODEL unset) — run `mercury model` first")
+    runtime = resolve_runtime_provider(requested=None, target_model=effective)
+    provider = str(runtime.get("provider") or "").strip() or "unknown"
+    return effective, provider
+
+
+def _inject_ping(timeout: float = 20.0) -> str:
+    """Headless inject ping (defect i): one ``ping`` turn through the live
+    gateway control socket. Returns ``"passed: <reply-head>"``,
+    ``"skipped: <reason>"`` (no gateway/socket — legitimate during setup),
+    or ``"failed: <reason>"``. Never raises, never prompts."""
+    try:
+        from observatory.gateway_transport import ControlSocketGatewayTransport
+        from observatory.provision import _mercury_home
+    except Exception as exc:  # noqa: BLE001 — transport unavailable
+        return f"skipped: gateway transport unavailable ({exc})"
+    try:
+        import asyncio as _asyncio
+
+        home = _mercury_home(None)
+        transport = ControlSocketGatewayTransport(home, timeout=timeout)
+
+        async def _ping() -> str:
+            return await transport.prompt("ping")
+
+        reply = _asyncio.run(_ping())
+        head = str(reply or "").strip().splitlines()[0][:80] if str(reply or "").strip() else ""
+        if not head:
+            return "failed: gateway answered inject without a reply"
+        return f"passed: {head}"
+    except Exception as exc:  # noqa: BLE001 — ping failure is a report line
+        text = str(exc)
+        if "timeout" in text.lower() or "no gateway" in text.lower() \
+                or "refused" in text.lower() or "no such file" in text.lower():
+            return f"skipped: {exc}"
+        return f"failed: {exc}"
+
+
+def _synthetic_transaction() -> str:
+    """Acceptance synthetic transaction (defect v): one synthetic txn
+    through a fresh intake — accepted with zero recorded appservice
+    errors. Returns ``"passed"`` / ``"failed: ..."`` / ``"skipped: ..."``.
+    Never raises."""
+    try:
+        import asyncio as _asyncio
+
+        from observatory.appservice import (
+            TransactionIntake,
+            as_token_from_registration,
+        )
+        from observatory.config_gen import ObservatoryPaths
+        from observatory.provision import _mercury_home
+    except Exception as exc:  # noqa: BLE001 — stack unavailable (no aiohttp?)
+        return f"skipped: appservice stack unavailable ({exc})"
+    try:
+        paths = ObservatoryPaths(_mercury_home(None))
+        intake = TransactionIntake(
+            as_token=as_token_from_registration(
+                paths.appservice_registration))
+
+        async def _push() -> None:
+            await intake.accept("setup-acceptance", [{
+                "type": "m.room.message", "sender": "@setup:acceptance",
+                "content": {"msgtype": "m.text", "body": "acceptance ping"},
+            }])
+
+        _asyncio.run(_push())
+        errors = intake.error_count()
+        if errors:
+            return f"failed: {errors} appservice errors recorded"
+        return "passed"
+    except Exception as exc:  # noqa: BLE001 — report, never raise
+        return f"failed: {exc}"
+
+
+def _run_observatory_acceptance(obs, status: dict, ts: dict | None) -> bool:
+    """Ordered setup acceptance (VM report): dual-bind assert, crypto
+    assert (+live-gate hint), model resolve + inject ping,
+    sidecar-encrypted room, admin ping, synthetic transaction, poisoned
+    rooms (+converge offer). The login card prints AFTER this (card
+    last). Every gate degrades to fail/skip — never raises. Returns
+    all-pass."""
+    print_header("Observatory acceptance")
+    results: list[tuple[str, str]] = []
+
+    def _report(name: str, outcome: str) -> None:
+        results.append((name, outcome))
+        if outcome.startswith("passed"):
+            print_success(f"[acceptance] {name}: {outcome}")
+        elif outcome.startswith("skipped"):
+            print_info(f"[acceptance] {name}: {outcome}")
+        else:
+            print_error(f"[acceptance] {name}: {outcome}")
+
+    # 1. dual-bind assert.
+    try:
+        bound = _read_bind_list(obs) or []
+        loops = {"127.0.0.1", "::1", "localhost"}
+        if isinstance(ts, dict) and ts.get("up") and ts.get("ip"):
+            ip = str(ts["ip"]).strip()
+            if ip in bound and any(b in loops for b in bound):
+                _report("dual-bind", f"passed: [{', '.join(bound)}]")
+            else:
+                _report("dual-bind",
+                        f"failed: tailnet up but bind is [{', '.join(bound) or 'unknown'}] "
+                        "— answer Yes at the bind prompt, then restart + re-run setup")
+        else:
+            _report("dual-bind",
+                    f"passed: tailnet down, localhost-only expected ([{', '.join(bound) or 'unknown'}])")
+    except Exception as exc:  # noqa: BLE001 — gate, never kills setup
+        _report("dual-bind", f"failed: {exc}")
+
+    # 2. crypto assert (+live-gate hint).
+    try:
+        crypto_fn = getattr(obs, "assert_crypto_stack", None)
+        if crypto_fn is None:
+            from observatory.provision import assert_crypto_stack as crypto_fn
+        ok, missing = crypto_fn()
+        if ok:
+            _report("crypto", "passed: olm+mautrix.crypto+aiosqlite+aiohttp import "
+                    "(live: python -m observatory.scripts.e2ee_live_gate --fresh)")
+        else:
+            _report("crypto", f"failed: missing {', '.join(missing)} "
+                    "— E2EE stays ON; retry: mercury setup observatory")
+    except Exception as exc:  # noqa: BLE001
+        _report("crypto", f"failed: {exc}")
+
+    # 3. model resolve + inject ping.
+    try:
+        model, provider = _self_test_model()
+        ping = _inject_ping()
+        _report("model", f"passed: {model} ({provider}); inject ping: {ping}"
+                if not ping.startswith("failed") else
+                f"failed: {model} ({provider}) resolves but inject ping: {ping}")
+    except Exception as exc:  # noqa: BLE001
+        _report("model", f"failed: {exc}")
+
+    # 4. sidecar-encrypted room.
+    try:
+        enc_fn = getattr(obs, "gateway_room_encrypted", None)
+        if enc_fn is None:
+            from observatory.provision import gateway_room_encrypted as enc_fn
+        verdict = enc_fn()
+        if verdict is True:
+            _report("encrypted-room", "passed: gateway room is sidecar-encrypted")
+        elif verdict is None:
+            _report("encrypted-room", "skipped: no gateway room yet (converges on sidecar start)")
+        else:
+            _report("encrypted-room", "failed: gateway room exists but is not sidecar-encrypted "
+                    "— purge + re-converge, or wipe + re-provision")
+    except Exception as exc:  # noqa: BLE001
+        _report("encrypted-room", f"failed: {exc}")
+
+    # 5. admin ping (validate + self-heal).
+    try:
+        if not status.get("homeserver_reachable"):
+            _report("admin", "skipped: homeserver unreachable")
+        else:
+            heal_fn = getattr(obs, "heal_owner_admin_token", None)
+            if heal_fn is None:
+                from observatory.provision import heal_owner_admin_token as heal_fn
+            _report("admin", f"passed: token {heal_fn()}")
+    except Exception as exc:  # noqa: BLE001
+        _report("admin", f"failed: {exc} — re-login: mercury setup observatory")
+
+    # 6. synthetic transaction.
+    _report("synthetic-txn", _synthetic_transaction())
+
+    # 7. poisoned rooms (+converge offer).
+    try:
+        scan_fn = getattr(obs, "scan_poisoned_rooms", None)
+        if scan_fn is None:
+            from observatory.provision import scan_poisoned_rooms as scan_fn
+        problems = scan_fn()
+        if problems is None:
+            _report("poison-scan", "skipped: unscannable (unreachable or unprovisioned)")
+        elif not problems:
+            _report("poison-scan", "passed: no plaintext-history rooms")
+        else:
+            names = ", ".join(f"{p['key']} ({p['status']})" for p in problems)
+            print_error(f"[acceptance] poison-scan: failed: {names}")
+            results.append(("poison-scan", f"failed: {names}"))
+            try:
+                if prompt_yes_no(
+                    f"Purge {len(problems)} poisoned rooms and re-converge encrypted?",
+                    default=False,
+                ):
+                    fix_fn = getattr(obs, "reconverge_poisoned_rooms", None)
+                    if fix_fn is None:
+                        from observatory.provision import (
+                            reconverge_poisoned_rooms as fix_fn,
+                        )
+                    summary = fix_fn()
+                    print_success(f"[acceptance] reconverge: {summary}")
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 — offer never kills setup
+                print_error(f"[acceptance] reconverge failed: {exc}")
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # noqa: BLE001 — gate, never kills setup
+        _report("poison-scan", f"failed: {exc}")
+
+    all_pass = all(outcome.startswith(("passed", "skipped")) for _, outcome in results)
+    if all_pass:
+        print_success("[acceptance] all gates pass or skip — login card next.")
+    else:
+        print_error("[acceptance] failures above need action — login card still prints last.")
+    return all_pass
+
 def setup_observatory(config: dict, *, quick: bool = False):
     """Wizard section: the bundled Matrix observatory (Tuwunel homeserver
     + sidecar). Spec D1/D2 — default on, closed registration, localhost.
@@ -3777,9 +4014,18 @@ def setup_observatory(config: dict, *, quick: bool = False):
 
     if status.get("provisioned"):
         ts = _tailscale_status(obs)
-        _print_observatory_setup_card(status, ts)
         _offer_tailscale_bind(obs, ts)
-        # Post-offer re-check: a declined/failed bind (or a standalone
+        # Post-bind refresh: the offer may have rewritten the bind, so the
+        # acceptance gates and the login card see the fresh URL.
+        try:
+            status = obs.status_summary()
+        except Exception:  # noqa: BLE001 — keep the pre-bind status
+            pass
+        # Acceptance BEFORE the login card (card last): dual-bind, crypto,
+        # model+ping, encrypted room, admin, synthetic txn, poison scan.
+        _run_observatory_acceptance(obs, status, ts)
+        _print_observatory_setup_card(status, ts)
+        # Post-acceptance re-check: a declined/failed bind (or a standalone
         # `mercury setup observatory` re-run) still strands phones on a
         # localhost-only tuwunel — say so explicitly.
         _maybe_print_bind_mismatch_action(obs, ts)

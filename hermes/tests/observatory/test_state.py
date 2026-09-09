@@ -224,3 +224,10 @@ class TestMatrixIdUpsert:
     def test_set_id_unknown_node_fails_hard(self, store: ObservatoryState):
         with pytest.raises(StateError):
             store.set_room_id("ghost", "!r")
+
+    def test_delete_meta_removes_entry(self, store: ObservatoryState):
+        store.set_meta("room:gw", "!r1")
+        assert store.delete_meta("room:gw") is True
+        with pytest.raises(StateError):
+            store.get_meta("room:gw")
+        assert store.delete_meta("room:gw") is False

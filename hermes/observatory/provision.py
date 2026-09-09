@@ -855,6 +855,195 @@ def wipe_observatory_data(
     return summary
 
 
+# --- poisoned rooms (defect iii): detect + converge --------------------------------
+# Pre-fix rooms were created plaintext (encryption as a follow-up PUT, or
+# never) — their early history stays undecryptable forever. The setup
+# acceptance sequence scans for them and offers re-convergence (purge +
+# recreate encrypted from the start).
+
+
+def gateway_room_encrypted(
+    mercury_home: str | Path | None = None,
+) -> bool | None:
+    """Setup-acceptance assert: is the gateway room sidecar-encrypted?
+
+    True when the gateway room id matches the ``crypt:`` registry (created
+    encrypted by the sidecar path), False when it exists but is
+    unregistered, None when unknown (unprovisioned / no room yet).
+    Never raises."""
+    try:
+        from observatory.state import ObservatoryState, StateError
+
+        paths = ObservatoryPaths(_mercury_home(mercury_home))
+        state = ObservatoryState(paths.root / "state.db")
+        try:
+            gw = state.get("gw")
+            room_id = gw.get("room_id") or ""
+            if not room_id:
+                return None
+            try:
+                return bool(state.get_meta("crypt:gw") == room_id)
+            except StateError:
+                return False
+        finally:
+            state.close()
+    except Exception:  # noqa: BLE001 — probe, never kills setup
+        return None
+
+
+def _poison_scan_client(home: Path, paths: ObservatoryPaths):
+    """Live MatrixClient for the poison scan (admin-401 self-healing)."""
+    from observatory.appservice import as_token_from_registration
+    from observatory.matrix_client import MatrixClient
+
+    doc = json.loads(paths.owner_credentials.read_text(encoding="utf-8"))
+    bound = _bound_base_url(paths)
+
+    async def _hook() -> str | None:
+        try:
+            stored = read_owner_credentials(paths) or {}
+            _refresh_owner_admin_token(paths, stored, http=_http_json)
+            return str(stored.get("access_token") or "") or None
+        except Exception:  # noqa: BLE001 — hook failure = original error
+            return None
+
+    return MatrixClient(
+        bound, as_token_from_registration(paths.appservice_registration),
+        server_name=str(_load_toml(paths.toml).get("global", {}).get(
+            "server_name", config_gen.SERVER_NAME_DEFAULT)),
+        admin_token=str(doc.get("access_token") or ""),
+        on_admin_401=_hook,
+    )
+
+
+def scan_poisoned_rooms(
+    mercury_home: str | Path | None = None,
+) -> list[dict[str, Any]] | None:
+    """Live poison scan: None when unscannable (unprovisioned, homeserver
+    unreachable, client unavailable), else the problem-room list (possibly
+    empty). Never raises — failures degrade to None with a debug log."""
+    import asyncio as _asyncio
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
+    try:
+        from observatory import e2ee as _e2ee
+        from observatory.state import ObservatoryState
+
+        home = _mercury_home(mercury_home)
+        paths = ObservatoryPaths(home)
+        if not paths.toml.is_file() or not paths.owner_credentials.is_file():
+            return None
+        if not _homeserver_reachable(_bound_base_url(paths)):
+            return None
+        try:
+            doc = json.loads(paths.owner_credentials.read_text(encoding="utf-8"))
+            owner_mxid = str(doc.get("user_id") or "")
+            gateway_mxid = ""
+            state = ObservatoryState(paths.root / "state.db")
+            try:
+                rooms: list[tuple[str, str]] = []
+                for row in state.get_live():
+                    if row.get("room_id"):
+                        rooms.append((row["node_id"], str(row["room_id"])))
+                try:
+                    rooms.append(("directives",
+                                  state.get_meta("room:directives")))
+                except Exception:  # noqa: BLE001 — no directives room yet
+                    pass
+                try:
+                    gateway_mxid = str(state.get("gw")["mxid"])
+                except Exception:  # noqa: BLE001 — no gateway node yet
+                    pass
+            finally:
+                state.close()
+        except Exception as exc:  # noqa: BLE001 — state unreadable
+            _log.debug("poison scan skipped (state): %s", exc)
+            return None
+        if not rooms:
+            return []
+        sender = gateway_mxid or owner_mxid
+
+        async def _scan():
+            client = _poison_scan_client(home, paths)
+            try:
+                return await _e2ee.detect_poisoned_rooms(
+                    client, rooms, sender=sender)
+            finally:
+                try:
+                    await client.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        return _asyncio.run(_scan())
+    except Exception as exc:  # noqa: BLE001 — scan never kills setup
+        _log.debug("poison scan skipped: %s", exc)
+        return None
+
+
+def reconverge_poisoned_rooms(
+    mercury_home: str | Path | None = None,
+) -> dict[str, Any]:
+    """Purge poisoned rooms + recreate them encrypted (setup converge offer).
+
+    Scans, admin-purges each problem room, clears its state ids (node
+    columns + room/crypt metas) so the renderer recreates it, then runs
+    the encrypted converge. Returns ``{"purged": [...], "converge": str}``.
+    Raises ProvisionError when unscannable or a purge fails (loud — a
+    half-converge must never pass as clean).
+    """
+    import asyncio as _asyncio
+
+    from observatory.state import ObservatoryState, StateError
+
+    home = _mercury_home(mercury_home)
+    paths = ObservatoryPaths(home)
+    problems = scan_poisoned_rooms(home)
+    if problems is None:
+        raise ProvisionError(
+            "poison scan unscannable (unprovisioned or homeserver "
+            "unreachable) — converge later with: mercury setup observatory")
+    if not problems:
+        return {"purged": [], "converge": "already-clean"}
+    bound = _bound_base_url(paths)
+    if not _homeserver_reachable(bound):
+        raise ProvisionError("homeserver unreachable — cannot purge poisoned rooms")
+
+    async def _purge() -> list[str]:
+        client = _poison_scan_client(home, paths)
+        purged: list[str] = []
+        try:
+            for problem in problems:
+                await client.delete_room(str(problem["room_id"]))
+                purged.append(str(problem["room_id"]))
+            return purged
+        finally:
+            try:
+                await client.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        purged = _asyncio.run(_purge())
+    except Exception as exc:  # noqa: BLE001 — purge failure is loud
+        raise ProvisionError(f"poisoned-room purge failed: {exc}") from exc
+    state = ObservatoryState(paths.root / "state.db")
+    try:
+        for problem in problems:
+            key = str(problem["key"])
+            try:
+                state.set_room_id(key, "")
+            except StateError:
+                pass
+            for prefix in ("room:", "crypt:"):
+                try:
+                    state.delete_meta(prefix + key)
+                except Exception:  # noqa: BLE001 — best-effort meta clear
+                    pass
+    finally:
+        state.close()
+    return {"purged": purged, "converge": verify_and_converge_gateway(home)}
+
 # --- steps ---------------------------------------------------------------------
 
 def ensure_config(paths: ObservatoryPaths, registration_token: str | None = None,
