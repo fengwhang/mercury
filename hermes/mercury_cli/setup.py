@@ -3349,6 +3349,46 @@ def _offer_owner_password_rotate(obs) -> None:
     print_success("Owner password rotated (mirrored to .env — paste it into FluffyChat).")
 
 
+def _maybe_heal_owner_env_mirror(obs) -> None:
+    """Setup-time .env-vs-credentials consistency check (warn + heal).
+
+    The credentials file is the source of truth; a stale
+    MATRIX_OBS_OWNER_PASSWORD in .env authenticates nowhere and leaves the
+    user unable to tell which credential works. On mismatch: warn naming
+    the keys, heal from the credentials file, confirm. Never prompts and
+    never kills the wizard — every failure degrades to a printed hint.
+    Doubles without the provision helpers (older fakes) skip silently.
+    """
+    describe = getattr(obs, "describe_owner_env_mismatch", None)
+    heal = getattr(obs, "heal_owner_env", None)
+    if describe is None or heal is None:
+        return
+    try:
+        mismatch = describe()
+    except Exception:
+        return
+    if not isinstance(mismatch, dict) or "error" in mismatch:
+        return
+    missing = list(mismatch.get("missing") or [])
+    drifted = missing + [
+        k for k in (mismatch.get("stale") or []) if k not in missing
+    ]
+    if not drifted:
+        return
+    print_warning(
+        "Observatory .env mirror disagrees with owner-credentials.json "
+        f"({', '.join(drifted)}) — healing from the credentials file."
+    )
+    try:
+        healed = heal()
+    except Exception as exc:  # noqa: BLE001 — hint, never kills setup
+        print_error(f"Could not heal the .env owner mirror: {exc}")
+        print_info("Fix it any time with: mercury setup observatory")
+        return
+    if healed:
+        print_success(f"Healed the .env owner mirror ({', '.join(healed)}).")
+
+
 def setup_observatory(config: dict, *, quick: bool = False):
     """Wizard section: the bundled Matrix observatory (Tuwunel homeserver
     + sidecar). Spec D1/D2 — default on, closed registration, localhost.
@@ -3380,6 +3420,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
 
     _observatory_state_lines(status)
     print()
+    _maybe_heal_owner_env_mirror(obs)
 
     # Reconfigure gate: already provisioned → one-line summary + ask
     # (default NO keeps everything, fast re-run). Fresh installs fall
@@ -3513,6 +3554,7 @@ def run_headless_observatory_setup() -> None:
         obs.provision_in_wizard()
         _run_observatory_auto_steps(obs)
         print_success("Observatory provisioning complete.")
+        _maybe_heal_owner_env_mirror(obs)
     except KeyboardInterrupt:
         raise
     except Exception as exc:
