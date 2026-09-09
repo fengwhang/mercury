@@ -670,6 +670,64 @@ def run_gui_uninstall(args):
     print()
 
 
+def _observatory_data_present(mercury_home) -> bool:
+    """True when tuwunel data exists under the Mercury home. Lazy import —
+    this module must stay importable under a bare system Python."""
+    try:
+        from observatory.provision import observatory_data_present
+        return bool(observatory_data_present(mercury_home))
+    except Exception:  # noqa: BLE001 — probe, never kills uninstall
+        return False
+
+
+def _wipe_observatory(mercury_home, mode: str) -> None:
+    """Archive/annihilate tuwunel data (DB, WALs, credentials, units)."""
+    from observatory.provision import wipe_observatory_data
+    summary = wipe_observatory_data(mercury_home, mode=mode)
+    moved = summary.get("moved" if mode == "archive" else "deleted") or []
+    log_success(
+        f"Observatory data {mode}d "
+        f"({', '.join(moved) or 'nothing present'})")
+    if summary.get("units_removed"):
+        log_success(
+            f"Removed units: {', '.join(summary['units_removed'])}")
+
+
+def _remove_observatory_units_only() -> None:
+    """Full uninstall: the home rmtree covers data, but the user units live
+    outside it — stop + remove them so no zombie homeserver survives."""
+    try:
+        from observatory.provision import _stop_and_remove_units
+        removed = _stop_and_remove_units()
+        if removed:
+            log_success(f"Removed observatory units: {', '.join(removed)}")
+    except Exception as e:  # noqa: BLE001 — best-effort, never kills uninstall
+        log_warn(f"Could not remove observatory units: {e}")
+
+
+def _ask_observatory_wipe(mercury_home) -> str | None:
+    """Keep-data uninstall: explicit archive/annihilate/keep for tuwunel
+    data — residual installs break clean reinstalls, so keeping is a
+    conscious choice, never the silent default. Returns the mode or None."""
+    if not _observatory_data_present(mercury_home):
+        return None
+    print()
+    print(color("Observatory data found (tuwunel DB, credentials, units).", Colors.YELLOW, Colors.BOLD))
+    print("Residual installs break clean reinstalls — choose explicitly:")
+    print()
+    print("  1) " + color("Keep", Colors.GREEN) + " - Leave tuwunel data as-is")
+    print("  2) " + color("Archive", Colors.CYAN) + " - Move it aside (timestamped, restorable by hand)")
+    print("  3) " + color("Annihilate", Colors.RED) + " - Delete it permanently")
+    print()
+    try:
+        choice = input(color("Select option [1/2/3]: ", Colors.BOLD)).strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        print("Cancelled.")
+        raise SystemExit(1)
+    return {"2": "archive", "3": "annihilate"}.get(choice)
+
+
 def run_uninstall(args):
     """
     Run the uninstall process.
@@ -719,6 +777,7 @@ def run_uninstall(args):
             full_uninstall=full_uninstall,
             remove_profiles=False,
             named_profiles=named_profiles,
+            observatory_wipe=None,
         )
         return
 
@@ -791,6 +850,12 @@ def run_uninstall(args):
             return
         remove_profiles = resp in {"y", "yes"}
 
+    # Keep-data uninstall with tuwunel data present: explicit archive /
+    # annihilate / keep — residual installs break clean reinstalls.
+    observatory_wipe = None
+    if not full_uninstall:
+        observatory_wipe = _ask_observatory_wipe(mercury_home)
+
     # Final confirmation
     print()
     if full_uninstall:
@@ -804,6 +869,9 @@ def run_uninstall(args):
             ))
     else:
         print("This will remove the Mercury code but keep your configuration and data.")
+        if observatory_wipe:
+            print(color(f"   Observatory data: {observatory_wipe} tuwunel data "
+                        "(DB, credentials, units).", Colors.YELLOW))
     
     print()
     try:
@@ -824,6 +892,7 @@ def run_uninstall(args):
         full_uninstall=full_uninstall,
         remove_profiles=remove_profiles,
         named_profiles=named_profiles,
+        observatory_wipe=observatory_wipe,
     )
 
 
@@ -833,7 +902,7 @@ def _print_uninstall_dry_run(*, project_root: Path, mercury_home: Path, full_uni
     print(color("Dry run: no files, services, or environment entries will be changed.", Colors.CYAN, Colors.BOLD))
     print()
     print(color("Would inspect/remove:", Colors.YELLOW, Colors.BOLD))
-    print("  • Gateway services and standalone gateway processes")
+    print("  • Observatory user units (tuwunel homeserver + sidecar)")
     print("  • Mercury PATH entries from shell configs / Windows User PATH")
     print("  • Mercury wrapper scripts and Mercury-managed node/npm/npx symlinks")
     print("  • Desktop Chat GUI artifacts")
@@ -848,7 +917,8 @@ def _print_uninstall_dry_run(*, project_root: Path, mercury_home: Path, full_uni
                     print(f"    - {prof.name}: {prof.path}")
     else:
         print(f"  • Keep Mercury config/data: {mercury_home}")
-    print()
+        if _observatory_data_present(mercury_home):
+            print("  • Observatory tuwunel data: interactive uninstall asks (keep/archive/annihilate)")
 
 
 def _perform_uninstall(
@@ -858,12 +928,15 @@ def _perform_uninstall(
     full_uninstall: bool,
     remove_profiles: bool,
     named_profiles: list,
+    observatory_wipe: str | None = None,
 ) -> None:
     """Execute the uninstall steps. Shared by the interactive and ``--yes``
     paths so the destructive sequence lives in exactly one place.
 
-    Steps: stop gateway → strip PATH (rc files + Windows registry) → remove the
-    ``mercury`` wrapper + node symlinks → remove the desktop Chat GUI artifacts →
+    Steps: stop gateway → observatory units/data (full: drop the zombie
+    units; keep-data: the explicit archive/annihilate choice, if any) →
+    strip PATH (rc files + Windows registry) → remove the ``mercury``
+    wrapper + node symlinks → remove the desktop Chat GUI artifacts →
     delete the code checkout → (Windows) remove PortableGit/Node → optionally
     wipe ``$HERMES_HOME`` data and named profiles on full uninstall.
     """
@@ -875,6 +948,17 @@ def _perform_uninstall(
     log_info("Checking for running gateway...")
     if not uninstall_gateway_service():
         log_info("No gateway service or processes found")
+
+    # 1b. Observatory: full uninstall drops the zombie user units (the home
+    #     rmtree below cannot reach them); keep-data honors the explicit
+    #     archive/annihilate choice, if any. Never kills uninstall on error.
+    try:
+        if full_uninstall:
+            _remove_observatory_units_only()
+        elif observatory_wipe in ("archive", "annihilate"):
+            _wipe_observatory(mercury_home, observatory_wipe)
+    except Exception as e:  # noqa: BLE001 — best-effort, never kills uninstall
+        log_warn(f"Observatory cleanup incomplete: {e}")
     
     # 2. Remove PATH entries from shell configs (POSIX) AND from the Windows
     #    User-scope registry.  Both helpers no-op on the wrong platform so we

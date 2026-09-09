@@ -3512,6 +3512,49 @@ def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
         )
         if new_pw is not None:
             print_error("Password change not applied — resolve the identity change first.")
+        wipe_choice = prompt_choice(
+            f"Wipe tuwunel data and re-provision as @{new_local}:{new_server} "
+            "(the ONLY way to change identity — residual installs break reinstalls)?",
+            [
+                "Keep existing identity",
+                "Archive tuwunel data aside + re-provision with the new identity",
+                "Annihilate tuwunel data + re-provision with the new identity",
+            ],
+            0,
+        )
+        if wipe_choice != 0:
+            mode = "archive" if wipe_choice == 1 else "annihilate"
+            wipe = getattr(obs, "wipe_observatory_data", None)
+            if wipe is None:
+                print_error(
+                    "Wipe is unavailable in this install — keeping existing credentials."
+                )
+            else:
+                try:
+                    summary = wipe(mode=mode)
+                    moved = (summary.get("moved") if mode == "archive"
+                             else summary.get("deleted")) or []
+                    print_success(
+                        f"Observatory data {mode}d "
+                        f"({', '.join(moved) or 'nothing present'})."
+                    )
+                    obs.provision_in_wizard(
+                        server_name=new_server,
+                        owner_localpart=new_local,
+                        owner_password=new_pw,
+                    )
+                    _run_observatory_auto_steps(obs)
+                    refreshed = obs.status_summary()
+                    print_success(
+                        f"Observatory re-provisioned as @{new_local}:{new_server}."
+                    )
+                    return refreshed
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — wipe failure is loud
+                    print_error(f"Re-provisioning failed: {exc}")
+                    print_info("Retry any time with: mercury setup observatory")
+                    return status
         print_info("Keeping the existing owner credentials.")
         try:
             obs.provision_in_wizard()

@@ -715,6 +715,146 @@ def rotate_owner_password(
     return "rotated"
 
 
+# --- wipe (archive vs annihilate) -------------------------------------------------
+#
+# Residual installs break clean reinstalls (stale server_name pins, orphaned
+# MXIDs, device keys bound to a dead DB). Wiping is EXPLICIT and two-flavored:
+# ``archive`` moves tuwunel data aside under a timestamped dir (forensics /
+# hand-restore); ``annihilate`` deletes it. Both stop the units, remove the
+# generated unit files, and strip the stale .env owner mirror (keys that
+# authenticate nowhere after a wipe). The tuwunel BINARY + logs are install
+# artifacts, not data — both modes keep them.
+#
+
+#: Wipeable tuwunel data, resolved per home: toml (identity pin), DB dir
+#: (RocksDB + archived WALs), owner credentials, appservice registrations
+#: (tokens), renderer state (room/space ids of deleted rooms), crypto stores
+#: (device keys bound to the dead DB).
+def observatory_wipe_targets(paths: ObservatoryPaths) -> list[Path]:
+    """Existing wipe-target paths under the observatory root (in wipe order)."""
+    candidates = [
+        paths.toml,
+        paths.db_dir,
+        paths.owner_credentials,
+        paths.appservices_dir,
+        paths.root / "state.db",
+        paths.root / "crypto",
+    ]
+    return [p for p in candidates if p.exists()]
+
+
+def observatory_data_present(mercury_home: str | Path | None = None) -> bool:
+    """True when any wipeable tuwunel data exists (wizard gate). Never raises."""
+    try:
+        return bool(observatory_wipe_targets(
+            ObservatoryPaths(_mercury_home(mercury_home))))
+    except Exception:  # noqa: BLE001 — probe, never kills the caller
+        return False
+
+
+def _stop_and_remove_units(*, unit_dir: Path | None = None) -> list[str]:
+    """Stop + remove the homeserver/sidecar user units. Best-effort: every
+    failure degrades silently (containers have no systemd); returns the unit
+    names actually removed."""
+    removed: list[str] = []
+    units = [HOMESERVER_UNIT_NAME, SIDECAR_UNIT_NAME]
+    if _systemctl_available():
+        for unit in units:
+            try:
+                _run_systemctl(["stop", unit], check=False)
+                _run_systemctl(["disable", unit], check=False)
+            except Exception:  # noqa: BLE001 — best-effort stop
+                pass
+    udir = unit_dir if unit_dir is not None else (
+        Path.home() / ".config" / "systemd" / "user")
+    for unit in units:
+        try:
+            target = udir / unit
+            if target.is_file() or target.is_symlink():
+                target.unlink()
+                removed.append(unit)
+        except Exception:  # noqa: BLE001 — best-effort removal
+            pass
+    if removed and _systemctl_available():
+        try:
+            _run_systemctl(["daemon-reload"], check=False)
+        except Exception:  # noqa: BLE001
+            pass
+    return removed
+
+
+def _strip_owner_env_mirror(home: Path) -> list[str]:
+    """Drop MATRIX_OBS_OWNER_* lines from $MERCURY_HOME/.env (atomic).
+    Returns stripped keys; missing file/keys are a no-op (never raises)."""
+    try:
+        env_path = home / ".env"
+        if not env_path.is_file():
+            return []
+        lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        kept = [ln for ln in lines
+                if not _env_line_defines_key(ln, ENV_OWNER_USER_ID)
+                and not _env_line_defines_key(ln, ENV_OWNER_PASSWORD)]
+        if len(kept) == len(lines):
+            return []
+        _atomic_write_text(env_path, "".join(kept))
+        return [ENV_OWNER_USER_ID, ENV_OWNER_PASSWORD]
+    except Exception:  # noqa: BLE001 — best-effort strip
+        return []
+
+
+def wipe_observatory_data(
+    mercury_home: str | Path | None = None,
+    *,
+    mode: str,
+    unit_dir: Path | None = None,
+) -> dict:
+    """Wipe tuwunel data: ``mode="archive"`` moves it aside (timestamped dir
+    under the observatory root), ``mode="annihilate"`` deletes it. Both stop
+    the units, remove generated unit files, and strip the stale .env owner
+    mirror. Keeps the tuwunel binary + logs. Returns a summary dict
+    (``mode``, ``moved``/``deleted``, ``archived_to``, ``units_removed``,
+    ``env_stripped``). Raises ProvisionError on an unknown mode; per-target
+    failures raise (loud — a half-wipe must never pass as clean).
+    """
+    if mode not in ("archive", "annihilate"):
+        raise ProvisionError(
+            f"unknown wipe mode {mode!r} — expected 'archive' or 'annihilate'")
+    home = _mercury_home(mercury_home)
+    paths = ObservatoryPaths(home)
+    targets = observatory_wipe_targets(paths)
+    udir = unit_dir if unit_dir is not None else (
+        Path.home() / ".config" / "systemd" / "user")
+    # Snapshot generated unit files BEFORE removal so the archive stays
+    # hand-restorable (units re-generate on provision; copies are forensics).
+    unit_copies: dict[str, str] = {}
+    for unit in (HOMESERVER_UNIT_NAME, SIDECAR_UNIT_NAME):
+        try:
+            unit_copies[unit] = (udir / unit).read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001 — absent unit, nothing to snapshot
+            pass
+    removed_units = _stop_and_remove_units(unit_dir=unit_dir)
+    summary: dict = {"mode": mode, "units_removed": removed_units,
+                     "moved": [], "deleted": []}
+    if mode == "archive":
+        dest = paths.root / time.strftime("wiped-archive-%Y%m%d-%H%M%S")
+        dest.mkdir(parents=True, exist_ok=False)
+        for unit, text in unit_copies.items():
+            (dest / unit).write_text(text, encoding="utf-8")
+        summary["archived_to"] = str(dest)
+        for target in targets:
+            shutil.move(str(target), str(dest / target.name))
+            summary["moved"].append(target.name)
+    else:
+        for target in targets:
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+            summary["deleted"].append(target.name)
+    summary["env_stripped"] = _strip_owner_env_mirror(home)
+    return summary
+
+
 # --- steps ---------------------------------------------------------------------
 
 def ensure_config(paths: ObservatoryPaths, registration_token: str | None = None,
