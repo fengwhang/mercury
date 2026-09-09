@@ -141,3 +141,23 @@ def test_staged_dir_wins_on_name_clash(tmp_path):
     with tarfile.open(repo / "dist" / "mercury-9.9.9-x64.tar.gz", "r:gz") as tf:
         member = "mercury/wheels/python_olm-3.2.16-cp313-cp313-linux_x86_64.whl"
         assert tf.extractfile(member).read() == b"NEW-STAGED"
+
+
+def test_both_arch_olm_wheels_stage_together(tmp_path):
+    """Both-arch olm wheels stay staged in the tarball; arch selection is
+    the INSTALLER's job (install.sh arch filter + update_release
+    _split_bundled_wheels), not the packager's. Regression: trimming the
+    tarball to one arch would re-break the other arch's offline install."""
+    repo = _sandbox_repo(tmp_path)
+    wheels = repo / "dist" / "wheels"
+    wheels.mkdir(parents=True)
+    (wheels / "python_olm-3.2.16-cp313-cp313-linux_x86_64.whl").write_bytes(b"PK-X64")
+    (wheels / "python_olm-3.2.16-cp313-cp313-linux_aarch64.whl").write_bytes(b"PK-ARM")
+    (wheels / "mautrix-0.21.1-py3-none-any.whl").write_bytes(b"PK")
+    proc = _run_make_dist(repo, {})
+    assert proc.returncode == 0, proc.stderr
+    with tarfile.open(repo / "dist" / "mercury-9.9.9-x64.tar.gz", "r:gz") as tf:
+        names = tf.getnames()
+    assert "mercury/wheels/python_olm-3.2.16-cp313-cp313-linux_x86_64.whl" in names
+    assert "mercury/wheels/python_olm-3.2.16-cp313-cp313-linux_aarch64.whl" in names
+    assert "mercury/wheels/mautrix-0.21.1-py3-none-any.whl" in names

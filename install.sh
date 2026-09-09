@@ -264,6 +264,26 @@ for name, pin in pins.items():
 EOF
 }
 
+# Arch-selected vendored python-olm wheel (mirrors
+# hermes/observatory/provision.py _vendored_olm_wheel: uname -m maps
+# x86_64/amd64 -> x86_64, aarch64/arm64 -> aarch64). Echoes the single
+# this-arch wheel path, or nothing when the arch is unknown or no wheel
+# matches — callers skip silently then (a glob would hand pip BOTH arch
+# wheels as conflicting python-olm URLs).
+_select_vendored_olm_wheel() { # $1 = wheels dir; echoes path or nothing
+    local _arch=""
+    case "$(uname -m)" in
+        x86_64|amd64)  _arch="x86_64" ;;
+        aarch64|arm64) _arch="aarch64" ;;
+        *) return 1 ;;
+    esac
+    local _cand
+    for _cand in "$1"/python_olm-*-linux_"${_arch}".whl; do
+        [ -f "$_cand" ] && { printf '%s\n' "$_cand"; return 0; }
+    done
+    return 1
+}
+
 install_observatory() {
     if [ "$SKIP_OBSERVATORY" = true ]; then
         log_info "skipping observatory homeserver (--skip-observatory)"
@@ -294,10 +314,12 @@ install_observatory() {
     # warn-not-die: the homeserver itself still provisions; only E2EE is
     # degraded until the stack lands.
     local VENDORED_WHEELS="$INSTALL_ROOT/hermes/observatory/wheels"
-    if compgen -G "$VENDORED_WHEELS"/python_olm-*.whl >/dev/null; then
+    local VENDORED_WHEEL=""
+    VENDORED_WHEEL="$(_select_vendored_olm_wheel "$VENDORED_WHEELS" || true)"
+    if [ -n "$VENDORED_WHEEL" ]; then
         if _verify_vendored_wheels "$VENV_PY" "$VENDORED_WHEELS"; then
             log_info "observatory crypto stack: vendored wheel (hash-verified)"
-            if "$UV_CMD" pip install --python "$VENV_PY" -q "$VENDORED_WHEELS"/python_olm-*.whl; then
+            if "$UV_CMD" pip install --python "$VENV_PY" -q "$VENDORED_WHEEL"; then
                 log_success "vendored python-olm installed"
             else
                 log_warn "vendored python-olm did not install (platform mismatch?) — continuing"
@@ -309,9 +331,37 @@ install_observatory() {
     local WHEELS_DIR="$INSTALL_ROOT/wheels"
     if compgen -G "$WHEELS_DIR"/*.whl >/dev/null; then
         log_info "observatory crypto stack: bundled wheels (no network needed)"
-        "$UV_CMD" pip install --python "$VENV_PY" -q "$WHEELS_DIR"/*.whl \
-            || { log_error "bundled-wheels install failed (corrupt tarball?)"; exit 1; }
-        log_success "observatory crypto stack installed from bundled wheels"
+        # make-dist stages BOTH arch python-olm wheels; pip fails when handed
+        # two conflicting python-olm URLs, so install this-arch olm + every
+        # non-olm wheel and skip the foreign-arch olm with a notice (never
+        # passed to pip). Unknown arch: every olm wheel is foreign.
+        local _olm_arch=""
+        case "$(uname -m)" in
+            x86_64|amd64)  _olm_arch="x86_64" ;;
+            aarch64|arm64) _olm_arch="aarch64" ;;
+        esac
+        local _bundled_args=() _whl _base
+        for _whl in "$WHEELS_DIR"/*.whl; do
+            [ -f "$_whl" ] || continue
+            _base="$(basename "$_whl")"
+            case "$_base" in
+                python_olm-*.whl)
+                    if [ -n "$_olm_arch" ] && [[ "$_base" == *"$_olm_arch"* ]]; then
+                        _bundled_args+=("$_whl")
+                    else
+                        log_info "skipping foreign-arch bundled wheel: $_base"
+                    fi
+                    ;;
+                *) _bundled_args+=("$_whl") ;;
+            esac
+        done
+        if [ "${#_bundled_args[@]}" -gt 0 ]; then
+            "$UV_CMD" pip install --python "$VENV_PY" -q "${_bundled_args[@]}" \
+                || { log_error "bundled-wheels install failed (corrupt tarball?)"; exit 1; }
+            log_success "observatory crypto stack installed from bundled wheels"
+        else
+            log_warn "bundled wheels hold no wheel for this host — continuing without them"
+        fi
     else
         log_info "observatory crypto stack ([matrix] extra, from network)"
         if ( cd hermes && "$UV_CMD" pip install --python "$VENV_PY" -q -e ".[matrix]" ); then
