@@ -39,20 +39,28 @@ remains as the documented MANUAL rebuild path only, never auto-invoked.
 
 **Key bootstrap — the manual verify step (documented, D4 bridge pattern):**
 
-1. The owner logs in on a second device (device O1 — FluffyChat is the
+1. At boot the sidecar publishes the gateway device's keys
+   (:meth:`E2EEManager.warmup` — device + one-time keys), so the owner's
+   clients see a live device immediately instead of "the other party is
+   currently not logged in".
+2. The owner logs in on a second device (device O1 — FluffyChat is the
    tested client) and — once — verifies the
    gateway agent's device in the gateway room ("Verify manually" /
-   emoji/SAS or key-pin): display the gateway machine's ed25519 key from
-   ``observatory crypto-key @merc_gateway:<server>`` output. This pins
+   emoji/SAS or fingerprint compare): the fingerprint to compare is
+   posted in every room's verify-howto notice
+   (:meth:`E2EEManager.verify_notice_text`, via
+   :meth:`E2EEManager.gateway_fingerprint`) the first time the sidecar
+   shares a Megolm session there. This pins
    the root of the observatory's trust. The store makes this a ONE-TIME
    step: the gateway's Olm identity survives sidecar restarts, so the
    owner's verification stays valid.
-2. Virtual users (one machine each) apply **trust-on-first-use (TOFU)**
-   to the owner's devices — the O3-sanctioned fallback: the first device
-   key seen for ``@owner:<server>`` is marked ``TrustState.VERIFIED``
-   (:meth:`E2EEManager.trust_device_tofu`); a CHANGED key later fails
-   decryption (DecryptionError), never silently re-trusts. TOFU is
-   spec-sanctioned because the homeserver is single-owner,
+3. Virtual users (one machine each) apply **trust-on-first-use (TOFU)**
+   to the owner's devices — the O3-sanctioned fallback, applied by
+   :meth:`E2EEManager.ensure_owner_trust` before every fresh Megolm
+   share: the first device key seen for ``@owner:<server>`` is marked
+   ``TrustState.VERIFIED`` (:meth:`E2EEManager.trust_device_tofu`); a
+   CHANGED key later is refused (fail closed), never silently re-trusted.
+   TOFU is spec-sanctioned because the homeserver is single-owner,
    localhost-bound (D2): the operator who can MITM the homeserver owns
    the machine anyway.
 
@@ -74,9 +82,9 @@ cannot run the compiled stack set ``observatory.e2ee: false`` explicitly.
    scope until the owner actually rotates devices (the sidecar never
    drives SSSS; those adapter methods fail loudly).
 2. ``E2EEManager.handle_as_transaction`` is the routing contract; the
-   sidecar intake must call it with each raw transaction body (the
-   room-event half of that pipeline is already wired via
-   ``decrypt_event`` in sidecar_main).
+   sidecar intake calls it via the intake's ``crypto_handler``
+   (``to_device`` / ``device_lists`` / ``device_one_time_keys_count``
+   ride alongside the room events — see appservice ``TransactionIntake``).
 """
 from __future__ import annotations
 
@@ -113,6 +121,11 @@ CRYPTO_DIR_NAME = "crypto"
 #: (``crypt:<room_key> -> room_id``); also the restart-time registry of
 #: rooms the executor must keep encrypting.
 CRYPT_ROOM_META_PREFIX = "crypt:"
+
+#: State-meta prefix recording that a room already got its verify-howto
+#: notice (``e2ee-notice:<room_key> -> json`` of the device picture);
+#: reposted only when the picture changes (new TOFU device, key refusal).
+NOTICE_META_PREFIX = "e2ee-notice:"
 
 #: Exact remedy surfaced by :class:`E2EEError` (single source, tested).
 E2EE_REMEDY = (
@@ -1151,19 +1164,43 @@ class E2EEManager:
         )
         return str((out or {}).get("event_id") or "")
 
-    # -- TOFU trust (O3-sanctioned fallback; manual owner step documented up top)
-
-    async def trust_device_tofu(self, mxid: str, target_user: str, device: Any) -> None:
+    async def trust_device_tofu(self, mxid: str, target_user: str, device: Any,
+                                *, first_sight: bool = False) -> bool:
         """Mark a first-seen device of ``target_user`` as verified for the
         given virtual user's machine. TOFU: only first sight; a device
-        that CHANGES key later fails decryption — never re-trusted."""
+        that CHANGES key later fails closed — never re-trusted.
+
+        ``first_sight`` covers the fetch-then-trust order: mautrix key
+        fetches store every device as UNVERIFIED, so a device the last
+        fetch just introduced looks "known". The caller passes
+        ``first_sight=True`` only for device ids absent from its
+        pre-fetch snapshot; same-keys-required, so a concurrent rotation
+        still refuses instead of trusting. Resighting a known UNVERIFIED
+        device WITHOUT the flag leaves it untouched (manual verify may
+        be pending) but still returns True.
+
+        Returns True when the device is trusted (first sight, or already
+        known under identical keys) and False when a key change was
+        refused: the caller must surface that refusal, never encrypt to
+        the changed device on TOFU authority."""
         from mautrix.types import TrustState
 
         crypto = self.machine_for(mxid)
         store = crypto.machine.crypto_store
         existing = await store.get_device(target_user, device.device_id)
         if existing is not None:
-            return  # already known — TOFU only applies at first sight
+            if (str(existing.identity_key) != str(device.identity_key)
+                    or str(existing.signing_key) != str(device.signing_key)):
+                log.warning(
+                    "TOFU REFUSED for %s/%s: keys changed since first sight"
+                    " — manual re-verify required, never silent re-trust",
+                    target_user, device.device_id,
+                )
+                return False
+            if not first_sight or existing.trust == TrustState.VERIFIED:
+                return True
+            # else: first sight of a device the last fetch just stored as
+            # UNVERIFIED — fall through to VERIFY + persist below.
         device.trust = TrustState.VERIFIED
         if hasattr(store, "put_device"):  # SQLiteCryptoStore — single upsert
             await store.put_device(target_user, device)
@@ -1171,24 +1208,126 @@ class E2EEManager:
             devices = await store.get_devices(target_user) or {}
             devices[device.device_id] = device
             await store.put_devices(target_user, devices)
+        return True
 
-    # -- outbound encryption ------------------------------------------------------
+    # -- startup warmup ---------------------------------------------------------
 
-    async def encrypt_megolm(
-        self, room_id: str, sender: str, event_type: str, content: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Encrypt one room event as ``sender``. Shares the group session
-        with the room members on first use (bridge pattern: we KNOW the
-        member set — owner + virtual users — the sidecar created the
-        room). Returns ``m.room.encrypted`` content ready to PUT."""
-        from mautrix.types import EventType, RoomID
+    async def warmup(self) -> dict[str, str]:
+        """Load the gateway agent's machine — device + one-time key upload
+        via ``share_keys`` — so owner clients see a live device the moment
+        the sidecar is up. The live "other party is currently not logged
+        in" dead-end was machines that only loaded lazily on first send:
+        until then no device keys were published and FluffyChat could not
+        open an Olm session to us. Idempotent; returns ``{mxid: device_id}``.
+
+        Gateway ONLY — never the owner MXID: loading a machine for the
+        owner would publish a rogue sidecar device under the owner's user
+        id. Without a gateway identity there is nothing safe to warm."""
+        if not self.gateway_mxid:
+            return {}
+        crypto = self.machine_for(self.gateway_mxid)
+        await crypto.load()
+        log.info("e2ee warmup: %s device %s keys published",
+                 self.gateway_mxid, crypto.device_id)
+        return {self.gateway_mxid: str(crypto.device_id)}
+
+    async def gateway_fingerprint(self, mxid: str) -> str:
+        """This device's ed25519 fingerprint as clients display it — the
+        string the owner compares in the manual-verify step (also carried
+        by every verify-howto room notice, so no separate key-display
+        command is needed)."""
+        crypto = self.machine_for(mxid)
+        await crypto.load()
+        return str(crypto.machine.account.fingerprint)
+
+    async def ensure_owner_trust(self, sender_mxid: str) -> dict[str, list[str]]:
+        """Fetch the owner's current device keys and TOFU-trust every
+        first-seen device as VERIFIED for ``sender``'s machine; a device
+        whose keys CHANGED since first sight lands in ``refused`` (fail
+        closed — the caller surfaces it, never encrypts on TOFU authority).
+
+        Runs BEFORE ``share_group_session`` on purpose: mautrix 0.21.1
+        resets every refetched device to UNVERIFIED (``_validate_device``),
+        so trust must be applied after the last fetch. The share's own
+        internal fetch then finds the devices already stored and keeps
+        this trust. Returns ``trusted`` (new), ``known``, ``refused`` and
+        ``fetched`` device-id lists."""
+        report: dict[str, list[str]] = {"trusted": [], "known": [],
+                                        "refused": [], "fetched": []}
+        owner = (self.owner_mxid or "").strip()
+        if not owner:
+            return report
+        from mautrix.types import UserID
+
+        crypto = self.machine_for(sender_mxid)
+        await crypto.load()
+        machine = crypto.machine
+        store = machine.crypto_store
+        # Pre-fetch snapshot: the fetch below stores everything as
+        # UNVERIFIED, so "first sight" is decided against THIS set.
+        known_before = set((await store.get_devices(owner) or {}).keys())
+        # Pinned mautrix 0.21.1 has no public fetch-untracked entry point;
+        # _share_group_session uses this same call, so the contract is stable.
+        fetched = await machine._fetch_keys(  # noqa: SLF001 — see above
+            [UserID(owner)], include_untracked=True)
+        devices = fetched.get(UserID(owner), {}) or {}
+        for device_id, device in devices.items():
+            name = str(device_id)
+            report["fetched"].append(name)
+            sighted = device_id not in known_before
+            ok = await self.trust_device_tofu(sender_mxid, owner, device,
+                                              first_sight=sighted)
+            if not ok:
+                report["refused"].append(name)
+            elif sighted:
+                report["trusted"].append(name)
+            else:
+                report["known"].append(name)
+        if not devices:
+            log.warning("owner %s published no device keys — encrypted rooms stay "
+                        "unreadable on their clients until they log in", owner)
+        return report
+
+    async def ensure_room_share(self, room_id: str, sender: str) -> dict[str, list[str]]:
+        """TOFU-trust the owner's devices, then create/share the Megolm
+        outbound session when none is live (missing, expired, or never
+        shared). Returns the trust report plus ``shared`` ([room_id] when
+        a fresh share happened, else [])."""
+        from mautrix.types import RoomID
 
         crypto = self.machine_for(sender)
         await crypto.load()
         machine = crypto.machine
-        if not await machine.crypto_store.get_outbound_group_session(RoomID(room_id)):
+        report = await self.ensure_owner_trust(sender)
+        session = await machine.crypto_store.get_outbound_group_session(RoomID(room_id))
+        if (session is None or getattr(session, "expired", False)
+                or not getattr(session, "shared", True)):
             members = await self._room_members(room_id)
             await machine.share_group_session(RoomID(room_id), list(members))
+            report["shared"] = [room_id]
+        else:
+            report["shared"] = []
+        return report
+
+    # -- outbound encryption ------------------------------------------------------
+
+    async def encrypt_megolm(
+        self, room_id: str, sender: str, event_type: str, content: dict[str, Any],
+        *, report_out: dict[str, list[str]] | None = None,
+    ) -> dict[str, Any]:
+        """Encrypt one room event as ``sender``. Shares the group session
+        with the room members on first use (bridge pattern: we KNOW the
+        member set — owner + virtual users — the sidecar created the
+        room), TOFU-trusting the owner's devices first. Returns
+        ``m.room.encrypted`` content ready to PUT. The share ceremony
+        report lands in ``report_out`` when provided (verify-notice path)."""
+        from mautrix.types import EventType, RoomID
+
+        report = await self.ensure_room_share(room_id, sender)
+        if report_out is not None:
+            report_out.update(report)
+        crypto = self.machine_for(sender)
+        machine = crypto.machine
         return (
             await machine.encrypt_megolm_event(
                 # mautrix 0.21.1 EventType takes (type, t_class) — .find()
@@ -1204,14 +1343,17 @@ class E2EEManager:
         body: str,
         formatted_body: str | None = None,
         relates_to: dict[str, Any] | None = None,
+        report_out: dict[str, list[str]] | None = None,
     ) -> str:
         """Encrypt an ``m.room.message`` and PUT it (txnId form — the
         ruma/tuwunel-compatible send path, same law as
-        ``matrix_client.MatrixClient._send_event``)."""
+        ``matrix_client.MatrixClient._send_event``). The share ceremony
+        report lands in ``report_out`` when provided (verify-notice path)."""
         from urllib.parse import quote
 
         content = message_content(body, formatted_body, relates_to)
-        encrypted = await self.encrypt_megolm(room_id, sender, "m.room.message", content)
+        encrypted = await self.encrypt_megolm(
+            room_id, sender, "m.room.message", content, report_out=report_out)
         txn = uuid.uuid4().hex
         path = f"{CLIENT_V3}/rooms/{quote(room_id, safe='')}/send/m.room.encrypted/{txn}"
         out = await self.client.client_api("PUT", path, sender=sender, json_body=encrypted)
@@ -1219,6 +1361,79 @@ class E2EEManager:
         if not event_id:
             raise E2EEError(f"homeserver accepted no event id for encrypted send in {room_id}")
         return event_id
+
+    # -- verify-howto notice (never silent darkness) -------------------------------
+
+    def verify_notice_text(self, *, gateway_mxid: str, device_id: str,
+                           fingerprint: str, trusted: list[str],
+                           refused: list[str]) -> str:
+        """The user-facing notice posted when the owner has unverified
+        devices: exact FluffyChat tap path plus the fingerprint to compare.
+        Single source so the room text and any operator docs never drift."""
+        lines = [
+            "Encrypted chat is on, but one verification step remains — until then",
+            "your phone may show these messages as unverified or refuse to send its own.",
+            "",
+            f"This room is served by {gateway_mxid}, device {device_id}.",
+            "To verify it in FluffyChat:",
+            "1. Tap the room name at the top to open the chat details.",
+            f"2. Tap {gateway_mxid} in the member list, then open Devices.",
+            f"3. Tap device {device_id}, choose Verify, and compare the",
+            "   fingerprint shown with this one:",
+            f"   {fingerprint}",
+            "",
+        ]
+        if trusted:
+            lines += [
+                f"New owner device(s) auto-trusted on first sight (TOFU): "
+                f"{', '.join(trusted)}.",
+                "If a device key ever changes, messages fail closed — never silently re-trusted.",
+                "",
+            ]
+        if refused:
+            lines += [
+                "WARNING: these owner device(s) presented CHANGED keys and were NOT trusted:",
+                f"   {', '.join(refused)}.",
+                "If you reinstalled the app, confirm the new device in person; messages",
+                "to those devices stay blocked until then.",
+                "",
+            ]
+        lines += ["After verifying, new messages arrive without warnings."]
+        return "\n".join(lines)
+
+    async def maybe_post_verify_notice(self, room_id: str, *, sender: str,
+                                       room_key: str, report: dict[str, Any]) -> bool:
+        """Post the verify-howto notice when the share report shows fresh
+        TOFU trust or a key-change refusal. Deduped per ``room_key`` via
+        state meta: reposts only when the device picture (fingerprint,
+        trusted, refused) changes. The notice itself goes out encrypted —
+        the owner reads it once the just-shared room key arrives. Returns
+        True when a notice was posted."""
+        import json
+
+        trusted = [str(d) for d in (report.get("trusted") or [])]
+        refused = [str(d) for d in (report.get("refused") or [])]
+        if not trusted and not refused:
+            return False
+        crypto = self.machine_for(sender)
+        await crypto.load()
+        fingerprint = str(crypto.machine.account.fingerprint)
+        device_id = str(crypto.device_id)
+        picture = {"fp": fingerprint, "dev": device_id,
+                   "trusted": sorted(trusted), "refused": sorted(refused)}
+        meta_key = NOTICE_META_PREFIX + room_key
+        try:
+            seen_raw = self.state.get_meta(meta_key)
+        except StateError:
+            seen_raw = ""
+        if seen_raw == json.dumps(picture, sort_keys=True):
+            return False
+        body = self.verify_notice_text(
+            gateway_mxid=sender, device_id=device_id, fingerprint=fingerprint,
+            trusted=trusted, refused=refused)
+        await self.send_encrypted_message(room_id, sender=sender, body=body)
+        self.state.set_meta(meta_key, json.dumps(picture, sort_keys=True))
+        return True
 
     async def _room_members(self, room_id: str) -> list[str]:
         from urllib.parse import quote
@@ -1250,6 +1465,7 @@ class E2EEManager:
                 return None
             evt = wire_encrypted_event(event)
             crypto = self.machine_for(self.gateway_mxid or self._first_machine_mxid())
+            await crypto.load()  # never decrypt on a cold machine (no account = always fail)
             decrypted = await crypto.machine.decrypt_megolm_event(evt)
             content = decrypted.content
             return content.serialize() if hasattr(content, "serialize") else dict(content)
@@ -1336,25 +1552,33 @@ class EncryptedIntentExecutor:
                                 "encrypted": True})
             elif isinstance(op, SendMessage) and self.e2ee.room_is_encrypted(op.room_key):
                 rid = self.room_id(op.room_key)
+                report: dict[str, Any] = {}
                 event_id = await self.e2ee.send_encrypted_message(
                     rid,
                     sender=op.sender,
                     body=op.body,
                     formatted_body=op.formatted_body,
+                    report_out=report,
                 )
+                await self.e2ee.maybe_post_verify_notice(
+                    rid, sender=op.sender, room_key=op.room_key, report=report)
                 if op.tag:
                     self.state.set_meta(op.tag, event_id)
                 records.append({"op": "send", "room": rid, "event_id": event_id,
                                 "encrypted": True, "tag": op.tag})
             elif isinstance(op, EditMessage) and self.e2ee.room_is_encrypted(op.room_key):
                 rid = self.room_id(op.room_key)
+                report: dict[str, Any] = {}
                 event_id = await self.e2ee.send_encrypted_message(
                     rid,
                     sender=op.sender,
                     body=f"* {op.body}",
                     formatted_body=op.formatted_body,
                     relates_to={"rel_type": "m.replace", "event_id": op.event_id},
+                    report_out=report,
                 )
+                await self.e2ee.maybe_post_verify_notice(
+                    rid, sender=op.sender, room_key=op.room_key, report=report)
                 records.append({"op": "edit", "room": rid, "replaces": op.event_id,
                                 "event_id": event_id, "encrypted": True})
             else:

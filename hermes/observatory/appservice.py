@@ -48,6 +48,12 @@ TXN_MEMORY_DEFAULT = 1024
 
 EventHandler = Callable[[str, list[dict[str, Any]]], Awaitable[None]]
 
+#: Raw appservice crypto fields (``to_device`` / ``device_lists`` /
+#: ``device_one_time_keys_count``) routed to the E2EE machines alongside
+#: the room events. A separate callback — not a third handler arg — so
+#: every existing 2-arg EventHandler keeps working untouched.
+CryptoHandler = Callable[[dict[str, Any]], Awaitable[None]]
+
 
 class TransactionIntake:
     """Dedup + queue between the HTTP surface and the event consumer."""
@@ -57,16 +63,18 @@ class TransactionIntake:
         *,
         as_token: str,
         handler: EventHandler | None = None,
+        crypto_handler: CryptoHandler | None = None,
         queue_size: int = 1000,
         txn_memory: int = TXN_MEMORY_DEFAULT,
     ):
         if not as_token:
             raise ValueError("as_token must be a non-empty secret")
         self.as_token = as_token
-        self.queue: asyncio.Queue[tuple[str, list[dict[str, Any]]]] = asyncio.Queue(
-            maxsize=queue_size
-        )
+        self.queue: asyncio.Queue[
+            tuple[str, list[dict[str, Any]], dict[str, Any]]
+        ] = asyncio.Queue(maxsize=queue_size)
         self._handler: EventHandler | None = handler
+        self._crypto_handler: CryptoHandler | None = crypto_handler
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._txn_memory = txn_memory
         self._consumer: asyncio.Task[None] | None = None
@@ -93,6 +101,11 @@ class TransactionIntake:
         """Set the consumer callback; takes effect on next ``start()``."""
         self._handler = handler
 
+    def attach_crypto_handler(self, handler: CryptoHandler | None) -> None:
+        """Set the crypto-fields callback (to-device/device-lists/OTK
+        counts); takes effect on next ``start()``."""
+        self._crypto_handler = handler
+
     async def start(self) -> None:
         """Spawn the consumer task (no-op without a handler attached)."""
         if self._handler is None or self._consumer is not None:
@@ -113,8 +126,12 @@ class TransactionIntake:
     async def _consume(self) -> None:
         assert self._handler is not None
         while True:
-            txn_id, events = await self.queue.get()
+            txn_id, events, crypto = await self.queue.get()
             try:
+                # crypto FIRST: to-device room keys must land before the
+                # room events that need them reach decrypt.
+                if crypto and self._crypto_handler is not None:
+                    await self._crypto_handler(crypto)
                 await self._handler(txn_id, events)
             except Exception:  # consumer bugs must never kill the intake
                 log.exception("observatory event handler failed for txn %s", txn_id)
@@ -123,7 +140,8 @@ class TransactionIntake:
 
     # --- intake -----------------------------------------------------------------
 
-    async def accept(self, txn_id: str, events: list[dict[str, Any]]) -> web.Response:
+    async def accept(self, txn_id: str, events: list[dict[str, Any]],
+                     crypto: dict[str, Any] | None = None) -> web.Response:
         """Dedup, enqueue, and answer. 200 in every accepted case — the
         homeserver treats non-2xx as "retry forever"."""
         if not isinstance(events, list):
@@ -134,7 +152,7 @@ class TransactionIntake:
         if not self.register_txn(txn_id):
             return web.json_response({})  # retry of an accepted txn: idempotent 200
         try:
-            self.queue.put_nowait((txn_id, events))
+            self.queue.put_nowait((txn_id, events, dict(crypto or {})))
         except asyncio.QueueFull:
             # Real backpressure: 429 is the canonical homeserver retry signal.
             return web.json_response(
@@ -189,7 +207,15 @@ async def _put_transaction(request: web.Request) -> web.Response:
             status=400,
         )
     intake: TransactionIntake = request.app[_INTAKE_KEY]
-    return await intake.accept(txn_id, body.get("events", []))
+    # Crypto side-channel (E2EE key-sharing transport): the ruma/tuwunel
+    # appservice extension carries to-device messages, device-list deltas
+    # and OTK counts beside the room events. Only present keys ride along
+    # (handle_as_transaction reads the same raw shape).
+    crypto = {key: body[key] for key in (
+        "to_device", "device_lists", "device_one_time_keys_count",
+        "device_one_time_keys_counts",
+    ) if key in body and body[key]}
+    return await intake.accept(txn_id, body.get("events", []), crypto=crypto)
 
 
 async def _health(_request: web.Request) -> web.Response:

@@ -434,6 +434,14 @@ class SidecarDaemon:
         )
         # fails HARD when the crypto stack is missing (O3 — never fake it)
         await self.e2ee.start(enabled=True)
+        try:  # publish device + one-time keys NOW (warmup): a cold key
+            # directory is exactly the "other party is currently not logged
+            # in" FluffyChat dead-end. A failed warmup only logs — every
+            # later send/load retries the upload, never silent plaintext.
+            warmed = await self.e2ee.warmup()
+            log.info("e2ee warmup published keys for %s", sorted(warmed))
+        except Exception:  # noqa: BLE001 — boot must survive HS blips
+            log.warning("e2ee warmup failed — keys publish on next use", exc_info=True)
         return e2ee_mod.EncryptedIntentExecutor(
             self.client,
             self.state,
@@ -577,6 +585,7 @@ class SidecarDaemon:
         self.intake = TransactionIntake(
             as_token=hs_token_from_registration(self.paths.appservice_registration),
             handler=self._on_transaction,
+            crypto_handler=self._on_crypto,
         )
         app = make_app(self.intake)
         self._runner = web.AppRunner(app, access_log=None)
@@ -946,6 +955,20 @@ class SidecarDaemon:
         ]
 
     # --- inbound transactions ---------------------------------------------------
+    async def _on_crypto(self, txn: dict[str, Any]) -> None:
+        """Crypto side-channel consumer: route the transaction's to-device
+        messages, device-list deltas and OTK counts into the per-user
+        machines (Olm pre-keys, room keys, key requests). Runs BEFORE the
+        room events of the same transaction so inbound room keys land
+        before decrypt needs them. E2EE off → no-op."""
+        if self.e2ee is None:
+            return
+        try:
+            routed = await self.e2ee.handle_as_transaction(txn)
+            if any(routed.values()):
+                log.info("e2ee crypto routed %s", routed)
+        except Exception:  # noqa: BLE001 — the intake survives handler bugs
+            log.exception("e2ee crypto routing failed")
 
     async def _on_transaction(self, txn_id: str, events: list[dict[str, Any]]) -> None:
         """Intake consumer: decrypt (E2EE) → directives delivery / control

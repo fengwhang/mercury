@@ -824,3 +824,47 @@ class TestGatewayGhostVerify:
         """--repair-ghosts is a real CLI flag (wired to run_repair_ghosts)."""
         with pytest.raises(FileNotFoundError):  # nonexistent home: no tuwunel.toml
             sm.main(["--repair-ghosts", "--home", "/nonexistent-home-xyz"])
+
+
+class TestOnCryptoGlue:
+    """The intake crypto side-channel reaches the E2EE router (or no-ops
+    cleanly when E2EE is off) — the live key-exchange gap, pinned."""
+
+    @pytest.mark.asyncio
+    async def test_crypto_transaction_routes_to_manager(self, tmp_path):
+        d = sm.SidecarDaemon(tmp_path / "mercury",
+                             hermes_db=tmp_path / "h.db",
+                             appservice_port=_free_port())
+        routed: list[dict] = []
+
+        class _FakeE2EE:
+            async def handle_as_transaction(self, txn):
+                routed.append(txn)
+                return {"to_device": 1, "device_lists": 0,
+                        "otk_counts": 0}
+
+        d.e2ee = _FakeE2EE()  # type: ignore[assignment]
+        txn = {"to_device": {"@merc_gw:x": {"D": {}}}}
+        await d._on_crypto(txn)
+        assert routed == [txn]
+
+    @pytest.mark.asyncio
+    async def test_crypto_without_e2ee_is_noop(self, tmp_path):
+        d = sm.SidecarDaemon(tmp_path / "mercury",
+                             hermes_db=tmp_path / "h.db",
+                             appservice_port=_free_port())
+        d.e2ee = None  # type: ignore[assignment]
+        await d._on_crypto({"to_device": {}})  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_router_errors_never_kill_intake(self, tmp_path):
+        d = sm.SidecarDaemon(tmp_path / "mercury",
+                             hermes_db=tmp_path / "h.db",
+                             appservice_port=_free_port())
+
+        class _Boom:
+            async def handle_as_transaction(self, txn):
+                raise RuntimeError("boom")
+
+        d.e2ee = _Boom()  # type: ignore[assignment]
+        await d._on_crypto({"to_device": {"@merc_gw:x": {"D": {}}}})
