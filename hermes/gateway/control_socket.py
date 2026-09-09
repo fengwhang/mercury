@@ -248,12 +248,33 @@ class GatewayControlServer:
         self._pipe_server: Any = None  # Windows proactor pipe server
         self._bind_path: Optional[Path] = None
         self._pointer_file: Optional[Path] = None
-        self._handlers: dict[str, Callable[[], dict[str, Any]]] = {
+        self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
             "identify": build_identify_payload,
             "status": build_status_payload,
         }
+        #: Verbs whose handler takes the request's ``params`` dict
+        #: (``handler(params)``). All other verbs keep the zero-arg
+        #: ``handler()`` shape — existing consumers never send params.
+        self._params_verbs: set[str] = set()
         if verb_handlers:
             self._handlers.update(verb_handlers)
+
+    def register_handler(
+        self, verb: str, handler: Callable[..., dict[str, Any]],
+        *, takes_params: bool = False,
+    ) -> None:
+        """Register (or replace) a verb handler after construction.
+
+        ``takes_params=True``: the handler is called as
+        ``handler(params)`` with the request's ``params`` object (``{}``
+        when absent); otherwise it is called with no arguments. Used by
+        the gateway process to expose new verbs (e.g. observatory prompt
+        injection) without touching this module."""
+        self._handlers[verb] = handler
+        if takes_params:
+            self._params_verbs.add(verb)
+        else:
+            self._params_verbs.discard(verb)
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -361,10 +382,17 @@ class GatewayControlServer:
                     "supported_verbs": sorted(self._handlers),
                 }
             else:
+                params = request.get("params")
+                if not isinstance(params, dict):
+                    params = {}
+                if isinstance(verb, str) and verb in self._params_verbs:
+                    result = handler(params)
+                else:
+                    result = handler()
                 response = {
                     "ok": True,
                     "protocol": CONTROL_PROTOCOL_VERSION,
-                    "result": handler(),
+                    "result": result,
                 }
         except Exception as exc:
             response = {
@@ -441,6 +469,7 @@ def query_gateway_control(
     home: Path,
     verb: str,
     *,
+    params: dict[str, Any] | None = None,
     timeout: float = _DEFAULT_CLIENT_TIMEOUT,
 ) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` a control verb; None when unanswered.
@@ -450,11 +479,10 @@ def query_gateway_control(
     ``ok: false`` — returns None so callers fall back to the scan layer.
     Never raises.
     """
-    request = (
-        json.dumps({"verb": verb, "id": 1, "protocol": CONTROL_PROTOCOL_VERSION})
-        .encode("utf-8")
-        + b"\n"
-    )
+    payload: dict[str, Any] = {"verb": verb, "id": 1, "protocol": CONTROL_PROTOCOL_VERSION}
+    if params:
+        payload["params"] = dict(params)
+    request = json.dumps(payload).encode("utf-8") + b"\n"
     try:
         if _IS_WINDOWS:
             raw = _query_windows_pipe(Path(home), request, timeout)

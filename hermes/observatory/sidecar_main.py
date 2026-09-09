@@ -40,9 +40,10 @@ Assembly, in boot order:
    DirectivesManager (membership sync), CronRooms (+ render_poll loop),
    ManualRunsWatcher (+ render_poll loop), OrchestratorRegistry omp
    feeds (one :class:`~observatory.omp_feed.OmpFeed` per live RPC child).
-   Control ACTIONS (InjectText/OmpSteer/...) are logged this wave — the
-   engine transports (gateway WS injection, RPC steer fan-out) belong to
-   the M4a/M5 gateway-side wiring and land there.
+   Gateway-node InjectText delivers over the gateway control socket
+   (``inject`` verb → one headless turn → reply renders in the room);
+   the remaining engine transports (RPC steer/prompt fan-out, aborts)
+   are still pending — those ACTIONS stay logged in ``routing_log``.
 10. **Graceful shutdown** (SIGINT/SIGTERM): stop loops + feeds +
     discovery, stop the intake, flush state, terminate an owned
     homeserver. The systemd unit never owns homeserver lifetime here
@@ -101,6 +102,11 @@ from observatory.config_gen import (
 )
 from observatory.identity import assign_slug, virtual_mxid
 from observatory.matrix_client import CLIENT_V3, MatrixError, MatrixClient
+from observatory.control import QUEUED_STEER_NOTICE, InjectText
+from observatory.gateway_transport import (
+    ControlSocketGatewayTransport,
+    GatewayTransportError,
+)
 from observatory.renderer import IntentExecutor, Renderer, SendMessage
 from observatory.state import ObservatoryState, StateError
 from observatory.tree import DIRECTIVES_ROOM_KEY
@@ -117,6 +123,19 @@ GATEWAY_NODE_NAME = "gateway agent"
 APPROVALS_EXPIRY_INTERVAL = 5.0
 CRON_POLL_INTERVAL = 5.0
 MANUAL_POLL_INTERVAL = 5.0
+
+#: Gateway-room prompt delivery is prompt-only: plain text starts a turn
+#: on the live gateway session (there is no busy run to steer into), so
+#: the router's "queued steer" honesty notice never applies there — the
+#: reply itself is the acknowledgement.
+#: Delivery/reporting notices posted in the gateway agent's voice.
+GATEWAY_UNREACHABLE_NOTICE = (
+    "⚠ gateway is not answering — message not delivered "
+    "(start the gateway and retry)"
+)
+GATEWAY_PROMPT_FAILED_NOTICE = (
+    "⚠ gateway prompt failed — see the sidecar log"
+)
 
 SMOKE_MARKER = "MERCURY-M4C-OK"
 SMOKE_E2EE_MARKER = "MERCURY-M4C-E2EE-OK"
@@ -198,6 +217,13 @@ class SidecarDaemon:
         self.directives: Any | None = None
         self.manual_runs: Any | None = None
         self.cron_rooms: Any | None = None
+        #: Gateway-session prompt transport (control-socket ``inject``).
+        #: None only when the transport package is unavailable — delivery
+        #: then reports unreachable instead of dying silently.
+        self.gateway_transport: Any | None = None
+        #: In-flight gateway-room prompt deliveries (a set so shutdown
+        #: cancellation is trivial).
+        self._gateway_tasks: set[asyncio.Task] = set()
         #: D7 power-level snapshot cache (sync provider for the router).
         self._pl_cache: dict[str, Any] = {}
         self.omp_feeds: dict[str, Any] = {}  # node_id -> OmpFeed
@@ -565,9 +591,10 @@ class SidecarDaemon:
     def wire_siblings(self) -> None:
         """Construct the parallel-wave subsystems against their landed
         interfaces (each module owns its file; this daemon imports and
-        never edits). Engine-side transports (gateway WS injection, RPC
-        steer fan-out) are not landed — routed ACTIONS are logged in
-        ``routing_log`` until they land."""
+        never edits). Gateway-node prompts deliver over the gateway
+        control socket (``inject``); the remaining engine transports
+        (RPC steer fan-out, aborts) are not landed — those ACTIONS stay
+        logged in ``routing_log``."""
         from observatory.approvals import ApprovalBridge, MatrixAuthority
         from observatory.control import ControlRouter, RoomPowerLevels
         from observatory.cron_rooms import CronRooms, CronStore
@@ -598,6 +625,14 @@ class SidecarDaemon:
             poster=self.client,
             authority=MatrixAuthority(self.client, reader_mxid=self.gateway_mxid),
         )
+        # Gateway-session prompt transport (control-socket ``inject``).
+        # Construction is side-effect free (no I/O until a prompt sends);
+        # None only when the package itself is unavailable.
+        try:
+            self.gateway_transport = ControlSocketGatewayTransport(self.mercury_home)
+        except Exception:  # noqa: BLE001 — delivery reports unreachable instead
+            log.exception("gateway transport unavailable (prompts will not deliver)")
+            self.gateway_transport = None
         self.directives = DirectivesManager(self.renderer)
         self.cron_rooms = CronRooms(
             self.renderer,
@@ -959,12 +994,80 @@ class SidecarDaemon:
             outcomes = await self.control_router.handle_transaction(txn_id, [event])
             for outcome in outcomes:
                 self.routing_log.append(outcome.disposition)
+                if self._is_gateway_prompt(outcome):
+                    await self._handle_gateway_prompt_outcome(outcome)
+                    continue
                 for notice in outcome.notices:
                     await self._post_notice(notice)
                 for action in outcome.actions:
                     # Engine transports (gateway WS injection, RPC steer)
                     # land with the M4a/M5 gateway-side wiring — logged here.
                     log.info("control action pending transport: %r", action)
+
+    def _gateway_node_id(self) -> str:
+        """The gateway agent's node (router-owned when wired)."""
+        router = self.control_router
+        return str(getattr(router, "gateway_node_id", GATEWAY_NODE_ID) or GATEWAY_NODE_ID)
+
+    def _is_gateway_prompt(self, outcome: Any) -> bool:
+        """True when the outcome injects text into the gateway session."""
+        return (
+            getattr(outcome, "node_id", None) == self._gateway_node_id()
+            and any(isinstance(a, InjectText) for a in (getattr(outcome, "actions", ()) or ()))
+        )
+
+    async def _handle_gateway_prompt_outcome(self, outcome: Any) -> None:
+        """Gateway-room text → prompt delivery (never a steer notice).
+
+        Replies are the acknowledgement: the router's "queued steer"
+        notice is skipped here (plain text starts a turn — there is no
+        busy run to steer into) and the agent's reply renders when the
+        turn completes. Delivery runs in its own task so the intake
+        never blocks on a multi-minute turn.
+        """
+        for notice in outcome.notices:
+            if notice.body == QUEUED_STEER_NOTICE:
+                continue
+            await self._post_notice(notice)
+        for action in outcome.actions:
+            if isinstance(action, InjectText):
+                task = asyncio.create_task(
+                    self._deliver_gateway_prompt(
+                        str(action.node_id), str(action.text),
+                    ),
+                    name=f"observatory-gateway-prompt-{action.node_id}",
+                )
+                self._gateway_tasks.add(task)
+                task.add_done_callback(self._gateway_tasks.discard)
+            else:
+                log.info("control action pending transport: %r", action)
+
+    async def _deliver_gateway_prompt(self, node_id: str, text: str) -> None:
+        """One prompt → gateway session → reply renders in the room."""
+        from observatory.control import ControlNotice
+
+        transport = self.gateway_transport
+        if transport is None:
+            log.warning("gateway prompt dropped: no transport (node %s)", node_id)
+            await self._post_notice(ControlNotice(node_id, GATEWAY_UNREACHABLE_NOTICE))
+            return
+        try:
+            reply = await transport.prompt(text, kind="prompt", node_id=node_id)
+        except GatewayTransportError as exc:
+            log.warning("gateway prompt delivery failed: %s", exc)
+            await self._post_notice(ControlNotice(node_id, GATEWAY_UNREACHABLE_NOTICE))
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — delivery never kills the task host
+            log.exception("gateway prompt failed (node %s)", node_id)
+            await self._post_notice(ControlNotice(node_id, GATEWAY_PROMPT_FAILED_NOTICE))
+            return
+        if not reply.strip():
+            log.warning("gateway answered with an empty reply (node %s)", node_id)
+            return
+        assert self.renderer is not None
+        await self.renderer.render_agent_message(node_id, reply)
 
     async def _post_notice(self, notice: Any) -> None:
         """ControlNotice → room message in the agent's own voice."""
@@ -996,6 +1099,16 @@ class SidecarDaemon:
         """Reverse-order teardown; every step best-effort, logged. D18:
         the orchestrator registry's live handles are NEVER stopped here —
         a sidecar restart is not death; the next respawn pass re-adopts."""
+        # In-flight gateway prompts first: a stale reply must not render
+        # after teardown starts (renderer/client close below).
+        for task in list(self._gateway_tasks):
+            task.cancel()
+        for task in list(self._gateway_tasks):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        self._gateway_tasks.clear()
         for task in self._loops:
             task.cancel()
         for task in self._loops:
