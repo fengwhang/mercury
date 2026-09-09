@@ -224,8 +224,9 @@ class SidecarDaemon:
         #: In-flight gateway-room prompt deliveries (a set so shutdown
         #: cancellation is trivial).
         self._gateway_tasks: set[asyncio.Task] = set()
-        #: D7 power-level snapshot cache (sync provider for the router).
-        self._pl_cache: dict[str, Any] = {}
+        #: Rooms already carrying a decrypt-failure recovery notice (one
+        #: notice per room per process — failures after the first only log).
+        self._decrypt_notified: set[str] = set()
         self.omp_feeds: dict[str, Any] = {}  # node_id -> OmpFeed
 
         self._homeserver_proc: subprocess.Popen | None = None
@@ -980,6 +981,8 @@ class SidecarDaemon:
                 decrypted = await self.e2ee.decrypt_event(event)
                 if decrypted is not None:
                     event = {**event, "type": "m.room.message", "content": decrypted}
+                else:
+                    await self._notice_decrypt_failure(event)
             self.seen_events.append(event)
             if len(self.seen_events) > 1024:  # bounded observation buffer
                 del self.seen_events[:512]
@@ -998,6 +1001,32 @@ class SidecarDaemon:
             return self.state.get_meta("room:" + DIRECTIVES_ROOM_KEY)
         except StateError:
             return ""
+
+    async def _notice_decrypt_failure(self, event: dict[str, Any]) -> None:
+        """Surface one undecryptable event with recovery steps (defect iii).
+
+        One notice per room per process (later failures only log) — the
+        intake never dies on a notice failure. Never raises.
+        """
+        try:
+            room_id = str(event.get("room_id") or "")
+            event_id = str(event.get("event_id") or "")
+            if not room_id or room_id in self._decrypt_notified:
+                log.warning("megolm decrypt failed for %s (already notified: %s)",
+                            event_id, room_id)
+                return
+            self._decrypt_notified.add(room_id)
+            if len(self._decrypt_notified) > 64:
+                self._decrypt_notified.pop()
+            if self.client is None or not self.gateway_mxid:
+                return
+            from observatory.e2ee import decrypt_failure_notice
+
+            await self.client.send_message(
+                room_id, decrypt_failure_notice(event_id, room_id),
+                sender=self.gateway_mxid)
+        except Exception:  # noqa: BLE001 — notices never kill the intake
+            log.exception("decrypt-failure notice failed")
 
     async def _route_inbound(self, txn_id: str, event: dict, directives_room: str) -> None:
         # §6 directives room: owner-only mention-gated fan-out

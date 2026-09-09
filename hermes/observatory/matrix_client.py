@@ -212,11 +212,15 @@ class MatrixClient:
         invite: tuple[str, ...] | list[str] = (),
         space: bool = False,
         topic: str | None = None,
+        initial_state: list[dict[str, Any]] | None = None,
     ) -> str:
         """createRoom masqueraded as ``sender`` (the room creator). Spaces
         add ``creation_content.type = m.space`` (spec §3). ``preset=None``
         derives the §4 default: private_chat for spaces,
-        trusted_private_chat for rooms."""
+        trusted_private_chat for rooms. ``initial_state`` rides the
+        creation call itself — the ONLY way to have encryption from the
+        first event (a follow-up ``m.room.encryption`` PUT leaves a
+        plaintext window = poisoned history, defect iii)."""
         chosen = preset or (PRESET_PRIVATE if space else PRESET_TRUSTED_PRIVATE)
         body: dict[str, Any] = {"preset": chosen}
         if name is not None:
@@ -227,6 +231,8 @@ class MatrixClient:
             body["invite"] = list(invite)
         if space:
             body["creation_content"] = {"type": SPACE_ROOM_TYPE}
+        if initial_state:
+            body["initial_state"] = list(initial_state)
         out = await self.client_api("POST", f"{CLIENT_V3}/createRoom", sender=sender, json_body=body)
         room_id = str(out.get("room_id") or "")
         if not room_id:
@@ -301,6 +307,22 @@ class MatrixClient:
         if not event_id:
             raise MatrixError("PUT", path, 200, out)
         return event_id
+
+    async def get_room_state(
+        self,
+        room_id: str,
+        event_type: str,
+        state_key: str = "",
+        *,
+        sender: str,
+    ) -> Any:
+        """GET one state event (raises MatrixError 404 when absent — the
+        caller distinguishes 'never encrypted' from 'encrypted late')."""
+        from urllib.parse import quote as _q2
+
+        path = (f"{CLIENT_V3}/rooms/{_q2(room_id, safe='')}"
+                f"/state/{_q2(event_type, safe='')}/{_q2(state_key, safe='')}")
+        return await self.client_api("GET", path, sender=sender)
 
     async def set_space_child(
         self,

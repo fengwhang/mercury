@@ -1487,6 +1487,87 @@ class E2EEManager:
 # (spec M4c: coordinate via subclass; renderer.py is NOT edited)
 # ============================================================================
 
+#: Plaintext-window tolerance (seconds) between room creation and
+#: ``m.room.encryption``: atomic creation lands both in the same instant;
+#: anything wider means plaintext history exists (poisoned, defect iii).
+POISON_GAP_SECONDS = 60.0
+
+#: Recovery steps surfaced with every decrypt failure (defect iii): the
+#: notice names the event + room and tells the owner exactly what to try,
+#: in order. Never a bare "unable to decrypt".
+DECRYPT_RECOVERY_STEPS = (
+    "Recovery, in order: "
+    "1) in FluffyChat, verify the gateway-agent device (emoji/SAS or "
+    "fingerprint compare — the fingerprint is in every room's verify-howto "
+    "notice); "
+    "2) if the sidecar was reinstalled, the old messages need the OLD keys "
+    "— in FluffyChat open the undecryptable message → 'request keys'; "
+    "3) still failing: stop the sidecar, delete "
+    "$MERCURY_HOME/observatory/crypto, restart (fresh Olm account, keys "
+    "re-shared), then ask the sender to resend."
+)
+
+
+def decrypt_failure_notice(event_id: str | None, room_id: str) -> str:
+    """Human notice for one undecryptable event + recovery steps."""
+    return (
+        f"⚠️ Could not decrypt event {event_id or '(unknown)'} in {room_id}. "
+        + DECRYPT_RECOVERY_STEPS
+    )
+
+
+async def detect_poisoned_rooms(
+    client: Any,
+    rooms: list[tuple[str, str]],
+    *,
+    sender: str,
+    gap_seconds: float = POISON_GAP_SECONDS,
+) -> list[dict[str, Any]]:
+    """Find rooms with undecryptable plaintext history (defect iii).
+
+    A room is poisoned when it is unencrypted (encryption state 404 — a
+    pre-fix plaintext room) or was encrypted LATER than ``gap_seconds``
+    after creation (plaintext window). Atomically created rooms land both
+    state events in the same instant and never appear here. Returns one
+    dict per problem room (``key``, ``room_id``, ``status``,
+    ``gap_seconds``); clean rooms are omitted. Never raises — per-room
+    failures degrade to omission (detection must not block setup).
+    """
+    problems: list[dict[str, Any]] = []
+
+    def _ts(state_event: Any) -> float | None:
+        try:
+            ts = (state_event or {}).get("origin_server_ts")
+            return float(ts) / 1000.0 if ts is not None else None
+        except Exception:  # noqa: BLE001 — malformed state degrades to unknown
+            return None
+
+    for key, room_id in rooms:
+        try:
+            try:
+                created = await client.get_room_state(
+                    room_id, "m.room.create", "", sender=sender)
+            except Exception:  # noqa: BLE001 — unreadable room: skip it
+                continue
+            try:
+                encrypted = await client.get_room_state(
+                    room_id, "m.room.encryption", "", sender=sender)
+            except Exception:  # noqa: BLE001 — 404 = never encrypted
+                problems.append({"key": key, "room_id": room_id,
+                                 "status": "unencrypted", "gap_seconds": None})
+                continue
+            created_ts, encrypted_ts = _ts(created), _ts(encrypted)
+            if created_ts is None or encrypted_ts is None:
+                continue
+            gap = encrypted_ts - created_ts
+            if gap > gap_seconds:
+                problems.append({"key": key, "room_id": room_id,
+                                 "status": "poisoned", "gap_seconds": gap})
+        except Exception:  # noqa: BLE001 — one bad room never kills the scan
+            continue
+    return problems
+
+
 class EncryptedIntentExecutor:
     """Compose-in wrapper around ``renderer.IntentExecutor``: identical
     intent surface, but every chat room it creates gets
@@ -1586,10 +1667,25 @@ class EncryptedIntentExecutor:
         return records
 
     async def _create_encrypted_room(self, op: "CreateRoom") -> str:
-        """Plain create + owner PL (the base executor's law), then D4:
-        ``m.room.encryption`` on every CHAT room, registry entry after."""
-        rid = await self._inner.execute([op])
-        room_id = str(rid[0].get("room_id") or "")
-        await self.e2ee.enable_room_encryption(room_id, sender=op.sender)
+        """Encrypted from the FIRST event (defect iii): ``m.room.encryption``
+        rides ``initial_state`` in the creation call itself — never a
+        follow-up PUT (a plaintext window poisons history: pre-encryption
+        events stay undecryptable forever). Owner PL + registry entry
+        follow the base executor's law."""
+        inner = self._inner
+        room_id = await inner.client.create_room(
+            name=op.name,
+            sender=op.sender,
+            preset=inner.room_preset,
+            invite=(inner.owner_mxid,),
+            initial_state=[{
+                "type": "m.room.encryption",
+                "state_key": "",
+                "content": dict(ENCRYPTION_CONTENT),
+            }],
+        )
+        await inner.client.set_power_levels(
+            room_id, {inner.owner_mxid: 100}, sender=op.sender)
+        inner._record_room(op.key, room_id)
         self.e2ee.mark_room_encrypted(op.key, room_id)
         return room_id
