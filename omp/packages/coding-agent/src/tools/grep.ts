@@ -63,6 +63,7 @@ import {
 	splitPathAndSelPreferringLiteral,
 	toPathList,
 } from "./path-utils";
+import { getReadBlockError } from "./read-deny";
 import { isRawSelector } from "./read-selector";
 import {
 	createCachedComponent,
@@ -1326,6 +1327,23 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					}
 					matchesByPath.get(match.path)!.push(match);
 				}
+				// Credential denylist (mirrors hermes _filter_read_blocked_search_results
+				// and the read tool guard): match content from secret-bearing files
+				// is never surfaced — only a count, never a value.
+				let omittedBlockedFiles = 0;
+				// Backwards by index: entries are spliced out during the scan.
+				for (let i = fileOrder.length - 1; i >= 0; i--) {
+					const file = fileOrder[i];
+					const abs = matchAbsolutePath(file, searchPath);
+					const blocked =
+						getReadBlockError(abs) !== undefined ||
+						getReadBlockError(resolveReadPath(file, this.session.cwd)) !== undefined;
+					if (blocked) {
+						fileOrder.splice(i, 1);
+						matchesByPath.delete(file);
+						omittedBlockedFiles++;
+					}
+				}
 				let perFileLimitReached = false;
 				for (const file of fileOrder) {
 					const list = matchesByPath.get(file)!;
@@ -1431,8 +1449,12 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 				const missingPathsForNote = missingPaths.filter(p => !archiveUnreadablePaths.has(p));
 				const missingPathsNote =
 					missingPathsForNote.length > 0 ? `Skipped missing paths: ${missingPathsForNote.join(", ")}` : undefined;
+				const blockedNote =
+					omittedBlockedFiles > 0
+						? `Omitted matches from ${omittedBlockedFiles} secret-bearing file(s) (.env / credential stores are never searched; read .env.example for structure)`
+						: undefined;
 				const warningNote =
-					[missingPathsNote, archiveNote, oversizedNote, oversizedScanNote]
+					[missingPathsNote, archiveNote, oversizedNote, oversizedScanNote, blockedNote]
 						.filter((s): s is string => Boolean(s))
 						.join("\n") || undefined;
 				if (selectedMatches.length === 0) {

@@ -77,6 +77,7 @@ import {
 	splitPathAndSelPreferringLiteral,
 } from "./path-utils";
 import { readArchive, resolveArchiveReadPath } from "./read-archive";
+import { getReadBlockError } from "./read-deny";
 import {
 	BRACKET_CONTEXT_ELLIPSIS,
 	buildInMemoryMultiRangeResult,
@@ -1389,6 +1390,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				: parseSel(localTarget.sel);
 
 		let absolutePath = resolveReadPath(localReadPath, this.session.cwd);
+		// Credential denylist (mirrors hermes agent/file_safety): refuse
+		// secret-bearing reads before any I/O. The message is location-only —
+		// it never carries a secret value.
+		const preBlock = getReadBlockError(absolutePath);
+		if (preBlock !== undefined) throw new ToolError(preBlock);
 		let suffixResolution: { from: string; to: string } | undefined;
 
 		let isDirectory = false;
@@ -1451,6 +1457,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				throw error;
 			}
 		}
+		// Re-check after suffix/approved-plan recovery: resolution may have
+		// moved the target onto a denied path.
+		const resolvedBlock = getReadBlockError(absolutePath);
+		if (resolvedBlock !== undefined) throw new ToolError(resolvedBlock);
 
 		if (isDirectory) {
 			if (isMultiRange(parsed)) {
