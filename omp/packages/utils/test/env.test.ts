@@ -327,3 +327,81 @@ describe("$envExact", () => {
 		expect($envExact(name)).toBeUndefined();
 	});
 });
+
+const mercuryProbePath = path.join(import.meta.dir, "fixtures", "mercury-env-probe.ts");
+
+function makeIsolatedHome(): string {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-utils-mercury-home-"));
+	tempDirs.push(dir);
+	return dir;
+}
+
+function writeMercuryEnv(home: string, content: string): void {
+	fs.writeFileSync(path.join(home, ".env"), content);
+}
+
+async function runMercuryProbe(env: Record<string, string | undefined>): Promise<{ marker: string | null; override: string | null }> {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-utils-mercury-cwd-"));
+	tempDirs.push(cwd);
+	const proc = Bun.spawn([process.execPath, mercuryProbePath], {
+		cwd,
+		env: { ...process.env, ...env },
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	expect(exitCode, stderr).toBe(0);
+	return JSON.parse(stdout);
+}
+
+describe("mercury shared env cascade", () => {
+	it("loads keys from $MERCURY_HOME/.env", async () => {
+		const home = makeIsolatedHome();
+		const mercury = fs.mkdtempSync(path.join(os.tmpdir(), "pi-utils-mercury-store-"));
+		tempDirs.push(mercury);
+		writeMercuryEnv(mercury, "MERCURY_CASCADE_PROBE=from-shared-store\n");
+		const out = await runMercuryProbe({ HOME: home, MERCURY_HOME: mercury });
+		expect(out.marker).toBe("from-shared-store");
+	});
+
+	it("real process env wins over $MERCURY_HOME/.env", async () => {
+		const home = makeIsolatedHome();
+		const mercury = fs.mkdtempSync(path.join(os.tmpdir(), "pi-utils-mercury-store-"));
+		tempDirs.push(mercury);
+		writeMercuryEnv(mercury, "MERCURY_CASCADE_PROBE=from-shared-store\n");
+		const out = await runMercuryProbe({
+			HOME: home,
+			MERCURY_HOME: mercury,
+			MERCURY_CASCADE_PROBE: "from-process-env",
+		});
+		expect(out.marker).toBe("from-process-env");
+	});
+
+	it("agent-dir .env wins over the shared store", async () => {
+		const home = makeIsolatedHome();
+		const mercury = fs.mkdtempSync(path.join(os.tmpdir(), "pi-utils-mercury-store-"));
+		tempDirs.push(mercury);
+		writeMercuryEnv(mercury, "MERCURY_CASCADE_OVERRIDE=from-shared-store\n");
+		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-utils-mercury-agent-"));
+		tempDirs.push(agentDir);
+		fs.writeFileSync(path.join(agentDir, ".env"), "MERCURY_CASCADE_OVERRIDE=from-agent-dir\n");
+		const out = await runMercuryProbe({
+			HOME: home,
+			MERCURY_HOME: mercury,
+			PI_CODING_AGENT_DIR: agentDir,
+		});
+		expect(out.override).toBe("from-agent-dir");
+	});
+
+	it("falls back to ~/.mercury/.env when MERCURY_HOME is unset", async () => {
+		const home = makeIsolatedHome();
+		fs.mkdirSync(path.join(home, ".mercury"), { recursive: true });
+		writeMercuryEnv(path.join(home, ".mercury"), "MERCURY_CASCADE_PROBE=from-default-home\n");
+		const out = await runMercuryProbe({ HOME: home, MERCURY_HOME: "" });
+		expect(out.marker).toBe("from-default-home");
+	});
+});

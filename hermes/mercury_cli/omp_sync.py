@@ -44,6 +44,31 @@ def _repo_root() -> Path | None:
     return None
 
 
+def qualify_omp_model(model_id: str, provider: str) -> str:
+    """Prefix a provider-relative model id with the mercury provider slug.
+
+    OpenRouter catalog ids are provider-RELATIVE but contain a slash
+    (``meta/muse-spark-...``, ``openai/gpt-...``) — a bare ``"/" in id``
+    check mistakes them for already-qualified selectors, and the short id
+    reaches ``omp --model`` raw, where omp resolves provider ``meta`` with
+    no key mapping (``No API key found for "meta"``). So for ``openrouter``,
+    only an ``openrouter/`` prefix counts as qualified. Other providers use
+    bare catalog ids, so the legacy rule stands: anything containing a slash
+    is treated as an already-qualified (possibly custom-provider) selector
+    and passes through untouched. Idempotent in all cases: re-syncs never
+    double-prefix (``openrouter/openrouter/...``).
+    """
+    mid = (model_id or "").strip()
+    prov = (provider or "").strip().rstrip("/")
+    if not mid or not prov:
+        return mid
+    if mid == prov or mid.startswith(prov + "/"):
+        return mid
+    if prov == "openrouter" or "/" not in mid:
+        return f"{prov}/{mid}"
+    return mid
+
+
 def _read_model_default() -> tuple[str, str] | None:
     """Resolve the EFFECTIVE default model from the hermes config view.
 
@@ -89,7 +114,7 @@ def _read_fallback() -> str | None:
             prov = str(chain[0].get("provider") or "").strip()
             mid = str(chain[0].get("model") or "").strip()
             if mid:
-                return f"{prov}/{mid}" if prov else mid
+                return qualify_omp_model(mid, prov)
     except Exception:
         pass
     return None
@@ -258,7 +283,7 @@ def sync_omp_from_setup(quiet: bool = False) -> bool:
             print("omp-sync: no hermes model configured — nothing to sync")
         return False
     provider, model_id = default
-    qualified = f"{provider}/{model_id}" if provider else model_id
+    qualified = qualify_omp_model(model_id, provider)
 
     update: dict[str, str] = {}
     slots = _current_slots()
