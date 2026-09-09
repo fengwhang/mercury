@@ -234,11 +234,11 @@ install_computer_use_driver() {
 }
 
 # ============================================================================
-# Matrix Observatory homeserver — Tuwunel (fetch-at-install, NOT vendored;
+# Matrix Observatory homeserver — Tuwunel (offline provision, NOT vendored;
 # docs/design/matrix-observatory.md §2/D16). The shared python module does
-# the work so install.sh, the first-gateway-start hook and
-# `mercury update` all run the SAME code: latest STABLE release from the
-# GitHub API with a hard >=1.8.1 gate, static binary to
+# the work so install.sh, the setup wizard and `mercury update` all run
+# the SAME code: installed binary trusted behind a hard >=1.8.1 gate,
+# static binary at
 # $MERCURY_HOME/observatory/bin/tuwunel + version file, closed tuwunel.toml
 # (localhost, no federation, no registration, registration_token), sidecar
 # appservice registration YAML, owner bootstrap, systemd user unit
@@ -289,7 +289,7 @@ install_observatory() {
         log_info "skipping observatory homeserver (--skip-observatory)"
         return 0
     fi
-    log_info "Matrix Observatory homeserver (Tuwunel — fetched from upstream)"
+    log_info "Matrix Observatory homeserver (Tuwunel — offline provision, no upstream query)"
     local VENV_PY="$INSTALL_ROOT/hermes/.venv/bin/python"
     [ -x "$VENV_PY" ] || { log_error "venv python missing — cannot provision the observatory"; exit 1; }
     # registration_token entropy per spec: openssl rand when present; the
@@ -304,6 +304,11 @@ install_observatory() {
     else
         log_info "openssl not found — provisioner draws the registration_token itself"
     fi
+    # Install law: provision offline — trust the installed tuwunel binary
+    # behind the provisioner's >= MIN_VERSION gate, zero GitHub requests,
+    # so a rate-limit can never fail an install. The latest-stable check
+    # lives ONLY behind explicit `mercury update` (refresh_for_update).
+    _obs_args+=(--offline)
     # E2EE crypto stack (mautrix[encryption] + python-olm). python-olm has
     # NO cp313 wheel on PyPI — the repo vendors per-arch wheels checked in
     # under hermes/observatory/wheels/ (SHA256SUMS-pinned). Install order:
