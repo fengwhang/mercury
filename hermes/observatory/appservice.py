@@ -42,6 +42,12 @@ log = logging.getLogger(__name__)
 #: Matrix appservice API paths (spec: HS → AS push).
 TRANSACTIONS_PATH = r"/_matrix/app/v1/transactions/{txn_id}"
 HEALTH_PATH = "/health"
+#: HS→AS queries the transaction surface never served (tuwunel logged
+#: them as bare 404s): user-existence probes, room-alias probes, and the
+#: liveness ping. All three now answer explicitly AND log the path.
+USER_QUERY_PATH = r"/_matrix/app/v1/users/{user_id}"
+ROOM_ALIAS_QUERY_PATH = r"/_matrix/app/v1/rooms/{room_alias}"
+PING_PATH = r"/_matrix/app/v1/ping"
 
 #: Bounded txnId memory: dedup window for homeserver retries.
 TXN_MEMORY_DEFAULT = 1024
@@ -78,6 +84,38 @@ class TransactionIntake:
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._txn_memory = txn_memory
         self._consumer: asyncio.Task[None] | None = None
+        # Appservice error accounting (defect v acceptance): every intake
+        # failure lands here (intake 4xx/429, handler crashes, logged 404
+        # query paths). ``error_count() == 0`` is the acceptance assert.
+        self._app_errors: list[str] = []
+        try:
+            import re as _re
+
+            from observatory.config_gen import APPSERVICE_NAMESPACE_REGEX
+
+            self._namespace = _re.compile(APPSERVICE_NAMESPACE_REGEX)
+        except Exception:  # noqa: BLE001 — a broken regex never kills intake
+            self._namespace = None
+
+    def note_error(self, what: str) -> None:
+        """Record one appservice-side error (bounded memory). Never raises."""
+        try:
+            self._app_errors.append(str(what))
+            del self._app_errors[:-256]
+        except Exception:  # noqa: BLE001 — accounting never kills intake
+            pass
+
+    def error_count(self) -> int:
+        """Number of recorded appservice errors (acceptance: assert zero)."""
+        return len(self._app_errors)
+
+    def is_ours(self, user_id: str) -> bool:
+        """True when a user id falls in our exclusive ghost namespace."""
+        try:
+            return self._namespace is not None and bool(
+                self._namespace.match(str(user_id or "")))
+        except Exception:  # noqa: BLE001 — match failure means not ours
+            return False
 
     # --- dedup ----------------------------------------------------------------
 
@@ -135,6 +173,7 @@ class TransactionIntake:
                 await self._handler(txn_id, events)
             except Exception:  # consumer bugs must never kill the intake
                 log.exception("observatory event handler failed for txn %s", txn_id)
+                self.note_error(f"handler-failed txn {txn_id}")
             finally:
                 self.queue.task_done()
 
@@ -145,6 +184,7 @@ class TransactionIntake:
         """Dedup, enqueue, and answer. 200 in every accepted case — the
         homeserver treats non-2xx as "retry forever"."""
         if not isinstance(events, list):
+            self.note_error(f"400 txn {txn_id}: events not a list")
             return web.json_response(
                 {"errcode": "M_BAD_JSON", "error": "events must be a list"},
                 status=400,
@@ -155,6 +195,7 @@ class TransactionIntake:
             self.queue.put_nowait((txn_id, events, dict(crypto or {})))
         except asyncio.QueueFull:
             # Real backpressure: 429 is the canonical homeserver retry signal.
+            self.note_error(f"429 txn {txn_id}: intake queue full")
             return web.json_response(
                 {"errcode": "M_LIMIT_EXCEEDED", "error": "intake queue full"},
                 status=429,
@@ -217,16 +258,87 @@ async def _put_transaction(request: web.Request) -> web.Response:
     ) if key in body and body[key]}
     return await intake.accept(txn_id, body.get("events", []), crypto=crypto)
 
-
 async def _health(_request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
+async def _get_user_query(request: web.Request) -> web.Response:
+    """HS user-existence probe: 200 when the id is our ghost, else 404.
+
+    Both outcomes are logged (the bare 404s tuwunel logged were
+    indistinguishable from breakage). A 200 means "ours — provision on
+    demand via register_virtual_user"; 404 M_NOT_FOUND means "not ours".
+    The 404 is counted once by _log_404_middleware (it sees the response).
+    """
+    intake: TransactionIntake = request.app[_INTAKE_KEY]
+    user_id = request.match_info.get("user_id", "")
+    if intake.is_ours(user_id):
+        log.info("appservice user query: ours %s", user_id)
+        return web.json_response({})
+    log.warning("appservice user query 404 (not ours): %s", user_id)
+    return web.json_response(
+        {"errcode": "M_NOT_FOUND", "error": "user is not in our namespace"},
+        status=404,
+    )
+
+
+async def _get_alias_query(request: web.Request) -> web.Response:
+    """HS room-alias probe: we claim no aliases — always 404, logged.
+
+    Counted once by _log_404_middleware (it sees the response).
+    """
+    alias = request.match_info.get("room_alias", "")
+    log.warning("appservice alias query 404 (no aliases claimed): %s", alias)
+    return web.json_response(
+        {"errcode": "M_NOT_FOUND", "error": "no aliases claimed"},
+        status=404,
+    )
+
+
+async def _post_ping(request: web.Request) -> web.Response:
+    """HS→AS liveness ping: 200, logged at debug (chatty by design)."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — ping body is informational only
+        body = {}
+    txn_id = body.get("transaction_id", "") if isinstance(body, dict) else ""
+    log.debug("appservice ping (txn %s)", txn_id)
+    return web.json_response({})
+
+@web.middleware
+async def _log_404_middleware(request: web.Request, handler):
+    """Log every 404 path (unknown routes raise through here; explicit
+    query 404s return through here) and count it once for the zero-errors
+    acceptance assert. Without this, router 404s are invisible except in
+    the homeserver log."""
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        if exc.status == 404:
+            log.warning("appservice 404: %s %s", request.method, request.path)
+            try:
+                request.app[_INTAKE_KEY].note_error(
+                    f"404 {request.method} {request.path}")
+            except Exception:  # noqa: BLE001 — accounting never breaks serving
+                pass
+        raise
+    if response.status == 404:
+        log.warning("appservice 404: %s %s", request.method, request.path)
+        try:
+            request.app[_INTAKE_KEY].note_error(
+                f"404 {request.method} {request.path}")
+        except Exception:  # noqa: BLE001 — accounting never breaks serving
+            pass
+    return response
+
 def make_app(intake: TransactionIntake) -> web.Application:
     """Wire routes + token middleware onto a fresh application."""
-    app = web.Application(middlewares=[_token_middleware])
+    app = web.Application(middlewares=[_log_404_middleware, _token_middleware])
     app[_INTAKE_KEY] = intake
     app.router.add_put(TRANSACTIONS_PATH, _put_transaction)
+    app.router.add_get(USER_QUERY_PATH, _get_user_query)
+    app.router.add_get(ROOM_ALIAS_QUERY_PATH, _get_alias_query)
+    app.router.add_post(PING_PATH, _post_ping)
     app.router.add_get(HEALTH_PATH, _health)
     return app
 

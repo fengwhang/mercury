@@ -502,6 +502,130 @@ def verify_owner_login(
     return body
 
 
+def _refresh_owner_admin_token(
+    resolved: ObservatoryPaths,
+    stored: dict,
+    *,
+    http: Any | None = None,
+) -> str:
+    """Re-login with the STORED user_id+password; persist the fresh token.
+
+    Self-heal for a stale ``access_token`` (server DB recreated, token
+    revoked): the password still authenticates, so mint a new token and
+    rewrite owner-credentials.json (password untouched). Returns the fresh
+    token. Raises ProvisionError when the stored password no longer logs in.
+    """
+    base_url = str(stored.get("homeserver_url") or "")
+    user_id = str(stored.get("user_id") or "")
+    password = str(stored.get("password") or "")
+    if not password:
+        raise ProvisionError(
+            "owner credentials carry no password — cannot refresh the admin "
+            "token (delete owner-credentials.json and tuwunel-db to re-provision)"
+        )
+    try:
+        body = verify_owner_login(base_url, user_id, password, http=http)
+    except ProvisionError as exc:
+        raise ProvisionError(
+            f"admin token refresh failed (stored password rejected): {exc}"
+        ) from exc
+    stored["access_token"] = str(body.get("access_token") or "")
+    if body.get("device_id"):
+        stored["device_id"] = str(body["device_id"])
+    _atomic_write_secret_file(
+        resolved.owner_credentials, json.dumps(stored, indent=2) + "\n")
+    return str(stored["access_token"])
+
+
+def heal_owner_admin_token(
+    paths: ObservatoryPaths | None = None,
+    *,
+    http: Any | None = None,
+) -> str:
+    """Validate the stored admin token; re-login when it is stale.
+
+    Returns ``"valid"`` (whoami accepted the token), ``"refreshed"`` (401 /
+    M_UNKNOWN_TOKEN → re-login with the stored password succeeded and the
+    fresh token was persisted), or raises ProvisionError. Setup calls this
+    before any admin surface (purge, rotation); the sidecar calls it
+    periodically (self-heal). Never logs secrets.
+    """
+    resolved = paths if paths is not None else ObservatoryPaths(_mercury_home(None))
+    stored = read_owner_credentials(resolved)
+    if stored is None:
+        raise ProvisionError(
+            "owner is not provisioned — run the observatory install first"
+        )
+    base_url = str(stored.get("homeserver_url") or "")
+    token = str(stored.get("access_token") or "")
+    if not base_url or not token:
+        raise ProvisionError(
+            "owner credentials carry no homeserver_url/access_token — "
+            "re-provision to repair (delete owner-credentials.json and tuwunel-db)"
+        )
+    call = http or _http_json
+    try:
+        status, body = call(
+            "GET", f"{base_url}/_matrix/client/v3/account/whoami", token=token)
+    except ProvisionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — network failure is a hard error here
+        raise ProvisionError(f"admin token validation failed: {exc}") from exc
+    if status == 200:
+        return "valid"
+    if status == 401 or (isinstance(body, dict)
+                         and body.get("errcode") == "M_UNKNOWN_TOKEN"):
+        _refresh_owner_admin_token(resolved, stored, http=call)
+        return "refreshed"
+    raise ProvisionError(
+        "admin token validation failed "
+        f"(HTTP {status}): {json.dumps(body)[:200]}"
+    )
+
+
+def _client_password_change(
+    base_url: str,
+    user_id: str,
+    old_password: str,
+    new_password: str,
+    token: str,
+    *,
+    http: Any | None = None,
+) -> tuple[int, dict]:
+    """Client-API password change (Tuwunel fallback for the Synapse admin PUT).
+
+    ``POST /_matrix/client/v3/account/password`` authenticated with the
+    current access token + UIAA ``m.login.password`` (the stored password).
+    Retries once with the server's UIAA ``session`` when the first attempt
+    answers 401-with-flows. Returns the final (status, body).
+    """
+    call = http or _http_json
+    auth = {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": user_id},
+        "password": old_password,
+    }
+    try:
+        status, body = call(
+            "POST", f"{base_url}/_matrix/client/v3/account/password",
+            payload={"new_password": new_password, "auth": auth}, token=token)
+    except ProvisionError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ProvisionError(f"password change failed: {exc}") from exc
+    if status == 401 and isinstance(body, dict) and body.get("session"):
+        auth = {**auth, "session": body["session"]}
+        try:
+            status, body = call(
+                "POST", f"{base_url}/_matrix/client/v3/account/password",
+                payload={"new_password": new_password, "auth": auth}, token=token)
+        except ProvisionError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ProvisionError(f"password change failed: {exc}") from exc
+    return status, body
+
+
 def rotate_owner_password(
     new_password: str,
     paths: ObservatoryPaths | None = None,
@@ -511,11 +635,14 @@ def rotate_owner_password(
     """Rotate the owner password on the live homeserver + both mirrors.
 
     ``http(method, url, payload, token)`` replaces :func:`_http_json`
-    (tests inject a fake). Flow: admin PUT then login probe with the NEW
+    (tests inject a fake). Flow: Synapse admin PUT (401/M_UNKNOWN_TOKEN →
+    re-login with the stored password + one retry), Tuwunel fallback to
+    the client ``/account/password`` UIAA change when the admin surface is
+    absent (404/405/M_UNRECOGNIZED), then login probe with the NEW
     password, then the atomic dual-write (``_atomic_write_secret_file`` +
     atomic ``mirror_owner_env``). Mirrors move ONLY after the server both
-    accepts the PUT and proves the new password logs in — a failed rotation
-    or probe never diverges local state. Returns 'rotated'.
+    accepts the change and proves the new password logs in — a failed
+    rotation or probe never diverges local state. Returns 'rotated'.
     """
     resolved = paths if paths is not None else ObservatoryPaths(_mercury_home(None))
     stored = read_owner_credentials(resolved)
@@ -551,6 +678,31 @@ def rotate_owner_password(
         raise
     except Exception as exc:  # noqa: BLE001 — network failure is a hard error here
         raise ProvisionError(f"password rotation failed: {exc}") from exc
+    if status == 401 or (isinstance(body, dict)
+                         and body.get("errcode") == "M_UNKNOWN_TOKEN"):
+        # Stale admin token (server DB recreated, token revoked): the stored
+        # password still authenticates — refresh and retry the PUT once.
+        admin_token = _refresh_owner_admin_token(resolved, stored, http=call)
+        try:
+            status, body = call(
+                "PUT",
+                f"{base_url}/_synapse/admin/v2/users/"
+                f"{urllib.parse.quote(user_id, safe='')}",
+                payload={"password": password, "logout_devices": False},
+                token=admin_token,
+            )
+        except ProvisionError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ProvisionError(f"password rotation failed: {exc}") from exc
+    if status in (404, 405) or (isinstance(body, dict)
+                                and body.get("errcode") in ("M_UNRECOGNIZED", "M_NOT_FOUND")
+                                and status != 200):
+        # Tuwunel does not implement the Synapse admin user surface: change
+        # the password through the client API (UIAA with the stored password).
+        old_password = str(stored.get("password") or "")
+        status, body = _client_password_change(
+            base_url, user_id, old_password, password, admin_token, http=call)
     if status != 200:
         raise ProvisionError(
             f"password rotation failed (HTTP {status}): "
@@ -562,6 +714,335 @@ def rotate_owner_password(
     mirror_owner_env(resolved.root.parent, user_id, password)
     return "rotated"
 
+
+# --- wipe (archive vs annihilate) -------------------------------------------------
+#
+# Residual installs break clean reinstalls (stale server_name pins, orphaned
+# MXIDs, device keys bound to a dead DB). Wiping is EXPLICIT and two-flavored:
+# ``archive`` moves tuwunel data aside under a timestamped dir (forensics /
+# hand-restore); ``annihilate`` deletes it. Both stop the units, remove the
+# generated unit files, and strip the stale .env owner mirror (keys that
+# authenticate nowhere after a wipe). The tuwunel BINARY + logs are install
+# artifacts, not data — both modes keep them.
+#
+
+#: Wipeable tuwunel data, resolved per home: toml (identity pin), DB dir
+#: (RocksDB + archived WALs), owner credentials, appservice registrations
+#: (tokens), renderer state (room/space ids of deleted rooms), crypto stores
+#: (device keys bound to the dead DB).
+def observatory_wipe_targets(paths: ObservatoryPaths) -> list[Path]:
+    """Existing wipe-target paths under the observatory root (in wipe order)."""
+    candidates = [
+        paths.toml,
+        paths.db_dir,
+        paths.owner_credentials,
+        paths.appservices_dir,
+        paths.root / "state.db",
+        paths.root / "crypto",
+    ]
+    return [p for p in candidates if p.exists()]
+
+
+def observatory_data_present(mercury_home: str | Path | None = None) -> bool:
+    """True when any wipeable tuwunel data exists (wizard gate). Never raises."""
+    try:
+        return bool(observatory_wipe_targets(
+            ObservatoryPaths(_mercury_home(mercury_home))))
+    except Exception:  # noqa: BLE001 — probe, never kills the caller
+        return False
+
+
+def _stop_and_remove_units(*, unit_dir: Path | None = None) -> list[str]:
+    """Stop + remove the homeserver/sidecar user units. Best-effort: every
+    failure degrades silently (containers have no systemd); returns the unit
+    names actually removed."""
+    removed: list[str] = []
+    units = [HOMESERVER_UNIT_NAME, SIDECAR_UNIT_NAME]
+    if _systemctl_available():
+        for unit in units:
+            try:
+                _run_systemctl(["stop", unit], check=False)
+                _run_systemctl(["disable", unit], check=False)
+            except Exception:  # noqa: BLE001 — best-effort stop
+                pass
+    udir = unit_dir if unit_dir is not None else (
+        Path.home() / ".config" / "systemd" / "user")
+    for unit in units:
+        try:
+            target = udir / unit
+            if target.is_file() or target.is_symlink():
+                target.unlink()
+                removed.append(unit)
+        except Exception:  # noqa: BLE001 — best-effort removal
+            pass
+    if removed and _systemctl_available():
+        try:
+            _run_systemctl(["daemon-reload"], check=False)
+        except Exception:  # noqa: BLE001
+            pass
+    return removed
+
+
+def _strip_owner_env_mirror(home: Path) -> list[str]:
+    """Drop MATRIX_OBS_OWNER_* lines from $MERCURY_HOME/.env (atomic).
+    Returns stripped keys; missing file/keys are a no-op (never raises)."""
+    try:
+        env_path = home / ".env"
+        if not env_path.is_file():
+            return []
+        lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        kept = [ln for ln in lines
+                if not _env_line_defines_key(ln, ENV_OWNER_USER_ID)
+                and not _env_line_defines_key(ln, ENV_OWNER_PASSWORD)]
+        if len(kept) == len(lines):
+            return []
+        _atomic_write_text(env_path, "".join(kept))
+        return [ENV_OWNER_USER_ID, ENV_OWNER_PASSWORD]
+    except Exception:  # noqa: BLE001 — best-effort strip
+        return []
+
+
+def wipe_observatory_data(
+    mercury_home: str | Path | None = None,
+    *,
+    mode: str,
+    unit_dir: Path | None = None,
+) -> dict:
+    """Wipe tuwunel data: ``mode="archive"`` moves it aside (timestamped dir
+    under the observatory root), ``mode="annihilate"`` deletes it. Both stop
+    the units, remove generated unit files, and strip the stale .env owner
+    mirror. Keeps the tuwunel binary + logs. Returns a summary dict
+    (``mode``, ``moved``/``deleted``, ``archived_to``, ``units_removed``,
+    ``env_stripped``). Raises ProvisionError on an unknown mode; per-target
+    failures raise (loud — a half-wipe must never pass as clean).
+    """
+    if mode not in ("archive", "annihilate"):
+        raise ProvisionError(
+            f"unknown wipe mode {mode!r} — expected 'archive' or 'annihilate'")
+    home = _mercury_home(mercury_home)
+    paths = ObservatoryPaths(home)
+    targets = observatory_wipe_targets(paths)
+    udir = unit_dir if unit_dir is not None else (
+        Path.home() / ".config" / "systemd" / "user")
+    # Snapshot generated unit files BEFORE removal so the archive stays
+    # hand-restorable (units re-generate on provision; copies are forensics).
+    unit_copies: dict[str, str] = {}
+    for unit in (HOMESERVER_UNIT_NAME, SIDECAR_UNIT_NAME):
+        try:
+            unit_copies[unit] = (udir / unit).read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001 — absent unit, nothing to snapshot
+            pass
+    removed_units = _stop_and_remove_units(unit_dir=unit_dir)
+    summary: dict = {"mode": mode, "units_removed": removed_units,
+                     "moved": [], "deleted": []}
+    if mode == "archive":
+        dest = paths.root / time.strftime("wiped-archive-%Y%m%d-%H%M%S")
+        dest.mkdir(parents=True, exist_ok=False)
+        for unit, text in unit_copies.items():
+            (dest / unit).write_text(text, encoding="utf-8")
+        summary["archived_to"] = str(dest)
+        for target in targets:
+            shutil.move(str(target), str(dest / target.name))
+            summary["moved"].append(target.name)
+    else:
+        for target in targets:
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+            summary["deleted"].append(target.name)
+    summary["env_stripped"] = _strip_owner_env_mirror(home)
+    return summary
+
+
+# --- poisoned rooms (defect iii): detect + converge --------------------------------
+# Pre-fix rooms were created plaintext (encryption as a follow-up PUT, or
+# never) — their early history stays undecryptable forever. The setup
+# acceptance sequence scans for them and offers re-convergence (purge +
+# recreate encrypted from the start).
+
+
+def gateway_room_encrypted(
+    mercury_home: str | Path | None = None,
+) -> bool | None:
+    """Setup-acceptance assert: is the gateway room sidecar-encrypted?
+
+    True when the gateway room id matches the ``crypt:`` registry (created
+    encrypted by the sidecar path), False when it exists but is
+    unregistered, None when unknown (unprovisioned / no room yet).
+    Never raises."""
+    try:
+        from observatory.state import ObservatoryState, StateError
+
+        paths = ObservatoryPaths(_mercury_home(mercury_home))
+        state = ObservatoryState(paths.root / "state.db")
+        try:
+            gw = state.get("gw")
+            room_id = gw.get("room_id") or ""
+            if not room_id:
+                return None
+            try:
+                return bool(state.get_meta("crypt:gw") == room_id)
+            except StateError:
+                return False
+        finally:
+            state.close()
+    except Exception:  # noqa: BLE001 — probe, never kills setup
+        return None
+
+
+def _poison_scan_client(home: Path, paths: ObservatoryPaths):
+    """Live MatrixClient for the poison scan (admin-401 self-healing)."""
+    from observatory.appservice import as_token_from_registration
+    from observatory.matrix_client import MatrixClient
+
+    doc = json.loads(paths.owner_credentials.read_text(encoding="utf-8"))
+    bound = _bound_base_url(paths)
+
+    async def _hook() -> str | None:
+        try:
+            stored = read_owner_credentials(paths) or {}
+            _refresh_owner_admin_token(paths, stored, http=_http_json)
+            return str(stored.get("access_token") or "") or None
+        except Exception:  # noqa: BLE001 — hook failure = original error
+            return None
+
+    return MatrixClient(
+        bound, as_token_from_registration(paths.appservice_registration),
+        server_name=str(_load_toml(paths.toml).get("global", {}).get(
+            "server_name", config_gen.SERVER_NAME_DEFAULT)),
+        admin_token=str(doc.get("access_token") or ""),
+        on_admin_401=_hook,
+    )
+
+
+def scan_poisoned_rooms(
+    mercury_home: str | Path | None = None,
+) -> list[dict[str, Any]] | None:
+    """Live poison scan: None when unscannable (unprovisioned, homeserver
+    unreachable, client unavailable), else the problem-room list (possibly
+    empty). Never raises — failures degrade to None with a debug log."""
+    import asyncio as _asyncio
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
+    try:
+        from observatory import e2ee as _e2ee
+        from observatory.state import ObservatoryState
+
+        home = _mercury_home(mercury_home)
+        paths = ObservatoryPaths(home)
+        if not paths.toml.is_file() or not paths.owner_credentials.is_file():
+            return None
+        if not _homeserver_reachable(_bound_base_url(paths)):
+            return None
+        try:
+            doc = json.loads(paths.owner_credentials.read_text(encoding="utf-8"))
+            owner_mxid = str(doc.get("user_id") or "")
+            gateway_mxid = ""
+            state = ObservatoryState(paths.root / "state.db")
+            try:
+                rooms: list[tuple[str, str]] = []
+                for row in state.get_live():
+                    if row.get("room_id"):
+                        rooms.append((row["node_id"], str(row["room_id"])))
+                try:
+                    rooms.append(("directives",
+                                  state.get_meta("room:directives")))
+                except Exception:  # noqa: BLE001 — no directives room yet
+                    pass
+                try:
+                    gateway_mxid = str(state.get("gw")["mxid"])
+                except Exception:  # noqa: BLE001 — no gateway node yet
+                    pass
+            finally:
+                state.close()
+        except Exception as exc:  # noqa: BLE001 — state unreadable
+            _log.debug("poison scan skipped (state): %s", exc)
+            return None
+        if not rooms:
+            return []
+        sender = gateway_mxid or owner_mxid
+
+        async def _scan():
+            client = _poison_scan_client(home, paths)
+            try:
+                return await _e2ee.detect_poisoned_rooms(
+                    client, rooms, sender=sender)
+            finally:
+                try:
+                    await client.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        return _asyncio.run(_scan())
+    except Exception as exc:  # noqa: BLE001 — scan never kills setup
+        _log.debug("poison scan skipped: %s", exc)
+        return None
+
+
+def reconverge_poisoned_rooms(
+    mercury_home: str | Path | None = None,
+) -> dict[str, Any]:
+    """Purge poisoned rooms + recreate them encrypted (setup converge offer).
+
+    Scans, admin-purges each problem room, clears its state ids (node
+    columns + room/crypt metas) so the renderer recreates it, then runs
+    the encrypted converge. Returns ``{"purged": [...], "converge": str}``.
+    Raises ProvisionError when unscannable or a purge fails (loud — a
+    half-converge must never pass as clean).
+    """
+    import asyncio as _asyncio
+
+    from observatory.state import ObservatoryState, StateError
+
+    home = _mercury_home(mercury_home)
+    paths = ObservatoryPaths(home)
+    problems = scan_poisoned_rooms(home)
+    if problems is None:
+        raise ProvisionError(
+            "poison scan unscannable (unprovisioned or homeserver "
+            "unreachable) — converge later with: mercury setup observatory")
+    if not problems:
+        return {"purged": [], "converge": "already-clean"}
+    bound = _bound_base_url(paths)
+    if not _homeserver_reachable(bound):
+        raise ProvisionError("homeserver unreachable — cannot purge poisoned rooms")
+
+    async def _purge() -> list[str]:
+        client = _poison_scan_client(home, paths)
+        purged: list[str] = []
+        try:
+            for problem in problems:
+                await client.delete_room(str(problem["room_id"]))
+                purged.append(str(problem["room_id"]))
+            return purged
+        finally:
+            try:
+                await client.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        purged = _asyncio.run(_purge())
+    except Exception as exc:  # noqa: BLE001 — purge failure is loud
+        raise ProvisionError(f"poisoned-room purge failed: {exc}") from exc
+    state = ObservatoryState(paths.root / "state.db")
+    try:
+        for problem in problems:
+            key = str(problem["key"])
+            try:
+                state.set_room_id(key, "")
+            except StateError:
+                pass
+            for prefix in ("room:", "crypt:"):
+                try:
+                    state.delete_meta(prefix + key)
+                except Exception:  # noqa: BLE001 — best-effort meta clear
+                    pass
+    finally:
+        state.close()
+    return {"purged": purged, "converge": verify_and_converge_gateway(home)}
 
 # --- steps ---------------------------------------------------------------------
 
@@ -1157,6 +1638,38 @@ def _crypto_pip_install(python_bin: str, args: list[str]) -> tuple[bool, str]:
     return ok, detail
 
 
+#: The four imports the sidecar boot needs (defect ii acceptance): the
+#: compiled Olm stack, the mautrix crypto machine, the SQLite crypto-store
+#: adapter, and the HTTP layer the appservice/matrix clients import.
+_CRYPTO_IMPORTS = ("olm", "mautrix.crypto", "aiosqlite", "aiohttp")
+
+
+def crypto_import_probe() -> dict[str, bool]:
+    """Import-probe each crypto-stack dependency. Never raises — every
+    failure is False (missing, broken, or partially installed)."""
+    import importlib as _importlib
+
+    out: dict[str, bool] = {}
+    for name in _CRYPTO_IMPORTS:
+        try:
+            if name == "mautrix.crypto":
+                from mautrix.crypto import OlmMachine  # noqa: F401
+            else:
+                _importlib.import_module(name)
+            out[name] = True
+        except Exception:  # noqa: BLE001 — any import failure = missing
+            out[name] = False
+    return out
+
+
+def assert_crypto_stack() -> tuple[bool, list[str]]:
+    """Setup-acceptance gate: (True, []) when all four crypto imports land,
+    else (False, [missing names]). Pure probe — installs nothing."""
+    probe = crypto_import_probe()
+    missing = [name for name, ok in probe.items() if not ok]
+    return (not missing, missing)
+
+
 def _crypto_fail_closed(reason: str) -> str:
     """Fail CLOSED: E2EE stays on, nothing is written to config.yaml.
 
@@ -1173,20 +1686,22 @@ def _crypto_fail_closed(reason: str) -> str:
 def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
     """Ensure the compiled crypto stack from the vendored wheels, or fail CLOSED.
 
-    Returns one of ``"ready"`` (stack already imports),
+    Returns one of ``"ready"`` (all four stack imports land),
     ``"disabled-already"`` (``observatory.e2ee: false`` set EXPLICITLY by
     the operator — nothing to do), ``"installed"`` (vendored/index wheel
-    restored the stack), or ``"failed: <reason>"`` (no usable wheel, hash
-    mismatch, or the install failed — E2EE stays ON, config.yaml untouched,
-    retry command printed). NEVER raises and NEVER crashes the wizard:
-    every failure degrades to the fail-closed status. Installs into
-    ``sys.executable``'s environment (the same venv that runs the
-    sidecar); needs no compiler and no container runtime.
+    restored the stack, verified by re-import), or ``"failed: <reason>"``
+    (no usable wheel, hash mismatch, or the install failed — E2EE stays
+    ON, config.yaml untouched, retry command printed). NEVER raises and
+    NEVER crashes the wizard: every failure degrades to the fail-closed
+    status. Installs into ``sys.executable``'s environment (the same venv
+    that runs the sidecar); needs no compiler and no container runtime.
 
-    ``"ready"`` requires BOTH the compiled Olm stack AND aiohttp: the
-    sidecar boots appservice/matrix_client which import aiohttp directly,
-    so an olm-ready env without aiohttp is still 'missing' (a
-    matrix-extra-less venv recreates exactly that shape after update)."""
+    MANDATORY, not best-effort: ``"ready"`` requires ALL FOUR imports
+    (``olm`` + ``mautrix.crypto`` + ``aiosqlite`` + ``aiohttp``) — the
+    sidecar boots appservice/matrix_client (aiohttp) and the E2EEManager
+    (olm, OlmMachine, aiosqlite store), so a partially importable env is
+    still 'missing' (a matrix-extra-less venv recreates exactly that
+    shape after update)."""
     try:
         from observatory.e2ee import e2ee_available, e2ee_enabled
     except Exception:  # noqa: BLE001 — import shape failure = unavailable
@@ -1199,10 +1714,15 @@ def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
     except Exception:  # noqa: BLE001 — unreadable config means default-on
         pass
     try:
-        if bool(e2ee_available()) and _aiohttp_available():
-            return "ready"
+        legacy_ok = bool(e2ee_available()) and bool(_aiohttp_available())
     except Exception:  # noqa: BLE001 — probe failure = unavailable
-        pass
+        legacy_ok = False
+    try:
+        _ok, _missing = assert_crypto_stack()
+    except Exception:  # noqa: BLE001 — probe failure = unavailable
+        _ok, _missing = False, ["probe-failed"]
+    if legacy_ok and _ok:
+        return "ready"
     python_bin = sys.executable
     if sys.platform == "linux" and sys.version_info[:2] == (3, 13):
         try:
@@ -1232,14 +1752,13 @@ def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
             tail = detail.strip().replace("\n", " ")
             return _crypto_fail_closed(
                 f"index install failed{': ' + tail[-300:] if tail else ''}")
-    sys.modules.pop("olm", None)
-    sys.modules.pop("aiohttp", None)
-    try:
-        import olm  # noqa: F401
-        import aiohttp  # noqa: F401
-    except Exception:  # noqa: BLE001 — installed but still unimportable
+    for _mod in ("olm", "mautrix.crypto", "aiosqlite", "aiohttp"):
+        sys.modules.pop(_mod, None)
+    _ok, _missing = assert_crypto_stack()
+    if not _ok:
         return _crypto_fail_closed(
-            "crypto stack installed but does not import")
+            "crypto stack installed but does not import: "
+            f"missing {', '.join(_missing)}")
     print("  ✓ crypto stack ready (python-olm installed, no build needed).")
     return "installed"
 
@@ -1349,19 +1868,37 @@ def verify_and_converge_gateway(mercury_home: str | Path | None = None) -> str:
             executor: object = IntentExecutor(client, state, owner_mxid=owner_mxid,
                                              server_name=server_name)
             if want_e2ee:
+                # MANDATORY (defect ii): with E2EE on, rooms MUST be
+                # sidecar-created encrypted from the start (defect iii) — a
+                # plaintext converge would poison them (undecryptable
+                # history). Missing stack or E2EE-start failure DEFERS the
+                # whole converge; the sidecar retries encrypted on boot.
                 try:
                     from observatory import e2ee as _e2ee
-                    if _e2ee.e2ee_available():
-                        mgr = _e2ee.E2EEManager(
-                            client, state,
-                            crypto_dir=_e2ee.crypto_dir_for(home),
-                            owner_mxid=owner_mxid, gateway_mxid=gateway_mxid)
-                        await mgr.start(enabled=True)
-                        executor = _e2ee.EncryptedIntentExecutor(
-                            client, state, owner_mxid=owner_mxid,
-                            server_name=server_name, e2ee=mgr)
-                except Exception:  # noqa: BLE001 — plaintext converge beats no converge
-                    pass
+                    _ok, _missing = assert_crypto_stack()
+                    if not _ok:
+                        try:
+                            state.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return ("deferred: crypto stack missing "
+                                f"({', '.join(_missing)}) — refusing plaintext "
+                                "rooms (sidecar converges encrypted on start)")
+                    mgr = _e2ee.E2EEManager(
+                        client, state,
+                        crypto_dir=_e2ee.crypto_dir_for(home),
+                        owner_mxid=owner_mxid, gateway_mxid=gateway_mxid)
+                    await mgr.start(enabled=True)
+                    executor = _e2ee.EncryptedIntentExecutor(
+                        client, state, owner_mxid=owner_mxid,
+                        server_name=server_name, e2ee=mgr)
+                except Exception as exc:  # noqa: BLE001 — never plaintext
+                    try:
+                        state.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return (f"deferred: encrypted converge unavailable ({exc} "
+                            "— sidecar retries on start)")
             renderer = Renderer(state, gateway_node_id="gw",
                                 server_name=server_name, owner_mxid=owner_mxid,
                                 executor=executor)  # type: ignore[arg-type]
@@ -1490,6 +2027,37 @@ def observatory_offline() -> bool:
     if not isinstance(obs, dict):
         return False
     return bool(obs.get("offline", False))
+
+#: CLI/TUI session mirror modes (``observatory.mirror_cli``): ``off``
+#: (default — CLI/manual TUI sessions never get rooms), ``observe``
+#: (read-only presence rooms, no transcript content), ``full`` (rooms +
+#: live transcript forwarding). Unknown values fail closed to ``off``.
+MIRROR_CLI_MODES = ("off", "observe", "full")
+
+
+def mirror_cli_mode(mercury_home: str | Path | None = None) -> str:
+    """Config gate: ``observatory.mirror_cli`` in config.yaml, default OFF.
+
+    Reads the given Mercury home's config.yaml directly (same pattern as
+    ``e2ee.e2ee_enabled`` — safe from the sidecar boot path, hermetic in
+    tests). Unreadable/missing config or an unknown value never silently
+    enables mirroring: both degrade to ``"off"``.
+    """
+    try:
+        import yaml
+
+        cfg_path = _mercury_home(mercury_home) / "config.yaml"
+        with open(cfg_path, encoding="utf-8") as f:
+            doc = yaml.safe_load(f) or {}
+    except Exception:  # noqa: BLE001 — unreadable config means no mirroring
+        return "off"
+    if not isinstance(doc, dict):
+        return "off"
+    obs = doc.get("observatory")
+    if not isinstance(obs, dict):
+        return "off"
+    mode = str(obs.get("mirror_cli", "off") or "off").strip().lower()
+    return mode if mode in MIRROR_CLI_MODES else "off"
 
 
 def _refresh_tuwunel_offline(paths: ObservatoryPaths) -> tuple[str, str]:
@@ -1768,14 +2336,17 @@ def tailscale_phone_url(detection: dict | None, port: int = config_gen.HOMESERVE
 
 
 def set_tuwunel_bind(ip: str, mercury_home: str | Path | None = None) -> str:
-    """Bind the homeserver to one interface address (Tailscale-only offer).
+    """Dual-bind the homeserver: tailnet IP first, localhost retained.
 
-    Rewrites the ``address = "..."`` line in the EXISTING tuwunel.toml and
-    returns the new address. Fails with a ProvisionError carrying guidance
-    when unprovisioned (missing tuwunel.toml) or when no address line is
-    found — never creates config. Never starts/stops the server itself:
-    the caller must restart ``mercury-observatory-homeserver.service``
-    for the new bind to take effect.
+    A Tailscale-only bind killed localhost (health probes, desktop clients,
+    and the owner-URL heal all speak 127.0.0.1); a localhost-only bind
+    strands phones. The rewrite is always the TOML vector
+    ``address = ["<tailnet-ip>", "127.0.0.1"]`` — tailnet primary (so the
+    bound owner URL stays the tailnet URL) with localhost kept. Rewrites
+    either the scalar or the vector form; idempotent. Returns the tailnet
+    IP. Never starts/stops the server: the caller must restart
+    ``mercury-observatory-homeserver.service`` for the new bind to take
+    effect. Refuses loopback targets (nothing to add).
     """
     if not isinstance(ip, str) or not ip.strip():
         raise ProvisionError("set_tuwunel_bind needs a non-empty tailnet IP")
@@ -1786,6 +2357,10 @@ def set_tuwunel_bind(ip: str, mercury_home: str | Path | None = None) -> str:
         _ipaddress.ip_address(target)
     except Exception as exc:
         raise ProvisionError(f"refusing to bind to {target!r}: not an IP address ({exc})") from exc
+    if target in ("127.0.0.1", "::1", "localhost"):
+        raise ProvisionError(
+            f"refusing to dual-bind loopback {target!r} — localhost is "
+            "already bound; pass the tailnet IP")
     paths = ObservatoryPaths(_mercury_home(mercury_home))
     if not paths.toml.is_file():
         raise ProvisionError(
@@ -1799,14 +2374,15 @@ def set_tuwunel_bind(ip: str, mercury_home: str | Path | None = None) -> str:
         raise ProvisionError(f"could not read {paths.toml}: {exc}") from exc
     import re as _re
 
-    pattern = _re.compile(r'(?m)^address\s*=\s*".*"\s*$')
+    pattern = _re.compile(r'(?m)^address\s*=\s*("[^"]*"|\[[^\]]*\])\s*$')
     if not pattern.search(text):
         raise ProvisionError(
             f"could not find the address line in {paths.toml} — hand-edit "
             '`address = "..."` under [global] instead'
         )
+    dual = f'address = ["{target}", "127.0.0.1"]'
     paths.toml.write_text(
-        pattern.sub(f'address = "{target}"', text, count=1), encoding="utf-8"
+        pattern.sub(dual, text, count=1), encoding="utf-8"
     )
     try:
         paths.toml.chmod(0o600)
@@ -1816,22 +2392,41 @@ def set_tuwunel_bind(ip: str, mercury_home: str | Path | None = None) -> str:
     return target
 
 
-def current_bind_address(mercury_home: str | Path | None = None) -> str | None:
-    """Current tuwunel ``address`` (first entry when bound to a list).
+def current_bind_addresses(
+    mercury_home: str | Path | None = None,
+) -> list[str]:
+    """All bound tuwunel ``address`` entries (scalar or vector form).
 
-    None when unprovisioned or unreadable — never raises. The wizard uses
-    this to detect the localhost-only trap (tailnet up, toml still on
-    127.0.0.1, so phones cannot reach the homeserver).
+    Empty when unprovisioned or unreadable — never raises. The trap
+    detector keys on the WHOLE list: localhost-only means every entry is
+    loopback (a dual bind is already phone-reachable).
     """
     try:
         paths = ObservatoryPaths(_mercury_home(mercury_home))
         if not paths.toml.is_file():
-            return None
+            return []
         address = _load_toml(paths.toml).get("global", {}).get("address")
         if isinstance(address, list):
-            address = address[0] if address else None
-        text = str(address or "").strip()
-        return text or None
+            items = [str(a).strip() for a in address if str(a).strip()]
+        elif str(address or "").strip():
+            items = [str(address).strip()]
+        else:
+            items = []
+        return items
+    except Exception:  # noqa: BLE001 — display probe, never raises
+        return []
+
+
+def current_bind_address(mercury_home: str | Path | None = None) -> str | None:
+    """Primary (first) tuwunel ``address`` — the owner-URL bind.
+
+    None when unprovisioned or unreadable — never raises. Prefer
+    :func:`current_bind_addresses` for reachability questions (a dual
+    bind's first entry says nothing about localhost).
+    """
+    try:
+        items = current_bind_addresses(mercury_home)
+        return items[0] if items else None
     except Exception:  # noqa: BLE001 — display probe, never raises
         return None
 

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from observatory import provision as provision_mod
 from observatory.config_gen import ObservatoryPaths
 
@@ -93,3 +95,40 @@ def test_sync_noop_without_credentials_file(tmp_path):
     paths = ObservatoryPaths(home)
     assert provision_mod.sync_owner_homeserver_url(paths) == BOUND_URL
     assert not paths.owner_credentials.exists()
+
+
+def test_dual_bind_keeps_localhost_with_tailnet_primary(tmp_path):
+    """Tailscale offer writes [tailnet, localhost] — never tailscale-only."""
+    home = tmp_path / "mhome"
+    _write_home(home)
+    assert provision_mod.set_tuwunel_bind(TAIL_IP, home) == TAIL_IP
+    text = (home / "observatory" / "tuwunel.toml").read_text(encoding="utf-8")
+    assert f'address = ["{TAIL_IP}", "127.0.0.1"]' in text
+    # Bound owner URL stays the tailnet URL (first entry); localhost kept.
+    assert provision_mod.current_bind_addresses(home) == [TAIL_IP, "127.0.0.1"]
+    assert provision_mod.current_bind_address(home) == TAIL_IP
+    doc = json.loads((home / "observatory" / "owner-credentials.json").read_text())
+    assert doc["homeserver_url"] == BOUND_URL
+
+
+def test_dual_bind_idempotent_and_repoints(tmp_path):
+    home = tmp_path / "mhome"
+    _write_home(home)
+    provision_mod.set_tuwunel_bind(TAIL_IP, home)
+    before = (home / "observatory" / "tuwunel.toml").read_text(encoding="utf-8")
+    provision_mod.set_tuwunel_bind(TAIL_IP, home)
+    assert (home / "observatory" / "tuwunel.toml").read_text() == before
+    provision_mod.set_tuwunel_bind("100.99.0.7", home)
+    text = (home / "observatory" / "tuwunel.toml").read_text(encoding="utf-8")
+    assert 'address = ["100.99.0.7", "127.0.0.1"]' in text
+    assert provision_mod.current_bind_addresses(home) == ["100.99.0.7", "127.0.0.1"]
+
+
+def test_dual_bind_refuses_loopback(tmp_path):
+    home = tmp_path / "mhome"
+    _write_home(home)
+    with pytest.raises(provision_mod.ProvisionError, match="loopback"):
+        provision_mod.set_tuwunel_bind("127.0.0.1", home)
+    # Failed bind leaves the toml untouched.
+    assert 'address = "127.0.0.1"' in (
+        home / "observatory" / "tuwunel.toml").read_text(encoding="utf-8")

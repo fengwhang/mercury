@@ -186,7 +186,7 @@ def test_wizard_install_runs_full_auto_path(monkeypatch, capsys, tmp_path):
         healed=HOMESERVER_URL,
     )
     out, remaining = _run_install(monkeypatch, capsys, fake, yes_no=(True, True))
-    assert fake.calls == {"provision": 1, "status": 2, "crypto": 1,
+    assert fake.calls == {"provision": 1, "status": 3, "crypto": 1,
                           "sidecar": 1, "heal": 1, "tree": 1, "bind": 0}
     # fresh install: prompted identity (defaults) reaches provisioning
     assert fake.provision_kwargs == {

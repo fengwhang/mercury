@@ -200,6 +200,9 @@ class _FakeProvision:
     def current_bind_address(self, *a, **k):
         return self._bind_address
 
+    def current_bind_addresses(self, *a, **k):
+        return [self._bind_address] if self._bind_address else []
+
 
 def _run_section(monkeypatch, capsys, fake, *, choice, yes_no, texts=()):
     """Run setup_observatory with fakes; returns (stdout, consumed_answers)."""
@@ -934,8 +937,8 @@ def test_bind_offer_uses_exact_prompt_text(monkeypatch):
         SimpleNamespace(set_tuwunel_bind=lambda ip: ip), dict(_TS_UP_IP)
     )
     assert seen == [
-        "Bind homeserver to the Tailscale interface only?"
-        " (unreachable from LAN/internet)"
+        "Bind the homeserver to Tailscale too?"
+        " (dual bind — keeps localhost, phones reach it over the tailnet)"
     ]
 
 
@@ -1012,16 +1015,21 @@ def test_bind_restart_offer_uses_exact_prompt_text(monkeypatch):
 
     def _ask(question, default=True):
         seen.append((question, default))
-        return "Bind homeserver" in question
+        return "Tailscale too" in question
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", _ask)
     setup_mod._offer_tailscale_bind(
-        SimpleNamespace(set_tuwunel_bind=lambda ip: ip), dict(_TS_UP_IP)
+        SimpleNamespace(
+            set_tuwunel_bind=lambda ip: ip,
+            current_bind_addresses=lambda: ["100.89.0.5", "127.0.0.1"],
+            status_summary=lambda: {"homeserver_url": "http://100.89.0.5:18008"},
+        ),
+        dict(_TS_UP_IP),
     )
     assert seen == [
         (
-            "Bind homeserver to the Tailscale interface only?"
-            " (unreachable from LAN/internet)",
+            "Bind the homeserver to Tailscale too?"
+            " (dual bind — keeps localhost, phones reach it over the tailnet)",
             False,
         ),
         (
@@ -1075,7 +1083,7 @@ def test_set_tuwunel_bind_rewrites_address_line(tmp_path):
     got = provision_mod.set_tuwunel_bind("100.89.0.5", home)
     assert got == "100.89.0.5"
     text = (obs / "tuwunel.toml").read_text(encoding="utf-8")
-    assert 'address = "100.89.0.5"' in text
+    assert 'address = ["100.89.0.5", "127.0.0.1"]' in text
     assert 'server_name = "mercury.local"' in text
     assert "port = 18008" in text
 
@@ -1251,6 +1259,36 @@ def test_current_bind_address_reads_toml_and_list_forms(tmp_path):
     )
     assert provision_mod.current_bind_address(home) == "100.89.0.5"
     assert provision_mod.current_bind_address(tmp_path / "empty-home") is None
+
+
+def test_bind_mismatch_absent_for_dual_bind():
+    """A dual bind is phone-reachable — no ACTION even with localhost kept."""
+    assert setup_mod._bind_mismatch_action_line(
+        ["100.89.0.5", "127.0.0.1"], dict(_TS_UP_IP)) is None
+    assert setup_mod._bind_mismatch_action_line(
+        ["127.0.0.1", "127.0.0.1"], dict(_TS_UP_IP)) is not None
+    assert setup_mod._bind_mismatch_action_line([], dict(_TS_UP_IP)) is None
+
+
+def test_bind_offer_rechecks_url_after_restart(monkeypatch, capsys, tmp_path):
+    """Accepted bind + restart re-reads the bind and prints the phone URL."""
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision(
+        [_provisioned_status(creds)],
+        tailscale=dict(_TS_UP_IP),
+        bind_address="100.89.0.5",
+    )
+
+    def _run(argv, **kwargs):
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", _run)
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True]
+    )
+    assert "Homeserver will dual-bind to 100.89.0.5 + localhost" in out
+    assert "Bind rechecked: 100.89.0.5 bound (phones: http://100.89.0.5:18008)." in out
+    assert remaining == []
 
 
 # ---------------------------------------------------------------------------

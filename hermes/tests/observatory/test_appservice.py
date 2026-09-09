@@ -265,3 +265,75 @@ class TestAsTokenLoader:
         reg.write_text("id: x\n", encoding="utf-8")
         with pytest.raises(ValueError, match="as_token"):
             as_token_from_registration(reg)
+
+# --- HS query surface (defect v) ----------------------------------------------------
+
+
+def _authed(path: str) -> str:
+    return f"{path}?access_token={TOKEN}"
+
+
+@pytest_asyncio.fixture
+async def wired():
+    """Fresh (client, intake) pair for error-count assertions."""
+    from aiohttp.test_utils import TestClient as TC, TestServer as TS
+
+    intake = TransactionIntake(as_token=TOKEN)
+    app = make_app(intake)
+    async with TC(TS(app)) as c:
+        yield c, intake
+
+
+class TestQuerySurface:
+    @pytest.mark.asyncio
+    async def test_user_query_ours_answers_200(self, client: TestClient):
+        resp = await client.get(_authed("/_matrix/app/v1/users/@merc_gw:x"))
+        assert resp.status == 200
+        assert await resp.json() == {}
+
+    @pytest.mark.asyncio
+    async def test_user_query_foreign_answers_logged_404(self, wired):
+        client, intake = wired
+        resp = await client.get(_authed("/_matrix/app/v1/users/@alice:other"))
+        assert resp.status == 404
+        assert (await resp.json())["errcode"] == "M_NOT_FOUND"
+        assert intake.error_count() == 1
+
+    @pytest.mark.asyncio
+    async def test_alias_query_always_404(self, client: TestClient):
+        resp = await client.get(_authed("/_matrix/app/v1/rooms/%23x%3Ay"))
+        assert resp.status == 404
+        assert (await resp.json())["errcode"] == "M_NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_ping_answers_200(self, client: TestClient):
+        resp = await client.post(
+            _authed("/_matrix/app/v1/ping"),
+            data=json.dumps({"transaction_id": "t1"}),
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_unknown_route_404_is_logged_and_counted(self, wired):
+        client, intake = wired
+        resp = await client.get(
+            _authed("/_matrix/app/v1/nope"),
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert resp.status == 404
+        assert intake.error_count() == 1
+
+    @pytest.mark.asyncio
+    async def test_clean_run_leaves_zero_errors(self, wired):
+        """Acceptance hook: no failures across the happy paths."""
+        client, intake = wired
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        assert (await client.get("/health")).status == 200
+        assert (await client.get(
+            _authed("/_matrix/app/v1/users/@merc_x:y"),
+            headers=headers)).status == 200
+        assert (await client.post(
+            _authed("/_matrix/app/v1/ping"),
+            data="{}", headers=headers)).status == 200
+        assert intake.error_count() == 0

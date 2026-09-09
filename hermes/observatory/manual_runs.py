@@ -59,6 +59,12 @@ READONLY_TOPIC = "read-only (manual run)"
 #: Node id prefix; session uuid follows.
 MANUAL_NODE_PREFIX = "manual:"
 
+#: CLI/TUI mirror modes (``observatory.mirror_cli``): ``off`` (default —
+#: sessions never get rooms), ``observe`` (read-only presence rooms, no
+#: transcript content), ``full`` (rooms + live transcript forwarding).
+#: Unknown values fail closed to ``off``.
+MIRROR_CLI_MODES = ("off", "observe", "full")
+
 #: Quiet window before a room is reaped (D14).
 DEFAULT_QUIET_WINDOW = 24.0 * 3600.0
 
@@ -358,8 +364,11 @@ class ManualRunsWatcher:
         clock: Callable[[], float] = time.time,
         proc_root: str | Path = "/proc",
         process_probe: Optional[Callable[[Path], bool]] = None,
+        mode: str = "off",
     ):
         self.renderer = renderer
+        # observatory.mirror_cli (default off): unknown values fail closed.
+        self.mode = mode if mode in MIRROR_CLI_MODES else "off"
         self.state: ObservatoryState = renderer.state
         self.agent_dir = Path(agent_dir)
         self.poll_interval = max(0.05, float(poll_interval))
@@ -391,6 +400,10 @@ class ManualRunsWatcher:
 
     def poll(self) -> ManualPollResult:
         result = ManualPollResult()
+        if self.mode == "off":
+            # Default: CLI/manual TUI sessions never get rooms — no scan,
+            # no rows, no intents downstream.
+            return result
         now = self._clock()
         seen: set[str] = set()
 
@@ -458,6 +471,11 @@ class ManualRunsWatcher:
                 if not self._probe(path):
                     self._reap(node_id)
                     result.reaped.append(node_id)
+        if self.mode == "observe":
+            # Presence rooms only: nodes + reaps flow, transcript content
+            # never reaches Matrix (tails still advance — no backlog flood
+            # on a later switch to full).
+            result.events = {}
         return result
 
     def _reap(self, node_id: str) -> None:

@@ -163,6 +163,16 @@ class ObservatoryState:
         )
         self._db.commit()
 
+    def delete_meta(self, key: str) -> bool:
+        """Drop one meta entry (poisoned-room reconverge); True when one
+        existed. Never raises for absent keys."""
+        try:
+            cur = self._db.execute("DELETE FROM meta WHERE key = ?", (key,))
+            self._db.commit()
+            return (cur.rowcount or 0) > 0
+        except Exception:  # noqa: BLE001 — best-effort delete
+            return False
+
     # --- nodes ----------------------------------------------------------------
 
     @staticmethod

@@ -63,8 +63,10 @@ class FakeClient:
         self.calls.append(("api", method, path, sender, json_body))
         return {"event_id": self._id("$ev")}
 
-    async def create_room(self, *, name, sender, preset, invite=(), space=False):
-        self.calls.append(("create_room", name, sender, preset, tuple(invite), space))
+    async def create_room(self, *, name, sender, preset, invite=(), space=False,
+                          topic=None, initial_state=None):
+        self.calls.append(("create_room", name, sender, preset, tuple(invite),
+                           space, initial_state))
         return f"!room{self._n + 1}:hs" if space else f"!space{self._n + 1}:hs" \
             if False else self._id(("!" if not space else "!s"))
 
@@ -243,8 +245,14 @@ class TestEncryptedIntentExecutor:
         # registry entry: the crypt: meta maps key -> room id
         room_id = state.get_meta(CRYPT_ROOM_META_PREFIX + "gw:room")
         assert room_id == records[0]["room_id"]
-        # the enable call was issued for the created room
-        assert records[0]["room_id"] in e2ee.enabled_rooms.values()
+        # encryption rode initial_state (atomic, defect iii) — never a
+        # follow-up PUT, so no enable call exists for the created room.
+        creates = [c for c in client.calls if c[0] == "create_room"]
+        assert len(creates) == 1
+        initial = creates[0][6]
+        assert initial == [{"type": "m.room.encryption", "state_key": "",
+                            "content": dict(ENCRYPTION_CONTENT)}]
+        assert not [k for k in e2ee.enabled_rooms if k.startswith("room:")]
 
     @pytest.mark.asyncio
     async def test_send_into_registered_room_is_encrypted(self, tmp_path):

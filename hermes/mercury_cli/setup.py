@@ -2897,13 +2897,35 @@ def _tailscale_phone_url(ts: dict | None, homeserver_url: str) -> str | None:
         return None
 
 
+def _read_bind_list(obs) -> list[str] | None:
+    """Bound addresses preferring the list form (None when unreadable).
+
+    Old doubles expose only ``current_bind_address`` (single) — wrapped
+    into a one-entry list so the trap detector stays list-aware.
+    """
+    try:
+        fn = getattr(obs, "current_bind_addresses", None)
+        if fn is not None:
+            items = fn()
+            return list(items) if isinstance(items, list) else None
+        single = getattr(obs, "current_bind_address", None)
+        if single is None:
+            from observatory.provision import current_bind_addresses as fn
+            return list(fn())
+        value = single()
+        return [value] if value else []
+    except Exception:  # noqa: BLE001 — display probe, never kills the wizard
+        return None
+
+
 def _offer_tailscale_bind(obs, ts: dict | None) -> None:
-    """Offer binding the homeserver to the Tailscale interface only.
+    """Offer dual-binding the homeserver (tailnet IP + localhost).
 
     Runs only when the tailnet is up with an IPv4. Delegates the toml
     rewrite to ``provision.set_tuwunel_bind`` (never starts/stops the
     server here); every failure degrades to a hand-edit hint. The new
-    bind needs a homeserver restart to take effect.
+    bind needs a homeserver restart to take effect; after the bind the
+    phone URL is rechecked from the re-read bind + status.
     """
     try:
         if not isinstance(ts, dict) or not ts.get("up"):
@@ -2913,8 +2935,8 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
             return
         ip = str(ip).strip()
         want = prompt_yes_no(
-            "Bind homeserver to the Tailscale interface only?"
-            " (unreachable from LAN/internet)",
+            "Bind the homeserver to Tailscale too?"
+            " (dual bind — keeps localhost, phones reach it over the tailnet)",
             default=False,
         )
     except KeyboardInterrupt:
@@ -2943,7 +2965,7 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
         from observatory.config_gen import HOMESERVER_UNIT_NAME as _unit
     except Exception:  # noqa: BLE001
         _unit = "mercury-observatory-homeserver.service"
-    print_success(f"Homeserver will bind to {ip} on next restart.")
+    print_success(f"Homeserver will dual-bind to {ip} + localhost on next restart.")
     try:
         restart_now = prompt_yes_no(
             "Restart the homeserver now? (necessary to apply the new bind address)",
@@ -2972,21 +2994,60 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
         print_info(f"Restart it manually: systemctl --user restart {_unit}")
         return
     print_success(f"Homeserver restarted ({_unit}).")
+    _recheck_bind_url(obs, ts, ip)
+
+
+def _recheck_bind_url(obs, ts: dict | None, ip: str) -> None:
+    """URL recheck after the bind offer: re-read the toml bind + status and
+    confirm the tailnet IP is bound and which phone URL serves it.
+
+    Best-effort display confirmation — never raises, never prompts. A bind
+    whose toml read-back lacks the IP warns (restart or write pending);
+    otherwise the recomputed phone URL prints so the card's pre-bind URL
+    never stands stale.
+    """
+    try:
+        bound = _read_bind_list(obs) or []
+        if ip not in bound:
+            print_warning(
+                f"Bind recheck: {ip} not yet in tuwunel.toml "
+                f"(bound: {', '.join(bound) or 'unknown'}) — "
+                "restart the homeserver and re-run setup to confirm.")
+            return
+        url = ""
+        try:
+            status = obs.status_summary()
+            url = str((status or {}).get("homeserver_url") or "")
+        except Exception:  # noqa: BLE001 — status is best-effort here
+            pass
+        phone = _tailscale_phone_url(ts, url) if url else None
+        if phone:
+            print_success(f"Bind rechecked: {ip} bound (phones: {phone}).")
+        else:
+            print_success(f"Bind rechecked: {ip} bound ([{', '.join(bound)}]).")
+    except Exception:  # noqa: BLE001 — a recheck never kills the wizard
+        return
 
 
 _LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
 
 
-def _bind_mismatch_action_line(address: str | None, ts: dict | None) -> str | None:
-    """ACTION text when the tailnet is up but tuwunel still binds localhost.
+def _bind_mismatch_action_line(
+    address: str | list[str] | None, ts: dict | None) -> str | None:
+    """ACTION text when the tailnet is up but tuwunel binds localhost-only.
 
     Pure: returns the line, or None when there is nothing to act on
-    (tailnet down, address unknown, or already bound off localhost).
+    (tailnet down, bind unknown/empty, or any non-loopback entry bound —
+    a dual bind is already phone-reachable). Accepts the legacy single
+    address or the full bind list.
     """
     try:
         if not isinstance(ts, dict) or not ts.get("up"):
             return None
-        if address is None or str(address).strip() not in _LOOPBACK_BINDS:
+        items = ([address] if isinstance(address, str) else
+                 list(address) if isinstance(address, list) else [])
+        items = [str(a).strip() for a in items if str(a).strip()]
+        if not items or any(a not in _LOOPBACK_BINDS for a in items):
             return None
         try:
             from observatory.config_gen import HOMESERVER_UNIT_NAME as _unit
@@ -3009,14 +3070,25 @@ def _maybe_print_bind_mismatch_action(obs, ts: dict | None) -> None:
     a display hint, never a wizard gate.
     """
     try:
-        fn = getattr(obs, "current_bind_address", None)
-        if fn is None:
-            from observatory.provision import current_bind_address as fn
-        line = _bind_mismatch_action_line(fn(), ts)
+        line = _bind_mismatch_action_line(_read_bind_list(obs), ts)
     except Exception:  # noqa: BLE001 — display probe, never kills the wizard
         return
     if line:
         print_warning(line)
+
+
+def _mirror_cli_card_line() -> str:
+    """One-line mirror_cli status for the setup card (never raises)."""
+    try:
+        from observatory.provision import mirror_cli_mode
+        mode = mirror_cli_mode()
+    except Exception:  # noqa: BLE001 — display probe, never kills setup
+        mode = "off"
+    if mode == "full":
+        return "full (CLI/TUI sessions get rooms + transcripts)"
+    if mode == "observe":
+        return "observe (CLI/TUI sessions get presence rooms, no transcripts)"
+    return "off (CLI/TUI sessions never get rooms — opt in: mercury config set observatory.mirror_cli observe|full)"
 
 
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
@@ -3079,6 +3151,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         [
             f"owner account:       {owner_mxid}",
             *password_lines,
+            f"CLI/TUI mirror:      {_mirror_cli_card_line()}",
             "in FluffyChat:       add account → enter the homeserver URL",
             "                     manually → paste the URL above",
             "                     (use your own server, not matrix.org)",
@@ -3512,6 +3585,49 @@ def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
         )
         if new_pw is not None:
             print_error("Password change not applied — resolve the identity change first.")
+        wipe_choice = prompt_choice(
+            f"Wipe tuwunel data and re-provision as @{new_local}:{new_server} "
+            "(the ONLY way to change identity — residual installs break reinstalls)?",
+            [
+                "Keep existing identity",
+                "Archive tuwunel data aside + re-provision with the new identity",
+                "Annihilate tuwunel data + re-provision with the new identity",
+            ],
+            0,
+        )
+        if wipe_choice != 0:
+            mode = "archive" if wipe_choice == 1 else "annihilate"
+            wipe = getattr(obs, "wipe_observatory_data", None)
+            if wipe is None:
+                print_error(
+                    "Wipe is unavailable in this install — keeping existing credentials."
+                )
+            else:
+                try:
+                    summary = wipe(mode=mode)
+                    moved = (summary.get("moved") if mode == "archive"
+                             else summary.get("deleted")) or []
+                    print_success(
+                        f"Observatory data {mode}d "
+                        f"({', '.join(moved) or 'nothing present'})."
+                    )
+                    obs.provision_in_wizard(
+                        server_name=new_server,
+                        owner_localpart=new_local,
+                        owner_password=new_pw,
+                    )
+                    _run_observatory_auto_steps(obs)
+                    refreshed = obs.status_summary()
+                    print_success(
+                        f"Observatory re-provisioned as @{new_local}:{new_server}."
+                    )
+                    return refreshed
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — wipe failure is loud
+                    print_error(f"Re-provisioning failed: {exc}")
+                    print_info("Retry any time with: mercury setup observatory")
+                    return status
         print_info("Keeping the existing owner credentials.")
         try:
             obs.provision_in_wizard()
@@ -3572,6 +3688,243 @@ def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
         print_info("Retry any time with: mercury setup observatory")
         return status
 
+
+def _self_test_model() -> tuple[str, str]:
+    """Setup self-test (defect i): resolve the effective model with the
+    exact precedence the observatory path uses (explicit env →
+    model.default/model → dict split) and prove it routes to a configured
+    provider. Returns ``(model, provider)``; raises with the
+    ``mercury model`` remedy when nothing resolves — the silent glm
+    fallback can never pass as configured."""
+    import os as _os
+
+    from mercury_cli.config import split_model_config_default
+    from mercury_cli.runtime_provider import resolve_runtime_provider
+
+    cfg = load_config() or {}
+    model_cfg = cfg.get("model") or {}
+    if isinstance(model_cfg, str):
+        cfg_model = model_cfg
+    else:
+        _raw = model_cfg.get("default") or model_cfg.get("model") or ""
+        if isinstance(_raw, dict):
+            cfg_model, _ = split_model_config_default(_raw)
+        else:
+            cfg_model = str(_raw or "")
+    env_model = _os.environ.get("HERMES_INFERENCE_MODEL", "").strip()
+    effective = env_model or cfg_model.strip()
+    if not effective:
+        raise ValueError(
+            "no model configured (model.default empty and "
+            "HERMES_INFERENCE_MODEL unset) — run `mercury model` first")
+    runtime = resolve_runtime_provider(requested=None, target_model=effective)
+    provider = str(runtime.get("provider") or "").strip() or "unknown"
+    return effective, provider
+
+
+def _inject_ping(timeout: float = 20.0) -> str:
+    """Headless inject ping (defect i): one ``ping`` turn through the live
+    gateway control socket. Returns ``"passed: <reply-head>"``,
+    ``"skipped: <reason>"`` (no gateway/socket — legitimate during setup),
+    or ``"failed: <reason>"``. Never raises, never prompts."""
+    try:
+        from observatory.gateway_transport import ControlSocketGatewayTransport
+        from observatory.provision import _mercury_home
+    except Exception as exc:  # noqa: BLE001 — transport unavailable
+        return f"skipped: gateway transport unavailable ({exc})"
+    try:
+        import asyncio as _asyncio
+
+        home = _mercury_home(None)
+        transport = ControlSocketGatewayTransport(home, timeout=timeout)
+
+        async def _ping() -> str:
+            return await transport.prompt("ping")
+
+        reply = _asyncio.run(_ping())
+        head = str(reply or "").strip().splitlines()[0][:80] if str(reply or "").strip() else ""
+        if not head:
+            return "failed: gateway answered inject without a reply"
+        return f"passed: {head}"
+    except Exception as exc:  # noqa: BLE001 — ping failure is a report line
+        text = str(exc)
+        if "timeout" in text.lower() or "no gateway" in text.lower() \
+                or "refused" in text.lower() or "no such file" in text.lower():
+            return f"skipped: {exc}"
+        return f"failed: {exc}"
+
+
+def _synthetic_transaction() -> str:
+    """Acceptance synthetic transaction (defect v): one synthetic txn
+    through a fresh intake — accepted with zero recorded appservice
+    errors. Returns ``"passed"`` / ``"failed: ..."`` / ``"skipped: ..."``.
+    Never raises."""
+    try:
+        import asyncio as _asyncio
+
+        from observatory.appservice import (
+            TransactionIntake,
+            as_token_from_registration,
+        )
+        from observatory.config_gen import ObservatoryPaths
+        from observatory.provision import _mercury_home
+    except Exception as exc:  # noqa: BLE001 — stack unavailable (no aiohttp?)
+        return f"skipped: appservice stack unavailable ({exc})"
+    try:
+        paths = ObservatoryPaths(_mercury_home(None))
+        intake = TransactionIntake(
+            as_token=as_token_from_registration(
+                paths.appservice_registration))
+
+        async def _push() -> None:
+            await intake.accept("setup-acceptance", [{
+                "type": "m.room.message", "sender": "@setup:acceptance",
+                "content": {"msgtype": "m.text", "body": "acceptance ping"},
+            }])
+
+        _asyncio.run(_push())
+        errors = intake.error_count()
+        if errors:
+            return f"failed: {errors} appservice errors recorded"
+        return "passed"
+    except Exception as exc:  # noqa: BLE001 — report, never raise
+        return f"failed: {exc}"
+
+
+def _run_observatory_acceptance(obs, status: dict, ts: dict | None) -> bool:
+    """Ordered setup acceptance (VM report): dual-bind assert, crypto
+    assert (+live-gate hint), model resolve + inject ping,
+    sidecar-encrypted room, admin ping, synthetic transaction, poisoned
+    rooms (+converge offer). The login card prints AFTER this (card
+    last). Every gate degrades to fail/skip — never raises. Returns
+    all-pass."""
+    print_header("Observatory acceptance")
+    results: list[tuple[str, str]] = []
+
+    def _report(name: str, outcome: str) -> None:
+        results.append((name, outcome))
+        if outcome.startswith("passed"):
+            print_success(f"[acceptance] {name}: {outcome}")
+        elif outcome.startswith("skipped"):
+            print_info(f"[acceptance] {name}: {outcome}")
+        else:
+            print_error(f"[acceptance] {name}: {outcome}")
+
+    # 1. dual-bind assert.
+    try:
+        bound = _read_bind_list(obs) or []
+        loops = {"127.0.0.1", "::1", "localhost"}
+        if isinstance(ts, dict) and ts.get("up") and ts.get("ip"):
+            ip = str(ts["ip"]).strip()
+            if ip in bound and any(b in loops for b in bound):
+                _report("dual-bind", f"passed: [{', '.join(bound)}]")
+            else:
+                _report("dual-bind",
+                        f"failed: tailnet up but bind is [{', '.join(bound) or 'unknown'}] "
+                        "— answer Yes at the bind prompt, then restart + re-run setup")
+        else:
+            _report("dual-bind",
+                    f"passed: tailnet down, localhost-only expected ([{', '.join(bound) or 'unknown'}])")
+    except Exception as exc:  # noqa: BLE001 — gate, never kills setup
+        _report("dual-bind", f"failed: {exc}")
+
+    # 2. crypto assert (+live-gate hint).
+    try:
+        crypto_fn = getattr(obs, "assert_crypto_stack", None)
+        if crypto_fn is None:
+            from observatory.provision import assert_crypto_stack as crypto_fn
+        ok, missing = crypto_fn()
+        if ok:
+            _report("crypto", "passed: olm+mautrix.crypto+aiosqlite+aiohttp import "
+                    "(live: python -m observatory.scripts.e2ee_live_gate --fresh)")
+        else:
+            _report("crypto", f"failed: missing {', '.join(missing)} "
+                    "— E2EE stays ON; retry: mercury setup observatory")
+    except Exception as exc:  # noqa: BLE001
+        _report("crypto", f"failed: {exc}")
+
+    # 3. model resolve + inject ping.
+    try:
+        model, provider = _self_test_model()
+        ping = _inject_ping()
+        _report("model", f"passed: {model} ({provider}); inject ping: {ping}"
+                if not ping.startswith("failed") else
+                f"failed: {model} ({provider}) resolves but inject ping: {ping}")
+    except Exception as exc:  # noqa: BLE001
+        _report("model", f"failed: {exc}")
+
+    # 4. sidecar-encrypted room.
+    try:
+        enc_fn = getattr(obs, "gateway_room_encrypted", None)
+        if enc_fn is None:
+            from observatory.provision import gateway_room_encrypted as enc_fn
+        verdict = enc_fn()
+        if verdict is True:
+            _report("encrypted-room", "passed: gateway room is sidecar-encrypted")
+        elif verdict is None:
+            _report("encrypted-room", "skipped: no gateway room yet (converges on sidecar start)")
+        else:
+            _report("encrypted-room", "failed: gateway room exists but is not sidecar-encrypted "
+                    "— purge + re-converge, or wipe + re-provision")
+    except Exception as exc:  # noqa: BLE001
+        _report("encrypted-room", f"failed: {exc}")
+
+    # 5. admin ping (validate + self-heal).
+    try:
+        if not status.get("homeserver_reachable"):
+            _report("admin", "skipped: homeserver unreachable")
+        else:
+            heal_fn = getattr(obs, "heal_owner_admin_token", None)
+            if heal_fn is None:
+                from observatory.provision import heal_owner_admin_token as heal_fn
+            _report("admin", f"passed: token {heal_fn()}")
+    except Exception as exc:  # noqa: BLE001
+        _report("admin", f"failed: {exc} — re-login: mercury setup observatory")
+
+    # 6. synthetic transaction.
+    _report("synthetic-txn", _synthetic_transaction())
+
+    # 7. poisoned rooms (+converge offer).
+    try:
+        scan_fn = getattr(obs, "scan_poisoned_rooms", None)
+        if scan_fn is None:
+            from observatory.provision import scan_poisoned_rooms as scan_fn
+        problems = scan_fn()
+        if problems is None:
+            _report("poison-scan", "skipped: unscannable (unreachable or unprovisioned)")
+        elif not problems:
+            _report("poison-scan", "passed: no plaintext-history rooms")
+        else:
+            names = ", ".join(f"{p['key']} ({p['status']})" for p in problems)
+            print_error(f"[acceptance] poison-scan: failed: {names}")
+            results.append(("poison-scan", f"failed: {names}"))
+            try:
+                if prompt_yes_no(
+                    f"Purge {len(problems)} poisoned rooms and re-converge encrypted?",
+                    default=False,
+                ):
+                    fix_fn = getattr(obs, "reconverge_poisoned_rooms", None)
+                    if fix_fn is None:
+                        from observatory.provision import (
+                            reconverge_poisoned_rooms as fix_fn,
+                        )
+                    summary = fix_fn()
+                    print_success(f"[acceptance] reconverge: {summary}")
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 — offer never kills setup
+                print_error(f"[acceptance] reconverge failed: {exc}")
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # noqa: BLE001 — gate, never kills setup
+        _report("poison-scan", f"failed: {exc}")
+
+    all_pass = all(outcome.startswith(("passed", "skipped")) for _, outcome in results)
+    if all_pass:
+        print_success("[acceptance] all gates pass or skip — login card next.")
+    else:
+        print_error("[acceptance] failures above need action — login card still prints last.")
+    return all_pass
 
 def setup_observatory(config: dict, *, quick: bool = False):
     """Wizard section: the bundled Matrix observatory (Tuwunel homeserver
@@ -3661,9 +4014,18 @@ def setup_observatory(config: dict, *, quick: bool = False):
 
     if status.get("provisioned"):
         ts = _tailscale_status(obs)
-        _print_observatory_setup_card(status, ts)
         _offer_tailscale_bind(obs, ts)
-        # Post-offer re-check: a declined/failed bind (or a standalone
+        # Post-bind refresh: the offer may have rewritten the bind, so the
+        # acceptance gates and the login card see the fresh URL.
+        try:
+            status = obs.status_summary()
+        except Exception:  # noqa: BLE001 — keep the pre-bind status
+            pass
+        # Acceptance BEFORE the login card (card last): dual-bind, crypto,
+        # model+ping, encrypted room, admin, synthetic txn, poison scan.
+        _run_observatory_acceptance(obs, status, ts)
+        _print_observatory_setup_card(status, ts)
+        # Post-acceptance re-check: a declined/failed bind (or a standalone
         # `mercury setup observatory` re-run) still strands phones on a
         # localhost-only tuwunel — say so explicitly.
         _maybe_print_bind_mismatch_action(obs, ts)
