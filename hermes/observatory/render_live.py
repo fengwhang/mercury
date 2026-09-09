@@ -376,7 +376,9 @@ def main(argv: list[str] | None = None) -> int:
     gate.line(f"== M3c live gate == {time.strftime('%Y-%m-%d %H:%M:%S')} home={home}")
 
     # 1. Provision the throwaway home (idempotent; downloads tuwunel on first run).
-    summary = provision.provision(mercury_home=home, systemd=False)
+    # Explicit online: a dev-run gate with network, not boot (provision()
+    # itself defaults to offline).
+    summary = provision.provision(mercury_home=home, systemd=False, offline=False)
     gate.line(f"provision: {json.dumps(summary)}")
 
     paths = ObservatoryPaths(home)
