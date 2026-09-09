@@ -465,6 +465,43 @@ def _stored_owner_localpart(user_id: str) -> str:
     return user_id.lstrip("@").split(":", 1)[0]
 
 
+def verify_owner_login(
+    base_url: str,
+    user_id: str,
+    password: str,
+    *,
+    http: Any | None = None,
+) -> dict:
+    """Login probe: verify a password works against the live homeserver.
+
+    POSTs ``m.login.password`` for ``user_id``; returns the login body on
+    200-with-token, raises ProvisionError otherwise (wrong password,
+    unreachable server, unexpected shape). ``http`` replaces :func:`_http_json`
+    (tests inject a fake). NEVER logs the password.
+    """
+    call = http or _http_json
+    try:
+        status, body = call(
+            "POST",
+            f"{base_url.rstrip('/')}/_matrix/client/v3/login",
+            payload={
+                "type": "m.login.password",
+                "identifier": {"type": "m.id.user", "user": user_id},
+                "password": password,
+            },
+        )
+    except ProvisionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — network failure is a hard error here
+        raise ProvisionError(f"owner login verification failed: {exc}") from exc
+    if status != 200 or not isinstance(body, dict) or not body.get("access_token"):
+        raise ProvisionError(
+            "owner login verification failed "
+            f"(HTTP {status}): {json.dumps(body)[:200]}"
+        )
+    return body
+
+
 def rotate_owner_password(
     new_password: str,
     paths: ObservatoryPaths | None = None,
@@ -474,9 +511,11 @@ def rotate_owner_password(
     """Rotate the owner password on the live homeserver + both mirrors.
 
     ``http(method, url, payload, token)`` replaces :func:`_http_json`
-    (tests inject a fake). The credentials file and the .env mirror are
-    rewritten ONLY after the server answers 200 — a failed rotation
-    never diverges local state. Returns 'rotated'.
+    (tests inject a fake). Flow: admin PUT then login probe with the NEW
+    password, then the atomic dual-write (``_atomic_write_secret_file`` +
+    atomic ``mirror_owner_env``). Mirrors move ONLY after the server both
+    accepts the PUT and proves the new password logs in — a failed rotation
+    or probe never diverges local state. Returns 'rotated'.
     """
     resolved = paths if paths is not None else ObservatoryPaths(_mercury_home(None))
     stored = read_owner_credentials(resolved)
@@ -517,6 +556,7 @@ def rotate_owner_password(
             f"password rotation failed (HTTP {status}): "
             f"{json.dumps(body)[:200]}"
         )
+    verify_owner_login(base_url, user_id, password, http=call)
     stored["password"] = password
     _atomic_write_secret_file(resolved.owner_credentials, json.dumps(stored, indent=2) + "\n")
     mirror_owner_env(resolved.root.parent, user_id, password)
