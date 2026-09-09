@@ -1449,6 +1449,38 @@ def _crypto_pip_install(python_bin: str, args: list[str]) -> tuple[bool, str]:
     return ok, detail
 
 
+#: The four imports the sidecar boot needs (defect ii acceptance): the
+#: compiled Olm stack, the mautrix crypto machine, the SQLite crypto-store
+#: adapter, and the HTTP layer the appservice/matrix clients import.
+_CRYPTO_IMPORTS = ("olm", "mautrix.crypto", "aiosqlite", "aiohttp")
+
+
+def crypto_import_probe() -> dict[str, bool]:
+    """Import-probe each crypto-stack dependency. Never raises — every
+    failure is False (missing, broken, or partially installed)."""
+    import importlib as _importlib
+
+    out: dict[str, bool] = {}
+    for name in _CRYPTO_IMPORTS:
+        try:
+            if name == "mautrix.crypto":
+                from mautrix.crypto import OlmMachine  # noqa: F401
+            else:
+                _importlib.import_module(name)
+            out[name] = True
+        except Exception:  # noqa: BLE001 — any import failure = missing
+            out[name] = False
+    return out
+
+
+def assert_crypto_stack() -> tuple[bool, list[str]]:
+    """Setup-acceptance gate: (True, []) when all four crypto imports land,
+    else (False, [missing names]). Pure probe — installs nothing."""
+    probe = crypto_import_probe()
+    missing = [name for name, ok in probe.items() if not ok]
+    return (not missing, missing)
+
+
 def _crypto_fail_closed(reason: str) -> str:
     """Fail CLOSED: E2EE stays on, nothing is written to config.yaml.
 
@@ -1465,20 +1497,22 @@ def _crypto_fail_closed(reason: str) -> str:
 def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
     """Ensure the compiled crypto stack from the vendored wheels, or fail CLOSED.
 
-    Returns one of ``"ready"`` (stack already imports),
+    Returns one of ``"ready"`` (all four stack imports land),
     ``"disabled-already"`` (``observatory.e2ee: false`` set EXPLICITLY by
     the operator — nothing to do), ``"installed"`` (vendored/index wheel
-    restored the stack), or ``"failed: <reason>"`` (no usable wheel, hash
-    mismatch, or the install failed — E2EE stays ON, config.yaml untouched,
-    retry command printed). NEVER raises and NEVER crashes the wizard:
-    every failure degrades to the fail-closed status. Installs into
-    ``sys.executable``'s environment (the same venv that runs the
-    sidecar); needs no compiler and no container runtime.
+    restored the stack, verified by re-import), or ``"failed: <reason>"``
+    (no usable wheel, hash mismatch, or the install failed — E2EE stays
+    ON, config.yaml untouched, retry command printed). NEVER raises and
+    NEVER crashes the wizard: every failure degrades to the fail-closed
+    status. Installs into ``sys.executable``'s environment (the same venv
+    that runs the sidecar); needs no compiler and no container runtime.
 
-    ``"ready"`` requires BOTH the compiled Olm stack AND aiohttp: the
-    sidecar boots appservice/matrix_client which import aiohttp directly,
-    so an olm-ready env without aiohttp is still 'missing' (a
-    matrix-extra-less venv recreates exactly that shape after update)."""
+    MANDATORY, not best-effort: ``"ready"`` requires ALL FOUR imports
+    (``olm`` + ``mautrix.crypto`` + ``aiosqlite`` + ``aiohttp``) — the
+    sidecar boots appservice/matrix_client (aiohttp) and the E2EEManager
+    (olm, OlmMachine, aiosqlite store), so a partially importable env is
+    still 'missing' (a matrix-extra-less venv recreates exactly that
+    shape after update)."""
     try:
         from observatory.e2ee import e2ee_available, e2ee_enabled
     except Exception:  # noqa: BLE001 — import shape failure = unavailable
@@ -1491,10 +1525,15 @@ def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
     except Exception:  # noqa: BLE001 — unreadable config means default-on
         pass
     try:
-        if bool(e2ee_available()) and _aiohttp_available():
-            return "ready"
+        legacy_ok = bool(e2ee_available())
     except Exception:  # noqa: BLE001 — probe failure = unavailable
-        pass
+        legacy_ok = False
+    try:
+        _ok, _missing = assert_crypto_stack()
+    except Exception:  # noqa: BLE001 — probe failure = unavailable
+        _ok, _missing = False, ["probe-failed"]
+    if legacy_ok and _ok:
+        return "ready"
     python_bin = sys.executable
     if sys.platform == "linux" and sys.version_info[:2] == (3, 13):
         try:
@@ -1524,14 +1563,13 @@ def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
             tail = detail.strip().replace("\n", " ")
             return _crypto_fail_closed(
                 f"index install failed{': ' + tail[-300:] if tail else ''}")
-    sys.modules.pop("olm", None)
-    sys.modules.pop("aiohttp", None)
-    try:
-        import olm  # noqa: F401
-        import aiohttp  # noqa: F401
-    except Exception:  # noqa: BLE001 — installed but still unimportable
+    for _mod in ("olm", "mautrix.crypto", "aiosqlite", "aiohttp"):
+        sys.modules.pop(_mod, None)
+    _ok, _missing = assert_crypto_stack()
+    if not _ok:
         return _crypto_fail_closed(
-            "crypto stack installed but does not import")
+            "crypto stack installed but does not import: "
+            f"missing {', '.join(_missing)}")
     print("  ✓ crypto stack ready (python-olm installed, no build needed).")
     return "installed"
 
@@ -1641,19 +1679,37 @@ def verify_and_converge_gateway(mercury_home: str | Path | None = None) -> str:
             executor: object = IntentExecutor(client, state, owner_mxid=owner_mxid,
                                              server_name=server_name)
             if want_e2ee:
+                # MANDATORY (defect ii): with E2EE on, rooms MUST be
+                # sidecar-created encrypted from the start (defect iii) — a
+                # plaintext converge would poison them (undecryptable
+                # history). Missing stack or E2EE-start failure DEFERS the
+                # whole converge; the sidecar retries encrypted on boot.
                 try:
                     from observatory import e2ee as _e2ee
-                    if _e2ee.e2ee_available():
-                        mgr = _e2ee.E2EEManager(
-                            client, state,
-                            crypto_dir=_e2ee.crypto_dir_for(home),
-                            owner_mxid=owner_mxid, gateway_mxid=gateway_mxid)
-                        await mgr.start(enabled=True)
-                        executor = _e2ee.EncryptedIntentExecutor(
-                            client, state, owner_mxid=owner_mxid,
-                            server_name=server_name, e2ee=mgr)
-                except Exception:  # noqa: BLE001 — plaintext converge beats no converge
-                    pass
+                    _ok, _missing = assert_crypto_stack()
+                    if not _ok:
+                        try:
+                            state.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return ("deferred: crypto stack missing "
+                                f"({', '.join(_missing)}) — refusing plaintext "
+                                "rooms (sidecar converges encrypted on start)")
+                    mgr = _e2ee.E2EEManager(
+                        client, state,
+                        crypto_dir=_e2ee.crypto_dir_for(home),
+                        owner_mxid=owner_mxid, gateway_mxid=gateway_mxid)
+                    await mgr.start(enabled=True)
+                    executor = _e2ee.EncryptedIntentExecutor(
+                        client, state, owner_mxid=owner_mxid,
+                        server_name=server_name, e2ee=mgr)
+                except Exception as exc:  # noqa: BLE001 — never plaintext
+                    try:
+                        state.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return (f"deferred: encrypted converge unavailable ({exc} "
+                            "— sidecar retries on start)")
             renderer = Renderer(state, gateway_node_id="gw",
                                 server_name=server_name, owner_mxid=owner_mxid,
                                 executor=executor)  # type: ignore[arg-type]
