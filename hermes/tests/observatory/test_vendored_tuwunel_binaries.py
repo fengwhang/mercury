@@ -219,6 +219,7 @@ class TestOfflineProvisionFromStaged:
 
 @NEEDS_SHELL_STAGE
 @NEEDS_EXEC_X64
+@pytest.mark.live_system_guard_bypass
 class TestLiveBootRealBinary:
     def test_real_binary_boots_and_registers_owner(self, tmp_path):
         """The vendored binary actually runs: full provision boots tuwunel
