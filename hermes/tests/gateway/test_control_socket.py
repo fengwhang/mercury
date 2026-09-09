@@ -403,3 +403,101 @@ def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch
     # supervisor comes from the gateway's own declaration, not a PID scan
     assert gws[0].supervisor == "systemd"
     assert gws[0].code_sha == "SHA555"
+
+
+# ---------------------------------------------------------------------------
+# Params verbs (observatory `inject` shape)
+# ---------------------------------------------------------------------------
+
+def test_params_verb_receives_params_over_socket(home: Path):
+    seen: dict = {}
+
+    async def scenario():
+        server = GatewayControlServer(home)
+        server.register_handler(
+            "inject",
+            lambda params: (seen.update(params) or {"reply": f"echo:{params.get('text')}"}),
+            takes_params=True,
+        )
+        assert await server.start()
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None,
+                lambda: query_gateway_control(
+                    home, "inject",
+                    params={"text": "hello?", "kind": "prompt", "node_id": "gw"},
+                ),
+            )
+        finally:
+            await server.stop()
+
+    assert _run(scenario()) == {"reply": "echo:hello?"}
+    assert seen == {"text": "hello?", "kind": "prompt", "node_id": "gw"}
+
+
+def test_legacy_verb_ignores_params(home: Path):
+    # Zero-arg handlers keep working when a client sends params anyway.
+    async def scenario():
+        server = GatewayControlServer(
+            home, verb_handlers={"identify": lambda: {"pid": 9}}
+        )
+        assert await server.start()
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None,
+                lambda: query_gateway_control(home, "identify", params={"x": 1}),
+            )
+        finally:
+            await server.stop()
+
+    assert _run(scenario()) == {"pid": 9}
+
+
+def test_params_verb_defaults_to_empty_dict(home: Path):
+    seen: dict = {}
+
+    async def scenario():
+        server = GatewayControlServer(home)
+        server.register_handler(
+            "inject",
+            lambda params: (seen.update(params) or {"reply": "ok"}),
+            takes_params=True,
+        )
+        assert await server.start()
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None, lambda: query_gateway_control(home, "inject")
+            )
+        finally:
+            await server.stop()
+
+    assert _run(scenario()) == {"reply": "ok"}
+    assert seen == {}
+
+
+def test_registered_verb_appears_in_supported_verbs(home: Path):
+    async def scenario():
+        server = GatewayControlServer(home)
+        server.register_handler("inject", lambda params: {}, takes_params=True)
+
+        def raw_unknown():
+            path = resolve_client_socket_path(home)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(2)
+                s.connect(str(path))
+                s.sendall(b'{"verb": "nope", "id": 1}\n')
+                return s.recv(65536)
+
+        assert await server.start()
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, raw_unknown)
+        finally:
+            await server.stop()
+
+    payload = json.loads(_run(scenario()).decode())
+    assert payload["ok"] is False
+    assert "inject" in payload["supported_verbs"]

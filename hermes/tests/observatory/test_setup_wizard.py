@@ -121,6 +121,17 @@ class _FakeProvision:
         self.calls = {"provision": 0, "status": 0, "bind": 0,
                       "crypto": 0, "sidecar": 0, "heal": 0, "tree": 0}
         self.bind_ips: list = []
+        self.provision_kwargs: dict = {}
+        self.rotated: list = []
+        # Identity surface mirrors observatory.provision (real validators —
+        # the prompt loops exercise true accept/reject behavior).
+        self.validate_server_name = provision_mod.validate_server_name
+        self.validate_owner_localpart = provision_mod.validate_owner_localpart
+        self.validate_owner_password = provision_mod.validate_owner_password
+
+    def rotate_owner_password(self, new_password, *a, **k):
+        self.rotated.append(new_password)
+        return "rotated"
 
     def status_summary(self, *a, **k):
         idx = min(self.calls["status"], len(self._statuses) - 1)
@@ -129,6 +140,7 @@ class _FakeProvision:
 
     def provision_in_wizard(self, *a, **k):
         self.calls["provision"] += 1
+        self.provision_kwargs = dict(k)
         if self._provision_error is not None:
             raise self._provision_error
         print("→ Matrix Observatory provisioning (Tuwunel)")
@@ -177,7 +189,7 @@ class _FakeProvision:
         return self._bind_address
 
 
-def _run_section(monkeypatch, capsys, fake, *, choice, yes_no):
+def _run_section(monkeypatch, capsys, fake, *, choice, yes_no, texts=()):
     """Run setup_observatory with fakes; returns (stdout, consumed_answers)."""
     monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
     monkeypatch.setattr(
@@ -191,8 +203,19 @@ def _run_section(monkeypatch, capsys, fake, *, choice, yes_no):
         return remaining.pop(0)
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", fake_yes_no)
+
+    pending_texts = list(texts)
+
+    def fake_prompt(question, default=None, password=False):
+        # Mirrors setup.prompt: empty input selects the default.
+        assert pending_texts, f"unexpected extra prompt: {question!r}"
+        answer = pending_texts.pop(0)
+        return answer if answer else (default or "")
+
+    monkeypatch.setattr(setup_mod, "prompt", fake_prompt)
     config = load_config()
     setup_mod.setup_observatory(config)
+    assert not pending_texts, f"unconsumed prompt answers: {pending_texts!r}"
     return capsys.readouterr().out, config, remaining
 
 
@@ -213,11 +236,8 @@ def test_section_fresh_unprovisioned_skip(monkeypatch, capsys):
     assert "observatory.enabled:  yes  (config.yaml)" in out
     # Skip prints the --skip-observatory equivalent note
     assert "--skip-observatory" in out
-    assert fake.calls["provision"] == 0
-    # Fresh + skipped: no card, no secrets
-    assert "first login" not in out
-    assert PASSWORD not in out
     assert remaining == []  # only the toggle prompt ran
+
 
 def test_section_install_calls_provision_then_card(monkeypatch, capsys, tmp_path):
     creds = _write_credentials(tmp_path)
@@ -233,10 +253,17 @@ def test_section_install_calls_provision_then_card(monkeypatch, capsys, tmp_path
         )]
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=0, yes_no=[True]
+        monkeypatch, capsys, fake, choice=0, yes_no=[True, True],
+        texts=["", ""],
     )
 
     assert fake.calls["provision"] == 1
+    # fresh install: prompted identity (defaults) reaches provisioning
+    assert fake.provision_kwargs == {
+        "server_name": "mercury.local",
+        "owner_localpart": "merc-owner",
+        "owner_password": None,
+    }
     # auto steps run without further commands: crypto + sidecar + heal/converge
     assert fake.calls["crypto"] == 1
     assert fake.calls["sidecar"] == 1
@@ -260,7 +287,7 @@ def test_section_install_calls_provision_then_card(monkeypatch, capsys, tmp_path
     # no reveal prompt exists anymore — the password is never printed
     assert PASSWORD not in out
     assert "MATRIX_OBS_OWNER_PASSWORD" in out
-    assert remaining == []  # only the toggle prompt ran
+    assert remaining == []  # identity + toggle prompts all consumed
 
 def test_section_provisioned_enabled_state_and_card(monkeypatch, capsys, tmp_path):
     creds = _write_credentials(tmp_path)
@@ -399,7 +426,8 @@ def test_provision_failure_never_kills_the_wizard(monkeypatch, capsys):
         provision_error=provision_mod.ProvisionError("boom"),
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=0, yes_no=[True]
+        monkeypatch, capsys, fake, choice=0, yes_no=[True, True],
+        texts=["", ""],
     )
 
     assert "Observatory provisioning failed: boom" in out

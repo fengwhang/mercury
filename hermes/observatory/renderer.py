@@ -531,6 +531,13 @@ class Renderer:
         body, formatted = thinking_message(text)
         return (SendMessage(node_id, row["mxid"], body, formatted),)
 
+    def plan_agent_message(self, node_id: str, text: str) -> tuple[RenderIntent, ...]:
+        """An agent's own reply → its room, in its own voice (e.g. the
+        gateway agent answering a Matrix prompt). Plaintext — replies
+        carry the model's raw text, never dashboard tags."""
+        row = self._node(node_id)
+        return (SendMessage(node_id, row["mxid"], text),)
+
     # --- D8 death ------------------------------------------------------------------------
 
     def death_purge_set(self, node_id: str) -> list[dict[str, Any]]:
@@ -656,6 +663,11 @@ class Renderer:
 
     async def render_thinking(self, node_id: str, text: str) -> list[RenderIntent]:
         intents = self.plan_thinking(node_id, text)
+        await self._execute(intents)
+        return list(intents)
+
+    async def render_agent_message(self, node_id: str, text: str) -> list[RenderIntent]:
+        intents = self.plan_agent_message(node_id, text)
         await self._execute(intents)
         return list(intents)
 

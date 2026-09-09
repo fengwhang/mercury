@@ -59,7 +59,9 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from pathlib import Path
+from typing import Any
 
 from observatory import config_gen
 from observatory.config_gen import (
@@ -301,22 +303,224 @@ def _aiohttp_available() -> bool:
         return False
     return True
 
+
+# --- owner identity (setup-chosen server name / localpart / password) -----------
+# The wizard prompts for all three with safe defaults; every explicit value
+# is validated here BEFORE anything is written, and re-provisioning never
+# silently diverges from stored state (conflicts fail hard with a remedy).
+
+#: Strength floor for user-chosen owner passwords (generated ones carry
+#: ~144 bits from ``new_secret(24)`` and bypass this).
+OWNER_PASSWORD_MIN_LENGTH = 12
+
+#: Hostname (+ optional :port) for the MXID suffix — strict DNS labels,
+#: normalized to lowercase. IPv6 literals and underscores are unsupported
+#: (never valid in a Matrix server name on this stack).
+_SERVER_NAME_RE = r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?"
+
+
+def validate_server_name(value: str) -> str:
+    """Normalize (strip + lowercase) and validate a homeserver name.
+
+    Returns the normalized name; raises ValueError with the reason.
+    Immutable once the database exists (tuwunel) — changing it later
+    means wiping ``tuwunel-db`` and re-provisioning.
+    """
+    import re
+
+    clean = (value or "").strip().lower()
+    if not clean:
+        raise ValueError("server name must not be empty")
+    if len(clean) > 255:
+        raise ValueError("server name must be at most 255 characters")
+    if not re.fullmatch(_SERVER_NAME_RE, clean):
+        raise ValueError(
+            f"invalid server name {clean!r}: use a hostname "
+            "(letters, digits, dots, hyphens, optional :port)"
+        )
+    host = clean.split(":")[0]
+    if ".." in host or any(
+        not label or label.startswith("-") or label.endswith("-")
+        for label in host.split(".")
+    ):
+        raise ValueError(f"invalid server name {clean!r}: bad DNS label")
+    return clean
+
+
+def validate_owner_localpart(value: str) -> str:
+    """Normalize (strip + lowercase) and validate the owner localpart.
+
+    Same grammar the homeserver enforces at registration
+    (``identity.SLUG_GRAMMAR``), minus the appservice's exclusive
+    ``merc_`` namespace — an owner inside it could never register.
+    Returns the normalized localpart; raises ValueError with the reason.
+    """
+    from observatory.identity import SLUG_GRAMMAR, VIRTUAL_USER_PREFIX
+
+    import re
+
+    clean = (value or "").strip().lower()
+    if not clean:
+        raise ValueError("owner username must not be empty")
+    if len(clean) > 255:
+        raise ValueError("owner username must be at most 255 characters")
+    if not re.fullmatch(SLUG_GRAMMAR, clean):
+        raise ValueError(
+            f"invalid owner username {clean!r}: use lowercase letters, "
+            "digits, and . _ = - + / (must start with a letter or digit)"
+        )
+    if clean.startswith(VIRTUAL_USER_PREFIX):
+        raise ValueError(
+            f"owner username must not start with {VIRTUAL_USER_PREFIX!r} "
+            "(reserved for agent virtual users)"
+        )
+    return clean
+
+
+def validate_owner_password(value: str, *, localpart: str | None = None) -> str:
+    """Validate a user-chosen owner password (never normalized, never logged).
+
+    The floor is deliberately a length floor plus a same-as-username ban —
+    not composition rules. Returns the password unchanged; raises
+    ValueError with the reason.
+    """
+    if not value or not value.strip():
+        raise ValueError("owner password must not be empty")
+    if len(value) < OWNER_PASSWORD_MIN_LENGTH:
+        raise ValueError(
+            "owner password must be at least "
+            f"{OWNER_PASSWORD_MIN_LENGTH} characters"
+        )
+    if localpart and value.strip().lower() == localpart.strip().lower():
+        raise ValueError("owner password must not be the username itself")
+    return value
+
+
+def generate_owner_password(nbytes: int = 24) -> str:
+    """A generated owner password (URL-safe, ~8 bits/char). Shown NEVER —
+    it lands straight in owner-credentials.json + the .env mirror."""
+    return config_gen.new_secret(nbytes)
+
+
+def read_owner_credentials(paths: ObservatoryPaths | None = None) -> dict | None:
+    """Stored owner credentials, or None when never provisioned.
+
+    Raises ProvisionError on a corrupt file (never destroys it — the
+    remedy names the re-provision path).
+    """
+    resolved = paths if paths is not None else ObservatoryPaths(_mercury_home(None))
+    if not resolved.owner_credentials.exists():
+        return None
+    try:
+        doc = json.loads(resolved.owner_credentials.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ProvisionError(
+            f"owner credentials at {resolved.owner_credentials} are unreadable "
+            f"({exc}) — delete the file (and tuwunel-db) to re-provision"
+        ) from exc
+    if not isinstance(doc, dict) or not doc.get("user_id"):
+        raise ProvisionError(
+            f"owner credentials at {resolved.owner_credentials} carry no user_id "
+            "— delete the file (and tuwunel-db) to re-provision"
+        )
+    return doc
+
+
+def _stored_owner_localpart(user_id: str) -> str:
+    return user_id.lstrip("@").split(":", 1)[0]
+
+
+def rotate_owner_password(
+    new_password: str,
+    paths: ObservatoryPaths | None = None,
+    *,
+    http: Any | None = None,
+) -> str:
+    """Rotate the owner password on the live homeserver + both mirrors.
+
+    ``http(method, url, payload, token)`` replaces :func:`_http_json`
+    (tests inject a fake). The credentials file and the .env mirror are
+    rewritten ONLY after the server answers 200 — a failed rotation
+    never diverges local state. Returns 'rotated'.
+    """
+    resolved = paths if paths is not None else ObservatoryPaths(_mercury_home(None))
+    stored = read_owner_credentials(resolved)
+    if stored is None:
+        raise ProvisionError(
+            "owner is not provisioned — run the observatory install first"
+        )
+    user_id = str(stored.get("user_id") or "")
+    localpart = _stored_owner_localpart(user_id)
+    password = validate_owner_password(new_password, localpart=localpart)
+    base_url = str(stored.get("homeserver_url") or "")
+    admin_token = str(stored.get("access_token") or "")
+    if not base_url:
+        raise ProvisionError(
+            f"owner credentials at {resolved.owner_credentials} carry no "
+            "homeserver_url — delete the file (and tuwunel-db) to re-provision"
+        )
+    if not admin_token:
+        raise ProvisionError(
+            "owner credentials carry no admin access token — "
+            "re-provision to repair (delete owner-credentials.json and tuwunel-db)"
+        )
+    call = http or _http_json
+    try:
+        status, body = call(
+            "PUT",
+            f"{base_url}/_synapse/admin/v2/users/"
+            f"{urllib.parse.quote(user_id, safe='')}",
+            payload={"password": password, "logout_devices": False},
+            token=admin_token,
+        )
+    except ProvisionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — network failure is a hard error here
+        raise ProvisionError(f"password rotation failed: {exc}") from exc
+    if status != 200:
+        raise ProvisionError(
+            f"password rotation failed (HTTP {status}): "
+            f"{json.dumps(body)[:200]}"
+        )
+    stored["password"] = password
+    _write_secret_file(resolved.owner_credentials, json.dumps(stored, indent=2) + "\n")
+    mirror_owner_env(resolved.root.parent, user_id, password)
+    return "rotated"
+
+
 # --- steps ---------------------------------------------------------------------
 
-def ensure_config(paths: ObservatoryPaths, registration_token: str | None = None) -> str:
+def ensure_config(paths: ObservatoryPaths, registration_token: str | None = None,
+                  *, server_name: str | None = None) -> str:
     """Write the closed tuwunel.toml if absent; NEVER overwrite. Returns
     'created' for a fresh file, 'healed' when an existing file was missing
     ``rocksdb_allow_fallocate`` and gained it in place (every other byte
-    preserved), 'kept' otherwise."""
+    preserved), 'kept' otherwise.
+
+    ``server_name`` applies to fresh files only: against an existing toml
+    a differing explicit name fails hard (the name is immutable without a
+    database wipe — silently forking it would orphan every MXID)."""
+    wanted = validate_server_name(server_name) if server_name is not None else None
     if not paths.toml.exists():
         token = registration_token or config_gen.new_secret(32)
         content = config_gen.render_tuwunel_toml(
             database_path=str(paths.db_dir),
             appservice_dir=str(paths.appservices_dir),
             registration_token=token,
+            server_name=wanted or config_gen.SERVER_NAME_DEFAULT,
         )
         _write_secret_file(paths.toml, content)
         return "created"
+    if wanted is not None:
+        stored = _load_toml(paths.toml).get("global", {}).get(
+            "server_name", config_gen.SERVER_NAME_DEFAULT)
+        if str(stored) != wanted:
+            raise ProvisionError(
+                f"tuwunel.toml already pins server_name {stored!r} — refusing "
+                f"to provision {wanted!r} over it (the name is immutable "
+                "without a wipe; delete tuwunel.toml and tuwunel-db to "
+                "re-provision, or drop the --server-name flag)"
+            )
     return _heal_fallocate_flag(paths)
 
 
@@ -414,7 +618,8 @@ def _heal_owner_env_best_effort(paths: ObservatoryPaths) -> None:
 
 
 def ensure_owner_account(paths: ObservatoryPaths,
-                         owner_localpart: str = OWNER_LOCALPART_DEFAULT) -> str:
+                         owner_localpart: str | None = None,
+                         owner_password: str | None = None) -> str:
     """Bootstrap the owner (admin) account; 'exists' when already provisioned.
 
     Boots the binary against a THROWAWAY bootstrap config (identical to the
@@ -423,6 +628,14 @@ def ensure_owner_account(paths: ObservatoryPaths,
     running systemd unit, if any, is stopped first and restarted by the
     caller's unit step.
 
+    ``None`` means "existing-or-default" (the idempotent law): fresh
+    installs use the setup-chosen values or fall back to
+    ``OWNER_LOCALPART_DEFAULT`` + a generated password. Against stored
+    credentials, agreeing explicit values are a no-op but a differing
+    localpart fails hard (re-provision to rename) and a differing
+    password fails hard (rotate it via ``rotate_owner_password``) —
+    re-provisioning never silently forks identity.
+
     Fresh credentials are mirrored into ``$MERCURY_HOME/.env`` as
     ``MATRIX_OBS_OWNER_USER_ID`` / ``MATRIX_OBS_OWNER_PASSWORD`` (0600);
     the 'exists' path only fills keys a pre-mirror install never wrote.
@@ -430,6 +643,23 @@ def ensure_owner_account(paths: ObservatoryPaths,
     if paths.owner_credentials.exists():
         _heal_owner_env_best_effort(paths)
         sync_owner_homeserver_url(paths)
+        if owner_localpart is not None or owner_password is not None:
+            stored = read_owner_credentials(paths) or {}
+            user_id = str(stored.get("user_id") or "")
+            if owner_localpart is not None and validate_owner_localpart(
+                    owner_localpart) != _stored_owner_localpart(user_id):
+                raise ProvisionError(
+                    f"owner already provisioned as {user_id} — refusing to "
+                    "rename it in place (delete owner-credentials.json and "
+                    "tuwunel-db to re-provision)"
+                )
+            if owner_password is not None and owner_password != str(
+                    stored.get("password") or ""):
+                raise ProvisionError(
+                    "owner already has a password — rotate it with "
+                    "`mercury setup observatory` (or rotate_owner_password), "
+                    "never by re-provisioning"
+                )
         return "exists"
     if not paths.binary.is_file():
         raise ProvisionError(
@@ -462,7 +692,10 @@ def ensure_owner_account(paths: ObservatoryPaths,
         allow_registration=True,  # bootstrap ONLY; deleted below
     )
     _write_secret_file(paths.bootstrap_toml, bootstrap)
-    password = config_gen.new_secret(24)
+    localpart = (validate_owner_localpart(owner_localpart)
+                 if owner_localpart is not None else OWNER_LOCALPART_DEFAULT)
+    password = (validate_owner_password(owner_password, localpart=localpart)
+                if owner_password is not None else generate_owner_password())
 
     proc = subprocess.Popen(
         [str(paths.binary), "-c", str(paths.bootstrap_toml)],
@@ -475,7 +708,7 @@ def ensure_owner_account(paths: ObservatoryPaths,
             "POST",
             f"{base_url}/_matrix/client/v3/register",
             payload={
-                "username": owner_localpart,
+                "username": localpart,
                 "password": password,
                 "auth": {"type": _REGISTRATION_AUTH_TYPE, "token": token},
             },
@@ -985,7 +1218,9 @@ def provision(mercury_home: str | Path | None = None,
               registration_token: str | None = None, *,
               fetch: tuwunel.Fetch | None = None,
               systemd: bool = True,
-              owner_localpart: str = OWNER_LOCALPART_DEFAULT,
+              server_name: str | None = None,
+              owner_localpart: str | None = None,
+              owner_password: str | None = None,
               offline: bool | None = None) -> dict:
     """Run every provisioning step (order matters: binary -> config ->
     appservice -> owner -> unit). Returns a summary dict; raises
@@ -1009,10 +1244,28 @@ def provision(mercury_home: str | Path | None = None,
     (>= MIN_VERSION gate), provision keeps it (action ``"kept"``) with a
     warning and continues — a rate limit never fails an install. With
     nothing usable installed the original fetch error still raises.
+
+    Identity (``server_name`` / ``owner_localpart`` / ``owner_password``):
+    ``None`` on each means "existing-or-default" — the idempotent law for
+    unattended callers (boot, sidecar, update gate). Explicit values are
+    validated up front and apply to fresh installs; against stored state
+    a disagreement fails hard (see ensure_config / ensure_owner_account).
     """
     paths = ObservatoryPaths(_mercury_home(mercury_home))
     for d in (paths.root, paths.bin_dir, paths.db_dir, paths.appservices_dir, paths.logs_dir):
         d.mkdir(parents=True, exist_ok=True)
+
+    # Fail fast on explicit identity (before the binary/config/owner steps).
+    if server_name is not None:
+        server_name = validate_server_name(server_name)
+    if owner_localpart is not None:
+        owner_localpart = validate_owner_localpart(owner_localpart)
+    if owner_password is not None:
+        validate_owner_password(
+            owner_password,
+            localpart=owner_localpart or _stored_owner_localpart(
+                str((read_owner_credentials(paths) or {}).get("user_id") or "")),
+        )
 
     online = offline is False
     if online:
@@ -1025,9 +1278,9 @@ def provision(mercury_home: str | Path | None = None,
     summary = {
         "tuwunel": {"action": action, "version": version, "binary": str(paths.binary),
                     "offline": not online},
-        "config": ensure_config(paths, registration_token),
+        "config": ensure_config(paths, registration_token, server_name=server_name),
         "appservice": ensure_appservice_registration(paths),
-        "owner": ensure_owner_account(paths, owner_localpart),
+        "owner": ensure_owner_account(paths, owner_localpart, owner_password),
         "unit": ensure_systemd_unit(paths) if systemd else "skipped (--no-systemd)",
     }
     return summary
@@ -1427,7 +1680,10 @@ def _print_summary(summary: dict) -> None:
         print(f"  ✓ systemd unit: {summary['unit']} ({HOMESERVER_UNIT_NAME})")
 
 
-def provision_in_wizard(mercury_home: str | Path | None = None) -> dict:
+def provision_in_wizard(mercury_home: str | Path | None = None, *,
+                        server_name: str | None = None,
+                        owner_localpart: str | None = None,
+                        owner_password: str | None = None) -> dict:
     """In-process provisioning entry for the setup wizard's 'Matrix
     Observatory' section: same steps, same summary, same output lines as
     the ``python -m observatory.provision`` CLI. Boot-law offline: trusts
@@ -1435,9 +1691,14 @@ def provision_in_wizard(mercury_home: str | Path | None = None) -> dict:
     TuwunelError with the `mercury update` remediation). Raises
     TuwunelError/ProvisionError on failure — the wizard section catches
     and shows the message — and never ``sys.exit()``s: the wizard must
-    survive a failed install."""
+    survive a failed install.
+
+    Identity kwargs are the setup-prompted values (``None`` =
+    existing-or-default per :func:`provision`)."""
     print("→ Matrix Observatory provisioning (Tuwunel)")
-    summary = provision(mercury_home)
+    summary = provision(mercury_home, server_name=server_name,
+                        owner_localpart=owner_localpart,
+                        owner_password=owner_password)
     _print_summary(summary)
     return summary
 
@@ -1459,8 +1720,13 @@ def main(argv: list[str] | None = None) -> int:
              "passes `openssl rand` output; a fresh secret is drawn when omitted)",
     )
     parser.add_argument(
-        "--owner-localpart", default=OWNER_LOCALPART_DEFAULT,
-        help=f"owner account localpart (default: {OWNER_LOCALPART_DEFAULT})",
+        "--owner-localpart", default=None,
+        help=f"owner account localpart (default: existing or {OWNER_LOCALPART_DEFAULT})",
+    )
+    parser.add_argument(
+        "--server-name", default=None,
+        help="homeserver name / MXID suffix for fresh installs "
+             "(default: existing or mercury.local; immutable once provisioned)",
     )
     parser.add_argument(
         "--no-systemd", action="store_true",
@@ -1481,10 +1747,11 @@ def main(argv: list[str] | None = None) -> int:
             args.mercury_home,
             args.registration_token,
             systemd=not args.no_systemd,
+            server_name=args.server_name,
             owner_localpart=args.owner_localpart,
             offline=True if args.offline else False,
         )
-    except (tuwunel.TuwunelError, ProvisionError) as exc:
+    except (tuwunel.TuwunelError, ProvisionError, ValueError) as exc:
         print(f"✗ observatory provisioning failed: {exc}")
         return 1
 

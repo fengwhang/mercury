@@ -33094,6 +33094,25 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler}
         )
+        # observatory prompt delivery (matrix-observatory §5): the sidecar
+        # sends gateway-room text as `inject` with {text, kind, node_id};
+        # the handler runs one headless turn on the gateway session and
+        # answers with {reply}. Handlers run on the socket's executor
+        # thread (never the gateway loop), so the blocking turn cannot
+        # stall platform traffic; per-session locking serializes turns.
+        try:
+            from observatory.gateway_session import run_gateway_prompt as _run_gateway_prompt
+
+            def _observatory_inject_handler(params: dict) -> dict:
+                text = params.get("text", "") if isinstance(params, dict) else ""
+                kind = params.get("kind", "prompt") if isinstance(params, dict) else "prompt"
+                return {"reply": _run_gateway_prompt(text, kind=kind)}
+
+            _control_server.register_handler(
+                "inject", _observatory_inject_handler, takes_params=True
+            )
+        except Exception as _oi_exc:
+            logger.debug("Observatory inject verb not registered: %s", _oi_exc)
         if not await _control_server.start():
             _control_server = None
         else:
