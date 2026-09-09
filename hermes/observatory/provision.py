@@ -56,6 +56,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -110,6 +111,39 @@ def _write_secret_file(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     path.chmod(0o600)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write text atomically (temp file in the same dir + os.replace).
+
+    A crash mid-write never leaves a truncated secrets file behind: readers
+    see the old content or the new content, never a prefix. Raises OSError
+    on failure (callers translate to ProvisionError — fail loudly).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_secret_file(path: Path, content: str) -> None:
+    """Atomic ``_write_secret_file`` for the owner-password mirror pair.
+
+    Owner credentials and the .env mirror must move together: every path
+    that sets/changes the owner password writes the credentials file with
+    this helper and the .env mirror with the atomic ``mirror_owner_env``
+    below, so a crash can never strand one file new and the other stale.
+    """
+    _atomic_write_text(path, content)
 
 
 def _bound_base_url(paths: ObservatoryPaths) -> str:
@@ -206,7 +240,9 @@ def mirror_owner_env(mercury_home: str | Path | None, user_id: str,
     assignments are replaced in place, missing ones appended (creating the
     file when absent). With ``only_missing=True`` pre-existing values are
     left untouched — the idempotent heal path for installs provisioned
-    before the mirror existed. NEVER logs the values.
+    before the mirror existed. The final write is atomic (temp + rename),
+    and any failure raises ProvisionError — a half-written mirror never
+    stands, and a failed mirror never passes silently. NEVER logs values.
     """
     home = _mercury_home(mercury_home)
     env_path = home / ".env"
@@ -229,8 +265,7 @@ def mirror_owner_env(mercury_home: str | Path | None, user_id: str,
             lines[-1] += "\n"
         for key, value in pending.items():
             lines.append(f"{key}={_quote_env_value(value)}\n")
-        env_path.write_text("".join(lines), encoding="utf-8")
-        env_path.chmod(0o600)
+        _atomic_write_text(env_path, "".join(lines))
     except OSError as exc:
         raise ProvisionError(f"could not mirror owner credentials to {env_path}: {exc}") from exc
 
@@ -483,7 +518,7 @@ def rotate_owner_password(
             f"{json.dumps(body)[:200]}"
         )
     stored["password"] = password
-    _write_secret_file(resolved.owner_credentials, json.dumps(stored, indent=2) + "\n")
+    _atomic_write_secret_file(resolved.owner_credentials, json.dumps(stored, indent=2) + "\n")
     mirror_owner_env(resolved.root.parent, user_id, password)
     return "rotated"
 
@@ -617,6 +652,103 @@ def _heal_owner_env_best_effort(paths: ObservatoryPaths) -> None:
         pass
 
 
+def _unquote_env_value(raw: str) -> str:
+    """Invert ``_quote_env_value`` (double-quote backslash escapes only).
+
+    Exact inversion matters: the mismatch check compares parsed .env values
+    against the credentials file, and a lossy unquote would cry "stale" on
+    every setup run for passwords carrying quotes or backslashes.
+    """
+    text = raw.strip()
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        inner, out, i = text[1:-1], [], 0
+        while i < len(inner):
+            char = inner[i]
+            if char == "\\" and i + 1 < len(inner) and inner[i + 1] in ('"', "\\"):
+                out.append(inner[i + 1])
+                i += 2
+            else:
+                out.append(char)
+                i += 1
+        return "".join(out)
+    if len(text) >= 2 and text[0] == "'" and text[-1] == "'":
+        return text[1:-1]
+    return text
+
+
+def _read_owner_env_mirror(home: Path) -> dict:
+    """Current ``MATRIX_OBS_OWNER_*`` values from ``$MERCURY_HOME/.env``."""
+    found: dict = {}
+    try:
+        text = (home / ".env").read_text(encoding="utf-8")
+    except OSError:
+        return found
+    for line in text.splitlines():
+        for key in (ENV_OWNER_USER_ID, ENV_OWNER_PASSWORD):
+            if key not in found and _env_line_defines_key(line, key):
+                found[key] = _unquote_env_value(line.split("=", 1)[1])
+    return found
+
+
+def describe_owner_env_mismatch(
+    paths: ObservatoryPaths | None = None,
+) -> dict:
+    """Compare the .env owner mirror against owner-credentials.json.
+
+    Returns ``{"missing": [...], "stale": [...]}`` (both empty = the mirror
+    agrees with the credentials file, the source of truth), or
+    ``{"error": reason}`` when there is nothing to compare (never
+    provisioned) or the comparison itself failed. Never raises and never
+    logs values — the setup-time consistency check reads this.
+    """
+    try:
+        resolved = paths if paths is not None else ObservatoryPaths(
+            _mercury_home(None))
+        stored = read_owner_credentials(resolved)
+    except Exception as exc:  # noqa: BLE001 — describe-only; caller decides
+        return {"error": str(exc)}
+    if stored is None:
+        return {"error": "owner is not provisioned"}
+    mirror = _read_owner_env_mirror(resolved.root.parent)
+    wanted = {
+        ENV_OWNER_USER_ID: str(stored.get("user_id") or ""),
+        ENV_OWNER_PASSWORD: str(stored.get("password") or ""),
+    }
+    missing = [k for k in wanted if k not in mirror]
+    stale = [k for k in wanted if k in mirror and mirror[k] != wanted[k]]
+    return {"missing": missing, "stale": stale}
+
+
+def heal_owner_env(paths: ObservatoryPaths | None = None) -> list:
+    """Rewrite the .env owner mirror from owner-credentials.json.
+
+    Unlike ``_heal_owner_env_best_effort`` (missing-only), this also
+    overwrites STALE values: the credentials file is the source of truth,
+    and a diverged password in .env authenticates nowhere. Returns the
+    healed key names. Raises ProvisionError when unprovisioned, unreadable,
+    or the mirror write fails — heal problems fail loudly, never silently.
+    """
+    resolved = paths if paths is not None else ObservatoryPaths(
+        _mercury_home(None))
+    stored = read_owner_credentials(resolved)
+    if stored is None:
+        raise ProvisionError(
+            "owner is not provisioned — run the observatory install first"
+        )
+    user_id = str(stored.get("user_id") or "")
+    password = str(stored.get("password") or "")
+    if not user_id or not password:
+        raise ProvisionError(
+            f"owner credentials at {resolved.owner_credentials} carry no "
+            "user_id/password — delete the file (and tuwunel-db) to "
+            "re-provision"
+        )
+    before = _read_owner_env_mirror(resolved.root.parent)
+    mirror_owner_env(resolved.root.parent, user_id, password)
+    return [k for k in (ENV_OWNER_USER_ID, ENV_OWNER_PASSWORD)
+            if before.get(k) != (user_id if k == ENV_OWNER_USER_ID else password)]
+
+
 def ensure_owner_account(paths: ObservatoryPaths,
                          owner_localpart: str | None = None,
                          owner_password: str | None = None) -> str:
@@ -718,7 +850,7 @@ def ensure_owner_account(paths: ObservatoryPaths,
                 f"owner registration failed (HTTP {status}): "
                 f"{json.dumps(body)[:300]}"
             )
-        _write_secret_file(
+        _atomic_write_secret_file(
             paths.owner_credentials,
             json.dumps(
                 {

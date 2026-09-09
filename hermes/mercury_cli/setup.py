@@ -978,7 +978,10 @@ def _read_model_slots() -> dict:
 
     Hoisted from ``_prompt_mercury_slots`` so the delegate reconfigure gate
     reuses the exact same probe (no new detection). A missing file or a
-    parse error degrades to empty slots (unconfigured → no gate).
+    parse error degrades to empty slots (unconfigured → no gate). Real
+    files nest the block under ``hermes:`` (save_config writes the mercury
+    subtree) — check the nested block when the top level is empty, else
+    the delegate gate never fires on real installs.
     """
     import os as _os
     from pathlib import Path as _Path
@@ -1004,6 +1007,14 @@ def _read_model_slots() -> dict:
 
         whole = _yaml.safe_load(path.read_text()) or {}
         models = whole.get("models") or {}
+        if not isinstance(models, dict):
+            models = {}
+        if not any(models.get(k) for k in slots):
+            nested = whole.get("hermes") or {}
+            if isinstance(nested, dict):
+                nested_models = nested.get("models") or {}
+                if isinstance(nested_models, dict):
+                    models = nested_models
         for key in slots:
             value = str(models.get(key) or "").strip()
             if value:
@@ -3266,6 +3277,32 @@ def _prompt_observatory_identity(obs) -> dict:
     }
 
 
+def _rotate_owner_localpart(obs) -> str | None:
+    """Stored owner localpart for rotation-time password validation.
+
+    The fresh-install prompt validates the password against the just-chosen
+    username (same-as-username ban); rotation must apply the same rule
+    against the STORED username. Without it the wizard loop accepts a
+    password the provision layer's rotate (which validates with localpart)
+    then refuses with a post-hoc failure instead of a reprompt.
+    Best-effort: None when the credentials can't be read (validation
+    degrades to the length floor, exactly as before).
+    """
+    read = getattr(obs, "read_owner_credentials", None)
+    if read is None:
+        return None
+    try:
+        stored = read()
+    except Exception:
+        return None
+    if not isinstance(stored, dict):
+        return None
+    user_id = str(stored.get("user_id") or "")
+    if not user_id.startswith("@") or ":" not in user_id:
+        return None
+    return user_id[1:].split(":", 1)[0] or None
+
+
 def _offer_owner_password_rotate(obs) -> None:
     """Opt-in password rotation on already-provisioned homes (never default).
 
@@ -3287,11 +3324,17 @@ def _offer_owner_password_rotate(obs) -> None:
     if not want:
         print_info("Keeping the existing owner credentials.")
         return
-    validate = getattr(obs, "validate_owner_password", None)
+    validate = getattr(obs, "validate_owner_password", None) or (lambda v, **k: v)
+    localpart = _rotate_owner_localpart(obs)
     while True:
         new = prompt("New owner password (at least 12 characters, hidden)", None, password=True)
         try:
-            (validate or (lambda v, **k: v))(new)
+            try:
+                validate(new, localpart=localpart)
+            except TypeError:
+                # A third-party provision double without the localpart
+                # keyword: fall back to the bare call, as before.
+                validate(new)
             break
         except ValueError as exc:
             print_error(str(exc))
@@ -3304,6 +3347,46 @@ def _offer_owner_password_rotate(obs) -> None:
         print_info("Retry any time with: mercury setup observatory")
         return
     print_success("Owner password rotated (mirrored to .env — paste it into FluffyChat).")
+
+
+def _maybe_heal_owner_env_mirror(obs) -> None:
+    """Setup-time .env-vs-credentials consistency check (warn + heal).
+
+    The credentials file is the source of truth; a stale
+    MATRIX_OBS_OWNER_PASSWORD in .env authenticates nowhere and leaves the
+    user unable to tell which credential works. On mismatch: warn naming
+    the keys, heal from the credentials file, confirm. Never prompts and
+    never kills the wizard — every failure degrades to a printed hint.
+    Doubles without the provision helpers (older fakes) skip silently.
+    """
+    describe = getattr(obs, "describe_owner_env_mismatch", None)
+    heal = getattr(obs, "heal_owner_env", None)
+    if describe is None or heal is None:
+        return
+    try:
+        mismatch = describe()
+    except Exception:
+        return
+    if not isinstance(mismatch, dict) or "error" in mismatch:
+        return
+    missing = list(mismatch.get("missing") or [])
+    drifted = missing + [
+        k for k in (mismatch.get("stale") or []) if k not in missing
+    ]
+    if not drifted:
+        return
+    print_warning(
+        "Observatory .env mirror disagrees with owner-credentials.json "
+        f"({', '.join(drifted)}) — healing from the credentials file."
+    )
+    try:
+        healed = heal()
+    except Exception as exc:  # noqa: BLE001 — hint, never kills setup
+        print_error(f"Could not heal the .env owner mirror: {exc}")
+        print_info("Fix it any time with: mercury setup observatory")
+        return
+    if healed:
+        print_success(f"Healed the .env owner mirror ({', '.join(healed)}).")
 
 
 def setup_observatory(config: dict, *, quick: bool = False):
@@ -3337,6 +3420,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
 
     _observatory_state_lines(status)
     print()
+    _maybe_heal_owner_env_mirror(obs)
 
     # Reconfigure gate: already provisioned → one-line summary + ask
     # (default NO keeps everything, fast re-run). Fresh installs fall
@@ -3470,6 +3554,7 @@ def run_headless_observatory_setup() -> None:
         obs.provision_in_wizard()
         _run_observatory_auto_steps(obs)
         print_success("Observatory provisioning complete.")
+        _maybe_heal_owner_env_mirror(obs)
     except KeyboardInterrupt:
         raise
     except Exception as exc:
@@ -3673,6 +3758,37 @@ def _model_section_has_credentials(config: dict) -> bool:
     return False
 
 
+def _model_section_is_configured(config: dict) -> bool:
+    """Return True when the passed config itself names a model (VM-gate fix).
+
+    ``_model_section_has_credentials`` only sees OAuth via the auth store's
+    ``active_provider`` (unset on the already-logged-in Nous path and every
+    API-key flow) and API keys via env vars (OAuth providers like ``nous``
+    have none). A VM that picked its model through Quick Setup therefore
+    reads as "unconfigured" and the model gate never fires. The config
+    dict is the other source of truth: ``model:`` (dict or string) or the
+    shared four-slot ``models:`` block. Deliberately in-memory only (no
+    file re-read): the wizard re-syncs its dict from disk after every
+    section, so the dict already mirrors the file — and a file probe here
+    would leak ambient state into callers that pass an explicit config.
+    """
+    cfg = config if isinstance(config, dict) else {}
+    model = cfg.get("model")
+    if isinstance(model, dict):
+        if str(model.get("default") or model.get("model") or "").strip():
+            return True
+        if str(model.get("provider") or "").strip():
+            return True
+    elif isinstance(model, str):
+        if model.strip():
+            return True
+    models = cfg.get("models")
+    if isinstance(models, dict):
+        if str(models.get("default") or "").strip():
+            return True
+    return False
+
+
 def _gateway_platform_short_label(label: str) -> str:
     """Strip trailing parenthetical qualifiers from a gateway platform label."""
     base = label.split("(", 1)[0].strip()
@@ -3687,13 +3803,24 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
     so that test patches on ``setup_mod.get_env_value`` take effect.
     """
     if section_key == "model":
-        if not _model_section_has_credentials(config):
+        # Either signal fires the gate: usable credentials (existing
+        # behavior) OR a model named in the config file (VM fix — OAuth
+        # installs such as Nous carry no env keys and often no
+        # active_provider, so the credentials probe alone reads them as
+        # unconfigured and setup falls straight into full model prompts).
+        if not (_model_section_has_credentials(config)
+                or _model_section_is_configured(config)):
             return None
-        model = config.get("model")
+        model = config.get("model") if isinstance(config, dict) else None
         if isinstance(model, str) and model.strip():
             return model.strip()
         if isinstance(model, dict):
             return str(model.get("default") or model.get("model") or "configured")
+        models = config.get("models") if isinstance(config, dict) else None
+        if isinstance(models, dict):
+            slot_default = str(models.get("default") or "").strip()
+            if slot_default:
+                return slot_default
         return "configured"
 
     elif section_key == "terminal":
@@ -3721,9 +3848,28 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
 
     elif section_key == "tools":
         tools = []
+        # Real tools state lives in config.yaml (platform_toolsets written
+        # by tools_command, mcp_servers, browser backend) — not just three
+        # API keys. A VM using Nous subscription defaults carries none of
+        # those keys, so the old probe read it as unconfigured and forced a
+        # full tool reconfiguration with no gate.
+        pts = config.get("platform_toolsets") if isinstance(config, dict) else None
+        if isinstance(pts, dict):
+            enabled = sum(len(v) for v in pts.values() if isinstance(v, list))
+            if enabled:
+                tools.append(f"{enabled} toolsets")
+        servers = config.get("mcp_servers") if isinstance(config, dict) else None
+        if isinstance(servers, dict) and servers:
+            tools.append(f"{len(servers)} MCP")
+        try:
+            backend = cfg_get(config, "browser", "backend", default="")
+        except Exception:
+            backend = ""
+        if str(backend or "").strip():
+            tools.append("Browser")
         if get_env_value("ELEVENLABS_API_KEY"):
             tools.append("TTS/ElevenLabs")
-        if get_env_value("BROWSERBASE_API_KEY"):
+        if get_env_value("BROWSERBASE_API_KEY") and "Browser" not in tools:
             tools.append("Browser")
         if get_env_value("FIRECRAWL_API_KEY"):
             tools.append("Firecrawl")

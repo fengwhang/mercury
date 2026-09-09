@@ -160,3 +160,55 @@ def test_headless_setup_never_prompts(monkeypatch, capsys, tmp_path):
         monkeypatch.setattr(setup_mod, helper, no_prompt)
     setup_mod.run_headless_observatory_setup()
     assert seen == {}
+
+
+def test_fresh_password_matching_username_reprompts(monkeypatch, capsys):
+    """The triple prompt wires the username into password validation."""
+    fake = _FakeProvision([_status()])
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=0,
+        yes_no=[False, True],  # custom password, toggle keep
+        texts=["mybox.lan", "alicealice12", "alicealice12",
+               "totally-different-password-1"],
+    )
+    assert "must not be the username itself" in out
+    assert fake.provision_kwargs == {
+        "server_name": "mybox.lan",
+        "owner_localpart": "alicealice12",
+        "owner_password": "totally-different-password-1",
+    }
+    assert remaining == []
+
+
+def test_rotate_password_matching_stored_username_reprompts(
+        monkeypatch, capsys, tmp_path):
+    """Rotation validates against the STORED username, not just the floor."""
+    creds = _write_credentials(tmp_path, user_id="@alicealice12:mercury.local")
+    fake = _FakeProvision([_provisioned_status(creds)])
+    fake.read_owner_credentials = (
+        lambda *a, **k: {"user_id": "@alicealice12:mercury.local"})
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=0,
+        yes_no=[True, True],  # rotate yes, toggle keep
+        texts=["alicealice12", "rotated-password-99"],
+    )
+    assert "must not be the username itself" in out
+    assert fake.rotated == ["rotated-password-99"]
+    assert remaining == []
+
+
+def test_rotate_without_credential_reader_keeps_length_floor(
+        monkeypatch, capsys, tmp_path):
+    """No credential reader (third-party double) degrades to the old floor."""
+    creds = _write_credentials(tmp_path)
+    fake = _FakeProvision([_provisioned_status(creds)])
+    assert getattr(fake, "read_owner_credentials", None) is None
+    assert setup_mod._rotate_owner_localpart(fake) is None
+    out, _config, remaining = _run_section(
+        monkeypatch, capsys, fake, choice=0,
+        yes_no=[True, True],
+        texts=["short", "rotated-password-99"],
+    )
+    assert "at least 12 characters" in out
+    assert fake.rotated == ["rotated-password-99"]
+    assert remaining == []
