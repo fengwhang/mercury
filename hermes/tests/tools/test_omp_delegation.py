@@ -221,7 +221,7 @@ class TestPromptVerbatim(unittest.TestCase):
                      fallback_chain, batch_procs=None,
                      profile_home=None, extra_env=None,
                      delegation_id=None, name=None, goal=None,
-                     owner_session_id=""):
+                     owner_session_id="", base_env=None):
             captured["prompt"] = prompt
             captured["model"] = model
             captured["fallback"] = fallback_chain

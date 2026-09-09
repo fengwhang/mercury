@@ -84,6 +84,9 @@ DEFAULT_TIMEOUT = (
 
 # --- process-lifetime caches -------------------------------------------------
 _env_cache: Dict[str, Any] = {"mtime": None, "env": None, "err": None}
+# Serializes bridge invocations (see _omp_delegate_env): without it an
+# N-thread fan-out spawns N bridge subprocesses for one cached answer.
+_env_cache_lock = threading.Lock()
 _rendered = threading.Event()
 _live_procs: List["subprocess.Popen"] = []  # global, for action='list' counts
 _live_procs_lock = threading.Lock()
@@ -351,6 +354,11 @@ def _omp_delegate_env() -> tuple[Dict[str, str], Optional[str]]:
 
     Fail-hard: the bridge validating the four-slot config is the gate; a
     refusal aborts delegation with the bridge's FATAL lines verbatim.
+
+    Double-checked locking: an N-child fan-out resolves the thinking level
+    (hence this env) from N worker threads at once. Without the lock every
+    thread that arrives before the first bridge run finishes spawns its
+    OWN bridge subprocess — N identical Python processes for one answer.
     """
     config_yaml = _config_path()
     try:
@@ -359,9 +367,15 @@ def _omp_delegate_env() -> tuple[Dict[str, str], Optional[str]]:
         mtime = None
     if _env_cache["mtime"] == mtime and _env_cache["env"] is not None:
         return _env_cache["env"], None
+    with _env_cache_lock:
+        if _env_cache["mtime"] == mtime and _env_cache["env"] is not None:
+            return _env_cache["env"], None
+        return _omp_delegate_env_locked(mtime)
+
+
+def _omp_delegate_env_locked(mtime: Any) -> tuple[Dict[str, str], Optional[str]]:
+    """Bridge invocation; caller holds ``_env_cache_lock``."""
     bridge = _bridge_path()
-    if not bridge.exists():
-        return {}, f"bridge not found at {bridge} (mercury-omp layout broken?)"
     try:
         out = subprocess.run(
             [sys.executable, str(bridge), "--delegate"],
@@ -405,10 +419,16 @@ def _shared_env_overrides() -> Dict[str, str]:
     inherit everything. This net catches the cases where the parent's
     environment predates the .env (long-running gateway, cron, IDE
     subprocess) — reading the same single file both engines share.
+
+    Pure function of the current process env (no caching here): the batch
+    builder below calls it once per dispatch and shares the result, so an
+    N-child fan-out performs exactly ONE .env read and ONE gateway
+    token peek instead of N.
     """
+    overrides: Dict[str, str] = {}
     mercury = os.environ.get("MERCURY_HOME", "").strip()
     if not mercury:
-        return {}
+        return overrides
     path = Path(mercury) / ".env"
     # Nous-managed web selection -> omp-native firecrawl env bridge
     # (gateway URL + Nous token) so omp search/scrape uses hermes' gateway.
@@ -418,7 +438,6 @@ def _shared_env_overrides() -> Dict[str, str]:
         pass
     if not path.is_file():
         return overrides
-    overrides: Dict[str, str] = {}
     # engine env parity (user bug: omp reads ONLY ZAI_API_KEY; the wizard used
     # to save GLM_API_KEY first): mirror the alias inside the net as well.
     try:
@@ -439,6 +458,25 @@ def _shared_env_overrides() -> Dict[str, str]:
     except OSError:
         return {}
     return overrides
+
+
+def _delegate_batch_base_env() -> Dict[str, str]:
+    """Build the child-process base env ONCE per delegation batch.
+
+    Linear-memory contract: a fan-out of N omp children must not repeat
+    shared work per child. ``os.environ.copy()`` plus the .env safety net
+    (file read + config parse + gateway token peek) is identical for every
+    child in the batch, so it is computed here and SHARED read-only.
+    Workers assemble each child's env as ``dict(base)`` plus that task's
+    extras (approval socket, profile home, fallback chain) — one cheap
+    shallow copy per child, never a mutation of the shared base.
+
+    No concurrency cap is involved: every task still gets its own worker
+    and its own child process; only the duplicated computation is shared.
+    """
+    base = os.environ.copy()
+    base.update(_shared_env_overrides())
+    return base
 
 
 
@@ -719,7 +757,8 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                   delegation_id: Optional[str] = None,
                   name: Optional[str] = None,
                   goal: Optional[str] = None,
-                  owner_session_id: str = "") -> Dict[str, Any]:
+                  owner_session_id: str = "",
+                  base_env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Run ONE omp child; return a result entry (old entry contract).
 
     C1 slice 2: prefer the RPC transport (approval routing live); fall
@@ -777,8 +816,15 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                 "C1: omp_rpc_transport unavailable (%s) — falling back to "
                 "-p one-shot for task %d", exc, task_index)
         else:
-            rpc_env = os.environ.copy()
-            rpc_env.update(_shared_env_overrides())
+            # Batch-shared base (linear-memory contract): the fan-out builds
+            # os.environ + safety-net overrides ONCE; each child copies it
+            # and overlays only its own extras. None = legacy direct-caller
+            # path (compute inline, exactly as before).
+            if base_env is None:
+                rpc_env = os.environ.copy()
+                rpc_env.update(_shared_env_overrides())
+            else:
+                rpc_env = dict(base_env)
             if extra_env:
                 rpc_env.update(extra_env)
             if profile_home:
@@ -811,7 +857,8 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                     task_index, prompt, model, omp_path, workdir,
                     timeout, fallback_chain, batch_procs, started,
                     profile_home=profile_home, extra_env=extra_env,
-                    meta={**meta, "transport_kind": "oneshot-fallback"})
+                    meta={**meta, "transport_kind": "oneshot-fallback"},
+                    base_env=base_env)
                 entry["transport"] = "oneshot-fallback"
                 return entry
             except Exception as exc:  # after a good start: real failure
@@ -835,7 +882,8 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
         task_index, prompt, model, omp_path, workdir,
         timeout, fallback_chain, batch_procs, started,
         profile_home=profile_home, extra_env=extra_env,
-        meta={**meta, "transport_kind": "oneshot"})
+        meta={**meta, "transport_kind": "oneshot"},
+        base_env=base_env)
 
 
 def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
@@ -845,14 +893,20 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
                       started: float,
                       profile_home: Optional[str] = None,
                       extra_env: Optional[Dict[str, str]] = None,
-                      meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                      meta: Optional[Dict[str, Any]] = None,
+                      base_env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """The original ``omp --model m -p <prompt>`` one-shot path (B1).
 
     ``meta`` (M0A): live-child registry record — one-shot children are
     listed and stoppable (SIGKILL), but never steerable.
     """
-    env = os.environ.copy()
-    env.update(_shared_env_overrides())
+    # Batch-shared base (linear-memory contract): copy the fan-out's base
+    # and overlay this child's extras. None = legacy direct-caller path.
+    if base_env is None:
+        env = os.environ.copy()
+        env.update(_shared_env_overrides())
+    else:
+        env = dict(base_env)
     if extra_env:
         env.update(extra_env)
     if profile_home:
@@ -938,11 +992,17 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
               batch_procs: Optional[List["subprocess.Popen"]] = None,
               delegation_id: Optional[str] = None,
               owner_session_id: str = "") -> Dict[str, Any]:
-    """Bounded-parallel run of all omp children; one entry per task.
+    """Run all omp children; one entry per task.
 
     ``delegation_id``/``owner_session_id`` (M0A): registry spine so each
     child registers under ``<delegation_id>/<task_index>`` owned by the
     dispatching conversation (steer/stop addressing).
+
+    Linear-memory contract: the child-process base env (os.environ + the
+    .env safety net) is built ONCE here and shared read-only across the
+    batch — workers copy it per child instead of each repeating the file
+    reads, config parse, and token peek. No cap: ``max_workers`` still
+    equals the task count (every task gets its own worker).
     """
     started = time.time()
     # HERMES-OMP PATCH (approval pass-through): one-shot children ask the
@@ -957,8 +1017,10 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
         except Exception:
             _bridge = None
     try:
+        base_env = _delegate_batch_base_env()
         return _sync_run_inner(tasks, env, workdir, timeout, max_workers,
-                               batch_procs, delegation_id, owner_session_id)
+                               batch_procs, delegation_id, owner_session_id,
+                               base_env=base_env)
     finally:
         if _bridge is not None:
             _bridge.stop()
@@ -969,7 +1031,12 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
               max_workers: int,
               batch_procs: Optional[List["subprocess.Popen"]] = None,
               delegation_id: Optional[str] = None,
-              owner_session_id: str = "") -> Dict[str, Any]:
+              owner_session_id: str = "",
+              base_env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    # Direct-caller path (tests, diagnostics): no batch base supplied, so
+    # build it once here — still exactly once per batch, never per child.
+    if base_env is None:
+        base_env = _delegate_batch_base_env()
     started = time.time()
     if len(tasks) == 1 or max_workers <= 1:
         _profile_home = env.get("MERCURY_PROFILE_HOME")
@@ -980,7 +1047,8 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
                           profile_home=_profile_home, extra_env=_extra or None,
                           delegation_id=delegation_id, name=t.get("name"),
                           goal=t.get("goal"),
-                          owner_session_id=owner_session_id)
+                          owner_session_id=owner_session_id,
+                          base_env=base_env)
             for i, t in enumerate(tasks)
         ]
     else:
@@ -993,7 +1061,8 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
                             extra_env=_extra or None,
                             delegation_id=delegation_id, name=t.get("name"),
                             goal=t.get("goal"),
-                            owner_session_id=owner_session_id)
+                            owner_session_id=owner_session_id,
+                            base_env=base_env)
                 for i, t in enumerate(tasks)
             ]
             results = [f.result() for f in futures]
