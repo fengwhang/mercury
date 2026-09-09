@@ -172,7 +172,8 @@ class TestFlag:
         # the remedy names the exact install path — tested verbatim so the
         # operator-facing fix can never silently drift
         assert str(exc.value) == E2EE_REMEDY
-        assert "build_python_olm_wheel.sh" in str(exc.value)
+        assert "observatory/wheels" in str(exc.value)
+        assert "mercury setup observatory" in str(exc.value)
         assert "observatory.e2ee: false" in str(exc.value)
 
     @pytest.mark.asyncio

@@ -3045,6 +3045,24 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     print_info(_OBSERVATORY_GUIDE_LINE)
 
 
+def _auto_ensure_crypto(obs) -> str:
+    """Auto crypto step: install the E2EE crypto stack from the vendored
+    wheels (hermes/observatory/wheels/) — no compiler, no container
+    runtime, offline-capable for the compiled piece. Best-effort — never
+    raises, never prompts. Missing helper (old install / minimal fake)
+    degrades to silence."""
+    fn = getattr(obs, "ensure_crypto_stack", None)
+    if fn is None:
+        return "skipped-unavailable"
+    try:
+        return str(fn())
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # noqa: BLE001 — auto step never kills setup
+        print_warning(f"Crypto auto-setup skipped: {exc}")
+        return "skipped-error"
+
+
 def _run_observatory_sidecar_repair() -> None:
     """Non-interactive repair: provision, then install/enable/start the
     sidecar unit (``mercury setup observatory --install-sidecar``).
@@ -3065,6 +3083,7 @@ def _run_observatory_sidecar_repair() -> None:
         return
     try:
         obs.provision_in_wizard()
+        _auto_ensure_crypto(obs)
         print_success("Observatory provisioning complete.")
     except KeyboardInterrupt:
         raise
@@ -3137,6 +3156,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
     if choice == 0:
         try:
             obs.provision_in_wizard()
+            _auto_ensure_crypto(obs)
             status = obs.status_summary()
             print_success("Observatory provisioning complete.")
         except KeyboardInterrupt:
@@ -3214,6 +3234,41 @@ def print_noninteractive_observatory_guidance() -> None:
     print_info("  mercury config set observatory.enabled false")
     print_info(_OBSERVATORY_GUIDE_LINE)
     print()
+
+
+def run_headless_observatory_setup() -> None:
+    """Headless `mercury setup observatory`: provision + vendored crypto
+    install with zero prompts, then the manual-only login card.
+
+    Same crypto step as the wizard Install path, minus every prompt
+    (enabled toggle, Tailscale bind offer). Failures degrade to printed
+    hints — never raises, never exits."""
+    obs = _load_observatory_provision()
+    if obs is None:
+        print_warning("Bundled observatory package not found in this install.")
+        print_info(_OBSERVATORY_GUIDE_LINE)
+        return
+    try:
+        obs.provision_in_wizard()
+        print_success("Observatory provisioning complete.")
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        print_error(f"Observatory provisioning failed: {exc}")
+        print_info("Retry any time with: mercury setup observatory --install-sidecar")
+        return
+    _auto_ensure_crypto(obs)
+    try:
+        status = obs.status_summary()
+    except Exception as exc:
+        logger.debug("observatory status unavailable after headless setup: %s", exc)
+        return
+    if not status.get("provisioned"):
+        print_info(_OBSERVATORY_GUIDE_LINE)
+        return
+    ts = _tailscale_status(obs)
+    _print_observatory_setup_card(status, ts)
+    _maybe_print_bind_mismatch_action(obs, ts)
 
 
 # =============================================================================
@@ -4013,6 +4068,9 @@ def _run_setup_wizard_impl(args):
         return
 
     if non_interactive:
+        if getattr(args, "section", None) == "observatory":
+            run_headless_observatory_setup()
+            return
         print_noninteractive_setup_guidance(
             "Running in a non-interactive environment (no TTY detected)."
         )

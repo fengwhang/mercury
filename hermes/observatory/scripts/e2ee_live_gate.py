@@ -527,7 +527,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if not e2ee_available():
         print("REFUSING to run: crypto stack missing "
-              "(run observatory/scripts/build_python_olm_wheel.sh)", file=sys.stderr)
+              "(install the vendored wheels — re-run `mercury setup observatory`, "
+              "or uv pip install --find-links hermes/observatory/wheels "
+              "'python-olm==3.2.16')", file=sys.stderr)
         return 2
 
     home = args.home.expanduser()

@@ -497,6 +497,228 @@ def ensure_sidecar_unit(mercury_home: str | Path | None = None,
     _run_systemctl(["restart", SIDECAR_UNIT_NAME])
     return "refreshed" if changed and existing else "installed" if changed else "started"
 
+# --- vendored crypto stack ---------------------------------------------------------
+# python-olm 3.2.16 publishes no cp313 wheel on PyPI (cp310–cp312 only),
+# and mautrix 0.21.1 hard-requires the compiled ``olm`` extension — so the
+# repo vendors per-arch cp313 wheels under hermes/observatory/wheels/
+# (checked in, SHA256SUMS-pinned). setup installs from there: no compiler,
+# no container runtime, and no network needed for the compiled piece.
+# observatory/scripts/build_python_olm_wheel.sh remains as a DOCUMENTED
+# MANUAL fallback for rebuilding the wheels — it is never auto-invoked by
+# any setup/install/update path (user directive 2026-09-08).
+
+#: python-olm version pinned for the observatory E2EE stack.
+PYTHON_OLM_VERSION = "3.2.16"
+
+#: Pure-python crypto-stack companions, mirroring pyproject ``[matrix]``.
+_CRYPTO_PY_DEPS = ("mautrix[encryption]==0.21.1", "aiosqlite==0.22.1")
+
+
+def _vendored_wheels_dir() -> Path:
+    """Absolute path of the checked-in crypto wheel set."""
+    return Path(__file__).resolve().parent / "wheels"
+
+
+def _vendored_olm_wheel() -> Path | None:
+    """Vendored python-olm wheel for THIS interpreter + platform, or None.
+
+    Only cp313-on-linux needs vendoring (older interpreters resolve
+    python-olm from the package index; other platforms have no wheel and
+    no supported path). None also when the expected file is absent from
+    the checkout (e.g. a partial tree)."""
+    if sys.platform != "linux" or sys.version_info[:2] != (3, 13):
+        return None
+    import platform as _platform
+
+    arch = {"x86_64": "x86_64", "amd64": "x86_64",
+            "aarch64": "aarch64", "arm64": "aarch64"}.get(
+        _platform.machine().lower())
+    if arch is None:
+        return None
+    cand = (_vendored_wheels_dir()
+            / f"python_olm-{PYTHON_OLM_VERSION}-cp313-cp313-linux_{arch}.whl")
+    return cand if cand.is_file() else None
+
+
+def _read_wheel_hashes(wheels_dir: Path) -> dict[str, str]:
+    """Parse wheels/SHA256SUMS (sha256sum format); {} when absent."""
+    out: dict[str, str] = {}
+    try:
+        text = (wheels_dir / "SHA256SUMS").read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        digest, name = parts
+        out[name] = digest
+    return out
+
+
+def _verified_vendored_wheel(cand: Path) -> Path:
+    """Hash-verify the vendored wheel against SHA256SUMS.
+
+    Raises ProvisionError on a missing pin, an unreadable file, or any
+    mismatch — an unverified wheel is never installed."""
+    import hashlib
+
+    pinned = _read_wheel_hashes(cand.parent).get(cand.name)
+    if not pinned:
+        raise ProvisionError(
+            f"vendored wheel {cand.name} has no SHA256SUMS pin — refusing to install")
+    try:
+        digest = hashlib.sha256(cand.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ProvisionError(
+            f"vendored wheel {cand.name} unreadable ({exc}) — refusing to install") from exc
+    if digest.lower() != pinned.lower():
+        raise ProvisionError(
+            f"vendored wheel {cand.name} hash mismatch (file {digest[:16]}… "
+            f"!= pin {pinned[:16]}…) — refusing to install")
+    return cand
+
+
+def set_observatory_e2ee(enabled: bool, mercury_home: str | Path | None = None) -> None:
+    """Write ``observatory.e2ee`` in ``$MERCURY_HOME/config.yaml`` (creates
+    the mapping when absent, preserves every other key). Raises
+    ProvisionError when the file cannot be read/written — callers
+    (ensure_crypto_stack) catch and degrade to a printed warning."""
+    home = _mercury_home(mercury_home)
+    cfg_path = home / "config.yaml"
+    try:
+        import yaml  # type: ignore[import-untyped]
+    except Exception as exc:
+        raise ProvisionError(f"cannot set observatory.e2ee (pyyaml missing): {exc}") from exc
+    try:
+        if cfg_path.is_file():
+            doc = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(doc, dict):
+                doc = {}
+        else:
+            doc = {}
+        obs = doc.get("observatory")
+        if not isinstance(obs, dict):
+            obs = {}
+            doc["observatory"] = obs
+        obs["e2ee"] = bool(enabled)
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    except ProvisionError:
+        raise
+    except Exception as exc:
+        raise ProvisionError(f"could not write observatory.e2ee to {cfg_path}: {exc}") from exc
+
+
+def _crypto_pip_install(python_bin: str, args: list[str]) -> tuple[bool, str]:
+    """Install into python_bin's env: uv first, then pip.
+
+    Local copy of the update_release runner — this module stays importable
+    from install.sh without the CLI package, so it cannot import it."""
+    def _run(cmd: list[str]) -> tuple[bool, str]:
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        except (OSError, ValueError) as exc:
+            return False, str(exc)
+        detail = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        return proc.returncode == 0, detail[-600:]
+
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        ok, detail = _run([uv_bin, "pip", "install", "--python", python_bin, *args])
+        if ok:
+            return True, ""
+    else:
+        ok, detail = False, "uv not found"
+    if not ok:
+        ok, detail = _run([python_bin, "-m", "pip", "install", *args])
+    return ok, detail
+
+
+def _crypto_fallback(reason: str, mercury_home: str | Path | None) -> str:
+    """Plaintext fallback: auto-set ``observatory.e2ee: false`` (best
+    effort) with a loud line. Never raises."""
+    try:
+        set_observatory_e2ee(False, mercury_home)
+    except Exception as exc:  # noqa: BLE001 — fallback write best-effort
+        print(f"  ⚠ crypto stack unrestorable ({reason}) — could not auto-set "
+              f"observatory.e2ee:false ({exc}); rooms will fail at sidecar "
+              f"boot until you set it.")
+        return "fallback-disabled"
+    print(f"  ⚠ crypto stack unrestorable ({reason}) — auto-set "
+          f"observatory.e2ee:false (plaintext path, no manual edit needed).")
+    return "fallback-disabled"
+
+
+def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
+    """Ensure the compiled crypto stack from the vendored wheels, or
+    auto-fallback to plaintext.
+
+    Returns one of ``"ready"`` (stack already imports),
+    ``"disabled-already"`` (``observatory.e2ee: false`` — nothing to do),
+    ``"installed"`` (vendored/index wheel restored the stack), or
+    ``"fallback-disabled"`` (no usable wheel, hash mismatch, or the
+    install failed → ``observatory.e2ee`` auto-set to ``false`` with a
+    clear printed line). NEVER raises and NEVER crashes the wizard:
+    every failure degrades to the fallback path. Installs into
+    ``sys.executable``'s environment (the same venv that runs the
+    sidecar); needs no compiler and no container runtime."""
+    try:
+        from observatory.e2ee import e2ee_available, e2ee_enabled
+    except Exception:  # noqa: BLE001 — import shape failure = unavailable
+        e2ee_available = lambda: False  # type: ignore[assignment]  # noqa: E731
+        def e2ee_enabled(_home=None) -> bool:  # type: ignore[misc]  # noqa: E306
+            return True
+    try:
+        if not bool(e2ee_enabled(mercury_home)):
+            return "disabled-already"
+    except Exception:  # noqa: BLE001 — unreadable config means default-on
+        pass
+    try:
+        if bool(e2ee_available()):
+            return "ready"
+    except Exception:  # noqa: BLE001 — probe failure = unavailable
+        pass
+    python_bin = sys.executable
+    if sys.platform == "linux" and sys.version_info[:2] == (3, 13):
+        try:
+            cand = _vendored_olm_wheel()
+        except Exception as exc:  # noqa: BLE001 — selection failure = no wheel
+            return _crypto_fallback(f"wheel selection failed ({exc})", mercury_home)
+        if cand is None:
+            return _crypto_fallback(
+                "no vendored python-olm wheel for this machine in "
+                "hermes/observatory/wheels", mercury_home)
+        try:
+            wheel = _verified_vendored_wheel(cand)
+        except ProvisionError as exc:
+            return _crypto_fallback(str(exc), mercury_home)
+        print(f"  → crypto stack missing — installing vendored {wheel.name} …")
+        ok, detail = _crypto_pip_install(
+            python_bin, ["-q", str(wheel), *_CRYPTO_PY_DEPS])
+        if not ok:
+            tail = detail.strip().replace("\n", " ")
+            return _crypto_fallback(
+                f"vendored install failed{': ' + tail[-300:] if tail else ''}",
+                mercury_home)
+    else:
+        print("  → crypto stack missing — installing python-olm from the index …")
+        ok, detail = _crypto_pip_install(
+            python_bin, ["-q", f"python-olm=={PYTHON_OLM_VERSION}", *_CRYPTO_PY_DEPS])
+        if not ok:
+            tail = detail.strip().replace("\n", " ")
+            return _crypto_fallback(
+                f"index install failed{': ' + tail[-300:] if tail else ''}",
+                mercury_home)
+    sys.modules.pop("olm", None)
+    try:
+        import olm  # noqa: F401
+    except Exception:  # noqa: BLE001 — installed but still unimportable
+        return _crypto_fallback(
+            "python-olm installed but does not import", mercury_home)
+    print("  ✓ crypto stack ready (python-olm installed, no build needed).")
+    return "installed"
+
 
 # --- orchestration ---------------------------------------------------------------
 

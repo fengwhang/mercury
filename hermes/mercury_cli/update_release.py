@@ -219,22 +219,46 @@ def _pip_install(venv: Path, args: list[str]) -> tuple[bool, str]:
 def _install_bundled_wheels(root: Path, venv: Path) -> None:
     """(update-completeness) Install the tarball-bundled crypto-stack
     wheels (``wheels/`` staged by make-dist: mautrix[encryption] pinned
-    set + the cp313 python-olm wheel that does not exist on PyPI).
-    Offline-friendly — no network. Best-effort: warns, never blocks."""
+    set + the cp313 python-olm wheel that does not exist on PyPI) plus
+    the checked-in vendored wheel (hermes/observatory/wheels/).
+    Offline-friendly — no network. Best-effort: warns, never blocks.
+    Disabled observatory: no installs at all."""
+    try:
+        from observatory.provision import observatory_enabled
+
+        if not observatory_enabled():
+            return
+    except Exception:  # noqa: BLE001 — ungated legacy path when provision unreadable
+        pass
     wheels_dir = root / "wheels"
-    if not wheels_dir.is_dir():
-        return
-    whls = sorted(p for p in wheels_dir.glob("*.whl") if p.is_file())
-    if not whls:
-        return
-    ok, detail = _pip_install(venv, [str(p) for p in whls])
-    if ok:
-        print(f"  🌡️ observatory crypto stack: installed {len(whls)} bundled wheel(s)")
-    else:
-        print("  ⚠ bundled-wheels install failed — observatory E2EE may be broken")
-        print(f"    output:\n{detail}")
-        print(f"    manual fix: uv pip install --python {venv}/bin/python "
-              f"{wheels_dir}/*.whl")
+    whls = sorted(p for p in wheels_dir.glob("*.whl")) if wheels_dir.is_dir() else []
+    whls = [p for p in whls if p.is_file()]
+    if whls:
+        ok, detail = _pip_install(venv, [str(p) for p in whls])
+        if ok:
+            print(f"  🌡️ observatory crypto stack: installed {len(whls)} bundled wheel(s)")
+        else:
+            print("  ⚠ bundled-wheels install failed — observatory E2EE may be broken")
+            print(f"    output:\n{detail}")
+            print(f"    manual fix: uv pip install --python {venv}/bin/python "
+                  f"{wheels_dir}/*.whl")
+    # Vendored cp313 wheel (checked in under hermes/observatory/wheels):
+    # covers installs whose tarball shipped no wheels/ (dev checkouts,
+    # pre-vendoring tarballs). Hash-verified; skipped silently when this
+    # platform needs none. Best-effort: warns, never blocks.
+    try:
+        from observatory.provision import _vendored_olm_wheel, _verified_vendored_wheel
+        cand = _vendored_olm_wheel()
+        if cand is not None:
+            wheel = _verified_vendored_wheel(cand)
+            ok, detail = _pip_install(venv, [str(wheel)])
+            if ok:
+                print(f"  🌡️ observatory crypto stack: installed vendored {wheel.name}")
+            else:
+                print("  ⚠ vendored-wheel install failed — observatory E2EE may be broken")
+                print(f"    output:\n{detail}")
+    except Exception as exc:  # noqa: BLE001 — best-effort, never blocks
+        print(f"  ⚠ vendored-wheel step skipped ({exc})")
 
 
 def _ensure_matrix_extra(root: Path, venv: Path) -> None:
@@ -261,8 +285,9 @@ def _ensure_matrix_extra(root: Path, venv: Path) -> None:
         print(f"    output:\n{detail}")
         print(f"    manual fix: cd {root}/hermes && "
               "uv pip install --python .venv/bin/python -e '.[matrix]'")
-        print("    (py3.13 without bundled wheels: build python-olm with "
-              "hermes/observatory/scripts/build_python_olm_wheel.sh)")
+        print("    (py3.13 gets python-olm from the vendored wheel under "
+              "hermes/observatory/wheels/; rebuild it manually with "
+              "hermes/observatory/scripts/build_python_olm_wheel.sh only if that wheel is missing)")
 
 
 def update_from_release(*, assume_yes: bool = False) -> int:

@@ -31,11 +31,11 @@ per virtual user, bridge pattern:
 **Backend**: mautrix 0.21.1 hard-imports the ``olm`` extension (python-olm)
 in six modules — there is no vodozemac-bindings path in this version, so
 python-olm is required. Python 3.13 has no upstream python-olm wheel
-(3.2.16 ships cp310–cp312 only), so the observatory carries a
-reproducible podman wheel build:
-``observatory/scripts/build_python_olm_wheel.sh`` (python:3.13-slim +
-g++/make/cmake; the sdist bundles the full libolm C++ sources). Log and
-wheel land under ``observatory/scripts/{logs,dist}/``.
+(3.2.16 ships cp310–cp312 only), so the repo vendors per-arch cp313
+wheels under ``observatory/wheels/`` (SHA256SUMS-pinned; installed
+automatically by ``mercury setup observatory`` — no compiler, no
+container runtime). ``observatory/scripts/build_python_olm_wheel.sh``
+remains as the documented MANUAL rebuild path only, never auto-invoked.
 
 **Key bootstrap — the manual verify step (documented, D4 bridge pattern):**
 
@@ -117,11 +117,13 @@ CRYPT_ROOM_META_PREFIX = "crypt:"
 #: Exact remedy surfaced by :class:`E2EEError` (single source, tested).
 E2EE_REMEDY = (
     "E2EE is enabled (observatory.e2ee: true) but the crypto stack is "
-    "missing. Build + install it (reproducible, no host compiler "
-    "needed), then restart the sidecar:  "
-    "observatory/scripts/build_python_olm_wheel.sh <venv-dir>  "
-    "(podman build of python-olm for cp313 — mautrix 0.21.1 requires "
-    "python-olm; upstream ships no cp313 wheel). "
+    "missing. Install it from the vendored wheels (no build needed), "
+    "then restart the sidecar:  "
+    "uv pip install --python <venv>/bin/python --find-links "
+    "hermes/observatory/wheels 'python-olm==3.2.16' "
+    "'mautrix[encryption]==0.21.1' 'aiosqlite==0.22.1'  "
+    "(or re-run `mercury setup observatory`, which installs it "
+    "automatically). "
     "Or set observatory.e2ee: false for the plaintext path."
 )
 

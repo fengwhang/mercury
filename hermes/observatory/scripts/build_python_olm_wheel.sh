@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# MANUAL FALLBACK ONLY (user directive 2026-09-08): rebuilds the vendored
+# python-olm cp313 wheels checked in under hermes/observatory/wheels/.
+# NEVER auto-invoked by setup/install/update — those paths consume the
+# checked-in wheels (see observatory.provision.ensure_crypto_stack).
 # Build a CPython-3.13 (cp313) manylinux wheel for python-olm via podman.
 #
 # WHY THIS EXISTS (2026-09-08, M4c e2ee-real):
