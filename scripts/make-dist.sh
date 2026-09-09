@@ -42,17 +42,26 @@ build_one() { # $1 = arch suffix (x64|arm64), $2 = source binary path, $3 = labe
     fi
 
     echo "== [$LABEL] observatory crypto-stack wheels (E2EE)"
-    # python-olm has NO cp313 wheel on PyPI (built reproducibly by
-    # hermes/observatory/scripts/build_python_olm_wheel.sh); mautrix
-    # [encryption] pins it. The release host stages the FULL pinned set
-    # (mautrix[encryption]==0.21.1 deps + per-arch python-olm wheel) into
-    # $MERCURY_WHEELS_DIR (default dist/wheels); wheels freshly built by
-    # the e2ee script into hermes/observatory/scripts/dist are picked up
-    # too (staged set wins on a name clash). Shipping them lets
-    # `mercury update` and install.sh deliver E2EE offline — a release
-    # WITHOUT them bricks e2ee on existing installs, hence the gate below.
+    # python-olm has NO cp313 wheel on PyPI; mautrix [encryption] pins it.
+    # Sources, in ascending precedence (later wins on a name clash):
+    #   1. hermes/observatory/wheels/ — the CHECKED-IN per-arch wheels
+    #      (always present; rebuilt manually with
+    #      hermes/observatory/scripts/build_python_olm_wheel.sh);
+    #   2. hermes/observatory/scripts/dist/ — wheels freshly built by the
+    #      e2ee script on the release host;
+    #   3. $MERCURY_WHEELS_DIR (default dist/wheels) — the FULL pinned set
+    #      (mautrix[encryption]==0.21.1 deps + per-arch python-olm wheel)
+    #      explicitly staged by the release host.
+    # Shipping them lets `mercury update` and install.sh deliver E2EE
+    # offline — a release WITHOUT them bricks e2ee on existing installs,
+    # hence the gate below.
     mkdir -p "$S/mercury/wheels"
     local WHEELS_STAGED=0 WHL
+    for WHL in "$REPO"/hermes/observatory/wheels/*.whl; do
+        [ -f "$WHL" ] || continue
+        cp "$WHL" "$S/mercury/wheels/"
+        WHEELS_STAGED=1
+    done
     for WHL in "$REPO"/hermes/observatory/scripts/dist/*.whl; do
         [ -f "$WHL" ] || continue
         cp "$WHL" "$S/mercury/wheels/"

@@ -244,6 +244,26 @@ install_computer_use_driver() {
 # appservice registration YAML, owner bootstrap, systemd user unit
 # mercury-observatory-homeserver.service. Fail-hard, idempotent.
 # ============================================================================
+# Verify wheels/SHA256SUMS with the venv python (sha256sum is absent on
+# macOS without coreutils; python is always present at this point).
+_verify_vendored_wheels() { # $1 = venv python, $2 = wheels dir
+    "$1" - "$2" <<'EOF' >/dev/null 2>&1
+import hashlib, sys
+from pathlib import Path
+wheels = Path(sys.argv[1])
+pins = {}
+for line in (wheels / "SHA256SUMS").read_text().splitlines():
+    parts = line.split()
+    if len(parts) == 2:
+        pins[parts[1]] = parts[0]
+if not pins:
+    sys.exit("empty pin set")
+for name, pin in pins.items():
+    if hashlib.sha256((wheels / name).read_bytes()).hexdigest() != pin.lower():
+        sys.exit(f"mismatch: {name}")
+EOF
+}
+
 install_observatory() {
     if [ "$SKIP_OBSERVATORY" = true ]; then
         log_info "skipping observatory homeserver (--skip-observatory)"
@@ -265,14 +285,27 @@ install_observatory() {
         log_info "openssl not found — provisioner draws the registration_token itself"
     fi
     # E2EE crypto stack (mautrix[encryption] + python-olm). python-olm has
-    # NO cp313 wheel on PyPI — make-dist bundles the built wheel set under
-    # wheels/ in the tarball. Parity with the `mercury update` tail
-    # (update_release): bundled wheels first (offline-friendly), the
-    # network [matrix] extra only when the tarball shipped none. The
-    # network path is warn-not-die: the homeserver itself still provisions;
-    # only E2EE is degraded until the stack lands (py<3.13 hosts: the
-    # plain network install works; py3.13 without wheels: build it with
-    # hermes/observatory/scripts/build_python_olm_wheel.sh).
+    # NO cp313 wheel on PyPI — the repo vendors per-arch wheels checked in
+    # under hermes/observatory/wheels/ (SHA256SUMS-pinned). Install order:
+    # vendored wheel first (hash-verified, offline-capable), then the
+    # tarball wheels/ set when present (make-dist full pinned set), then
+    # the network [matrix] extra for the pure-python remainder. Parity
+    # with the `mercury update` tail (update_release). The network path is
+    # warn-not-die: the homeserver itself still provisions; only E2EE is
+    # degraded until the stack lands.
+    local VENDORED_WHEELS="$INSTALL_ROOT/hermes/observatory/wheels"
+    if compgen -G "$VENDORED_WHEELS"/python_olm-*.whl >/dev/null; then
+        if _verify_vendored_wheels "$VENV_PY" "$VENDORED_WHEELS"; then
+            log_info "observatory crypto stack: vendored wheel (hash-verified)"
+            if "$UV_CMD" pip install --python "$VENV_PY" -q "$VENDORED_WHEELS"/python_olm-*.whl; then
+                log_success "vendored python-olm installed"
+            else
+                log_warn "vendored python-olm did not install (platform mismatch?) — continuing"
+            fi
+        else
+            log_warn "vendored wheels failed hash check — continuing without them"
+        fi
+    fi
     local WHEELS_DIR="$INSTALL_ROOT/wheels"
     if compgen -G "$WHEELS_DIR"/*.whl >/dev/null; then
         log_info "observatory crypto stack: bundled wheels (no network needed)"
@@ -286,7 +319,7 @@ install_observatory() {
         else
             log_warn "matrix extra install failed — the observatory homeserver still works,"
             log_warn "E2EE needs it: cd $INSTALL_ROOT/hermes && $UV_CMD pip install --python .venv/bin/python -e '.[matrix]'"
-            log_warn "(python 3.13 without bundled wheels: hermes/observatory/scripts/build_python_olm_wheel.sh)"
+            log_warn "(py3.13: python-olm comes from hermes/observatory/wheels/ — rebuilt manually with hermes/observatory/scripts/build_python_olm_wheel.sh only if that wheel is missing)"
         fi
     fi
     MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
