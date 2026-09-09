@@ -937,7 +937,8 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
               max_workers: int,
               batch_procs: Optional[List["subprocess.Popen"]] = None,
               delegation_id: Optional[str] = None,
-              owner_session_id: str = "") -> Dict[str, Any]:
+              owner_session_id: str = "",
+              parent_agent: Any = None) -> Dict[str, Any]:
     """Bounded-parallel run of all omp children; one entry per task.
 
     ``delegation_id``/``owner_session_id`` (M0A): registry spine so each
@@ -958,7 +959,8 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
             _bridge = None
     try:
         return _sync_run_inner(tasks, env, workdir, timeout, max_workers,
-                               batch_procs, delegation_id, owner_session_id)
+                               batch_procs, delegation_id, owner_session_id,
+                               parent_agent)
     finally:
         if _bridge is not None:
             _bridge.stop()
@@ -969,7 +971,8 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
               max_workers: int,
               batch_procs: Optional[List["subprocess.Popen"]] = None,
               delegation_id: Optional[str] = None,
-              owner_session_id: str = "") -> Dict[str, Any]:
+              owner_session_id: str = "",
+              parent_agent: Any = None) -> Dict[str, Any]:
     started = time.time()
     if len(tasks) == 1 or max_workers <= 1:
         _profile_home = env.get("MERCURY_PROFILE_HOME")
@@ -997,6 +1000,15 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
                 for i, t in enumerate(tasks)
             ]
             results = [f.result() for f in futures]
+    # Bound what re-enters the parent context: over-budget summaries are
+    # trimmed to a head+tail window with the full text spilled to
+    # cache/delegation (same machinery as the Mercury-child path, PR #9126).
+    # Small/serial (N=1) results pass through untouched.
+    try:
+        from tools.delegate_tool import _apply_summary_budget
+        _apply_summary_budget(results, parent_agent)
+    except Exception as exc:  # noqa: BLE001 — never lose results to budgeting
+        logger.warning("omp result budget failed (%s); returning full results", exc)
     return {
         "results": results,
         "total_duration_seconds": round(time.time() - started, 2),
@@ -1025,6 +1037,7 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
 
     # --- spawn path -----------------------------------------------------------
     from tools.delegate_tool import (
+        _effective_concurrency_cap,
         _get_max_async_children,
         _get_max_concurrent_children,
         _resolve_workspace_hint,
@@ -1065,7 +1078,18 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     # derived fallback here so nothing breaks.
     normalize_delegation_names(task_dicts)
     goals: List[Dict[str, Any]] = task_dicts
-
+    # Concurrency cap (parity with the Mercury-child path): the model can't
+    # fan out more tasks than max_concurrent_children. Validated BEFORE any
+    # env/binary work so over-cap batches fail fast and hermetically.
+    max_configured = _get_max_concurrent_children()
+    if len(task_dicts) > max_configured:
+        return tool_error(
+            f"Too many tasks: {len(task_dicts)} provided, but "
+            f"max_concurrent_children is {max_configured}. "
+            f"Either reduce the task count, split into multiple "
+            f"delegate_task calls, or increase "
+            f"delegation.max_concurrent_children in config.yaml."
+        )
     env, err = _omp_delegate_env()
     if err:
         return tool_error(f"delegation aborted (omp engine): {err}")
@@ -1089,9 +1113,11 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     ]
     workdir = _resolve_workspace_hint(parent_agent)
     timeout = DEFAULT_TIMEOUT
-    # HERMES-OMP PATCH (NO LIMITS, user directive 2026-09-05): no cap on
-    # the number of concurrent subagents — every task gets its own worker.
-    max_workers = max(1, len(tasks))
+    # Bounded-parallel: at most the effective (memory-aware) cap runs at
+    # once; the pool queues the rest. Replaces the old NO-LIMITS
+    # max_workers=len(tasks), which multiplied child-process RSS linearly
+    # with N (parallel-wave memory blowup).
+    max_workers = max(1, min(len(tasks), _effective_concurrency_cap(max_configured)))
     is_subagent = getattr(parent_agent, "_delegate_depth", 0) > 0
     # M0A: registry spine — generated HERE so the id is known before the
     # runner starts (children register under <delegation_id>/<task_index>
@@ -1104,7 +1130,8 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
         return json.dumps(
             _sync_run(tasks, env, workdir, timeout, max_workers,
                       delegation_id=delegation_id,
-                      owner_session_id=owner_session_id),
+                      owner_session_id=owner_session_id,
+                      parent_agent=parent_agent),
             ensure_ascii=False,
         )
 
@@ -1131,7 +1158,8 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
         # Finite session, no wake id: run in-turn so the result is not lost.
         result = _sync_run(tasks, env, workdir, timeout, max_workers, batch_procs,
                            delegation_id=delegation_id,
-                           owner_session_id=owner_session_id)
+                           owner_session_id=owner_session_id,
+                           parent_agent=parent_agent)
         result["note"] = (
             "background delivery is unavailable in this session (one-shot "
             "runner); the omp children ran SYNCHRONOUSLY and their results "
@@ -1164,7 +1192,8 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
         runner=lambda: _sync_run(tasks, env, workdir, timeout, max_workers,
                                  batch_procs,
                                  delegation_id=delegation_id,
-                                 owner_session_id=owner_session_id),
+                                 owner_session_id=owner_session_id,
+                                 parent_agent=parent_agent),
         delegation_id=delegation_id,
         origin_ui_session_id=origin_ui_session_id,
         origin_session_id=origin_session_id,
