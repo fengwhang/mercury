@@ -192,6 +192,7 @@ async def boot_sidecar(
     server_name: str = "mercury.local",
     discovery: bool = True,
     config: Optional[Mapping[str, Any]] = None,
+    registry: Any = None,
 ) -> BootResult:
     """The real boot (callable from any loop — sidecar_main calls it on
     the gateway loop). Builds state + renderer (when ``client`` given),
@@ -229,7 +230,7 @@ async def boot_sidecar(
     from observatory.respawn import respawn_pass
     from observatory.spawn import OrchestratorRegistry
 
-    result.registry = registry or OrchestratorRegistry()
+    result.registry = registry if registry is not None else OrchestratorRegistry()
     try:
         result.report = await respawn_pass(
             state=result.state,

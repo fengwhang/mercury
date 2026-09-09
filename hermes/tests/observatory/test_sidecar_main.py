@@ -508,6 +508,83 @@ class TestPlatformHook:
         assert hasattr(platform_hook, "try_boot_sidecar")
 
     @pytest.mark.asyncio
+    async def test_boot_sidecar_constructs_registry_when_none_passed(
+        self, fake_home: Path, monkeypatch
+    ):
+        # Regression: boot_sidecar referenced bare `registry` (NameError —
+        # gateway sidecar boot thread died silently via except). The param
+        # is optional (default None) and the boot constructs one inside.
+        from observatory import platform_hook, respawn
+        from observatory.spawn import OrchestratorRegistry
+
+        monkeypatch.setattr(platform_hook, "open_state", lambda home: object())
+        monkeypatch.setattr(platform_hook, "build_discovery", lambda home: object())
+        captured: dict = {}
+
+        async def fake_respawn_pass(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(respawn, "respawn_pass", fake_respawn_pass)
+
+        cfg = {"observatory": {"enabled": True}}
+        # Pre-fix this raised NameError: bare `registry` not in scope.
+        result = await platform_hook.boot_sidecar(fake_home, config=cfg)
+        assert isinstance(result.registry, OrchestratorRegistry)
+        assert captured.get("registry") is result.registry
+
+        sentinel = object()
+        captured.clear()
+        explicit = await platform_hook.boot_sidecar(
+            fake_home, config=cfg, discovery=False, registry=sentinel
+        )
+        assert explicit.registry is sentinel
+        assert captured.get("registry") is sentinel
+
+        # The seam is an optional param defaulting to None.
+        import inspect
+
+        assert (
+            inspect.signature(platform_hook.boot_sidecar)
+            .parameters["registry"]
+            .default
+            is None
+        )
+
+    def test_boot_thread_body_forwards_registry(
+        self, fake_home: Path, monkeypatch
+    ):
+        # try_boot_sidecar packages **boot_kwargs into _boot_thread_body —
+        # a registry passed by the caller must reach the boot result.
+        from observatory import platform_hook, respawn
+
+        monkeypatch.setattr(platform_hook, "open_state", lambda home: object())
+        captured: dict = {}
+
+        async def fake_respawn_pass(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(respawn, "respawn_pass", fake_respawn_pass)
+
+        sentinel = object()
+        old = platform_hook.LAST_BOOT
+        try:
+            platform_hook._boot_thread_body(
+                {
+                    "mercury_home": fake_home,
+                    "config": {"observatory": {"enabled": True}},
+                    "discovery": False,
+                    "registry": sentinel,
+                }
+            )
+            assert platform_hook.LAST_BOOT is not None
+            assert platform_hook.LAST_BOOT.registry is sentinel
+            assert captured.get("registry") is sentinel
+        finally:
+            platform_hook.LAST_BOOT = old
+
+    @pytest.mark.asyncio
     async def test_daemon_discovery_accepts_hook_payloads(self, daemon: sm.SidecarDaemon):
         # after boot the daemon owns a started engine: live hook pushes
         # bridge safely (thread-safe queue) and shutdown drains cleanly
