@@ -3277,6 +3277,32 @@ def _prompt_observatory_identity(obs) -> dict:
     }
 
 
+def _rotate_owner_localpart(obs) -> str | None:
+    """Stored owner localpart for rotation-time password validation.
+
+    The fresh-install prompt validates the password against the just-chosen
+    username (same-as-username ban); rotation must apply the same rule
+    against the STORED username. Without it the wizard loop accepts a
+    password the provision layer's rotate (which validates with localpart)
+    then refuses with a post-hoc failure instead of a reprompt.
+    Best-effort: None when the credentials can't be read (validation
+    degrades to the length floor, exactly as before).
+    """
+    read = getattr(obs, "read_owner_credentials", None)
+    if read is None:
+        return None
+    try:
+        stored = read()
+    except Exception:
+        return None
+    if not isinstance(stored, dict):
+        return None
+    user_id = str(stored.get("user_id") or "")
+    if not user_id.startswith("@") or ":" not in user_id:
+        return None
+    return user_id[1:].split(":", 1)[0] or None
+
+
 def _offer_owner_password_rotate(obs) -> None:
     """Opt-in password rotation on already-provisioned homes (never default).
 
@@ -3298,11 +3324,17 @@ def _offer_owner_password_rotate(obs) -> None:
     if not want:
         print_info("Keeping the existing owner credentials.")
         return
-    validate = getattr(obs, "validate_owner_password", None)
+    validate = getattr(obs, "validate_owner_password", None) or (lambda v, **k: v)
+    localpart = _rotate_owner_localpart(obs)
     while True:
         new = prompt("New owner password (at least 12 characters, hidden)", None, password=True)
         try:
-            (validate or (lambda v, **k: v))(new)
+            try:
+                validate(new, localpart=localpart)
+            except TypeError:
+                # A third-party provision double without the localpart
+                # keyword: fall back to the bare call, as before.
+                validate(new)
             break
         except ValueError as exc:
             print_error(str(exc))
