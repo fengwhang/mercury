@@ -48,7 +48,9 @@ def _sandbox_repo(tmp_path: Path) -> Path:
     machine = platform.machine().lower()
     magic = 183 if machine in ("aarch64", "arm64") else 62
     omp_bin = omp / "omp"
-    omp_bin.write_bytes(b"\x7fELF" + b"\x00" * 14 + bytes([magic]) + b"\x00" * 8)
+    # Fixture binary must carry the release user-agent: make-dist.sh fail-hards
+    # (strings check) when the baked omp/<ver>-mercury disagrees with __version__.
+    omp_bin.write_bytes(b"\x7fELF" + b"\x00" * 14 + bytes([magic]) + b"\x00" * 8 + b"omp/9.9.9-mercury")
     omp_bin.chmod(0o755)
     ui = repo / "hermes" / "ui-tui" / "dist"
     ui.mkdir(parents=True)

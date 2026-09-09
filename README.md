@@ -281,10 +281,12 @@ scripts/         make-dist.sh (release tarball), vm-sim.sh (fresh-python
 
 ```bash
 # one-time on the build host: bun, then
-cd omp/packages/coding-agent && bun run build     # compiles dist/omp (x64)
-CROSS_TARGET=linux-arm64 bun run build            # also compiles dist/omp-linux-arm64
+# 1. bump the version FIRST (the omp binary bakes it at compile time):
+#    edit hermes/mercury_cli/__init__.py __version__ (+ commit)
+cd omp/packages/coding-agent && bun run build     # 2. compiles dist/omp (x64)
+CROSS_TARGET=linux-arm64 bun run build            #    also compiles dist/omp-linux-arm64
 cd ../../.. && cd hermes/ui-tui && bun run build  # compiles dist/entry.js
-cd ../../.. && scripts/make-dist.sh               # -> dist/mercury-<v>-{x64,arm64}.tar.gz + sha256
+cd ../../.. && scripts/make-dist.sh               # 3. -> dist/mercury-<v>-{x64,arm64}.tar.gz + sha256
 
 # install from a local tree (dev loop)
 bash install.sh
@@ -294,11 +296,16 @@ cd hermes && uv venv .venv --python '>=3.11,<3.14' && uv pip install -e .
 PYTHONPATH=hermes hermes/.venv/bin/python ...     # run against the repo
 ```
 
-Release workflow: commit → rebuild omp + ui-tui → `make-dist.sh` →
-publish the tarball → users re-run `install.sh <tarball-url>` (tree
-replaced in place; `~/.mercury` state survives). `scripts/vm-sim.sh`
-verifies the fresh-interpreter path (uv venv, no shared state) before
-shipping.
+Release workflow: bump `__version__` (+ commit) → rebuild omp + ui-tui →
+`make-dist.sh` → publish the tarball → users re-run `install.sh
+<tarball-url>` (tree replaced in place; `~/.mercury` state survives).
+`scripts/vm-sim.sh` verifies the fresh-interpreter path (uv venv, no shared
+state) before shipping. Order matters: `compile-binary.ts`
+`resolveMercuryVersion` reads `hermes/mercury_cli/__init__.py` at BUILD
+time, so a binary built BEFORE the bump bakes the previous release
+(v0.0.19 shipped `omp/0.0.18` this way — build → bump → pack). Never
+build → bump → pack; `make-dist.sh` fail-hards (`strings` user-agent
+check: binary must contain `omp/<version>-mercury`) if the binary is stale.
 
 ### Re-pinning upstream
 
