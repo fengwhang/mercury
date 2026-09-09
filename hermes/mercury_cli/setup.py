@@ -978,7 +978,10 @@ def _read_model_slots() -> dict:
 
     Hoisted from ``_prompt_mercury_slots`` so the delegate reconfigure gate
     reuses the exact same probe (no new detection). A missing file or a
-    parse error degrades to empty slots (unconfigured → no gate).
+    parse error degrades to empty slots (unconfigured → no gate). Real
+    files nest the block under ``hermes:`` (save_config writes the mercury
+    subtree) — check the nested block when the top level is empty, else
+    the delegate gate never fires on real installs.
     """
     import os as _os
     from pathlib import Path as _Path
@@ -1004,6 +1007,14 @@ def _read_model_slots() -> dict:
 
         whole = _yaml.safe_load(path.read_text()) or {}
         models = whole.get("models") or {}
+        if not isinstance(models, dict):
+            models = {}
+        if not any(models.get(k) for k in slots):
+            nested = whole.get("hermes") or {}
+            if isinstance(nested, dict):
+                nested_models = nested.get("models") or {}
+                if isinstance(nested_models, dict):
+                    models = nested_models
         for key in slots:
             value = str(models.get(key) or "").strip()
             if value:
@@ -3673,6 +3684,37 @@ def _model_section_has_credentials(config: dict) -> bool:
     return False
 
 
+def _model_section_is_configured(config: dict) -> bool:
+    """Return True when the passed config itself names a model (VM-gate fix).
+
+    ``_model_section_has_credentials`` only sees OAuth via the auth store's
+    ``active_provider`` (unset on the already-logged-in Nous path and every
+    API-key flow) and API keys via env vars (OAuth providers like ``nous``
+    have none). A VM that picked its model through Quick Setup therefore
+    reads as "unconfigured" and the model gate never fires. The config
+    dict is the other source of truth: ``model:`` (dict or string) or the
+    shared four-slot ``models:`` block. Deliberately in-memory only (no
+    file re-read): the wizard re-syncs its dict from disk after every
+    section, so the dict already mirrors the file — and a file probe here
+    would leak ambient state into callers that pass an explicit config.
+    """
+    cfg = config if isinstance(config, dict) else {}
+    model = cfg.get("model")
+    if isinstance(model, dict):
+        if str(model.get("default") or model.get("model") or "").strip():
+            return True
+        if str(model.get("provider") or "").strip():
+            return True
+    elif isinstance(model, str):
+        if model.strip():
+            return True
+    models = cfg.get("models")
+    if isinstance(models, dict):
+        if str(models.get("default") or "").strip():
+            return True
+    return False
+
+
 def _gateway_platform_short_label(label: str) -> str:
     """Strip trailing parenthetical qualifiers from a gateway platform label."""
     base = label.split("(", 1)[0].strip()
@@ -3687,13 +3729,24 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
     so that test patches on ``setup_mod.get_env_value`` take effect.
     """
     if section_key == "model":
-        if not _model_section_has_credentials(config):
+        # Either signal fires the gate: usable credentials (existing
+        # behavior) OR a model named in the config file (VM fix — OAuth
+        # installs such as Nous carry no env keys and often no
+        # active_provider, so the credentials probe alone reads them as
+        # unconfigured and setup falls straight into full model prompts).
+        if not (_model_section_has_credentials(config)
+                or _model_section_is_configured(config)):
             return None
-        model = config.get("model")
+        model = config.get("model") if isinstance(config, dict) else None
         if isinstance(model, str) and model.strip():
             return model.strip()
         if isinstance(model, dict):
             return str(model.get("default") or model.get("model") or "configured")
+        models = config.get("models") if isinstance(config, dict) else None
+        if isinstance(models, dict):
+            slot_default = str(models.get("default") or "").strip()
+            if slot_default:
+                return slot_default
         return "configured"
 
     elif section_key == "terminal":
@@ -3721,9 +3774,28 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
 
     elif section_key == "tools":
         tools = []
+        # Real tools state lives in config.yaml (platform_toolsets written
+        # by tools_command, mcp_servers, browser backend) — not just three
+        # API keys. A VM using Nous subscription defaults carries none of
+        # those keys, so the old probe read it as unconfigured and forced a
+        # full tool reconfiguration with no gate.
+        pts = config.get("platform_toolsets") if isinstance(config, dict) else None
+        if isinstance(pts, dict):
+            enabled = sum(len(v) for v in pts.values() if isinstance(v, list))
+            if enabled:
+                tools.append(f"{enabled} toolsets")
+        servers = config.get("mcp_servers") if isinstance(config, dict) else None
+        if isinstance(servers, dict) and servers:
+            tools.append(f"{len(servers)} MCP")
+        try:
+            backend = cfg_get(config, "browser", "backend", default="")
+        except Exception:
+            backend = ""
+        if str(backend or "").strip():
+            tools.append("Browser")
         if get_env_value("ELEVENLABS_API_KEY"):
             tools.append("TTS/ElevenLabs")
-        if get_env_value("BROWSERBASE_API_KEY"):
+        if get_env_value("BROWSERBASE_API_KEY") and "Browser" not in tools:
             tools.append("Browser")
         if get_env_value("FIRECRAWL_API_KEY"):
             tools.append("Firecrawl")
