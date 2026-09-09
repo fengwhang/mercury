@@ -129,6 +129,18 @@ class _FakeProvision:
         self.validate_owner_localpart = provision_mod.validate_owner_localpart
         self.validate_owner_password = provision_mod.validate_owner_password
 
+    def read_owner_credentials(self, *a, **k):
+        import json as _json
+        try:
+            path = (self._statuses[0] or {}).get("owner_credentials_path")
+            if path:
+                doc = _json.loads(Path(path).read_text(encoding="utf-8"))
+                if isinstance(doc, dict) and doc.get("user_id"):
+                    return {"user_id": str(doc["user_id"])}
+        except Exception:  # noqa: BLE001 — test double falls back to default
+            pass
+        return {"user_id": MXID}
+
     def rotate_owner_password(self, new_password, *a, **k):
         self.rotated.append(new_password)
         return "rotated"

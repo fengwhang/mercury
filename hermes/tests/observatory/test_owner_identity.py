@@ -335,20 +335,29 @@ def _creds_with_env(tmp_path: Path, monkeypatch) -> ObservatoryPaths:
 
 def test_rotate_success_rewrites_both_mirrors(tmp_path: Path, monkeypatch):
     paths = _creds_with_env(tmp_path, monkeypatch)
-    calls: dict = {}
+    seen: list = []
 
     def fake_http(method, url, payload=None, token=None):
-        calls.update(method=method, url=url, payload=payload, token=token)
-        return 200, {}
+        seen.append((method, url, dict(payload or {}), token))
+        if method == "PUT":
+            return 200, {}
+        assert method == "POST"
+        assert url == "http://127.0.0.1:18008/_matrix/client/v3/login"
+        assert (payload or {}).get("password") == "brand-new-password-1"
+        assert (payload or {}).get("identifier") == {
+            "type": "m.id.user", "user": "@owner:mercury.local"}
+        return 200, {"access_token": "login-tok", "user_id": "@owner:mercury.local"}
 
     assert provision_mod.rotate_owner_password(
         "brand-new-password-1", paths, http=fake_http) == "rotated"
-    assert calls["method"] == "PUT"
-    assert calls["url"] == (
+    put = seen[0]
+    assert put[0] == "PUT"
+    assert put[1] == (
         "http://127.0.0.1:18008/_synapse/admin/v2/users/%40owner%3Amercury.local")
-    assert calls["payload"] == {"password": "brand-new-password-1",
-                                "logout_devices": False}
-    assert calls["token"] == "admin-tok"
+    assert put[2] == {"password": "brand-new-password-1",
+                      "logout_devices": False}
+    assert put[3] == "admin-tok"
+    assert [m for m, _u, _p, _t in seen].count("POST") == 1
     stored = json.loads(paths.owner_credentials.read_text(encoding="utf-8"))
     assert stored["password"] == "brand-new-password-1"
     assert stored["user_id"] == "@owner:mercury.local"
@@ -420,6 +429,37 @@ def test_rotate_missing_admin_token_fails_hard(tmp_path: Path, monkeypatch):
     with pytest.raises(provision_mod.ProvisionError, match="no admin access token"):
         provision_mod.rotate_owner_password(
             "brand-new-password-1", paths, http=boom)
+
+def test_rotate_login_probe_failure_keeps_local_state(tmp_path: Path, monkeypatch):
+    """PUT accepted but the new password does not log in: no file moves."""
+    paths = _creds_with_env(tmp_path, monkeypatch)
+    before_creds = paths.owner_credentials.read_text(encoding="utf-8")
+    before_env = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    def put_ok_login_bad(method, url, payload=None, token=None):
+        if method == "PUT":
+            return 200, {}
+        return 403, {"errcode": "M_FORBIDDEN", "error": "bad password"}
+
+    with pytest.raises(provision_mod.ProvisionError, match="login verification failed"):
+        provision_mod.rotate_owner_password(
+            "brand-new-password-1", paths, http=put_ok_login_bad)
+    assert paths.owner_credentials.read_text(encoding="utf-8") == before_creds
+    assert (tmp_path / ".env").read_text(encoding="utf-8") == before_env
+
+
+def test_verify_owner_login_accepts_token_and_rejects_shape(tmp_path: Path, monkeypatch):
+    paths = _creds_with_env(tmp_path, monkeypatch)
+    ok = provision_mod.verify_owner_login(
+        "http://127.0.0.1:18008", "@owner:mercury.local", "brand-new-password-1",
+        http=lambda *a, **k: (200, {"access_token": "tok"}),
+    )
+    assert ok["access_token"] == "tok"
+    with pytest.raises(provision_mod.ProvisionError, match="login verification failed"):
+        provision_mod.verify_owner_login(
+            "http://127.0.0.1:18008", "@owner:mercury.local", "brand-new-password-1",
+            http=lambda *a, **k: (200, {}),
+        )
 
 
 # ---------------------------------------------------------------------------

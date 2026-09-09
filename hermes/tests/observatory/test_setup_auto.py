@@ -86,6 +86,19 @@ class _FakeProvision:
         self.validate_owner_localpart = provision_mod.validate_owner_localpart
         self.validate_owner_password = provision_mod.validate_owner_password
 
+    def read_owner_credentials(self, *a, **k):
+        import json as _json
+        from pathlib import Path as _Path
+        try:
+            path = (self._statuses[0] or {}).get("owner_credentials_path")
+            if path:
+                doc = _json.loads(_Path(path).read_text(encoding="utf-8"))
+                if isinstance(doc, dict) and doc.get("user_id"):
+                    return {"user_id": str(doc["user_id"])}
+        except Exception:  # noqa: BLE001 — test double falls back to default
+            pass
+        return {"user_id": MXID}
+
     def rotate_owner_password(self, new_password, *a, **k):
         self.rotated.append(new_password)
         return "rotated"
@@ -229,12 +242,12 @@ def test_wizard_install_idempotent_double_run(monkeypatch, capsys, tmp_path):
                  owner_credentials_path=str(creds))
     fake = _FakeProvision([st, st, st])
     out, remaining = _run_install(
-        monkeypatch, capsys, fake, yes_no=(False, True), texts=())
+        monkeypatch, capsys, fake, yes_no=(True,), texts=("", "", ""))
     assert remaining == []
     out, remaining = _run_install(
-        monkeypatch, capsys, fake, yes_no=(False, True), texts=())
+        monkeypatch, capsys, fake, yes_no=(True,), texts=("", "", ""))
     assert remaining == []
-    # re-runs pass no identity (stored credentials kept) and rotate declined
+    # re-runs offer the triple (empty keeps) and pass no identity onwards.
     assert fake.provision_kwargs == {}
     assert fake.rotated == []
     assert fake.calls["provision"] == 2

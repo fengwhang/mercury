@@ -3277,6 +3277,94 @@ def _prompt_observatory_identity(obs) -> dict:
     }
 
 
+def _current_observatory_identity(obs) -> tuple[str, str]:
+    """Currently provisioned (server_name, localpart) with safe fallbacks.
+
+    Parsed from the stored owner user_id (``@local:server``); falls back to
+    the shipped defaults when unreadable. Never raises, never logs secrets.
+    """
+    try:
+        from observatory.config_gen import OWNER_LOCALPART_DEFAULT as _def_local
+        from observatory.config_gen import SERVER_NAME_DEFAULT as _def_server
+    except Exception:  # noqa: BLE001 — display fallback, never kills setup
+        _def_local, _def_server = "merc-owner", "mercury.local"
+    server, localpart = _def_server, _def_local
+    read = getattr(obs, "read_owner_credentials", None)
+    if read is None:
+        return server, localpart
+    try:
+        stored = read()
+    except Exception:  # noqa: BLE001 — fallback to defaults
+        return server, localpart
+    if not isinstance(stored, dict):
+        return server, localpart
+    user_id = str(stored.get("user_id") or "")
+    if not user_id.startswith("@") or ":" not in user_id:
+        return server, localpart
+    try:
+        localpart = user_id[1:].split(":", 1)[0] or localpart
+        server = user_id.split(":", 1)[1] or server
+    except Exception:  # noqa: BLE001 — keep fallbacks
+        pass
+    return server, localpart
+
+
+def _prompt_observatory_identity_rerun(obs) -> dict:
+    """Prompt the identity triple on a keep-data re-run (per-field keep).
+
+    Same validators as the fresh-install triple; every field defaults to
+    keep-current (empty = keep). The password is never displayed — empty
+    keeps the stored secret, a typed value is validated against the
+    just-entered username and MUST be rotated by the caller (never dropped).
+    Returns ``{"server_name", "owner_localpart", "owner_password" (None =
+    keep), "_current_server_name", "_current_localpart"}``.
+    """
+    cur_server, cur_localpart = _current_observatory_identity(obs)
+    print_info(
+        f"Provisioned identity: @{cur_localpart}:{cur_server} "
+        "— empty keeps current per field."
+    )
+    server_name = _prompt_validated(
+        "Homeserver name (empty = keep current — immutable once provisioned)",
+        default=cur_server,
+        validate=obs.validate_server_name,
+    )
+    localpart = _prompt_validated(
+        "Owner username (empty = keep current)",
+        default=cur_localpart,
+        validate=obs.validate_owner_localpart,
+    )
+    validate = getattr(obs, "validate_owner_password", None) or (lambda v, **k: v)
+    while True:
+        new = prompt(
+            "Owner password (empty = keep current, at least 12 characters, hidden)",
+            None,
+            password=True,
+        )
+        if not new:
+            owner_password = None
+            break
+        try:
+            try:
+                validate(new, localpart=localpart)
+            except TypeError:
+                # A third-party provision double without the localpart
+                # keyword: fall back to the bare call, as before.
+                validate(new)
+            owner_password = new
+            break
+        except ValueError as exc:
+            print_error(str(exc))
+    print_info(f"Owner account will be @{localpart}:{server_name}.")
+    return {
+        "server_name": server_name,
+        "owner_localpart": localpart,
+        "owner_password": owner_password,
+        "_current_server_name": cur_server,
+        "_current_localpart": cur_localpart,
+    }
+
+
 def _rotate_owner_localpart(obs) -> str | None:
     """Stored owner localpart for rotation-time password validation.
 
@@ -3388,6 +3476,102 @@ def _maybe_heal_owner_env_mirror(obs) -> None:
     if healed:
         print_success(f"Healed the .env owner mirror ({', '.join(healed)}).")
 
+def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
+    """Keep-data re-run: explicit triple offer, per-field keep vs change.
+
+    Same validators as the fresh-install triple; empty keeps current per
+    field. Unchanged prints ``identity unchanged (kept existing data)`` and
+    runs the idempotent repair. A server-name / localpart change fails
+    loudly (immutable without a wipe — never a silent fork) and repairs
+    with the stored identity. A typed password is ALWAYS rotated
+    (admin PUT + login probe + atomic dual-write) or errors loudly —
+    never silently dropped. Returns the refreshed status (or the input
+    status when the repair failed). Only KeyboardInterrupt escapes.
+    """
+    rerun = _prompt_observatory_identity_rerun(obs)
+    cur_server = rerun.pop("_current_server_name")
+    cur_local = rerun.pop("_current_localpart")
+    new_server = rerun["server_name"]
+    new_local = rerun["owner_localpart"]
+    new_pw = rerun["owner_password"]
+    try:
+        norm_cur_server = obs.validate_server_name(cur_server)
+    except Exception:  # noqa: BLE001 — compare raw on validator failure
+        norm_cur_server = cur_server
+    try:
+        norm_cur_local = obs.validate_owner_localpart(cur_local)
+    except Exception:  # noqa: BLE001 — compare raw on validator failure
+        norm_cur_local = cur_local
+    server_changed = new_server != norm_cur_server
+    local_changed = new_local != norm_cur_local
+    if server_changed or local_changed:
+        print_error(
+            "Observatory identity is immutable once provisioned "
+            f"(stored @{cur_local}:{cur_server}) — refusing to rename/repoint "
+            "in place (delete owner-credentials.json and tuwunel-db to re-provision)."
+        )
+        if new_pw is not None:
+            print_error("Password change not applied — resolve the identity change first.")
+        print_info("Keeping the existing owner credentials.")
+        try:
+            obs.provision_in_wizard()
+            _run_observatory_auto_steps(obs)
+            refreshed = obs.status_summary()
+            print_success("Observatory provisioning complete (identity unchanged).")
+            return refreshed
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 — auto step never kills setup
+            print_error(f"Observatory provisioning failed: {exc}")
+            print_info("Nothing else was changed — the wizard continues.")
+            print_info("Retry any time with: mercury setup observatory")
+            return status
+    if new_pw is not None:
+        try:
+            obs.provision_in_wizard()
+            _run_observatory_auto_steps(obs)
+            refreshed = obs.status_summary()
+            print_success("Observatory provisioning complete.")
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 — repair failure is loud
+            print_error(f"Observatory provisioning failed: {exc}")
+            print_info("Nothing else was changed — the wizard continues.")
+            print_info("Retry any time with: mercury setup observatory")
+            print_error("Password change not applied — provisioning failed first.")
+            return status
+        rotate = getattr(obs, "rotate_owner_password", None)
+        if rotate is None:
+            print_error(
+                "Password change requested but rotation is unavailable "
+                "in this install — keeping existing credentials."
+            )
+            return refreshed
+        try:
+            rotate(new_pw)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 — rotation failure is loud
+            print_error(f"Password rotation failed: {exc}")
+            print_info("Retry any time with: mercury setup observatory")
+            return refreshed
+        print_success("Owner password rotated (mirrored to .env — paste it into FluffyChat).")
+        return refreshed
+    print_info("identity unchanged (kept existing data)")
+    try:
+        obs.provision_in_wizard()
+        _run_observatory_auto_steps(obs)
+        refreshed = obs.status_summary()
+        print_success("Observatory provisioning complete.")
+        return refreshed
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # noqa: BLE001 — auto step never kills setup
+        print_error(f"Observatory provisioning failed: {exc}")
+        print_info("Nothing else was changed — the wizard continues.")
+        print_info("Retry any time with: mercury setup observatory")
+        return status
+
 
 def setup_observatory(config: dict, *, quick: bool = False):
     """Wizard section: the bundled Matrix observatory (Tuwunel homeserver
@@ -3446,27 +3630,29 @@ def setup_observatory(config: dict, *, quick: bool = False):
 
     if choice == 0:
         was_provisioned = bool(status.get("provisioned"))
-        identity: dict = {}
         if not was_provisioned:
             # Fresh install: the user chooses the identity (safe defaults,
-            # validated in a loop); re-runs keep stored credentials.
+            # validated in a loop).
             identity = _prompt_observatory_identity(obs)
-        try:
-            obs.provision_in_wizard(**identity)
-            _run_observatory_auto_steps(obs)
-            status = obs.status_summary()
-            print_success("Observatory provisioning complete.")
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:
-            print_error(f"Observatory provisioning failed: {exc}")
-            print_info("Nothing else was changed — the wizard continues.")
-            print_info("Retry any time with: mercury setup observatory")
+            try:
+                obs.provision_in_wizard(**identity)
+                _run_observatory_auto_steps(obs)
+                status = obs.status_summary()
+                print_success("Observatory provisioning complete.")
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                print_error(f"Observatory provisioning failed: {exc}")
+                print_info("Nothing else was changed — the wizard continues.")
+                print_info("Retry any time with: mercury setup observatory")
         else:
-            if was_provisioned:
-                # Repair re-run: credentials stay untouched unless the
-                # user explicitly opts into a rotation.
-                _offer_owner_password_rotate(obs)
+            # Keep-data re-run: explicit triple offer, per-field keep vs
+            # change — a typed password always rotates (or errors), never
+            # silently drops. Only KeyboardInterrupt escapes.
+            try:
+                status = _run_observatory_provisioned_rerun(obs, status)
+            except KeyboardInterrupt:
+                raise
     else:
         print_info("Skipped — same as installing with --skip-observatory.")
         print_info("Provision later with: mercury setup observatory")
