@@ -119,6 +119,10 @@ class _Harness:
         monkeypatch.setattr(update_cmd, "_check_and_apply_config_migration", _migrate)
 
         monkeypatch.setattr(prov, "observatory_enabled", lambda: enabled)
+        # Hermetic baseline: these tail tests cover the tarball path; the
+        # vendored wheel (resolved from the live checkout on cp313 linux)
+        # is pinned off here and covered by test_vendored_olm_wheels.py.
+        monkeypatch.setattr(prov, "_vendored_olm_wheel", lambda: None)
 
         def _provision_if_missing(*a, **k):
             self.events.append("provision-if-missing")
