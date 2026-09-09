@@ -1653,6 +1653,19 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                         "interact with it."
                     ),
                 })
+        # ── Mercury internal path guard ────────────────────────────────
+        # Prevent prompt injection via catalog or hub metadata files,
+        # and block credential stores under HERMES_HOME. Runs BEFORE
+        # document extraction so no blocked byte is ever read off disk,
+        # whatever the file extension. Pass the already-resolved path so
+        # a relative-path read against TERMINAL_CWD == HERMES_HOME
+        # (e.g. "auth.json") still hits the denylist —
+        # get_read_block_error's own resolve() runs against the Python
+        # process cwd, which can differ.
+        block_error = get_read_block_error(str(_resolved))
+        if block_error:
+            return tool_error(block_error)
+
 
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
@@ -1764,17 +1777,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 f"Cannot read binary file '{path}' ({_ext}). "
                 "Use vision_analyze for images, or terminal to inspect binary files."
             )
-
-        # ── Mercury internal path guard ────────────────────────────────
-        # Prevent prompt injection via catalog or hub metadata files,
-        # and block credential stores under HERMES_HOME.  Pass the
-        # already-resolved path so a relative-path read against
-        # TERMINAL_CWD == HERMES_HOME (e.g. "auth.json") still hits the
-        # denylist — get_read_block_error's own resolve() runs against
-        # the Python process cwd, which can differ.
-        block_error = get_read_block_error(str(_resolved))
-        if block_error:
-            return tool_error(block_error)
 
         # ── Negative-result cache ─────────────────────────────────────
         # If we already discovered this path doesn't exist (within TTL),
@@ -2392,6 +2394,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        # Read-deny: patch reads file content (fuzzy match, unified-diff
+        # context lines) — a blocked read must refuse before any I/O, same
+        # as read_file_tool. Resolve against the task cwd so a relative
+        # path (e.g. TERMINAL_CWD == HERMES_HOME) still hits the denylist.
+        try:
+            _read_resolved = str(_resolve_path_for_task(_p, task_id))
+        except (OSError, ValueError, RuntimeError):
+            _read_resolved = _p
+        _read_blocked = get_read_block_error(_read_resolved)
+        if _read_blocked:
+            return tool_error(_read_blocked)
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
