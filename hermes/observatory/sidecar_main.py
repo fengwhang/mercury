@@ -77,6 +77,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:  # aiohttp is a matrix-extra dependency; the daemon requires it.
+    # Guard FIRST: appservice/matrix_client import aiohttp at their top
+    # level, so this must precede every observatory import — otherwise the
+    # missing-dep failure surfaces as ModuleNotFoundError instead of the
+    # handled SystemExit below.
+    from aiohttp import web
+except ImportError as exc:
+    raise SystemExit("observatory sidecar requires aiohttp (matrix extra)") from exc
+
 from observatory import e2ee as e2ee_mod
 from observatory import provision
 from observatory.appservice import (
@@ -95,11 +104,6 @@ from observatory.matrix_client import CLIENT_V3, MatrixError, MatrixClient
 from observatory.renderer import IntentExecutor, Renderer, SendMessage
 from observatory.state import ObservatoryState, StateError
 from observatory.tree import DIRECTIVES_ROOM_KEY
-
-try:  # aiohttp is a matrix-extra dependency; the daemon requires it
-    from aiohttp import web
-except ImportError as exc:  # pragma: no cover - env law, not testable here
-    raise SystemExit("observatory sidecar requires aiohttp (matrix extra)") from exc
 
 log = logging.getLogger(__name__)
 

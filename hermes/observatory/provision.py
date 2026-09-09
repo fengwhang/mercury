@@ -275,6 +275,30 @@ def _run_systemctl(args: list[str], *, check: bool = True) -> subprocess.Complet
     return proc
 
 
+def _unit_is_active(unit_name: str) -> bool:
+    """``systemctl --user is-active --quiet <unit>`` probe. False whenever
+    systemd is missing or the unit is not running; never raises."""
+    if not _systemctl_available():
+        return False
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", unit_name],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return proc.returncode == 0
+
+
+def _aiohttp_available() -> bool:
+    """True when the sidecar's HTTP layer imports (matrix-extra dependency).
+    Never raises — an unimportable aiohttp is simply 'missing'."""
+    try:
+        import aiohttp  # noqa: F401
+    except Exception:  # noqa: BLE001 — any import failure = missing
+        return False
+    return True
+
 # --- steps ---------------------------------------------------------------------
 
 def ensure_config(paths: ObservatoryPaths, registration_token: str | None = None) -> str:
@@ -442,8 +466,15 @@ def ensure_owner_account(paths: ObservatoryPaths,
 
 
 def ensure_systemd_unit(paths: ObservatoryPaths) -> str:
-    """Install/refresh the user unit; returns 'installed', 'refreshed', or
-    'skipped' (no systemd — containers/CI; caller surfaces a hint)."""
+    """Install/refresh the user unit; returns 'installed', 'refreshed',
+    'started', or 'skipped' (no systemd — containers/CI; caller surfaces
+    a hint).
+
+    Flap law: restarts are rare and deliberate, never per-provision-call.
+    An unchanged unit file means systemd already has this exact unit, so
+    an active unit is left alone (no daemon-reload, no restart) and an
+    inactive one is *started*, never restarted. Only a content change
+    reloads + restarts."""
     if not _systemctl_available():
         return "skipped"
     unit = config_gen.render_homeserver_unit(
@@ -455,13 +486,19 @@ def ensure_systemd_unit(paths: ObservatoryPaths) -> str:
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     paths.logs_dir.mkdir(parents=True, exist_ok=True)
     existing = unit_path.read_text() if unit_path.exists() else ""
-    changed = existing != unit
-    if changed:
-        unit_path.write_text(unit, encoding="utf-8")
+    if existing == unit:
+        if _unit_is_active(HOMESERVER_UNIT_NAME):
+            return "started"
+        _run_systemctl(["start", HOMESERVER_UNIT_NAME])
+        return "started"
+    unit_path.write_text(unit, encoding="utf-8")
     _run_systemctl(["daemon-reload"])
     _run_systemctl(["enable", HOMESERVER_UNIT_NAME])
-    _run_systemctl(["restart", HOMESERVER_UNIT_NAME])
-    return "refreshed" if changed and existing else "installed" if changed else "started"
+    if existing:
+        _run_systemctl(["restart", HOMESERVER_UNIT_NAME])
+        return "refreshed"
+    _run_systemctl(["start", HOMESERVER_UNIT_NAME])
+    return "installed"
 
 
 def ensure_sidecar_unit(mercury_home: str | Path | None = None,
@@ -474,7 +511,11 @@ def ensure_sidecar_unit(mercury_home: str | Path | None = None,
     Repair path for ``mercury setup observatory --install-sidecar`` —
     deliberately NOT part of provision() (see module docstring). The
     render lives in sidecar_main (lazy import: that module imports this
-    one, so a top-level import would cycle)."""
+    one, so a top-level import would cycle).
+
+    Same flap law as :func:`ensure_systemd_unit`: an unchanged unit file
+    never restarts (active → return, inactive → start); only a content
+    change reloads + restarts."""
     if not _systemctl_available():
         return "skipped"
     from observatory.sidecar_main import render_sidecar_unit
@@ -495,13 +536,19 @@ def ensure_sidecar_unit(mercury_home: str | Path | None = None,
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     paths.logs_dir.mkdir(parents=True, exist_ok=True)
     existing = unit_path.read_text() if unit_path.exists() else ""
-    changed = existing != unit
-    if changed:
-        unit_path.write_text(unit, encoding="utf-8")
+    if existing == unit:
+        if _unit_is_active(SIDECAR_UNIT_NAME):
+            return "started"
+        _run_systemctl(["start", SIDECAR_UNIT_NAME])
+        return "started"
+    unit_path.write_text(unit, encoding="utf-8")
     _run_systemctl(["daemon-reload"])
     _run_systemctl(["enable", SIDECAR_UNIT_NAME])
-    _run_systemctl(["restart", SIDECAR_UNIT_NAME])
-    return "refreshed" if changed and existing else "installed" if changed else "started"
+    if existing:
+        _run_systemctl(["restart", SIDECAR_UNIT_NAME])
+        return "refreshed"
+    _run_systemctl(["start", SIDECAR_UNIT_NAME])
+    return "installed"
 
 # --- vendored crypto stack ---------------------------------------------------------
 # python-olm 3.2.16 publishes no cp313 wheel on PyPI (cp310–cp312 only),
@@ -517,7 +564,10 @@ def ensure_sidecar_unit(mercury_home: str | Path | None = None,
 PYTHON_OLM_VERSION = "3.2.16"
 
 #: Pure-python crypto-stack companions, mirroring pyproject ``[matrix]``.
-_CRYPTO_PY_DEPS = ("mautrix[encryption]==0.21.1", "aiosqlite==0.22.1")
+#: aiohttp is pinned explicitly (same pin as the matrix extra): the sidecar
+#: boots appservice/matrix_client which import aiohttp directly, so no boot
+#: path may assume it arrives transitively via mautrix.
+_CRYPTO_PY_DEPS = ("mautrix[encryption]==0.21.1", "aiosqlite==0.22.1", "aiohttp==3.14.3")
 
 
 def _vendored_wheels_dir() -> Path:
@@ -677,7 +727,12 @@ def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
     retry command printed). NEVER raises and NEVER crashes the wizard:
     every failure degrades to the fail-closed status. Installs into
     ``sys.executable``'s environment (the same venv that runs the
-    sidecar); needs no compiler and no container runtime."""
+    sidecar); needs no compiler and no container runtime.
+
+    ``"ready"`` requires BOTH the compiled Olm stack AND aiohttp: the
+    sidecar boots appservice/matrix_client which import aiohttp directly,
+    so an olm-ready env without aiohttp is still 'missing' (a
+    matrix-extra-less venv recreates exactly that shape after update)."""
     try:
         from observatory.e2ee import e2ee_available, e2ee_enabled
     except Exception:  # noqa: BLE001 — import shape failure = unavailable
@@ -690,7 +745,7 @@ def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
     except Exception:  # noqa: BLE001 — unreadable config means default-on
         pass
     try:
-        if bool(e2ee_available()):
+        if bool(e2ee_available()) and _aiohttp_available():
             return "ready"
     except Exception:  # noqa: BLE001 — probe failure = unavailable
         pass
@@ -724,11 +779,13 @@ def ensure_crypto_stack(mercury_home: str | Path | None = None) -> str:
             return _crypto_fail_closed(
                 f"index install failed{': ' + tail[-300:] if tail else ''}")
     sys.modules.pop("olm", None)
+    sys.modules.pop("aiohttp", None)
     try:
         import olm  # noqa: F401
+        import aiohttp  # noqa: F401
     except Exception:  # noqa: BLE001 — installed but still unimportable
         return _crypto_fail_closed(
-            "python-olm installed but does not import")
+            "crypto stack installed but does not import")
     print("  ✓ crypto stack ready (python-olm installed, no build needed).")
     return "installed"
 
@@ -1091,19 +1148,9 @@ def _homeserver_reachable(base_url: str, timeout: float = 2.0) -> bool:
 
 
 def _unit_active() -> bool:
-    """``systemctl --user is-active --quiet`` probe for status displays.
-    False whenever systemd is missing or the unit is not running; never
-    raises (containers/CI have no systemd user session at all)."""
-    if not _systemctl_available():
-        return False
-    try:
-        proc = subprocess.run(
-            ["systemctl", "--user", "is-active", "--quiet", HOMESERVER_UNIT_NAME],
-            capture_output=True, text=True, timeout=15,
-        )
-    except Exception:  # noqa: BLE001
-        return False
-    return proc.returncode == 0
+    """Homeserver ``is-active`` probe for status displays (never raises).
+    Thin wrapper over :func:`_unit_is_active`."""
+    return _unit_is_active(HOMESERVER_UNIT_NAME)
 
 
 def observatory_e2ee_flag(mercury_home: str | Path | None = None) -> bool:
