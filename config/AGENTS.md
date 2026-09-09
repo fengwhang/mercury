@@ -5,5 +5,7 @@
 - Each subagent gets their own branch in the repo, for the orchestrator to later merge.
 - Be PERSISTENT and INDEPENDENT in your task! Complete each next step as described; do not pause for user input unless it is absolutely necessary.
 - NEVER write secrets into the repo; keys live in .env files outside it.
+- Do NOT produce your EOS (End of Sequence) token until work is complete.
+- When you know the best method, do NOT wait on user input to execute it.
 - Prefer systemic fixes over output patches: fix the generating job or
   script, not just the artifact it produced.
