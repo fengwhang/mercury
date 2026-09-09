@@ -2113,12 +2113,6 @@ DEFAULT_CONFIG = {
                                        # delegation units. New async dispatches beyond the cap
                                        # fall back to synchronous execution. Floor of 1, no ceiling.
                                        # (Replaces the deprecated max_async_children.)
-        "max_child_rss_mb": 450,  # per-child RSS planning figure for the memory-aware
-                                  # effective cap: spawn sites run at most
-                                  # min(max_concurrent_children, (avail-reserve)/this).
-                                  # 450 ≈ full omp child process w/ bundle+context.
-        "memory_cap_enabled": True,  # False restores the pure configured cap
-                                     # (memory-aware clamping off).
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
         # raise deliberately, each level multiplies API cost.

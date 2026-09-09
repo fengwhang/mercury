@@ -1145,14 +1145,7 @@ Roles:
 Key config knobs (under `delegation:` in `config.yaml`):
 `max_concurrent_children`, `max_spawn_depth`, `child_timeout_seconds`,
 `orchestrator_enabled`, `subagent_auto_approve`, `inherit_mcp_toolsets`,
-`max_iterations`, `max_summary_chars`, `max_child_rss_mb`, `memory_cap_enabled`.
-
-Memory safety: spawn sites run at most
-`min(max_concurrent_children, (available_RAM − reserve) / max_child_rss_mb)`
-children concurrently (floored at 1, so serial batches never block), and each
-over-budget child summary is trimmed to a head+tail window with the full text
-spilled to `cache/delegation/` (retrievable via `read_file`). Set
-`memory_cap_enabled: false` to restore the pure configured cap.
+`max_iterations`.
 
 Durability rule: background `delegate_task` is detached from the current
 turn but still process-local. For work that must survive process restart, use

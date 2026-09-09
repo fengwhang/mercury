@@ -31,7 +31,7 @@ import weakref
 from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from toolsets import TOOLSETS
@@ -973,98 +973,6 @@ def _get_max_concurrent_children() -> int:
         except (TypeError, ValueError):
             return _DEFAULT_MAX_CONCURRENT_CHILDREN
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
-
-
-# ---------------------------------------------------------------------------
-# Memory-aware effective concurrency (parallel-delegation memory fix).
-#
-# _get_max_concurrent_children() above is the USER-VISIBLE cap (config > env
-# > default 10) and keeps its exact semantics. The EFFECTIVE cap used at
-# spawn sites is min(configured, memory-derived), so a parallel wave stays
-# safe on small machines with no tuning: each omp child is a full process
-# (~450MB RSS with bundle + context; bare-node floor ≈ 50MB) and each
-# in-process Mercury child holds a full conversation in heap. Uncapped N
-# (the old omp path: max_workers = len(tasks)) multiplied RSS linearly —
-# the ~17GB waves this fixes. Floored at 1 so the serial (N=1) path can
-# never block. Override: delegation.memory_cap_enabled=false (or
-# HERMES_DELEGATION_MEMORY_CAP=0) restores the pure configured value;
-# delegation.max_child_rss_mb (or HERMES_DELEGATION_CHILD_RSS_MB) tunes the
-# per-child estimate.
-# ---------------------------------------------------------------------------
-
-_DEFAULT_CHILD_RSS_MB = 450
-# Kept free for the parent process + OS: this floor, or a quarter of total
-# RAM, whichever is larger.
-_MEMORY_RESERVE_MB = 2048
-_MEMORY_RESERVE_FRACTION = 0.25
-
-
-def _get_child_rss_mb() -> int:
-    """Per-child RSS planning figure in MB (default 450)."""
-    cfg = _load_config()
-    for raw in (cfg.get("max_child_rss_mb"), os.getenv("HERMES_DELEGATION_CHILD_RSS_MB")):
-        if raw is None or (isinstance(raw, str) and not raw.strip()):
-            continue
-        try:
-            return max(64, int(raw))
-        except (TypeError, ValueError):
-            continue
-    return _DEFAULT_CHILD_RSS_MB
-
-
-def _memory_stats_mb() -> Optional[Tuple[int, int]]:
-    """Return (total_mb, available_mb), or None when unknowable."""
-    try:
-        with open("/proc/meminfo", encoding="utf-8") as fh:
-            fields: Dict[str, int] = {}
-            for line in fh:
-                parts = line.split()
-                if len(parts) >= 2 and parts[0].rstrip(":") in ("MemTotal", "MemAvailable"):
-                    fields[parts[0].rstrip(":")] = int(parts[1]) // 1024
-            if "MemTotal" in fields and "MemAvailable" in fields:
-                return fields["MemTotal"], fields["MemAvailable"]
-    except (OSError, ValueError):
-        pass
-    return None
-
-
-def _memory_cap_enabled() -> bool:
-    """False only on explicit opt-out (config or env)."""
-    cfg = _load_config()
-    raw = cfg.get("memory_cap_enabled", True)
-    if isinstance(raw, str):
-        if raw.strip() == "":
-            pass
-        elif raw.strip().lower() in ("0", "false", "no", "off"):
-            return False
-        else:
-            return True
-    if raw is False or raw == 0:
-        return False
-    env_val = os.getenv("HERMES_DELEGATION_MEMORY_CAP", "").strip().lower()
-    if env_val in ("0", "false", "no", "off"):
-        return False
-    return True
-
-
-def _memory_concurrency_cap() -> Optional[int]:
-    """Max parallel children that fit usable RAM, or None (unknown/disabled)."""
-    if not _memory_cap_enabled():
-        return None
-    stats = _memory_stats_mb()
-    if stats is None:
-        return None
-    total_mb, avail_mb = stats
-    reserve_mb = max(_MEMORY_RESERVE_MB, int(total_mb * _MEMORY_RESERVE_FRACTION))
-    return max(1, (avail_mb - reserve_mb) // max(64, _get_child_rss_mb()))
-
-
-def _effective_concurrency_cap(configured: int) -> int:
-    """Spawn-site cap: min(configured, memory-derived), floored at 1."""
-    mem_cap = _memory_concurrency_cap()
-    if mem_cap is None:
-        return max(1, int(configured))
-    return max(1, min(int(configured), mem_cap))
 
 
 def _get_worktree_isolation() -> bool:
@@ -4301,7 +4209,7 @@ def delegate_task(
             # normally, but if the parent is interrupted while a child is
             # wedged, the abandoned worker must not block interpreter exit.
             from tools.daemon_pool import DaemonThreadPoolExecutor
-            with DaemonThreadPoolExecutor(max_workers=_effective_concurrency_cap(max_children)) as executor:
+            with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
                     child_context = contextvars.copy_context()
