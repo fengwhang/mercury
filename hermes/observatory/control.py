@@ -6,7 +6,7 @@ gates. Pure data in, pure data out: the router owns PARSING, GATING and
 LEDGER state; the engine bindings (gateway ``slash.exec``/session
 injection, omp RPC ``steer``/``prompt``/``abort``/``subagent_steer``/
 ``subagent_abort``, approval resolution) and the Matrix send of notices
-live in the future sidecar_main, which executes the returned actions and
+live in sidecar_main, which executes the returned actions and
 notices. This module must stay importable without aiohttp, homeserver, or
 a live omp child — mirroring the renderer's planning/execution split.
 

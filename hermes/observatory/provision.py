@@ -16,7 +16,7 @@ D16. What 'provision' means here, in order:
    ``allow_registration = true`` on the SAME database/port, registers the
    owner via ``m.login.registration_token``, then removes it. Credentials
    land in ``owner-credentials.json`` (0600) and are mirrored into
-   ``$MERCURY_HOME/.env`` as ``MATRIX_OBS_OWNER_*`` (0600) — the Phase 3
+   ``$MERCURY_HOME/.env`` as ``MATRIX_OBS_OWNER_*`` (0600) — the
    setup card's sources. Skipped entirely when the credentials file exists
    (the 'exists' path only fills .env keys a pre-mirror install missed).
 5. ``ensure_systemd_unit`` — user unit ``mercury-observatory-homeserver.service``
@@ -26,8 +26,8 @@ D16. What 'provision' means here, in order:
    when systemd is absent (containers/CI) — everything else fails hard.
 
 Entry points:
-  ``python -m observatory.provision``          — install.sh + the future
-      first-gateway-start hook (same command, same idempotence).
+  ``python -m observatory.provision``          — install.sh + the
+      first-gateway-start hook (gateway/run.py try_boot_sidecar; same command, same idempotence).
   ``observatory.provision.refresh_for_update`` — `mercury update` (D16).
   ``observatory.provision.provision_in_wizard`` — the setup wizard's
       'Matrix Observatory' section (same steps/summary, never exits).
@@ -416,7 +416,7 @@ def ensure_owner_account(paths: ObservatoryPaths,
                     "access_token": body.get("access_token", ""),
                     "device_id": body.get("device_id", ""),
                     "note": "first registered user = server admin (owner). "
-                            "Shown by the Phase 3 onboarding setup card.",
+                            "Shown by the onboarding setup card (mercury setup observatory).",
                 },
                 indent=2,
             ) + "\n",

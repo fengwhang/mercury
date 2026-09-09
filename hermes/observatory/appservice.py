@@ -7,8 +7,8 @@ A thin aiohttp server (already a hermes dependency — no new deps):
   batches. Responds 200 ALWAYS once the transaction is accepted (any
   non-2xx makes the homeserver retry forever). When no consumer is
   attached yet the body carries the ``M_NOT_YET_SENT`` stub marker:
-  accepted + queued, nothing forwarded onward (M3a skeleton; the renderer
-  consumer lands with discovery).
+  accepted + queued; the sidecar daemon attaches the renderer/discovery
+  consumer at boot.
 - ``GET /health`` — unauthenticated liveness probe.
 - Token-check middleware: every other route requires the appservice
   ``as_token`` (``Authorization: Bearer`` header or ``access_token``
@@ -224,7 +224,7 @@ def serve(
     host: str = HOMESERVER_ADDRESS,
     port: int = APPSERVICE_PORT_DEFAULT,
 ) -> None:
-    """Foreground entry point for the future systemd unit
+    """Foreground entry point for the systemd unit
     (mercury-observatory.service)."""
     app = make_app(intake)
 

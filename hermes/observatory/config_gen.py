@@ -29,7 +29,8 @@ HOMESERVER_ADDRESS = "127.0.0.1"
 HOMESERVER_PORT_DEFAULT = 18008
 
 #: Appservice (sidecar) listen port; the registration YAML points the
-#: homeserver here. Sidecar daemon lands in Phase 3.
+#: homeserver here. Served by the bundled sidecar daemon
+#: (mercury-observatory.service).
 APPSERVICE_PORT_DEFAULT = 18090
 APPSERVICE_ID = "merc-observatory"
 APPSERVICE_SENDER_LOCALPART = "merc-bot"
@@ -117,7 +118,7 @@ allow_federation = {str(allow_federation).lower()}
 allow_registration = {str(allow_registration).lower()}
 registration_token = "{registration_token}"
 
-# Appservice registration YAMLs (sidecar, Phase 3) are dropped here;
+# Appservice registration YAMLs (sidecar) are dropped here;
 # tuwunel loads them at startup.
 appservice_dir = "{appservice_dir}"
 """
@@ -141,7 +142,7 @@ def render_appservice_registration_yaml(
     """
     return f"""\
 # Mercury Observatory appservice registration (generated; the homeserver
-# reads this from appservice_dir at startup). The sidecar (Phase 3) serves
+# reads this from appservice_dir at startup). The sidecar serves
 # {url} and authenticates with as_token; hs_token authenticates the
 # homeserver's transactions TO the sidecar.
 id: {registration_id}

@@ -236,7 +236,7 @@ install_computer_use_driver() {
 # ============================================================================
 # Matrix Observatory homeserver — Tuwunel (fetch-at-install, NOT vendored;
 # docs/design/matrix-observatory.md §2/D16). The shared python module does
-# the work so install.sh, the future first-gateway-start hook and
+# the work so install.sh, the first-gateway-start hook and
 # `mercury update` all run the SAME code: latest STABLE release from the
 # GitHub API with a hard >=1.8.1 gate, static binary to
 # $MERCURY_HOME/observatory/bin/tuwunel + version file, closed tuwunel.toml
