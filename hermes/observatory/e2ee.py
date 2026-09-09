@@ -1016,11 +1016,13 @@ class E2EEManager:
         """Probe-and-fail-hard gate. ``enabled`` usually comes from
         :func:`e2ee_enabled`; the caller decides policy, this enforces
         honesty: enabled + missing stack = :class:`E2EEError`, never
-        silent plaintext."""
+        silent plaintext. Disabled is a no-op (plaintext path needs no
+        crypto store, so it never touches the disk)."""
+        if not enabled:
+            return
         if not e2ee_available():
             raise E2EEError(E2EE_REMEDY)
-        if enabled:
-            self.crypto_dir.mkdir(parents=True, exist_ok=True)
+        self.crypto_dir.mkdir(parents=True, exist_ok=True)
 
     # -- machines --------------------------------------------------------------
 

@@ -3052,6 +3052,55 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     print_info(_OBSERVATORY_GUIDE_LINE)
 
 
+def _run_observatory_sidecar_repair() -> None:
+    """Non-interactive repair: provision, then install/enable/start the
+    sidecar unit (``mercury setup observatory --install-sidecar``).
+
+    Never prompts; every failure degrades to a printed hint and the
+    wizard returns. provision() itself never touches the sidecar unit
+    (the daemon boots provision(), so auto-installing there would
+    restart its own unit mid-boot) — this explicit path is the only
+    installer."""
+    try:
+        from observatory.config_gen import SIDECAR_UNIT_NAME as _sidecar_unit
+    except Exception:  # noqa: BLE001 — display fallback, never kills setup
+        _sidecar_unit = "mercury-observatory.service"
+    obs = _load_observatory_provision()
+    if obs is None:
+        print_warning("Bundled observatory package not found in this install.")
+        print_info(_OBSERVATORY_GUIDE_LINE)
+        return
+    try:
+        obs.provision_in_wizard()
+        print_success("Observatory provisioning complete.")
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        print_error(f"Observatory provisioning failed: {exc}")
+        print_info("Retry any time with: mercury setup observatory --install-sidecar")
+        return
+    install = getattr(obs, "ensure_sidecar_unit", None)
+    if install is None:
+        print_warning("Sidecar unit installer unavailable in this install.")
+        print_info(f"Start it by hand: systemctl --user start {_sidecar_unit}")
+        return
+    try:
+        result = install()
+    except KeyboardInterrupt:
+        raise
+    except SystemExit as exc:
+        # sidecar_main requires aiohttp (matrix extra): its import raises
+        # SystemExit, not Exception, when the dep is missing.
+        print_error(f"Sidecar unit install failed: {exc}")
+        print_info("The sidecar needs the matrix extra, then retry this command.")
+        return
+    except Exception as exc:  # noqa: BLE001 — repair never kills setup
+        print_error(f"Sidecar unit install failed: {exc}")
+        print_info(f"Start it by hand: systemctl --user start {_sidecar_unit}")
+        return
+    print_success(f"Sidecar unit {result} ({_sidecar_unit}) — enabled and started.")
+
+
 def setup_observatory(config: dict, *, quick: bool = False):
     """Wizard section: the bundled Matrix observatory (Tuwunel homeserver
     + sidecar). Spec D1/D2 — default on, closed registration, localhost.
@@ -3961,6 +4010,14 @@ def _run_setup_wizard_impl(args):
     non_interactive = getattr(args, 'non_interactive', False)
     if not non_interactive and not is_interactive_stdin():
         non_interactive = True
+
+    # --install-sidecar: explicit sidecar repair (no prompts, no wizard).
+    if bool(getattr(args, "install_sidecar", False)):
+        if getattr(args, "section", None) != "observatory":
+            print_error("--install-sidecar needs a section: mercury setup observatory --install-sidecar")
+            return
+        _run_observatory_sidecar_repair()
+        return
 
     if non_interactive:
         print_noninteractive_setup_guidance(

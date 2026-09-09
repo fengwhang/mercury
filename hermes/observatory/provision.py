@@ -34,8 +34,11 @@ Entry points:
   ``observatory.provision.status_summary``     — wizard status card input
       (booleans/paths only, never secrets).
 
-The sidecar unit (``mercury-observatory.service``) is deliberately NOT
-created — the sidecar package lands in Phase 3.
+The sidecar unit (``mercury-observatory.service``) is installed ONLY by
+the explicit repair path ``ensure_sidecar_unit`` (``mercury setup
+observatory --install-sidecar``) — never by provision() itself, because
+the sidecar daemon boots provision() and auto-installing would restart
+its own unit mid-boot.
 """
 from __future__ import annotations
 
@@ -54,6 +57,7 @@ from observatory import config_gen
 from observatory.config_gen import (
     APPSERVICE_PORT_DEFAULT,
     HOMESERVER_UNIT_NAME,
+    SIDECAR_UNIT_NAME,
     ObservatoryPaths,
     OWNER_LOCALPART_DEFAULT,
 )
@@ -96,6 +100,56 @@ def _write_secret_file(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     path.chmod(0o600)
+
+
+def _bound_base_url(paths: ObservatoryPaths) -> str:
+    """Homeserver URL from the CLOSED tuwunel.toml bind (address + port).
+
+    The sidecar and render_live compute this same URL at boot; the
+    credentials file and status displays must agree with it (a stale
+    127.0.0.1 URL strands Tailscale phones after a bind change).
+    Falls back to the localhost default when unprovisioned or
+    unreadable — never raises."""
+    try:
+        cfg = _load_toml(paths.toml).get("global", {})
+        port = int(cfg.get("port", config_gen.HOMESERVER_PORT_DEFAULT))
+        address = cfg.get("address", config_gen.HOMESERVER_ADDRESS)
+        if isinstance(address, list):
+            address = address[0] if address else config_gen.HOMESERVER_ADDRESS
+        text = str(address or "").strip() or config_gen.HOMESERVER_ADDRESS
+        return paths.homeserver_url(address=text, port=port)
+    except Exception:  # noqa: BLE001 — display/sync probe, never raises
+        return paths.homeserver_url()
+
+
+def sync_owner_homeserver_url(paths: ObservatoryPaths) -> str:
+    """Rewrite owner-credentials.json homeserver_url to the toml bind.
+
+    Returns the bound URL. No-op when the credentials file is absent;
+    leaves a corrupt/unparseable file untouched (never destroys
+    secrets); preserves every other key and keeps 0600. Best-effort by
+    design — callers (re-provision heal, the bind offer) must never fail
+    the outer step when the sync cannot complete."""
+    bound = _bound_base_url(paths)
+    try:
+        raw = paths.owner_credentials.read_text(encoding="utf-8")
+    except OSError:
+        return bound
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return bound
+    if not isinstance(doc, dict):
+        return bound
+    if doc.get("homeserver_url") == bound:
+        return bound
+    doc["homeserver_url"] = bound
+    try:
+        paths.owner_credentials.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        paths.owner_credentials.chmod(0o600)
+    except OSError:
+        pass
+    return bound
 
 
 #: $MERCURY_HOME/.env keys mirroring the observatory owner credentials, so
@@ -296,6 +350,7 @@ def ensure_owner_account(paths: ObservatoryPaths,
     """
     if paths.owner_credentials.exists():
         _heal_owner_env_best_effort(paths)
+        sync_owner_homeserver_url(paths)
         return "exists"
     if not paths.binary.is_file():
         raise ProvisionError(
@@ -400,6 +455,46 @@ def ensure_systemd_unit(paths: ObservatoryPaths) -> str:
     _run_systemctl(["daemon-reload"])
     _run_systemctl(["enable", HOMESERVER_UNIT_NAME])
     _run_systemctl(["restart", HOMESERVER_UNIT_NAME])
+    return "refreshed" if changed and existing else "installed" if changed else "started"
+
+
+def ensure_sidecar_unit(mercury_home: str | Path | None = None,
+                        python_bin: str | None = None,
+                        hermes_root: str | Path | None = None) -> str:
+    """Install/refresh the sidecar user unit; returns 'installed',
+    'refreshed', 'started', or 'skipped' (no systemd — containers/CI;
+    caller surfaces a hint).
+
+    Repair path for ``mercury setup observatory --install-sidecar`` —
+    deliberately NOT part of provision() (see module docstring). The
+    render lives in sidecar_main (lazy import: that module imports this
+    one, so a top-level import would cycle)."""
+    if not _systemctl_available():
+        return "skipped"
+    from observatory.sidecar_main import render_sidecar_unit
+
+    home = _mercury_home(mercury_home)
+    paths = ObservatoryPaths(home)
+    if hermes_root is None:
+        hermes_root = Path(__file__).resolve().parent.parent
+    if python_bin is None:
+        python_bin = sys.executable
+    unit = render_sidecar_unit(
+        python_bin=str(python_bin),
+        hermes_root=str(hermes_root),
+        mercury_home=str(home),
+        log_dir=str(paths.logs_dir),
+    )
+    unit_path = Path.home() / ".config" / "systemd" / "user" / SIDECAR_UNIT_NAME
+    unit_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.logs_dir.mkdir(parents=True, exist_ok=True)
+    existing = unit_path.read_text() if unit_path.exists() else ""
+    changed = existing != unit
+    if changed:
+        unit_path.write_text(unit, encoding="utf-8")
+    _run_systemctl(["daemon-reload"])
+    _run_systemctl(["enable", SIDECAR_UNIT_NAME])
+    _run_systemctl(["restart", SIDECAR_UNIT_NAME])
     return "refreshed" if changed and existing else "installed" if changed else "started"
 
 
@@ -603,9 +698,9 @@ def observatory_e2ee_flag(mercury_home: str | Path | None = None) -> bool:
         with open(cfg_path, encoding="utf-8") as f:
             doc = yaml.safe_load(f) or {}
         obs = doc.get("observatory") if isinstance(doc, dict) else None
-        return bool(obs.get("e2ee", False)) if isinstance(obs, dict) else False
+        return bool(obs.get("e2ee", True)) if isinstance(obs, dict) else True
     except Exception:
-        return False
+        return True
 
 
 def status_summary(mercury_home: str | Path | None = None) -> dict:
@@ -619,7 +714,7 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
     - ``binary_installed``        — tuwunel binary present
     - ``owner_credentials_exist`` / ``owner_credentials_path`` — the 0600
       credentials file (the password stays inside it)
-    - ``homeserver_url`` / ``homeserver_reachable`` — localhost URL + liveness
+    - ``homeserver_url`` / ``homeserver_reachable`` — toml-bound URL + liveness
     - ``unit_active`` / ``unit_name`` — systemd user unit state
     - ``enabled``                 — observatory.enabled config gate (default on)
     - ``e2ee``                    — observatory.e2ee flag
@@ -628,14 +723,15 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
     paths = ObservatoryPaths(_mercury_home(mercury_home))
     config_exists = paths.toml.is_file()
     creds_exist = paths.owner_credentials.is_file()
+    bound = _bound_base_url(paths)
     return {
         "provisioned": config_exists and creds_exist,
         "config_exists": config_exists,
         "binary_installed": paths.binary.is_file(),
         "owner_credentials_exist": creds_exist,
         "owner_credentials_path": str(paths.owner_credentials),
-        "homeserver_url": paths.homeserver_url(),
-        "homeserver_reachable": _homeserver_reachable(paths.homeserver_url()),
+        "homeserver_url": bound,
+        "homeserver_reachable": _homeserver_reachable(bound),
         "unit_active": _unit_active(),
         "unit_name": HOMESERVER_UNIT_NAME,
         "enabled": observatory_enabled(),
@@ -767,6 +863,7 @@ def set_tuwunel_bind(ip: str, mercury_home: str | Path | None = None) -> str:
         paths.toml.chmod(0o600)
     except Exception:  # noqa: BLE001 — perms best-effort on odd filesystems
         pass
+    sync_owner_homeserver_url(paths)
     return target
 
 

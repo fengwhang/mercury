@@ -65,4 +65,10 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
         "model, set Nous as the inference provider, and opt into the Tool "
         "Gateway. Skips the rest of the wizard.",
     )
+    setup_parser.add_argument(
+        "--install-sidecar",
+        action="store_true",
+        help="With 'observatory': provision, then install/enable/start the "
+        "mercury-observatory.service sidecar unit (repair path)",
+    )
     setup_parser.set_defaults(func=cmd_setup)
