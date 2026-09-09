@@ -2091,14 +2091,17 @@ def tailscale_phone_url(detection: dict | None, port: int = config_gen.HOMESERVE
 
 
 def set_tuwunel_bind(ip: str, mercury_home: str | Path | None = None) -> str:
-    """Bind the homeserver to one interface address (Tailscale-only offer).
+    """Dual-bind the homeserver: tailnet IP first, localhost retained.
 
-    Rewrites the ``address = "..."`` line in the EXISTING tuwunel.toml and
-    returns the new address. Fails with a ProvisionError carrying guidance
-    when unprovisioned (missing tuwunel.toml) or when no address line is
-    found — never creates config. Never starts/stops the server itself:
-    the caller must restart ``mercury-observatory-homeserver.service``
-    for the new bind to take effect.
+    A Tailscale-only bind killed localhost (health probes, desktop clients,
+    and the owner-URL heal all speak 127.0.0.1); a localhost-only bind
+    strands phones. The rewrite is always the TOML vector
+    ``address = ["<tailnet-ip>", "127.0.0.1"]`` — tailnet primary (so the
+    bound owner URL stays the tailnet URL) with localhost kept. Rewrites
+    either the scalar or the vector form; idempotent. Returns the tailnet
+    IP. Never starts/stops the server: the caller must restart
+    ``mercury-observatory-homeserver.service`` for the new bind to take
+    effect. Refuses loopback targets (nothing to add).
     """
     if not isinstance(ip, str) or not ip.strip():
         raise ProvisionError("set_tuwunel_bind needs a non-empty tailnet IP")
@@ -2109,6 +2112,10 @@ def set_tuwunel_bind(ip: str, mercury_home: str | Path | None = None) -> str:
         _ipaddress.ip_address(target)
     except Exception as exc:
         raise ProvisionError(f"refusing to bind to {target!r}: not an IP address ({exc})") from exc
+    if target in ("127.0.0.1", "::1", "localhost"):
+        raise ProvisionError(
+            f"refusing to dual-bind loopback {target!r} — localhost is "
+            "already bound; pass the tailnet IP")
     paths = ObservatoryPaths(_mercury_home(mercury_home))
     if not paths.toml.is_file():
         raise ProvisionError(
@@ -2122,14 +2129,15 @@ def set_tuwunel_bind(ip: str, mercury_home: str | Path | None = None) -> str:
         raise ProvisionError(f"could not read {paths.toml}: {exc}") from exc
     import re as _re
 
-    pattern = _re.compile(r'(?m)^address\s*=\s*".*"\s*$')
+    pattern = _re.compile(r'(?m)^address\s*=\s*("[^"]*"|\[[^\]]*\])\s*$')
     if not pattern.search(text):
         raise ProvisionError(
             f"could not find the address line in {paths.toml} — hand-edit "
             '`address = "..."` under [global] instead'
         )
+    dual = f'address = ["{target}", "127.0.0.1"]'
     paths.toml.write_text(
-        pattern.sub(f'address = "{target}"', text, count=1), encoding="utf-8"
+        pattern.sub(dual, text, count=1), encoding="utf-8"
     )
     try:
         paths.toml.chmod(0o600)
@@ -2139,22 +2147,41 @@ def set_tuwunel_bind(ip: str, mercury_home: str | Path | None = None) -> str:
     return target
 
 
-def current_bind_address(mercury_home: str | Path | None = None) -> str | None:
-    """Current tuwunel ``address`` (first entry when bound to a list).
+def current_bind_addresses(
+    mercury_home: str | Path | None = None,
+) -> list[str]:
+    """All bound tuwunel ``address`` entries (scalar or vector form).
 
-    None when unprovisioned or unreadable — never raises. The wizard uses
-    this to detect the localhost-only trap (tailnet up, toml still on
-    127.0.0.1, so phones cannot reach the homeserver).
+    Empty when unprovisioned or unreadable — never raises. The trap
+    detector keys on the WHOLE list: localhost-only means every entry is
+    loopback (a dual bind is already phone-reachable).
     """
     try:
         paths = ObservatoryPaths(_mercury_home(mercury_home))
         if not paths.toml.is_file():
-            return None
+            return []
         address = _load_toml(paths.toml).get("global", {}).get("address")
         if isinstance(address, list):
-            address = address[0] if address else None
-        text = str(address or "").strip()
-        return text or None
+            items = [str(a).strip() for a in address if str(a).strip()]
+        elif str(address or "").strip():
+            items = [str(address).strip()]
+        else:
+            items = []
+        return items
+    except Exception:  # noqa: BLE001 — display probe, never raises
+        return []
+
+
+def current_bind_address(mercury_home: str | Path | None = None) -> str | None:
+    """Primary (first) tuwunel ``address`` — the owner-URL bind.
+
+    None when unprovisioned or unreadable — never raises. Prefer
+    :func:`current_bind_addresses` for reachability questions (a dual
+    bind's first entry says nothing about localhost).
+    """
+    try:
+        items = current_bind_addresses(mercury_home)
+        return items[0] if items else None
     except Exception:  # noqa: BLE001 — display probe, never raises
         return None
 

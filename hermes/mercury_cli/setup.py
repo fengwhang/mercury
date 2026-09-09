@@ -2897,13 +2897,35 @@ def _tailscale_phone_url(ts: dict | None, homeserver_url: str) -> str | None:
         return None
 
 
+def _read_bind_list(obs) -> list[str] | None:
+    """Bound addresses preferring the list form (None when unreadable).
+
+    Old doubles expose only ``current_bind_address`` (single) — wrapped
+    into a one-entry list so the trap detector stays list-aware.
+    """
+    try:
+        fn = getattr(obs, "current_bind_addresses", None)
+        if fn is not None:
+            items = fn()
+            return list(items) if isinstance(items, list) else None
+        single = getattr(obs, "current_bind_address", None)
+        if single is None:
+            from observatory.provision import current_bind_addresses as fn
+            return list(fn())
+        value = single()
+        return [value] if value else []
+    except Exception:  # noqa: BLE001 — display probe, never kills the wizard
+        return None
+
+
 def _offer_tailscale_bind(obs, ts: dict | None) -> None:
-    """Offer binding the homeserver to the Tailscale interface only.
+    """Offer dual-binding the homeserver (tailnet IP + localhost).
 
     Runs only when the tailnet is up with an IPv4. Delegates the toml
     rewrite to ``provision.set_tuwunel_bind`` (never starts/stops the
     server here); every failure degrades to a hand-edit hint. The new
-    bind needs a homeserver restart to take effect.
+    bind needs a homeserver restart to take effect; after the bind the
+    phone URL is rechecked from the re-read bind + status.
     """
     try:
         if not isinstance(ts, dict) or not ts.get("up"):
@@ -2913,8 +2935,8 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
             return
         ip = str(ip).strip()
         want = prompt_yes_no(
-            "Bind homeserver to the Tailscale interface only?"
-            " (unreachable from LAN/internet)",
+            "Bind the homeserver to Tailscale too?"
+            " (dual bind — keeps localhost, phones reach it over the tailnet)",
             default=False,
         )
     except KeyboardInterrupt:
@@ -2943,7 +2965,7 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
         from observatory.config_gen import HOMESERVER_UNIT_NAME as _unit
     except Exception:  # noqa: BLE001
         _unit = "mercury-observatory-homeserver.service"
-    print_success(f"Homeserver will bind to {ip} on next restart.")
+    print_success(f"Homeserver will dual-bind to {ip} + localhost on next restart.")
     try:
         restart_now = prompt_yes_no(
             "Restart the homeserver now? (necessary to apply the new bind address)",
@@ -2972,21 +2994,60 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
         print_info(f"Restart it manually: systemctl --user restart {_unit}")
         return
     print_success(f"Homeserver restarted ({_unit}).")
+    _recheck_bind_url(obs, ts, ip)
+
+
+def _recheck_bind_url(obs, ts: dict | None, ip: str) -> None:
+    """URL recheck after the bind offer: re-read the toml bind + status and
+    confirm the tailnet IP is bound and which phone URL serves it.
+
+    Best-effort display confirmation — never raises, never prompts. A bind
+    whose toml read-back lacks the IP warns (restart or write pending);
+    otherwise the recomputed phone URL prints so the card's pre-bind URL
+    never stands stale.
+    """
+    try:
+        bound = _read_bind_list(obs) or []
+        if ip not in bound:
+            print_warning(
+                f"Bind recheck: {ip} not yet in tuwunel.toml "
+                f"(bound: {', '.join(bound) or 'unknown'}) — "
+                "restart the homeserver and re-run setup to confirm.")
+            return
+        url = ""
+        try:
+            status = obs.status_summary()
+            url = str((status or {}).get("homeserver_url") or "")
+        except Exception:  # noqa: BLE001 — status is best-effort here
+            pass
+        phone = _tailscale_phone_url(ts, url) if url else None
+        if phone:
+            print_success(f"Bind rechecked: {ip} bound (phones: {phone}).")
+        else:
+            print_success(f"Bind rechecked: {ip} bound ([{', '.join(bound)}]).")
+    except Exception:  # noqa: BLE001 — a recheck never kills the wizard
+        return
 
 
 _LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
 
 
-def _bind_mismatch_action_line(address: str | None, ts: dict | None) -> str | None:
-    """ACTION text when the tailnet is up but tuwunel still binds localhost.
+def _bind_mismatch_action_line(
+    address: str | list[str] | None, ts: dict | None) -> str | None:
+    """ACTION text when the tailnet is up but tuwunel binds localhost-only.
 
     Pure: returns the line, or None when there is nothing to act on
-    (tailnet down, address unknown, or already bound off localhost).
+    (tailnet down, bind unknown/empty, or any non-loopback entry bound —
+    a dual bind is already phone-reachable). Accepts the legacy single
+    address or the full bind list.
     """
     try:
         if not isinstance(ts, dict) or not ts.get("up"):
             return None
-        if address is None or str(address).strip() not in _LOOPBACK_BINDS:
+        items = ([address] if isinstance(address, str) else
+                 list(address) if isinstance(address, list) else [])
+        items = [str(a).strip() for a in items if str(a).strip()]
+        if not items or any(a not in _LOOPBACK_BINDS for a in items):
             return None
         try:
             from observatory.config_gen import HOMESERVER_UNIT_NAME as _unit
@@ -3009,10 +3070,7 @@ def _maybe_print_bind_mismatch_action(obs, ts: dict | None) -> None:
     a display hint, never a wizard gate.
     """
     try:
-        fn = getattr(obs, "current_bind_address", None)
-        if fn is None:
-            from observatory.provision import current_bind_address as fn
-        line = _bind_mismatch_action_line(fn(), ts)
+        line = _bind_mismatch_action_line(_read_bind_list(obs), ts)
     except Exception:  # noqa: BLE001 — display probe, never kills the wizard
         return
     if line:
