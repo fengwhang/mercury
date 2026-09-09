@@ -7,7 +7,7 @@
 # config_gen.render_homeserver_unit) which this one orders after.
 [Unit]
 Description={description}
-Requires=mercury-observatory-homeserver.service
+Wants=mercury-observatory-homeserver.service
 After=mercury-observatory-homeserver.service
 StartLimitIntervalSec=0
 

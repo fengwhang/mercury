@@ -613,8 +613,10 @@ class TestUnitTemplate:
             log_dir="/home/phoenix/.mercury/observatory/logs",
         )
         assert "ExecStart=/opt/mercury/hermes/.venv/bin/python -m observatory.sidecar_main --home /home/phoenix/.mercury" in unit
-        # orders after the homeserver unit (its own unit restarts tuwunel)
-        assert "Requires=mercury-observatory-homeserver.service" in unit
+        # orders after the homeserver unit without binding its lifetime
+        # (Wants, not Requires: a homeserver bounce must not SIGTERM us)
+        assert "Wants=mercury-observatory-homeserver.service" in unit
+        assert "Requires=mercury-observatory-homeserver.service" not in unit
         assert "After=mercury-observatory-homeserver.service" in unit
         assert "Environment=PYTHONPATH=/opt/mercury/hermes" in unit
         assert "Restart=on-failure" in unit
