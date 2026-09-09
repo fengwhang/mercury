@@ -1047,6 +1047,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     in the unified config, which both engines read.
     """
     import os as _os
+    from mercury_cli.omp_sync import qualify_omp_model as _qualify_omp_model
     from pathlib import Path as _Path
 
     def _unified_path() -> _Path:
@@ -1083,7 +1084,7 @@ def _prompt_mercury_slots(config: dict) -> None:
         model_cfg = (load_config() or {}).get("model") or {}
         default = str(model_cfg.get("default") or "").strip()
         provider = str(model_cfg.get("provider") or "").strip()
-        default_qualified = f"{provider}/{default}" if provider and default else ""
+        default_qualified = _qualify_omp_model(default, provider)
     except Exception:
         default_qualified = ""
 
@@ -1150,7 +1151,7 @@ def _prompt_mercury_slots(config: dict) -> None:
             fallback = ""
             print_info("Fallback skipped — no mid-turn failover will be configured.")
             break
-        fallback = f"{provider}/{fallback}" if provider and "/" not in fallback else fallback
+        fallback = _qualify_omp_model(fallback, provider)
         if fallback == slots["default"]:
             print_warning("Fallback must differ from the default model.")
             continue
@@ -1180,7 +1181,7 @@ def _prompt_mercury_slots(config: dict) -> None:
             # prefix FIRST, THEN compare — comparing the bare id against the
             # prefixed slot values let a duplicate slip through (reinstall
             # artifact: 'delegate_fallback_chain contains duplicates').
-            extra = f"{provider}/{extra}" if provider and "/" not in extra else extra
+            extra = _qualify_omp_model(extra, provider)
             if extra == fallback or extra == slots["default"]:
                 if _dup_retries >= 1:
                     print_warning(f"Skipping second-order fallback — must differ from {fallback} and {slots['default']}.")
@@ -1237,11 +1238,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     # Delegate model — NO seeding: only a genuinely configured slot is
     # current (user directive — never pre-select a preferred model).
     delegate_model = _pick("Select delegate model (the model omp SUBAGENTS run on):", slots["delegate_model"], delegate_catalog, delegate_pricing)
-    delegate_model = (
-        f"{delegate_provider}/{delegate_model}"
-        if delegate_model and delegate_provider and "/" not in delegate_model
-        else delegate_model
-    )
+    delegate_model = _qualify_omp_model(delegate_model, delegate_provider)
 
     # Delegate fallback — OPTIONAL (user directive 2026-09-05); cancel/skip
     # leaves it unset. NO seeding (user directive). Bounded retries: one
@@ -1251,11 +1248,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     _df_retries = 0
     while True:
         delegate_fallback = _pick("Select delegate fallback (subagent retry model; empty to skip):", slots["delegate_fallback"], delegate_catalog, delegate_pricing)
-        delegate_fallback = (
-            f"{delegate_provider}/{delegate_fallback}"
-            if delegate_fallback and delegate_provider and "/" not in delegate_fallback
-            else delegate_fallback
-        )
+        delegate_fallback = _qualify_omp_model(delegate_fallback, delegate_provider)
         if not delegate_fallback:
             print_info("Delegate fallback skipped — subagent retries will use no fallback model.")
             break
@@ -1286,7 +1279,7 @@ def _prompt_mercury_slots(config: dict) -> None:
             extra = _pick("Select second-order delegate fallback (used when the SUBAGENT fallback also fails; empty to skip):", "", delegate_catalog, delegate_pricing)
             if not extra:
                 break
-            extra = f"{delegate_provider}/{extra}" if delegate_provider and "/" not in extra else extra
+            extra = _qualify_omp_model(extra, delegate_provider)
             if extra == delegate_fallback or extra == delegate_model:
                 if _dup_retries >= 1:
                     print_warning(f"Skipping second-order delegate fallback — must differ from {delegate_fallback} and {delegate_model}.")

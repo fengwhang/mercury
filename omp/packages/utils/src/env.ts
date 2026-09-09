@@ -236,6 +236,15 @@ export function parseEnvFile(filePath: string): Record<string, string> {
 	return result;
 }
 
+// MERCURY-OMP PATCH (fix-omp-keypath): $MERCURY_HOME/.env is THE shared env
+// store for both engines (bin/mercury sources it at boot, so launcher-spawned
+// children normally inherit everything). The cascade still reads it here so
+// DIRECT omp invocations (bypassing the launcher) and children whose parent
+// predates the .env resolve the same keys. Real process env always wins (see
+// the fill-unset loop below); omp-specific agent/project files win over the
+// shared store. Absent file (non-Mercury use) parses to {} — a no-op.
+const mercuryHome = Bun.env.MERCURY_HOME || path.join(os.homedir(), ".mercury");
+const mercuryEnv = mercuryHome ? parseEnvFile(path.join(mercuryHome, ".env")) : {};
 // Eagerly parse the user's $HOME/.env and the current project's .env (from cwd)
 const homeEnv = parseEnvFile(path.join(os.homedir(), ".env"));
 const piEnv = parseEnvFile(path.join(getConfigRootDir(), ".env"));
@@ -249,7 +258,7 @@ for (const key of Object.keys(Bun.env)) {
 	}
 }
 
-for (const file of [projectEnv, agentEnv, piEnv, homeEnv]) {
+for (const file of [projectEnv, agentEnv, mercuryEnv, piEnv, homeEnv]) {
 	for (const key in file) {
 		if (!isMacosMallocStackLoggingEnvName(key) && !Bun.env[key]) {
 			Bun.env[key] = file[key];
