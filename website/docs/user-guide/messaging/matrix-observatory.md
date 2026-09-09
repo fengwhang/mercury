@@ -11,15 +11,9 @@ registration is closed, and federation is off.
 The tested recommendation is **FluffyChat** (iOS/Android/desktop). Other
 Matrix clients work for reading; this guide assumes FluffyChat.
 
-> **Status at time of writing.** The homeserver side is live: install-time
-> provisioning, the Tuwunel binary, the owner account, and the
-> `mercury-observatory-homeserver.service` systemd unit all work today.
-> The **sidecar daemon** (`mercury-observatory.service`) that populates
-> rooms, streams tool calls, and takes steering/commands — and with it
-> **per-room E2EE** — are still **landing**. Until the sidecar ships, you
-> can log in and see the empty server, but rooms won't fill up yet.
-> Design and rollout state: `docs/design/matrix-observatory.md` (the
-> truth doc) and `TODO.md` Track M.
+> **Status.** The observatory ships: install-time provisioning, the Tuwunel binary, the owner account, the `mercury-observatory-homeserver.service` systemd unit, and the **sidecar daemon** (`mercury-observatory.service`) that populates rooms, streams tool calls, and takes steering/commands — with **per-room E2EE** — all work today.
+> If rooms stay empty, the sidecar unit is not running — start/repair with `mercury setup observatory` (or `mercury setup observatory --install-sidecar`), then check `systemctl --user status mercury-observatory.service`.
+> Design state: `docs/design/matrix-observatory.md` and `TODO.md` Track M.
 
 ## What gets installed
 

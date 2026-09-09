@@ -1,9 +1,9 @@
 """Matrix Observatory — Mercury's bundled local Matrix stack.
 
-Spec: docs/design/matrix-observatory.md. Phase 2 = Tuwunel bundling
-(fetch-at-install per D16). Phase 3 = the appservice sidecar (this
-package); M3a ships the skeleton modules below — no live homeserver
-needed to import or test any of them.
+Spec: docs/design/matrix-observatory.md. Tuwunel bundling is fetch-at-install
+(per D16). This package is the bundled appservice sidecar, which ships in
+the tarball (provision.py + sidecar_main.py); the modules below import and
+test without a live homeserver.
 
 Modules:
   config_gen — pure generators for tuwunel.toml, the appservice
@@ -12,14 +12,14 @@ Modules:
       install/refresh of the static binary (fetch boundary injectable).
   provision — idempotent fail-hard orchestrator: config, appservice
       registration, owner bootstrap, systemd unit. Entry point for
-      install.sh, the future first-gateway-start hook, and `mercury update`.
+      install.sh, the first-gateway-start hook, and `mercury update`.
   state — agent-tree SQLite store ($MERCURY_HOME/observatory/state.db,
       WAL) with D8 depth semantics and D17 live-only slug collisions.
   identity — display-name (unicode-preserving) + MXID slug policy
       (strict lowercase ASCII, ``merc_`` prefix, live-only suffixing).
   tree — pure forest assembly + desired space hierarchy + diff plan
       (create/attach/detach/room-add) against a matrix snapshot.
-  appservice — aiohttp transaction-intake skeleton (dedup by txnId,
+  appservice — aiohttp transaction intake (dedup by txnId,
       token middleware, event queue). Imported lazily: aiohttp is an
       optional extra and config_gen/provision must stay importable
       without it.

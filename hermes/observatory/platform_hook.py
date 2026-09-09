@@ -4,7 +4,7 @@ The one place the GATEWAY process touches the observatory at startup —
 post-provision, pre-traffic. Everything here is an importable pure-ish
 function over ``$MERCURY_HOME``; the long-lived sidecar daemon (appservice
 HTTP endpoint, transaction intake, control router, feed loops —
-``sidecar_main``, a later milestone) is assembled FROM these builders, not
+``sidecar_main``, which ships) is assembled FROM these builders, not
 replaced by them.
 
 What boot does (D18 ordering — recovery before traffic):
@@ -30,7 +30,7 @@ async boot on a private event loop in a daemon thread (the respawn pass
 spawns real omp subprocesses; the gateway loop must not stall on them),
 stores the result on this module (``LAST_BOOT``) for the sidecar daemon to
 adopt, and logs one line either way. Full in-process wiring (aiohttp
-appservice, discovery stream consumption) lands with sidecar_main, which
+appservice, discovery stream consumption) lives in sidecar_main, which
 calls :func:`boot_sidecar` directly on the gateway loop.
 """
 from __future__ import annotations
