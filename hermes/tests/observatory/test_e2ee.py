@@ -186,6 +186,19 @@ class TestFlag:
         await manager.start(enabled=True)
         assert crypto_dir.is_dir()
 
+    @pytest.mark.asyncio
+    async def test_start_noop_when_disabled_without_stack(self, tmp_path, monkeypatch):
+        # opt-out path: E2EE off + missing crypto stack must NOT fail and
+        # must NOT touch the disk (plaintext needs no crypto store).
+        monkeypatch.setattr(e2ee_mod, "e2ee_available", lambda: False)
+        crypto_dir = tmp_path / "crypto"
+        manager = E2EEManager(
+            FakeClient(), ObservatoryState(tmp_path / "state.db"),
+            crypto_dir=crypto_dir, owner_mxid="@owner:x",
+        )
+        await manager.start(enabled=False)
+        assert not crypto_dir.exists()
+
 
 # ---------------------------------------------------------------------------
 # EncryptedIntentExecutor — the renderer intent hook
