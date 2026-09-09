@@ -1,15 +1,15 @@
 {
   "version": 1,
-  "updated_at": "2026-08-29T02:38:32Z",
+  "updated_at": "2026-09-09T22:51:05Z",
   "metadata": {
-    "source": "hermes-agent repo",
+    "source": "mercury-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
   },
   "providers": {
     "openrouter": {
       "metadata": {
         "display_name": "OpenRouter",
-        "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
+        "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing. The entry labeled \"default\": true is the model Mercury silently lands on when the user never picked one."
       },
       "models": [
         {
@@ -122,7 +122,8 @@
         },
         {
           "id": "z-ai/glm-5.3",
-          "description": ""
+          "description": "default",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.3-flash",
@@ -130,8 +131,7 @@
         },
         {
           "id": "z-ai/glm-5.2",
-          "description": "default",
-          "default": true
+          "description": ""
         },
         {
           "id": "xiaomi/mimo-v2.5-pro",
@@ -206,7 +206,7 @@
     "nous": {
       "metadata": {
         "display_name": "Nous Portal",
-        "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
+        "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest. The entry labeled \"default\": true is the model Mercury silently lands on when the user never picked one."
       },
       "models": [
         {
@@ -285,14 +285,14 @@
           "id": "minimax/minimax-m3"
         },
         {
-          "id": "z-ai/glm-5.3"
+          "id": "z-ai/glm-5.3",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.3-flash"
         },
         {
-          "id": "z-ai/glm-5.2",
-          "default": true
+          "id": "z-ai/glm-5.2"
         },
         {
           "id": "xiaomi/mimo-v2.5-pro"

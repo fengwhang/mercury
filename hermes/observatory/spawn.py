@@ -196,8 +196,29 @@ def build_hermes_agent(
         os.environ.setdefault("MERCURY_HOME", str(home))
     cfg = load_config()
 
-    model_cfg = cfg.get("models") or {}
-    effective_model = (model or "").strip() or str(model_cfg.get("default") or "")
+    # Mirror oneshot._run_agent (model.default singular, dict split, env):
+    # explicit arg → HERMES_INFERENCE_MODEL → config model.default/model.
+    # NEVER the plural 'models' key (no such key — it resolved "" and the
+    # runtime silently auto-picked a provider the user never chose, e.g.
+    # zai via an inherited ZAI_API_KEY landing on a stale glm default).
+    model_cfg = cfg.get("model") or {}
+    if isinstance(model_cfg, str):
+        cfg_model = model_cfg
+    else:
+        _raw = model_cfg.get("default") or model_cfg.get("model") or ""
+        if isinstance(_raw, dict):
+            from mercury_cli.config import split_model_config_default
+            cfg_model, _ = split_model_config_default(_raw)
+        else:
+            cfg_model = str(_raw or "")
+    env_model = os.environ.get("HERMES_INFERENCE_MODEL", "").strip()
+    effective_model = (model or "").strip() or env_model or cfg_model
+    if not effective_model:
+        raise RuntimeError(
+            "no model configured (model.default empty and "
+            "HERMES_INFERENCE_MODEL unset) — refusing to silently fall back "
+            "to an unchosen provider; run `mercury model` first"
+        )
     runtime = resolve_runtime_provider(
         requested=None,
         target_model=effective_model or None,
