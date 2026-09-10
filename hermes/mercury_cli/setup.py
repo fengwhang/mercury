@@ -3549,8 +3549,50 @@ def _maybe_heal_owner_env_mirror(obs) -> None:
     if healed:
         print_success(f"Healed the .env owner mirror ({', '.join(healed)}).")
 
+def _ask_observatory_wipe_upfront(obs, *, reason: str) -> str | None:
+    """Ask wipe/archive/keep BEFORE any identity prompt; wipe applies now.
+
+    Ordering law (VM defect: the wizard asked identity first, so values
+    typed against the pre-wipe state were dropped or failed against it).
+    Returns ``"archive"``/``"annihilate"`` after performing the wipe, or
+    None for keep. The wipe itself raises on failure (loud — the caller
+    reports it); a half-wipe must never pass as clean.
+    """
+    wipe = getattr(obs, "wipe_observatory_data", None)
+    options = ["Keep existing data"]
+    if wipe is not None:
+        options += [
+            "Archive tuwunel data aside",
+            "Annihilate tuwunel data",
+        ]
+    choice = prompt_choice(
+        f"Existing tuwunel installation detected ({reason}) — "
+        "what should happen to it?",
+        options,
+        0,
+    )
+    if choice == 0 or wipe is None:
+        return None
+    mode = "archive" if choice == 1 else "annihilate"
+    summary = wipe(mode=mode)
+    moved = (summary.get("moved") if mode == "archive"
+             else summary.get("deleted")) or []
+    print_success(
+        f"Observatory data {mode}d "
+        f"({', '.join(moved) or 'nothing present'})."
+    )
+    return mode
+
+
 def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
-    """Keep-data re-run: explicit triple offer, per-field keep vs change.
+    """Keep-data re-run: wipe/archive/keep FIRST, then identity prompts.
+
+    Ordering law (VM defect: identity was asked before the wipe question,
+    so values typed against the pre-wipe state were dropped or failed
+    against it). A wipe choice wipes immediately then collects a FRESH
+    identity triple that applies to the post-wipe state by construction —
+    nothing collected pre-wipe can be silently dropped. Keep falls through
+    to the per-field keep-vs-change offer below.
 
     Same validators as the fresh-install triple; empty keeps current per
     field. Unchanged prints ``identity unchanged (kept existing data)`` and
@@ -3561,6 +3603,35 @@ def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
     never silently dropped. Returns the refreshed status (or the input
     status when the repair failed). Only KeyboardInterrupt escapes.
     """
+    try:
+        wiped = _ask_observatory_wipe_upfront(
+            obs, reason="already provisioned")
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # noqa: BLE001 — wipe failure is loud
+        print_error(f"Observatory wipe failed: {exc}")
+        print_info("Nothing else was changed — the wizard continues.")
+        print_info("Retry any time with: mercury setup observatory")
+        return status
+    if wiped:
+        # Post-wipe state: collect the identity AFTER the wipe so every
+        # value applies to what provision actually sees.
+        identity = _prompt_observatory_identity(obs)
+        try:
+            obs.provision_in_wizard(**identity)
+            _run_observatory_auto_steps(obs)
+            refreshed = obs.status_summary()
+            print_success(
+                f"Observatory re-provisioned as "
+                f"@{identity['owner_localpart']}:{identity['server_name']}."
+            )
+            return refreshed
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 — reprovision failure is loud
+            print_error(f"Re-provisioning failed: {exc}")
+            print_info("Retry any time with: mercury setup observatory")
+            return status
     rerun = _prompt_observatory_identity_rerun(obs)
     cur_server = rerun.pop("_current_server_name")
     cur_local = rerun.pop("_current_localpart")
@@ -3984,24 +4055,49 @@ def setup_observatory(config: dict, *, quick: bool = False):
     if choice == 0:
         was_provisioned = bool(status.get("provisioned"))
         if not was_provisioned:
-            # Fresh install: the user chooses the identity (safe defaults,
-            # validated in a loop).
-            identity = _prompt_observatory_identity(obs)
+            # Residual-data gate: an existing tuwunel installation (stale
+            # files from a previous install) gets its wipe/archive/keep
+            # question BEFORE the identity prompts, so the typed identity
+            # applies to the post-wipe state instead of failing against
+            # (or being dropped by) the pre-wipe one.
+            data_present = getattr(obs, "observatory_data_present", None)
             try:
-                obs.provision_in_wizard(**identity)
-                _run_observatory_auto_steps(obs)
-                status = obs.status_summary()
-                print_success("Observatory provisioning complete.")
-            except KeyboardInterrupt:
-                raise
-            except Exception as exc:
-                print_error(f"Observatory provisioning failed: {exc}")
-                print_info("Nothing else was changed — the wizard continues.")
-                print_info("Retry any time with: mercury setup observatory")
+                residual = bool(data_present and data_present())
+            except Exception:  # noqa: BLE001 — probe, never kills setup
+                residual = False
+            wipe_failed = False
+            if residual:
+                try:
+                    _ask_observatory_wipe_upfront(
+                        obs, reason="stale files from a previous install")
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — wipe failure is loud
+                    print_error(f"Observatory wipe failed: {exc}")
+                    print_info("Nothing else was changed — the wizard continues.")
+                    print_info("Retry any time with: mercury setup observatory")
+                    wipe_failed = True
+            if not wipe_failed:
+                # Fresh install: the user chooses the identity (safe defaults,
+                # validated in a loop).
+                identity = _prompt_observatory_identity(obs)
+                try:
+                    obs.provision_in_wizard(**identity)
+                    _run_observatory_auto_steps(obs)
+                    status = obs.status_summary()
+                    print_success("Observatory provisioning complete.")
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:
+                    print_error(f"Observatory provisioning failed: {exc}")
+                    print_info("Nothing else was changed — the wizard continues.")
+                    print_info("Retry any time with: mercury setup observatory")
         else:
-            # Keep-data re-run: explicit triple offer, per-field keep vs
-            # change — a typed password always rotates (or errors), never
-            # silently drops. Only KeyboardInterrupt escapes.
+            # Keep-data re-run: wipe/archive/keep was already asked FIRST
+            # inside _run_observatory_provisioned_rerun; the per-field
+            # keep-vs-change offer below only runs on keep — a typed
+            # password always rotates (or errors), never silently drops.
+            # Only KeyboardInterrupt escapes.
             try:
                 status = _run_observatory_provisioned_rerun(obs, status)
             except KeyboardInterrupt:
