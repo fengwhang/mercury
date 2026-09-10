@@ -112,4 +112,4 @@ L9106–9107, `_early_recovery.py` L416+, `update_cmd.py` L3134–3138 / L3168�
 
 - `hermes/tests/mercury_cli/test_update_release_live_checkout_guard.py` — RED,
   hermetic (tripwires + tmp tarball; live root only read-resolved).
-- This file. Commit hash on branch `agent/mercury-cli-stomper-probe`: see below.
+- This file.
