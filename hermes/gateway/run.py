@@ -33099,12 +33099,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # thread (never the gateway loop), so the blocking turn cannot
         # stall platform traffic; per-session locking serializes turns.
         try:
-            from observatory.gateway_session import run_gateway_prompt as _run_gateway_prompt
+            from observatory.gateway_session import (
+                run_gateway_prompt_with_events as _run_gateway_prompt_with_events,
+            )
 
             def _observatory_inject_handler(params: dict) -> dict:
                 text = params.get("text", "") if isinstance(params, dict) else ""
                 kind = params.get("kind", "prompt") if isinstance(params, dict) else "prompt"
-                return {"reply": _run_gateway_prompt(text, kind=kind)}
+                _reply, _events = _run_gateway_prompt_with_events(text, kind=kind)
+                _out: dict = {"reply": _reply}
+                if _events:
+                    _out["events"] = _events
+                return _out
 
             _control_server.register_handler(
                 "inject", _observatory_inject_handler, takes_params=True

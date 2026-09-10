@@ -52,9 +52,20 @@ def gateway_socket_homes(mercury_home: str | Path) -> list[Path]:
 class GatewayTransport:
     """Deliver gateway-room prompts; return the agent's reply text."""
 
-    async def prompt(self, text: str, *, kind: str = GATEWAY_PROMPT_KIND) -> str:
+    async def prompt(self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw") -> str:
         """Run ``text`` as a turn on the gateway session → reply text."""
         raise NotImplementedError
+
+    async def prompt_with_events(
+        self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw"
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Run ``text`` → (reply text, batched display events).
+
+        Default shim for transports that only carry the reply: delegates
+        to :meth:`prompt` and reports no events. The control-socket
+        transport overrides this to surface the gateway's ``events`` list.
+        """
+        return await self.prompt(text, kind=kind, node_id=node_id), []
 
 
 QueryFn = Callable[..., Optional[dict[str, Any]]]
@@ -95,6 +106,18 @@ class ControlSocketGatewayTransport(GatewayTransport):
     async def prompt(
         self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw"
     ) -> str:
+        reply, _events = await self.prompt_with_events(text, kind=kind, node_id=node_id)
+        return reply
+
+    async def prompt_with_events(
+        self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw"
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Inject over the control socket → (reply, optional events list).
+
+        The gateway answers ``{"reply": str, "events": [...]}``; ``events``
+        is optional (absent/empty when the turn ran no tools). ``prompt``
+        keeps the stable reply-only shape.
+        """
         clean = (text or "").strip()
         if not clean:
             raise ValueError("gateway_transport: refusing empty prompt text")
@@ -106,7 +129,9 @@ class ControlSocketGatewayTransport(GatewayTransport):
             raise GatewayTransportError(
                 "gateway answered inject without a reply string"
             )
-        return reply
+        raw_events = result.get("events") if isinstance(result, dict) else None
+        events = raw_events if isinstance(raw_events, list) else []
+        return reply, [e for e in events if isinstance(e, dict)]
 
     def _query_all_homes(
         self, text: str, kind: str, node_id: str

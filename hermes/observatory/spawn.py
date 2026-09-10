@@ -177,6 +177,7 @@ def build_hermes_agent(
     mercury_home: str | Path | None = None,
     session_id: Optional[str] = None,
     model: Optional[str] = None,
+    platform: str = "cli",
 ) -> Any:
     """Fresh OR resumed hermes orchestrator session — the same machinery a
     CLI chat turn uses (oneshot ``_run_agent`` shape: config-resolved
@@ -242,7 +243,7 @@ def build_hermes_agent(
         api_mode=runtime.get("api_mode"),
         model=effective_model,
         quiet_mode=True,
-        platform="cli",
+        platform=platform,
         session_id=session_id,
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
