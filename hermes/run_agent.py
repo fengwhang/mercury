@@ -8703,7 +8703,6 @@ class AIAgent:
             finish_task_run,
             start_task_run,
         )
-        from agent.subagent_lifecycle import bind_subagent_parent
         effective_task_id = task_id or str(uuid.uuid4())
         session_id = str(getattr(self, "session_id", None) or "")
         task_context = {
@@ -9034,7 +9033,7 @@ class AIAgent:
             # replaces the value with the live runtime after fallback restoration.
             # Keep the scope local instead of storing ContextVar tokens on the agent,
             # which may be observed from another thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}):
+            with scoped_runtime_main({}):
                 try:
                     if durable_turn_lease_thread is not None:
                         with durable_turn_lease_activity_lock:

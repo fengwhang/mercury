@@ -3407,7 +3407,6 @@ def _(rid, params: dict) -> dict:
         is_spawn_paused,
         list_active_subagents,
         _get_max_concurrent_children,
-        _get_max_spawn_depth,
     )
 
     return _ok(
@@ -3415,7 +3414,9 @@ def _(rid, params: dict) -> dict:
         {
             "active": list_active_subagents(),
             "paused": is_spawn_paused(),
-            "max_spawn_depth": _get_max_spawn_depth(),
+            # Legacy key, wire-compat only: hermes-side spawn depth is gone
+            # (DEAD DEPTH -- recursion is omp-side now), so this stays 1.
+            "max_spawn_depth": 1,
             "max_concurrent_children": _get_max_concurrent_children(),
         },
     )
@@ -3437,6 +3438,17 @@ def _(rid, params: dict) -> dict:
     if not subagent_id:
         return _err(rid, 4000, "subagent_id required")
     ok = interrupt_subagent(subagent_id)
+    if not ok:
+        # Hermes-side registry is empty (children are omp processes now) --
+        # fall through to the omp engine's control plane (operator-trusted;
+        # no conversation ownership check, same as the hermes path above).
+        try:
+            from tools.omp_delegation import handle_omp_control_action
+
+            raw = handle_omp_control_action("stop", subagent_id, None, None)
+            ok = "error" not in json.loads(raw)
+        except Exception:
+            ok = False
     return _ok(rid, {"found": ok, "subagent_id": subagent_id})
 
 
@@ -3476,6 +3488,17 @@ def _(rid, params: dict) -> dict:
             owner_transport=invoking_transport,
             owner_session_record=invoking_session,
         )
+    if not queued:
+        # Hermes-side registry is empty (children are omp processes now) --
+        # fall through to the omp engine's control plane (operator-trusted;
+        # no conversation ownership check, same as the interrupt RPC above).
+        try:
+            from tools.omp_delegation import handle_omp_control_action
+
+            raw = handle_omp_control_action("steer", subagent_id, text, None)
+            queued = "error" not in json.loads(raw)
+        except Exception:
+            queued = False
     return _ok(
         rid,
         {

@@ -619,8 +619,9 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     """delegate_task(background=True) returns a handle without running the
     child synchronously, and the child completes on the background thread.
     A single task is dispatched as a one-item background batch unit."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
     import tools.delegate_tool as dt
+    import tools.omp_delegation as omp
 
     parent = MagicMock()
     parent._delegate_depth = 0
@@ -628,29 +629,30 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     parent._interrupt_requested = False
     parent._active_children = []
     parent._active_children_lock = None
-    fake_child = MagicMock()
-    fake_child._delegate_role = "leaf"
-    fake_child._subagent_id = "s1"
 
     gate = threading.Event()
 
-    def slow_child(task_index, goal, child=None, parent_agent=None, **kw):
+    def slow_sync_run(tasks, *args, **kwargs):
         gate.wait(timeout=60)  # a sync impl would hang delegate_task here
         return {
-            "task_index": 0, "status": "completed", "summary": f"done: {goal}",
-            "api_calls": 1, "duration_seconds": 0.1, "model": "m",
-            "exit_reason": "completed",
+            "results": [
+                {
+                    "task_index": i, "status": "completed",
+                    "summary": f"done: {t.get('goal')}",
+                    "api_calls": 1, "duration_seconds": 0.1, "model": "m",
+                    "exit_reason": "completed",
+                }
+                for i, t in enumerate(tasks)
+            ],
+            "total_duration_seconds": 0.1,
         }
 
-    creds = {
-        "model": "m", "provider": None, "base_url": None, "api_key": None,
-        "api_mode": None, "command": None, "args": None,
-    }
     # monkeypatch (not `with`) so patches outlive delegate_task's return and
     # remain active while the background worker runs.
-    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
-    monkeypatch.setattr(dt, "_run_single_child", slow_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(omp, "_omp_delegate_env", lambda: ({"OMP_MODEL": "m"}, None))
+    monkeypatch.setattr(omp, "_resolve_omp_binary", lambda: "/fake/omp")
+    monkeypatch.setattr(omp, "_render_omp_config_once", lambda: None)
+    monkeypatch.setattr(omp, "_sync_run", slow_sync_run)
     out = dt.delegate_task(
         goal="the real task", context="ctx",
         background=True, parent_agent=parent,
@@ -689,6 +691,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     import json
     from unittest.mock import MagicMock
     import tools.delegate_tool as dt
+    import tools.omp_delegation as omp
     from gateway.session_context import clear_session_vars, set_session_vars
     from tools.approval import reset_current_session_key, set_current_session_key
 
@@ -698,28 +701,24 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     parent._interrupt_requested = False
     parent._active_children = []
     parent._active_children_lock = None
-    fake_child = MagicMock()
-    fake_child._delegate_role = "leaf"
 
-    creds = {
-        "model": "m", "provider": None, "base_url": None, "api_key": None,
-        "api_mode": None, "command": None, "args": None,
-    }
-    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    monkeypatch.setattr(
-        dt,
-        "_run_single_child",
-        lambda *a, **k: {
-            "task_index": 0,
-            "status": "completed",
-            "summary": "done",
-            "api_calls": 1,
-            "duration_seconds": 0.1,
-            "model": "m",
-            "exit_reason": "completed",
-        },
-    )
+    def fast_sync_run(tasks, *args, **kwargs):
+        return {
+            "results": [
+                {
+                    "task_index": i, "status": "completed", "summary": "done",
+                    "api_calls": 1, "duration_seconds": 0.1, "model": "m",
+                    "exit_reason": "completed",
+                }
+                for i, t in enumerate(tasks)
+            ],
+            "total_duration_seconds": 0.1,
+        }
+
+    monkeypatch.setattr(omp, "_omp_delegate_env", lambda: ({"OMP_MODEL": "m"}, None))
+    monkeypatch.setattr(omp, "_resolve_omp_binary", lambda: "/fake/omp")
+    monkeypatch.setattr(omp, "_render_omp_config_once", lambda: None)
+    monkeypatch.setattr(omp, "_sync_run", fast_sync_run)
 
     approval_token = set_current_session_key("pre-compress-parent")
     session_tokens = set_session_vars(
