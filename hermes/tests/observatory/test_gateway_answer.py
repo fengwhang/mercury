@@ -142,8 +142,8 @@ async def test_gateway_room_hello_delivers_prompt_and_renders_reply(
         await daemon._on_transaction("tx-gw-1", [_gw_event(daemon, "hello?")])
         await _drain_gateway_tasks(daemon)
 
-        # prompt delivered as a PROMPT (never steer), verbatim text
-        assert fake.prompts == [("hello?", "prompt", sm.GATEWAY_NODE_ID)]
+        # InjectText kind threaded end to end (plain text routes as steer)
+        assert fake.prompts == [("hello?", "steer", sm.GATEWAY_NODE_ID)]
 
         # reply rendered in the gateway room, in the gateway agent's voice
         gw_room = daemon.state.get(sm.GATEWAY_NODE_ID)["room_id"]

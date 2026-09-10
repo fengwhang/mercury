@@ -1132,6 +1132,7 @@ class SidecarDaemon:
                 task = asyncio.create_task(
                     self._deliver_gateway_prompt(
                         str(action.node_id), str(action.text),
+                        kind=str(getattr(action, "kind", None) or "prompt"),
                     ),
                     name=f"observatory-gateway-prompt-{action.node_id}",
                 )
@@ -1140,8 +1141,8 @@ class SidecarDaemon:
             else:
                 log.info("control action pending transport: %r", action)
 
-    async def _deliver_gateway_prompt(self, node_id: str, text: str) -> None:
-        """One prompt → gateway session → reply renders in the room."""
+    async def _deliver_gateway_prompt(self, node_id: str, text: str, *, kind: str = "prompt") -> None:
+        """One prompt → gateway session → batched replay + reply in the room."""
         from observatory.control import ControlNotice
 
         transport = self.gateway_transport
@@ -1149,8 +1150,13 @@ class SidecarDaemon:
             log.warning("gateway prompt dropped: no transport (node %s)", node_id)
             await self._post_notice(ControlNotice(node_id, GATEWAY_UNREACHABLE_NOTICE))
             return
+        prompt_with_events = getattr(transport, "prompt_with_events", None)
         try:
-            reply = await transport.prompt(text, kind="prompt", node_id=node_id)
+            if callable(prompt_with_events):
+                reply, events = await prompt_with_events(text, kind=kind, node_id=node_id)
+            else:
+                reply = await transport.prompt(text, kind=kind, node_id=node_id)
+                events = []
         except GatewayTransportError as exc:
             log.warning("gateway prompt delivery failed: %s", exc)
             await self._post_notice(ControlNotice(node_id, GATEWAY_UNREACHABLE_NOTICE))
@@ -1165,7 +1171,52 @@ class SidecarDaemon:
             log.warning("gateway answered with an empty reply (node %s)", node_id)
             return
         assert self.renderer is not None
+        await self._replay_gateway_events(node_id, events or [])
         await self.renderer.render_agent_message(node_id, reply)
+
+    async def _replay_gateway_events(self, node_id: str, events: list) -> None:
+        """Batched tool/thinking replay before the final reply renders.
+
+        Tool calls render unconditionally; thinking renders iff the room
+        has thinking display on (``control_router.cot_enabled``) — the
+        same gate the omp feed path uses. Unknown event shapes are
+        skipped; one bad event never kills the replay.
+        """
+        assert self.renderer is not None
+        import json as _json
+
+        router = self.control_router
+        for event in events or []:
+            try:
+                if not isinstance(event, dict):
+                    continue
+                etype = str(event.get("type") or "")
+                if etype in ("tool_call", "tool"):
+                    tool = str(event.get("tool") or "")
+                    if not tool:
+                        continue
+                    args = event.get("args")
+                    if args is None:
+                        args_text = None
+                    elif isinstance(args, str):
+                        args_text = args or None
+                    elif isinstance(args, dict):
+                        try:
+                            args_text = _json.dumps(args, default=str)
+                        except Exception:
+                            args_text = str(args)
+                    else:
+                        args_text = str(args)
+                    await self.renderer.render_tool_call(node_id, tool, args_text)
+                elif etype in ("thinking", "thought", "reasoning"):
+                    text_val = event.get("text")
+                    if not isinstance(text_val, str) or not text_val.strip():
+                        continue
+                    if router is not None and not router.cot_enabled(node_id):
+                        continue
+                    await self.renderer.render_thinking(node_id, text_val)
+            except Exception:  # noqa: BLE001 — one bad event must not kill replay
+                log.exception("gateway event replay failed (node %s)", node_id)
 
     async def _post_notice(self, notice: Any) -> None:
         """ControlNotice → room message in the agent's own voice."""
