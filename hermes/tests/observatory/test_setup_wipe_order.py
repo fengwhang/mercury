@@ -235,7 +235,7 @@ def test_fresh_residual_archive_wipes_before_identity(monkeypatch, capsys,
                                                       tmp_path):
     fake = _FakeProvision(_provisioned_statuses(tmp_path), data_present=True)
     # Install, then Archive; identity defaults; generate pw; keep enabled.
-    rec = _Recorder(choices=[0, 1, 0], yes_no=[True, True], texts=["", ""])
+    rec = _Recorder(choices=[0, 1, 0], yes_no=[True, True, True], texts=["", ""])
     _run_section(monkeypatch, capsys, fake, rec)
     assert fake.wipe_modes == ["archive"]
     wi, ii = rec.wipe_index(), rec.first_identity_index()
@@ -250,7 +250,7 @@ def test_fresh_residual_archive_wipes_before_identity(monkeypatch, capsys,
 
 def test_fresh_no_residual_asks_no_wipe_question(monkeypatch, capsys, tmp_path):
     fake = _FakeProvision(_provisioned_statuses(tmp_path), data_present=False)
-    rec = _Recorder(choices=[0, 0], yes_no=[True, True], texts=["", ""])
+    rec = _Recorder(choices=[0, 0], yes_no=[True, True, True], texts=["", ""])
     _run_section(monkeypatch, capsys, fake, rec)
     assert rec.wipe_index() is None
     assert fake.wipe_modes == []
@@ -260,7 +260,7 @@ def test_fresh_no_residual_asks_no_wipe_question(monkeypatch, capsys, tmp_path):
 def test_fresh_residual_keep_provisions_with_typed_identity(monkeypatch, capsys,
                                                            tmp_path):
     fake = _FakeProvision(_provisioned_statuses(tmp_path), data_present=True)
-    rec = _Recorder(choices=[0, 0, 0], yes_no=[True, True], texts=["", ""])
+    rec = _Recorder(choices=[0, 0, 0], yes_no=[True, True, True], texts=["", ""])
     _run_section(monkeypatch, capsys, fake, rec)
     assert fake.wipe_modes == []
     assert rec.wipe_index() < rec.first_identity_index()

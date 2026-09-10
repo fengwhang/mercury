@@ -249,7 +249,7 @@ def _run_section(monkeypatch, capsys, fake, *, choice, yes_no, texts=(), choices
 def test_section_fresh_unprovisioned_skip(monkeypatch, capsys):
     fake = _FakeProvision([_status()])
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True]
     )
     assert "Matrix Observatory (bundled)" in out
     assert "Provisioned:          no" in out
@@ -275,7 +275,7 @@ def test_section_install_calls_provision_then_card(monkeypatch, capsys, tmp_path
         )]
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=0, yes_no=[True, True],
+        monkeypatch, capsys, fake, choice=0, yes_no=[True, True, True],
         texts=["", ""],
     )
 
@@ -323,7 +323,7 @@ def test_section_provisioned_enabled_state_and_card(monkeypatch, capsys, tmp_pat
         unit_active=True,
     )])
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True]
     )
     assert "Provisioned:          yes" in out
     assert "Homeserver reachable: yes" in out
@@ -359,7 +359,7 @@ def test_section_provisioned_disabled_state(monkeypatch, capsys, tmp_path):
         e2ee=True,
     )])
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[False, True]
     )
 
     assert "observatory.enabled:  no  (config.yaml)" in out
@@ -379,7 +379,7 @@ def test_card_never_prints_password(monkeypatch, capsys, tmp_path):
         owner_credentials_path=str(creds),
     )])
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True]
     )
 
     assert PASSWORD not in out
@@ -420,7 +420,7 @@ def test_toggle_writes_observatory_enabled_to_config(monkeypatch, capsys, tmp_pa
         owner_credentials_path=str(creds),
     )])
     out, _config, _remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[False, True]
     )
 
     assert f"observatory.enabled = false written to {get_config_path()}" in out
@@ -435,7 +435,7 @@ def test_toggle_unchanged_leaves_config_alone(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     fake = _FakeProvision([_status()])
     out, _config, _remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True], choices=[1, 0]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True], choices=[1, 0]
     )
 
     assert "Keeping observatory.enabled = true" in out
@@ -449,7 +449,7 @@ def test_provision_failure_never_kills_the_wizard(monkeypatch, capsys):
         provision_error=provision_mod.ProvisionError("boom"),
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=0, yes_no=[True, True],
+        monkeypatch, capsys, fake, choice=0, yes_no=[True, True, True],
         texts=["", ""],
     )
 
@@ -897,7 +897,7 @@ def test_card_detected_shows_phone_url_keeps_localhost(
         tailscale=dict(_TS_UP_DNS),
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, False]
     )
     assert f"homeserver URL:      {HOMESERVER_URL}" in out
     assert f"http://box.tail.ts.net:{HOMESERVER_PORT_DEFAULT}" in out
@@ -916,7 +916,7 @@ def test_card_falls_back_to_tailnet_ip(monkeypatch, capsys, tmp_path):
         [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, False]
     )
     assert f"http://100.89.0.5:{HOMESERVER_PORT_DEFAULT}" in out
     assert "over Tailscale" in out
@@ -929,7 +929,7 @@ def test_card_down_shows_reconnect_hint_no_bind(monkeypatch, capsys, tmp_path):
         [_provisioned_status(creds)], tailscale=dict(_TS_DOWN)
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True]
     )
     assert "not connected" in out
     assert "tailscale up" in out
@@ -967,7 +967,7 @@ def test_bind_offer_yes_restart_yes_restarts_unit(monkeypatch, capsys, tmp_path)
 
     monkeypatch.setattr("subprocess.run", _run)
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True, True]
     )
     assert fake.calls["bind"] == 1
     assert fake.bind_ips == ["100.89.0.5"]
@@ -990,7 +990,7 @@ def test_bind_offer_yes_restart_no_keeps_manual_line(
 
     monkeypatch.setattr("subprocess.run", _boom)
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True, False]
     )
     assert fake.calls["bind"] == 1
     assert "100.89.0.5" in out
@@ -1014,7 +1014,7 @@ def test_bind_offer_restart_failure_warns_with_manual_command(
 
     monkeypatch.setattr("subprocess.run", _boom)
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True, True]
     )
     assert fake.calls["bind"] == 1
     assert "Could not restart" in out
@@ -1058,7 +1058,7 @@ def test_bind_offer_no_keeps_address(monkeypatch, capsys, tmp_path):
         [_provisioned_status(creds)], tailscale=dict(_TS_UP_IP)
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, False]
     )
     assert fake.calls["bind"] == 0
     assert "Keeping the homeserver on its current address." in out
@@ -1073,7 +1073,7 @@ def test_bind_failure_degrades_to_hand_edit_hint(monkeypatch, capsys, tmp_path):
         bind_error=provision_mod.ProvisionError("disk on fire"),
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True]
     )
     assert fake.calls["bind"] == 1
     assert "Could not bind the homeserver to 100.89.0.5" in out
@@ -1205,7 +1205,7 @@ def test_section_prints_mismatch_action_on_declined_bind(
         bind_address="127.0.0.1",
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, False]
     )
     assert "only listens on localhost" in out
     assert "mercury setup observatory" in out
@@ -1224,7 +1224,7 @@ def test_section_hides_mismatch_action_once_bound(
         bind_address="100.89.0.5",
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, False]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, False]
     )
     assert "only listens on localhost" not in out
     assert remaining == []
@@ -1296,7 +1296,7 @@ def test_bind_offer_rechecks_url_after_restart(monkeypatch, capsys, tmp_path):
 
     monkeypatch.setattr("subprocess.run", _run)
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True, True, True]
     )
     assert "Homeserver will dual-bind to 100.89.0.5 + localhost" in out
     assert "Bind rechecked: 100.89.0.5 bound (phones: http://100.89.0.5:18008)." in out
@@ -1368,7 +1368,7 @@ def test_observatory_section_prints_in_repo_guide(monkeypatch, capsys, tmp_path)
         [_provisioned_status(creds)], tailscale=dict(_TS_ABSENT)
     )
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True, True]
     )
     assert "Guide: docs/design/matrix-observatory.md" in out
     assert "website/docs/user-guide/messaging/matrix-observatory.md" in out
