@@ -414,6 +414,18 @@ def _delegate_thinking_level() -> str:
     return env.get("OMP_THINKING_LEVEL") or _THINKING_DEFAULT
 
 
+def _delegate_fallback_thinking_level() -> str:
+    """Fallback-slot thinking level (models.delegate_fallback_thinking_level).
+
+    Empty inherits the delegate level (SKIP=EMPTY: skip leaves the slot
+    untouched, never auto-mirrors at write time; inheritance happens only at
+    read time). Default xhigh via the delegate chain. Reserved for
+    forward-compat — single-level runs keep using _delegate_thinking_level().
+    """
+    env, _err = _omp_delegate_env()
+    return env.get("OMP_FALLBACK_THINKING_LEVEL") or _delegate_thinking_level()
+
+
 def _shared_env_overrides() -> Dict[str, str]:
     """ONE-env safety net: keys from MERCURY_HOME/.env not already in env.
 

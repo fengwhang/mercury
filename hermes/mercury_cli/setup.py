@@ -138,6 +138,58 @@ def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
     agent_cfg["reasoning_effort"] = effort
 
 
+# Reasoning picker (user directive 2026-09-10): per-slot thinking depth asked
+# in the Model Slots section — one prompt per configured model slot (default,
+# fallback, delegate, delegate fallback). Choices off/minimal/low/medium/high/
+# xhigh/max (+auto omp-side only), default xhigh. There is NO ultra level
+# (valid set tops at max) and NO 512 budget in omp source (bench-only
+# constant; any 512 observed is provider-side) — neither is offered here.
+# SKIP=EMPTY: skip (Esc/cancel) leaves the slot untouched — never writes the
+# default, never auto-mirrors another slot, never resurrects a cleared slot.
+# Hermes-side slots map to agent.reasoning_effort values (off -> none =
+# disabled); omp-side slots map to Effort strings (off/auto pass through).
+REASONING_DEFAULT = "xhigh"
+HERMES_REASONING_CHOICES = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+OMP_REASONING_CHOICES = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
+
+
+def _hermes_reasoning_value(pick: str) -> str:
+    """Map a hermes-side picker choice to an agent.reasoning_effort value."""
+    v = str(pick or "").strip().lower()
+    return "none" if v == "off" else v
+
+
+def _omp_reasoning_value(pick: str) -> str:
+    """Map an omp-side picker choice to an Effort string (off/auto kept)."""
+    return str(pick or "").strip().lower()
+
+
+def _pick_reasoning_level(title: str, current: str = "", *, allow_auto: bool = False) -> str | None:
+    """Ask one reasoning level; None = skip (leave the slot untouched).
+
+    Default selection is the current value when valid, else xhigh (fresh
+    installs default xhigh). Cancel/Esc returns None — never the default —
+    so a skip never writes, mirrors, or resurrects. Non-interactive returns
+    None (the omp-sync tail ensures engine xhigh defaults). Navigation
+    control flow (_SetupGoBack/_SetupCancelled) propagates.
+    """
+    choices = list(OMP_REASONING_CHOICES if allow_auto else HERMES_REASONING_CHOICES)
+    cur = str(current or "").strip().lower()
+    # Hermes stores disabled as none; show it as off in the picker.
+    if not allow_auto and cur == "none":
+        cur = "off"
+    try:
+        default_idx = choices.index(cur)
+    except ValueError:
+        default_idx = choices.index(REASONING_DEFAULT)
+    if is_noninteractive() or not is_interactive_stdin():
+        return None
+    idx = _curses_prompt_choice(title, choices, default_idx)
+    if idx is None or idx < 0 or idx >= len(choices):
+        return None
+    return choices[idx]
+
+
 
 
 # Import config helpers
@@ -1368,6 +1420,78 @@ def _prompt_mercury_slots(config: dict) -> None:
     print_info("Subagents will run on " + delegate_model + f" (fallback chain {chain_txt}).")
     fb_txt = " -> ".join([fallback] + fallback_chain) if fallback_chain else fallback
     print_info(f"Main model fallback chain: {fb_txt}.")
+    _prompt_slot_reasoning(config, slots["default"], fallback, delegate_model, delegate_fallback)
+
+
+def _prompt_slot_reasoning(config: dict, default_model: str, fallback_model: str, delegate_model: str, delegate_fallback: str) -> None:
+    """Ask per-slot reasoning effort (wizard reasoning picker).
+
+    One prompt per configured model slot; skipped slots are never asked.
+    SKIP=EMPTY: a skip (Esc/cancel) leaves that slot untouched — no default
+    write, no mirror from another slot, no resurrection of a cleared slot.
+    Hermes-side (default/fallback) maps off->none and stores per-model in
+    agent.reasoning_overrides; omp-side (delegate slots) stores Effort
+    strings in models.delegate_thinking_level /
+    models.delegate_fallback_thinking_level (fallback empty = inherit).
+    """
+    from mercury_cli.omp_sync import _current_slots as _read_think_slots, _write_slots as _write_think_slots
+
+    print_header("Reasoning Effort")
+    print_info("Per-slot thinking depth (default xhigh; Esc leaves a slot unchanged).")
+    print_info("Hermes slots use agent.reasoning_effort values; omp slots use Effort strings.")
+    print()
+
+    agent_cfg = config.get("agent") if isinstance(config.get("agent"), dict) else {}
+    overrides = agent_cfg.get("reasoning_overrides") if isinstance(agent_cfg.get("reasoning_overrides"), dict) else {}
+    try:
+        think_current = _read_think_slots()
+    except Exception:
+        think_current = {}
+
+    omp_update: dict[str, str] = {}
+    override_updates: dict[str, str] = {}
+
+    if default_model:
+        _cur = str(overrides.get(default_model) or "").strip().lower()
+        _pick = _pick_reasoning_level(
+            "Select reasoning effort for the DEFAULT model (hermes orchestrator; empty to skip):",
+            _cur, allow_auto=False,
+        )
+        if _pick is not None:
+            override_updates[default_model] = _hermes_reasoning_value(_pick)
+    if fallback_model:
+        _cur = str(overrides.get(fallback_model) or "").strip().lower()
+        _pick = _pick_reasoning_level(
+            "Select reasoning effort for the FALLBACK model (hermes orchestrator; empty to skip):",
+            _cur, allow_auto=False,
+        )
+        if _pick is not None:
+            override_updates[fallback_model] = _hermes_reasoning_value(_pick)
+    if delegate_model:
+        _cur = str((think_current or {}).get("delegate_thinking_level") or "").strip().lower()
+        _pick = _pick_reasoning_level(
+            "Select reasoning effort for the DELEGATE model (omp subagents; empty to skip):",
+            _cur, allow_auto=True,
+        )
+        if _pick is not None:
+            omp_update["delegate_thinking_level"] = _omp_reasoning_value(_pick)
+    if delegate_fallback:
+        _cur = str((think_current or {}).get("delegate_fallback_thinking_level") or "").strip().lower()
+        _pick = _pick_reasoning_level(
+            "Select reasoning effort for the DELEGATE FALLBACK model (omp subagents; empty to skip):",
+            _cur, allow_auto=True,
+        )
+        if _pick is not None:
+            omp_update["delegate_fallback_thinking_level"] = _omp_reasoning_value(_pick)
+
+    if override_updates:
+        config.setdefault("agent", {}).setdefault("reasoning_overrides", {}).update(override_updates)
+    if omp_update:
+        _write_think_slots(omp_update)
+    if override_updates or omp_update:
+        print_success(f"Reasoning effort written for {len(override_updates) + len(omp_update)} slot(s).")
+    else:
+        print_info("Reasoning effort unchanged (all slots skipped).")
 
 
 # =============================================================================

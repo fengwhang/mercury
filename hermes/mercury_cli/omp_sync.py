@@ -122,7 +122,7 @@ def _read_fallback() -> str | None:
 
 def _current_slots() -> dict[str, str]:
     """Read the shared models: block as a dict (empty strings when absent)."""
-    slots: dict[str, str] = {"default": "", "fallback": "", "delegate_model": "", "delegate_fallback": "", "delegate_thinking_level": "", "orchestrator_thinking_level": ""}
+    slots: dict[str, str] = {"default": "", "fallback": "", "delegate_model": "", "delegate_fallback": "", "delegate_thinking_level": "", "delegate_fallback_thinking_level": "", "orchestrator_thinking_level": ""}
     try:
         import yaml
         whole = yaml.safe_load(_unified_path().read_text()) or {}
@@ -178,7 +178,7 @@ def _write_slots(update: dict[str, str]) -> bool:
     """Merge updates into the shared models: block, preserving everything else.
 
     Line-oriented merge (same discipline as the bridge): only rewrites
-    the four slot lines inside the models: block. Creates the block if
+    the slot lines inside the models: block. Creates the block if
     missing.
     """
     path = _unified_path()
@@ -205,7 +205,7 @@ def _write_slots(update: dict[str, str]) -> bool:
                     seen[k] = True
                     wrote_any = True
             in_models = False
-        m = re.match(r"^  (default|fallback|delegate_model|delegate_fallback|delegate_fallback_chain|fallback_chain|delegate_thinking_level|orchestrator_thinking_level):\s*(.*)$", line) if in_models else None
+        m = re.match(r"^  (default|fallback|delegate_model|delegate_fallback|delegate_fallback_chain|fallback_chain|delegate_thinking_level|delegate_fallback_thinking_level|orchestrator_thinking_level):\s*(.*)$", line) if in_models else None
         if m and m.group(1) in update:
             v = update[m.group(1)]
             # ordered chain: write as a YAML flow sequence, single-quoted ids
@@ -302,8 +302,11 @@ def sync_omp_from_setup(quiet: bool = False) -> bool:
     # degrading to an unchosen model.
 
     # MERCURY-OMP PATCH (user directive): thinking levels are config
-    # parameters with xhigh defaults — ensure both keys exist so users can
-    # see and edit them. Never invented per-spawn.
+    # parameters with xhigh defaults — ensure both engine keys exist so users
+    # can see and edit them. Never invented per-spawn. The per-slot fallback
+    # thinking key (delegate_fallback_thinking_level) is deliberately NOT
+    # defaulted here: empty inherits the delegate level at runtime (SKIP=EMPTY
+    # — skip leaves the slot untouched, never auto-mirrors or resurrects).
     _think_update: dict[str, str] = {}
     _cur = _current_slots()
     for _k, _v in (("delegate_thinking_level", "xhigh"),
