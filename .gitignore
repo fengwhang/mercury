@@ -13,3 +13,4 @@ scripts/tmp-*
 
 # release artifacts (GitHub release assets, never git objects)
 dist/
+.omp/worktrees/
