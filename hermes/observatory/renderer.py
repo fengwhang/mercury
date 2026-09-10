@@ -713,18 +713,65 @@ class Renderer:
         await self._execute(intents)
         return list(intents)
 
+    async def _execute_death(self, intents: Sequence[RenderIntent]) -> list[dict[str, Any]]:
+        """Tolerant death batch (D8 convergence, spawn.py purge parity).
+
+        Every intent is attempted even when an earlier one fails: a PurgeRoom
+        404-already-gone records gone:true (the desired end state — a retried
+        room purge must never abort its space purge); any other PurgeRoom
+        error is collected as fatal but still lets siblings attempt (one wedged
+        room must not orphan the rest); Send/Detach errors are soft (cosmetic
+        once rooms purge) and never block. Non-404 purge failures raise at the
+        end so rows survive for retry; 404/soft never block row removal.
+        """
+        from observatory.matrix_client import MatrixError  # lazy: no aiohttp at import
+
+        records: list[dict[str, Any]] = []
+        fatal: list[str] = []
+        for op in intents:
+            try:
+                records.extend(await self._execute([op]))
+            except MatrixError as exc:
+                if isinstance(op, PurgeRoom) and exc.status == 404:
+                    records.append({"op": "purge", "room_id": op.room_id, "gone": True})
+                    continue
+                if isinstance(op, PurgeRoom):
+                    fatal.append(f"{type(op).__name__} {getattr(op, 'room_id', '')}: {exc}")
+                    records.append({"op": "purge-failed", "room_id": getattr(op, "room_id", ""), "error": str(exc)})
+                    continue
+                log.warning("death batch soft failure %r: %s", op, exc)
+                records.append({"op": "soft-failed", "error": str(exc)})
+            except Exception as exc:  # noqa: BLE001 — classified, not swallowed
+                if isinstance(op, PurgeRoom):
+                    fatal.append(f"{type(op).__name__} {getattr(op, 'room_id', '')}: {exc}")
+                    records.append({"op": "purge-failed", "room_id": getattr(op, "room_id", ""), "error": str(exc)})
+                    continue
+                log.warning("death batch soft failure %r: %s", op, exc)
+                records.append({"op": "soft-failed", "error": str(exc)})
+        if fatal:
+            raise RuntimeError("death purge not converged: " + "; ".join(fatal))
+        return records
+
     async def render_death(
         self, node_id: str, *, status: str | None = None, summary: str | None = None
     ) -> list[RenderIntent]:
         """D8 render-time enforcement. Tombstones first (rows must survive
-        planning), execute the intents, THEN drop every purged row (D17:
-        no tombstone may survive to leak state into a successor)."""
+        planning), execute the tolerant death batch, THEN drop every purged row
+        (D17: no tombstone may survive to leak state into a successor).
+        Depth>=2 settles (empty purge set) still tombstones the dying row so
+        the settled gate disables steering."""
         purge = self.death_purge_set(node_id)
         for r in purge:
             if r["status"] == "live":
                 self.state.mark_dead(r["node_id"])
+        if not purge:
+            try:
+                if self.state.get(node_id)["status"] == "live":
+                    self.state.mark_dead(node_id)
+            except StateError:
+                pass
         intents = self.plan_death(node_id, status=status, summary=summary)
-        await self._execute(intents)
+        await self._execute_death(intents)
         # Rows drop deepest-first: children reference parents (FK), and the
         # purge set is BFS top-down, so walk it in reverse.
         for r in reversed(purge):
