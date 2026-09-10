@@ -190,21 +190,17 @@ class CLIAgentSetupMixin:
             if should_use_runtime_model:
                 self.model = runtime_model
 
-        # If model is still empty (e.g. user ran `mercury auth add openai-codex`
-        # without `mercury model`), fall back to the provider's first catalog
-        # model so the API call doesn't fail with "model must be non-empty".
+        # Fail closed when the model is still empty (e.g. user ran
+        # `mercury auth add openai-codex` without `mercury model`): NEVER
+        # silently land on a model the user didn't pick (VM: stale caches
+        # kept resolving glm-5.2 with zero intent). The API call fails
+        # loudly on the empty model with the remedy below.
         if not self.model and resolved_provider:
-            try:
-                from mercury_cli.models import get_default_model_for_provider
-                _default = get_default_model_for_provider(resolved_provider)
-                if _default:
-                    self.model = _default
-                    logger.info(
-                        "No model configured — defaulting to %s for provider %s",
-                        _default, resolved_provider,
-                    )
-            except Exception:
-                pass
+            logger.error(
+                "No model configured for provider %s — refusing to silently "
+                "fall back; run `mercury model` to choose one explicitly",
+                resolved_provider,
+            )
 
         # Normalize model for the resolved provider (e.g. swap non-Codex
         # models when provider is openai-codex).  Fixes #651.

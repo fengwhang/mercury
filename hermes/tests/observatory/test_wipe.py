@@ -160,14 +160,16 @@ def test_setup_rerun_identity_change_offers_wipe_reprovision(
         return {"mode": mode, "moved": ["tuwunel-db"], "deleted": []}
 
     monkeypatch.setattr(fake, "wipe_observatory_data", fake_wipe, raising=False)
-    # prompt_choice faked to `choice`: 0 = Install/repair, then 1 = archive.
-    calls = {"n": 0}
+    # Wipe-first order: 0 = Install/repair, 0 = Keep (up-front wipe
+    # question), then the typed identity change triggers the conditional
+    # wipe offer answered 1 = archive.
+    answers = [0, 0, 1]
 
     orig_choice = setup_mod.prompt_choice
 
     def seq_choice(q, c, d=0, description=None):
-        calls["n"] += 1
-        return 0 if calls["n"] == 1 else 1
+        assert answers, f"unexpected extra prompt_choice: {q!r}"
+        return answers.pop(0)
 
     monkeypatch.setattr(setup_mod, "prompt_choice", seq_choice)
     monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)

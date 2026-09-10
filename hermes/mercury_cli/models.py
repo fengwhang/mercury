@@ -1612,14 +1612,18 @@ def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter"
 
     Returns the catalog-labeled default (see
     :func:`get_preferred_silent_default_model`) when the list carries it,
-    else the first entry, else "". Used by every surface that must choose a
-    model on the user's behalf without an interactive picker (GUI onboarding
-    recommended-default, empty-model runtime fallback).
+    else "". Callers treat "" as "no consensual default — require an
+    explicit pick" (GUI onboarding shows the confirm card with no
+    pre-persisted choice; the recommended-default endpoint answers "").
+    Never falls back to entry [0]: aggregator lists lead with the priciest
+    Anthropic flagship, and silently landing the user on a model they never
+    chose — flagship or glm, any version — is the bug (VM: stale caches
+    kept resolving glm-5.2 with zero user intent).
     """
     preferred = get_preferred_silent_default_model(provider)
     if preferred in model_ids:
         return preferred
-    return model_ids[0] if model_ids else ""
+    return ""
 
 
 # Providers whose *silent* auto-default must go through the cost-safe

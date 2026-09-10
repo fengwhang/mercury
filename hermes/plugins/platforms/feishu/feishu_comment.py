@@ -982,13 +982,16 @@ def _resolve_model_and_runtime() -> Tuple[str, dict]:
     from gateway.run import _resolve_runtime_agent_kwargs
     runtime_kwargs = _resolve_runtime_agent_kwargs()
 
-    # Fall back to provider's default model if none configured
+    # Fail closed when no model is configured: NEVER silently land on a
+    # model the user didn't pick (VM: stale caches kept resolving glm-5.2
+    # with zero intent). Callers surface the empty model as an explicit
+    # error naming `mercury model`.
     if not model and runtime_kwargs.get("provider"):
-        try:
-            from mercury_cli.models import get_default_model_for_provider
-            model = get_default_model_for_provider(runtime_kwargs["provider"])
-        except Exception:
-            pass
+        logger.error(
+            "No model configured for provider %s — refusing to silently "
+            "fall back; run `mercury model` to choose one explicitly",
+            runtime_kwargs["provider"],
+        )
 
     return model, runtime_kwargs
 

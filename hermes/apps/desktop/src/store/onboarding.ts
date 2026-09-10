@@ -313,29 +313,16 @@ async function completeWithModelConfirm(
 
   const defaults = await fetchProviderDefaultModel(preferredSlugs)
 
-  if (defaults) {
-    // Persist the chosen provider/model before the runtime gate so a stale
-    // config provider (e.g. anthropic from a prior failed setup) cannot make
-    // setup.runtime_check validate the wrong backend after a fresh OAuth login.
-    try {
-      const res = await setMainModelAssignment(
-        {
-          provider: defaults.providerSlug,
-          model: defaults.defaultModel
-        },
-        undefined,
-        // Headless automated flow: nothing is mounted to click a guard
-        // prompt, so fail with the message instead of hanging.
-        { skipConfirmPrompt: true }
-      )
-
-      notifyGatewayTools(res.gateway_tools)
-    } catch (error) {
-      onFail(error instanceof Error ? error.message : 'Hermes could not save the selected model.')
-
-      return
-    }
-  }
+  // NOTE: the suggestion above is NEVER persisted here. A previous version
+  // called setMainModelAssignment with skipConfirmPrompt BEFORE showing the
+  // confirm card, so merely completing OAuth silently saved a model the user
+  // never picked (VM: stale backend caches kept resolving glm-5.2 with zero
+  // intent — closing the window at the confirm card left the silent glm in
+  // place). Persistence happens only on explicit user action: the dropdown
+  // (setOnboardingModel) or "Start chatting" (confirmOnboardingModel).
+  // The runtime gate below is scoped to the just-authenticated provider via
+  // requestedProvider, so no pre-persist is needed to validate the right
+  // backend.
 
   const runtime = await checkRuntime(ctx, preferredSlugs[0])
 
@@ -932,14 +919,39 @@ export async function setOnboardingModel(model: string) {
   }
 }
 
-// User clicked "Start chatting" on the confirm card. Finalizes onboarding
-// — the model was already persisted by completeWithModelConfirm (or by
-// setOnboardingModel if they changed it), so all that's left is to mark
-// onboarding done and unblock the rest of the app.
-export function confirmOnboardingModel(ctx: OnboardingContext) {
+// User clicked "Start chatting" on the confirm card. This click IS the
+// explicit choice: persist the displayed model (or the dropdown-picked one
+// from setOnboardingModel) and only then finalize onboarding. Nothing is
+// persisted before this point — closing the window at the confirm card
+// leaves config untouched (previously completeWithModelConfirm pre-persisted
+// a backend suggestion the user never picked).
+export async function confirmOnboardingModel(ctx: OnboardingContext) {
   const { flow } = $desktopOnboarding.get()
 
   if (flow.status !== 'confirming_model') {
+    return
+  }
+
+  // No skipConfirmPrompt: the card shows pricing/tier info, and a backend
+  // expensive-model guard here gets a real user decision (accept → retry
+  // with ack; decline → stay on the card). Failing closed instead would
+  // strand onboarding on models that only need an ack.
+  setFlow({ ...flow, saving: true })
+
+  try {
+    const res = await setMainModelAssignment({
+      provider: flow.providerSlug,
+      model: flow.currentModel
+    })
+    notifyGatewayTools(res.gateway_tools)
+  } catch (error) {
+    notifyError(error, 'Could not save model')
+    const current = $desktopOnboarding.get().flow
+
+    if (current.status === 'confirming_model') {
+      setFlow({ ...current, saving: false })
+    }
+
     return
   }
 

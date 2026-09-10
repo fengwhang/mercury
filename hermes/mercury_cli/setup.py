@@ -3191,18 +3191,29 @@ def _auto_ensure_crypto(obs) -> str:
     return result
 
 
-def _auto_ensure_sidecar_unit(obs) -> str:
+def _auto_ensure_sidecar_unit(obs, *, loud: bool = False) -> str:
     """Auto sidecar step: install/enable/restart the sidecar unit (the old
     ``--install-sidecar`` flag path, now automatic). Never prompts, never
-    raises — failures degrade to a manual hint."""
+    raises — failures degrade to a manual hint.
+
+    ``loud=True`` is the post-wipe contract: the wipe just destroyed the
+    sidecar unit file, so the wizard must restore what it destroyed — a
+    failed reinstall is a print_error naming the exact retry command, not
+    a warning the user can miss. ``"skipped"`` (no systemd: containers/CI)
+    stays soft in both modes — there is no unit system to fail against.
+    """
     try:
         from observatory.config_gen import SIDECAR_UNIT_NAME as _sidecar_unit
     except Exception:  # noqa: BLE001 — display fallback, never kills setup
         _sidecar_unit = "mercury-observatory.service"
     install = getattr(obs, "ensure_sidecar_unit", None)
     if install is None:
-        print_warning("Sidecar unit installer unavailable in this install.")
-        print_info(f"Start it by hand: systemctl --user start {_sidecar_unit}")
+        _sidecar_problem(
+            loud,
+            "Sidecar unit installer unavailable in this install.",
+            f"Fix with: mercury setup observatory --install-sidecar "
+            f"(or by hand: systemctl --user start {_sidecar_unit})",
+        )
         return "skipped-unavailable"
     try:
         result = install()
@@ -3211,12 +3222,20 @@ def _auto_ensure_sidecar_unit(obs) -> str:
     except SystemExit as exc:
         # sidecar_main requires aiohttp (matrix extra): its import raises
         # SystemExit, not Exception, when the dep is missing.
-        print_warning(f"Sidecar unit install skipped: {exc}")
-        print_info("The sidecar needs the matrix extra, then re-run setup.")
+        _sidecar_problem(
+            loud,
+            f"Sidecar unit install skipped: {exc}",
+            "The sidecar needs the matrix extra, then re-run setup "
+            "(or: mercury setup observatory --install-sidecar).",
+        )
         return "skipped-error"
     except Exception as exc:  # noqa: BLE001 — auto step never kills setup
-        print_warning(f"Sidecar unit install skipped: {exc}")
-        print_info(f"Start it by hand: systemctl --user start {_sidecar_unit}")
+        _sidecar_problem(
+            loud,
+            f"Sidecar unit install skipped: {exc}",
+            f"Fix with: mercury setup observatory --install-sidecar "
+            f"(or by hand: systemctl --user start {_sidecar_unit})",
+        )
         return "skipped-error"
     if result == "skipped":
         print_info("Sidecar unit skipped (no systemd) — start the sidecar manually "
@@ -3224,6 +3243,16 @@ def _auto_ensure_sidecar_unit(obs) -> str:
         return result
     print_success(f"Sidecar unit {result} ({_sidecar_unit}) — enabled and started.")
     return result
+
+
+def _sidecar_problem(loud: bool, warning: str, remedy: str) -> None:
+    """Emit a sidecar-step failure softly (warning) or loudly (error)."""
+    if loud:
+        print_error(f"Sidecar unit install FAILED: {warning}")
+        print_error(remedy)
+    else:
+        print_warning(warning)
+        print_info(remedy)
 
 
 def _auto_heal_and_converge(obs) -> str:
@@ -3259,14 +3288,32 @@ def _auto_heal_and_converge(obs) -> str:
     return result
 
 
-def _run_observatory_auto_steps(obs) -> dict:
+def _run_observatory_auto_steps(obs, *, sidecar_loud: bool = False) -> dict:
     """Run every post-provision auto step in order: crypto → sidecar →
     heal+converge. Idempotent; each step degrades independently so one
-    skip never blocks the next. Returns ``{"crypto", "sidecar", "tree"}``."""
+    skip never blocks the next. Returns ``{"crypto", "sidecar", "tree"}``.
+
+    ``sidecar_loud=True`` is for paths that JUST wiped: the wipe destroyed
+    the sidecar unit, so a failed reinstall errors loudly (naming the retry
+    command) instead of warning. Callers must then NOT print a blanket
+    success — check ``steps["sidecar"]`` via :func:`_sidecar_failed`.
+    """
     crypto = _auto_ensure_crypto(obs)
-    sidecar = _auto_ensure_sidecar_unit(obs)
+    sidecar = _auto_ensure_sidecar_unit(obs, loud=sidecar_loud)
     tree = _auto_heal_and_converge(obs)
     return {"crypto": crypto, "sidecar": sidecar, "tree": tree}
+
+
+#: Sidecar-step results that mean "no sidecar after a wipe" — the broken
+#: state a wipe+reprovision must never report as success. ``"skipped"`` (no
+#: systemd) is deliberately absent: containers have no unit system, and the
+#: soft hint already covers them.
+_SIDECAR_FAILED_RESULTS = ("skipped-error", "skipped-unavailable")
+
+
+def _sidecar_failed(steps: dict) -> bool:
+    """True when post-wipe auto steps left no sidecar behind."""
+    return bool(steps) and steps.get("sidecar") in _SIDECAR_FAILED_RESULTS
 
 
 def _run_observatory_sidecar_repair() -> None:
@@ -3549,8 +3596,50 @@ def _maybe_heal_owner_env_mirror(obs) -> None:
     if healed:
         print_success(f"Healed the .env owner mirror ({', '.join(healed)}).")
 
+def _ask_observatory_wipe_upfront(obs, *, reason: str) -> str | None:
+    """Ask wipe/archive/keep BEFORE any identity prompt; wipe applies now.
+
+    Ordering law (VM defect: the wizard asked identity first, so values
+    typed against the pre-wipe state were dropped or failed against it).
+    Returns ``"archive"``/``"annihilate"`` after performing the wipe, or
+    None for keep. The wipe itself raises on failure (loud — the caller
+    reports it); a half-wipe must never pass as clean.
+    """
+    wipe = getattr(obs, "wipe_observatory_data", None)
+    options = ["Keep existing data"]
+    if wipe is not None:
+        options += [
+            "Archive tuwunel data aside",
+            "Annihilate tuwunel data",
+        ]
+    choice = prompt_choice(
+        f"Existing tuwunel installation detected ({reason}) — "
+        "what should happen to it?",
+        options,
+        0,
+    )
+    if choice == 0 or wipe is None:
+        return None
+    mode = "archive" if choice == 1 else "annihilate"
+    summary = wipe(mode=mode)
+    moved = (summary.get("moved") if mode == "archive"
+             else summary.get("deleted")) or []
+    print_success(
+        f"Observatory data {mode}d "
+        f"({', '.join(moved) or 'nothing present'})."
+    )
+    return mode
+
+
 def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
-    """Keep-data re-run: explicit triple offer, per-field keep vs change.
+    """Keep-data re-run: wipe/archive/keep FIRST, then identity prompts.
+
+    Ordering law (VM defect: identity was asked before the wipe question,
+    so values typed against the pre-wipe state were dropped or failed
+    against it). A wipe choice wipes immediately then collects a FRESH
+    identity triple that applies to the post-wipe state by construction —
+    nothing collected pre-wipe can be silently dropped. Keep falls through
+    to the per-field keep-vs-change offer below.
 
     Same validators as the fresh-install triple; empty keeps current per
     field. Unchanged prints ``identity unchanged (kept existing data)`` and
@@ -3561,6 +3650,45 @@ def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
     never silently dropped. Returns the refreshed status (or the input
     status when the repair failed). Only KeyboardInterrupt escapes.
     """
+    try:
+        wiped = _ask_observatory_wipe_upfront(
+            obs, reason="already provisioned")
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # noqa: BLE001 — wipe failure is loud
+        print_error(f"Observatory wipe failed: {exc}")
+        print_info("Nothing else was changed — the wizard continues.")
+        print_info("Retry any time with: mercury setup observatory")
+        return status
+    if wiped:
+        # Post-wipe state: collect the identity AFTER the wipe so every
+        # value applies to what provision actually sees. The wipe destroyed
+        # the sidecar unit — the auto steps MUST reinstall+start it, and a
+        # failed reinstall downgrades the success (loud error above names
+        # the retry command; never report a detached stack as complete).
+        identity = _prompt_observatory_identity(obs)
+        try:
+            obs.provision_in_wizard(**identity)
+            steps = _run_observatory_auto_steps(obs, sidecar_loud=True)
+            refreshed = obs.status_summary()
+            if _sidecar_failed(steps):
+                print_info(
+                    "Homeserver re-provisioned, but the sidecar is NOT "
+                    "running (see error above) — Matrix mirroring is "
+                    "detached until it is reinstalled."
+                )
+            else:
+                print_success(
+                    f"Observatory re-provisioned as "
+                    f"@{identity['owner_localpart']}:{identity['server_name']}."
+                )
+            return refreshed
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 — reprovision failure is loud
+            print_error(f"Re-provisioning failed: {exc}")
+            print_info("Retry any time with: mercury setup observatory")
+            return status
     rerun = _prompt_observatory_identity_rerun(obs)
     cur_server = rerun.pop("_current_server_name")
     cur_local = rerun.pop("_current_localpart")
@@ -3616,11 +3744,21 @@ def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
                         owner_localpart=new_local,
                         owner_password=new_pw,
                     )
-                    _run_observatory_auto_steps(obs)
+                    # Post-wipe: the sidecar unit was destroyed with the
+                    # rest — reinstall loudly, never report detached as done.
+                    steps = _run_observatory_auto_steps(obs, sidecar_loud=True)
                     refreshed = obs.status_summary()
-                    print_success(
-                        f"Observatory re-provisioned as @{new_local}:{new_server}."
-                    )
+                    if _sidecar_failed(steps):
+                        print_info(
+                            "Homeserver re-provisioned, but the sidecar is "
+                            "NOT running (see error above) — Matrix "
+                            "mirroring is detached until it is reinstalled."
+                        )
+                    else:
+                        print_success(
+                            f"Observatory re-provisioned as "
+                            f"@{new_local}:{new_server}."
+                        )
                     return refreshed
                 except KeyboardInterrupt:
                     raise
@@ -3984,24 +4122,60 @@ def setup_observatory(config: dict, *, quick: bool = False):
     if choice == 0:
         was_provisioned = bool(status.get("provisioned"))
         if not was_provisioned:
-            # Fresh install: the user chooses the identity (safe defaults,
-            # validated in a loop).
-            identity = _prompt_observatory_identity(obs)
+            # Residual-data gate: an existing tuwunel installation (stale
+            # files from a previous install) gets its wipe/archive/keep
+            # question BEFORE the identity prompts, so the typed identity
+            # applies to the post-wipe state instead of failing against
+            # (or being dropped by) the pre-wipe one.
+            data_present = getattr(obs, "observatory_data_present", None)
             try:
-                obs.provision_in_wizard(**identity)
-                _run_observatory_auto_steps(obs)
-                status = obs.status_summary()
-                print_success("Observatory provisioning complete.")
-            except KeyboardInterrupt:
-                raise
-            except Exception as exc:
-                print_error(f"Observatory provisioning failed: {exc}")
-                print_info("Nothing else was changed — the wizard continues.")
-                print_info("Retry any time with: mercury setup observatory")
+                residual = bool(data_present and data_present())
+            except Exception:  # noqa: BLE001 — probe, never kills setup
+                residual = False
+            wipe_failed = False
+            wiped = False
+            if residual:
+                try:
+                    wiped = bool(_ask_observatory_wipe_upfront(
+                        obs, reason="stale files from a previous install"))
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — wipe failure is loud
+                    print_error(f"Observatory wipe failed: {exc}")
+                    print_info("Nothing else was changed — the wizard continues.")
+                    print_info("Retry any time with: mercury setup observatory")
+                    wipe_failed = True
+            if not wipe_failed:
+                # Fresh install: the user chooses the identity (safe defaults,
+                # validated in a loop).
+                identity = _prompt_observatory_identity(obs)
+                try:
+                    obs.provision_in_wizard(**identity)
+                    # A wipe just destroyed the sidecar unit: reinstall
+                    # loudly, never report a detached stack as complete.
+                    steps = _run_observatory_auto_steps(
+                        obs, sidecar_loud=wiped)
+                    status = obs.status_summary()
+                    if wiped and _sidecar_failed(steps):
+                        print_info(
+                            "Homeserver provisioned, but the sidecar is NOT "
+                            "running (see error above) — Matrix mirroring "
+                            "is detached until it is reinstalled."
+                        )
+                    else:
+                        print_success("Observatory provisioning complete.")
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:
+                    print_error(f"Observatory provisioning failed: {exc}")
+                    print_info("Nothing else was changed — the wizard continues.")
+                    print_info("Retry any time with: mercury setup observatory")
         else:
-            # Keep-data re-run: explicit triple offer, per-field keep vs
-            # change — a typed password always rotates (or errors), never
-            # silently drops. Only KeyboardInterrupt escapes.
+            # Keep-data re-run: wipe/archive/keep was already asked FIRST
+            # inside _run_observatory_provisioned_rerun; the per-field
+            # keep-vs-change offer below only runs on keep — a typed
+            # password always rotates (or errors), never silently drops.
+            # Only KeyboardInterrupt escapes.
             try:
                 status = _run_observatory_provisioned_rerun(obs, status)
             except KeyboardInterrupt:

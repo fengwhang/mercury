@@ -42,9 +42,12 @@ Entry points:
   ``observatory.provision.status_summary``     — wizard status card input
       (booleans/paths only, never secrets).
 
-The sidecar unit (``mercury-observatory.service``) is installed ONLY by
-the explicit repair path ``ensure_sidecar_unit`` (``mercury setup
-observatory --install-sidecar``) — never by provision() itself, because
+The sidecar unit (``mercury-observatory.service``) is installed by the
+setup Install paths via ``_run_observatory_auto_steps`` (best-effort on
+plain installs, LOUD on post-wipe reprovision — a wipe destroys the unit
+file, so the wizard must restore what it destroyed or fail naming
+``mercury setup observatory --install-sidecar``) and by the explicit
+repair path ``ensure_sidecar_unit`` — never by provision() itself, because
 the sidecar daemon boots provision() and auto-installing would restart
 its own unit mid-boot.
 """

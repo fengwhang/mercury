@@ -226,11 +226,13 @@ class TestDefaultModelFromCache:
 
     def test_reads_label_from_disk_cache(self, isolated_home):
         from mercury_cli import model_catalog
+        manifest = self._manifest_with_default()
+        # Newer than the shipped manifest: a genuine remote rotation that
+        # must keep winning (rotate-without-release intact).
+        manifest["updated_at"] = "2099-01-01T00:00:00Z"
         cache = isolated_home / "cache"
         cache.mkdir()
-        (cache / "model_catalog.json").write_text(
-            json.dumps(self._manifest_with_default())
-        )
+        (cache / "model_catalog.json").write_text(json.dumps(manifest))
         with patch.object(model_catalog, "_fetch_manifest") as fetch:
             assert (
                 model_catalog.get_default_model_from_cache("openrouter")
@@ -242,13 +244,22 @@ class TestDefaultModelFromCache:
             )
             fetch.assert_not_called()
 
-    def test_no_label_returns_none(self, isolated_home):
+    def test_stale_label_loses_to_shipped_manifest(self, isolated_home):
+        """VM repro: a disk cache older than the shipped manifest that
+        disagrees on the default (stale glm-5.2 era) must never surface —
+        the shipped label wins so a bot-gated fetch can't pin a dead
+        default forever."""
         from mercury_cli import model_catalog
+        manifest = self._manifest_with_default()
+        manifest["updated_at"] = "2020-01-01T00:00:00Z"
         cache = isolated_home / "cache"
         cache.mkdir()
-        (cache / "model_catalog.json").write_text(json.dumps(_valid_manifest()))
+        (cache / "model_catalog.json").write_text(json.dumps(manifest))
         with patch.object(model_catalog, "_fetch_manifest") as fetch:
-            assert model_catalog.get_default_model_from_cache("openrouter") is None
+            for provider in ("openrouter", "nous"):
+                resolved = model_catalog.get_default_model_from_cache(provider)
+                assert resolved is not None
+                assert resolved not in ("openai/gpt-5.4", "moonshotai/kimi-k2.6")
             fetch.assert_not_called()
 
 
