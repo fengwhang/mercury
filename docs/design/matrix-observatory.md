@@ -1,6 +1,6 @@
 # Matrix Observatory — design spec
 
-Status: DESIGN AGREED (grilling session 2026-09-07, hermes+user). Not yet implemented.
+Status: SHIPPED (sidecar runs live since v0.0.16; current v0.0.25 + post-25 main). This doc is the truth doc — design intent kept where it still binds, shipped deltas marked with versions.
 Owner: phoenix. Truth doc for implementation; every section cites the facts it rests on.
 
 ## 0. What this is
@@ -10,7 +10,7 @@ homeserver + appservice sidecar that mirrors every live agent session on the
 machine as a tree of nested Matrix spaces, streams their tool calls (and
 omp-side reasoning) into per-agent encrypted rooms, and lets the owner steer,
 stop, approve, and converse with any agent — orchestrator or subagent,
-hermes-side or omp-side — from a phone running Element X.
+hermes-side or omp-side — from a phone (FluffyChat recommended since v0.0.18; Element X supported — remaining quirks are client-side, §11).
 
 Positioning: Matrix becomes the *primary* chat surface for Mercury (like
 Telegram is for hermes/openclaw today, but local and out-of-the-box). The
@@ -43,17 +43,17 @@ number of live orchestrators (explicitly rejected — no cap, ever).
 | D11 | Cron: one room per *job* (not per fire) directly in the gateway space; per-fire rolling content. |
 | D12 | Directives room in the gateway space (see §6): membership = the gateway agent + every live 0-agent (both /spawn and /spawnomp kinds, auto-maintained by the sidecar); delivery is mention-gated — a directive reaches ONLY the agents whose virtual user is @-mentioned; @room/@everyone = all members; replies go to each agent's own room, never the directives room. |
 | D13 | Commands: sidecar verbs recognize both `/verb` and `!verb` (Matrix clients reserve `/`; Element passes unknown `/words` through as text). Everything else starting with `/` routes to the agent's native command surface: hermes rooms → gateway slash dispatch (full registry), omp rooms → omp RPC `prompt` 3-stage handling (ACP builtins intercept; unmatched text reaches the model). Command SCOPE by agent class: gateway-lifecycle verbs whose blast radius is the gateway process itself (`/restart`, `/update`, pause/resume-for-update) are accepted ONLY from the gateway agent's room — spawned 0-agents and all deeper agents get session-scoped commands for their own session only (e.g. `/reset`, `/compact`, model pickers), never process-level ones. The gateway agent is a 0-agent for deletion semantics (D8); the difference is exactly this command scope. |
-| D14 | Discovery covers every active agent session on the machine: all delegate_task children (any origin: gateway, CLI, cron), all omp in-process subagents, spawned orchestrators, and manual terminal `omp` runs — the last observe-only in v1 (no RPC server exists in TUI mode; collab relay is not self-hostable in production). |
-| D15 | Element X is the reference client; nested subspaces verified rendering on iOS+Android (element-meta#2913 closed, flags removed 2026-01). A rolling-edited dashboard message remains as insurance + "what's running" summary. |
-| D16 | Tuwunel is fetched at install time (latest stable release from upstream releases) — NOT vendored/packed like omp — and `mercury update` (updater: `mercury_cli/cli_commands_mixin.py:4019`) refreshes it to latest stable + restarts `mercury-observatory-homeserver.service`. Mercury never modifies Tuwunel; all interaction is external interfaces (appservice registration file, Synapse-compatible admin API, client-server API). |
+| D14 | Discovery covers every active agent session on the machine: all delegate_task children (any origin: gateway, CLI, cron), all omp in-process subagents, spawned orchestrators, and manual terminal `omp` runs — the last gated by `observatory.mirror_cli` (default `off`; `observe` = presence rooms, `full` = +transcript forwarding; unknown values fail closed to `off`). |
+| D15 | FluffyChat is the recommended client (since v0.0.18, vm-feedback); Element X supported — its missing per-device verify screen and key-request gesture are client-side constraints the notices are written for (§11). Nested subspaces render on both (element-meta#2913 closed, flags removed 2026-01). A rolling-edited dashboard message remains as insurance + "what's running" summary. |
+| D16 | Tuwunel 1.9.0 VENDORED per-arch (x86_64-v1 + aarch64-v8 under `hermes/observatory/tuwunel-binaries/`, SHA256SUMS-pinned; v0.0.22) — install.sh hash-verifies and stages the matching-arch binary BEFORE `provision --offline`; `provision()` trusts the installed binary (≥min-version gate) and never touches the network; `mercury update` refreshes to latest stable + restarts `mercury-observatory-homeserver.service`. Mercury never modifies Tuwunel; all interaction is external interfaces (appservice registration file, Synapse-compatible admin API, client-server API). |
 
 ## 2. Architecture
 
 Components (process model mirrors simplex-chat.service precedent):
 
 1. **Tuwunel** — systemd user unit `mercury-observatory-homeserver.service`.
-   Fetched at install time from the LATEST STABLE upstream release (D16 —
-   not vendored; `mercury update` refreshes it); pinned minimum ≥1.8.1
+   Vendored per-arch 1.9.0 binary (D16 — install stages it, provision trusts
+   it offline; refresh only behind explicit update); pinned minimum ≥1.8.1
    (Synapse admin API introduction), config
    generated: `allow_federation = false`, `allow_registration = false`
    (+ `registration_token` for the owner's own onboarding), appservice
@@ -61,9 +61,15 @@ Components (process model mirrors simplex-chat.service precedent):
 2. **Sidecar daemon** — `hermes/observatory/` (new package), systemd user
    unit `mercury-observatory.service`, Python/asyncio in the gateway venv.
    Subsystems:
-   - **Appservice endpoint** (mautrix appservice framework): transaction
-     intake, virtual-user masquerade via `?user_id=`, namespace
-     `@merc_.*` (exclusive, anchored).
+  - **Appservice endpoint** (mautrix appservice framework): transaction
+    intake, virtual-user masquerade via `?user_id=`, namespace
+    `@merc_.*` (exclusive, anchored). SHIPPED transports: MSC3984
+    `keys/query` + `keys/claim` served from live Olm accounts (real device
+    keys; honest 404 in plaintext mode); MSC-normalized to-device intake
+    (tuwunel 1.9.0 emits MSC-prefixed aliases; list-shape to-device
+    flattened to map form) routed into the per-user machines BEFORE the
+    room events needing them; every 404 counted once for the zero-errors
+    acceptance assert.
    - **Discovery**: subscribes to hermes delegation lifecycle (see §7) +
      scans omp session dirs for manual runs; maintains the agent tree in
      SQLite (`<MERCURY_HOME>/observatory/state.db`): node id, parent node,
@@ -75,7 +81,7 @@ Components (process model mirrors simplex-chat.service precedent):
    - **Renderer**: tree → spaces (`m.space.child` state), events → room
      messages (one per tool call; thinking as separate messages; rolling
      dashboard edit).
-   - **Control router**: room messages → steer/abort/commands/approvals.
+  - **Control router**: room messages → steer/abort/commands/approvals. Gateway-node prompts deliver NOW via the gateway control-socket `inject` verb (v0.0.23); per-child RPC steer/abort fan-out still pending (logged in `routing_log`, not executed).
 3. **Gateway integration** — the observatory registers as a platform
    plugin (pattern: `plugins/platforms/simplex/adapter.py` register(ctx),
    env-driven enablement) for matrix-born orchestrator conversations; the
@@ -139,11 +145,16 @@ Rules:
   sidecar enforces steer-only-while-running). Read-only users see
   everything (including omp thinking) but their messages in agent rooms
   are rejected by the sidecar with an explanatory notice.
-- Onboarding: first gateway start provisions homeserver + owner account +
-  appservice; prints/DMs a setup card (homeserver URL + owner
-  credentials). Element X: manual homeserver URL entry (QR transfer only
-  works from an authenticated Element Web session — not a self-hosted
-  login path).
+- Onboarding: `mercury setup observatory` provisions (homeserver + owner +
+  appservice + sidecar unit auto-install since v0.0.19), heals, converges,
+  then runs the setup ACCEPTANCE sequence (dual-bind, crypto, model +
+  inject-ping, encrypted-room, admin ping, synthetic txn, poison scan +
+  converge offer — failures loud, never blocking) and prints the login card
+  LAST (bind offer → status refresh → acceptance → card, v0.0.25). Owner
+  auto-join heals pre-existing invites with the owner's own credential (the
+  same POST /join a Join tap sends). FluffyChat is the tested client:
+  manual homeserver URL entry (QR transfer only works from an authenticated
+  Element Web session — not a self-hosted login path).
 
 ## 5. Event flow (per agent)
 
@@ -168,14 +179,28 @@ Streaming into a room:
    the root dashboard in the gateway room (edits are silent —
    `m.rule.suppress_edits`).
 
-Steering (control router):
-- Plain message in a live agent's room (write PL required):
-  - hermes-side child or orchestrator → injected as user message at the
-    next iteration boundary (gateway `slash.exec`/session injection path).
-  - omp-side (main or subagent) → RPC `steer` / new `subagent_steer`
-    (§8). Room shows "⏳ queued steer" then "✔ applied" when the
-    injection fires; `/stop` shows "🛑 stop requested — waiting for
-    boundary" until confirmed kill.
+Steering (control router — gateway path SHIPPED v0.0.23, per-child RPC fan-out pending):
+- Gateway agent's room: plain text IS the prompt — delivered over the gateway
+  control socket (`inject` verb → one headless turn → reply renders in the
+  room). No busy run exists there, so the router's "⏳ queued steer" notice
+  is SKIPPED; the reply itself is the acknowledgement.
+- Other live agents' rooms (write PL required): hermes-side
+  child/orchestrator → session injection at the next iteration boundary;
+  omp-side main/subagent → RPC `steer` / `subagent_steer` (§8) — currently
+  logged in `routing_log`, not yet executed. Room shows "⏳ queued steer"
+  then "✔ applied" when the injection fires; `/stop` shows "🛑 stop
+  requested — waiting for boundary" until confirmed kill.
+- Intake transports behind steering: TOFU trust (first-seen device VERIFIED
+  before every fresh Megolm share; changed keys refused fail-closed, never
+  silently re-trusted), MSC3984 query/claim serving real keys, MSC-normalized
+  to-device intake (room keys land before the events needing them), owner
+  auto-join, `mirror_cli` gate (default off).
+- Decrypt failures: one recovery notice per room per process — written for
+  Element X reality (no per-device verify screen, no key-request gesture):
+  force-close/rejoin + fresh message; pre-reinstall messages UNRECOVERABLE
+  by design (reinstalls ROTATE the Olm identity); the reinstall-rotation
+  case offers re-converge (`mercury setup observatory`). Never a bare
+  "unable to decrypt".
 - Approvals: hermes guard approval requests surface in the requesting
   agent's room as a prompt; resolution by `/approve` / `/deny` reply
   (option words `once|session|always` accepted as `/approve always`).
@@ -288,16 +313,23 @@ Phase 1 — omp RPC control: `subagent_steer`/`subagent_abort` + python
   client methods; hermes-side steer/stop forwarding. Tests: fake-server
   E2E (pattern of tests/tools/test_omp_rpc_transport.py) + LIVE steer of
   a running child.
-Phase 2 — Tuwunel bundling: install.sh fetch + pinned version, config
+Phase 2 — Tuwunel bundling: SHIPPED as vendoring (v0.0.22, supersedes the
+  fetch-at-install plan): per-arch 1.9.0 binaries checked in, install.sh
+  hash-verifies + stages matching arch, provision trusts it offline; config
   generation, provisioning script (owner account, registration closed,
   appservice registration), systemd units, "Secondary chat" relabel.
-Phase 3 — sidecar core: appservice endpoint, discovery (hooks + state.db
-  poll + RPC connect), space/room provisioning, streaming renderer
-  (tool calls, omp thinking, lifecycle), dashboard, virtual users, E2EE
-  per room. LIVE gate: watch a real 3-deep fan-out render on Element X.
-Phase 4 — control router: steering UX (queued/applied states), `/stop`,
-  approvals via `/approve`/`/deny`, command routing (gateway slash.exec
-  for hermes rooms; omp prompt pass-through).
+Phase 3 — sidecar core: SHIPPED (runs live since v0.0.16): appservice
+  endpoint (+MSC3984 query/claim, MSC-normalized to-device intake),
+  discovery (hooks + state.db poll + RPC connect), space/room provisioning
+  with gateway-agent subspace parity, streaming renderer (tool calls, omp
+  thinking, lifecycle), dashboard, virtual users, E2EE per room. Gate:
+  `render_live.py` asserts root child order + gateway-subspace nesting
+  (v0.0.25); per-release VM converge proof stays open (§11).
+Phase 4 — control router: PARTIAL. Gateway-node prompt delivery SHIPPED
+  v0.0.23 (control-socket `inject`, plain-text-as-prompt, steer notices
+  skipped); approvals bridge + queued/applied ledger in tree; per-child RPC
+  steer/abort fan-out PENDING. Command routing (gateway slash.exec for
+  hermes rooms; omp prompt pass-through) lands with the fan-out.
 Phase 5 — orchestrators: `/spawn`, `/spawnomp`, `/exit`, directives
   room, cron job rooms, "Manual runs" observe-only discovery, and the
   D18 respawn pass on gateway/sidecar start (resume live 0-agents,
@@ -315,27 +347,32 @@ markers in TODO.md for each phase gate.
   full-fidelity steering of manual TUI runs becomes possible (v2).
 - O2: Element X widget support — a richer spawn UI than the command room
   if/when EX supports widgets.
-- O3: E2EE device verification UX for N virtual users — the bridge
-  pattern (bot device verified once, virtual users chain) needs a proof
-  at Phase 3; if verification friction is high, fall back to
-  owner-verifies-first-virtual-user + trust-on-first-use for the rest.
+- O3: RESOLVED — TOFU for virtual users (`ensure_owner_trust` before every
+  fresh Megolm share: first-seen VERIFIED, changed keys refused) + exact
+  FluffyChat tap-path verify notice + Element X decrypt-recovery text.
+  Bridge-pattern manual verify proven by the E2EE live gate (E2EE-OK 15/15).
 - O4: hermes-orchestrator thinking panes — currently hidden; revisit if
   the user ever wants orchestrator CoT (today: explicitly no).
 - O5: name sanitizer details — unicode display names need a length cap
   and bidi/zwj sanity rules at render time (room names), decided at
   Phase 0 implementation.
 
-Pre-release status (2026-09-08, final-sweep):
-- E2EE gate: FAIL — `~/.mercury/observatory-build/gate-e2ee.log` reports
-  MERCURY-E2EE-FAIL (M_UNKNOWN_TOKEN on login, 1/1 checks); O3's Phase-3
-  proof still open, owned by the e2ee-gate2 agent. Blocks release.
+Shipped status (v0.0.25 + post-25 main):
+- E2EE gate: RESOLVED — E2EE-OK 15/15 live pre-v0.0.16 (mautrix 0.21.1
+  contract fixes); hardened v0.0.23 (TOFU, key-sharing, verify notices) +
+  post-25 (encrypt option default ON, MSC3984 endpoints, Element X notices,
+  MSC-normalized to-device intake). O3's proof closed.
 - Remote reachability: D2 stands — homeserver bound to localhost/LAN,
   mobile over the owner's Tailscale/existing VPN; no dedicated VPN
   shipped, no further decision taken.
-- User→running-batch steering UX: see
-  `docs/design/midflight-steering.md` (investigation, no code changes) —
-  the observatory room verbs (§5) are the matrix-surface counterpart of
-  the chat-surface wiring it proposes.
+- Steering: gateway path live via control socket (v0.0.23); per-child RPC
+  fan-out pending — see `docs/design/midflight-steering.md` (its
+  "logged, not executed" note now applies ONLY to the non-gateway fan-out).
+- Open, honestly non-blocking: FluffyChat/Element X client quirks are
+  CLIENT-SIDE (Element X gestures/verify screens; reinstall rotation
+  unrecoverable by design); VM converge proof pending PER RELEASE
+  (clean-VM end-to-end render + steer each release, never assumed from
+  unit gates).
 
 ## 12. Fact appendix (key citations)
 
