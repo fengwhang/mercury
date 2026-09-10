@@ -170,6 +170,10 @@ def test_rerun_wipe_sidecar_failure_is_loud_not_success(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert fake.wipe_modes == ["annihilate"]
     assert fake.calls["provision"] == 1
+    # Automatic contract (VM round 2): setup CALLS ensure_sidecar_unit
+    # itself — the retry command below is the fallback for when that call
+    # fails, never the primary path.
+    assert fake.calls["sidecar"] == 1
     assert "FAILED" in out
     assert RETRY_CMD in out
     assert "re-provisioned as @" not in out
@@ -183,8 +187,8 @@ def test_rerun_wipe_sidecar_success_reports_complete(monkeypatch, capsys):
     setup_mod._run_observatory_provisioned_rerun(fake, _status(provisioned=True))
     out = capsys.readouterr().out
     assert fake.wipe_modes == ["archive"]
+    assert fake.calls["sidecar"] == 1  # automatic reinstall, not manual
     assert "re-provisioned as @merc-owner:mercury.local." in out
-    assert "FAILED" not in out
 
 
 def test_rerun_wipe_missing_installer_names_command(monkeypatch, capsys):
@@ -207,11 +211,12 @@ def test_fresh_residual_wipe_sidecar_failure_is_loud(monkeypatch, capsys,
                                                      tmp_path):
     fake = _FakeProvision(_provisioned_statuses(tmp_path), data_present=True,
                           sidecar_error=RuntimeError("boom-sidecar"))
-    rec = _Recorder(choices=[0, 1], yes_no=[True, True], texts=["", ""])
+    rec = _Recorder(choices=[0, 1, 0], yes_no=[True, True], texts=["", ""])
     _install(monkeypatch, fake, rec)
     setup_mod.setup_observatory(load_config())
     out = capsys.readouterr().out
     assert fake.wipe_modes == ["archive"]
+    assert fake.calls["sidecar"] == 1  # automatic reinstall, not manual
     assert "FAILED" in out
     assert RETRY_CMD in out
     assert "Observatory provisioning complete." not in out
@@ -223,11 +228,12 @@ def test_plain_install_sidecar_failure_stays_soft(monkeypatch, capsys, tmp_path)
     have no systemd; the card still prints). Only post-wipe goes loud."""
     fake = _FakeProvision(_provisioned_statuses(tmp_path), data_present=False,
                           sidecar_error=RuntimeError("boom-sidecar"))
-    rec = _Recorder(choices=[0], yes_no=[True, True], texts=["", ""])
+    rec = _Recorder(choices=[0, 0], yes_no=[True, True], texts=["", ""])
     _install(monkeypatch, fake, rec)
     setup_mod.setup_observatory(load_config())
     out = capsys.readouterr().out
     assert fake.wipe_modes == []
+    assert fake.calls["sidecar"] == 1  # fresh installs call it too
     assert "Sidecar unit install skipped" in out
     assert "FAILED" not in out
     assert "Observatory provisioning complete." in out

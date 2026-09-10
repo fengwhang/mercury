@@ -294,6 +294,29 @@ class TestStateEvents:
         )
 
 
+class TestOwnerAutoJoin:
+    """Owner auto-join (VM round 2): the sidecar accepts the owner's own
+    invites with the owner's own credential — the same POST /join a Join
+    tap sends. join_rule stays invite for everyone else."""
+
+    @pytest.mark.asyncio
+    async def test_join_room_as_owner_uses_owner_token(self, client, mock):
+        server, _ = mock
+        rid = await client.join_room_as_owner(ROOM_ID)
+        req = server.find("POST", f"/join/{ROOM_ID}")
+        assert req["auth"] == f"Bearer {ADMIN_TOKEN}"
+        assert "user_id" not in req["query"]  # owner credential, not masquerade
+        assert rid == ROOM_ID
+
+    @pytest.mark.asyncio
+    async def test_join_room_as_owner_requires_owner_token(self, mock):
+        _server, tc = mock
+        async with MatrixClient(str(tc.make_url("")), AS_TOKEN) as c:
+            with pytest.raises(MatrixError) as exc:
+                await c.join_room_as_owner(ROOM_ID)
+            assert exc.value.errcode == "M_NO_ADMIN_TOKEN"
+
+
 # --- reads ------------------------------------------------------------------------------
 
 

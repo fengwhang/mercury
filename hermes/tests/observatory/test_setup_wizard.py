@@ -204,12 +204,19 @@ class _FakeProvision:
         return [self._bind_address] if self._bind_address else []
 
 
-def _run_section(monkeypatch, capsys, fake, *, choice, yes_no, texts=()):
-    """Run setup_observatory with fakes; returns (stdout, consumed_answers)."""
+def _run_section(monkeypatch, capsys, fake, *, choice, yes_no, texts=(), choices=None):
+    """Run setup_observatory with fakes; returns (stdout, consumed_answers).
+
+    ``choices`` (optional) answers successive prompt_choice calls in order
+    (section install/skip, then the mirror_cli choice, ...); omitted means
+    every prompt gets ``choice``.
+    """
     monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
+    pending_choices = list(choices) if choices is not None else None
     monkeypatch.setattr(
         setup_mod, "prompt_choice",
-        lambda q, c, d=0, description=None: choice,
+        lambda q, c, d=0, description=None: (
+            pending_choices.pop(0) if pending_choices else choice),
     )
     remaining = list(yes_no)
 
@@ -428,10 +435,11 @@ def test_toggle_unchanged_leaves_config_alone(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     fake = _FakeProvision([_status()])
     out, _config, _remaining = _run_section(
-        monkeypatch, capsys, fake, choice=1, yes_no=[True]
+        monkeypatch, capsys, fake, choice=1, yes_no=[True], choices=[1, 0]
     )
 
     assert "Keeping observatory.enabled = true" in out
+    assert "Keeping observatory.mirror_cli = off" in out
     assert not get_config_path().exists()
 
 
@@ -495,19 +503,23 @@ def test_section_registered_before_gateway_in_registry():
     assert keys.index("observatory") < keys.index("gateway")
     assert keys.index("observatory") < keys.index("tools")
 
-
 def test_section_choice_prompt_marks_recommended(monkeypatch, capsys):
-    """The observatory install question carries the RECOMMENDED tag."""
+    """The observatory install question carries the RECOMMENDED tag, and the
+    section asks the mirror_cli choice (VM round 2: setup never asked)."""
     fake = _FakeProvision([_status()])
     monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: fake)
     seen: list = []
-    monkeypatch.setattr(
-        setup_mod, "prompt_choice",
-        lambda q, c, d=0, description=None: seen.append(q) or 1,
-    )
+
+    def _choice(q, c, d=0, description=None):
+        seen.append(q)
+        # Skip the install, keep mirror off (no config write without a home).
+        return 1 if q.startswith("Set up the Matrix") else 0
+
+    monkeypatch.setattr(setup_mod, "prompt_choice", _choice)
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
     setup_mod.setup_observatory({})
-    assert seen == ["Set up the Matrix observatory now (RECOMMENDED)?"]
+    assert seen == ["Set up the Matrix observatory now (RECOMMENDED)?",
+                    "Mirror CLI/TUI sessions into Matrix rooms? (observatory.mirror_cli)"]
 
 
 def test_setup_parser_accepts_observatory_section():

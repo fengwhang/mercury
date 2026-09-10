@@ -1908,6 +1908,19 @@ def verify_and_converge_gateway(mercury_home: str | Path | None = None) -> str:
             import socket as _socket
             applied = await renderer.apply_plan(
                 renderer.build_plan(host=_socket.gethostname()))
+            # Owner auto-join heal (VM round 2): pre-existing rooms whose
+            # creation invite was never accepted join now, on the owner's
+            # behalf with the owner's own credential. Best-effort — the
+            # converge result is unchanged either way.
+            try:
+                owner_joined = await executor.ensure_owner_in_plan(
+                    renderer.build_plan(host=_socket.gethostname()))
+            except Exception:  # noqa: BLE001 — membership heal never fails converge
+                owner_joined = 0
+            if owner_joined:
+                import logging as _logging
+                _logging.getLogger(__name__).info(
+                    "owner auto-joined %d room(s)", owner_joined)
             return f"converged-{len(applied)}"
 
         result = _asyncio.run(_converge())

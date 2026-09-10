@@ -626,20 +626,55 @@ class Renderer:
     async def snapshot(self, plan: tree.SpacePlan) -> dict[str, Any]:
         """Current matrix state from the root hierarchy, AUGMENTED with
         every plan id the state already knows (a created-but-unattached
-        space must count as known, or re-apply would duplicate it)."""
+        space must count as known, or re-apply would duplicate it).
+
+        Backfill rule (VM defect: after a wipe+reprovision the server is
+        new but state.db still holds pre-wipe ids — a CLI agent's subagent
+        got a fresh room while the CLI agent itself stayed roomless):
+        a state-known id the server does NOT confirm is a phantom, and
+        phantoms NEVER count as known. Dropping them makes the next diff
+        recreate the parent WITH its subtree in one consistent plan, so
+        children of unmirrored parents stay unmirrored — no orphan rooms.
+        Confirmation is the owner-token admin read
+        (``admin_room_alive`` — membership-independent, no sync): only a
+        clean False drops the id. Any other outcome (exists, no-access,
+        probe error, or a client double without the probe) keeps today's
+        attach-only behavior — never a duplicate, never a new loud
+        failure.
+        """
         snap: dict[str, Any] = {"spaces": {}, "rooms": {}}
         gw_space = self._gateway.get("space_id")
         if gw_space:
             hierarchy = await self.executor.client.room_hierarchy(gw_space, sender=self.gateway_mxid)
             snap = snapshot_from_hierarchy(hierarchy)
         spaces_by_key, rooms_by_key = tree.plan_index(plan)
+        probe = getattr(self.executor.client, "admin_room_alive", None)
         for key, space in spaces_by_key.items():
             if space.matrix_id and space.matrix_id not in snap["spaces"]:
-                snap["spaces"][space.matrix_id] = {"name": space.name, "children": []}
+                if await self._server_confirms(space.matrix_id, probe):
+                    snap["spaces"][space.matrix_id] = {"name": space.name, "children": []}
+                else:
+                    log.info("snapshot: phantom space id %s for %r — recreating with its subtree",
+                             space.matrix_id, key)
         for key, room in rooms_by_key.items():
             if room.matrix_id and room.matrix_id not in snap["rooms"]:
-                snap["rooms"][room.matrix_id] = {"name": room.name}
+                if await self._server_confirms(room.matrix_id, probe):
+                    snap["rooms"][room.matrix_id] = {"name": room.name}
+                else:
+                    log.info("snapshot: phantom room id %s for %r — recreating",
+                             room.matrix_id, key)
         return snap
+
+    @staticmethod
+    async def _server_confirms(matrix_id: str, probe) -> bool:
+        """True when a state-known-but-unlisted id may count as known."""
+        if probe is None:
+            return True  # legacy double without the admin probe — today's behavior
+        try:
+            return bool(await probe(matrix_id))
+        except Exception:  # noqa: BLE001 — probe failure keeps attach-only (never a duplicate)
+            log.debug("snapshot: room probe failed for %s — keeping state id", matrix_id)
+            return True
 
     async def apply_plan(self, plan: tree.SpacePlan) -> list[RenderIntent]:
         """Converge matrix onto the plan (idempotent). Returns the applied
@@ -788,11 +823,47 @@ class IntentExecutor:
             space=space,
         )
         await self.client.set_power_levels(room_id, {self.owner_mxid: 100}, sender=op.sender)
+        # Owner auto-join (VM defect: the owner saw invites / join prompts
+        # on their own spaces+rooms): the sidecar accepts the creation
+        # invite on the owner's behalf with the owner's own credential —
+        # the same POST /join Element/FluffyChat send on a Join tap.
+        await self.ensure_owner_in_room(room_id)
         if space:
             self._record_space(op.key, room_id)
         else:
             self._record_room(op.key, room_id)
         return room_id
+
+    async def ensure_owner_in_room(self, room_id: str) -> bool:
+        """Best-effort owner join of one room/space id. True when the owner
+        is now in the room (joined or already there); False when the join
+        was skipped or failed. Never raises — the creation invite is the
+        fallback, so a failed join only leaves a normal pending invite."""
+        try:
+            await self.client.join_room_as_owner(room_id)
+            return True
+        except AttributeError:
+            # Client double without the owner-join surface (older fakes):
+            # the invite still stands, nothing to heal.
+            log.debug("owner auto-join unavailable for %s (no join_room_as_owner)", room_id)
+            return False
+        except Exception as exc:  # noqa: BLE001 — best-effort membership
+            log.warning("owner auto-join failed for %s: %s", room_id, exc)
+            return False
+
+    async def ensure_owner_in_plan(self, plan: "tree.SpacePlan") -> int:
+        """Converge-time heal: join the owner to every planned space/room
+        id (covers pre-existing rooms whose invite was never accepted —
+        the VM's current state). Best-effort per room; returns the join
+        count. Never raises."""
+        spaces, rooms = tree.plan_index(plan)
+        ids = [s.matrix_id for s in spaces.values() if s.matrix_id]
+        ids += [r.matrix_id for r in rooms.values() if r.matrix_id]
+        joined = 0
+        for rid in ids:
+            if await self.ensure_owner_in_room(rid):
+                joined += 1
+        return joined
 
     async def execute(self, intents: Iterable[RenderIntent]) -> list[dict[str, Any]]:
         """Run intents in order; returns an execution log (one record per

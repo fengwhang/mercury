@@ -2835,6 +2835,48 @@ def _prompt_observatory_enabled_toggle(config: dict) -> None:
     )
 
 
+_MIRROR_CLI_OPTIONS = (
+    "Off — CLI/TUI sessions never get rooms (default)",
+    "Observe — presence rooms only, no transcript content",
+    "Full — rooms + live transcript forwarding",
+)
+
+
+def _prompt_mirror_cli_mode(config: dict) -> None:
+    """Offer the CLI/TUI session mirror mode (observatory.mirror_cli).
+
+    The gate itself lives in provision.mirror_cli_mode (default off, bogus
+    values fail closed); setup previously only documented the ``mercury
+    config set`` command on the card line — users could never choose during
+    setup (VM defect: no prompt). Answers persist through save_config;
+    answering the default keeps the file untouched. Non-interactive callers
+    keep the current value (prompt_choice falls back to its default).
+    """
+    from observatory.provision import MIRROR_CLI_MODES
+
+    raw = cfg_get(config, "observatory", "mirror_cli", default="off")
+    current = str(raw or "off").strip().lower()
+    if current not in MIRROR_CLI_MODES:
+        current = "off"
+    idx = prompt_choice(
+        "Mirror CLI/TUI sessions into Matrix rooms? (observatory.mirror_cli)",
+        list(_MIRROR_CLI_OPTIONS),
+        MIRROR_CLI_MODES.index(current),
+    )
+    want = MIRROR_CLI_MODES[idx]
+    if want == current:
+        print_info(f"Keeping observatory.mirror_cli = {current}")
+        return
+    obs = config.get("observatory")
+    if not isinstance(obs, dict):
+        obs = {}
+        config["observatory"] = obs
+    obs["mirror_cli"] = want
+    save_config(config)
+    print_success(
+        f"observatory.mirror_cli = {want} written to {get_config_path()}"
+    )
+
 def _tailscale_down() -> dict:
     """Fresh absent/down detection dict (never share mutable state)."""
     return {"available": False, "up": False, "ip": None, "dns_name": None}
@@ -4071,7 +4113,9 @@ def setup_observatory(config: dict, *, quick: bool = False):
     Shows current state, offers idempotent install/repair (provision +
     crypto + sidecar + heal/converge, all automatic) or skip (the
     --skip-observatory equivalent), offers the ``observatory.enabled``
-    toggle, and prints the manual-only first-login card when provisioned.
+    toggle and the ``observatory.mirror_cli`` choice (off/observe/full,
+    default off), and prints the manual-only first-login card when
+    provisioned.
     Never gates the rest of the wizard: every failure degrades to a
     printed hint and the section returns.
     """
@@ -4185,6 +4229,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
         print_info("Provision later with: mercury setup observatory")
 
     _prompt_observatory_enabled_toggle(config)
+    _prompt_mirror_cli_mode(config)
 
     if status.get("provisioned"):
         ts = _tailscale_status(obs)

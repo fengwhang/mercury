@@ -108,3 +108,48 @@ def test_setup_card_documents_gate(monkeypatch, tmp_path, capsys):
     assert "never get rooms" in setup_mod._mirror_cli_card_line()
     _write_config(tmp_path, "observatory:\n  mirror_cli: full\n")
     assert "full" in setup_mod._mirror_cli_card_line()
+
+
+class TestSetupMirrorPrompt:
+    """Setup asks the mirror_cli choice (VM defect: the gate existed but
+    setup never asked — users could not choose during setup)."""
+
+    def _run(self, monkeypatch, config, choice):
+        import mercury_cli.setup as setup_mod
+
+        seen = {}
+
+        def _choice(question, choices, default=0, description=None):
+            seen["default"] = default
+            seen["choices"] = list(choices)
+            return choice
+
+        saved = []
+        monkeypatch.setattr(setup_mod, "prompt_choice", _choice)
+        monkeypatch.setattr(
+            setup_mod, "save_config", lambda cfg: saved.append(dict(cfg)))
+        monkeypatch.setattr(
+            setup_mod, "get_config_path", lambda: "/tmp/config.yaml")
+        setup_mod._prompt_mirror_cli_mode(config)
+        return seen, saved
+
+    def test_observe_choice_persists(self, monkeypatch):
+        config: dict = {}
+        seen, saved = self._run(monkeypatch, config, 1)
+        assert seen["default"] == 0  # default off
+        assert len(seen["choices"]) == 3
+        assert config == {"observatory": {"mirror_cli": "observe"}}
+        assert saved and saved[0] == config
+
+    def test_keep_current_writes_nothing(self, monkeypatch):
+        config: dict = {"observatory": {"mirror_cli": "full"}}
+        seen, saved = self._run(monkeypatch, config, 2)
+        assert seen["default"] == 2
+        assert saved == []
+        assert config == {"observatory": {"mirror_cli": "full"}}
+
+    def test_bogus_current_fails_closed_to_off(self, monkeypatch):
+        config: dict = {"observatory": {"mirror_cli": "yes-please"}}
+        seen, saved = self._run(monkeypatch, config, 0)
+        assert seen["default"] == 0
+        assert saved == []  # off == default → file untouched
