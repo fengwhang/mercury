@@ -6,6 +6,7 @@ import type { OAuthProvider } from '@/types/hermes'
 
 import {
   $desktopOnboarding,
+  confirmOnboardingModel,
   type DesktopOnboardingState,
   type OnboardingContext,
   refreshOnboarding,
@@ -13,7 +14,6 @@ import {
   saveOnboardingLocalEndpoint,
   submitOnboardingCode
 } from './onboarding'
-
 function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnboardingState {
   return {
     configured: false,
@@ -396,20 +396,36 @@ describe('OAuth onboarding', () => {
       expect(state.flow.currentModel).toBe(model)
     }
 
-    expect(calls.some(c => c.path === '/api/model/set')).toBe(true)
+    // No silent persist: merely completing OAuth must not save a model the
+    // user never picked (VM: stale backend caches kept resolving glm-5.2
+    // with zero intent). The suggestion is only fetched for the card.
+    expect(calls.some(c => c.path === '/api/model/set')).toBe(false)
 
     const optionsIndex = calls.findIndex(c => c.path.startsWith('/api/model/options'))
     const recommendedIndex = calls.findIndex(c => c.path.startsWith('/api/model/recommended-default'))
-    const setIndex = calls.findIndex(c => c.path === '/api/model/set')
 
     expect(optionsIndex).toBeGreaterThanOrEqual(0)
     expect(recommendedIndex).toBeGreaterThan(optionsIndex)
-    expect(setIndex).toBeGreaterThan(recommendedIndex)
+
+    // Explicit choice persists: clicking "Start chatting" saves the shown model.
+    await confirmOnboardingModel(onboardingContext(requestGateway))
+
+    const setCalls = calls.filter(c => c.path === '/api/model/set')
+    expect(setCalls).toHaveLength(1)
+    expect(setCalls[0].body).toMatchObject({ provider: 'nous', model })
+
+    const done = $desktopOnboarding.get()
+    expect(done.flow.status).toBe('idle')
+    expect(done.configured).toBe(true)
   })
 
-  it('does not advance when the default model assignment is not persisted', async () => {
+  it('does not complete onboarding when the confirmed model fails to persist', async () => {
     const model = 'openai/gpt-5.5-pro'
-    installApiMock(async ({ path }: { path: string }) => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
       if (path === '/api/providers/oauth/nous/submit') {
         return { ok: true, status: 'approved' }
       }
@@ -423,27 +439,27 @@ describe('OAuth onboarding', () => {
       }
 
       if (path === '/api/model/set') {
-        return {
-          ok: false,
-          provider: 'nous',
-          model,
-          confirm_required: true,
-          confirm_message: 'Confirm this expensive model.'
-        }
+        return { ok: false, provider: 'nous', model, confirm_message: 'Hermes could not save the selected model.' }
       }
 
       throw new Error(`unexpected api path: ${path}`)
     })
 
-    const requestGatewayMock = vi.fn(async (method: string) => {
+    const requestGateway: OnboardingContext['requestGateway'] = async method => {
       if (method === 'reload.env') {
-        return {}
+        return {} as never
+      }
+
+      if (method === 'setup.status') {
+        return { provider_configured: true } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        return { ok: true } as never
       }
 
       throw new Error(`unexpected gateway method: ${method}`)
-    })
-
-    const requestGateway = requestGatewayMock as OnboardingContext['requestGateway']
+    }
     $desktopOnboarding.set(
       baseState({
         flow: {
@@ -463,10 +479,20 @@ describe('OAuth onboarding', () => {
 
     await submitOnboardingCode(onboardingContext(requestGateway))
 
+    // Submit alone never persists: the confirm card is shown with no save.
+    expect($desktopOnboarding.get().flow.status).toBe('confirming_model')
+    expect(calls.some(c => c.path === '/api/model/set')).toBe(false)
+
+    // "Start chatting" attempts the persist; on failure onboarding stays on
+    // the card (fail closed — never completes with an unpersisted model).
+    await confirmOnboardingModel(onboardingContext(requestGateway))
+
+    const setCalls = calls.filter(c => c.path === '/api/model/set')
+    expect(setCalls).toHaveLength(1)
+
     const state = $desktopOnboarding.get()
-    expect(state.flow.status).toBe('error')
-    expect(state.flow.status === 'error' ? state.flow.message : '').toContain('Confirm this expensive model.')
-    expect(requestGatewayMock).not.toHaveBeenCalledWith('setup.runtime_check', expect.anything())
+    expect(state.flow.status).toBe('confirming_model')
+    expect(state.configured).toBe(false)
   })
 })
 

@@ -5213,6 +5213,17 @@ def _ensure_skin_watcher() -> None:
 
 
 def _resolve_model() -> str:
+    """Explicitly-configured model only: env seed, then config, else "".
+
+    NEVER silently lands on a model the user didn't pick. A previous version
+    fell back to the catalog-labeled silent default (cache-only read) with a
+    hardcoded ``z-ai/glm-5.2`` literal beneath that — a stale disk cache kept
+    resolving glm-5.2 with zero user intent after the default had rotated to
+    glm-5.3, and the literal pinned 5.2 even when the catalog was
+    unreachable. Callers treat "" as "unconfigured" and surface the
+    ``mercury model`` remedy (same fail-closed contract as
+    observatory.spawn.build_hermes_agent).
+    """
     env = (
         os.environ.get("HERMES_MODEL", "")
         or os.environ.get("HERMES_INFERENCE_MODEL", "")
@@ -5224,15 +5235,7 @@ def _resolve_model() -> str:
         return str(m.get("default", "") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
-    # No env seed and no config preference: fall back to the cost-safe silent
-    # default (catalog-labeled, cache-only read), never an expensive Anthropic
-    # flagship the user didn't pick.
-    try:
-        from mercury_cli.models import get_preferred_silent_default_model
-
-        return get_preferred_silent_default_model()
-    except Exception:
-        return "z-ai/glm-5.2"
+    return ""
 
 
 def _resolve_session_platform() -> str:

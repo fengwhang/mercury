@@ -41,14 +41,11 @@ class TestGetDefaultModelForProvider:
 
 
 
-
-
-
-class TestGatewayEmptyModelFallback:
-    """Test that _resolve_session_agent_runtime fills in empty model from provider catalog."""
-
-    def test_empty_model_filled_from_provider(self):
-        """When config has no model but provider is openai-codex, use first codex model."""
+    def test_empty_model_fails_closed_without_silent_pick(self):
+        """When config has no model but a provider resolved, the runner must
+        NOT silently substitute a catalog model (VM: stale caches kept
+        resolving glm-5.2 with zero user intent). The model stays empty and
+        surfaces loudly with the `mercury model` remedy."""
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
@@ -65,9 +62,8 @@ class TestGatewayEmptyModelFallback:
              }):
             model, kwargs = runner._resolve_session_agent_runtime()
 
-        # Model should have been filled in from provider catalog
-        assert model, "Model should not be empty when provider is known"
-        assert isinstance(model, str)
+        # Fail closed: no silent catalog substitution for an unchosen model.
+        assert model == "", f"must not silently pick a model, got {model!r}"
         assert kwargs["provider"] == "openai-codex"
 
     def test_nonempty_model_not_overridden(self):

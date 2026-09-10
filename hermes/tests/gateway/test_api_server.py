@@ -2925,12 +2925,13 @@ class TestRouteWithoutModelKeepsDefault:
 # ---------------------------------------------------------------------------
 
 
-class TestCreateAgentModelRecovery:
-    def test_create_agent_defaults_to_provider_catalog_model_when_empty(self, monkeypatch):
-        """api_server.py had no equivalent of run.py's provider-catalog
-        default when model resolves empty but a provider did resolve (e.g.
-        `mercury auth add openai-codex` without `mercury model`) —
-        AIAgent(model="") 400s every call."""
+    def test_create_agent_fails_closed_without_silent_pick_when_empty(self, monkeypatch):
+        """Fail-closed (VM: stale caches kept resolving glm-5.2 with zero
+        user intent): when the model resolves empty but a provider did
+        resolve, _create_agent must NOT silently substitute a catalog model.
+        The empty model reaches the agent (which errors loudly naming
+        `mercury model`); the last-known-good net still covers transient
+        misses within a live session (see next test)."""
         captured = {}
 
         class FakeAgent:
@@ -2944,10 +2945,6 @@ class TestCreateAgentModelRecovery:
                      "api_mode": "codex_responses"},
         )
         monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
-        monkeypatch.setattr(
-            "mercury_cli.models.get_default_model_for_provider",
-            lambda provider: "gpt-5.5-codex" if provider == "openai-codex" else None,
-        )
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
@@ -2955,7 +2952,9 @@ class TestCreateAgentModelRecovery:
         agent = adapter._create_agent(session_id="api-session")
 
         assert isinstance(agent, FakeAgent)
-        assert captured["model"] == "gpt-5.5-codex"
+        assert captured["model"] == "", (
+            f"must not silently pick a model, got {captured['model']!r}"
+        )
 
     def test_create_agent_recovers_last_known_good_model_when_empty(self, monkeypatch):
         """Last-known-good recovery (#35314): a transient config-cache miss

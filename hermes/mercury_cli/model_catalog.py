@@ -409,6 +409,32 @@ def _default_model_from_block(block: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _shipped_manifest_path() -> Path:
+    """Absolute path of the catalog manifest shipped in this checkout."""
+    return (
+        Path(__file__).resolve().parent.parent
+        / "website" / "static" / "api" / "model-catalog.json"
+    )
+
+
+def _shipped_default_model(provider: str) -> tuple[str | None, str]:
+    """``(default_id_or_None, updated_at)`` from the shipped manifest.
+
+    Never raises — a missing/unreadable manifest (packed installs that do
+    not ship ``website/``) degrades to ``(None, "")`` so the disk cache
+    keeps its legacy behavior there.
+    """
+    try:
+        with open(_shipped_manifest_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return (None, "")
+    if not _validate_manifest(data):
+        return (None, "")
+    block = data.get("providers", {}).get(provider)
+    return (_default_model_from_block(block), str(data.get("updated_at") or ""))
+
+
 def get_default_model_from_cache(provider: str) -> str | None:
     """Return the catalog's labeled default model for ``provider`` — cache only.
 
@@ -420,17 +446,42 @@ def get_default_model_from_cache(provider: str) -> str | None:
     network-free. The cache is kept fresh by the picker/`mercury update` paths;
     when no cached manifest exists (fresh install, offline), returns None and
     the caller falls back to the in-repo constant.
+
+    Stale-cache guard (VM defect: a disk cache fetched when the default was
+    ``glm-5.2`` kept winning over the fixed ``glm-5.3`` constant forever
+    whenever the manifest fetch was bot-gated — the user silently landed on
+    5.2 with zero intent). When the cached label disagrees with the manifest
+    shipped in this checkout, the newer ``updated_at`` wins; missing or
+    unparseable stamps fail closed to the shipped manifest (reviewable,
+    versioned with the release — never opaque user-state).
     """
+    manifest: dict[str, Any] | None = None
     if _catalog_cache is not None:
-        block = _catalog_cache.get("providers", {}).get(provider)
-        found = _default_model_from_block(block)
-        if found:
-            return found
-    disk_data, _mtime = _read_disk_cache()
-    if disk_data is not None:
-        block = disk_data.get("providers", {}).get(provider)
-        return _default_model_from_block(block)
-    return None
+        manifest = _catalog_cache
+    else:
+        disk_data, _mtime = _read_disk_cache()
+        if disk_data is not None:
+            manifest = disk_data
+    if manifest is None:
+        return None
+    block = manifest.get("providers", {}).get(provider)
+    cached = _default_model_from_block(block)
+    if cached is None:
+        return None
+    shipped, shipped_updated = _shipped_default_model(provider)
+    if shipped is None or cached == shipped:
+        return cached
+    cached_updated = str(manifest.get("updated_at") or "")
+    if cached_updated and shipped_updated and cached_updated > shipped_updated:
+        # The remote catalog rotated past what this release shipped (fresh
+        # fetch landed in the cache) — honor the rotation.
+        return cached
+    logger.info(
+        "model catalog disk cache labels %r as the %s default but the "
+        "shipped manifest (%s) labels %r — ignoring the stale cache entry",
+        cached, provider, shipped_updated or "unversioned", shipped,
+    )
+    return shipped
 
 
 def seed_cache_from_checkout(project_root: "Path | str") -> bool:
