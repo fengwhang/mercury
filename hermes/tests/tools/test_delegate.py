@@ -262,13 +262,16 @@ class TestDelegateTaskValidation(unittest.TestCase):
 
     def test_invalid_output_schema_rejected(self):
         parent = _make_mock_parent()
+        # {'type': 'bogus-type'} passes coerce (it is not a validator), so
+        # use a non-dict schema, which coercion rejects loudly instead of
+        # dispatching a child that can never satisfy its contract.
         result = json.loads(
             delegate_task(
                 tasks=[
                     {
                         "goal": "do the thing properly",
                         "name": "thing",
-                        "output_schema": {"type": "bogus-type"},
+                        "output_schema": "bogus-type",
                     }
                 ],
                 parent_agent=parent,
