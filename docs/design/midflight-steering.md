@@ -1,8 +1,6 @@
 # Mid-flight steering of omp delegation batches — design investigation
 
-Status: INVESTIGATION (2026-09-08, omp delegate on hermes' request). No code
-changes; this doc records verified current mechanics, three candidate designs,
-risks, and a recommendation. Truth source for any implementation.
+Status: PARTIALLY SHIPPED (2026-09-09). The Matrix-surface half of this doc's problem SHIPPED via the observatory (v0.0.23 gateway control-socket `inject`); the gateway-native verbs (B1/B2/A) were NOT built — no `/dsteer`/`/dstop`/`/dlist`/`stop_batch` exists in the tree. This doc stays the truth source for the unbuilt half; shipped deltas marked with versions.
 
 Scope: the ORCHESTRATOR'S ORCHESTRATOR — the human user chatting with the
 hermes gateway/CLI session that dispatched a `delegate_task` fan-out — gaining
@@ -197,9 +195,12 @@ Other in-repo prior art:
   `OmpAbortMain`, `OmpSubagentSteer`, `OmpSubagentAbort`, :258-340), a
   queued/applied honesty ledger with a per-node unconfirmed-steer cap
   (`STEER_QUEUE_CAP_DEFAULT = 64`, :86-89) and stop boundary-wait states
-  (:91-96). Currently the SIDECAR's ingestion layer only; its engine
-  transports are logged, not executed, pending M4a/M5 gateway-side wiring
-  (`observatory/sidecar_main.py:43-45`).
+  (:91-96). Gateway-node `InjectText` delivers NOW via the gateway
+  control-socket `inject` verb (`observatory/gateway_transport.py`,
+  v0.0.23 — plain-text-as-prompt, steer notices skipped); the remaining
+  engine transports (RPC steer/prompt fan-out, aborts) are still logged,
+  not executed, pending gateway-side wiring
+  (`observatory/sidecar_main.py:43-46`).
 
 ### What observatory D12/D13 already covers (do not duplicate)
 
@@ -212,15 +213,15 @@ Other in-repo prior art:
   rooms → gateway slash dispatch (full registry)". So the observatory design
   EXPECTS the gateway slash registry to be the native hermes-side command
   surface; a gateway verb is complementary, not competing.
-- **Observatory Phase 4 / M4a** (:292-294, `sidecar_main.py:43-45`): the
-  Matrix-side steering UX (queued/applied, `/stop`, approvals) against the
-  SAME live children — via the gateway's registry handles (the sidecar boots
-  on the gateway thread and adopts its live handles,
-  `sidecar_main.py:517-535`, `platform_hook.py:18-20`). When it lands, users
-  in Element can steer these children; users in Telegram/WhatsApp/CLI/TUI
-  still cannot. THIS doc designs that native-surface path and deliberately
-  reuses the same control plane (`handle_omp_control_action`) so both
-  surfaces stay consistent.
+- **Observatory Phase 4 / M4a** (PARTIAL, was :292-294): gateway-node prompt
+  delivery SHIPPED v0.0.23 (control-socket `inject`, plain-text-as-prompt,
+  steer notices skipped — `sidecar_main._handle_gateway_prompt_outcome`);
+  per-child RPC steer/abort fan-out PENDING (logged, not executed). Users in
+  FluffyChat/Element X can converse with the GATEWAY agent from its room
+  today; steering deeper children from rooms — and users on
+  Telegram/WhatsApp/CLI/TUI — still cannot. THIS doc's native-surface path
+  (B1/B2 below) is unbuilt and deliberately reuses the same control plane
+  (`handle_omp_control_action`) when built, so both surfaces stay consistent.
 
 ## 3. Candidate designs
 
@@ -404,15 +405,34 @@ Verdict: do not build C now. Build B thin; borrow C's ledger semantics.
   path (`slash_access.py`). B2's plain-text interception must be config-gated
   per platform.
 
-## 5. Recommendation
+## 5. Recommendation (2026-09-09 status: Matrix half shipped, gateway verbs unbuilt)
+
+What shipped instead of B1: the observatory's gateway-room path (v0.0.23,
+gateway-answer) — router → control-socket `inject` verb, plain-text-as-prompt,
+steer notices skipped for the gateway (no busy run exists). Per-child RPC
+steer/abort fan-out still pending (sidecar `routing_log`, not executed).
+B1/B2/A gateway verbs below are NOT BUILT (verified: no
+dsteer/dstop/dlist/stop_batch in tree) — the recommendation stands as the
+design for that half when built.
+
+Decrypt-failure UX (Element X reality, shipped post-25):
+`observatory/e2ee.py:DECRYPT_RECOVERY_STEPS` — one notice per room per
+process: force-close Element X completely, rejoin, fresh message;
+pre-reinstall messages UNRECOVERABLE by design (reinstalls ROTATE the Olm
+identity); the reinstall-rotation case offers re-converge (`mercury setup
+observatory`). Never a bare "unable to decrypt".
+
+Original recommendation (still the design for the unbuilt gateway-verbs half):
 
 Ship **B1 (slash verbs) + the steer ledger/echo**, borrow C's queued/applied
 ack copy, and land **A only as `/dstop-all`-style graceful batch stop** (the
 stop half of A — no auto-requeue; hermes re-plans on the next turn when the
 partials re-enter, which is the async model already in place). B2 (`@name:`
 interception) is a config-gated follow-up once B1 proves the plumbing. Do not
-build a second control router (C) and do not add Matrix-side anything — that
-is M4a/M5's lane against the same handles (§2, observatory D12/D13 coverage).
+build a second control router (C); Matrix-side duplication stays banned —
+the gateway-room path has since shipped via the observatory (v0.0.23, §5
+header), and the remaining per-child fan-out is its lane (§2, observatory
+D12/D13 coverage).
 
 Suggested slice order (each independently shippable):
 1. `handle_omp_control_action` ownership stub from the gateway + name
@@ -447,3 +467,9 @@ Suggested slice order (each independently shippable):
   `guest.ts:204-214`
 - Observatory router + coverage: `hermes/observatory/control.py:59-134, 142-340`;
   `sidecar_main.py:19-63, 517-535`; `docs/design/matrix-observatory.md:31-48 (D5-D14), 142-201, 275-301`
+- Shipped control path (v0.0.23): `hermes/observatory/gateway_transport.py`
+  (`GATEWAY_INJECT_VERB = "inject"`, `ControlSocketGatewayTransport`),
+  `hermes/observatory/gateway_session.py` (headless turn on a stable session
+  id), `sidecar_main._handle_gateway_prompt_outcome` (notice skipped for
+  gateway); decrypt recovery `hermes/observatory/e2ee.py:DECRYPT_RECOVERY_STEPS`
+  + `decrypt_failure_notice`

@@ -88,11 +88,11 @@ Legend: [ ] todo · [~] partial · [x] done
       NB-6d pyproject console-script NAME `hermes =` → decide alongside
       D3 install layout.
 
-## Track M — matrix observatory (pre-release, integration branch recovery/matrix-observatory)
+## Track M — matrix observatory (SHIPPED: sidecar live since v0.0.16, main-line through v0.0.25)
 
-Truth doc: `docs/design/matrix-observatory.md` (§3 layout verified against
-`hermes/observatory/tree.py` `desired_plan`/`space_child_order` 2026-09-08 —
-no drift). Code: `hermes/observatory/`. Midflight-steering counterpart:
+Truth doc: `docs/design/matrix-observatory.md` (§3 layout locked at
+`build_plan` gw-parity v0.0.25 + `render_live.py` gate asserts — no drift).
+Code: `hermes/observatory/`. Midflight-steering counterpart:
 `docs/design/midflight-steering.md`.
 - [~] **M0/M1** (22acd41f): hermes delegation control plane (name schema,
       steer/stop forwarding, RPC methods, names persistence). Code in tree;
@@ -111,15 +111,102 @@ no drift). Code: `hermes/observatory/`. Midflight-steering counterpart:
       (mercury_tools_mcp_server absent), 10 hermes/mercury rename +
       description drift — ALL pre-existing at HEAD 3a05be10, zero caused
       by this branch (touches docs only).
-- [ ] **M-LIVE1**: real 3-deep fan-out renders on Element X (spec Phase 3 gate).
-- [ ] **M-LIVE2**: LIVE steer/stop of a running child from its room
-      (spec Phase 4 gate).
-- [ ] **M-E2EE gate**: FAIL 2026-09-08 (`gate-e2ee.log`
-      MERCURY-E2EE-FAIL, M_UNKNOWN_TOKEN on login, 1/1 checks; owner:
-      e2ee-gate2 agent). BLOCKS release.
-- [ ] **M-omp-swap**: installed-binary swap SKIPPED 2026-09-08 (2 live
-      `omp --mode rpc` children; kill forbidden). Installed sha bda272dd
-      vs tree 28073b1f — swap + `--version` check deferred until children exit.
+- [x] **M-LIVE1**: RESOLVED v0.0.25 (`render_live.py` gate: root child
+      order + gateway-subspace nesting asserts; gw-parity locked at
+      `build_plan`, vm-report-7 slice 3). Per-release VM converge proof
+      stays OPEN (below).
+- [~] **M-LIVE2**: PARTIAL. Gateway-room steer SHIPPED v0.0.23
+      (gateway-answer: control-socket `inject` verb → headless turn →
+      reply; plain-text-as-prompt, steer notices skipped — no busy run
+      exists). Per-child RPC steer/abort fan-out PENDING (sidecar logs
+      actions in `routing_log`, does not execute —
+      `sidecar_main.py:43-46`). Model-facing delegate_task steer/stop
+      (M0/M1 plane) live throughout.
+- [x] **M-E2EE gate**: RESOLVED. E2EE-OK 15/15 live (e2ee-gate2, merged
+      pre-v0.0.16, confirmed `e555db0c`; original 2026-09-08 FAIL
+      M_UNKNOWN_TOKEN root-caused via mautrix 0.21.1 contract fixes);
+      hardened v0.0.23 (e2ee-keyshare: TOFU trust, warmup, verify
+      notices) + post-25 (e2ee-option-msc3984: encrypt option default ON,
+      MSC3984 keys/query+claim from live Olm accounts, Element X notices;
+      todevice-intake: MSC-normalized crypto keys + list-shape to-device).
+- [x] **M-omp-swap**: SUPERSEDED v0.0.20. Live-swap procedure replaced by
+      version-gated builds: make-dist fail-hards when the omp binary bakes
+      a stale Mercury version (fix-omp-version-gate `5af34098`).
+- [x] **Sidecar auto-install** v0.0.19 (setup-auto-vendored: setup
+      auto-installs the sidecar unit, heals URL, converges tree,
+      fail-closed crypto) — LOUD on post-wipe reprovision (post-25-fixes).
+- [x] **Offline boot/provision/install** v0.0.21+v0.0.22: `provision()`
+      defaults offline (installed-binary trust, min-version gate);
+      install.sh `--offline`; online fetch degrades to keep-usable-binary;
+      vendored tuwunel 1.9.0 per-arch + vendored python-olm cp313 wheels
+      (SHA256SUMS-pinned, this-arch selection).
+- [x] **Gateway space nesting** v0.0.25 (vm-report-7 slice 3: gateway-agent
+      subspace parity at `build_plan`; owner auto-join via owner-credential
+      POST /join; `mirror_cli` gate default off).
+- **Wave ledger v0.0.17→v0.0.25 (+post-25 main), every merged wave:**
+  - v0.0.17: bugreport-8/8b (labels, run-order, password-env, telemetry
+    hard-off, card reprint, bind-mismatch/restart offer, in-repo guide).
+  - v0.0.18: vm-feedback (gateway ghost verify+repair at boot, loud on
+    missing ghost; FluffyChat replaces Element X as recommended client).
+  - v0.0.19: fix-sidecar-registry (optional registry param), fix-omp-keypath
+    (MERCURY_HOME/.env cascade, qualify short openrouter IDs),
+    fix-observatory-provision (bound URL sync, sidecar repair, E2EE gate fix),
+    vendor-olm-wheel + setup-auto-vendored (fully automatic setup).
+  - v0.0.20: fix-olm-arch-select (this-arch wheel, never both arches),
+    fix-omp-version-gate (make-dist stale-version fail-hard).
+  - v0.0.21: fix-sidecar-messaging (present-tense strings + user-output
+    guard), offline-boot (provision defaults offline), fix-owner-password-leak
+    (deny owner-credentials.json both engines); user AGENTS.md/HERMES.md
+    imperatives committed (`ba8ee250`, `54004d03`: delegate_task routing,
+    no-EOS, parallel subagents on own branches).
+  - v0.0.22: install-offline-provision, vendor-tuwunel (1.9.0 per-arch),
+    delegation-linear-mem (once-per-batch env, single bridge spawn, no caps —
+    replaces reverted cap approach `43326796`), wave-mem-profiler (RSS,
+    default off), fix-browser-select, flap-fix (no restart on unchanged
+    units), rocksdb-fallocate (`rocksdb_allow_fallocate=false` + heal).
+  - v0.0.23: gateway-answer (control-socket transport, setup identity
+    choice), e2ee-keyshare (TOFU trust, warmup, verify notice, intake crypto
+    channel), setup-reconfigure-gate.
+  - v0.0.24: setup-fixes-3 (real-config gates, rotation validation, atomic
+    password mirror), identity-rerun (keep-data triple, login-probe verified
+    rotation).
+  - v0.0.25: vm-report-7 (7 VM defects: glm fallback killed, identity
+    applies, gateway space, wipe choice, mirror gate, acceptance sequence
+    card-last, admin 401 self-heal, poison detect, appservice 404 accounting,
+    mandatory crypto, dual bind) + post-25-fixes (silent defaults fail
+    closed, wipe-first order, loud sidecar post-wipe).
+  - post-25 main (unreleased): vm-round-2 (mirror prompt, owner auto-join,
+    sidecar reinstall contract, crash-proof cross-signing store),
+    e2ee-option-msc3984, todevice-intake, mercury-cli-stomper-probe +
+    containment (`a1ae7edc`).
+- **Open items (honest):** FluffyChat/Element X client quirks are
+  CLIENT-SIDE (Element X: no per-device verify screen, no key-request
+  gesture — notices written for that reality; reinstalls ROTATE the Olm
+  identity so pre-reinstall messages are unrecoverable by design); VM
+  converge proof pending PER RELEASE (clean-VM end-to-end render + steer
+  each release, never assumed from unit gates).
+- **Standing lessons (shipped waves):**
+  - cwd-pinned git ops in delegation briefs: bare `git checkout -- .` in the
+    wrong cwd reverts sibling work — every brief pins cwd and scopes git ops
+    to the owned worktree (extends AGENTS.md rule 4).
+  - mercury_cli full-dir quarantine: full `hermes/tests/mercury_cli/` runs
+    stomp the live checkout (deleted files incl. committed tests, stray
+    `tuwunel-binaries/`+`wheels/` at root) via `update_from_release` until
+    containment proves out — contained by live-checkout refusal under pytest
+    (`a1ae7edc`) + RED guard test; report
+    `docs/design/mercury-cli-test-stomper-report.md`.
+  - no-silent-defaults + fail-closed: no silent glm (any version), unknown
+    `mirror_cli` → off, missing crypto stack → fail closed (never silent
+    plaintext), missing power-level snapshot → read-only, changed device keys
+    → refused, never silently re-trusted.
+  - vendored-binary strategy: python-olm cp313 wheels per-arch under
+    `hermes/observatory/wheels/` + tuwunel 1.9.0 per-arch under
+    `hermes/observatory/tuwunel-binaries/` (both SHA256SUMS-pinned;
+    make-dist/install.sh hash-verify and select this-arch; provision trusts
+    the installed binary offline, never downgrading). Rationale: PyPI ships
+    no cp313 olm wheel; fetch failures must never fail installs; virgin
+    hosts provision with zero network. Manual rebuild only
+    (`observatory/scripts/build_python_olm_wheel.sh`, never auto-invoked).
 
 ---
 
