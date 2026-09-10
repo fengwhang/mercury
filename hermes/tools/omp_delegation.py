@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import tempfile
 import shutil
@@ -734,6 +735,26 @@ def _rpc_disabled() -> bool:
     return os.environ.get("HERMES_OMP_TRANSPORT", "").strip().lower() == "oneshot"
 
 
+def _isolate_worktree_enabled() -> bool:
+    """Kill-switch: HERMES_OMP_ISOLATE=0/false/no/off disables; default ON."""
+    return os.environ.get("HERMES_OMP_ISOLATE", "").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _git_toplevel(workdir: Optional[str]) -> Optional[str]:
+    """Return the git toplevel for *workdir*, or None when not in a work tree."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=workdir or os.getcwd(),
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return (proc.stdout or "").strip() or None
+
+
 def _parent_approval_callback() -> Optional[Callable[..., Any]]:
     """The parent turn's thread-local approval callback, if any.
 
@@ -759,7 +780,8 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                   name: Optional[str] = None,
                   goal: Optional[str] = None,
                   owner_session_id: str = "",
-                  base_env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                  base_env: Optional[Dict[str, str]] = None,
+                  isolate_worktree: Optional[str] = None) -> Dict[str, Any]:
     """Run ONE omp child; return a result entry (old entry contract).
 
     C1 slice 2: prefer the RPC transport (approval routing live); fall
@@ -850,6 +872,7 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                     batch_procs=batch_procs,
                     approval_callback=_parent_approval_callback(),
                     thinking_level=_delegate_thinking_level(),
+                    isolate_worktree=isolate_worktree,
                     # M0A: live-child registry (steer/stop) for the run
                     child_started=lambda c: _register_live_child(
                         {**meta, "transport_kind": "rpc", "steerable": True}, c),
@@ -865,7 +888,11 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                     timeout, fallback_chain, batch_procs, started,
                     profile_home=profile_home, extra_env=extra_env,
                     meta={**meta, "transport_kind": "oneshot-fallback"},
-                    base_env=base_env)
+                    base_env=base_env,
+                    isolate_worktree=isolate_worktree)
+                if isolate_worktree and entry.get("status") == "completed":
+                    _slug = re.sub(r"[^A-Za-z0-9._-]+", "-", isolate_worktree)
+                    entry["isolated_worktree"] = {"branch": f"omp-isolated/{_slug}", "label": isolate_worktree}
                 entry["transport"] = "oneshot-fallback"
                 return entry
             except Exception as exc:  # after a good start: real failure
@@ -883,14 +910,22 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
             entry["task_index"] = task_index
             entry["name"] = child_name
             entry["transport"] = "rpc"
+            if isolate_worktree and entry.get("status") == "completed":
+                _slug = re.sub(r"[^A-Za-z0-9._-]+", "-", isolate_worktree)
+                entry["isolated_worktree"] = {"branch": f"omp-isolated/{_slug}", "label": isolate_worktree}
             return entry
 
-    return _run_omp_one_shot(
+    entry = _run_omp_one_shot(
         task_index, prompt, model, omp_path, workdir,
         timeout, fallback_chain, batch_procs, started,
         profile_home=profile_home, extra_env=extra_env,
         meta={**meta, "transport_kind": "oneshot"},
-        base_env=base_env)
+        base_env=base_env,
+        isolate_worktree=isolate_worktree)
+    if isolate_worktree and entry.get("status") == "completed":
+        _slug = re.sub(r"[^A-Za-z0-9._-]+", "-", isolate_worktree)
+        entry["isolated_worktree"] = {"branch": f"omp-isolated/{_slug}", "label": isolate_worktree}
+    return entry
 
 
 def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
@@ -901,7 +936,8 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
                       profile_home: Optional[str] = None,
                       extra_env: Optional[Dict[str, str]] = None,
                       meta: Optional[Dict[str, Any]] = None,
-                      base_env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                      base_env: Optional[Dict[str, str]] = None,
+                      isolate_worktree: Optional[str] = None) -> Dict[str, Any]:
     """The original ``omp --model m -p <prompt>`` one-shot path (B1).
 
     ``meta`` (M0A): live-child registry record — one-shot children are
@@ -928,6 +964,11 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
     _tl = _delegate_thinking_level()
     if _tl:
         cmd += ["--thinking", _tl]
+    # --isolate-worktree (oh-my-pi#452): start the child in its own linked
+    # worktree so parallel children never share a working copy. Omitted when
+    # None (flag off, or non-git workdir degraded silently).
+    if isolate_worktree:
+        cmd += ["--isolate-worktree", isolate_worktree]
 
     proc = subprocess.Popen(
         cmd, cwd=workdir, env=env,
@@ -1047,6 +1088,17 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
     if base_env is None:
         base_env = _delegate_batch_base_env()
     started = time.time()
+    # --isolate-worktree labels (oh-my-pi#452): computed ONCE per batch, not
+    # per child. None when the kill-switch is off or the workdir is not in a
+    # git tree (silent degrade — matches the subagent_worktree contract).
+    _isolate_repo = _git_toplevel(workdir) if _isolate_worktree_enabled() else None
+
+    def _isolate_label(i: int, t: Dict[str, Any]) -> Optional[str]:
+        if not _isolate_repo:
+            return None
+        _child = str(t.get("name") or "").strip() or f"task-{i}"
+        return f"{_child}-{delegation_id}"
+
     if len(tasks) == 1 or max_workers <= 1:
         _profile_home = env.get("MERCURY_PROFILE_HOME")
         _extra = {k: env[k] for k in ("MERCURY_APPROVAL_SOCKET",) if k in env}
@@ -1057,7 +1109,8 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
                           delegation_id=delegation_id, name=t.get("name"),
                           goal=t.get("goal"),
                           owner_session_id=owner_session_id,
-                          base_env=base_env)
+                          base_env=base_env,
+                          isolate_worktree=_isolate_label(i, t))
             for i, t in enumerate(tasks)
         ]
     else:
@@ -1071,7 +1124,8 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
                             delegation_id=delegation_id, name=t.get("name"),
                             goal=t.get("goal"),
                             owner_session_id=owner_session_id,
-                            base_env=base_env)
+                            base_env=base_env,
+                            isolate_worktree=_isolate_label(i, t))
                 for i, t in enumerate(tasks)
             ]
             results = [f.result() for f in futures]

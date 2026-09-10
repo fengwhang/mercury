@@ -279,13 +279,16 @@ class OmpRpcChild:
                  command_override: Optional[list] = None,
                  approval_callback: Optional[Callable] = None,
                  startup_timeout: float = 60.0,
-                 thinking_level: Optional[str] = None):
+                 thinking_level: Optional[str] = None,
+                 isolate_worktree: Optional[str] = None):
         self._omp_path = omp_path
         self._model = model
         # MERCURY-OMP PATCH (user directive): thinking level is a CONFIG
         # parameter (models.delegate_thinking_level, default xhigh) — never
         # agent-selected per spawn.
         self._thinking_level = thinking_level
+        # --isolate-worktree label (oh-my-pi#452): None = flag omitted.
+        self._isolate_worktree = isolate_worktree
         self._workdir = workdir
         self._env = env or {}
         self._approval_timeout = approval_timeout
@@ -328,6 +331,10 @@ class OmpRpcChild:
             self._omp_path, "--mode", "rpc", "--model", self._model]
         if self._thinking_level and not self._command_override:
             argv += ["--thinking", self._thinking_level]
+        # Same guard as --thinking: test fakes via command_override keep full
+        # control of the argv and never see this flag.
+        if self._isolate_worktree and not self._command_override:
+            argv += ["--isolate-worktree", self._isolate_worktree]
         self._client = RpcClient(
             command=list(argv),
             cwd=self._workdir,
@@ -516,6 +523,7 @@ def run_omp_task_rpc(
     rpc_procs: Optional[list] = None,
     approval_callback: Optional[Callable] = None,
     thinking_level: Optional[str] = None,
+    isolate_worktree: Optional[str] = None,
     child_started: Optional[Callable[["OmpRpcChild"], None]] = None,
     child_finished: Optional[Callable[["OmpRpcChild"], None]] = None,
 ) -> Dict[str, Any]:
@@ -540,6 +548,7 @@ def run_omp_task_rpc(
         # NO LIMITS: None task timeout -> no approval clock either.
         env=env,
         thinking_level=thinking_level,
+        isolate_worktree=isolate_worktree,
         approval_timeout=(min(timeout, 600.0) if timeout is not None else None),
         command_override=command_override,
         startup_timeout=startup_timeout,
