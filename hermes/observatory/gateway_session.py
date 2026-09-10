@@ -52,6 +52,28 @@ INJECT_KINDS = frozenset({"prompt", "steer", "command"})
 #: Best-effort: no listener or send error = drop silently.
 GATEWAY_PROGRESS_SOCK_NAME = "gateway-progress.sock"
 
+#: Datagram ``kind`` values on the gateway-progress socket. The turn
+#: collector sends ``{node_id, seq, event}`` with NO kind (legacy shape —
+#: the sidecar defaults it to ``TURN_PROGRESS_KIND``); gateway-origin
+#: omp-child frames carry an explicit kind so the sidecar can create and
+#: render child nodes from wire bytes alone. The sidecar MUST NEVER
+#: import the gateway's in-process ``tools.omp_delegation._live_children``
+#: table (separate processes in production — that import always fails
+#: there); the gateway reads its OWN table same-process and pushes bytes.
+TURN_PROGRESS_KIND = "turn_progress"
+#: ``{"kind": "child_lifecycle", "node_id", "lifecycle": "start"|"stop",
+#: "name", "goal", "delegation_id", "task_index", "parent_session",
+#: "status", "summary"}`` — the gateway-child feed watcher emits start
+#: when a ``_live_children`` entry appears, stop when it disappears.
+CHILD_LIFECYCLE_KIND = "child_lifecycle"
+#: ``{"kind": "child_event", "node_id", "feed": {...}}`` — one forwarded
+#: ``OmpFeed`` typed event (node/tool/thought; message frames are skipped,
+#: matching the sidecar ``_run_omp_feed`` parity) for a live child.
+CHILD_EVENT_KIND = "child_event"
+
+#: Gateway-child feed watcher poll cadence (seconds).
+CHILD_FEED_POLL_S = 1.0
+
 _locks_guard = threading.Lock()
 _session_locks: dict[str, threading.Lock] = {}
 _session_agents: dict[str, Any] = {}
@@ -110,27 +132,55 @@ def _parse_slash_verb(text: str) -> tuple[str, str]:
     return verb, args
 
 
+def _live_runner() -> Any | None:
+    """The live GatewayRunner serving this process, if any (never raises)."""
+    try:
+        from gateway.run import _gateway_runner_ref  # type: ignore
+
+        ref = _gateway_runner_ref
+        return ref() if ref is not None else None
+    except Exception:
+        return None
+
+
 def _dispatch_slash_command(text: str) -> Optional[str]:
     """Try the gateway slash dispatch for ``text``; None = unknown verb.
 
-    Uses the same table ``GatewayRunner._handle_message`` uses:
+    Generic pass-through (no per-command code): after the
+    ``is_gateway_known_command`` gate (unknown verbs return None so the
+    caller falls back to a turn), synthesize a Matrix ``MessageEvent``
+    and call the LIVE runner's full ``_handle_message`` — the same
+    pipeline every other surface uses. Every present and future
+    command/skill/plugin dispatches for free.
 
-    1. ``mercury_cli.commands.resolve_command`` (same resolver, aliases
-       included) + ``is_gateway_known_command`` (same gate). Unknown →
-       None so the caller falls back to ``run_conversation``.
-    2. Registry-owned pure executors via ``mercury_cli.slash_exec``
-       (``/version``, ``/help``, ``/commands``, ``/profile`` … — no
-       session mutation, safe headless).
-    3. The runner's plain-command table
-       (``GatewayRunner._gateway_plain_command_handlers`` — ``/status``,
-       ``/restart`` via ``slash_commands.py`` etc.) against the live
-       runner when one is serving this process; best-effort, any
-       failure falls through to None (caller falls back to a turn).
+    Session override: the event carries
+    ``metadata["gateway_session_id"] = "gateway"`` (the runner's
+    explicit-session seam, honored by ``_handle_message_with_agent``
+    for turn fall-throughs such as rewritten blueprint seeds) plus
+    ``gateway_session_key`` derived from the same source through the
+    live runner (arms the route-recovery guard), and ``internal=True``
+    (skips pairing auth — the Matrix ghost is not a paired user —
+    startup-restore queueing, and activity stamping; command-scoped
+    ``command:`` hooks still fire). Handlers that keep per-session
+    state (``/model`` overrides, destructive confirms) resolve it under
+    the stable Matrix DM key via ``_session_key_for_source`` — the same
+    key on every Matrix call.
 
-    Never raises: unexpected failures log and return None.
+    Degraded forms are whatever each handler already supports without
+    an adapter: no Matrix adapter is registered, so
+    ``_adapter_for_source`` returns None — ``/model`` with no args
+    renders its text list instead of the Telegram/Discord picker, and
+    destructive confirms use their text fallback. D13 scope
+    (gateway-lifecycle verbs gateway-room-only) is enforced in the
+    sidecar control router before inject, not here.
+
+    Requires the live runner (None without one → caller falls back to a
+    turn). The sync socket-thread context drives the coroutine with
+    ``asyncio.run``; a running loop falls back to a turn rather than
+    deadlocking on nested run. Never raises otherwise.
     """
     try:
-        verb, args = _parse_slash_verb(text)
+        verb, _args = _parse_slash_verb(text)
         if not verb:
             return None
         from mercury_cli.commands import is_gateway_known_command, resolve_command
@@ -139,33 +189,8 @@ def _dispatch_slash_command(text: str) -> Optional[str]:
         canonical = cmd_def.name if cmd_def is not None else verb
         if not is_gateway_known_command(canonical):
             return None
-        # 2. Pure executors first (no runner needed).
-        try:
-            from mercury_cli.slash_exec import CommandContext, run_execute
-
-            reply = run_execute(
-                cmd_def, CommandContext(surface="gateway", args=args)
-            )
-            if reply is not None:
-                return reply.text
-        except Exception:
-            logger.debug("gateway_session: slash executor failed for /%s", verb, exc_info=True)
-        # 3. Plain-command table on the live runner (stateful commands).
-        try:
-            from gateway.run import _gateway_runner_ref  # type: ignore
-
-            ref = _gateway_runner_ref
-            runner = ref() if ref is not None else None
-        except Exception:
-            runner = None
+        runner = _live_runner()
         if runner is None:
-            return None
-        try:
-            handlers = runner._gateway_plain_command_handlers()
-        except Exception:
-            return None
-        handler = handlers.get(canonical)
-        if handler is None:
             return None
         try:
             from gateway.config import Platform
@@ -173,34 +198,60 @@ def _dispatch_slash_command(text: str) -> Optional[str]:
             from gateway.session import SessionSource
         except Exception:
             return None
+        clean = (text or "").strip()
+        if not clean:
+            return None
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="gateway",
+            chat_type="dm",
+        )
+        try:
+            session_key = runner._session_key_for_source(source)
+        except Exception:
+            session_key = ""
         try:
             event = MessageEvent(
-                text=(text or "").strip(),
-                source=SessionSource(
-                    platform=Platform.MATRIX,
-                    chat_id="gateway",
-                    chat_type="dm",
-                ),
+                text=clean,
+                source=source,
+                metadata={
+                    "gateway_session_id": GATEWAY_SESSION_ID,
+                    "gateway_session_key": session_key,
+                },
+                internal=True,
             )
-            result = handler(event)
-            if asyncio.iscoroutine(result):
+        except Exception:
+            logger.debug("gateway_session: matrix event synth failed", exc_info=True)
+            return None
+        try:
+            coro = runner._handle_message(event)
+        except Exception:
+            logger.debug("gateway_session: runner dispatch failed for /%s", verb, exc_info=True)
+            return None
+        try:
+            if asyncio.iscoroutine(coro):
                 try:
                     loop = asyncio.get_running_loop()
                 except RuntimeError:
                     loop = None
                 if loop is not None and loop.is_running():
-                    # Sync socket-thread context never has a running loop;
-                    # an async caller hitting this path falls back to a
-                    # turn rather than deadlocking on nested run.
+                    # Async caller hitting this path falls back to a turn
+                    # rather than deadlocking on a nested run.
+                    try:
+                        coro.close()
+                    except Exception:
+                        pass
                     return None
-                result = asyncio.run(result)
-            if result is None:
-                return ""
-            # EphemeralReply and friends stringify to their text.
-            return str(result)
+                result = asyncio.run(coro)
+            else:
+                result = coro
         except Exception:
-            logger.debug("gateway_session: plain handler failed for /%s", verb, exc_info=True)
+            logger.debug("gateway_session: runner command failed for /%s", verb, exc_info=True)
             return None
+        if result is None:
+            return ""
+        # EphemeralReply and friends stringify to their text.
+        return str(result)
     except Exception:
         logger.debug("gateway_session: slash dispatch failed", exc_info=True)
         return None
@@ -245,6 +296,331 @@ def _push_progress(node_id: str, seq: int, event: dict[str, Any]) -> None:
                 pass
     except Exception:
         pass
+
+
+def _send_child_datagram(payload: dict[str, Any]) -> None:
+    """Fire-and-forget one child-feed datagram; never raises."""
+    try:
+        raw = json.dumps(payload).encode("utf-8")
+    except Exception:
+        return
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            sock.sendto(raw, str(_progress_socket_path()))
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def push_child_lifecycle(
+    node_id: str,
+    lifecycle: str,
+    *,
+    name: str | None = None,
+    goal: str | None = None,
+    delegation_id: str | None = None,
+    task_index: int | None = None,
+    parent_session: str | None = None,
+    status: str | None = None,
+    summary: str | None = None,
+) -> None:
+    """Push one child-lifecycle datagram; never raises.
+
+    ``lifecycle`` is ``"start"`` (entry appeared in the gateway's own
+    ``_live_children`` table) or ``"stop"`` (entry disappeared — the
+    watcher cannot know the terminal status, so stop carries
+    ``status="unknown"`` and no summary; the post-delegate follow-up
+    still verifies the result through the gateway turn).
+    """
+    payload: dict[str, Any] = {
+        "kind": CHILD_LIFECYCLE_KIND,
+        "node_id": node_id,
+        "lifecycle": lifecycle,
+    }
+    if name is not None:
+        payload["name"] = name
+    if goal is not None:
+        payload["goal"] = goal
+    if delegation_id is not None:
+        payload["delegation_id"] = delegation_id
+    if task_index is not None:
+        payload["task_index"] = task_index
+    if parent_session is not None:
+        payload["parent_session"] = parent_session
+    if status is not None:
+        payload["status"] = status
+    if summary is not None:
+        payload["summary"] = summary
+    _send_child_datagram(payload)
+
+
+def push_child_feed_event(node_id: str, feed_event: dict[str, Any]) -> None:
+    """Push one forwarded child feed frame; never raises."""
+    try:
+        feed = dict(feed_event)
+    except Exception:
+        return
+    _send_child_datagram(
+        {"kind": CHILD_EVENT_KIND, "node_id": node_id, "feed": feed}
+    )
+
+
+def _feed_event_to_dict(event: Any) -> dict[str, Any] | None:
+    """One ``OmpFeed`` typed event → datagram ``feed`` dict; None to skip.
+
+    Message frames are skipped (the sidecar ``_run_omp_feed`` ignores them
+    too — parity, not loss). Unknown shapes are skipped; never raises.
+    """
+    try:
+        import dataclasses
+
+        if dataclasses.is_dataclass(event) and not isinstance(event, type):
+            data = dataclasses.asdict(event)
+            shape = type(event).__name__
+        elif isinstance(event, dict):
+            data = dict(event)
+            shape = str(data.get("feed") or "")
+        else:
+            return None
+    except Exception:
+        return None
+    try:
+        # Message frames (role-bearing) are skipped before shape probes:
+        # they share subagent_id/text keys with thought frames.
+        if shape == "MessageEvent" or "role" in data:
+            return None
+        if shape == "NodeEvent" or (
+            "subagent_id" in data and "status" in data and "tool" not in data
+            and "text" not in data
+        ):
+            data["feed"] = "node"
+            return data
+        if shape == "ToolEvent" or ("subagent_id" in data and "tool" in data):
+            data["feed"] = "tool"
+            return data
+        if shape == "ThoughtEvent" or (
+            "subagent_id" in data and "text" in data and "tool" not in data
+        ):
+            data["feed"] = "thought"
+            return data
+    except Exception:
+        return None
+    return None
+
+
+def _snapshot_live_children() -> dict[str, dict[str, Any]]:
+    """Copy the gateway's OWN live-child table (same-process read).
+
+    Never raises — missing module/table reads as empty (gateways without
+    omp delegation simply have no children to forward).
+    """
+    try:
+        import tools.omp_delegation as _od
+    except Exception:
+        return {}
+    try:
+        table = getattr(_od, "_live_children", None)
+        if not isinstance(table, dict):
+            return {}
+        lock = getattr(_od, "_live_children_lock", None)
+        if lock is not None:
+            with lock:
+                items = list(table.items())
+        else:
+            items = list(table.items())
+    except Exception:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for child_id, rec in items:
+        if isinstance(rec, dict):
+            out[str(child_id)] = rec
+    return out
+
+
+def _child_transport_feedable(transport: Any) -> bool:
+    """True when an OmpFeed can subscribe to this child transport."""
+    if transport is None:
+        return False
+    try:
+        from observatory.omp_feed import OmpFeed
+
+        OmpFeed._frame_source(transport)
+        return True
+    except Exception:
+        return False
+
+
+async def _forward_child_feed(
+    child_id: str, transport: Any, feeds: dict[str, Any]
+) -> None:
+    """Subscribe one OmpFeed and push its frames as datagrams until cancelled."""
+    try:
+        from observatory.omp_feed import OmpFeed
+    except Exception:
+        logger.debug("child feed forwarder: no OmpFeed surface", exc_info=True)
+        return
+    feed = OmpFeed(transport)
+    feeds[child_id] = feed
+    try:
+        try:
+            await feed.start()
+        except Exception:
+            logger.debug("child feed subscribe failed for %s", child_id, exc_info=True)
+            return
+        try:
+            async for typed in feed.events():
+                try:
+                    payload = _feed_event_to_dict(typed)
+                except Exception:
+                    continue
+                if payload is None:
+                    continue
+                try:
+                    push_child_feed_event(child_id, payload)
+                except Exception:
+                    continue
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("child feed consume failed for %s", child_id, exc_info=True)
+    finally:
+        try:
+            await feed.stop()
+        except Exception:
+            pass
+        feeds.pop(child_id, None)
+
+
+async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None:
+    """Poll the OWN live-child table; push lifecycle + forward feed frames."""
+    try:
+        interval = float(poll_interval)
+    except Exception:
+        interval = CHILD_FEED_POLL_S
+    if interval <= 0:
+        interval = CHILD_FEED_POLL_S
+    known: dict[str, dict[str, Any]] = {}
+    tasks: dict[str, Any] = {}
+    feeds: dict[str, Any] = {}
+    stops_pushed: set[str] = set()
+    while True:
+        try:
+            snapshot = _snapshot_live_children()
+        except Exception:
+            snapshot = {}
+        for child_id, meta in snapshot.items():
+            if child_id in known:
+                continue
+            known[child_id] = meta
+            stops_pushed.discard(child_id)
+            try:
+                task_index = meta.get("task_index")
+                push_child_lifecycle(
+                    child_id,
+                    "start",
+                    name=(str(meta.get("name")) if meta.get("name") is not None else None),
+                    goal=(str(meta.get("goal")) if meta.get("goal") is not None else None),
+                    delegation_id=(
+                        str(meta.get("delegation_id"))
+                        if meta.get("delegation_id") is not None else None
+                    ),
+                    task_index=(int(task_index) if isinstance(task_index, int) else None),
+                    parent_session=(
+                        str(meta.get("owner_session_id"))
+                        if meta.get("owner_session_id") else None
+                    ),
+                )
+            except Exception:
+                logger.debug("child start push failed for %s", child_id, exc_info=True)
+            try:
+                transport = meta.get("transport")
+            except Exception:
+                transport = None
+            if _child_transport_feedable(transport):
+                try:
+                    tasks[child_id] = asyncio.create_task(
+                        _forward_child_feed(child_id, transport, feeds),
+                        name=f"observatory-child-feed-{child_id}",
+                    )
+                except Exception:
+                    logger.debug("child feed task spawn failed for %s", child_id, exc_info=True)
+        for child_id in list(known):
+            if child_id in snapshot:
+                continue
+            known.pop(child_id, None)
+            task = tasks.pop(child_id, None)
+            if task is not None:
+                try:
+                    task.cancel()
+                except Exception:
+                    pass
+                feed = feeds.pop(child_id, None)
+                if feed is not None:
+                    try:
+                        await feed.stop()
+                    except Exception:
+                        pass
+            if child_id not in stops_pushed:
+                stops_pushed.add(child_id)
+                try:
+                    push_child_lifecycle(child_id, "stop", status="unknown")
+                except Exception:
+                    logger.debug("child stop push failed for %s", child_id, exc_info=True)
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("child watcher sleep failed", exc_info=True)
+
+
+def _child_watcher_main(poll_interval: float = CHILD_FEED_POLL_S) -> None:
+    """Watcher thread body: own event loop, never raises out."""
+    try:
+        asyncio.run(_child_watcher_async(poll_interval))
+    except Exception:
+        logger.debug("child feed watcher exited", exc_info=True)
+
+
+_watcher_guard = threading.Lock()
+_watcher_state: dict[str, Any] = {"thread": None, "started": False}
+
+
+def ensure_child_feed_watcher(
+    *, poll_interval: float = CHILD_FEED_POLL_S
+) -> bool:
+    """Start the gateway-child feed forwarder thread (idempotent).
+
+    Gateway boot calls this once beside the ``inject`` verb registration;
+    the daemon thread owns one asyncio loop, polls the gateway's OWN
+    ``_live_children`` table, and pushes lifecycle + feed datagrams the
+    sidecar ingests cross-process. Best-effort: False when the thread
+    could not start. Never raises.
+    """
+    try:
+        with _watcher_guard:
+            if _watcher_state.get("started"):
+                thread = _watcher_state.get("thread")
+                if thread is not None and thread.is_alive():
+                    return True
+            thread = threading.Thread(
+                target=_child_watcher_main,
+                args=(poll_interval,),
+                name="observatory-child-feed",
+                daemon=True,
+            )
+            _watcher_state["thread"] = thread
+            _watcher_state["started"] = True
+            thread.start()
+            return True
+    except Exception:
+        logger.debug("child feed watcher did not start", exc_info=True)
+        return False
 
 
 class _TurnEventCollector:

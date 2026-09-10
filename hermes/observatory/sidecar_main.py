@@ -111,6 +111,7 @@ from observatory.control import QUEUED_STEER_NOTICE, InjectText
 from observatory.gateway_transport import (
     ControlSocketGatewayTransport,
     GatewayTransportError,
+    gateway_progress_sock_path,
 )
 from observatory.renderer import IntentExecutor, Renderer, SendMessage
 from observatory.state import ObservatoryState, StateError
@@ -166,6 +167,34 @@ GATEWAY_PROMPT_LIVENESS_AFTER_S = 90.0
 GATEWAY_PROMPT_WORKING_NOTICE = (
     "… still working — long turn in progress, reply to follow"
 )
+
+#: Live-ingest datagram cap (unix SOCK_DGRAM payload ceiling).
+GATEWAY_LIVE_DATAGRAM_MAX = 65535
+
+
+def _coerce_live_seq(value: Any) -> int | None:
+    """Coerce a datagram/event seq to int; None when absent/invalid."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and float(value).is_integer():
+        return int(value)
+    return None
+
+
+def _live_event_args_text(args: Any) -> str | None:
+    """Event args → renderer text (same shape as batched replay)."""
+    if args is None:
+        return None
+    if isinstance(args, str):
+        return args or None
+    if isinstance(args, dict):
+        try:
+            return json.dumps(args, default=str)
+        except Exception:
+            return str(args)
+    return str(args)
 
 SMOKE_MARKER = "MERCURY-M4C-OK"
 SMOKE_E2EE_MARKER = "MERCURY-M4C-E2EE-OK"
@@ -230,6 +259,19 @@ class SidecarDaemon:
         #: In-flight gateway-room prompt deliveries (a set so shutdown
         #: cancellation is trivial).
         self._gateway_tasks: set[asyncio.Task] = set()
+        #: Per-node seqs already rendered live via the gateway-progress
+        #: datagram socket. Cleared at each _deliver_gateway_prompt start;
+        #: _replay_gateway_events skips batched events whose seq is in here
+        #: (events without seq always render). Best-effort: bind failure
+        #: disables live only.
+        self._gateway_live_seqs: dict[str, set[int]] = {}
+        #: Live-ingest unix datagram socket (None when disabled/failed).
+        self._gateway_live_sock: Any = None
+        self._gateway_live_enabled: bool = False
+        #: Grandchild node map for datagram-forwarded child feeds:
+        #: child node_id -> subagent_id -> grandchild node_id (mirrors the
+        #: per-feed map in _run_omp_feed for registry children).
+        self._datagram_grandchildren: dict[str, dict[str, str]] = {}
         #: Rooms already carrying a decrypt-failure recovery notice (one
         #: notice per room per process — failures after the first only log).
         self._decrypt_notified: set[str] = set()
@@ -423,7 +465,15 @@ class SidecarDaemon:
 
         # 8. intake endpoint (this loop) — LAST: traffic only after recovery
         await self._serve_intake()
-
+        # 8b. live ingest: unix datagram socket for gateway turn progress
+        #     + gateway-child feed frames. Best-effort: bind failure
+        #     disables live only — batched replay still works.
+        self._start_gateway_live_listener()
+        report["gateway_live"] = bool(self._gateway_live_enabled)
+        # 8c. omp feeds for spawned children (registry). Gateway-origin
+        #     children arrive cross-process via the live socket (8b) — the
+        #     sidecar never imports the gateway's in-process table.
+        self._attach_omp_feeds()
         # 9. discovery (§7) + background loops
         self._start_discovery()
         self._start_loops()
@@ -705,23 +755,418 @@ class SidecarDaemon:
         )
     def _attach_omp_feeds(self) -> None:
         """One OmpFeed per live spawned omp RPC child (registry handles).
-        Grandchildren render into their own rooms; the subagent→node map
-        lives per feed."""
+
+        Gateway-origin omp children are NOT covered here: they live in the
+        gateway process's ``tools.omp_delegation._live_children`` table,
+        invisible to this separate sidecar process (a same-process import
+        of that table always fails here — it was removed, not fixed).
+        Their feed arrives cross-process as ``child_lifecycle`` /
+        ``child_event`` datagrams on the gateway-progress socket (pushed
+        by the gateway's own child-feed watcher, ingested by
+        :meth:`_handle_gateway_live_datagram`), which create and render
+        the child nodes. Grandchildren render into their own rooms; the
+        subagent→node map lives per feed.
+        """
         from observatory.omp_feed import OmpFeed
 
         assert self.registry is not None
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None  # type: ignore[assignment]
+        else:
+            loop = True  # type: ignore[assignment]
         for handle in self.registry.handles():
             rpc = getattr(handle, "rpc", None)
             if rpc is None or handle.node_id in self.omp_feeds:
                 continue
             feed = OmpFeed(rpc)
             self.omp_feeds[handle.node_id] = feed
+            if loop is None:
+                continue
             self._loops.append(
                 asyncio.create_task(
                     self._run_omp_feed(handle.node_id, feed),
                     name=f"observatory-omp-feed-{handle.node_id}",
                 )
             )
+
+    def _start_gateway_live_listener(self) -> None:
+        """Bind the live-ingest unix datagram socket (best-effort).
+
+        Path: ``$MERCURY_HOME/observatory/gateway-progress.sock``. The
+        gateway pushes turn-progress ``{node_id, seq, event}`` datagrams
+        plus gateway-child ``child_lifecycle``/``child_event`` frames.
+        Bind failure disables live rendering only (warning) — the batched
+        ``_replay_gateway_events`` path still works.
+        """
+        if self._gateway_live_sock is not None:
+            return
+        try:
+            sock_path = gateway_progress_sock_path(self.mercury_home)
+        except Exception:
+            log.exception("gateway live ingest disabled: bad socket path")
+            return
+        import socket as _socket
+
+        try:
+            sock_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            log.warning("gateway live ingest disabled: cannot mkdir %s", sock_path.parent)
+            return
+        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_DGRAM)
+        try:
+            if sock_path.exists():
+                try:
+                    sock_path.unlink()
+                except OSError:
+                    pass
+            sock.bind(str(sock_path))
+        except OSError as exc:
+            log.warning(
+                "gateway live ingest disabled: bind %s failed: %s "
+                "(batched replay still works)", sock_path, exc)
+            try:
+                sock.close()
+            except OSError:
+                pass
+            return
+        try:
+            sock.setblocking(False)
+        except OSError:
+            pass
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            log.warning("gateway live ingest disabled: no running loop")
+            try:
+                sock.close()
+            except OSError:
+                pass
+            return
+        self._gateway_live_sock = sock
+        self._gateway_live_enabled = True
+
+        def _on_readable() -> None:
+            try:
+                while True:
+                    try:
+                        data, _addr = sock.recvfrom(GATEWAY_LIVE_DATAGRAM_MAX)
+                    except BlockingIOError:
+                        break
+                    except OSError as exc:
+                        log.debug("gateway live recv failed: %s", exc)
+                        break
+                    if not data:
+                        continue
+                    try:
+                        loop.create_task(
+                            self._handle_gateway_live_datagram(data),
+                            name="observatory-gateway-live")
+                    except RuntimeError:
+                        break
+            except Exception:
+                log.exception("gateway live readable handler failed")
+
+        try:
+            loop.add_reader(sock.fileno(), _on_readable)
+        except Exception as exc:
+            log.warning(
+                "gateway live ingest disabled: add_reader failed: %s "
+                "(batched replay still works)", exc)
+            try:
+                sock.close()
+            except OSError:
+                pass
+            self._gateway_live_sock = None
+            self._gateway_live_enabled = False
+            return
+        log.info("gateway live ingest listening on %s", sock_path)
+
+    def _stop_gateway_live_listener(self) -> None:
+        """Best-effort teardown of the live-ingest socket (never raises)."""
+        sock = self._gateway_live_sock
+        self._gateway_live_sock = None
+        self._gateway_live_enabled = False
+        if sock is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None  # type: ignore[assignment]
+        if loop is not None:
+            try:
+                loop.remove_reader(sock.fileno())
+            except Exception:
+                pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+        try:
+            sock_path = gateway_progress_sock_path(self.mercury_home)
+            if sock_path.exists():
+                try:
+                    sock_path.unlink()
+                except OSError:
+                    pass
+        except Exception:
+            pass
+
+    async def _handle_gateway_live_datagram(self, data: bytes) -> None:
+        """Parse one live-ingest datagram → live render (never raises).
+
+        Three shapes share the socket: legacy turn-progress
+        ``{node_id, seq, event}`` (no ``kind``) plus the gateway-child
+        feed ``{"kind": "child_lifecycle" | "child_event", "node_id",
+        ...}``. Unknown or malformed payloads are skipped.
+        """
+        try:
+            payload = json.loads(data.decode("utf-8"))
+        except Exception:
+            log.debug("gateway live datagram: bad JSON, skipped", exc_info=True)
+            return
+        if not isinstance(payload, dict):
+            return
+        kind = str(payload.get("kind") or "")
+        try:
+            if kind in ("", "turn_progress"):
+                await self._handle_turn_progress_datagram(payload)
+            elif kind == "child_lifecycle":
+                await self._handle_child_lifecycle_datagram(payload)
+            elif kind == "child_event":
+                await self._handle_child_feed_datagram(payload)
+            else:
+                log.debug("gateway live datagram: unknown kind %r, skipped", kind)
+        except Exception:
+            log.debug("gateway live datagram handling failed", exc_info=True)
+
+    async def _handle_turn_progress_datagram(self, payload: dict) -> None:
+        """One ``{node_id, seq, event}`` turn frame → live render."""
+        node_id = str(payload.get("node_id") or payload.get("node") or "")
+        event = payload.get("event")
+        if event is None:
+            event = {
+                k: v for k, v in payload.items()
+                if k not in ("node_id", "node", "seq", "kind")
+            }
+        if not node_id or not isinstance(event, dict) or not event:
+            log.debug("gateway live datagram: missing node_id/event, skipped: %r", payload)
+            return
+        seq = _coerce_live_seq(payload.get("seq"))
+        ev_seq = _coerce_live_seq(event.get("seq"))
+        seqs = {s for s in (seq, ev_seq) if s is not None}
+        primary = seq if seq is not None else ev_seq
+        try:
+            await self._render_gateway_live_event(node_id, primary, event)
+        except Exception:
+            log.debug("gateway live render failed (node %s)", node_id, exc_info=True)
+            return
+        if seqs:
+            self._gateway_live_seqs.setdefault(node_id, set()).update(seqs)
+
+    async def _render_gateway_live_event(
+        self, node_id: str, seq: int | None, event: dict
+    ) -> None:
+        """Render one live event (same gates as batched replay)."""
+        assert self.renderer is not None
+        if not isinstance(event, dict):
+            return
+        etype = str(event.get("type") or "")
+        if etype in ("tool_call", "tool"):
+            tool = str(event.get("tool") or "")
+            if not tool:
+                return
+            await self.renderer.render_tool_call(
+                node_id, tool, _live_event_args_text(event.get("args")))
+        elif etype in ("thinking", "thought", "reasoning"):
+            text_val = event.get("text")
+            if not isinstance(text_val, str) or not text_val.strip():
+                return
+            router = self.control_router
+            if router is not None and not router.cot_enabled(node_id):
+                return
+            await self.renderer.render_thinking(node_id, text_val)
+        else:
+            return
+
+    async def _ensure_datagram_child_node(
+        self,
+        node_id: str,
+        *,
+        name: str | None = None,
+        goal: str | None = None,
+        delegation_id: str | None = None,
+        task_index: int | None = None,
+        parent_session: str | None = None,
+    ) -> bool:
+        """Create the datagram child node when absent; True when created.
+
+        Discovery may create the same node first (poll/hook race) — the
+        ``state.get`` guard makes creation exactly-once; late frames for
+        an unknown node build a minimal stub so no frame is ever dropped.
+        """
+        assert self.state is not None and self.renderer is not None
+        try:
+            self.state.get(node_id)
+            return False
+        except StateError:
+            pass
+        node_name = (name or "").strip() or node_id
+        try:
+            parent = self._resolve_parent_node(parent_session or "")
+        except Exception:
+            parent = GATEWAY_NODE_ID
+        slug = assign_slug(node_name, self.state)
+        mxid = virtual_mxid(slug, server_name=self.server_name)
+        extra: dict[str, Any] = {"engine_child": True}
+        if isinstance(delegation_id, str) and delegation_id:
+            extra["delegation_id"] = delegation_id
+        if isinstance(task_index, int):
+            extra["task_index"] = task_index
+        if isinstance(goal, str) and goal:
+            extra["goal"] = goal
+        try:
+            self.state.add_node(
+                node_id,
+                engine="omp",
+                name=node_name,
+                slug=slug,
+                mxid=mxid,
+                session_ref=f"omp-child:{node_id}",
+                parent_node_id=parent,
+                extra=extra,
+            )
+        except Exception:
+            log.debug("datagram child node %s already created (race)", node_id)
+            return False
+        if self.client is not None:
+            localpart = mxid.lstrip("@").split(":", 1)[0]
+            try:
+                await self.client.register_virtual_user(localpart)
+            except Exception as exc:  # noqa: BLE001 — ghost may auto-provision
+                log.info("register %s: %s", localpart, exc)
+        await self.renderer.apply_plan(
+            self.renderer.build_plan(host=socket.gethostname())
+        )
+        return True
+
+    async def _handle_child_lifecycle_datagram(self, payload: dict) -> None:
+        """Gateway-child start/stop → node create + provision + render."""
+        node_id = str(payload.get("node_id") or "")
+        lifecycle = str(payload.get("lifecycle") or "")
+        if not node_id or lifecycle not in ("start", "stop"):
+            log.debug("child lifecycle datagram: bad shape, skipped: %r", payload)
+            return
+        if self.state is None or self.renderer is None:
+            return
+        if lifecycle == "start":
+            task_index = payload.get("task_index")
+            await self._ensure_datagram_child_node(
+                node_id,
+                name=(str(payload.get("name")) if payload.get("name") is not None else None),
+                goal=(str(payload.get("goal")) if payload.get("goal") is not None else None),
+                delegation_id=(
+                    str(payload.get("delegation_id"))
+                    if payload.get("delegation_id") is not None else None
+                ),
+                task_index=(int(task_index) if isinstance(task_index, int) else None),
+                parent_session=(
+                    str(payload.get("parent_session"))
+                    if payload.get("parent_session") else None
+                ),
+            )
+            try:
+                row = self.state.get(node_id)
+            except StateError:
+                return
+            if row.get("room_id"):
+                await self.renderer.render_lifecycle(node_id)
+            else:
+                log.info(
+                    "gateway child %s observed without a planned room — "
+                    "lifecycle render skipped", node_id,
+                )
+            return
+        try:
+            row = self.state.get(node_id)
+        except StateError:
+            return  # stop for a node we never saw — nothing to render
+        if row["status"] != "live":
+            return
+        status = str(payload.get("status") or "unknown")
+        summary = payload.get("summary")
+        summary_text = str(summary) if summary is not None else None
+        await self.renderer.render_death(node_id, status=status, summary=summary_text)
+        try:
+            await self._maybe_post_delegate_followup(
+                node_id, str(row.get("parent_node_id") or ""),
+                str(row.get("name") or node_id),
+                status=status, summary=summary,
+            )
+        except Exception:
+            log.debug("post-delegate followup failed for %s", node_id, exc_info=True)
+
+    async def _handle_child_feed_datagram(self, payload: dict) -> None:
+        """Forwarded child feed frame → grandchild-mapped render."""
+        node_id = str(payload.get("node_id") or "")
+        feed = payload.get("feed")
+        if not node_id or not isinstance(feed, dict) or not feed:
+            log.debug("child feed datagram: bad shape, skipped: %r", payload)
+            return
+        if self.state is None or self.renderer is None:
+            return
+        await self._ensure_datagram_child_node(node_id)
+        ftype = str(feed.get("feed") or "")
+        boxes = self._datagram_grandchildren.setdefault(node_id, {})
+        try:
+            if ftype == "node":
+                subagent_id = str(feed.get("subagent_id") or "")
+                if not subagent_id:
+                    return
+                if str(feed.get("kind") or "") == "death":
+                    target = boxes.get(subagent_id) or f"{node_id}/gc:{subagent_id}"
+                    try:
+                        if self.state.get(target)["status"] == "live":
+                            await self.renderer.render_death(
+                                target, status=str(feed.get("status") or "completed"))
+                    except StateError:
+                        pass
+                    return
+                from types import SimpleNamespace
+
+                adapted = SimpleNamespace(
+                    kind="add",
+                    subagent_id=subagent_id,
+                    parent_tool_call_id=feed.get("parent_tool_call_id"),
+                    status="running",
+                    agent=feed.get("agent") or feed.get("task") or subagent_id,
+                    task=feed.get("task"),
+                    session_file=feed.get("session_file"),
+                )
+                boxes[subagent_id] = await self._render_grandchild(node_id, adapted)
+            elif ftype == "tool":
+                target = boxes.get(str(feed.get("subagent_id") or ""))
+                if not target:
+                    return
+                tool = str(feed.get("tool") or "")
+                if not tool:
+                    return
+                await self.renderer.render_tool_call(
+                    target, tool, _live_event_args_text(feed.get("args")))
+            elif ftype == "thought":
+                target = boxes.get(str(feed.get("subagent_id") or ""))
+                text_val = feed.get("text")
+                if not target or not isinstance(text_val, str) or not text_val.strip():
+                    return
+                router = self.control_router
+                if router is not None and not router.cot_enabled(target):
+                    return
+                await self.renderer.render_thinking(target, text_val)
+            else:
+                log.debug("child feed datagram: unknown feed %r, skipped", ftype)
+        except Exception:
+            log.debug("child feed render failed (node %s)", node_id, exc_info=True)
 
     # --- discovery → state → renderer (§7 + §5) ---------------------------------
 
@@ -805,9 +1250,16 @@ class SidecarDaemon:
                 row = self.state.get(node_id)
             except StateError:
                 return  # death for a node we never saw — nothing to render
+            parent_id = str(row.get("parent_node_id") or "")
+            child_name = str(row.get("name") or node_id)
             if row["status"] == "live":
                 await self.renderer.render_death(
                     node_id, status=event.status, summary=event.summary
+                )
+                await self._maybe_post_delegate_followup(
+                    node_id, parent_id, child_name,
+                    status=str(event.status or ""),
+                    summary=event.summary,
                 )
 
     def _resolve_parent_node(self, parent_session: str) -> str:
@@ -1120,6 +1572,48 @@ class SidecarDaemon:
             and any(isinstance(a, InjectText) for a in (getattr(outcome, "actions", ()) or ()))
         )
 
+    def _gateway_delivery_in_flight(self) -> bool:
+        """True when a gateway prompt delivery task is currently running."""
+        try:
+            return any(not t.done() for t in self._gateway_tasks)
+        except Exception:
+            return bool(self._gateway_tasks)
+
+    async def _maybe_post_delegate_followup(
+        self, node_id: str, parent_id: str, name: str, *, status: str, summary: Any
+    ) -> None:
+        """Post-delegate narration: child death under the gateway node.
+
+        When the parent is the gateway agent and no gateway delivery task
+        is currently running (the turn already ended), send one labeled
+        follow-up inject (kind=prompt) so the gateway verifies the result
+        and replies to the room. Skipped when a delivery is in flight —
+        the summary then arrives via the delegate result.
+        """
+        try:
+            gw_id = self._gateway_node_id()
+        except Exception:
+            gw_id = GATEWAY_NODE_ID
+        if parent_id != gw_id:
+            return
+        if self._gateway_delivery_in_flight():
+            return
+        transport = self.gateway_transport
+        if transport is None:
+            log.info("delegate followup skipped: no gateway transport (child %s)", node_id)
+            return
+        text_summary = str(summary or "").strip()
+        text = f"[subagent {name} {status}] {text_summary} verify the result and reply to the room"
+        try:
+            task = asyncio.create_task(
+                self._deliver_gateway_prompt(gw_id, text, kind="prompt"),
+                name=f"observatory-gateway-followup-{node_id}",
+            )
+        except RuntimeError:
+            return
+        self._gateway_tasks.add(task)
+        task.add_done_callback(self._gateway_tasks.discard)
+
     async def _handle_gateway_prompt_outcome(self, outcome: Any) -> None:
         """Gateway-room text → prompt delivery (never a steer notice).
 
@@ -1150,6 +1644,10 @@ class SidecarDaemon:
     async def _deliver_gateway_prompt(self, node_id: str, text: str, *, kind: str = "prompt") -> None:
         """One prompt → gateway session → batched replay + reply in the room."""
         from observatory.control import ControlNotice
+        # Live-ingest seq-dedupe: fresh per-node live set for this turn —
+        # datagrams arriving during the turn accumulate here, and the
+        # batched replay below skips their seqs.
+        self._gateway_live_seqs[node_id] = set()
 
         transport = self.gateway_transport
         if transport is None:
@@ -1216,11 +1714,13 @@ class SidecarDaemon:
                     await liveness
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+        assert self.renderer is not None
+        # Empty-reply fix: replay first so tool history never drops on
+        # empty replies; empty reply + empty events stays silent (no sends).
+        await self._replay_gateway_events(node_id, events or [])
         if not reply.strip():
             log.warning("gateway answered with an empty reply (node %s)", node_id)
             return
-        assert self.renderer is not None
-        await self._replay_gateway_events(node_id, events or [])
         await self.renderer.render_agent_message(node_id, reply)
 
     async def _replay_gateway_events(self, node_id: str, events: list) -> None:
@@ -1228,16 +1728,22 @@ class SidecarDaemon:
 
         Tool calls render unconditionally; thinking renders iff the room
         has thinking display on (``control_router.cot_enabled``) — the
-        same gate the omp feed path uses. Unknown event shapes are
-        skipped; one bad event never kills the replay.
+        same gate the omp feed path uses. Events whose ``seq`` was already
+        rendered live (``_gateway_live_seqs``) are skipped; events without
+        a seq always render. Unknown event shapes are skipped; one bad
+        event never kills the replay.
         """
         assert self.renderer is not None
         import json as _json
 
         router = self.control_router
+        live = self._gateway_live_seqs.get(node_id) or set()
         for event in events or []:
             try:
                 if not isinstance(event, dict):
+                    continue
+                seq = _coerce_live_seq(event.get("seq"))
+                if seq is not None and seq in live:
                     continue
                 etype = str(event.get("type") or "")
                 if etype in ("tool_call", "tool"):
@@ -1307,6 +1813,10 @@ class SidecarDaemon:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         self._gateway_tasks.clear()
+        try:
+            self._stop_gateway_live_listener()
+        except Exception:
+            log.debug("gateway live listener stop failed", exc_info=True)
         for task in self._loops:
             task.cancel()
         for task in self._loops:
