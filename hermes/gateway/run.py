@@ -33106,7 +33106,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             def _observatory_inject_handler(params: dict) -> dict:
                 text = params.get("text", "") if isinstance(params, dict) else ""
                 kind = params.get("kind", "prompt") if isinstance(params, dict) else "prompt"
-                _reply, _events = _run_gateway_prompt_with_events(text, kind=kind)
+                node_id = params.get("node_id", "gw") if isinstance(params, dict) else "gw"
+                _reply, _events = _run_gateway_prompt_with_events(text, kind=kind, node_id=node_id or "gw")
                 _out: dict = {"reply": _reply}
                 if _events:
                     # Cap events so the 512KB response guard cannot turn a
