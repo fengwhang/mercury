@@ -208,7 +208,7 @@ class SidecarDaemon:
         self.executor: IntentExecutor | Any = None
         self.e2ee: e2ee_mod.E2EEManager | None = None
         self.intake: TransactionIntake | None = None
-        self._runner: web.AppRunner | None = None
+        self._runner: Any = None  # web.AppRunner once aiohttp is required at boot
         self.discovery: Any | None = None
         self.registry: Any | None = None
         # Sibling subsystems (M4a/M4b/M5).
