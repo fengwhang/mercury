@@ -727,7 +727,22 @@ class _ApprovalBridgeServer:
 # fallback ONLY for RPC start failure (binary too old / not RPC-capable /
 # vendored client import error). ``startup`` bounds the ready-frame wait so
 # a non-RPC binary fails over fast instead of stalling the fan-out.
-RPC_STARTUP_TIMEOUT = float(os.environ.get("HERMES_OMP_RPC_STARTUP", "20"))
+try:
+    RPC_STARTUP_TIMEOUT = float(os.environ.get("HERMES_OMP_RPC_STARTUP", "20"))
+except (TypeError, ValueError):
+    RPC_STARTUP_TIMEOUT = 20.0
+
+
+def _rpc_startup_timeout() -> float:
+    """Ready-frame wait, re-read per batch so env changes take effect.
+
+    Invalid values (e.g. HERMES_OMP_RPC_STARTUP=garbage) fall back to 20s
+    instead of crashing the delegation engine at import or per batch.
+    """
+    try:
+        return float(os.environ.get("HERMES_OMP_RPC_STARTUP", str(RPC_STARTUP_TIMEOUT)))
+    except (TypeError, ValueError):
+        return 20.0
 
 
 def _rpc_disabled() -> bool:
@@ -736,8 +751,78 @@ def _rpc_disabled() -> bool:
 
 
 def _isolate_worktree_enabled() -> bool:
-    """Kill-switch: HERMES_OMP_ISOLATE=0/false/no/off disables; default ON."""
-    return os.environ.get("HERMES_OMP_ISOLATE", "").strip().lower() not in {"0", "false", "no", "off"}
+    """Opt-in: HERMES_OMP_ISOLATE=1/true/yes/on enables; default OFF.
+
+    OFF until --isolate-worktree stabilizes upstream (label collisions,
+    stale binaries). Explicit opt-in only — empty/unset means disabled.
+    """
+    return os.environ.get("HERMES_OMP_ISOLATE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_isolate_support_cache: Dict[str, bool] = {}
+
+
+def _omp_supports_isolate_worktree(omp_path: str) -> bool:
+    """Version gate: True when ``omp --help`` advertises --isolate-worktree.
+
+    Cached per binary path. Any probe failure (missing binary, timeout,
+    non-zero help) returns False — fail safe means omitting the flag.
+    """
+    if not omp_path:
+        return False
+    if omp_path in _isolate_support_cache:
+        return _isolate_support_cache[omp_path]
+    try:
+        proc = subprocess.run(
+            [omp_path, "--help"],
+            capture_output=True, text=True, timeout=10,
+        )
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        ok = "isolate-worktree" in out
+    except Exception:
+        ok = False
+    _isolate_support_cache[omp_path] = ok
+    return ok
+
+
+def _gate_isolate_label(omp_path: str, isolate_worktree: Optional[str]) -> Optional[str]:
+    """Omit + warn when the omp binary predates --isolate-worktree."""
+    if not isolate_worktree:
+        return None
+    try:
+        if _omp_supports_isolate_worktree(omp_path):
+            return isolate_worktree
+    except Exception:
+        pass
+    logger.warning(
+        "omp binary %s does not advertise --isolate-worktree "
+        "(predates flag?) — omitting isolate label %r",
+        omp_path, isolate_worktree)
+    return None
+
+
+def _isolate_slug(label: str) -> str:
+    """Branch slug omp derives from a label (mirrors its sanitization)."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", label)
+
+
+# Substrings (lowercased) marking an RPC start failure as isolate/usage
+# related: retrying the one-shot fallback with the SAME label would fail
+# the same way (stale binary: unknown flag exit 2; branch collision:
+# already-exists exit 1). The fallback strips the label instead.
+_ISOLATE_START_ERROR_HINTS = (
+    "isolate",
+    "unknown flag",
+    "unknown option",
+    "usage",
+    "already exists",
+    "worktree",
+)
+
+
+def _is_isolate_start_error(exc: BaseException) -> bool:
+    msg = str(exc or "").lower()
+    return any(hint in msg for hint in _ISOLATE_START_ERROR_HINTS)
 
 
 def _git_toplevel(workdir: Optional[str]) -> Optional[str]:
@@ -833,6 +918,9 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
             "model": model,
             "duration_seconds": 0.0,
         }
+    # Version gate: stale omp binaries predate --isolate-worktree (unknown
+    # flag exit 2). Omit + warn instead of failing every child in the batch.
+    isolate_worktree = _gate_isolate_label(omp_path, isolate_worktree)
 
     if not _rpc_disabled():
         try:
@@ -868,7 +956,7 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                     workdir=workdir,
                     env=rpc_env,
                     timeout=(float(timeout) if timeout is not None else None),
-                    startup_timeout=RPC_STARTUP_TIMEOUT,
+                    startup_timeout=_rpc_startup_timeout(),
                     batch_procs=batch_procs,
                     approval_callback=_parent_approval_callback(),
                     thinking_level=_delegate_thinking_level(),
@@ -880,19 +968,30 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                         meta["child_id"], c),
                 )
             except OmpRpcStartError as start_exc:
-                logger.warning(
-                    "C1: omp RPC start failed (%s) — falling back to -p "
-                    "one-shot for task %d", start_exc, task_index)
+                # Isolate/usage start errors must NOT retry with the same
+                # label: stale binary (unknown flag exit 2) or branch
+                # collision (same slug exists, exit 1) would fail identically
+                # on the fallback and double-spawn side effects. Strip it.
+                fallback_label: Optional[str] = None
+                if isolate_worktree and _is_isolate_start_error(start_exc):
+                    logger.warning(
+                        "C1: omp RPC start failed with isolate/usage error "
+                        "(%s) — retrying one-shot WITHOUT --isolate-worktree "
+                        "for task %d", start_exc, task_index)
+                else:
+                    logger.warning(
+                        "C1: omp RPC start failed (%s) — falling back to -p "
+                        "one-shot for task %d", start_exc, task_index)
+                    fallback_label = isolate_worktree
                 entry = _run_omp_one_shot(
                     task_index, prompt, model, omp_path, workdir,
                     timeout, fallback_chain, batch_procs, started,
                     profile_home=profile_home, extra_env=extra_env,
                     meta={**meta, "transport_kind": "oneshot-fallback"},
                     base_env=base_env,
-                    isolate_worktree=isolate_worktree)
-                if isolate_worktree and entry.get("status") == "completed":
-                    _slug = re.sub(r"[^A-Za-z0-9._-]+", "-", isolate_worktree)
-                    entry["isolated_worktree"] = {"branch": f"omp-isolated/{_slug}", "label": isolate_worktree}
+                    isolate_worktree=fallback_label)
+                if fallback_label and entry.get("status") == "completed":
+                    entry["isolated_worktree"] = {"branch": f"omp-isolated/{_isolate_slug(fallback_label)}", "label": fallback_label}
                 entry["transport"] = "oneshot-fallback"
                 return entry
             except Exception as exc:  # after a good start: real failure
@@ -911,7 +1010,7 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
             entry["name"] = child_name
             entry["transport"] = "rpc"
             if isolate_worktree and entry.get("status") == "completed":
-                _slug = re.sub(r"[^A-Za-z0-9._-]+", "-", isolate_worktree)
+                _slug = _isolate_slug(isolate_worktree)
                 entry["isolated_worktree"] = {"branch": f"omp-isolated/{_slug}", "label": isolate_worktree}
             return entry
 
@@ -923,8 +1022,9 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
         base_env=base_env,
         isolate_worktree=isolate_worktree)
     if isolate_worktree and entry.get("status") == "completed":
-        _slug = re.sub(r"[^A-Za-z0-9._-]+", "-", isolate_worktree)
+        _slug = _isolate_slug(isolate_worktree)
         entry["isolated_worktree"] = {"branch": f"omp-isolated/{_slug}", "label": isolate_worktree}
+    entry["transport"] = "oneshot"
     return entry
 
 
@@ -966,7 +1066,8 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
         cmd += ["--thinking", _tl]
     # --isolate-worktree (oh-my-pi#452): start the child in its own linked
     # worktree so parallel children never share a working copy. Omitted when
-    # None (flag off, or non-git workdir degraded silently).
+    # None (flag off, non-git workdir, or stale binary predating the flag).
+    isolate_worktree = _gate_isolate_label(omp_path, isolate_worktree)
     if isolate_worktree:
         cmd += ["--isolate-worktree", isolate_worktree]
 
@@ -1091,13 +1192,30 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
     # --isolate-worktree labels (oh-my-pi#452): computed ONCE per batch, not
     # per child. None when the kill-switch is off or the workdir is not in a
     # git tree (silent degrade — matches the subagent_worktree contract).
+    # Deduped on the SANITIZED slug (suffix -2, -3): distinct names can
+    # sanitize identically ("foo bar" vs "foo-bar") and omp would fail the
+    # second child with branch-exists exit 1.
     _isolate_repo = _git_toplevel(workdir) if _isolate_worktree_enabled() else None
+    _seen_slugs: set = set()
 
     def _isolate_label(i: int, t: Dict[str, Any]) -> Optional[str]:
         if not _isolate_repo:
             return None
         _child = str(t.get("name") or "").strip() or f"task-{i}"
-        return f"{_child}-{delegation_id}"
+        raw = f"{_child}-{delegation_id}"
+        slug = _isolate_slug(raw)
+        if slug not in _seen_slugs:
+            _seen_slugs.add(slug)
+            return raw
+        base = raw
+        n = 2
+        while True:
+            cand = f"{base}-{n}"
+            s = _isolate_slug(cand)
+            if s not in _seen_slugs:
+                _seen_slugs.add(s)
+                return cand
+            n += 1
 
     if len(tasks) == 1 or max_workers <= 1:
         _profile_home = env.get("MERCURY_PROFILE_HOME")

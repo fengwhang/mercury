@@ -501,7 +501,7 @@ class TestRpcTransportSelection(unittest.TestCase):
         os.environ["HERMES_OMP_TRANSPORT"] = "oneshot"
         entry = mod._run_omp_task(0, "p", "m", None, 30, None)
         self.assertEqual(entry["status"], "completed")
-        self.assertNotIn("transport", entry)  # one-shot never stamped
+        self.assertEqual(entry["transport"], "oneshot")  # direct one-shot stamps transport
 
     def test_failed_oneshot_after_rpc_start_failure_keeps_error(self):
         import tools.omp_delegation as mod

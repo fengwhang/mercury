@@ -60,6 +60,30 @@ _UI_POLL_INTERVAL = 0.5
 # MERCURY-OMP PATCH (matrix observatory §8.2): subagent frame subscription
 # levels the omp RPC server accepts (RpcSubagentSubscriptionLevel).
 _SUBAGENT_SUBSCRIPTION_LEVELS = ("off", "progress", "events")
+_isolate_support_cache: Dict[str, bool] = {}
+
+
+def _omp_supports_isolate_worktree(omp_path: str) -> bool:
+    """Version gate: True when ``omp --help`` advertises --isolate-worktree.
+
+    Cached per binary path. Any probe failure returns False — fail safe
+    means omitting the flag (stale binaries predate it: unknown flag exit 2).
+    """
+    if not omp_path:
+        return False
+    if omp_path in _isolate_support_cache:
+        return _isolate_support_cache[omp_path]
+    try:
+        proc = subprocess.run(
+            [omp_path, "--help"],
+            capture_output=True, text=True, timeout=10,
+        )
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        ok = "isolate-worktree" in out
+    except Exception:
+        ok = False
+    _isolate_support_cache[omp_path] = ok
+    return ok
 
 
 
@@ -332,9 +356,21 @@ class OmpRpcChild:
         if self._thinking_level and not self._command_override:
             argv += ["--thinking", self._thinking_level]
         # Same guard as --thinking: test fakes via command_override keep full
-        # control of the argv and never see this flag.
+        # control of the argv and never see this flag. Version-gated: stale
+        # omp binaries predate --isolate-worktree, so omit + warn instead of
+        # failing start with unknown-flag exit 2.
         if self._isolate_worktree and not self._command_override:
-            argv += ["--isolate-worktree", self._isolate_worktree]
+            try:
+                supported = _omp_supports_isolate_worktree(self._omp_path)
+            except Exception:
+                supported = False
+            if supported:
+                argv += ["--isolate-worktree", self._isolate_worktree]
+            else:
+                logger.warning(
+                    "omp binary %s does not advertise --isolate-worktree "
+                    "(predates flag?) — omitting isolate label %r",
+                    self._omp_path, self._isolate_worktree)
         self._client = RpcClient(
             command=list(argv),
             cwd=self._workdir,
