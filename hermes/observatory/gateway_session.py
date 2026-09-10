@@ -208,7 +208,7 @@ class _TurnEventCollector:
 
     def __init__(self) -> None:
         self.tools: list[tuple[str, Any]] = []
-        self.thinking: list[str] = []
+        self.thoughts: list[str] = []
 
     # -- callback shapes -------------------------------------------------
     def tool_progress(self, event_type: str, name: str | None = None, preview=None, args=None, **kwargs) -> None:
@@ -216,7 +216,7 @@ class _TurnEventCollector:
             if event_type == "_thinking" or name == "_thinking":
                 text = preview if name == "_thinking" else (name or "")
                 if isinstance(text, str) and text.strip():
-                    self.thinking.append(text.strip())
+                    self.thoughts.append(text.strip())
                 return
             if event_type == "tool.started" and name:
                 if str(name).startswith("_"):
@@ -228,7 +228,7 @@ class _TurnEventCollector:
     def thinking(self, text: str) -> None:
         try:
             if isinstance(text, str) and text.strip():
-                self.thinking.append(text.strip())
+                self.thoughts.append(text.strip())
         except Exception:
             pass
 
@@ -241,7 +241,7 @@ class _TurnEventCollector:
                 out.append({"type": "tool_call", "tool": tool, "args": {}})
             else:
                 out.append({"type": "tool_call", "tool": tool, "args": {"_raw": str(args)}})
-        for text in self.thinking:
+        for text in self.thoughts:
             out.append({"type": "thinking", "text": text})
         return out
 

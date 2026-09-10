@@ -133,3 +133,36 @@ def test_drop_cached_agent_forces_rebuild(builds):
     gs.run_gateway_prompt("second")
     assert gs._session_agents[gs.GATEWAY_SESSION_ID] is not first
     assert len(builds) == 2
+
+
+def test_collector_thinking_events_do_not_shadow_method():
+    """Regression: thinking storage must not shadow the thinking() method.
+
+    The list attribute used to be ``self.thinking``, so the first
+    thinking/reasoning callback raised ``TypeError: 'list' object is not
+    callable``, killing every real inject turn. Fires all three thinking
+    sinks through ``_install_collector`` — stub-agent probes miss this
+    because the crash needs a real thinking event.
+    """
+    collector = gs._TurnEventCollector()
+    assert callable(collector.thinking)
+
+
+    class ThinkingAgent:
+        tool_progress_callback = None
+        thinking_callback = None
+        reasoning_callback = None
+
+
+    agent = ThinkingAgent()
+    restore = gs._install_collector(agent, collector)
+    try:
+        agent.thinking_callback("alpha")
+        agent.reasoning_callback("beta")
+        agent.tool_progress_callback("_thinking", "gamma")
+        agent.tool_progress_callback("tool.started", "_thinking", preview="delta")
+    finally:
+        restore()
+    assert callable(collector.thinking)
+    texts = [e["text"] for e in collector.events() if e["type"] == "thinking"]
+    assert texts == ["alpha", "beta", "gamma", "delta"]

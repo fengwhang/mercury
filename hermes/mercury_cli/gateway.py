@@ -4012,6 +4012,17 @@ def _launcher_env_pins(hermes_home: Path) -> tuple[str, str, str]:
     )
 
 
+def _launcher_omp_bin_pin() -> str:
+    """Return the repo-vendored omp binary path for service units.
+
+    Derives from the source checkout (PROJECT_ROOT), not the engine home —
+    hence separate from _launcher_env_pins().
+    """
+    return str(
+        PROJECT_ROOT.parent / "omp" / "packages" / "coding-agent" / "dist" / "omp"
+    )
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     # HERMES-OMP PATCH (ONE home / ONE env): the launcher (bin/mercury)
     # forces MERCURY_HOME + MERCURY_CONFIG + PI_CODING_AGENT_DIR; the
@@ -4026,6 +4037,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     mercury_env_home, mercury_env_config, mercury_env_agent_dir = (
         _launcher_env_pins(get_hermes_home())
     )
+    omp_bin_pin = _launcher_omp_bin_pin()
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
@@ -4080,6 +4092,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         working_dir = str(mercury_home) if mercury_home else _remap_path_for_user(working_dir, home_dir)
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
+        omp_bin_pin_system = _remap_path_for_user(omp_bin_pin, home_dir)
         # Managed Node for the TARGET user's tree (see the skip above): probe
         # the remapped mercury_home, not the calling user's. Prepend — the
         # managed Node must outrank remapped shell-PATH entries, matching the
@@ -4116,6 +4129,7 @@ Environment="HERMES_HOME={mercury_home}"
 Environment="MERCURY_HOME={mercury_env_home}"
 Environment="MERCURY_CONFIG={mercury_env_config}"
 Environment="PI_CODING_AGENT_DIR={mercury_env_agent_dir}"
+Environment="HERMES_OMP_BIN={omp_bin_pin_system}"
 Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
 RestartSec=5
@@ -4158,6 +4172,7 @@ Environment="HERMES_HOME={mercury_home}"
 Environment="MERCURY_HOME={mercury_env_home}"
 Environment="MERCURY_CONFIG={mercury_env_config}"
 Environment="PI_CODING_AGENT_DIR={mercury_env_agent_dir}"
+Environment="HERMES_OMP_BIN={omp_bin_pin}"
 Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
 RestartSec=5

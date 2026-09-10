@@ -920,5 +920,43 @@ class TestSteerStopForwarding(unittest.TestCase):
         finally:
             bridge.stop()
 
+
+def test_resolve_omp_binary_precedence(monkeypatch, tmp_path):
+    """Regression: explicit HERMES_OMP_BIN (fail-hard) > PATH > vendored.
+
+    Unset with no bare ``omp`` on PATH resolves to the repo-vendored build;
+    a stale explicit pin returns None (never falls through to vendored);
+    a valid explicit pin returns itself. Monkeypatches ``_REPO_ROOT`` and
+    ``shutil.which`` — never touches the real env.
+    """
+    import shutil
+
+    import tools.omp_delegation as mod
+
+    vendored_dir = tmp_path / "omp" / "packages" / "coding-agent" / "dist"
+    vendored_dir.mkdir(parents=True)
+    vendored = vendored_dir / "omp"
+    vendored.write_text("#!/bin/sh\necho vendored\n")
+    vendored.chmod(vendored.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setattr(mod, "_REPO_ROOT", tmp_path)
+    monkeypatch.delenv("HERMES_OMP_BIN", raising=False)
+    # Unset + no bare omp on PATH -> vendored.
+    monkeypatch.setattr(shutil, "which", lambda cand: None)
+    assert mod._resolve_omp_binary() == str(vendored)
+    assert mod._vendored_omp_binary() == str(vendored)
+    # Stale explicit pin -> None (fail-hard, no vendored fallback).
+    monkeypatch.setenv("HERMES_OMP_BIN", "/nonexistent/omp-stale-precedence-test")
+    assert mod._resolve_omp_binary() is None
+    # Valid explicit pin -> itself.
+    fake = tmp_path / "custom-omp"
+    fake.write_text("#!/bin/sh\necho custom\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("HERMES_OMP_BIN", str(fake))
+    monkeypatch.setattr(
+        shutil, "which", lambda cand: str(fake) if cand == str(fake) else None
+    )
+    assert mod._resolve_omp_binary() == str(fake)
+
+
 if __name__ == "__main__":
     unittest.main()

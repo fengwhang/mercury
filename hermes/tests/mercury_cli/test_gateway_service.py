@@ -1267,6 +1267,55 @@ class TestUnitPinsOmpAgentDir:
         assert "/root/.mercury" not in unit
 
 
+class TestUnitPinsOmpBin:
+    """HERMES_OMP_BIN in generated units must pin the repo-vendored omp build.
+
+    The launcher (bin/mercury:112) defaults HERMES_OMP_BIN to the
+    repo-vendored build; service units must pin the same path or
+    gateway-spawned omp children resolve bare PATH instead of the tested
+    build. The pin derives from the source checkout (PROJECT_ROOT), not
+    the engine home — hence _launcher_omp_bin_pin(). Launchd plist keeps
+    no pin.
+    """
+
+    @staticmethod
+    def _env_value(unit: str, key: str) -> str:
+        prefix = f'Environment="{key}='
+        for line in unit.splitlines():
+            if line.startswith(prefix) and line.endswith('"'):
+                return line[len(prefix) : -1]
+        raise AssertionError(f"no Environment line for {key} in unit:\n{unit}")
+
+    def test_user_unit_pins_vendored_omp(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".mercury"))
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert self._env_value(unit, "HERMES_OMP_BIN") == gateway_cli._launcher_omp_bin_pin()
+        assert "omp/packages/coding-agent/dist/omp" in unit
+
+    def test_system_unit_remaps_omp_pin(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("MERCURY_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_build_user_local_paths",
+            lambda home, existing: [],
+        )
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+        expected = gateway_cli._remap_path_for_user(
+            gateway_cli._launcher_omp_bin_pin(), "/home/alice"
+        )
+        assert self._env_value(unit, "HERMES_OMP_BIN") == expected
+        assert "/root/.mercury" not in unit
+
+    def test_launchd_plist_has_no_omp_pin(self):
+        plist = gateway_cli.generate_launchd_plist()
+        assert "HERMES_OMP_BIN" not in plist
+
+
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
 
