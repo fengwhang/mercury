@@ -34,6 +34,22 @@ RELEASES_API = f"https://api.github.com/repos/{MERCURY_REPO_OWNER}/{MERCURY_REPO
 PRESERVED_TOP_LEVEL = {".venv", "venv", ".git", ".env", "dist", "node_modules", ".mercury", ".mercury-build-id"}
 
 
+def _pytest_owns_live_checkout(root: Path) -> bool:
+    """True when running under pytest AND ``root`` is this checkout itself.
+
+    Mirrors ``mercury_cli.main._pytest_owns_live_checkout`` (same posture:
+    ``PYTEST_CURRENT_TEST`` + root identity). Lives here so the guard test
+    can pin it on this module and the updater refuses a live-checkout swap
+    without importing the CLI entrypoint.
+    """
+    import os
+
+    return (
+        "PYTEST_CURRENT_TEST" in os.environ
+        and root == Path(__file__).resolve().parent.parent.parent
+    )
+
+
 def _project_root() -> Path:
     """The Mercury INSTALL ROOT (the dir containing bin/, hermes/, omp/).
 
@@ -318,6 +334,9 @@ def _ensure_matrix_extra(root: Path, venv: Path) -> None:
 
 def update_from_release(*, assume_yes: bool = False) -> int:
     """Run the release update. Returns a process exit code."""
+    if _pytest_owns_live_checkout(_project_root()):
+        print("✗ update_from_release refused: running under pytest against the live checkout.")
+        return 1
     print("🌡️ Updating Mercury (release channel: "
           f"{MERCURY_REPO_OWNER}/{MERCURY_REPO_NAME})...")
     print()
