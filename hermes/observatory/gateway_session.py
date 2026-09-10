@@ -28,8 +28,12 @@ system prompt picks the Matrix formatting hint; spawned orchestrators
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import socket
 import threading
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -41,6 +45,12 @@ GATEWAY_SESSION_ID = "gateway"
 #: Kinds the sidecar may send. ``prompt``/``steer`` both start a turn;
 #: ``command`` tries slash dispatch first. Anything else is a caller bug.
 INJECT_KINDS = frozenset({"prompt", "steer", "command"})
+
+#: Live-progress datagram socket name under ``$MERCURY_HOME/observatory``.
+#: The turn collector fire-and-forget sends one ``SOCK_DGRAM`` datagram per
+#: captured event; the sidecar ingests them for live room streaming (§5).
+#: Best-effort: no listener or send error = drop silently.
+GATEWAY_PROGRESS_SOCK_NAME = "gateway-progress.sock"
 
 _locks_guard = threading.Lock()
 _session_locks: dict[str, threading.Lock] = {}
@@ -196,19 +206,85 @@ def _dispatch_slash_command(text: str) -> Optional[str]:
         return None
 
 
+def _progress_socket_path() -> Path:
+    """``$MERCURY_HOME/observatory/gateway-progress.sock`` (never raises)."""
+    try:
+        from observatory.provision import _mercury_home
+
+        return Path(_mercury_home()) / "observatory" / GATEWAY_PROGRESS_SOCK_NAME
+    except Exception:
+        env = os.environ.get("MERCURY_HOME", "").strip()
+        home = Path(env).expanduser() if env else Path.home() / ".mercury"
+        return home / "observatory" / GATEWAY_PROGRESS_SOCK_NAME
+
+
+def _normalize_text(text: Any) -> str:
+    """Whitespace-collapsed compare form (reply-echo + double-capture dedupe)."""
+    return " ".join(str(text).split())
+
+
+def _push_progress(node_id: str, seq: int, event: dict[str, Any]) -> None:
+    """Fire-and-forget one live-progress datagram; never raises.
+
+    Payload is ``{node_id, seq, event}`` where ``event`` is the existing
+    shape (no ``seq`` inside — it rides beside it). No listener, missing
+    socket dir, or any send error = drop silently.
+    """
+    try:
+        payload = json.dumps({"node_id": node_id, "seq": seq, "event": event}).encode("utf-8")
+    except Exception:
+        return
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            sock.sendto(payload, str(_progress_socket_path()))
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 class _TurnEventCollector:
-    """Accumulate batched tool/thinking events during one turn.
+    """Accumulate batched tool/thinking events during one turn, live-pushed.
 
     Rides the agent's existing display callbacks — ``tool_progress_callback``
     (``tool.started`` carries the tool name + args dict; ``_thinking`` /
     ``reasoning.available`` carry assistant scratch text) plus the
     ``thinking_callback``/``reasoning_callback`` string sinks. Holds no
     agent-loop state; installed around the turn and removed after.
+
+    Each captured event takes the next per-turn ``seq`` starting at 0
+    (capture order) and is immediately pushed as a best-effort datagram;
+    the same ``seq`` rides the final ``events()`` list so live and final
+    correlate. Thinking double-capture (``_thinking`` tool_progress vs the
+    thinking/reasoning string sinks firing for the same text) is deduped
+    on normalized text — first capture wins, the drop consumes no seq.
     """
 
-    def __init__(self) -> None:
-        self.tools: list[tuple[str, Any]] = []
-        self.thoughts: list[str] = []
+    def __init__(self, node_id: str = "gw") -> None:
+        self._node_id = node_id or "gw"
+        self._next_seq = 0
+        self._records: list[dict[str, Any]] = []
+        self._seen_thinking: set[str] = set()
+
+    # -- capture ---------------------------------------------------------
+    def _record(self, event: dict[str, Any]) -> None:
+        seq = self._next_seq
+        self._next_seq += 1
+        stored = dict(event)
+        stored["seq"] = seq
+        self._records.append(stored)
+        _push_progress(self._node_id, seq, event)
+
+    def _add_thinking(self, text: str) -> None:
+        norm = _normalize_text(text)
+        if not norm or norm in self._seen_thinking:
+            return
+        self._seen_thinking.add(norm)
+        self._record({"type": "thinking", "text": text.strip()})
 
     # -- callback shapes -------------------------------------------------
     def tool_progress(self, event_type: str, name: str | None = None, preview=None, args=None, **kwargs) -> None:
@@ -216,34 +292,29 @@ class _TurnEventCollector:
             if event_type == "_thinking" or name == "_thinking":
                 text = preview if name == "_thinking" else (name or "")
                 if isinstance(text, str) and text.strip():
-                    self.thoughts.append(text.strip())
+                    self._add_thinking(text)
                 return
             if event_type == "tool.started" and name:
                 if str(name).startswith("_"):
                     return
-                self.tools.append((str(name), args))
+                if isinstance(args, dict):
+                    self._record({"type": "tool_call", "tool": str(name), "args": args})
+                elif args is None:
+                    self._record({"type": "tool_call", "tool": str(name), "args": {}})
+                else:
+                    self._record({"type": "tool_call", "tool": str(name), "args": {"_raw": str(args)}})
         except Exception:
             pass
 
     def thinking(self, text: str) -> None:
         try:
             if isinstance(text, str) and text.strip():
-                self.thoughts.append(text.strip())
+                self._add_thinking(text)
         except Exception:
             pass
 
     def events(self) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        for tool, args in self.tools:
-            if isinstance(args, dict):
-                out.append({"type": "tool_call", "tool": tool, "args": args})
-            elif args is None:
-                out.append({"type": "tool_call", "tool": tool, "args": {}})
-            else:
-                out.append({"type": "tool_call", "tool": tool, "args": {"_raw": str(args)}})
-        for text in self.thoughts:
-            out.append({"type": "thinking", "text": text})
-        return out
+        return [dict(rec) for rec in self._records]
 
 
 def _install_collector(agent: Any, collector: _TurnEventCollector) -> Callable[[], None]:
@@ -308,6 +379,7 @@ def run_gateway_prompt_with_events(
     *,
     kind: str = "prompt",
     session_id: str = GATEWAY_SESSION_ID,
+    node_id: str = "gw",
     agent_factory: Optional[Callable[[str], Any]] = None,
     turn: Optional[Callable[[Any, str], Any]] = None,
     slash_dispatch: Optional[Callable[[str], Optional[str]]] = None,
@@ -320,6 +392,14 @@ def run_gateway_prompt_with_events(
     (dispatch returns None) and ``prompt``/``steer`` run the agent turn
     with display callbacks attached, batching ``tool_call`` + ``thinking``
     events for the sidecar replay.
+
+    Every batched event carries its per-turn ``seq`` (0-based capture
+    order, keys otherwise stable) and was already live-pushed as
+    ``{node_id, seq, event}`` during the turn. Thinking events echoing
+    the final reply (normalized compare — the final message must not
+    appear twice, once plain once as reasoning) are dropped here; the
+    live datagrams for them already went out and keep their seqs, so
+    final seqs may show gaps.
     """
     clean = (text or "").strip()
     if not clean:
@@ -349,7 +429,7 @@ def run_gateway_prompt_with_events(
                 agent = _default_agent(session_id)
                 with _locks_guard:
                     _session_agents[session_id] = agent
-        collector = _TurnEventCollector()
+        collector = _TurnEventCollector(node_id=node_id)
         restore = _install_collector(agent, collector)
         try:
             result = turn(agent, clean) if turn is not None else agent.run_conversation(clean)
@@ -370,8 +450,19 @@ def run_gateway_prompt_with_events(
         raise RuntimeError(
             f"gateway_session: turn returned {type(result).__name__}, not a result dict"
         )
-    reply = result.get("final_response") or ""
-    return str(reply), collector.events()
+    reply = str(result.get("final_response") or "")
+    events = collector.events()
+    norm_reply = _normalize_text(reply)
+    if norm_reply:
+        events = [
+            e
+            for e in events
+            if not (
+                e.get("type") == "thinking"
+                and _normalize_text(e.get("text", "")) == norm_reply
+            )
+        ]
+    return reply, events
 
 
 def run_gateway_prompt(
@@ -379,6 +470,7 @@ def run_gateway_prompt(
     *,
     kind: str = "prompt",
     session_id: str = GATEWAY_SESSION_ID,
+    node_id: str = "gw",
     agent_factory: Optional[Callable[[str], Any]] = None,
     turn: Optional[Callable[[Any, str], Any]] = None,
     slash_dispatch: Optional[Callable[[str], Optional[str]]] = None,
@@ -395,6 +487,7 @@ def run_gateway_prompt(
         text,
         kind=kind,
         session_id=session_id,
+        node_id=node_id,
         agent_factory=agent_factory,
         turn=turn,
         slash_dispatch=slash_dispatch,
