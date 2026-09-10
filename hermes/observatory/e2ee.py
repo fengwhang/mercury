@@ -879,12 +879,34 @@ class SQLiteCryptoStore(_MemoryCryptoStore):
     # -- cross-signing (persisted for interface completeness; SSSS stays unwired) ---
 
     async def put_cross_signing_key(self, user_id, usage, key) -> None:
-        await super().put_cross_signing_key(user_id, usage, key)
+        # Crash-proof override (VM round 2): upstream mautrix 0.21.1
+        # MemoryCryptoStore.put_cross_signing_key mutates the immutable
+        # TOFUSigningKey NamedTuple on repeat store (``current.key = key``
+        # → AttributeError), which escapes share_group_session, kills the
+        # appservice transaction route, and renders no reply. mautrix is
+        # site-packages (not vendored — never edited), so this override is
+        # the fix.
+        #
+        # Write-through FIRST (SQLite is the restart source of truth), then
+        # best-effort memory update: a repeat store that trips the upstream
+        # bug is repaired with the immutable-safe update. Version-agnostic:
+        # a fixed upstream never raises and takes the plain path, while a
+        # first store (or any unrelated AttributeError) re-raises.
         await self._write(
             "INSERT INTO cross_signing_keys VALUES (?, ?, ?, ?)"
             " ON CONFLICT (user_id, usage) DO UPDATE SET key=excluded.key",
             (str(user_id), usage.value, str(key), str(key)),
         )
+        try:
+            await super().put_cross_signing_key(user_id, usage, key)
+        except AttributeError:
+            store = getattr(self, "_cross_signing_keys", None)
+            bucket = store.get(user_id, {}) if isinstance(store, dict) else {}
+            current = bucket.get(usage)
+            replace = getattr(current, "_replace", None)
+            if current is None or replace is None:
+                raise
+            bucket[usage] = replace(key=key)
 
     async def put_signature(self, target, signer, signature: str) -> None:
         await super().put_signature(target, signer, signature)
