@@ -622,6 +622,12 @@ class RpcClient:
         self._events = _BoundedHistory[JsonObject](
             self._max_event_history, hard_limit=self._max_event_ring_ceiling
         )
+        # HERMES-OMP PATCH (quadratic event ring): absolute ring indices
+        # of the latest coalescible streaming snapshot per key —
+        # ("message_update", None) or ("tool_execution_update", toolCallId).
+        # Touched only under _event_condition (see _append_event); reset
+        # wherever the ring is cleared.
+        self._coalesced_positions: dict[tuple[str, object], int] = {}
         self._async_errors = _BoundedHistory[BaseException](
             _DEFAULT_ERROR_HISTORY_LIMIT
         )
@@ -708,7 +714,7 @@ class RpcClient:
         self._protocol_v2_enabled = False
         self._frame_decoder = _RpcFrameDecoder()
         self._events.clear()
-        self._async_errors.clear()
+        self._coalesced_positions.clear()
         self._scheduled_agent_runs = 0
         self._completed_agent_runs = 0
         # HERMES-OMP PATCH (unbounded event ring): fresh child process —
@@ -1512,6 +1518,7 @@ class RpcClient:
                 )
             else:
                 self._events.clear()
+                self._coalesced_positions.clear()
 
     def _is_agent_idle(self) -> bool:
         with self._event_condition:
@@ -2382,7 +2389,24 @@ class RpcClient:
         self, payload: JsonObject, *, completes_run: bool = False
     ) -> None:
         with self._event_condition:
+            # HERMES-OMP PATCH (quadratic event ring): streaming snapshots
+            # are cumulative server-side (message_update re-lists the full
+            # accumulating message per delta; tool_execution_update carries
+            # growing partials), so appending every one makes the ring
+            # O(T*E) in turn size — measured 766MB parent RAM for a 400KB
+            # turn (1600 updates). Reconstruction needs only MessageEnd
+            # events + the terminal AgentEnd (see _build_prompt_turn /
+            # _complete_agent_end_messages; message_update is fallback-only),
+            # and live listeners are dispatched pre-storage below — so a new
+            # snapshot overwrites the previous identical one in place. Ring
+            # length only grows on non-coalescible frames; absolute indices,
+            # the terminal stamp, and waiter start-index semantics are
+            # unchanged (overwrite never shifts positions).
+            if self._coalesce_streaming_snapshot(payload):
+                self._event_condition.notify_all()
+                return
             self._events.append(_clone_json_object(payload))
+            self._record_coalescible_append(payload)
             # HERMES-OMP PATCH (O(n^2) wait loop): stamp terminal agent_end
             # at append time so waiters can check one int per wakeup.
             terminal = (
@@ -2400,6 +2424,54 @@ class RpcClient:
                 self._complete_agent_run(self._events.terminal_agent_end_index)
                 return  # _complete_agent_run already notified
             self._event_condition.notify_all()
+
+    def _coalesce_streaming_snapshot(self, payload: JsonObject) -> bool:
+        """Overwrite a superseded streaming snapshot in place.
+
+        HERMES-OMP PATCH (quadratic event ring): caller holds
+        ``_event_condition``. Streaming frames arrive interleaved with
+        tool frames, so the superseded snapshot is usually NOT the tail —
+        it is tracked by absolute ring index per coalescing key instead.
+        Returns True when the payload replaced an earlier item in place
+        (caller must still notify waiters); False for a normal append.
+        Overwrite never changes ring length, so absolute indices of all
+        items — and every waiter's start index — stay valid. Stale map
+        entries (post-trim/clear) fail validation and fall back to append.
+        """
+        kind = payload.get("type")
+        if kind == "message_update":
+            key = ("message_update", None)
+        elif kind == "tool_execution_update":
+            key = ("tool_execution_update", payload.get("toolCallId"))
+        else:
+            return False
+        positions = self._coalesced_positions
+        pos = positions.get(key)
+        if pos is not None:
+            rel = pos - self._events.offset
+            items = self._events.items
+            if 0 <= rel < len(items):
+                cur = items[rel]
+                if isinstance(cur, dict) and cur.get("type") == key[0] and (
+                    key[0] != "tool_execution_update"
+                    or cur.get("toolCallId") == key[1]
+                ):
+                    items[rel] = _clone_json_object(payload)
+                    return True
+            positions.pop(key, None)
+        return False
+
+    def _record_coalescible_append(self, payload: JsonObject) -> None:
+        """Track the ring position of an appended streaming snapshot."""
+        kind = payload.get("type")
+        if kind == "message_update":
+            self._coalesced_positions[("message_update", None)] = (
+                self._events.current_index() - 1
+            )
+        elif kind == "tool_execution_update":
+            self._coalesced_positions[
+                ("tool_execution_update", payload.get("toolCallId"))
+            ] = self._events.current_index() - 1
 
     def _append_async_error(self, error: BaseException) -> None:
         with self._event_condition:
