@@ -397,6 +397,16 @@ class SidecarDaemon:
             self.renderer.build_plan(host=socket.gethostname())
         )
         report["apply_plan"] = len(applied)
+        # Owner auto-join heal (VM round 2): every tracked room/space the
+        # owner hasn't joined yet joins now with the owner's own credential
+        # (same POST /join as a Join tap) — no more invite prompts on
+        # owner-owned rooms. Best-effort; boot never fails on it.
+        try:
+            report["owner_joined"] = await self.executor.ensure_owner_in_plan(
+                self.renderer.build_plan(host=socket.gethostname()))
+        except Exception as exc:  # noqa: BLE001 — membership heal never fails boot
+            log.warning("owner membership heal skipped: %s", exc)
+            report["owner_joined"] = 0
 
         # 7. sibling subsystems (M4a/M4b/M5) — integrate, never edit
         self.wire_siblings()

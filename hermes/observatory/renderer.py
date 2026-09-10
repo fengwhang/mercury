@@ -823,11 +823,47 @@ class IntentExecutor:
             space=space,
         )
         await self.client.set_power_levels(room_id, {self.owner_mxid: 100}, sender=op.sender)
+        # Owner auto-join (VM defect: the owner saw invites / join prompts
+        # on their own spaces+rooms): the sidecar accepts the creation
+        # invite on the owner's behalf with the owner's own credential —
+        # the same POST /join Element/FluffyChat send on a Join tap.
+        await self.ensure_owner_in_room(room_id)
         if space:
             self._record_space(op.key, room_id)
         else:
             self._record_room(op.key, room_id)
         return room_id
+
+    async def ensure_owner_in_room(self, room_id: str) -> bool:
+        """Best-effort owner join of one room/space id. True when the owner
+        is now in the room (joined or already there); False when the join
+        was skipped or failed. Never raises — the creation invite is the
+        fallback, so a failed join only leaves a normal pending invite."""
+        try:
+            await self.client.join_room_as_owner(room_id)
+            return True
+        except AttributeError:
+            # Client double without the owner-join surface (older fakes):
+            # the invite still stands, nothing to heal.
+            log.debug("owner auto-join unavailable for %s (no join_room_as_owner)", room_id)
+            return False
+        except Exception as exc:  # noqa: BLE001 — best-effort membership
+            log.warning("owner auto-join failed for %s: %s", room_id, exc)
+            return False
+
+    async def ensure_owner_in_plan(self, plan: "tree.SpacePlan") -> int:
+        """Converge-time heal: join the owner to every planned space/room
+        id (covers pre-existing rooms whose invite was never accepted —
+        the VM's current state). Best-effort per room; returns the join
+        count. Never raises."""
+        spaces, rooms = tree.plan_index(plan)
+        ids = [s.matrix_id for s in spaces.values() if s.matrix_id]
+        ids += [r.matrix_id for r in rooms.values() if r.matrix_id]
+        joined = 0
+        for rid in ids:
+            if await self.ensure_owner_in_room(rid):
+                joined += 1
+        return joined
 
     async def execute(self, intents: Iterable[RenderIntent]) -> list[dict[str, Any]]:
         """Run intents in order; returns an execution log (one record per

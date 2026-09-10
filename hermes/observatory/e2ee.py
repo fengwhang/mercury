@@ -1686,6 +1686,14 @@ class EncryptedIntentExecutor:
         )
         await inner.client.set_power_levels(
             room_id, {inner.owner_mxid: 100}, sender=op.sender)
+        # Owner auto-join like the base executor (VM round 2): the creation
+        # invite alone leaves a pending invite the owner must tap.
+        await inner.ensure_owner_in_room(room_id)
         inner._record_room(op.key, room_id)
         self.e2ee.mark_room_encrypted(op.key, room_id)
         return room_id
+
+    async def ensure_owner_in_plan(self, plan) -> int:
+        """Converge-time owner-membership heal (delegates to the wrapped
+        executor — same surface the renderer calls on the plain one)."""
+        return await self._inner.ensure_owner_in_plan(plan)

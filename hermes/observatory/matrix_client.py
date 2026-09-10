@@ -395,6 +395,22 @@ class MatrixClient:
         out = await self.client_api("POST", f"{CLIENT_V3}/join/{_q(room_id)}", sender=sender, json_body={})
         return str(out.get("room_id") or room_id)
 
+    async def join_room_as_owner(self, room_id: str) -> str:
+        """Accept an invite / enter a room AS THE OWNER (owner access token).
+
+        This is the exact call Element/FluffyChat make when the owner taps
+        Join on an invite — ``POST /_matrix/client/v3/join`` with the
+        invitee's own credential — run here by the sidecar on the owner's
+        behalf so owner-owned spaces/rooms never sit as pending invites
+        (VM defect: owner saw join prompts on their own spaces+rooms).
+        join_rule stays ``invite`` (presets unchanged): invite-only for
+        everyone else — no protocol invented. Via admin_api so a stale
+        owner token refreshes through the on_admin_401 hook (defect vi).
+        """
+        out = await self.admin_api("POST", f"{CLIENT_V3}/join/{_q(room_id)}",
+                                   json_body={})
+        return str((out or {}).get("room_id") or room_id)
+
     async def leave_room(self, room_id: str, *, sender: str) -> None:
         await self.client_api(
             "POST", f"{CLIENT_V3}/rooms/{_q(room_id)}/leave", sender=sender, json_body={}
