@@ -162,8 +162,8 @@ def test_setup_rerun_identity_change_offers_wipe_reprovision(
     monkeypatch.setattr(fake, "wipe_observatory_data", fake_wipe, raising=False)
     # Wipe-first order: 0 = Install/repair, 0 = Keep (up-front wipe
     # question), then the typed identity change triggers the conditional
-    # wipe offer answered 1 = archive.
-    answers = [0, 0, 1]
+    # wipe offer answered 1 = archive; trailing 0 keeps mirror_cli off.
+    answers = [0, 0, 1, 0]
 
     orig_choice = setup_mod.prompt_choice
 

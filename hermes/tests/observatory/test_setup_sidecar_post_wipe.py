@@ -207,7 +207,7 @@ def test_fresh_residual_wipe_sidecar_failure_is_loud(monkeypatch, capsys,
                                                      tmp_path):
     fake = _FakeProvision(_provisioned_statuses(tmp_path), data_present=True,
                           sidecar_error=RuntimeError("boom-sidecar"))
-    rec = _Recorder(choices=[0, 1], yes_no=[True, True], texts=["", ""])
+    rec = _Recorder(choices=[0, 1, 0], yes_no=[True, True], texts=["", ""])
     _install(monkeypatch, fake, rec)
     setup_mod.setup_observatory(load_config())
     out = capsys.readouterr().out
@@ -223,7 +223,7 @@ def test_plain_install_sidecar_failure_stays_soft(monkeypatch, capsys, tmp_path)
     have no systemd; the card still prints). Only post-wipe goes loud."""
     fake = _FakeProvision(_provisioned_statuses(tmp_path), data_present=False,
                           sidecar_error=RuntimeError("boom-sidecar"))
-    rec = _Recorder(choices=[0], yes_no=[True, True], texts=["", ""])
+    rec = _Recorder(choices=[0, 0], yes_no=[True, True], texts=["", ""])
     _install(monkeypatch, fake, rec)
     setup_mod.setup_observatory(load_config())
     out = capsys.readouterr().out

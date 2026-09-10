@@ -626,20 +626,55 @@ class Renderer:
     async def snapshot(self, plan: tree.SpacePlan) -> dict[str, Any]:
         """Current matrix state from the root hierarchy, AUGMENTED with
         every plan id the state already knows (a created-but-unattached
-        space must count as known, or re-apply would duplicate it)."""
+        space must count as known, or re-apply would duplicate it).
+
+        Backfill rule (VM defect: after a wipe+reprovision the server is
+        new but state.db still holds pre-wipe ids — a CLI agent's subagent
+        got a fresh room while the CLI agent itself stayed roomless):
+        a state-known id the server does NOT confirm is a phantom, and
+        phantoms NEVER count as known. Dropping them makes the next diff
+        recreate the parent WITH its subtree in one consistent plan, so
+        children of unmirrored parents stay unmirrored — no orphan rooms.
+        Confirmation is the owner-token admin read
+        (``admin_room_alive`` — membership-independent, no sync): only a
+        clean False drops the id. Any other outcome (exists, no-access,
+        probe error, or a client double without the probe) keeps today's
+        attach-only behavior — never a duplicate, never a new loud
+        failure.
+        """
         snap: dict[str, Any] = {"spaces": {}, "rooms": {}}
         gw_space = self._gateway.get("space_id")
         if gw_space:
             hierarchy = await self.executor.client.room_hierarchy(gw_space, sender=self.gateway_mxid)
             snap = snapshot_from_hierarchy(hierarchy)
         spaces_by_key, rooms_by_key = tree.plan_index(plan)
+        probe = getattr(self.executor.client, "admin_room_alive", None)
         for key, space in spaces_by_key.items():
             if space.matrix_id and space.matrix_id not in snap["spaces"]:
-                snap["spaces"][space.matrix_id] = {"name": space.name, "children": []}
+                if await self._server_confirms(space.matrix_id, probe):
+                    snap["spaces"][space.matrix_id] = {"name": space.name, "children": []}
+                else:
+                    log.info("snapshot: phantom space id %s for %r — recreating with its subtree",
+                             space.matrix_id, key)
         for key, room in rooms_by_key.items():
             if room.matrix_id and room.matrix_id not in snap["rooms"]:
-                snap["rooms"][room.matrix_id] = {"name": room.name}
+                if await self._server_confirms(room.matrix_id, probe):
+                    snap["rooms"][room.matrix_id] = {"name": room.name}
+                else:
+                    log.info("snapshot: phantom room id %s for %r — recreating",
+                             room.matrix_id, key)
         return snap
+
+    @staticmethod
+    async def _server_confirms(matrix_id: str, probe) -> bool:
+        """True when a state-known-but-unlisted id may count as known."""
+        if probe is None:
+            return True  # legacy double without the admin probe — today's behavior
+        try:
+            return bool(await probe(matrix_id))
+        except Exception:  # noqa: BLE001 — probe failure keeps attach-only (never a duplicate)
+            log.debug("snapshot: room probe failed for %s — keeping state id", matrix_id)
+            return True
 
     async def apply_plan(self, plan: tree.SpacePlan) -> list[RenderIntent]:
         """Converge matrix onto the plan (idempotent). Returns the applied
