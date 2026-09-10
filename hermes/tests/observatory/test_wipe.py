@@ -12,6 +12,7 @@ disabled via _systemctl_available=False so no host unit is ever touched.
 """
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -69,18 +70,30 @@ def test_archive_moves_data_keeps_artifacts(tmp_path, monkeypatch):
         home, mode="archive", unit_dir=units)
 
     assert summary["mode"] == "archive"
-    dest = Path(summary["archived_to"])
-    assert dest.parent == paths.root
+    zip_path = Path(summary["archived_to"])
+    assert zip_path.parent == paths.root
+    assert zip_path.suffix == ".zip"
+    assert zip_path.is_file()
+    with zipfile.ZipFile(zip_path) as zf:
+        names = zf.namelist()
+        top = zip_path.stem
+        for name in ("tuwunel.toml", "tuwunel-db", "owner-credentials.json",
+                     "appservices", "state.db", "crypto",
+                     HOMESERVER_UNIT_NAME, SIDECAR_UNIT_NAME):
+            assert (f"{top}/{name}" in names
+                    or f"{top}/{name}/" in names), name
+        # Archived WAL survived inside the moved DB dir.
+        assert zf.read(f"{top}/tuwunel-db/archived-wal.log") == b"wal"
+        # Unit files snapshotted into the archive.
+        assert zf.read(f"{top}/{HOMESERVER_UNIT_NAME}") == b"[unit hs]\n"
+        assert zf.read(f"{top}/{SIDECAR_UNIT_NAME}") == b"[unit sidecar]\n"
     for name in ("tuwunel.toml", "tuwunel-db", "owner-credentials.json",
                  "appservices", "state.db", "crypto"):
-        assert (dest / name).exists(), name
         assert not (paths.root / name).exists(), name
-    # Archived WAL survived inside the moved DB dir.
-    assert (dest / "tuwunel-db" / "archived-wal.log").read_text() == "wal"
-    # Unit files removed AND snapshotted into the archive.
-    assert list(units.iterdir()) == []
-    assert (dest / HOMESERVER_UNIT_NAME).read_text() == "[unit hs]\n"
-    assert (dest / SIDECAR_UNIT_NAME).read_text() == "[unit sidecar]\n"
+    # No loose dir left behind; live data gone so presence is False.
+    assert [p for p in paths.root.glob("wiped-archive-*")
+            if p.is_dir()] == []
+    assert not provision_mod.observatory_data_present(home)
     assert summary["units_removed"] == [HOMESERVER_UNIT_NAME, SIDECAR_UNIT_NAME]
     # Binary + logs kept; .env stripped of owner keys only.
     assert (paths.bin_dir / "tuwunel").exists()
@@ -126,7 +139,9 @@ def test_empty_home_wipe_is_noop(tmp_path, monkeypatch):
     summary = provision_mod.wipe_observatory_data(
         tmp_path, mode="archive", unit_dir=units)
     assert summary["moved"] == []
-    assert Path(summary["archived_to"]).is_dir()
+    zip_path = Path(summary["archived_to"])
+    assert zip_path.suffix == ".zip"
+    assert zip_path.is_file()
 
 
 def test_setup_rerun_identity_change_offers_wipe_reprovision(

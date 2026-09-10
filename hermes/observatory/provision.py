@@ -734,7 +734,12 @@ def rotate_owner_password(
 #: (tokens), renderer state (room/space ids of deleted rooms), crypto stores
 #: (device keys bound to the dead DB).
 def observatory_wipe_targets(paths: ObservatoryPaths) -> list[Path]:
-    """Existing wipe-target paths under the observatory root (in wipe order)."""
+    """Existing wipe-target paths under the observatory root (in wipe order).
+
+    Fixed six — ``wiped-archive-*.zip`` forensics can never match (different
+    names entirely), so archives stay invisible to provisioning and presence
+    checks by construction.
+    """
     candidates = [
         paths.toml,
         paths.db_dir,
@@ -811,13 +816,21 @@ def wipe_observatory_data(
     mode: str,
     unit_dir: Path | None = None,
 ) -> dict:
-    """Wipe tuwunel data: ``mode="archive"`` moves it aside (timestamped dir
-    under the observatory root), ``mode="annihilate"`` deletes it. Both stop
-    the units, remove generated unit files, and strip the stale .env owner
-    mirror. Keeps the tuwunel binary + logs. Returns a summary dict
-    (``mode``, ``moved``/``deleted``, ``archived_to``, ``units_removed``,
-    ``env_stripped``). Raises ProvisionError on an unknown mode; per-target
-    failures raise (loud — a half-wipe must never pass as clean).
+    """Wipe tuwunel data: ``mode="archive"`` moves it aside, ``mode="annihilate"``
+    deletes it. Archive moves the live targets PLUS the bootstrap toml (a crashed
+    provision can strand it between write and cleanup) into a timestamped
+    ``wiped-archive-*`` dir, then zips it to ``wiped-archive-*.zip`` and removes
+    the loose dir — archives accumulate as inert zip files, never loose dirs, and
+    neither mode ever deletes a ``*.zip``. Annihilate deletes the live targets
+    PLUS the bootstrap toml PLUS any loose (unzipped) ``wiped-archive-*`` dirs.
+    Both stop the units, remove generated unit files, and strip the stale .env
+    owner mirror. Keeps the tuwunel binary + logs. Returns a summary dict
+    (``mode``, ``moved``/``deleted``, ``archived_to`` — archive: the ``.zip``
+    path, ``units_removed``, ``env_stripped``); every moved and deleted name is
+    listed. ``observatory_wipe_targets`` / ``observatory_data_present`` never
+    match ``*.zip`` (inert forensics, invisible to provisioning). Raises
+    ProvisionError on an unknown mode; per-target failures raise (loud — a
+    half-wipe must never pass as clean).
     """
     if mode not in ("archive", "annihilate"):
         raise ProvisionError(
@@ -839,14 +852,28 @@ def wipe_observatory_data(
     summary: dict = {"mode": mode, "units_removed": removed_units,
                      "moved": [], "deleted": []}
     if mode == "archive":
-        dest = paths.root / time.strftime("wiped-archive-%Y%m%d-%H%M%S")
+        base = time.strftime("wiped-archive-%Y%m%d-%H%M%S")
+        dest = paths.root / base
+        n = 0
+        while dest.exists() or Path(f"{dest}.zip").exists():
+            n += 1
+            dest = paths.root / f"{base}-{n}"
         dest.mkdir(parents=True, exist_ok=False)
         for unit, text in unit_copies.items():
             (dest / unit).write_text(text, encoding="utf-8")
-        summary["archived_to"] = str(dest)
+        summary["archived_to"] = f"{dest}.zip"
         for target in targets:
             shutil.move(str(target), str(dest / target.name))
             summary["moved"].append(target.name)
+        if paths.bootstrap_toml.is_symlink() or paths.bootstrap_toml.exists():
+            shutil.move(
+                str(paths.bootstrap_toml), str(dest / paths.bootstrap_toml.name))
+            summary["moved"].append(paths.bootstrap_toml.name)
+        # Inert forensics: zip the snapshot, drop the loose dir. Prior
+        # archives (zips or pre-zip loose dirs) are never touched here.
+        shutil.make_archive(
+            str(dest), "zip", root_dir=str(paths.root), base_dir=dest.name)
+        shutil.rmtree(dest)
     else:
         for target in targets:
             if target.is_dir() and not target.is_symlink():
@@ -854,6 +881,22 @@ def wipe_observatory_data(
             else:
                 target.unlink()
             summary["deleted"].append(target.name)
+        # Loose leftovers only: *.zip archives are inert forensics and are
+        # NEVER deleted. The bootstrap toml always dies (registration token).
+        if paths.root.is_dir():
+            for stale in sorted(paths.root.glob("wiped-archive-*")):
+                if stale.name.endswith(".zip"):
+                    continue
+                if not (stale.exists() or stale.is_symlink()):
+                    continue
+                if stale.is_dir() and not stale.is_symlink():
+                    shutil.rmtree(stale)
+                else:
+                    stale.unlink()
+                summary["deleted"].append(stale.name)
+        if paths.bootstrap_toml.is_symlink() or paths.bootstrap_toml.exists():
+            paths.bootstrap_toml.unlink()
+            summary["deleted"].append(paths.bootstrap_toml.name)
     summary["env_stripped"] = _strip_owner_env_mirror(home)
     return summary
 
