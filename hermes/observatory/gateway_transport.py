@@ -83,12 +83,12 @@ def gateway_progress_sock_path(mercury_home: str | Path) -> Path:
 class GatewayTransport:
     """Deliver gateway-room prompts; return the agent's reply text."""
 
-    async def prompt(self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw", internal: bool = False) -> str:
+    async def prompt(self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw", room_id: str | None = None, internal: bool = False) -> str:
         """Run ``text`` as a turn on the gateway session → reply text."""
         raise NotImplementedError
 
     async def prompt_with_events(
-        self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw", internal: bool = False
+        self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw", room_id: str | None = None, internal: bool = False
     ) -> tuple[str, list[dict[str, Any]]]:
         """Run ``text`` → (reply text, batched display events).
 
@@ -99,9 +99,12 @@ class GatewayTransport:
         keep working via a TypeError fallback (shared-test back-compat).
         """
         try:
-            return await self.prompt(text, kind=kind, node_id=node_id, internal=internal), []
+            return await self.prompt(text, kind=kind, node_id=node_id, room_id=room_id, internal=internal), []
         except TypeError:
-            return await self.prompt(text, kind=kind, node_id=node_id), []
+            try:
+                return await self.prompt(text, kind=kind, node_id=node_id, internal=internal), []
+            except TypeError:
+                return await self.prompt(text, kind=kind, node_id=node_id), []
 
     async def interrupt(self, reason: str = "matrix /stop") -> dict[str, Any]:
         """Interrupt the in-flight gateway turn (BUG3 /stop). Base: no-op."""
@@ -112,11 +115,13 @@ QueryFn = Callable[..., Optional[dict[str, Any]]]
 
 
 def _default_query(
-    home: Path, text: str, kind: str, node_id: str, timeout: float | None, internal: bool = False
+    home: Path, text: str, kind: str, node_id: str, timeout: float | None, internal: bool = False, room_id: str | None = None
 ) -> Optional[dict[str, Any]]:
     from gateway.control_socket import query_gateway_control
 
     params: dict[str, Any] = {"text": text, "kind": kind, "node_id": node_id}
+    if room_id:
+        params["room_id"] = room_id
     if internal:
         params["internal"] = True
     return query_gateway_control(
@@ -149,13 +154,13 @@ class ControlSocketGatewayTransport(GatewayTransport):
         self._query_fn: QueryFn = query_fn or _default_query
 
     async def prompt(
-        self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw", internal: bool = False
+        self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw", room_id: str | None = None, internal: bool = False
     ) -> str:
-        reply, _events = await self.prompt_with_events(text, kind=kind, node_id=node_id, internal=internal)
+        reply, _events = await self.prompt_with_events(text, kind=kind, node_id=node_id, room_id=room_id, internal=internal)
         return reply
 
     async def prompt_with_events(
-        self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw", internal: bool = False
+        self, text: str, *, kind: str = GATEWAY_PROMPT_KIND, node_id: str = "gw", room_id: str | None = None, internal: bool = False
     ) -> tuple[str, list[dict[str, Any]]]:
         """Inject over the control socket → (reply, optional events list).
 
@@ -169,7 +174,7 @@ class ControlSocketGatewayTransport(GatewayTransport):
         if not clean:
             raise ValueError("gateway_transport: refusing empty prompt text")
         result = await asyncio.to_thread(
-            self._query_all_homes, clean, kind, node_id, internal
+            self._query_all_homes, clean, kind, node_id, internal, room_id
         )
         reply = result.get("reply") if isinstance(result, dict) else None
         if not isinstance(reply, str):
@@ -202,14 +207,17 @@ class ControlSocketGatewayTransport(GatewayTransport):
         return {"interrupted": False, "reason": last_error}
 
     def _query_all_homes(
-        self, text: str, kind: str, node_id: str, internal: bool = False
+        self, text: str, kind: str, node_id: str, internal: bool = False, room_id: str | None = None
     ) -> dict[str, Any]:
         for home in gateway_socket_homes(self.mercury_home):
             try:
                 try:
-                    result = self._query_fn(home, text, kind, node_id, self.timeout, internal)
+                    result = self._query_fn(home, text, kind, node_id, self.timeout, internal, room_id)
                 except TypeError:
-                    result = self._query_fn(home, text, kind, node_id, self.timeout)
+                    try:
+                        result = self._query_fn(home, text, kind, node_id, self.timeout, internal)
+                    except TypeError:
+                        result = self._query_fn(home, text, kind, node_id, self.timeout)
             except Exception as exc:  # noqa: BLE001 — one home must not kill the rest
                 logger.debug("gateway_transport: home %s failed: %s", home, exc)
                 continue

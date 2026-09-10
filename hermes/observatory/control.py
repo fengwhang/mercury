@@ -65,9 +65,12 @@ SIDECAR_VERBS = frozenset({"stop", "status", "cot", "approve", "deny"})
 #: Gateway-lifecycle verbs whose blast radius is the gateway process
 #: itself (D13): accepted ONLY from the gateway agent's room. They are
 #: engine-native commands (gateway slash registry) — the sidecar scopes
-#: them, it does not implement them.
+#: them, it does not implement them. /spawn + /spawnomp create 0-agents
+#: (gateway-room-only per D13); /exit is scoped handler-side instead
+#: (gateway refuses, spawned 0-agent rooms run it).
 GATEWAY_ONLY_VERBS = frozenset(
-    {"restart", "update", "pause", "resume", "pause-for-update", "resume-for-update"}
+    {"restart", "update", "pause", "resume", "pause-for-update", "resume-for-update",
+     "spawn", "spawnomp"}
 )
 
 #: Option words accepted after /approve and /deny (§5 approvals).
@@ -696,11 +699,18 @@ class ControlRouter:
             # session-scoped registry for spawned agents — D13).
             actions: tuple[Action, ...] = (InjectText(node_id, intent.text, "command"),)
         elif agent_class is AgentClass.OMP_MAIN:
-            # omp prompt 3-stage: ACP builtins intercept; unmatched text
-            # reaches the model.
-            actions = (
-                (OmpPrompt(node_id, intent.text) if not self._is_busy(node_id) else OmpSteer(node_id, intent.text),)
-            )
+            if intent.verb == "exit":
+                # /exit on a spawned omp orchestrator ends the 0-agent
+                # (D8 cascade via the gateway runner) — never a model
+                # prompt. Flows through the same generic gateway slash
+                # dispatch as every other EngineCommand (no second path).
+                actions = (InjectText(node_id, intent.text, "command"),)
+            else:
+                # omp prompt 3-stage: ACP builtins intercept; unmatched text
+                # reaches the model.
+                actions = (
+                    (OmpPrompt(node_id, intent.text) if not self._is_busy(node_id) else OmpSteer(node_id, intent.text),)
+                )
         else:
             return self._notice(
                 node_id, "notice:subagent-no-commands", SUBAGENT_NO_COMMAND_NOTICE

@@ -17781,6 +17781,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             "profile": self._handle_profile_command,
             "update": self._handle_update_command,
             "version": self._handle_version_command,
+            "spawn": self._handle_spawn_command,
+            "spawnomp": self._handle_spawnomp_command,
+            # /exit has no COMMAND_REGISTRY entry (CLI /quit keeps the
+            # `exit` alias there — different surface, different meaning), so
+            # it dispatches here by raw verb (idle + busy paths below).
+            "exit": self._handle_exit_command,
         }
 
     async def _dispatch_busy_slash_command(
@@ -18680,6 +18686,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 if _denied is not None:
                     return _denied
 
+            # /exit has no registry entry: dispatch by raw verb with
+            # dispatch-while-busy semantics (observatory lifecycle, like
+            # /restart). Must precede the generic branch (raw /exit
+            # resolves to the CLI `quit` alias there).
+            if (_evt_cmd or "") == "exit":
+                return await self._handle_exit_command(event)
             # Any recognized slash command: dispatch according to its
             # declared busy_policy (dispatch / interrupt_then_dispatch /
             # reject). Unrecognized commands and plain text fall through
@@ -18992,6 +19004,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         plain_handler = self._gateway_plain_command_handlers().get(canonical)
         if plain_handler is not None:
             return await plain_handler(event)
+        # /exit bypasses COMMAND_REGISTRY (CLI /quit owns the `exit` alias
+        # there). Route by raw verb so the observatory handler still runs
+        # through this same generic dispatch — no second Matrix path.
+        if (command or "") == "exit":
+            return await self._handle_exit_command(event)
 
         if canonical == "new":
             if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
@@ -33093,7 +33110,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             verb_handlers={"pause-for-update": _pause_for_update_handler}
         )
         # observatory prompt delivery (matrix-observatory §5): the sidecar
-        # sends gateway-room text as `inject` with {text, kind, node_id};
+        # sends room text as `inject` with {text, kind, node_id, room_id};
         # the handler runs one headless turn on the gateway session and
         # answers with {reply}. Handlers run on the socket's executor
         # thread (never the gateway loop), so the blocking turn cannot
@@ -33107,8 +33124,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 text = params.get("text", "") if isinstance(params, dict) else ""
                 kind = params.get("kind", "prompt") if isinstance(params, dict) else "prompt"
                 node_id = params.get("node_id", "gw") if isinstance(params, dict) else "gw"
+                room_id = params.get("room_id") if isinstance(params, dict) else None
                 internal = bool(params.get("internal", False)) if isinstance(params, dict) else False
-                _reply, _events = _run_gateway_prompt_with_events(text, kind=kind, node_id=node_id or "gw", internal=internal)
+                _reply, _events = _run_gateway_prompt_with_events(text, kind=kind, node_id=node_id or "gw", room_id=room_id, internal=internal)
                 _out: dict = {"reply": _reply}
                 if _events:
                     # Cap events so the 512KB response guard cannot turn a
