@@ -143,7 +143,12 @@ def _live_runner() -> Any | None:
         return None
 
 
-def _dispatch_slash_command(text: str) -> Optional[str]:
+def _dispatch_slash_command(
+    text: str,
+    *,
+    node_id: str | None = None,
+    room_id: str | None = None,
+) -> Optional[str]:
     """Try the gateway slash dispatch for ``text``; None = unknown verb.
 
     Generic pass-through (no per-command code): after the
@@ -151,7 +156,10 @@ def _dispatch_slash_command(text: str) -> Optional[str]:
     caller falls back to a turn), synthesize a Matrix ``MessageEvent``
     and call the LIVE runner's full ``_handle_message`` — the same
     pipeline every other surface uses. Every present and future
-    command/skill/plugin dispatches for free.
+    command/skill/plugin dispatches for free. /spawn + /spawnomp ride
+    this path via COMMAND_REGISTRY; /exit rides it by raw-verb routing
+    in the runner (it owns no registry entry — CLI /quit keeps the
+    `exit` alias there).
 
     Session override: the event carries
     ``metadata["gateway_session_id"] = "gateway"`` (the runner's
@@ -161,7 +169,10 @@ def _dispatch_slash_command(text: str) -> Optional[str]:
     live runner (arms the route-recovery guard), and ``internal=True``
     (skips pairing auth — the Matrix ghost is not a paired user —
     startup-restore queueing, and activity stamping; command-scoped
-    ``command:`` hooks still fire). Handlers that keep per-session
+    ``command:`` hooks still fire). Observability scope travels alongside
+    as ``metadata["observatory_node_id"]`` / ``["observatory_room_id"]``
+    (the sidecar inject params) so /spawn + /spawnomp + /exit handlers
+    can enforce D13 room scope without a second dispatch path. Handlers that keep per-session
     state (``/model`` overrides, destructive confirms) resolve it under
     the stable Matrix DM key via ``_session_key_for_source`` — the same
     key on every Matrix call.
@@ -187,7 +198,7 @@ def _dispatch_slash_command(text: str) -> Optional[str]:
 
         cmd_def = resolve_command(verb)
         canonical = cmd_def.name if cmd_def is not None else verb
-        if not is_gateway_known_command(canonical):
+        if not is_gateway_known_command(canonical) and verb != "exit" and canonical != "exit":
             return None
         runner = _live_runner()
         if runner is None:
@@ -211,13 +222,18 @@ def _dispatch_slash_command(text: str) -> Optional[str]:
         except Exception:
             session_key = ""
         try:
+            meta: dict[str, object] = {
+                "gateway_session_id": GATEWAY_SESSION_ID,
+                "gateway_session_key": session_key,
+            }
+            if node_id:
+                meta["observatory_node_id"] = str(node_id)
+            if room_id:
+                meta["observatory_room_id"] = str(room_id)
             event = MessageEvent(
                 text=clean,
                 source=source,
-                metadata={
-                    "gateway_session_id": GATEWAY_SESSION_ID,
-                    "gateway_session_key": session_key,
-                },
+                metadata=meta,
                 internal=True,
             )
         except Exception:
@@ -781,9 +797,10 @@ def run_gateway_prompt_with_events(
     kind: str = "prompt",
     session_id: str = GATEWAY_SESSION_ID,
     node_id: str = "gw",
+    room_id: str | None = None,
     agent_factory: Optional[Callable[[str], Any]] = None,
     turn: Optional[Callable[[Any, str], Any]] = None,
-    slash_dispatch: Optional[Callable[[str], Optional[str]]] = None,
+    slash_dispatch: Optional[Callable[..., Optional[str]]] = None,
     internal: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run one headless turn; return (reply text, batched display events).
@@ -812,11 +829,14 @@ def run_gateway_prompt_with_events(
         raise ValueError(f"gateway_session: unknown inject kind {kind!r}")
     if not session_id:
         raise ValueError("gateway_session: session_id is required")
-
     if kind == "command":
         dispatch = slash_dispatch if slash_dispatch is not None else _dispatch_slash_command
         try:
-            out = dispatch(clean)
+            try:
+                out = dispatch(clean, node_id=node_id, room_id=room_id)
+            except TypeError:
+                # Test doubles with the legacy (text)->reply shape.
+                out = dispatch(clean)
         except Exception:
             logger.debug("gateway_session: slash dispatch raised", exc_info=True)
             out = None
@@ -875,9 +895,10 @@ def run_gateway_prompt(
     kind: str = "prompt",
     session_id: str = GATEWAY_SESSION_ID,
     node_id: str = "gw",
+    room_id: str | None = None,
     agent_factory: Optional[Callable[[str], Any]] = None,
     turn: Optional[Callable[[Any, str], Any]] = None,
-    slash_dispatch: Optional[Callable[[str], Optional[str]]] = None,
+    slash_dispatch: Optional[Callable[..., Optional[str]]] = None,
     internal: bool = False,
 ) -> str:
     """Run one headless turn on the gateway session; return its reply text.
@@ -893,6 +914,7 @@ def run_gateway_prompt(
         kind=kind,
         session_id=session_id,
         node_id=node_id,
+        room_id=room_id,
         agent_factory=agent_factory,
         turn=turn,
         slash_dispatch=slash_dispatch,

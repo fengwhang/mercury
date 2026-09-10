@@ -6352,3 +6352,155 @@ class GatewaySlashCommandsMixin:
 
         self._schedule_update_notification_watch()
         return t("gateway.update.starting")
+    # --- Matrix observatory spawned-orchestrator lifecycle (D9/D8/D13) ----
+    # /spawn + /spawnomp create 0-agents (gateway room only); /exit ends
+    # them from their own rooms. All three flow through the generic Matrix
+    # pass-through (gateway_session._dispatch_slash_command -> _handle_message
+    # -> plain table here) — no second Matrix-only dispatch path. Sidecar
+    # handles come from platform_hook.LAST_BOOT (never a second state).
+    def _observatory_handles(self):
+        """Live sidecar state+registry+renderer or (None, reason)."""
+        try:
+            from observatory import platform_hook
+        except Exception as exc:
+            return None, f"observatory sidecar unavailable ({exc}) — run `mercury setup observatory`"
+        boot = getattr(platform_hook, "LAST_BOOT", None)
+        if boot is None:
+            return None, "no observatory sidecar boot found — run `mercury setup observatory`"
+        state = getattr(boot, "state", None)
+        registry = getattr(boot, "registry", None)
+        renderer = getattr(boot, "renderer", None)
+        if state is None or registry is None:
+            return None, "observatory sidecar has no live state — run `mercury setup observatory`"
+        return (state, registry, renderer), ""
+
+    def _observatory_gateway_ids(self, state, renderer=None):
+        """(gateway_node_id, gateway_room_id or ''). Never raises."""
+        gw_id = ""
+        try:
+            gw_id = str(getattr(renderer, "gateway_node_id", "") or "")
+        except Exception:
+            gw_id = ""
+        if not gw_id:
+            try:
+                for row in state.get_live():
+                    extra = row.get("extra") or {}
+                    if isinstance(extra, dict) and extra.get("kind") == "gateway":
+                        gw_id = str(row.get("node_id") or "")
+                        break
+            except Exception:
+                pass
+        if not gw_id:
+            gw_id = "gw"
+        room = ""
+        try:
+            room = str(state.get(gw_id).get("room_id") or "")
+        except Exception:
+            room = ""
+        return gw_id, room
+
+    def _observatory_caller(self, event):
+        """(node_id, room_id) the Matrix pass-through carried, or ('','')."""
+        try:
+            meta = getattr(event, "metadata", None) or {}
+            node = str(meta.get("observatory_node_id") or "")
+            room = str(meta.get("observatory_room_id") or "")
+            return node, room
+        except Exception:
+            return "", ""
+
+    def _observatory_find_by_room(self, state, room_id):
+        """room_id -> live node row (plus dead descendants), like the
+        sidecar control router. None when unknown/foreign."""
+        if not room_id:
+            return None
+        try:
+            live = state.get_live()
+        except Exception:
+            return None
+        for row in live:
+            if row.get("room_id") == room_id:
+                return row
+        for row in live:
+            try:
+                for sub in state.get_subtree(row["node_id"]):
+                    if sub["node_id"] != row["node_id"] and sub.get("room_id") == room_id:
+                        return sub
+            except Exception:
+                continue
+        return None
+
+    async def _handle_observatory_spawn(self, event: MessageEvent, *, engine: str, verb: str) -> str:
+        from observatory.spawn import run_spawn
+        name = (event.get_command_args() or "").strip()
+        if not name:
+            return f"usage: /{verb} <name> — name is required (D6; no goal — D9)"
+        handles, reason = self._observatory_handles()
+        if handles is None:
+            return f"✗ /{verb} failed: {reason}"
+        state, registry, renderer = handles
+        gw_id, gw_room = self._observatory_gateway_ids(state, renderer)
+        caller_node, caller_room = self._observatory_caller(event)
+        scoped = False
+        if caller_room and gw_room:
+            scoped = (caller_room == gw_room)
+        elif caller_node and gw_id:
+            scoped = (caller_node == gw_id)
+        if not scoped:
+            where = f"gateway agent's room ({gw_room})" if gw_room else "the gateway agent's room"
+            return f"🚫 /{verb} is a gateway-room-only command — accepted only from {where} (D13)."
+        try:
+            row = run_spawn(name, engine, state=state, registry=registry, renderer=renderer)
+        except Exception as exc:
+            return f"✗ /{verb} failed: {exc}"
+        node_id = str((row or {}).get("node_id") or "")
+        space_id = ""
+        room_id = ""
+        try:
+            if node_id:
+                fresh = state.get(node_id)
+                space_id = str(fresh.get("space_id") or "")
+                room_id = str(fresh.get("room_id") or "")
+        except Exception:
+            pass
+        bits = [f"🚀 spawned {engine} orchestrator '{name}' (node {node_id})"]
+        if space_id or room_id:
+            bits.append(f"space {space_id or 'pending'} room {room_id or 'pending'}")
+        return " — ".join(bits)
+
+    async def _handle_spawn_command(self, event: MessageEvent) -> str:
+        """Handle /spawn <name> — hermes-side orchestrator (D9)."""
+        return await self._handle_observatory_spawn(event, engine="hermes", verb="spawn")
+
+    async def _handle_spawnomp_command(self, event: MessageEvent) -> str:
+        """Handle /spawnomp <name> — omp-side orchestrator (D9)."""
+        return await self._handle_observatory_spawn(event, engine="omp", verb="spawnomp")
+
+    async def _handle_exit_command(self, event: MessageEvent) -> str:
+        """Handle /exit — end the caller's spawned 0-agent (D8 cascade)."""
+        from observatory.spawn import run_exit
+        handles, reason = self._observatory_handles()
+        if handles is None:
+            return f"✗ /exit failed: {reason}"
+        state, registry, renderer = handles
+        if renderer is None:
+            return "✗ /exit failed: observatory sidecar has no renderer — run `mercury setup observatory`"
+        gw_id, gw_room = self._observatory_gateway_ids(state, renderer)
+        caller_node, caller_room = self._observatory_caller(event)
+        target = self._observatory_find_by_room(state, caller_room) if caller_room else None
+        if target is None and caller_node:
+            try:
+                target = state.get(caller_node)
+            except Exception:
+                target = None
+        if target is None:
+            return "🚫 /exit refused: unknown or foreign room — /exit runs only in a spawned orchestrator's room."
+        target_id = str(target.get("node_id") or "")
+        if target_id == gw_id or (gw_room and str(target.get("room_id") or "") == gw_room):
+            return "🚫 no /exit on the gateway agent — the gateway room has no /exit (it would break the observatory surface); use /restart."
+        try:
+            run_exit(target_id, state=state, registry=registry, renderer=renderer)
+        except Exception as exc:
+            return f"✗ /exit failed: {exc}"
+        name = str(target.get("name") or target_id)
+        return f"👋 exited '{name}' (node {target_id}) — space+room purged (D8)."

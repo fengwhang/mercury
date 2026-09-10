@@ -399,8 +399,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", desktop="terminal"),
     CommandDef("version", "Show Mercury version", "Info", aliases=("v",),
                busy_policy="dispatch", execute="version"),
-    CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info",
-               args_hint="[nous|local]"),
+    CommandDef("spawn", "Spawn a hermes-side orchestrator (Matrix observatory, gateway room only)", "Session",
+               gateway_only=True, args_hint="<name>", busy_policy="dispatch"),
+    CommandDef("spawnomp", "Spawn an omp-side orchestrator (Matrix observatory, gateway room only)", "Session",
+               gateway_only=True, args_hint="<name>", busy_policy="dispatch"),
 
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",

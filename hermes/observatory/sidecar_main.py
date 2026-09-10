@@ -1633,12 +1633,72 @@ class SidecarDaemon:
                         if "stop requested" not in str(getattr(notice, "body", "")):
                             await self._post_notice(notice)
                     continue
+                if await self._handle_observatory_verb_outcome(outcome):
+                    continue
                 for notice in outcome.notices:
                     await self._post_notice(notice)
                 for action in outcome.actions:
                     # Engine transports (gateway WS injection, RPC steer)
                     # land with the M4a/M5 gateway-side wiring — logged here.
                     log.info("control action pending transport: %r", action)
+
+    def _observatory_verb(self, text: str) -> str:
+        """Lowercase /verb or !verb head of an EngineCommand text, else ''."""
+        try:
+            stripped = (text or "").strip()
+            if not stripped or stripped[0] not in ("/", "!"):
+                return ""
+            head = stripped[1:].split(None, 1)
+            if not head:
+                return ""
+            verb = head[0].lower()
+            if "@" in verb:
+                verb = verb.split("@", 1)[0]
+            return verb
+        except Exception:
+            return ""
+
+    async def _handle_observatory_verb_outcome(self, outcome: Any) -> bool:
+        """Spawned-room /spawn+/spawnomp+/exit via the generic gateway slash
+        dispatch (same transport + inject verb as gateway prompts — no second
+        Matrix path). Only these observatory verbs route here; every other
+        non-gateway InjectText (child steers, session-scoped commands) stays
+        on its pending engine transport. True when handled."""
+        try:
+            actions = list(getattr(outcome, "actions", ()) or ())
+        except Exception:
+            return False
+        if len(actions) != 1 or not isinstance(actions[0], InjectText):
+            return False
+        if str(getattr(actions[0], "kind", "") or "") != "command":
+            return False
+        if self._observatory_verb(str(getattr(actions[0], "text", "") or "")) not in (
+            "spawn", "spawnomp", "exit",
+        ):
+            return False
+        for notice in (getattr(outcome, "notices", ()) or ()):
+            try:
+                await self._post_notice(notice)
+            except Exception:
+                log.debug("observatory verb notice failed", exc_info=True)
+        action = actions[0]
+        try:
+            task = asyncio.create_task(
+                self._deliver_gateway_prompt(
+                    str(action.node_id), str(action.text),
+                    kind=str(getattr(action, "kind", None) or "command"),
+                ),
+                name=f"observatory-verb-prompt-{action.node_id}",
+            )
+        except RuntimeError:
+            return True
+        self._gateway_tasks.add(task)
+        task.add_done_callback(self._gateway_tasks.discard)
+        try:
+            self.routing_log.append(f"observatory-verb:{self._observatory_verb(str(action.text))}")
+        except Exception:
+            pass
+        return True
 
     async def _handle_gateway_abort_outcome(self, outcome: Any) -> bool:
         """BUG3: AbortSession on the gateway node — cancel the in-flight
@@ -1768,7 +1828,7 @@ class SidecarDaemon:
             else:
                 log.info("control action pending transport: %r", action)
 
-    async def _deliver_gateway_prompt(self, node_id: str, text: str, *, kind: str = "prompt", internal: bool = False) -> None:
+    async def _deliver_gateway_prompt(self, node_id: str, text: str, *, kind: str = "prompt", internal: bool = False, room_id: str | None = None) -> None:
         """One prompt → gateway session → batched replay + reply in the room."""
         from observatory.control import ControlNotice
         # Live-ingest seq-dedupe: fresh per-node live set for this turn —
@@ -1777,7 +1837,12 @@ class SidecarDaemon:
         self._gateway_live_seqs[node_id] = set()
         if internal:
             self._gateway_internal_turns[node_id] = True
-
+        if not room_id:
+            try:
+                if self.state is not None:
+                    room_id = str(self.state.get(node_id).get("room_id") or "") or None
+            except Exception:
+                room_id = None
         transport = self.gateway_transport
         if transport is None:
             log.warning("gateway prompt dropped: no transport (node %s)", node_id)
@@ -1817,14 +1882,20 @@ class SidecarDaemon:
             try:
                 if callable(prompt_with_events):
                     try:
-                        reply, events = await prompt_with_events(text, kind=kind, node_id=node_id, internal=internal)
+                        reply, events = await prompt_with_events(text, kind=kind, node_id=node_id, room_id=room_id, internal=internal)
                     except TypeError:
-                        reply, events = await prompt_with_events(text, kind=kind, node_id=node_id)
+                        try:
+                            reply, events = await prompt_with_events(text, kind=kind, node_id=node_id, internal=internal)
+                        except TypeError:
+                            reply, events = await prompt_with_events(text, kind=kind, node_id=node_id)
                 else:
                     try:
-                        reply = await transport.prompt(text, kind=kind, node_id=node_id, internal=internal)
+                        reply = await transport.prompt(text, kind=kind, node_id=node_id, room_id=room_id, internal=internal)
                     except TypeError:
-                        reply = await transport.prompt(text, kind=kind, node_id=node_id)
+                        try:
+                            reply = await transport.prompt(text, kind=kind, node_id=node_id, internal=internal)
+                        except TypeError:
+                            reply = await transport.prompt(text, kind=kind, node_id=node_id)
                     events = []
             except GatewayTransportError as exc:
                 log.warning("gateway prompt delivery failed: %s", exc)
