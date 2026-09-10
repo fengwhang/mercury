@@ -126,6 +126,158 @@ CRYPT_ROOM_META_PREFIX = "crypt:"
 #: notice (``e2ee-notice:<room_key> -> json`` of the device picture);
 #: reposted only when the picture changes (new TOFU device, key refusal).
 NOTICE_META_PREFIX = "e2ee-notice:"
+#: State-meta prefix for pending device-rotation trust records
+#: (``pending-trust:<user_id>/<device_id> -> json`` with old/new key
+#: fingerprints + first-seen timestamp). Written by
+#: :meth:`E2EEManager.ensure_owner_trust` when a known device ID presents
+#: changed keys (Element/Element X identity reset): the rotation stays
+#: REFUSED (fail closed, never auto-trusted) but becomes actionable — the
+#: operator approves it explicitly via
+#: ``mercury observatory trust-device --device <id>``.
+PENDING_TRUST_META_PREFIX = "pending-trust:"
+
+#: State-meta prefix for operator-approved rotation records
+#: (``approved-trust:<user_id>/<device_id> -> json``). Written by the
+#: trust-device approval path; consumed by the NEXT
+#: :meth:`E2EEManager.ensure_owner_trust`, which drops the old record,
+#: marks the approved new keys VERIFIED, and forces Megolm rotation.
+#: An approval only applies to the exact approved key pair — keys that
+#: changed AGAIN since approval fail closed with a fresh pending record.
+APPROVED_TRUST_META_PREFIX = "approved-trust:"
+
+#: The standalone command that approves a pending device rotation
+#: (single source: room-side surfaces never reword it).
+TRUST_DEVICE_CMD = "mercury observatory trust-device"
+
+
+def trust_device_command(device_id: str) -> str:
+    """Exact operator command approving one pending device rotation."""
+    return f"{TRUST_DEVICE_CMD} --device {device_id}"
+
+
+def _trust_meta_key(prefix: str, user_id: str, device_id: str) -> str:
+    return f"{prefix}{user_id}/{device_id}"
+
+
+def list_pending_trusts(state: ObservatoryState) -> list[dict[str, Any]]:
+    """Every pending device-rotation record, oldest first. Never raises —
+    CLI/setup surfaces degrade to "none" when state is unreadable."""
+    try:
+        rows = state._db.execute(  # noqa: SLF001 — same-package state scan
+            "SELECT key, value FROM meta WHERE key LIKE ? ORDER BY key",
+            (PENDING_TRUST_META_PREFIX + "%",),
+        ).fetchall()
+    except Exception:  # noqa: BLE001 — unreadable state reads as no pendings
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        try:
+            import json as _json
+
+            rec = _json.loads(row["value"])
+        except Exception:  # noqa: BLE001 — one corrupt record never hides rest
+            continue
+        if isinstance(rec, dict) and rec.get("device_id"):
+            out.append(rec)
+    out.sort(key=lambda rec: str(rec.get("first_seen") or ""))
+    return out
+
+
+def list_approved_trusts(state: ObservatoryState) -> list[dict[str, Any]]:
+    """Every unconsumed rotation approval. Same never-raises law as
+    :func:`list_pending_trusts`."""
+    try:
+        rows = state._db.execute(  # noqa: SLF001 — same-package state scan
+            "SELECT key, value FROM meta WHERE key LIKE ? ORDER BY key",
+            (APPROVED_TRUST_META_PREFIX + "%",),
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        try:
+            import json as _json
+
+            rec = _json.loads(row["value"])
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(rec, dict) and rec.get("device_id"):
+            out.append(rec)
+    return out
+
+
+def record_pending_trust(
+    state: ObservatoryState,
+    *,
+    user_id: str,
+    device_id: str,
+    old_identity_key: str,
+    old_signing_key: str,
+    new_identity_key: str,
+    new_signing_key: str,
+    reporter: str = "",
+) -> dict[str, Any]:
+    """Persist (or refresh) the pending record for one rotated device.
+    ``first_seen`` is set once and preserved across re-detections; the
+    advertised new keys + reporter list refresh. Returns the record."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    key = _trust_meta_key(PENDING_TRUST_META_PREFIX, user_id, device_id)
+    try:
+        rec = _json.loads(state.get_meta(key))
+        first_seen = str((rec or {}).get("first_seen") or "")
+        reporters = list((rec or {}).get("reporters") or [])
+    except StateError:
+        first_seen, reporters = "", []
+    if not first_seen:
+        first_seen = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if reporter and reporter not in reporters:
+        reporters.append(reporter)
+    rec = {
+        "user_id": str(user_id), "device_id": str(device_id),
+        "old_identity_key": str(old_identity_key),
+        "old_signing_key": str(old_signing_key),
+        "new_identity_key": str(new_identity_key),
+        "new_signing_key": str(new_signing_key),
+        "first_seen": first_seen, "reporters": reporters,
+    }
+    state.set_meta(key, _json.dumps(rec, sort_keys=True))
+    return rec
+
+
+def approve_pending_trust(
+    state: ObservatoryState, *, user_id: str, device_id: str,
+) -> dict[str, Any]:
+    """Approve one pending rotation: drops the pending record and writes
+    the approval marker the next share consumes (old record dropped, new
+    keys VERIFIED, Megolm rotation forced). Raises :class:`E2EEError`
+    when nothing is pending for that device."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    pending_key = _trust_meta_key(PENDING_TRUST_META_PREFIX, user_id, device_id)
+    try:
+        rec = _json.loads(state.get_meta(pending_key))
+    except StateError:
+        raise E2EEError(
+            f"no pending device rotation for {user_id}/{device_id} — "
+            f"run `{TRUST_DEVICE_CMD}` to list pendings") from None
+    if not isinstance(rec, dict) or not rec.get("new_identity_key"):
+        raise E2EEError(
+            f"pending record for {user_id}/{device_id} is corrupt — "
+            "re-run the share to re-record it, then approve again")
+    approval = {
+        "user_id": str(user_id), "device_id": str(device_id),
+        "new_identity_key": str(rec["new_identity_key"]),
+        "new_signing_key": str(rec.get("new_signing_key") or ""),
+        "approved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    state.set_meta(
+        _trust_meta_key(APPROVED_TRUST_META_PREFIX, user_id, device_id),
+        _json.dumps(approval, sort_keys=True))
+    state.delete_meta(pending_key)
+    return approval
 
 #: Exact remedy surfaced by :class:`E2EEError` (single source, tested).
 E2EE_REMEDY = (
@@ -1407,20 +1559,109 @@ class E2EEManager:
         await crypto.load()
         return str(crypto.machine.account.fingerprint)
 
+    async def _handle_same_id_change(
+        self, *, sender_mxid: str, owner: str, name: str,
+        old_identity_key: str, old_signing_key: str, device: Any,
+        snapshot: dict[str, tuple[str, str]],
+        approvals: dict[tuple[str, str], dict[str, Any]],
+        report: dict[str, list[str]], approval_store: Any,
+    ) -> None:
+        """Classify one same-device-ID key change (identity-reset rotation
+        candidate). Fail closed in every branch — the ONLY trust path is a
+        matching operator approval (``trust-device``); otherwise the device
+        lands in ``refused`` plus an actionable ``pending`` record, unless
+        the new keys collide with a DIFFERENT known device (genuine
+        ambiguity: refused with no pending record)."""
+        new_identity_key = str(device.identity_key)
+        new_signing_key = str(device.signing_key)
+        for other_id, (other_ik, other_sk) in snapshot.items():
+            if other_id != name and (new_identity_key == other_ik
+                                     or new_signing_key == other_sk):
+                log.warning(
+                    "TOFU REFUSED for %s/%s: new keys collide with a DIFFERENT "
+                    "known device %s — genuine ambiguity, manual investigation "
+                    "required, never auto-trusted",
+                    owner, name, other_id)
+                report["refused"].append(name)
+                return
+        approval = approvals.get((owner, name))
+        if (approval is not None
+                and str(approval.get("new_identity_key") or "") == new_identity_key
+                and str(approval.get("new_signing_key") or "") == new_signing_key):
+            # Operator approval is an explicit override: VERIFY + upsert
+            # directly (trust_device_tofu's same-keys gate would refuse —
+            # the store may still hold the OLD record when the fetch did
+            # not replace it). Same persistence tail as trust_device_tofu.
+            from mautrix.types import TrustState as _TrustState
+
+            device.trust = _TrustState.VERIFIED
+            ok = False
+            try:
+                if hasattr(approval_store, "put_device"):
+                    await approval_store.put_device(owner, device)
+                else:
+                    devices = await approval_store.get_devices(owner) or {}
+                    devices[device.device_id] = device
+                    await approval_store.put_devices(owner, devices)
+                ok = True
+            except Exception:  # noqa: BLE001 — persist failure refuses
+                log.exception("e2ee approved-rotation persist failed for %s/%s",
+                              owner, name)
+            try:
+                self.state.delete_meta(
+                    _trust_meta_key(APPROVED_TRUST_META_PREFIX, owner, name))
+            except Exception:  # noqa: BLE001 — approval already consumed
+                pass
+            if ok:
+                log.warning(
+                    "TOFU APPROVED-ROTATION for %s/%s: operator approval consumed, "
+                    "new keys VERIFIED, Megolm rotation forced",
+                    owner, name)
+                report["trusted"].append(name)
+                report["rotated"].append(name)
+            else:
+                report["refused"].append(name)
+            return
+        if approval is not None:
+            log.warning(
+                "TOFU REFUSED for %s/%s: keys changed AGAIN since the approval — "
+                "stale approval ignored, fail closed with a fresh pending record",
+                owner, name)
+        rec = record_pending_trust(
+            self.state, user_id=owner, device_id=name,
+            old_identity_key=old_identity_key, old_signing_key=old_signing_key,
+            new_identity_key=new_identity_key, new_signing_key=new_signing_key,
+            reporter=sender_mxid)
+        log.warning(
+            "TOFU REFUSED for %s/%s: same device ID with changed keys "
+            "(Element/Element X identity reset) — manual re-verify required, "
+            "never silent re-trust. Old identity=%s signing=%s, new identity=%s "
+            "signing=%s (first seen %s). To approve: %s",
+            owner, name, old_identity_key, old_signing_key,
+            new_identity_key, new_signing_key, rec.get("first_seen"),
+            trust_device_command(name))
+        report["refused"].append(name)
+        report["pending"].append(name)
+
     async def ensure_owner_trust(self, sender_mxid: str) -> dict[str, list[str]]:
         """Fetch the owner's current device keys and TOFU-trust every
         first-seen device as VERIFIED for ``sender``'s machine; a device
         whose keys CHANGED since first sight lands in ``refused`` (fail
         closed — the caller surfaces it, never encrypts on TOFU authority).
+        A same-ID change with fresh keys is additionally recorded as
+        ``pending`` (actionable via ``trust-device``); the only path back
+        to trusted is a matching operator approval, which lands in
+        ``trusted`` + ``rotated``.
 
         Runs BEFORE ``share_group_session`` on purpose: mautrix 0.21.1
         resets every refetched device to UNVERIFIED (``_validate_device``),
         so trust must be applied after the last fetch. The share's own
         internal fetch then finds the devices already stored and keeps
-        this trust. Returns ``trusted`` (new), ``known``, ``refused`` and
-        ``fetched`` device-id lists."""
+        this trust. Returns ``trusted`` (new), ``known``, ``refused``,
+        ``pending``, ``rotated`` and ``fetched`` device-id lists."""
         report: dict[str, list[str]] = {"trusted": [], "known": [],
-                                        "refused": [], "fetched": []}
+                                        "refused": [], "fetched": [],
+                                        "pending": [], "rotated": []}
         owner = (self.owner_mxid or "").strip()
         if not owner:
             return report
@@ -1431,8 +1672,18 @@ class E2EEManager:
         machine = crypto.machine
         store = machine.crypto_store
         # Pre-fetch snapshot: the fetch below stores everything as
-        # UNVERIFIED, so "first sight" is decided against THIS set.
-        known_before = set((await store.get_devices(owner) or {}).keys())
+        # UNVERIFIED, so "first sight" is decided against THIS set — and
+        # same-ID key changes (identity reset) are detected against it.
+        # A signing-key change never survives mautrix validation (the
+        # device is dropped from the fetch), so the snapshot also feeds
+        # the raw-query supplement below.
+        try:
+            snapshot = {str(did): (str(dev.identity_key), str(dev.signing_key))
+                        for did, dev in ((await store.get_devices(owner)) or {}).items()}
+        except Exception:  # noqa: BLE001 — stub stores without device listing
+            snapshot = {}
+        approvals = {(str(rec.get("user_id") or ""), str(rec.get("device_id") or "")): rec
+                     for rec in list_approved_trusts(self.state)}
         # Pinned mautrix 0.21.1 has no public fetch-untracked entry point;
         # _share_group_session uses this same call, so the contract is stable.
         fetched = await machine._fetch_keys(  # noqa: SLF001 — see above
@@ -1441,7 +1692,25 @@ class E2EEManager:
         for device_id, device in devices.items():
             name = str(device_id)
             report["fetched"].append(name)
-            sighted = device_id not in known_before
+            new_keys = (str(device.identity_key), str(device.signing_key))
+            if name in snapshot and snapshot[name] != new_keys:
+                await self._handle_same_id_change(
+                    sender_mxid=sender_mxid, owner=owner, name=name,
+                    old_identity_key=snapshot[name][0],
+                    old_signing_key=snapshot[name][1], device=device,
+                    snapshot=snapshot, approvals=approvals, report=report,
+                    approval_store=store)
+                continue
+            sighted = name not in snapshot
+            if sighted and any(new_keys[0] == ik or new_keys[1] == sk
+                               for ik, sk in snapshot.values()):
+                log.warning(
+                    "TOFU REFUSED for %s/%s: brand-new device ID presents keys "
+                    "already seen under a DIFFERENT device — genuine ambiguity, "
+                    "manual investigation required, never auto-trusted",
+                    owner, name)
+                report["refused"].append(name)
+                continue
             ok = await self.trust_device_tofu(sender_mxid, owner, device,
                                               first_sight=sighted)
             if not ok:
@@ -1450,23 +1719,214 @@ class E2EEManager:
                 report["trusted"].append(name)
             else:
                 report["known"].append(name)
-        if not devices:
+        # Supplement: known IDs the fetch dropped (mautrix validation
+        # rejects a same-ID signing-key change, so an identity reset
+        # vanishes here). Re-read the RAW advertised keys and classify
+        # them the same way — this is the live rotation path.
+        missing = [did for did in snapshot
+                   if did not in {str(d) for d in devices}]
+        if missing:
+            await self._supplement_missing_devices(
+                sender_mxid=sender_mxid, owner=owner, missing=missing,
+                snapshot=snapshot, approvals=approvals, report=report,
+                machine=machine)
+        if not devices and not missing:
             log.warning("owner %s published no device keys — encrypted rooms stay "
                         "unreadable on their clients until they log in", owner)
         return report
 
+    async def _supplement_missing_devices(
+        self, *, sender_mxid: str, owner: str, missing: list[str],
+        snapshot: dict[str, tuple[str, str]],
+        approvals: dict[tuple[str, str], dict[str, Any]],
+        report: dict[str, list[str]], machine: Any,
+    ) -> None:
+        """Classify known device IDs absent from the validated fetch via a
+        raw key query (bypasses mautrix's drop-on-signing-change). Devices
+        the server no longer advertises are genuinely deleted (left alone);
+        advertised ones go through the same rotation/approval classification
+        as fetched devices. Fail closed on any query/validation error."""
+        from mautrix.types import DeviceID, DeviceIdentity, TrustState, UserID
+        from mautrix.crypto.signature import verify_signature_json
+
+        try:
+            raw = await machine.client.query_keys([UserID(owner)])
+        except Exception as exc:  # noqa: BLE001 — no raw keys, no healing
+            log.warning("e2ee rotation supplement skipped for %s: key query failed: %s",
+                        owner, exc)
+            return
+        try:
+            advertised = (raw.device_keys.get(UserID(owner), {}) or {})
+            by_name = {str(did): rk for did, rk in advertised.items()}
+        except Exception:  # noqa: BLE001 — malformed response reads as empty
+            by_name = {}
+        for name in missing:
+            raw_keys = by_name.get(name)
+            if raw_keys is None:
+                continue  # genuinely deleted server-side — stays gone
+            try:
+                signing_key = raw_keys.ed25519
+                identity_key = raw_keys.curve25519
+                name_attr = (getattr(getattr(raw_keys, "unsigned", None),
+                                     "device_display_name", None) or name)
+            except Exception:  # noqa: BLE001 — malformed device entry
+                continue
+            try:
+                self_signed = bool(verify_signature_json(
+                    raw_keys.serialize(), UserID(owner), DeviceID(name),
+                    signing_key))
+            except Exception:  # noqa: BLE001 — unverifiable advertisement
+                self_signed = False
+            if not self_signed:
+                log.warning(
+                    "TOFU REFUSED for %s/%s: re-advertised keys carry no valid "
+                    "self-signature — fail closed, never re-trusted",
+                    owner, name)
+                report["refused"].append(name)
+                continue
+            new_keys = (str(identity_key), str(signing_key))
+            device = DeviceIdentity(
+                user_id=UserID(owner), device_id=DeviceID(name),
+                identity_key=identity_key, signing_key=signing_key,
+                trust=TrustState.UNVERIFIED, deleted=False, name=str(name_attr))
+            report["fetched"].append(name)
+            if snapshot.get(name) == new_keys:
+                # Defensive: same keys the fetch dropped anyway — re-list as
+                # known without touching trust.
+                report["known"].append(name)
+                continue
+            await self._handle_same_id_change(
+                sender_mxid=sender_mxid, owner=owner, name=name,
+                old_identity_key=snapshot[name][0],
+                old_signing_key=snapshot[name][1], device=device,
+                snapshot=snapshot, approvals=approvals, report=report,
+                approval_store=machine.crypto_store)
+
+    async def verify_recipient_otks(
+        self, machine: Any, members: list[str],
+    ) -> dict[str, list[str]]:
+        """CLAIM-VERIFY GUARD (D2 stale-pool defense): before sharing a
+        Megolm session, claim one OTK per recipient device lacking an Olm
+        session and verify its signature against the CURRENT advertised
+        signing key (mautrix ``verify_signature_json``). The homeserver
+        keeps serving OLD-signed OTKs after an Element/Element X identity
+        reset; mautrix drops those sessions yet logs success with zero
+        recipients — this guard names them instead.
+
+        Returns ``share_users`` (members safe to pass to
+        ``share_group_session`` — users whose every device failed are
+        dropped), ``verified`` and ``stale`` device-id lists. Devices with
+        a live Olm session skip the claim (reachable without an OTK) and
+        count as verified. A failed claim RPC degrades to the legacy
+        unfiltered share (fail-open: that error is not a stale pool)."""
+        from mautrix.crypto.signature import verify_signature_json
+        from mautrix.types import DeviceID, EncryptionKeyAlgorithm, UserID
+
+        store = getattr(machine, "crypto_store", None)
+        try:
+            per_user: dict[str, dict[str, Any]] = {}
+            if store is not None:
+                for user in members:
+                    try:
+                        devs = await store.get_devices(UserID(user)) or {}
+                    except Exception:  # noqa: BLE001 — per-user degrade
+                        devs = {}
+                    if devs:
+                        per_user[str(user)] = {str(did): dev
+                                              for did, dev in devs.items()}
+        except Exception:  # noqa: BLE001 — stub stores without device listing
+            return {"share_users": list(members), "verified": [],
+                    "stale": [], "stale_pairs": []}
+        need: dict[str, dict[str, Any]] = {}
+        verified: list[str] = []
+        for user, devs in per_user.items():
+            for did, dev in devs.items():
+                try:
+                    has = bool(await store.has_session(dev.identity_key))
+                except Exception:  # noqa: BLE001 — unknown reads as no session
+                    has = False
+                if has:
+                    verified.append(did)
+                else:
+                    need.setdefault(user, {})[did] = dev
+        stale_pairs: list[tuple[str, str]] = []
+        if need:
+            request = {UserID(user): {DeviceID(did): EncryptionKeyAlgorithm.SIGNED_CURVE25519
+                                      for did in devs}
+                       for user, devs in need.items()}
+            try:
+                resp = await machine.client.claim_keys(request)
+            except Exception as exc:  # noqa: BLE001 — not a stale pool
+                log.warning("e2ee claim-verify skipped: key claim failed (%s) — "
+                            "proceeding to legacy share", exc)
+                return {"share_users": list(members),
+                        "verified": sorted(set(verified)
+                                           | {d for devs in need.values()
+                                              for d in devs}),
+                        "stale": [], "stale_pairs": []}
+            try:
+                one_time_keys = getattr(resp, "one_time_keys", None) or {}
+            except Exception:  # noqa: BLE001 — malformed response
+                one_time_keys = {}
+            for user, devs in need.items():
+                got = (one_time_keys.get(UserID(user), {}) or {}
+                       or one_time_keys.get(str(user), {}) or {})
+                for did, dev in devs.items():
+                    entries = (got.get(DeviceID(did), {}) or {}
+                               or got.get(str(did), {}) or {})
+                    if not entries:
+                        stale_pairs.append((user, did))
+                        continue
+                    try:
+                        _key_id, otk = next(iter(entries.items()))
+                    except StopIteration:
+                        stale_pairs.append((user, did))
+                        continue
+                    try:
+                        data = (otk.serialize() if hasattr(otk, "serialize")
+                                else dict(otk))
+                        ok = bool(verify_signature_json(
+                            data, UserID(user), DeviceID(did),
+                            dev.signing_key))
+                    except Exception:  # noqa: BLE001 — unverifiable reads stale
+                        ok = False
+                    if ok:
+                        verified.append(did)
+                    else:
+                        stale_pairs.append((user, did))
+        # Per-(user, device) staleness drives exclusion (a bare device id
+        # can repeat across users); reports stay bare-device-id lists to
+        # match the trusted/known/refused convention.
+        stale_pair_set = set(stale_pairs)
+        stale = sorted({did for _user, did in stale_pair_set})
+        share_users = [u for u in members
+                       if not (u in need and need[u]
+                               and all((u, d) in stale_pair_set
+                                       for d in need[u]))]
+        return {"share_users": share_users,
+                "verified": sorted(set(verified)), "stale": stale,
+                "stale_pairs": sorted(stale_pair_set)}
+
     async def ensure_room_share(self, room_id: str, sender: str) -> dict[str, list[str]]:
         """TOFU-trust the owner's devices, then create/share the Megolm
         outbound session when none is live (missing, expired, or never
-        shared). Returns the trust report plus ``shared`` ([room_id] when
-        a fresh share happened, else [])."""
-        from mautrix.types import RoomID
+        shared). Before sharing, the claim-verify guard drops stale-pool
+        devices; refused/pending (untrusted) devices are excluded too —
+        without approval nothing encrypts to rotated keys. When ZERO
+        devices verify, nothing is shared and the report carries
+        ``failed-stale-pool`` (never a false success). Returns the trust
+        report plus ``shared`` ([room_id] when a fresh share happened,
+        else []), ``stale_excluded``, and ``pending``/``rotated``."""
+        from mautrix.types import RoomID, UserID
 
         crypto = self.machine_for(sender)
         await crypto.load()
         machine = crypto.machine
+        store = machine.crypto_store
         report = await self.ensure_owner_trust(sender)
-        session = await machine.crypto_store.get_outbound_group_session(RoomID(room_id))
+        for bucket in ("pending", "rotated", "stale_excluded"):
+            report.setdefault(bucket, [])
+        session = await store.get_outbound_group_session(RoomID(room_id))
         # BUG1 (VM round 2): a tracked user that gained a first-seen device
         # id (``trusted``) or failed validation with changed keys
         # (``refused``) since the outbound session was created means the
@@ -1477,7 +1937,7 @@ class E2EEManager:
             old_id = str(getattr(session, "id", getattr(session, "session_id", "?")))
             old_created = str(getattr(session, "creation_time", "?"))
             try:
-                await machine.crypto_store.remove_outbound_group_session(RoomID(room_id))
+                await store.remove_outbound_group_session(RoomID(room_id))
             except Exception:
                 log.exception("e2ee reshare rotation failed for %s", room_id)
             else:
@@ -1489,11 +1949,71 @@ class E2EEManager:
         if (session is None or getattr(session, "expired", False)
                 or not getattr(session, "shared", True)):
             members = await self._room_members(room_id)
-            await machine.share_group_session(RoomID(room_id), list(members))
+            guard = await self.verify_recipient_otks(machine, list(members))
+            if guard["stale"]:
+                report["stale_excluded"] = list(guard["stale"])
+            if guard["stale"] and not guard["verified"]:
+                report["failed-stale-pool"] = list(guard["stale"])
+                report["shared"] = []
+                log.warning(
+                    "E2EE STALE OTK POOL for %s: %d/%d recipient device(s) "
+                    "presented one-time keys that FAIL signature verification "
+                    "against their advertised signing keys (%s) — share SKIPPED, "
+                    "no Megolm session created, refusing to log success with "
+                    "zero recipients. This is the Element/Element X "
+                    "identity-reset shape: resetting the identity replaces the "
+                    "device key under the SAME device ID while the homeserver "
+                    "keeps serving OTKs signed by the OLD key. REMEDY: bring "
+                    "the owner client online so it publishes freshly-signed "
+                    "OTKs (force-close + reopen Element, or sign out/in), then "
+                    "send a fresh message to trigger a new share",
+                    room_id, len(guard["stale"]),
+                    len(guard["stale"]) + len(guard["verified"]),
+                    ", ".join(guard["stale"]))
+                return report
+            # Exclude stale-pool AND untrusted (refused/pending) devices from
+            # this share: without approval nothing encrypts to rotated keys.
+            # The share API is per-user, so untrusted devices are
+            # temporarily dropped from the store and restored afterwards —
+            # the share's internal fetch only refetches users with NO stored
+            # devices, so trust state survives.
+            # refused/pending are owner devices (ensure_owner_trust only
+            # classifies the owner); stale pairs already carry their user.
+            owner = (self.owner_mxid or "").strip()
+            excluded_pairs = (set(guard.get("stale_pairs", []))
+                              | {(owner, d) for d in (report.get("refused") or [])}
+                              | {(owner, d) for d in (report.get("pending") or [])})
+            dropped: dict[str, dict[Any, Any]] = {}
+            if excluded_pairs:
+                for user in members:
+                    try:
+                        devs = await store.get_devices(UserID(user)) or {}
+                    except Exception:  # noqa: BLE001 — stub/legacy stores
+                        continue
+                    if any((str(user), str(did)) in excluded_pairs
+                           for did in devs):
+                        dropped[str(user)] = dict(devs)
+                        try:
+                            await store.put_devices(
+                                UserID(user),
+                                {did: dev for did, dev in devs.items()
+                                 if (str(user), str(did)) not in excluded_pairs})
+                        except Exception:  # noqa: BLE001 — keep legacy share
+                            dropped.pop(str(user), None)
+            try:
+                await machine.share_group_session(
+                    RoomID(room_id), list(guard["share_users"]))
+            finally:
+                for user, devs in dropped.items():
+                    try:
+                        await store.put_devices(UserID(user), devs)
+                    except Exception:  # noqa: BLE001 — teardown must not raise
+                        log.warning("e2ee share device restore failed for %s",
+                                    user, exc_info=True)
             report["shared"] = [room_id]
             if old_session_id is not None:
                 try:
-                    fresh = await machine.crypto_store.get_outbound_group_session(RoomID(room_id))
+                    fresh = await store.get_outbound_group_session(RoomID(room_id))
                     new_id = str(getattr(fresh, "id", getattr(fresh, "session_id", "?"))) if fresh else "?"
                 except Exception:
                     new_id = "?"
@@ -1604,6 +2124,13 @@ class E2EEManager:
         True when a notice was posted."""
         import json
 
+        # Pending rotations NEVER post here: the room is undecryptable in
+        # exactly this state (no shared room key reaches the rotated device),
+        # so the owner could not read the remedy. The setup acceptance
+        # surface (`mercury setup observatory`) and the standalone
+        # `mercury observatory trust-device` command carry it instead.
+        if report.get("pending"):
+            return False
         trusted = [str(d) for d in (report.get("trusted") or [])]
         refused = [str(d) for d in (report.get("refused") or [])]
         if not trusted and not refused:

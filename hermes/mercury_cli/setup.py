@@ -4027,6 +4027,85 @@ def _synthetic_transaction() -> str:
         return f"failed: {exc}"
 
 
+_DEVICE_TRUST_STANDING_LINE = (
+    "To decrypt messages on Matrix after resetting identity in Element or "
+    "Element X, run: mercury observatory trust-device — the command lists "
+    "rotated devices and walks through fingerprint approval."
+)
+
+
+def _acceptance_device_trust_gate() -> str:
+    """Acceptance gate 8: pending device-rotation approvals + wizard.
+
+    Prints the standing trust-device remedy line on EVERY run, then lists
+    pending rotations (device ID, old/new fingerprints, first-seen time)
+    with the exact per-device approve command. Interactively prompts
+    approve/skip per device (default No — headless runs only print the
+    commands). Returns the gate outcome for the acceptance report."""
+    from observatory.e2ee import (
+        TRUST_DEVICE_CMD,
+        approve_pending_trust,
+        list_pending_trusts,
+        trust_device_command,
+    )
+
+    print_info(_DEVICE_TRUST_STANDING_LINE)
+    try:
+        from observatory.provision import _mercury_home
+        from observatory.state import ObservatoryState, default_state_db_path
+
+        db = default_state_db_path(_mercury_home(None))
+        if not db.exists():
+            return "passed: no pending device rotations"
+        state = ObservatoryState(db)
+    except Exception as exc:  # noqa: BLE001 — gate, never kills setup
+        return f"skipped: device-trust unreadable ({exc})"
+    try:
+        pendings = list_pending_trusts(state)
+        if not pendings:
+            return "passed: no pending device rotations"
+        unapproved: list[str] = []
+        for rec in pendings:
+            user = str(rec.get("user_id") or "")
+            device = str(rec.get("device_id") or "")
+            print_warning(
+                f"Pending device rotation: {user}/{device} "
+                f"(first seen {rec.get('first_seen')})")
+            print_info(f"  old identity: {rec.get('old_identity_key')}")
+            print_info(f"  old signing:  {rec.get('old_signing_key')}")
+            print_info(f"  new identity: {rec.get('new_identity_key')}")
+            print_info(f"  new signing:  {rec.get('new_signing_key')}")
+            print_info(f"  approve: {trust_device_command(device)}")
+            try:
+                approved = prompt_yes_no(
+                    f"Approve the new keys for {user}/{device}?", default=False)
+            except KeyboardInterrupt:
+                raise
+            except Exception:  # noqa: BLE001 — prompt failure reads as skip
+                approved = False
+            if not approved:
+                unapproved.append(device)
+                print_info(f"  skipped — approve later with: "
+                           f"{trust_device_command(device)}")
+                continue
+            try:
+                approve_pending_trust(state, user_id=user, device_id=device)
+            except Exception as exc:  # noqa: BLE001 — approval must not kill setup
+                unapproved.append(device)
+                print_error(f"  approval failed for {user}/{device}: {exc}")
+                continue
+            print_success(f"  approved {user}/{device} — the next share trusts "
+                          "the new keys and rotates the Megolm session.")
+        if unapproved:
+            return (f"failed: {len(unapproved)} pending device rotation(s) need "
+                    f"approval — run `{TRUST_DEVICE_CMD} --device <id>` per device")
+        return (f"passed: all {len(pendings)} pending device rotation(s) approved")
+    finally:
+        try:
+            state.close()
+        except Exception:  # noqa: BLE001 — teardown must not raise
+            pass
+
 def _run_observatory_acceptance(obs, status: dict, ts: dict | None) -> bool:
     """Ordered setup acceptance (VM report): dual-bind assert, crypto
     assert (+live-gate hint), model resolve + inject ping,
@@ -4176,6 +4255,14 @@ def _run_observatory_acceptance(obs, status: dict, ts: dict | None) -> bool:
             raise
         except Exception as exc:  # noqa: BLE001 — gate, never kills setup
             _report("poison-scan", f"failed: {exc}")
+
+    # 8. device-trust rotations (standing remedy line + approve/skip wizard).
+    try:
+        _report("device-trust", _acceptance_device_trust_gate())
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # noqa: BLE001 — gate, never kills setup
+        _report("device-trust", f"skipped: device-trust gate failed ({exc})")
 
     all_pass = all(outcome.startswith(("passed", "skipped")) for _, outcome in results)
     if all_pass:
