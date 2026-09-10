@@ -1269,6 +1269,11 @@ class E2EEManager:
                             user_id: {f"ed25519:{device_id}": str(sig)},
                         },
                     }
+                    # Real-server semantics (mirrors share_keys: generate →
+                    # publish → mark): a claimed key must never be handed out
+                    # twice, so mark it published — the next claim mints a
+                    # fresh one and the machine re-tops-up on its own cycle.
+                    account.mark_keys_as_published()
                 except Exception as exc:  # noqa: BLE001 — one bad claim never
                     log.warning("msc3984 key claim failed for %s/%s: %s",
                                 user_id, device_id, exc)
@@ -1629,11 +1634,11 @@ class E2EEManager:
 #: anything wider means plaintext history exists (poisoned, defect iii).
 POISON_GAP_SECONDS = 60.0
 
-#: Recovery steps surfaced with every decrypt failure: written for Element X
-#: reality — Element X has NO per-device verify screen and NO key-request
-#: long-press gesture, so the notice names neither. Recovery is
-#: force-close/rejoin + a FRESH message, with a re-converge offer for the
-#: reinstall-rotation case. Never a bare "unable to decrypt".
+#: Recovery steps surfaced with every decrypt failure: written for clients
+#: with no per-device verify screen and no key-request gesture, so the
+#: notice names neither. Recovery is force-close/rejoin + a FRESH message,
+#: with a re-converge offer for the reinstall-rotation case. Never a bare
+#: "unable to decrypt".
 DECRYPT_RECOVERY_STEPS = (
     "Recovery, in order: "
     "1) force-close Element X completely, reopen it, rejoin this room, then "

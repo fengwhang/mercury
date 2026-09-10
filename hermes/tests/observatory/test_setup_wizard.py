@@ -1488,7 +1488,17 @@ def _repo_root() -> Path:
 def test_no_user_facing_string_recommends_element(rel):
     """Source guard: Element X / Element Classic must not be named as the
     recommendation in any user-facing string (FluffyChat is)."""
+    import re as _re
+
     text = (_repo_root() / rel).read_text(encoding="utf-8")
+    if rel == "hermes/observatory/e2ee.py":
+        # Carve-out (2026-09-09 MSC3984/Element X field report): the
+        # decrypt-failure notice troubleshoots Element X for users already
+        # on it (force-close/rejoin, no verify screen, reinstall rotation)
+        # — it never RECOMMENDS it. The ban still covers every other
+        # string in the file.
+        text = _re.sub(
+            r"DECRYPT_RECOVERY_STEPS = \(.*?\)\n", "", text, flags=_re.DOTALL)
     assert "Element X" not in text
     assert "Element Classic" not in text
 
