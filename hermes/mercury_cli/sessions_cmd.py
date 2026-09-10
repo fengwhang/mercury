@@ -367,39 +367,82 @@ def cmd_sessions(args, sessions_parser=None):
             # copy-paste becomes a doomed prefix. First column = never
             # clipped, whatever the width.
             if has_titles:
-                print(f"{'ID':<24} {'Title':<26} {'Workspace':<16} {'Last Active':<13}")
-                print("─" * 84)
+                rows = [
+                    (
+                        str(s["id"]),
+                        str(s.get("title") or "—").replace("\n", " "),
+                        _ws_label(s),
+                        _relative_time(s.get("last_active")),
+                    )
+                    for s in sessions
+                ]
+                id_w = max(len("ID"), *(len(r[0]) for r in rows))
+                title_w = max(len("Title"), *(len(r[1]) for r in rows))
+                ws_w = max(len("Workspace"), *(len(r[2]) for r in rows))
+                la_w = max(len("Last Active"), *(len(r[3]) for r in rows))
+                print(f"{'ID':<{id_w}} {'Title':<{title_w}} {'Workspace':<{ws_w}} {'Last Active':<{la_w}}")
+                print("─" * (id_w + 1 + title_w + 1 + ws_w + 1 + la_w))
+                for sid, title, ws, last_active in rows:
+                    print(f"{sid:<{id_w}} {title:<{title_w}} {ws:<{ws_w}} {last_active:<{la_w}}")
             else:
-                print(f"{'ID':<24} {'Preview':<34} {'Workspace':<16} {'Last Active':<13} {'Src':<6}")
-                print("─" * 96)
-            for s in sessions:
-                last_active = _relative_time(s.get("last_active"))
-                ws = _ws_label(s)[:16]
-                if has_titles:
-                    title = (s.get("title") or "—")[:26]
-                    print(f"{s['id']:<24} {title:<26} {ws:<16} {last_active:<13}")
-                else:
-                    preview = s.get("preview", "")[:34]
-                    print(f"{s['id']:<24} {preview:<34} {ws:<16} {last_active:<13} {s['source']:<6}")
+                rows = [
+                    (
+                        str(s["id"]),
+                        str(s.get("preview", "")).replace("\n", " "),
+                        _ws_label(s),
+                        _relative_time(s.get("last_active")),
+                        str(s.get("source") or "-"),
+                    )
+                    for s in sessions
+                ]
+                id_w = max(len("ID"), *(len(r[0]) for r in rows))
+                prev_w = max(len("Preview"), *(len(r[1]) for r in rows))
+                ws_w = max(len("Workspace"), *(len(r[2]) for r in rows))
+                la_w = max(len("Last Active"), *(len(r[3]) for r in rows))
+                src_w = max(len("Src"), *(len(r[4]) for r in rows))
+                print(f"{'ID':<{id_w}} {'Preview':<{prev_w}} {'Workspace':<{ws_w}} {'Last Active':<{la_w}} {'Src':<{src_w}}")
+                print("─" * (id_w + 1 + prev_w + 1 + ws_w + 1 + la_w + 1 + src_w))
+                for sid, preview, ws, last_active, src in rows:
+                    print(f"{sid:<{id_w}} {preview:<{prev_w}} {ws:<{ws_w}} {last_active:<{la_w}} {src:<{src_w}}")
             return
 
         # HERMES-OMP PATCH: ID FIRST (see the has_ws branch above).
         if has_titles:
-            print(f"{'ID':<24} {'Title':<28} {'Preview':<36} {'Last Active':<13}")
-            print("─" * 104)
+            rows = [
+                (
+                    str(s["id"]),
+                    str(s.get("title") or "—").replace("\n", " "),
+                    str(s.get("preview", "")).replace("\n", " "),
+                    _relative_time(s.get("last_active")),
+                )
+                for s in sessions
+            ]
+            id_w = max(len("ID"), *(len(r[0]) for r in rows))
+            title_w = max(len("Title"), *(len(r[1]) for r in rows))
+            prev_w = max(len("Preview"), *(len(r[2]) for r in rows))
+            la_w = max(len("Last Active"), *(len(r[3]) for r in rows))
+            print(f"{'ID':<{id_w}} {'Title':<{title_w}} {'Preview':<{prev_w}} {'Last Active':<{la_w}}")
+            print("─" * (id_w + 1 + title_w + 1 + prev_w + 1 + la_w))
+            for sid, title, preview, last_active in rows:
+                print(f"{sid:<{id_w}} {title:<{title_w}} {preview:<{prev_w}} {last_active:<{la_w}}")
         else:
-            print(f"{'ID':<24} {'Preview':<44} {'Last Active':<13} {'Src':<6}")
-            print("─" * 92)
-        for s in sessions:
-            last_active = _relative_time(s.get("last_active"))
-            sid = s["id"]
-            if has_titles:
-                title = (s.get("title") or "—")[:28]
-                preview = s.get("preview", "")[:36]
-                print(f"{sid:<24} {title:<28} {preview:<36} {last_active:<13}")
-            else:
-                preview = s.get("preview", "")[:44]
-                print(f"{sid:<24} {preview:<44} {last_active:<13} {s['source']:<6}")
+            rows = [
+                (
+                    str(s["id"]),
+                    str(s.get("preview", "")).replace("\n", " "),
+                    _relative_time(s.get("last_active")),
+                    str(s.get("source") or "-"),
+                )
+                for s in sessions
+            ]
+            id_w = max(len("ID"), *(len(r[0]) for r in rows))
+            prev_w = max(len("Preview"), *(len(r[1]) for r in rows))
+            la_w = max(len("Last Active"), *(len(r[2]) for r in rows))
+            src_w = max(len("Src"), *(len(r[3]) for r in rows))
+            print(f"{'ID':<{id_w}} {'Preview':<{prev_w}} {'Last Active':<{la_w}} {'Src':<{src_w}}")
+            print("─" * (id_w + 1 + prev_w + 1 + la_w + 1 + src_w))
+            for sid, preview, last_active, src in rows:
+                print(f"{sid:<{id_w}} {preview:<{prev_w}} {last_active:<{la_w}} {src:<{src_w}}")
 
         # HERMES-OMP PATCH: teach resume right where the handles are shown —
         # multi-word titles need quotes or the shell splits them into -c args.

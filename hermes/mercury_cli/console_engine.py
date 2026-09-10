@@ -149,15 +149,21 @@ def _contains_shell_syntax(line: str, tokens: Sequence[str]) -> bool:
 def _format_sessions(sessions: Sequence[dict]) -> str:
     if not sessions:
         return "No sessions found."
-    lines = [f"{'ID':<32} {'Source':<12} {'Msgs':>5}  Title / Preview"]
-    lines.append("-" * 82)
+    rows: list[tuple[str, str, object, str]] = []
     for session in sessions:
-        sid = str(session.get("id") or "")[:32]
-        source = str(session.get("source") or "-")[:12]
+        sid = str(session.get("id") or "")
+        source = str(session.get("source") or "-")
         messages = session.get("message_count") or 0
         title = session.get("title") or session.get("preview") or ""
-        title = str(title).replace("\n", " ")[:60]
-        lines.append(f"{sid:<32} {source:<12} {messages:>5}  {title}")
+        title = str(title).replace("\n", " ")
+        rows.append((sid, source, messages, title))
+    id_w = max(len("ID"), *(len(sid) for sid, _, _, _ in rows))
+    src_w = max(len("Source"), *(len(source) for _, source, _, _ in rows))
+    header = f"{'ID':<{id_w}} {'Source':<{src_w}} {'Msgs':>5}  Title / Preview"
+    lines = [header]
+    lines.append("-" * len(header))
+    for sid, source, messages, title in rows:
+        lines.append(f"{sid:<{id_w}} {source:<{src_w}} {messages:>5}  {title}")
     return "\n".join(lines)
 
 
