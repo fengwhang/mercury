@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "bun:test";
-import { dispatchRpcSubagentControl, type RpcSubagentControlCommand } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
+import {
+	dispatchRpcSubagentControl,
+	type RpcSubagentControlCommand,
+} from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
 import type { RpcResponse } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
 import type { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import type { AgentRef } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";

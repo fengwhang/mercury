@@ -48,7 +48,7 @@ interface SessionOptions {
 
 function makeSession(opts: SessionOptions = {}): ToolSession {
 	const settings = Settings.isolated({ "async.enabled": false, "task.isolation.enabled": false });
-	const roles = opts.roles ?? {   };
+	const roles = opts.roles ?? {};
 	for (const role in roles) {
 		const value = roles[role as keyof typeof roles];
 		if (value) settings.setModelRole(role, value);

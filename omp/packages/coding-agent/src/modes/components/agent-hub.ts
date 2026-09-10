@@ -1100,9 +1100,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		add(theme.fg("dim", `Registered ${formatLocalDateTimeWithOffset(new Date(ref.createdAt))}`));
 
 		section("Changes");
-		add(
-			theme.fg("dim", "Shared workspace · per-agent LoC not attributable"),
-		);
+		add(theme.fg("dim", "Shared workspace · per-agent LoC not attributable"));
 		const artifacts = ref.history;
 		if (artifacts?.outputPath) addWrapped(`Output ${shortenPath(artifacts.outputPath)}`);
 		if (artifacts?.patchPath) addWrapped(`Patch ${shortenPath(artifacts.patchPath)}`);

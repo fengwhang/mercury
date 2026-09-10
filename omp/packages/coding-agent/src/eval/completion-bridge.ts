@@ -85,7 +85,6 @@ function resolveTierModel(tier: CompletionTier, session: ToolSession): Model<Api
 	return resolve(TIER_TO_PATTERN[tier]);
 }
 
-
 /**
  * Run a single stateless completion on behalf of an eval cell's `completion()` call.
  * Returns a `{ text, details }` value shaped like a {@link callSessionTool}

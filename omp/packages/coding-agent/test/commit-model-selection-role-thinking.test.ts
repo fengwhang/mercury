@@ -27,5 +27,4 @@ function createSettings(modelRoles: Record<string, string>) {
 	} as never;
 }
 
-describe("commit role thinking selection", () => {
-});
+describe("commit role thinking selection", () => {});

@@ -17,13 +17,11 @@ const asYield = (item: YieldItem) => item as never;
 
 function serializeTerminal(completeData: unknown): string {
 	// mirror of the executor's patched branch
-	return typeof completeData === "string"
-		? completeData
-		: (JSON.stringify(completeData, null, 2) ?? "null");
+	return typeof completeData === "string" ? completeData : (JSON.stringify(completeData, null, 2) ?? "null");
 }
 
 describe("bug #5 artifact 2 — string yields are raw", () => {
-	it("explicit yield(data=\"hello\") serializes to hello, 5 bytes, no quotes", () => {
+	it('explicit yield(data="hello") serializes to hello, 5 bytes, no quotes', () => {
 		const assembled = assembleYieldResult([asYield({ data: "hello" })], undefined, undefined);
 		if (!assembled) throw new Error("no assembly");
 		const completeData = assembled.data;
@@ -41,22 +39,14 @@ describe("bug #5 artifact 2 — string yields are raw", () => {
 	});
 
 	it("use_last_turn terminal yield stays raw (regression guard)", () => {
-		const assembled = assembleYieldResult(
-			[asYield({ type: "result", useLastTurn: true })],
-			"final text",
-			undefined,
-		);
+		const assembled = assembleYieldResult([asYield({ type: "result", useLastTurn: true })], "final text", undefined);
 		if (!assembled) throw new Error("no assembly");
 		const out = serializeTerminal(assembled.data);
 		expect(out).toBe("final text");
 	});
 
 	it("object payloads still pretty-print as JSON", () => {
-		const assembled = assembleYieldResult(
-			[asYield({ data: { answer: 42 } })],
-			undefined,
-			undefined,
-		);
+		const assembled = assembleYieldResult([asYield({ data: { answer: 42 } })], undefined, undefined);
 		if (!assembled) throw new Error("no assembly");
 		const out = serializeTerminal(assembled.data);
 		expect(JSON.parse(out)).toEqual({ answer: 42 });
@@ -64,11 +54,7 @@ describe("bug #5 artifact 2 — string yields are raw", () => {
 	});
 
 	it("sections object serializes as JSON (not raw)", () => {
-		const assembled = assembleYieldResult(
-			[asYield({ type: ["findings"], data: ["a"] })],
-			undefined,
-			undefined,
-		);
+		const assembled = assembleYieldResult([asYield({ type: ["findings"], data: ["a"] })], undefined, undefined);
 		if (!assembled) throw new Error("no assembly");
 		// sections without a terminal -> undefined until finalized; use the
 		// sections shape directly

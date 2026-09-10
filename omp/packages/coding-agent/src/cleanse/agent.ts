@@ -166,7 +166,7 @@ export async function createCleanseAgentRuntime(options: {
 					invocationKind: "task",
 					assignment: renderAssignment(assignment, context.peers, context.worker, context.checkers),
 					agent: "subagent",
-						identity: { id: agentId, label: name },
+					identity: { id: agentId, label: name },
 					index: assignment.index,
 					enableLsp: true,
 					enableIrc: true,

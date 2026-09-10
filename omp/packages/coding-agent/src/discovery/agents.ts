@@ -172,9 +172,11 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	// at the same tree.
 	const mercuryHome = process.env.MERCURY_HOME?.trim();
 	const sharedDir = mercuryHome ? [path.join(mercuryHome, "skills")] : [];
-	const results = await Promise.all([...projectScans, ...sharedDir.map(dir =>
-		scanSkillsFromDir(ctx, { dir, providerId: PROVIDER_ID, level: "user" })),
-		...userScans]);
+	const results = await Promise.all([
+		...projectScans,
+		...sharedDir.map(dir => scanSkillsFromDir(ctx, { dir, providerId: PROVIDER_ID, level: "user" })),
+		...userScans,
+	]);
 
 	return {
 		items: results.flatMap(r => r.items),
@@ -315,7 +317,7 @@ async function loadMercuryOmpMd(_ctx: LoadContext): Promise<LoadResult<ContextFi
 	// overrides the shared one — same mechanics as the memory composite.
 	const profileHome = process.env.MERCURY_PROFILE_HOME?.trim();
 	const filePath =
-		(profileHome && (await readFile(path.join(profileHome, "config", "OMP.md"))))
+		profileHome && (await readFile(path.join(profileHome, "config", "OMP.md")))
 			? path.join(profileHome, "config", "OMP.md")
 			: (await readFile(path.join(mercuryHome, "config", "OMP.md")))
 				? path.join(mercuryHome, "config", "OMP.md")
@@ -323,7 +325,15 @@ async function loadMercuryOmpMd(_ctx: LoadContext): Promise<LoadResult<ContextFi
 	const content = await readFile(filePath);
 	if (!content) return { items: [], warnings: [] };
 	return {
-		items: [{ path: filePath, content, level: "user", depth: undefined, _source: createSourceMeta("mercury-omp-md", filePath, "user") }],
+		items: [
+			{
+				path: filePath,
+				content,
+				level: "user",
+				depth: undefined,
+				_source: createSourceMeta("mercury-omp-md", filePath, "user"),
+			},
+		],
 		warnings: [],
 	};
 }
@@ -390,7 +400,8 @@ async function loadMercurySharedMemory(_ctx: LoadContext): Promise<LoadResult<Co
 registerProvider<ContextFile>(contextFileCapability.id, {
 	id: "mercury-memory",
 	displayName: "Mercury shared memory (SOUL/MEMORY/USER)",
-	description: "Read the shared hermes-owned memory files (SOUL.md, MEMORY.md, USER.md, AGENTS.md) from the Mercury config dir (omp reads; hermes writes)",
+	description:
+		"Read the shared hermes-owned memory files (SOUL.md, MEMORY.md, USER.md, AGENTS.md) from the Mercury config dir (omp reads; hermes writes)",
 	priority: PRIORITY,
 	load: loadMercurySharedMemory,
 });
