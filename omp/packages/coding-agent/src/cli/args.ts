@@ -48,6 +48,7 @@ export interface Args {
 	externalThinking?: boolean;
 	continue?: boolean;
 	resume?: string | true;
+	isolateWorktree?: string | true;
 	fromClaude?: boolean;
 	fromCodex?: boolean;
 	help?: boolean;
@@ -217,7 +218,10 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			const config = OPTIONAL_FLAGS[arg];
 			const next = args[i + 1];
 			const consume =
-				next !== undefined && !next.startsWith("-") && !(config.rejectEmpty === true && next.length === 0);
+				next !== undefined &&
+				!next.startsWith("-") &&
+				!(config.rejectEmpty === true && next.length === 0) &&
+				!(config.rejectAtFile === true && next.startsWith("@"));
 			config.set(result, consume ? args[++i] : undefined);
 		} else if (arg === "--help" || arg === "-h") {
 			result.help = true;

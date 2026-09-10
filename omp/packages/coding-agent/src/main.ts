@@ -31,6 +31,7 @@ import { buildInitialMessage } from "./cli/initial-message";
 import { selectSession } from "./cli/session-picker";
 import { applyStartupCwd } from "./cli/startup-cwd";
 import { getLatestRelease } from "./cli/update-cli";
+import { createTopLevelWorktree } from "./cli/worktree-create";
 import { findConfigFile } from "./config";
 import { ModelRegistry } from "./config/model-registry";
 import {
@@ -1459,6 +1460,22 @@ export async function runRootCommand(
 		if ((parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui") && parsedArgs.fileArgs.length > 0) {
 			process.stderr.write(`${chalk.red("Error: @file arguments are not supported in RPC mode")}\n`);
 			process.exit(1);
+		}
+		// `--isolate-worktree` relocates the session into a fresh linked worktree
+		// before anything resolves project-scoped state (plugin roots, settings,
+		// sessions), so every downstream consumer sees the worktree as the project.
+		if (parsedArgs.isolateWorktree) {
+			const worktreeName = parsedArgs.isolateWorktree === true ? undefined : parsedArgs.isolateWorktree;
+			try {
+				const wt = await createTopLevelWorktree(getProjectDir(), worktreeName);
+				setProjectDir(wt.path);
+				parsedArgs.cwd = wt.path;
+				writeStartupNotice(parsedArgs, `${chalk.green(`Isolated worktree: ${wt.path} (branch ${wt.branch})`)}\n`);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				process.stderr.write(`${chalk.red(`Error creating isolated worktree: ${message}`)}\n`);
+				process.exit(1);
+			}
 		}
 		const mode = parsedArgs.mode || "text";
 		// RPC owns stdin. Claim its singleton stream before plugin/extension discovery can load an in-process consumer.
