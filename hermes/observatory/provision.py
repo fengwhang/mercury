@@ -1448,15 +1448,17 @@ def ensure_sidecar_unit(mercury_home: str | Path | None = None,
 
     Repair path for ``mercury setup observatory --install-sidecar`` —
     deliberately NOT part of provision() (see module docstring). The
-    render lives in sidecar_main (lazy import: that module imports this
-    one, so a top-level import would cycle).
+    render lives in config_gen (pure templating, no aiohttp) and is
+    re-exported from sidecar_main for back-compat — import here from
+    config_gen so the unit installs even when the crypto stack
+    (aiohttp) is missing.
 
     Same flap law as :func:`ensure_systemd_unit`: an unchanged unit file
     never restarts (active → return, inactive → start); only a content
     change reloads + restarts."""
     if not _systemctl_available():
         return "skipped"
-    from observatory.sidecar_main import render_sidecar_unit
+    from observatory.config_gen import render_sidecar_unit
 
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
@@ -1616,11 +1618,68 @@ def set_observatory_e2ee(enabled: bool, mercury_home: str | Path | None = None) 
         raise ProvisionError(f"could not write observatory.e2ee to {cfg_path}: {exc}") from exc
 
 
+def _find_uv(python_bin: str) -> str | None:
+    """Locate a ``uv`` binary for ``python_bin``'s env (stdlib-only).
+
+    Fresh installs own a managed uv that is NOT on PATH
+    (``$MERCURY_HOME/bin/uv`` via install.sh, ``~/.mercury/bin/uv`` as the
+    default-home equivalent, ``$HERMES_HOME/bin/uv`` as the canonical
+    managed_uv.py location). ``uv venv`` venvs have no pip module, so
+    missing the managed binary means the pip fallback below always fails
+    with ``No module named pip``. Order: managed locations first, then the
+    venv-adjacent ``<venv>/bin/uv``, then ``shutil.which`` (PATH).
+    Never raises — None when nothing is found."""
+    exe = "uv.exe" if sys.platform == "win32" else "uv"
+    candidates: list[Path] = []
+    for env in ("MERCURY_HOME", "HERMES_HOME"):
+        try:
+            val = os.environ.get(env, "").strip()
+        except Exception:
+            val = ""
+        if val:
+            try:
+                candidates.append(Path(val).expanduser() / "bin" / exe)
+            except Exception:
+                pass
+    try:
+        candidates.append(Path.home() / ".mercury" / "bin" / exe)
+    except Exception:
+        pass
+    try:
+        candidates.append(Path(python_bin).parent / exe)
+    except Exception:
+        pass
+    seen: set[str] = set()
+    for cand in candidates:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if cand.is_file() and os.access(cand, os.X_OK):
+                return str(cand)
+        except Exception:
+            continue
+    try:
+        return shutil.which(exe)
+    except Exception:
+        return None
+
+
+def _uv_search_hint() -> str:
+    """Human-readable uv search locations for pip-less error messages."""
+    return "$MERCURY_HOME/bin/uv, ~/.mercury/bin/uv, <venv>/bin/uv, PATH"
+
+
 def _crypto_pip_install(python_bin: str, args: list[str]) -> tuple[bool, str]:
-    """Install into python_bin's env: uv first, then pip.
+    """Install into python_bin's env: managed uv first, then pip.
 
     Local copy of the update_release runner — this module stays importable
-    from install.sh without the CLI package, so it cannot import it."""
+    from install.sh without the CLI package, so it cannot import it.
+    ``uv venv`` venvs ship WITHOUT pip (``No module named pip``), so the
+    pip fallback bootstraps via ensurepip when needed; when neither uv nor
+    pip is usable the error names the uv locations searched so a
+    fresh install is actionable instead of a bare pip traceback."""
     def _run(cmd: list[str]) -> tuple[bool, str]:
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -1629,15 +1688,41 @@ def _crypto_pip_install(python_bin: str, args: list[str]) -> tuple[bool, str]:
         detail = ((proc.stderr or "") + (proc.stdout or "")).strip()
         return proc.returncode == 0, detail[-600:]
 
-    uv_bin = shutil.which("uv")
+    uv_bin: str | None = None
+    try:
+        uv_bin = _find_uv(python_bin)
+    except Exception:
+        uv_bin = None
+    uv_detail = ""
     if uv_bin:
         ok, detail = _run([uv_bin, "pip", "install", "--python", python_bin, *args])
         if ok:
             return True, ""
+        uv_detail = detail
     else:
-        ok, detail = False, "uv not found"
-    if not ok:
-        ok, detail = _run([python_bin, "-m", "pip", "install", *args])
+        uv_detail = f"uv not found (looked in {_uv_search_hint()})"
+    _ok_pip, pip_probe = _run([python_bin, "-m", "pip", "--version"])
+    if not _ok_pip and "No module named pip" in (pip_probe or ""):
+        _ok_boot, boot_detail = _run([python_bin, "-m", "ensurepip", "--upgrade"])
+        if _ok_boot:
+            _ok_pip, pip_probe = _run([python_bin, "-m", "pip", "--version"])
+        if not _ok_pip:
+            boot_tail = (boot_detail or "").strip().replace("\n", " ")[-200:]
+            if uv_bin:
+                return False, (
+                    f"uv install failed ({uv_detail[-300:]}) and pip missing "
+                    f"in {python_bin} (No module named pip"
+                    f"{': ensurepip ' + boot_tail if boot_tail else ''})")
+            return False, (
+                f"pip missing in {python_bin} (No module named pip) and "
+                f"{uv_detail}; install uv at $MERCURY_HOME/bin/uv or "
+                f"~/.mercury/bin/uv, or run "
+                f"'{python_bin} -m ensurepip --upgrade'")
+    ok, detail = _run([python_bin, "-m", "pip", "install", *args])
+    if ok:
+        return True, ""
+    if uv_bin and uv_detail and uv_detail != detail:
+        return False, f"uv failed ({uv_detail[-300:]}); pip failed ({detail[-300:]})"
     return ok, detail
 
 

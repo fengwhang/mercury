@@ -10,11 +10,10 @@ and ``Requires=`` tied the sidecar's lifetime to the homeserver.
 
 Laws pinned here:
 
-- unchanged unit file ⇒ NO restart (active: zero systemctl calls;
-  inactive: ``start``, never ``restart``); only a content change
-  reloads + restarts; a fresh install ``start``s;
-- ``import observatory.sidecar_main`` without aiohttp ⇒ SystemExit,
-  never ModuleNotFoundError/ImportError;
+- ``from observatory.sidecar_main import render_sidecar_unit`` without
+  aiohttp ⇒ imports fine and renders (pure templating lives in
+  config_gen; the daemon's missing-dep SystemExit fires lazily at boot
+  via ``_require_aiohttp()``, never at import);
 - ``ensure_crypto_stack`` treats olm-ready-but-no-aiohttp as missing
   (installs, passing an aiohttp pin to pip) — never ``"ready"``;
 - template and renderer agree on the ``sidecar.log`` filename;
@@ -208,11 +207,12 @@ class TestUnchangedUnitNoRestart:
 
 
 class TestAiohttpGuardOrder:
-    def test_missing_aiohttp_is_systemexit(
+    def test_missing_aiohttp_import_renders_no_systemexit(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        """Without aiohttp the sidecar must exit handled (SystemExit), not
-        crash with ModuleNotFoundError from the appservice import."""
+        """Without aiohttp the render import must NOT exit (fresh-install
+        law): the unit file installs before the crypto stack exists.
+        The daemon still fails fast — lazily at boot, not at import."""
         monkeypatch.setitem(sys.modules, "aiohttp", None)
         monkeypatch.setitem(sys.modules, "aiohttp.web", None)
         for name in (
@@ -221,23 +221,28 @@ class TestAiohttpGuardOrder:
             "observatory.matrix_client",
         ):
             monkeypatch.delitem(sys.modules, name, raising=False)
+        sm = importlib.import_module("observatory.sidecar_main")
+        unit = sm.render_sidecar_unit(
+            python_bin="/usr/bin/python3",
+            hermes_root="/opt/hermes",
+            mercury_home="/home/u/.mercury",
+            log_dir="/home/u/.mercury/observatory/logs",
+        )
+        assert "ExecStart=" in unit
         with pytest.raises(SystemExit, match="aiohttp"):
-            importlib.import_module("observatory.sidecar_main")
+            sm._require_aiohttp()
 
-    def test_guard_precedes_appservice_import(self):
-        """Static backstop: the aiohttp guard must sit above every
-        observatory import in sidecar_main (a later reordering that puts
-        appservice first resurrects the ModuleNotFoundError crash)."""
+    def test_guard_never_raises_at_import(self):
+        """Static backstop: sidecar_main must not raise SystemExit at
+        import time (fresh installs render the unit with no aiohttp); the
+        lazy ``_require_aiohttp()`` helper owns the daemon failure."""
         src = Path(provision_mod.__file__).with_name("sidecar_main.py").read_text(
             encoding="utf-8"
         )
-        guard = src.index("from aiohttp import web")
-        first_obs = min(
-            src.index("from observatory import e2ee"),
-            src.index("from observatory.appservice import"),
-            src.index("from observatory.matrix_client import"),
-        )
-        assert guard < first_obs
+        assert "def _require_aiohttp" in src
+        assert "web = None" in src
+        assert "from observatory.config_gen import" in src
+        assert "render_sidecar_unit" in src
 
 
 # ---------------------------------------------------------------------------

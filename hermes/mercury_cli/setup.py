@@ -3315,8 +3315,11 @@ def _auto_ensure_sidecar_unit(obs, *, loud: bool = False) -> str:
     except KeyboardInterrupt:
         raise
     except SystemExit as exc:
-        # sidecar_main requires aiohttp (matrix extra): its import raises
-        # SystemExit, not Exception, when the dep is missing.
+        # Legacy path: sidecar_main's import used to raise SystemExit when
+        # aiohttp (matrix extra) was missing. The render now lives in
+        # config_gen (no aiohttp) with a lazy _require_aiohttp() at daemon
+        # boot, so unit installs no longer exit here — keep catching
+        # SystemExit for back-compat with older provision/sidecar code.
         _sidecar_problem(
             loud,
             f"Sidecar unit install skipped: {exc}",

@@ -78,30 +78,35 @@ import time
 from pathlib import Path
 from typing import Any
 
-try:  # aiohttp is a matrix-extra dependency; the daemon requires it.
-    # Guard FIRST: appservice/matrix_client import aiohttp at their top
-    # level, so this must precede every observatory import — otherwise the
-    # missing-dep failure surfaces as ModuleNotFoundError instead of the
-    # handled SystemExit below.
+_AIOHTTP_IMPORT_ERROR: Exception | None = None
+try:  # aiohttp is a matrix-extra dependency; the DAEMON requires it, but
+    # pure helpers (render_sidecar_unit, re-exported from config_gen) must
+    # stay importable without it so provision.ensure_sidecar_unit can
+    # install the unit file on a fresh install before the crypto stack
+    # (which includes aiohttp) exists. Never raise here — daemon entry
+    # points call _require_aiohttp() instead.
     from aiohttp import web
 except ImportError as exc:
-    raise SystemExit("observatory sidecar requires aiohttp (matrix extra)") from exc
+    web = None  # type: ignore[assignment]
+    _AIOHTTP_IMPORT_ERROR = exc
+
+
+def _require_aiohttp() -> None:
+    """Raise the daemon's missing-dep SystemExit (lazy, not at import)."""
+    if web is None or _AIOHTTP_IMPORT_ERROR is not None:
+        raise SystemExit(
+            "observatory sidecar requires aiohttp (matrix extra)") from _AIOHTTP_IMPORT_ERROR
 
 from observatory import e2ee as e2ee_mod
 from observatory import provision
-from observatory.appservice import (
-    TransactionIntake,
-    as_token_from_registration,
-    make_app,
-)
 from observatory.config_gen import (
     APPSERVICE_PORT_DEFAULT,
     HOMESERVER_ADDRESS,
     HOMESERVER_UNIT_NAME,
     ObservatoryPaths,
+    render_sidecar_unit,
 )
 from observatory.identity import assign_slug, virtual_mxid
-from observatory.matrix_client import CLIENT_V3, MatrixError, MatrixClient
 from observatory.control import QUEUED_STEER_NOTICE, InjectText
 from observatory.gateway_transport import (
     ControlSocketGatewayTransport,
@@ -110,6 +115,23 @@ from observatory.gateway_transport import (
 from observatory.renderer import IntentExecutor, Renderer, SendMessage
 from observatory.state import ObservatoryState, StateError
 from observatory.tree import DIRECTIVES_ROOM_KEY
+
+try:
+    from observatory.appservice import (
+        TransactionIntake,
+        as_token_from_registration,
+        make_app,
+    )
+    from observatory.matrix_client import CLIENT_V3, MatrixError, MatrixClient
+except ImportError as exc:  # aiohttp (or another matrix-extra dep) missing
+    if _AIOHTTP_IMPORT_ERROR is None:
+        _AIOHTTP_IMPORT_ERROR = exc
+    TransactionIntake = None  # type: ignore[assignment]
+    as_token_from_registration = None  # type: ignore[assignment]
+    make_app = None  # type: ignore[assignment]
+    CLIENT_V3 = ""  # type: ignore[assignment]
+    MatrixError = Exception  # type: ignore[assignment]
+    MatrixClient = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
 
@@ -144,33 +166,9 @@ SMOKE_E2EE_MARKER = "MERCURY-M4C-E2EE-OK"
 SMOKE_FAIL_MARKER = "MERCURY-M4C-FAIL"
 DEFAULT_SMOKE_HOME = Path.home() / ".mercury" / "observatory-build" / "sidecar-smoke"
 
-_templates_dir = Path(__file__).parent / "templates"
-
-
-# ============================================================================
-# systemd unit (the sidecar's own — mercury-observatory.service)
-# ============================================================================
-
-def render_sidecar_unit(
-    *,
-    python_bin: str,
-    hermes_root: str,
-    mercury_home: str,
-    log_dir: str,
-    description: str = "Mercury Observatory sidecar (appservice daemon)",
-) -> str:
-    """Render the sidecar systemd USER unit from the checked-in template
-    (``observatory/templates/mercury-observatory.service``). Mirrors
-    config_gen.render_homeserver_unit's law: pure string templating, no
-    I/O beyond reading the template."""
-    template = (_templates_dir / "mercury-observatory.service").read_text(encoding="utf-8")
-    return template.format(
-        description=description,
-        python_bin=python_bin,
-        hermes_root=hermes_root,
-        mercury_home=mercury_home,
-        log_dir=log_dir,
-    )
+# (render_sidecar_unit lives in observatory.config_gen — pure templating
+# with no aiohttp dependency — and is re-exported from this module's
+# imports above for back-compat.)
 
 
 # ============================================================================
@@ -340,6 +338,7 @@ class SidecarDaemon:
 
     async def boot(self) -> dict[str, Any]:
         """Full assembly; returns a boot report (evidence for logs/smoke)."""
+        _require_aiohttp()
         report: dict[str, Any] = {"home": str(self.mercury_home), "e2ee": self.e2ee_flag}
 
         # 1. provision (idempotent, offline-aware)
@@ -614,6 +613,7 @@ class SidecarDaemon:
         return results
 
     async def _serve_intake(self) -> None:
+        _require_aiohttp()
         assert self.client is not None
         # Homeserver→AS transactions authenticate with the hs_token (the
         # registration's homeserver-side secret — "hs_token authenticates

@@ -204,6 +204,30 @@ WantedBy=default.target
 """
 
 
+def render_sidecar_unit(
+    *,
+    python_bin: str,
+    hermes_root: str,
+    mercury_home: str,
+    log_dir: str,
+    description: str = SIDECAR_UNIT_DESCRIPTION,
+) -> str:
+    """Render the sidecar systemd USER unit from the checked-in template
+    (``observatory/templates/mercury-observatory.service``). Mirrors
+    :func:`render_homeserver_unit`'s law: pure string templating, no
+    I/O beyond reading the template — importable WITHOUT the matrix
+    extra (aiohttp), so ``provision.ensure_sidecar_unit`` can install
+    the unit file even when the crypto stack is missing."""
+    template = (Path(__file__).parent / "templates" / "mercury-observatory.service").read_text(encoding="utf-8")
+    return template.format(
+        description=description,
+        python_bin=python_bin,
+        hermes_root=hermes_root,
+        mercury_home=mercury_home,
+        log_dir=log_dir,
+    )
+
+
 class ObservatoryPaths:
     """Resolved filesystem layout under ``$MERCURY_HOME/observatory``."""
 

@@ -1,6 +1,7 @@
 # Mercury Observatory sidecar — systemd USER unit template.
-# Rendered by observatory.sidecar_main.render_sidecar_unit (pure string
-# templating, same law as config_gen.render_homeserver_unit). Placeholders:
+# Rendered by observatory.config_gen.render_sidecar_unit (pure string
+# templating, same law as config_gen.render_homeserver_unit; re-exported
+# from sidecar_main for back-compat). Placeholders:
 #   {description} {python_bin} {hermes_root} {mercury_home} {log_dir}
 # Installed as ~/.config/systemd/user/mercury-observatory.service; the
 # homeserver has its own unit (mercury-observatory-homeserver.service,

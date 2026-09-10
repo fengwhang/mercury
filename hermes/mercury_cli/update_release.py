@@ -207,10 +207,72 @@ def _swap_tree(src: Path, dst: Path) -> None:
             shutil.copy2(entry, target)
 
 
+def _find_uv(python_bin: str) -> str | None:
+    """Locate a ``uv`` binary for ``python_bin``'s env (managed-first).
+
+    Mirrors ``observatory.provision._find_uv`` (kept duplicate: provision
+    stays importable without the CLI package). Order: canonical managed
+    uv (``managed_uv.resolve_uv`` → ``$HERMES_HOME/bin/uv``) when
+    importable, then ``$MERCURY_HOME/bin/uv`` / ``$HERMES_HOME/bin/uv`` /
+    ``~/.mercury/bin/uv``, then venv-adjacent ``<venv>/bin/uv``, then
+    ``shutil.which`` (PATH). Never raises — None when nothing is found."""
+    exe = "uv.exe" if sys.platform == "win32" else "uv"
+    try:
+        from mercury_cli.managed_uv import resolve_uv as _resolve_managed_uv
+        managed = _resolve_managed_uv()
+        if managed:
+            return managed
+    except Exception:
+        pass
+    candidates: list[Path] = []
+    for env in ("MERCURY_HOME", "HERMES_HOME"):
+        try:
+            val = os.environ.get(env, "").strip()
+        except Exception:
+            val = ""
+        if val:
+            try:
+                candidates.append(Path(val).expanduser() / "bin" / exe)
+            except Exception:
+                pass
+    try:
+        candidates.append(Path.home() / ".mercury" / "bin" / exe)
+    except Exception:
+        pass
+    try:
+        candidates.append(Path(python_bin).parent / exe)
+    except Exception:
+        pass
+    seen: set[str] = set()
+    for cand in candidates:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if cand.is_file() and os.access(os.fspath(cand), os.X_OK):
+                return str(cand)
+        except Exception:
+            continue
+    try:
+        return shutil.which(exe)
+    except Exception:
+        return None
+
+
+def _uv_search_hint() -> str:
+    """Human-readable uv search locations for pip-less error messages."""
+    return "$MERCURY_HOME/bin/uv, ~/.mercury/bin/uv, <venv>/bin/uv, PATH"
+
+
 def _pip_install(venv: Path, args: list[str]) -> tuple[bool, str]:
-    """Install into the install venv: uv first (the install venv is
-    UV-MANAGED and has no pip module), pip fallback. Returns (ok, detail);
-    never raises — callers own the warn-only contract."""
+    """Install into the install venv: managed uv first, pip fallback.
+
+    The install venv is UV-MANAGED and has no pip module, so the pip
+    fallback bootstraps via ensurepip when it sees ``No module named pip``;
+    when neither uv nor pip is usable the error names the uv locations
+    searched. Returns (ok, detail); never raises — callers own the
+    warn-only contract."""
     def _run(cmd: list[str]) -> tuple[bool, str]:
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -220,15 +282,40 @@ def _pip_install(venv: Path, args: list[str]) -> tuple[bool, str]:
         return proc.returncode == 0, detail[-600:]
 
     py = str(venv / "bin" / "python")
-    uv_bin = shutil.which("uv")
+    uv_bin: str | None = None
+    try:
+        uv_bin = _find_uv(py)
+    except Exception:
+        uv_bin = None
+    uv_detail = ""
     if uv_bin:
         ok, detail = _run([uv_bin, "pip", "install", "--python", py, *args])
         if ok:
             return True, ""
+        uv_detail = detail
     else:
-        ok, detail = False, "uv not found"
-    if not ok:
-        ok, detail = _run([sys.executable, "-m", "pip", "install", "-q", *args])
+        uv_detail = f"uv not found (looked in {_uv_search_hint()})"
+    _ok_pip, pip_probe = _run([py, "-m", "pip", "--version"])
+    if not _ok_pip and "No module named pip" in (pip_probe or ""):
+        _ok_boot, boot_detail = _run([py, "-m", "ensurepip", "--upgrade"])
+        if _ok_boot:
+            _ok_pip, pip_probe = _run([py, "-m", "pip", "--version"])
+        if not _ok_pip:
+            boot_tail = (boot_detail or "").strip().replace("\n", " ")[-200:]
+            if uv_bin:
+                return False, (
+                    f"uv install failed ({uv_detail[-300:]}) and pip missing "
+                    f"in {py} (No module named pip"
+                    f"{': ensurepip ' + boot_tail if boot_tail else ''})")
+            return False, (
+                f"pip missing in {py} (No module named pip) and "
+                f"{uv_detail}; install uv at $MERCURY_HOME/bin/uv or "
+                f"~/.mercury/bin/uv, or run '{py} -m ensurepip --upgrade'")
+    ok, detail = _run([py, "-m", "pip", "install", "-q", *args])
+    if ok:
+        return True, ""
+    if uv_bin and uv_detail and uv_detail != detail:
+        return False, f"uv failed ({uv_detail[-300:]}); pip failed ({detail[-300:]})"
     return ok, detail
 
 
@@ -509,27 +596,40 @@ def update_from_release(*, assume_yes: bool = False) -> int:
         if venv.exists():
             # MERCURY-OMP PATCH: the install venv is UV-MANAGED (uv venv +
             # uv pip install --python ... -e ., same as install.sh) — it has
-            # NO pip module, so `sys.executable -m pip` always exits 1 there.
-            # Refresh with uv first (targeting the venv python explicitly),
-            # fall back to pip only for pip-provisioned venvs, and surface
+            # NO pip module, so `python -m pip` against a uv venv always
+            # exits 1 with ``No module named pip``. Refresh with the
+            # managed uv first (targeting the venv python explicitly),
+            # fall back to pip only for pip-provisioned venvs (with an
+            # ensurepip bootstrap for pip-less venvs), and surface
             # the REAL stderr instead of a bare 'exit status 1'.
-            import shutil as _shutil
-
             def _run_refresh(cmd: list[str]) -> tuple[bool, str]:
-                proc = subprocess.run(cmd, capture_output=True, text=True)
+                try:
+                    proc = subprocess.run(cmd, capture_output=True, text=True)
+                except (OSError, ValueError) as exc:
+                    return False, str(exc)
                 detail = ((proc.stderr or "") + (proc.stdout or "")).strip()
                 return proc.returncode == 0, detail[-600:]
 
             ok, detail = False, ""
-            uv_bin = _shutil.which("uv")
             py = str(venv / "bin" / "python")
+            try:
+                uv_bin = _find_uv(py)
+            except Exception:
+                uv_bin = None
             if uv_bin:
                 ok, detail = _run_refresh(
                     [uv_bin, "pip", "install", "--python", py, "-q", "-e", str(root / "hermes")])
                 how = "uv"
+            if not ok and not uv_bin:
+                # pip-less venvs (uv venv without pip): bootstrap pip before
+                # the fallback so the error is actionable, not a bare
+                # ``No module named pip`` traceback.
+                _ok_pip, _pip_probe = _run_refresh([py, "-m", "pip", "--version"])
+                if not _ok_pip and "No module named pip" in (_pip_probe or ""):
+                    _run_refresh([py, "-m", "ensurepip", "--upgrade"])
             if not ok:
                 ok, detail = _run_refresh(
-                    [sys.executable, "-m", "pip", "install", "-q", "-e", str(root / "hermes")])
+                    [py, "-m", "pip", "install", "-q", "-e", str(root / "hermes")])
                 how = "pip"
             if ok:
                 print("  python environment refreshed"
