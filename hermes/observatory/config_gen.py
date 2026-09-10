@@ -45,7 +45,9 @@ OWNER_LOCALPART_DEFAULT = "merc-owner"
 HOMESERVER_UNIT_NAME = "mercury-observatory-homeserver.service"
 HOMESERVER_UNIT_DESCRIPTION = "Mercury Observatory homeserver (Tuwunel)"
 
-#: Sidecar daemon unit — installed ONLY by the explicit repair path
+#: Sidecar daemon unit — installed by the setup Install paths (via the
+#: auto steps; LOUD on post-wipe reprovision since the wipe destroys the
+#: unit file) and by the explicit repair path
 #: (``mercury setup observatory --install-sidecar`` via
 #: ``provision.ensure_sidecar_unit``), never by provision() itself: the
 #: daemon boots provision(), so auto-installing there would restart its
