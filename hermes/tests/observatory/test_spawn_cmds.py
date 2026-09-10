@@ -74,6 +74,17 @@ class _MixinHarness:
     """GatewaySlashCommandsMixin without a runner (helpers are self-contained)."""
 
     def __new__(cls):
+        import sys as _sys
+        import types as _types
+        # slash_commands imports agent.account_usage (httpx) at module top;
+        # the spawn/exit helpers under test never touch it. Stub the leaf
+        # so the mixin imports in the minimal venv.
+        _au = _sys.modules.get("agent.account_usage")
+        if _au is None:
+            _au = _types.ModuleType("agent.account_usage")
+            _au.fetch_account_usage = lambda *a, **k: None
+            _au.render_account_usage_lines = lambda *a, **k: []
+            _sys.modules["agent.account_usage"] = _au
         from gateway.slash_commands import GatewaySlashCommandsMixin
 
         inst = GatewaySlashCommandsMixin.__new__(GatewaySlashCommandsMixin)
