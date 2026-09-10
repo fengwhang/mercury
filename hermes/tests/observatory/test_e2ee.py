@@ -1285,6 +1285,200 @@ class TestIntakeCryptoChannel:
             "@merc_a:hs": {}}
 
 
+class TestToDeviceIntakeRegression:
+    """Wire-shape regression: tuwunel 1.9.0 sends MSC-prefixed keys with a
+    LIST-shape to_device; bare senders send nested maps. Every shape must
+    reach _on_crypto and route N to-device users — else room keys never
+    ingest and decrypt fails with 'no session with given ID' forever."""
+
+    GW = "@merc_gateway:hs"
+    GW2 = "@merc_auth:hs"
+
+    @staticmethod
+    def _olm_envelope(sender="@owner:hs"):
+        return {
+            "sender": sender,
+            "type": "m.room.encrypted",
+            "content": {
+                "algorithm": "m.olm.v1.curve25519-aes-sha2",
+                "sender_key": "CURVE1",
+                "ciphertext": {"CURVE1": {"body": "x", "type": 0}},
+            },
+        }
+
+    @classmethod
+    def _list_event(cls, user_id: str, device_id: str) -> dict:
+        return {**cls._olm_envelope(),
+                "to_user_id": user_id, "to_device_id": device_id}
+
+    def _manager_with_two_machines(self, tmp_path):
+        """E2EEManager with two seeded fake virtuals — no compiled stack
+        touched (machine_for returns the seeds; only mautrix.types parses)."""
+        manager = E2EEManager(
+            FakeClient(), ObservatoryState(tmp_path / "state.db"),
+            crypto_dir=tmp_path / "crypto", owner_mxid="@owner:hs",
+            gateway_mxid=self.GW,
+        )
+
+        class _Recording:
+            def __init__(self):
+                self.to_device = []
+                self.device_lists = []
+                self.otk_counts = []
+
+            async def handle_as_to_device_event(self, evt):
+                self.to_device.append(evt)
+
+            async def handle_as_device_lists(self, lists):
+                self.device_lists.append(lists)
+
+            async def handle_as_otk_counts(self, counts):
+                self.otk_counts.append(counts)
+
+        class _FakeVirtual:
+            _loaded = True
+            store = None
+
+            def __init__(self, recording):
+                self.machine = recording
+
+            async def load(self):
+                self._loaded = True
+
+        recorders = {}
+        for mxid in (self.GW, self.GW2):
+            rec = _Recording()
+            fake = _FakeVirtual(rec)
+            fake.mxid = mxid
+            manager._machines[mxid] = fake
+            recorders[mxid] = rec
+        return manager, recorders
+
+    @pytest.mark.asyncio
+    async def test_bare_dict_routes_each_user_to_own_machine(self, tmp_path):
+        manager, recs = self._manager_with_two_machines(tmp_path)
+        routed = await manager.handle_as_transaction({
+            "events": [],
+            "to_device": {
+                self.GW: {"OBSVAA11": self._olm_envelope()},
+                self.GW2: {"OBSVBB22": self._olm_envelope()},
+            },
+        })
+        assert routed["to_device"] == 2
+        assert len(recs[self.GW].to_device) == 1
+        assert len(recs[self.GW2].to_device) == 1
+        assert recs[self.GW].to_device[0].to_device_id == "OBSVAA11"
+        assert recs[self.GW2].to_device[0].to_device_id == "OBSVBB22"
+
+    @pytest.mark.asyncio
+    async def test_msc_list_routes_each_user_to_own_machine(self, tmp_path):
+        manager, recs = self._manager_with_two_machines(tmp_path)
+        routed = await manager.handle_as_transaction({
+            "events": [],
+            "de.sorunome.msc2409.to_device": [
+                self._list_event(self.GW, "OBSVAA11"),
+                self._list_event(self.GW2, "OBSVBB22"),
+                {"sender": "@owner:hs", "type": "m.room.encrypted"},
+                "garbage",
+            ],
+            "org.matrix.msc3202.device_lists": {
+                "changed": ["@owner:hs"], "left": []},
+        })
+        assert routed["to_device"] == 2
+        assert routed["device_lists"] == 1
+        assert len(recs[self.GW].to_device) == 1
+        assert len(recs[self.GW2].to_device) == 1
+        assert recs[self.GW].to_device[0].to_device_id == "OBSVAA11"
+        assert recs[self.GW2].to_device[0].to_device_id == "OBSVBB22"
+
+    @pytest.mark.asyncio
+    async def test_mixed_txn_routes_all_channels(self, tmp_path):
+        manager, recs = self._manager_with_two_machines(tmp_path)
+        routed = await manager.handle_as_transaction({
+            "events": [],
+            "to_device": {self.GW: {"OBSVAA11": self._olm_envelope()}},
+            "org.matrix.msc3202.device_lists": {
+                "changed": ["@owner:hs"], "left": []},
+            "org.matrix.msc3202.device_one_time_keys_count": {
+                self.GW: {"OBSVAA11": {"signed_curve25519": 9}}},
+        })
+        assert routed == {"to_device": 1, "device_lists": 1, "otk_counts": 1}
+        assert len(recs[self.GW].to_device) == 1
+        assert recs[self.GW2].to_device == []
+
+    @pytest.mark.asyncio
+    async def test_all_shapes_reach_on_crypto_end_to_end(self, tmp_path):
+        """Full wire path per shape: HTTP PUT → intake → _on_crypto →
+        handle_as_transaction. _on_crypto reached once per txn, N users
+        routed each time."""
+        import json
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from observatory.appservice import (
+            TRANSACTIONS_PATH,
+            TransactionIntake,
+            make_app,
+        )
+
+        gw, gw2 = self.GW, self.GW2
+        manager, recs = self._manager_with_two_machines(tmp_path)
+        on_crypto_calls: list[dict] = []
+        routed_out: list[dict] = []
+
+        async def _on_crypto(txn: dict) -> None:
+            """SidecarDaemon._on_crypto contract: route the transaction's
+            crypto side-channel into the per-user machines BEFORE the room
+            events of the same transaction reach decrypt."""
+            on_crypto_calls.append(txn)
+            routed_out.append(await manager.handle_as_transaction(txn))
+
+        async def _on_transaction(txn_id: str, events: list) -> None:
+            return None
+
+        bare_dict = {"events": [], "to_device": {
+            gw: {"D1": self._olm_envelope()},
+            gw2: {"D2": self._olm_envelope()},
+        }}
+        msc_list = {"events": [],
+                    "de.sorunome.msc2409.to_device": [
+                        self._list_event(gw, "D1"),
+                        self._list_event(gw2, "D2"),
+                    ],
+                    "org.matrix.msc3202.device_lists": {
+                        "changed": ["@owner:hs"], "left": []}}
+        mixed = {"events": [],
+                 "to_device": {gw: {"D1": self._olm_envelope()}},
+                 "org.matrix.msc3202.device_lists": {
+                     "changed": ["@owner:hs"], "left": []},
+                 "org.matrix.msc3202.device_one_time_keys_count": {
+                     gw: {"D1": {"signed_curve25519": 3}}}}
+        intake = TransactionIntake(
+            as_token="tok", handler=_on_transaction, crypto_handler=_on_crypto)
+        await intake.start()
+        app = make_app(intake)
+        try:
+            async with TestClient(TestServer(app)) as client:
+                for i, body in enumerate((bare_dict, msc_list, mixed)):
+                    resp = await client.put(
+                        TRANSACTIONS_PATH.format(txn_id=f"td{i}"),
+                        data=json.dumps(body),
+                        headers={"Authorization": "Bearer tok"},
+                    )
+                    assert resp.status == 200
+                await intake.queue.join()
+        finally:
+            await intake.stop()
+        assert len(on_crypto_calls) == 3
+        assert [r["to_device"] for r in routed_out] == [2, 2, 1]
+        assert all(r["to_device"] > 0 for r in routed_out)
+        assert routed_out[1]["device_lists"] == 1
+        assert routed_out[2] == {
+            "to_device": 1, "device_lists": 1, "otk_counts": 1}
+        assert len(recs[gw].to_device) == 3
+        assert len(recs[gw2].to_device) == 2
+
+
 class TestWarmup:
     """Boot key publish: gateway device loads (keys upload), and an
     identity-less manager warms nothing — never a rogue owner device."""

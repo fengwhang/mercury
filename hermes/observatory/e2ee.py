@@ -1095,9 +1095,14 @@ class E2EEManager:
     async def handle_as_transaction(self, txn: dict[str, Any]) -> dict[str, int]:
         """Route one RAW appservice transaction body into the per-user
         machines — the intake-side half of the crypto pipeline (REMAINING
-        WORK #2 closer). Tuwunel/ruma transaction shape:
+        WORK #2 closer). Tuwunel/ruma transaction shape (bare keys; tuwunel
+        1.9.0 emits the MSC-prefixed aliases — both accepted, first
+        present wins):
 
         * ``to_device``: ``{user_id: {device_id: {sender, type, content}}}``
+          OR the flattened LIST of ``AsToDeviceEvent``
+          ``[{sender, type, content, to_user_id, to_device_id}]`` (MSC2409
+          wire shape — flattened to the map form internally)
           → each event deserialized to ``ASToDeviceEvent`` and handed to
           the target machine's ``handle_as_to_device_event`` (Olm pre-key
           messages, room keys, key requests);
@@ -1117,28 +1122,46 @@ class E2EEManager:
         from mautrix.types import ASToDeviceEvent, DeviceLists, DeviceOTKCount
 
         routed: dict[str, int] = {"to_device": 0, "device_lists": 0, "otk_counts": 0}
-        to_device = txn.get("to_device") or {}
-        if isinstance(to_device, dict):
-            for user_id, devices in to_device.items():
-                if not str(user_id).lstrip("@").startswith("merc_"):
-                    log.debug("to-device for non-virtual user %s — skipped", user_id)
+        # MSC aliases: the intake normalizes these to bare first, but raw
+        # bodies carry them — accept both, first present wins, never double.
+        to_device = (txn.get("to_device")
+                     or txn.get("de.sorunome.msc2409.to_device") or {})
+        if isinstance(to_device, list):
+            nested: dict[str, dict[str, Any]] = {}
+            for entry in to_device:
+                if not isinstance(entry, dict):
                     continue
-                machine = self.machine_for(str(user_id))
-                await machine.load()
-                for device_id, raw in (devices or {}).items():
-                    try:
-                        evt = ASToDeviceEvent.deserialize({
-                            **(raw or {}),
-                            "to_user_id": user_id,
-                            "to_device_id": device_id,
-                        })
-                        await machine.machine.handle_as_to_device_event(evt)
-                        routed["to_device"] += 1
-                    except Exception:  # noqa: BLE001 — one bad message must not
-                        # kill the routing of the remaining ones
-                        log.warning("to-device route failed for %s/%s",
-                                    user_id, device_id, exc_info=True)
-        raw_lists = txn.get("device_lists")
+                user_id = entry.get("to_user_id")
+                device_id = entry.get("to_device_id")
+                if not user_id or not device_id:
+                    continue
+                raw = {k: v for k, v in entry.items()
+                       if k not in ("to_user_id", "to_device_id")}
+                nested.setdefault(str(user_id), {})[str(device_id)] = raw
+            to_device = nested
+        if not isinstance(to_device, dict):
+            to_device = {}
+        for user_id, devices in to_device.items():
+            if not str(user_id).lstrip("@").startswith("merc_"):
+                log.debug("to-device for non-virtual user %s — skipped", user_id)
+                continue
+            machine = self.machine_for(str(user_id))
+            await machine.load()
+            for device_id, raw in (devices or {}).items():
+                try:
+                    evt = ASToDeviceEvent.deserialize({
+                        **(raw or {}),
+                        "to_user_id": user_id,
+                        "to_device_id": device_id,
+                    })
+                    await machine.machine.handle_as_to_device_event(evt)
+                    routed["to_device"] += 1
+                except Exception:  # noqa: BLE001 — one bad message must not
+                    # kill the routing of the remaining ones
+                    log.warning("to-device route failed for %s/%s",
+                                user_id, device_id, exc_info=True)
+        raw_lists = (txn.get("device_lists")
+                     or txn.get("org.matrix.msc3202.device_lists"))
         if raw_lists:
             try:
                 lists = DeviceLists.deserialize(raw_lists)
@@ -1149,7 +1172,9 @@ class E2EEManager:
             except Exception:  # noqa: BLE001
                 log.warning("device_lists route failed", exc_info=True)
         counts = (txn.get("device_one_time_keys_count")
-                  or txn.get("device_one_time_keys_counts") or {})
+                  or txn.get("device_one_time_keys_counts")
+                  or txn.get("org.matrix.msc3202.device_one_time_keys_count")
+                  or {})
         if isinstance(counts, dict):
             for user_id, devices in counts.items():
                 machine = self._machines.get(str(user_id))

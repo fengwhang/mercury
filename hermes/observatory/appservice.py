@@ -274,6 +274,26 @@ async def _token_middleware(request: web.Request, handler):
     return await handler(request)
 
 
+#: Crypto side-channel aliases: tuwunel 1.9.0 serializes the appservice
+#: crypto extension under MSC-prefixed keys; stable senders use the bare
+#: names. Each row is (canonical bare key, aliases in preference order) —
+#: the intake normalizes to the canonical form handle_as_transaction
+#: routes, so no new key names ever flow downstream.
+_CRYPTO_KEY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("to_device", ("to_device", "de.sorunome.msc2409.to_device")),
+    ("device_lists", ("device_lists", "org.matrix.msc3202.device_lists")),
+    ("device_one_time_keys_count", (
+        "device_one_time_keys_count",
+        "device_one_time_keys_counts",
+        "org.matrix.msc3202.device_one_time_keys_count",
+    )),
+    ("device_unused_fallback_key_types", (
+        "device_unused_fallback_key_types",
+        "org.matrix.msc3202.device_unused_fallback_key_types",
+    )),
+)
+
+
 async def _put_transaction(request: web.Request) -> web.Response:
     txn_id = request.match_info["txn_id"]
     if not txn_id:
@@ -290,13 +310,18 @@ async def _put_transaction(request: web.Request) -> web.Response:
         )
     intake: TransactionIntake = request.app[_INTAKE_KEY]
     # Crypto side-channel (E2EE key-sharing transport): the ruma/tuwunel
-    # appservice extension carries to-device messages, device-list deltas
-    # and OTK counts beside the room events. Only present keys ride along
-    # (handle_as_transaction reads the same raw shape).
-    crypto = {key: body[key] for key in (
-        "to_device", "device_lists", "device_one_time_keys_count",
-        "device_one_time_keys_counts",
-    ) if key in body and body[key]}
+    # appservice extension carries to-device messages, device-list deltas,
+    # OTK counts and fallback-key types beside the room events. First
+    # present alias wins per group (bare preferred, MSC fallback) — a body
+    # carrying both forms never double-routes. Only present keys ride
+    # along (handle_as_transaction reads the same raw shape).
+    crypto: dict[str, Any] = {}
+    for canonical, aliases in _CRYPTO_KEY_ALIASES:
+        for alias in aliases:
+            if body.get(alias):
+                crypto[canonical] = body[alias]
+                break
+    log.debug("txn %s crypto keys: %s", txn_id, sorted(crypto))
     return await intake.accept(txn_id, body.get("events", []), crypto=crypto)
 
 async def _health(_request: web.Request) -> web.Response:
