@@ -1629,19 +1629,26 @@ class E2EEManager:
 #: anything wider means plaintext history exists (poisoned, defect iii).
 POISON_GAP_SECONDS = 60.0
 
-#: Recovery steps surfaced with every decrypt failure (defect iii): the
-#: notice names the event + room and tells the owner exactly what to try,
-#: in order. Never a bare "unable to decrypt".
+#: Recovery steps surfaced with every decrypt failure: written for Element X
+#: reality — Element X has NO per-device verify screen and NO key-request
+#: long-press gesture, so the notice names neither. Recovery is
+#: force-close/rejoin + a FRESH message, with a re-converge offer for the
+#: reinstall-rotation case. Never a bare "unable to decrypt".
 DECRYPT_RECOVERY_STEPS = (
     "Recovery, in order: "
-    "1) in FluffyChat, verify the gateway-agent device (emoji/SAS or "
-    "fingerprint compare — the fingerprint is in every room's verify-howto "
-    "notice); "
-    "2) if the sidecar was reinstalled, the old messages need the OLD keys "
-    "— in FluffyChat open the undecryptable message → 'request keys'; "
-    "3) still failing: stop the sidecar, delete "
-    "$MERCURY_HOME/observatory/crypto, restart (fresh Olm account, keys "
-    "re-shared), then ask the sender to resend."
+    "1) force-close Element X completely, reopen it, rejoin this room, then "
+    "ask the sender to post a FRESH message (a new message, not a resend of "
+    "the undecryptable one) — fresh messages use the current Megolm session "
+    "and usually decrypt; "
+    "2) if this message was sent BEFORE the sidecar was last reinstalled, it "
+    "is UNRECOVERABLE by design — reinstalls ROTATE the Olm identity, so no "
+    "keys exist anywhere that can decrypt pre-reinstall messages; ask the "
+    "sender for a fresh message instead; "
+    "3) if even fresh messages fail, purge + re-converge this room encrypted "
+    "from the start (`mercury setup observatory` offers this automatically), "
+    "then ask the sender to post again. "
+    "Element X has no per-device verify screen and no key-request gesture — "
+    "do not look for them."
 )
 
 

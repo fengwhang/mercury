@@ -126,9 +126,15 @@ def test_detect_never_raises_on_broken_rooms():
 def test_decrypt_failure_notice_carries_recovery():
     text = e2ee_mod.decrypt_failure_notice("$ev1", "!room:x")
     assert "$ev1" in text and "!room:x" in text
-    for step in ("verify the gateway-agent device", "request keys",
-                 "observatory/crypto"):
-        assert step in text
+    # Element X reality: force-close/rejoin + fresh message, re-converge
+    # offer, and the reinstall-rotation caveat — never the old fiction.
+    for step in ("force-close Element X", "FRESH message", "re-converge",
+                 "ROTATE the Olm identity", "UNRECOVERABLE by design",
+                 "mercury setup observatory"):
+        assert step in text, step
+    for fiction in ("verify the gateway-agent device", "request keys",
+                    "FluffyChat"):
+        assert fiction not in text, fiction
 
 
 def test_sidecar_notifies_once_per_room():
@@ -149,5 +155,6 @@ def test_sidecar_notifies_once_per_room():
     asyncio.run(SidecarDaemon._notice_decrypt_failure(self, event))
     asyncio.run(SidecarDaemon._notice_decrypt_failure(self, event))
     assert len(sent) == 1
-    assert "request keys" in sent[0]["body"]
+    assert "force-close Element X" in sent[0]["body"]
+    assert "request keys" not in sent[0]["body"]
     assert sent[0]["sender"] == "@gw:x"
