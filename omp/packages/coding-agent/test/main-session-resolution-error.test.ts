@@ -93,6 +93,16 @@ describe("writeStartupNotice", () => {
 			capture.restore();
 		}
 	});
+
+	it.each(["rpc", "rpc-ui"] as const)("keeps %s mode stdout clean by writing notices to stderr", (mode) => {
+		const capture = captureProcessOutput();
+		try {
+			writeStartupNotice({ mode }, "hello\n");
+			expect(capture.read()).toEqual({ stdout: "", stderr: "hello\n" });
+		} finally {
+			capture.restore();
+		}
+	});
 });
 
 describe("createSessionManager — missing session (#2084)", () => {

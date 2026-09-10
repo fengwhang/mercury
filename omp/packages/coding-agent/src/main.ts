@@ -120,7 +120,10 @@ type RunRpcMode = (
 ) => Promise<never>;
 
 export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string): void {
-	(parsedArgs.mode === "json" ? process.stderr : process.stdout).write(text);
+	// Protocol modes own stdout as a frame stream (JSON-RPC); notices must go to stderr
+	// so the client sees the ready frame on stdout line 1.
+	const mode = parsedArgs.mode;
+	(mode === "json" || mode === "rpc" || mode === "rpc-ui" ? process.stderr : process.stdout).write(text);
 }
 
 async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
