@@ -31,6 +31,7 @@ import { buildInitialMessage } from "./cli/initial-message";
 import { selectSession } from "./cli/session-picker";
 import { applyStartupCwd } from "./cli/startup-cwd";
 import { getLatestRelease } from "./cli/update-cli";
+import { createTopLevelWorktree } from "./cli/worktree-create";
 import { findConfigFile } from "./config";
 import { ModelRegistry } from "./config/model-registry";
 import {
@@ -969,10 +970,7 @@ export async function createSessionManager(
 		}
 		const match = await resolveResumableSession(forkSource, cwd, parsed.sessionDir);
 		if (!match) {
-			throw new SessionResolutionError(
-				`Session "${forkSource}" not found.`,
-				resumeHint(),
-			);
+			throw new SessionResolutionError(`Session "${forkSource}" not found.`, resumeHint());
 		}
 		return await SessionManager.forkFrom(match.session.path, cwd, parsed.sessionDir);
 	}
@@ -989,10 +987,7 @@ export async function createSessionManager(
 		}
 		const match = await resolveResumableSession(sessionArg, cwd, parsed.sessionDir);
 		if (!match) {
-			throw new SessionResolutionError(
-				`Session "${sessionArg}" not found.`,
-				resumeHint(),
-			);
+			throw new SessionResolutionError(`Session "${sessionArg}" not found.`, resumeHint());
 		}
 		if (match.scope === "local") {
 			const moveResult = await moveMissingCwdSessionIfNeeded(
@@ -1270,7 +1265,11 @@ export async function buildSessionOptions(
 	if (prewalkEnabled) {
 		// HERMES-OMP PATCH: prewalk target is an explicit model or the
 		// SESSION model — no role defaults (roles do not exist).
-		const resolved = resolveCliModel({ cliModel: parsed.prewalkInto ?? undefined, modelRegistry, preferences: modelMatchPreferences });
+		const resolved = resolveCliModel({
+			cliModel: parsed.prewalkInto ?? undefined,
+			modelRegistry,
+			preferences: modelMatchPreferences,
+		});
 		if (resolved.warning) {
 			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
 		}
@@ -1299,7 +1298,11 @@ export async function buildSessionOptions(
 		// HERMES-OMP PATCH: no "@smol" role default — plan-yolo executes on
 		// the SESSION model unless --plan-yolo-into names an explicit model.
 		const target = parsed.planYoloInto ?? "";
-		const resolved = resolveCliModel({ cliModel: target || undefined, modelRegistry, preferences: modelMatchPreferences });
+		const resolved = resolveCliModel({
+			cliModel: target || undefined,
+			modelRegistry,
+			preferences: modelMatchPreferences,
+		});
 		if (resolved.warning) {
 			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
 		}
@@ -1460,6 +1463,22 @@ export async function runRootCommand(
 			process.stderr.write(`${chalk.red("Error: @file arguments are not supported in RPC mode")}\n`);
 			process.exit(1);
 		}
+		// `--isolate-worktree` relocates the session into a fresh linked worktree
+		// before anything resolves project-scoped state (plugin roots, settings,
+		// sessions), so every downstream consumer sees the worktree as the project.
+		if (parsedArgs.isolateWorktree) {
+			const worktreeName = parsedArgs.isolateWorktree === true ? undefined : parsedArgs.isolateWorktree;
+			try {
+				const wt = await createTopLevelWorktree(getProjectDir(), worktreeName);
+				setProjectDir(wt.path);
+				parsedArgs.cwd = wt.path;
+				writeStartupNotice(parsedArgs, `${chalk.green(`Isolated worktree: ${wt.path} (branch ${wt.branch})`)}\n`);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				process.stderr.write(`${chalk.red(`Error creating isolated worktree: ${message}`)}\n`);
+				process.exit(1);
+			}
+		}
 		const mode = parsedArgs.mode || "text";
 		// RPC owns stdin. Claim its singleton stream before plugin/extension discovery can load an in-process consumer.
 		const rpcInput = mode === "rpc" || mode === "rpc-ui" ? claimRpcInput() : undefined;
@@ -1561,7 +1580,6 @@ export async function runRootCommand(
 
 		// Initialize discovery system with settings for provider persistence
 		logger.time("initializeWithSettings", initializeWithSettings, settingsInstance);
-
 
 		// --print-thoughts (single-shot print mode) must surface reasoning, so un-hide
 		// thinking before the session is built — otherwise a passive omitThinking

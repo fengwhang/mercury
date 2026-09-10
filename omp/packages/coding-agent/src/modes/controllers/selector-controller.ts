@@ -16,11 +16,7 @@ import {
 } from "../../advisor";
 import { reset as resetCapabilities } from "../../capability";
 import { showGitOverlay } from "../../cli/git-tui";
-import {
-	formatModelSelectorValue,
-	resolveRoleSelection,
-	resolveModelRoleValue,
-} from "../../config/model-resolver";
+import { formatModelSelectorValue, resolveRoleSelection, resolveModelRoleValue } from "../../config/model-resolver";
 import { getRoleInfo } from "../../config/model-roles";
 import { settings } from "../../config/settings";
 import { disableProvider, enableProvider } from "../../discovery";
@@ -334,10 +330,7 @@ export class SelectorController {
 			};
 			// Label the seeded implicit-default row with the actual advisor-role model
 			// (NOT the first live advisor, which may be a named advisor from another scope).
-			const advisorRoleSel = resolveRoleSelection(
-				this.ctx.settings,
-				this.ctx.session.modelRegistry.getAvailable(),
-			);
+			const advisorRoleSel = resolveRoleSelection(this.ctx.settings, this.ctx.session.modelRegistry.getAvailable());
 			const defaultAdvisorModel = advisorRoleSel?.model;
 			const deps: AdvisorConfigDeps = {
 				modelRegistry: this.ctx.session.modelRegistry,

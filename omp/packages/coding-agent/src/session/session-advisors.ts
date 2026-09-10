@@ -61,11 +61,7 @@ import {
 	slugifyAdvisorName,
 } from "../advisor";
 import type { ModelRegistry } from "../config/model-registry";
-import {
-	formatModelString,
-	formatModelStringWithRouting,
-	resolveModelOverride,
-} from "../config/model-resolver";
+import { formatModelString, formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
 import { serviceTierForAllFamilies, serviceTierSettingToTier } from "../config/service-tier";
 import type { Settings } from "../config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "../cursor";

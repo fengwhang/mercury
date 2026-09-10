@@ -671,18 +671,22 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	modelRoles: { type: "record", default: EMPTY_STRING_RECORD, hidden: true,
+	modelRoles: {
+		type: "record",
+		default: EMPTY_STRING_RECORD,
+		hidden: true,
 		// HERMES-OMP PATCH: modelRoles is DEAD config. The key remains parseable
 		// so old config files don't crash, but it is never read for routing —
 		// every role resolves to the session model (model-roles.ts stubs).
 		// The only model settings are delegateModel / delegateFallback.
-		description: "REMOVED (Mercury): role routing does not exist. Ignored." },
+		description: "REMOVED (Mercury): role routing does not exist. Ignored.",
+	},
 
 	// HERMES-OMP PATCH: the ONLY two model settings at the omp layer.
 	// delegateModel = the model hermes delegates to omp (session model for
 	// main loop AND every subagent). delegateFallback = its required
 	// fallback. No role routing exists.
-	"delegateModel": {
+	delegateModel: {
 		type: "model",
 		ui: {
 			tab: "model",
@@ -691,7 +695,7 @@ export const SETTINGS_SCHEMA = {
 			description: "The single model delegated from hermes to omp — session and all subagents",
 		},
 	},
-	"delegateFallback": {
+	delegateFallback: {
 		type: "model",
 		ui: {
 			tab: "model",
@@ -3263,8 +3267,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "memory",
 			group: "Mnemopi",
 			label: "Mnemopi LLM Mode",
-			description:
-				"Use no LLM or a remote OpenAI-compatible endpoint",
+			description: "Use no LLM or a remote OpenAI-compatible endpoint",
 			condition: "mnemopiActive",
 			options: [
 				{ value: "none", label: "None", description: "Disable Mnemopi LLM-backed extraction" },
@@ -5059,8 +5062,7 @@ export const SETTINGS_SCHEMA = {
 			// HERMES-OMP PATCH: dead — per-spawn effort removed; thinking is
 			// config-pinned (models.delegate_thinking_level). Kept parseable
 			// so stale configs don't break; has no effect.
-			description:
-				"Legacy toggle — per-task effort no longer exists; thinking level is config-pinned",
+			description: "Legacy toggle — per-task effort no longer exists; thinking level is config-pinned",
 		},
 	},
 
@@ -5593,8 +5595,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "providers",
 			group: "Tiny Model",
 			label: "Tiny Model",
-			description:
-				"Session-title model: online (tiny model) by default, or a local on-device model",
+			description: "Session-title model: online (tiny model) by default, or a local on-device model",
 			options: TINY_TITLE_MODEL_OPTIONS,
 		},
 	},
@@ -5632,8 +5633,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "memory",
 			group: "General",
 			label: "Memory Model",
-			description:
-				"Mnemopi LLM for fact extraction + consolidation: remote by default, or a local on-device model",
+			description: "Mnemopi LLM for fact extraction + consolidation: remote by default, or a local on-device model",
 			condition: "mnemopiActive",
 			options: TINY_MEMORY_MODEL_OPTIONS,
 		},
@@ -5703,8 +5703,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "providers",
 			group: "Tiny Model",
 			label: "Unexpected Stop Model",
-			description:
-				"Classifier for Smart unexpected-stop detection: remote by default, or a local on-device model.",
+			description: "Classifier for Smart unexpected-stop detection: remote by default, or a local on-device model.",
 			condition: "unexpectedStopSmart",
 			options: TINY_MEMORY_MODEL_OPTIONS,
 		},

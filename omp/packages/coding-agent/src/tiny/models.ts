@@ -69,8 +69,7 @@ export const TINY_TITLE_MODEL_OPTIONS = [
 	{
 		value: ONLINE_TINY_TITLE_MODEL_KEY,
 		label: "Online (tiny model)",
-		description:
-			"Online title generation: the online tiny model. No local download or on-device inference.",
+		description: "Online title generation: the online tiny model. No local download or on-device inference.",
 	},
 	...TINY_TITLE_LOCAL_MODELS.map(model => ({
 		value: model.key,
@@ -176,8 +175,7 @@ export const TINY_MEMORY_MODEL_OPTIONS = [
 	{
 		value: ONLINE_MEMORY_MODEL_KEY,
 		label: "Online (tiny model)",
-		description:
-			"Use the online model: the online tiny model. No local model download or on-device inference.",
+		description: "Use the online model: the online tiny model. No local model download or on-device inference.",
 	},
 	...TINY_MEMORY_LOCAL_MODELS.map(model => ({
 		value: model.key,

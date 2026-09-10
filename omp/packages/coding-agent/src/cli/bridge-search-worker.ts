@@ -50,9 +50,7 @@ async function runBridgeSearchWorker(): Promise<void> {
 	try {
 		if (request.op === "list") {
 			const { SEARCH_PROVIDER_OPTIONS } = await import("../web/search/types");
-			process.stdout.write(
-				JSON.stringify({ ok: true, providers: SEARCH_PROVIDER_OPTIONS }) + "\n",
-			);
+			process.stdout.write(JSON.stringify({ ok: true, providers: SEARCH_PROVIDER_OPTIONS }) + "\n");
 			return;
 		}
 
@@ -74,10 +72,18 @@ async function runBridgeSearchWorker(): Promise<void> {
 			// exists to satisfy the authStorage contract, not to persist.
 			const memStore = {
 				_data: new Map<string, string>(),
-				get(key: string) { return this._data.get(key) ?? null; },
-				set(key: string, value: string) { this._data.set(key, value); },
-				delete(key: string) { this._data.delete(key); },
-				list() { return [...this._data.keys()]; },
+				get(key: string) {
+					return this._data.get(key) ?? null;
+				},
+				set(key: string, value: string) {
+					this._data.set(key, value);
+				},
+				delete(key: string) {
+					this._data.delete(key);
+				},
+				list() {
+					return [...this._data.keys()];
+				},
 				close() {},
 			};
 			const authStorage = new AuthStorage(memStore as never);

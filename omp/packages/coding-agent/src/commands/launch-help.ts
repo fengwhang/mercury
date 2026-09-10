@@ -22,12 +22,14 @@ export const launchHelp = {
 				"Switch from the active model to a fast/cheap model at the first edit/write after the plan's todo list exists (default off; see prewalk.enabled)",
 		}),
 		"no-prewalk": Flags.boolean({ description: "Disable prewalk even if prewalk.enabled is set" }),
-		"prewalk-into": Flags.string({ description: 'Target model for prewalk (defaults to the session model)' }),
+		"prewalk-into": Flags.string({ description: "Target model for prewalk (defaults to the session model)" }),
 		"plan-yolo": Flags.boolean({
 			description:
 				"Force read-only plan mode at start, auto-approve the plan on the model's first resolve call, then switch to --plan-yolo-into to implement it",
 		}),
-		"plan-yolo-into": Flags.string({ description: 'Target model for plan-yolo execution (defaults to the session model)' }),
+		"plan-yolo-into": Flags.string({
+			description: "Target model for plan-yolo execution (defaults to the session model)",
+		}),
 		provider: Flags.string({ description: "Provider to use (legacy; prefer --model)" }),
 		"api-key": Flags.string({ description: "API key (defaults to env vars)" }),
 		"system-prompt": Flags.string({ description: "System prompt (default: coding assistant prompt)" }),
@@ -53,6 +55,9 @@ export const launchHelp = {
 		resume: Flags.string({ char: "r", description: "Resume a session (by ID prefix, path, or picker if omitted)" }),
 		"from-claude": Flags.boolean({ description: "Import a Claude Code session into OMP" }),
 		"from-codex": Flags.boolean({ description: "Import a Codex session into OMP" }),
+		"isolate-worktree": Flags.string({
+			description: "Start the session in an isolated git worktree (optionally named)",
+		}),
 		"session-dir": Flags.string({ description: "Directory for session storage and lookup" }),
 		"no-session": Flags.boolean({ description: "Don't save session (ephemeral)" }),
 		models: Flags.string({ description: "Comma-separated model patterns for Ctrl+P cycling" }),

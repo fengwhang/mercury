@@ -65,15 +65,19 @@ export type OptionalSetter = (result: Args, value: string | undefined) => void;
  * Every optional flag always rejects tokens that start with `-` — that shared
  * rule lives in the dispatch site. These booleans capture the *additional*
  * per-flag quirks:
- *
  * - `rejectEmpty`: treat `""` like “no value provided”. Needed for
  *   `--resume` / `-r` / `--session`. Without it, an empty string
  *   gets consumed as the session prefix and downstream resolution can match
  *   every session.
+ * - `rejectAtFile`: treat `@`-prefixed tokens like “no value provided”.
+ *   Needed for `--isolate-worktree`: a worktree name never starts with `@`,
+ *   and swallowing the next token would eat the user's `@file` argument
+ *   instead of leaving it for file-arg handling.
  */
 export interface OptionalFlagConfig {
 	set: OptionalSetter;
 	rejectEmpty?: boolean;
+	rejectAtFile?: boolean;
 }
 
 // Shared setters for flags that alias the same field.
@@ -84,6 +88,10 @@ const setExtension: StringSetter = (result, value) => {
 
 const setResume: OptionalSetter = (result, value) => {
 	result.resume = value !== undefined ? value : true;
+};
+
+const setIsolateWorktree: OptionalSetter = (result, value) => {
+	result.isolateWorktree = value !== undefined ? value : true;
 };
 
 const MAX_TIME_DURATION_RE = /^(\d+(?:\.\d+)?)([smh])$/;
@@ -240,6 +248,7 @@ export const OPTIONAL_FLAGS: Record<string, OptionalFlagConfig> = {
 	"--resume": { set: setResume, rejectEmpty: true },
 	"-r": { set: setResume, rejectEmpty: true },
 	"--session": { set: setResume, rejectEmpty: true },
+	"--isolate-worktree": { set: setIsolateWorktree, rejectEmpty: true, rejectAtFile: true },
 };
 
 /**
@@ -347,7 +356,11 @@ export function flagConsumesValue(flag: string, next: string | undefined): boole
 	if (EXTENSION_SHADOWABLE_STRING_FLAGS.has(flag)) return valueLike;
 	if (OPTIONAL_VALUE_FLAGS.has(flag)) {
 		const config = OPTIONAL_FLAGS[flag];
-		return valueLike && !(config.rejectEmpty === true && next.length === 0);
+		return (
+			valueLike &&
+			!(config.rejectEmpty === true && next.length === 0) &&
+			!(config.rejectAtFile === true && next.startsWith("@"))
+		);
 	}
 	if (isUnknownLongValueCandidate(flag)) return valueLike;
 	return false;
@@ -367,6 +380,11 @@ const SESSION_SOURCE_FLAGS: ReadonlySet<string> = new Set([
 	"--fork",
 	"--from-claude",
 	"--from-codex",
+	// One-shot worktree creation: replaying it on relaunch would re-run
+	// `git worktree add` against the already-created branch and fail. The
+	// relaunch resumes the session whose recorded cwd is already inside the
+	// worktree, so nothing is lost by dropping it.
+	"--isolate-worktree",
 ]);
 
 /**

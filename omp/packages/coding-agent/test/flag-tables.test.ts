@@ -130,6 +130,35 @@ describe("OPTIONAL_FLAGS per-flag quirks", () => {
 		expect(result.resume).toBe(true);
 		expect(result.messages).toEqual([""]);
 	});
+
+	it("treats bare --isolate-worktree as auto-named (true)", () => {
+		const result = parseArgs(["--isolate-worktree"]);
+		expect(result.isolateWorktree).toBe(true);
+	});
+
+	it("takes an explicit --isolate-worktree name", () => {
+		const result = parseArgs(["--isolate-worktree", "my-feature"]);
+		expect(result.isolateWorktree).toBe("my-feature");
+		expect(result.messages).toEqual([]);
+	});
+
+	it("does not consume a following flag as the --isolate-worktree name", () => {
+		const result = parseArgs(["--isolate-worktree", "--print"]);
+		expect(result.isolateWorktree).toBe(true);
+		expect(result.print).toBe(true);
+	});
+
+	it("does not consume a following @file as the --isolate-worktree name", () => {
+		const result = parseArgs(["--isolate-worktree", "@notes.md"]);
+		expect(result.isolateWorktree).toBe(true);
+		expect(result.fileArgs).toEqual(["notes.md"]);
+	});
+
+	it("treats empty string as bare --isolate-worktree", () => {
+		const result = parseArgs(["--isolate-worktree", ""]);
+		expect(result.isolateWorktree).toBe(true);
+		expect(result.messages).toEqual([""]);
+	});
 });
 
 describe("parseArgs end-of-options (--)", () => {

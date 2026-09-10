@@ -221,11 +221,13 @@ class TestPromptVerbatim(unittest.TestCase):
                      fallback_chain, batch_procs=None,
                      profile_home=None, extra_env=None,
                      delegation_id=None, name=None, goal=None,
-                     owner_session_id="", base_env=None):
+                     owner_session_id="", base_env=None,
+                     isolate_worktree=None):
             captured["prompt"] = prompt
             captured["model"] = model
             captured["fallback"] = fallback_chain
             captured["name"] = name
+            captured["isolate_worktree"] = isolate_worktree
             return {"task_index": task_index, "status": "completed",
                     "name": name, "summary": "s", "exit_reason": "completed"}
 

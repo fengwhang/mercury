@@ -340,7 +340,9 @@ function writeMercuryEnv(home: string, content: string): void {
 	fs.writeFileSync(path.join(home, ".env"), content);
 }
 
-async function runMercuryProbe(env: Record<string, string | undefined>): Promise<{ marker: string | null; override: string | null }> {
+async function runMercuryProbe(
+	env: Record<string, string | undefined>,
+): Promise<{ marker: string | null; override: string | null }> {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-utils-mercury-cwd-"));
 	tempDirs.push(cwd);
 	const proc = Bun.spawn([process.execPath, mercuryProbePath], {
