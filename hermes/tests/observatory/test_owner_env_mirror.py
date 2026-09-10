@@ -219,7 +219,7 @@ def test_setup_warns_and_heals_stale_mirror(home: Path, monkeypatch, capsys):
         lambda *a, **k: provision_mod.describe_owner_env_mismatch(paths))
     fake.heal_owner_env = lambda *a, **k: provision_mod.heal_owner_env(paths)
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, yes_no=[True])
+        monkeypatch, capsys, fake, yes_no=[True, True])
     assert "disagrees" in out and "MATRIX_OBS_OWNER_PASSWORD" in out
     assert "Healed the .env owner mirror" in out
     assert "correct-horse-password-1" in _env_text(home)
@@ -242,7 +242,7 @@ def test_setup_silent_when_mirror_consistent(home: Path, monkeypatch, capsys):
         lambda *a, **k: provision_mod.describe_owner_env_mismatch(paths))
     fake.heal_owner_env = lambda *a, **k: provision_mod.heal_owner_env(paths)
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, yes_no=[True])
+        monkeypatch, capsys, fake, yes_no=[True, True])
     assert "disagrees" not in out
     assert "Healed" not in out
     assert remaining == []
@@ -267,7 +267,7 @@ def test_setup_heal_failure_degrades_loudly(home: Path, monkeypatch, capsys):
 
     fake.heal_owner_env = boom
     out, _config, remaining = _run_section(
-        monkeypatch, capsys, fake, yes_no=[True])
+        monkeypatch, capsys, fake, yes_no=[True, True])
     assert "Could not heal the .env owner mirror" in out
     assert "mercury setup observatory" in out
     assert remaining == []

@@ -49,6 +49,15 @@ USER_QUERY_PATH = r"/_matrix/app/v1/users/{user_id}"
 ROOM_ALIAS_QUERY_PATH = r"/_matrix/app/v1/rooms/{room_alias}"
 PING_PATH = r"/_matrix/app/v1/ping"
 
+#: MSC3984 appservice key-query surface (HS → AS push, same token gate as
+#: transactions): the homeserver fans device-key queries and one-time-key
+#: claims for our ghost namespace here. Unanswered they 404 (the router
+#: default) and clients encrypt blind — hence explicit routes serving REAL
+#: key material from the E2EE machines (wired by the sidecar; absent only
+#: in plaintext mode, where a 404 M_NOT_FOUND is the honest answer).
+KEY_QUERY_PATH = "/_matrix/app/unstable/org.matrix.msc3984/keys/query"
+KEY_CLAIM_PATH = "/_matrix/app/unstable/org.matrix.msc3984/keys/claim"
+
 #: Bounded txnId memory: dedup window for homeserver retries.
 TXN_MEMORY_DEFAULT = 1024
 
@@ -60,6 +69,15 @@ EventHandler = Callable[[str, list[dict[str, Any]]], Awaitable[None]]
 #: every existing 2-arg EventHandler keeps working untouched.
 CryptoHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
+#: MSC3984 serving callbacks: raw request body in, MSC3984 response dict
+#: out (``{"device_keys", "master_keys", "self_signing_keys", "failures"}``
+#: for query, ``{"one_time_keys", "failures"}`` for claim). The sidecar
+#: attaches the E2EE manager's bound methods; detached means plaintext
+#: mode (routes 404 honestly). Separate callbacks — like CryptoHandler —
+#: so every existing constructor call keeps working untouched.
+KeyQueryHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+KeyClaimHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+
 
 class TransactionIntake:
     """Dedup + queue between the HTTP surface and the event consumer."""
@@ -70,6 +88,8 @@ class TransactionIntake:
         as_token: str,
         handler: EventHandler | None = None,
         crypto_handler: CryptoHandler | None = None,
+        key_query_handler: KeyQueryHandler | None = None,
+        key_claim_handler: KeyClaimHandler | None = None,
         queue_size: int = 1000,
         txn_memory: int = TXN_MEMORY_DEFAULT,
     ):
@@ -81,6 +101,8 @@ class TransactionIntake:
         ] = asyncio.Queue(maxsize=queue_size)
         self._handler: EventHandler | None = handler
         self._crypto_handler: CryptoHandler | None = crypto_handler
+        self._key_query_handler: KeyQueryHandler | None = key_query_handler
+        self._key_claim_handler: KeyClaimHandler | None = key_claim_handler
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._txn_memory = txn_memory
         self._consumer: asyncio.Task[None] | None = None
@@ -143,6 +165,25 @@ class TransactionIntake:
         """Set the crypto-fields callback (to-device/device-lists/OTK
         counts); takes effect on next ``start()``."""
         self._crypto_handler = handler
+
+    @property
+    def key_query_handler(self) -> KeyQueryHandler | None:
+        """Attached MSC3984 query callback (None in plaintext mode)."""
+        return self._key_query_handler
+
+    @property
+    def key_claim_handler(self) -> KeyClaimHandler | None:
+        """Attached MSC3984 claim callback (None in plaintext mode)."""
+        return self._key_claim_handler
+
+    def attach_key_query_handler(self, handler: KeyQueryHandler | None) -> None:
+        """Set the MSC3984 keys/query callback (takes effect immediately —
+        key routes read it per request, unlike the queued consumer)."""
+        self._key_query_handler = handler
+
+    def attach_key_claim_handler(self, handler: KeyClaimHandler | None) -> None:
+        """Set the MSC3984 keys/claim callback (takes effect immediately)."""
+        self._key_claim_handler = handler
 
     async def start(self) -> None:
         """Spawn the consumer task (no-op without a handler attached)."""
@@ -305,6 +346,77 @@ async def _post_ping(request: web.Request) -> web.Response:
     log.debug("appservice ping (txn %s)", txn_id)
     return web.json_response({})
 
+
+async def _post_key_query(request: web.Request) -> web.Response:
+    """MSC3984 keys/query: 200 with REAL device keys from the E2EE machines.
+
+    Detached handler (plaintext mode) answers an honest 404 M_NOT_FOUND —
+    counted once by _log_404_middleware like every other explicit 404.
+    Handler crashes degrade to 500 M_UNKNOWN (also counted); the
+    homeserver treats those as retryable, never silent.
+    """
+    intake: TransactionIntake = request.app[_INTAKE_KEY]
+    if intake.key_query_handler is None:
+        log.warning("msc3984 key query with no handler (E2EE disabled?)")
+        return web.json_response(
+            {"errcode": "M_NOT_FOUND", "error": "no key query handler"},
+            status=404,
+        )
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        intake.note_error("400 msc3984 keys/query: body is not JSON")
+        return web.json_response(
+            {"errcode": "M_NOT_JSON", "error": "request body is not JSON"},
+            status=400,
+        )
+    try:
+        result = await intake.key_query_handler(
+            body if isinstance(body, dict) else {})
+    except Exception:  # noqa: BLE001 — serving survives handler bugs
+        log.exception("msc3984 key query handler failed")
+        intake.note_error("500 msc3984 keys/query: handler failed")
+        return web.json_response(
+            {"errcode": "M_UNKNOWN", "error": "key query failed"},
+            status=500,
+        )
+    return web.json_response(result if isinstance(result, dict) else {})
+
+
+async def _post_key_claim(request: web.Request) -> web.Response:
+    """MSC3984 keys/claim: 200 with a FRESH signed one-time key per device.
+
+    Same honesty contract as keys/query: detached handler 404s, crashes
+    500 (both counted), bad JSON 400s.
+    """
+    intake: TransactionIntake = request.app[_INTAKE_KEY]
+    if intake.key_claim_handler is None:
+        log.warning("msc3984 key claim with no handler (E2EE disabled?)")
+        return web.json_response(
+            {"errcode": "M_NOT_FOUND", "error": "no key claim handler"},
+            status=404,
+        )
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        intake.note_error("400 msc3984 keys/claim: body is not JSON")
+        return web.json_response(
+            {"errcode": "M_NOT_JSON", "error": "request body is not JSON"},
+            status=400,
+        )
+    try:
+        result = await intake.key_claim_handler(
+            body if isinstance(body, dict) else {})
+    except Exception:  # noqa: BLE001 — serving survives handler bugs
+        log.exception("msc3984 key claim handler failed")
+        intake.note_error("500 msc3984 keys/claim: handler failed")
+        return web.json_response(
+            {"errcode": "M_UNKNOWN", "error": "key claim failed"},
+            status=500,
+        )
+    return web.json_response(result if isinstance(result, dict) else {})
+
+
 @web.middleware
 async def _log_404_middleware(request: web.Request, handler):
     """Log every 404 path (unknown routes raise through here; explicit
@@ -339,6 +451,8 @@ def make_app(intake: TransactionIntake) -> web.Application:
     app.router.add_get(USER_QUERY_PATH, _get_user_query)
     app.router.add_get(ROOM_ALIAS_QUERY_PATH, _get_alias_query)
     app.router.add_post(PING_PATH, _post_ping)
+    app.router.add_post(KEY_QUERY_PATH, _post_key_query)
+    app.router.add_post(KEY_CLAIM_PATH, _post_key_claim)
     app.router.add_get(HEALTH_PATH, _health)
     return app
 

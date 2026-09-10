@@ -625,6 +625,12 @@ class SidecarDaemon:
             handler=self._on_transaction,
             crypto_handler=self._on_crypto,
         )
+        # MSC3984 (HS fans @merc_* key queries/claims here): serve REAL key
+        # material from the E2EE machines. E2EE off (self.e2ee None) leaves
+        # the routes detached — they 404 honestly instead of faking keys.
+        if self.e2ee is not None:
+            self.intake.attach_key_query_handler(self.e2ee.key_query)
+            self.intake.attach_key_claim_handler(self.e2ee.key_claim)
         app = make_app(self.intake)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()

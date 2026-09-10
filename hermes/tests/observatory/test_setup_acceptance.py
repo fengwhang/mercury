@@ -54,7 +54,7 @@ def test_acceptance_all_pass_then_card_last(monkeypatch, capsys, tmp_path):
     fake = _FakeProvision([_provisioned_status(creds)])
     _pin_obs(monkeypatch, fake, poison=[])
     _pin_env(monkeypatch)
-    out, _config, remaining = _run(monkeypatch, capsys, fake, yes_no=[True])
+    out, _config, remaining = _run(monkeypatch, capsys, fake, yes_no=[True, True])
     for gate in ("dual-bind", "crypto", "model", "encrypted-room",
                  "admin", "synthetic-txn", "poison-scan"):
         assert f"[acceptance] {gate}: passed" in out, gate
@@ -71,7 +71,7 @@ def test_acceptance_model_failure_still_ends_with_card(
     _pin_obs(monkeypatch, fake, poison=[])
     _pin_env(monkeypatch, model_cfg={})
     monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
-    out, _config, remaining = _run(monkeypatch, capsys, fake, yes_no=[True])
+    out, _config, remaining = _run(monkeypatch, capsys, fake, yes_no=[True, True])
     assert "[acceptance] model: failed: no model configured" in out
     assert "failures above need action" in out
     assert out.index("[acceptance] model") < out.index("first login")
@@ -91,7 +91,7 @@ def test_acceptance_poisoned_offer_reconverges(monkeypatch, capsys, tmp_path):
                         raising=False)
     _pin_env(monkeypatch)
     out, _config, remaining = _run(
-        monkeypatch, capsys, fake, yes_no=[True, True])
+        monkeypatch, capsys, fake, yes_no=[True, True, True])
     assert "poison-scan: failed: gw (poisoned)" in out
     assert fixed == [True]
     assert "reconverge:" in out

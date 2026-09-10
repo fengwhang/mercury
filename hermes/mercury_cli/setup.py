@@ -2806,6 +2806,7 @@ def _observatory_state_lines(status: dict) -> None:
     )
     print_info(f"Unit active:          {yn(status['unit_active'])}  ({status['unit_name']})")
     print_info(f"observatory.enabled:  {yn(status['enabled'])}  (config.yaml)")
+    print_info(f"observatory.e2ee:     {yn(status.get('e2ee', True))}  (config.yaml)")
 
 
 def _prompt_observatory_enabled_toggle(config: dict) -> None:
@@ -2876,6 +2877,46 @@ def _prompt_mirror_cli_mode(config: dict) -> None:
     print_success(
         f"observatory.mirror_cli = {want} written to {get_config_path()}"
     )
+
+#: Plaintext opt-in warning (single source: the setup prompt and the
+#: --no-encrypt-rooms flag path print the same text).
+PLAINTEXT_WARNING = (
+    "PLAINTEXT OPT-IN: rooms will NOT be encrypted — every Matrix message, "
+    "including agent prompts and outputs mirrored to rooms, travels "
+    "UNENCRYPTED on your tailnet and sits in cleartext in the homeserver "
+    "database. Only use this if you cannot run the compiled Olm crypto stack."
+)
+
+
+def _prompt_observatory_encrypt_rooms(config: dict) -> None:
+    """Offer room encryption (observatory.e2ee, default ON).
+
+    Explicit plaintext opt-in: answering No shows the tailnet-plaintext
+    warning and persists ``observatory.e2ee: false`` through save_config;
+    answering the default keeps the file untouched (absent = on, per
+    ``e2ee.e2ee_enabled``). Non-interactive callers keep the current value
+    (prompt_yes_no falls back to its default).
+    """
+    current = bool(cfg_get(config, "observatory", "e2ee", default=True))
+    want = prompt_yes_no(
+        "Encrypt Matrix rooms with Megolm (observatory.e2ee — RECOMMENDED)?",
+        default=current,
+    )
+    if want == current:
+        print_info(f"Keeping observatory.e2ee = {str(current).lower()}")
+        return
+    if not want:
+        print_warning(PLAINTEXT_WARNING)
+    obs = config.get("observatory")
+    if not isinstance(obs, dict):
+        obs = {}
+        config["observatory"] = obs
+    obs["e2ee"] = want
+    save_config(config)
+    print_success(
+        f"observatory.e2ee = {str(want).lower()} written to {get_config_path()}"
+    )
+
 
 def _tailscale_down() -> dict:
     """Fresh absent/down detection dict (never share mutable state)."""
@@ -3133,6 +3174,17 @@ def _mirror_cli_card_line() -> str:
     return "off (CLI/TUI sessions never get rooms — opt in: mercury config set observatory.mirror_cli observe|full)"
 
 
+def _e2ee_card_line() -> str:
+    """One-line e2ee status for the setup card (never raises)."""
+    try:
+        from observatory.provision import observatory_e2ee_flag
+        on = bool(observatory_e2ee_flag())
+    except Exception:  # noqa: BLE001 — display probe, never kills setup
+        on = True
+    if on:
+        return "ON (Megolm — rooms are end-to-end encrypted)"
+    return "OFF (PLAINTEXT — messages travel unencrypted on the tailnet)"
+
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
     """First-login card — ONLY what remains truly manual (FluffyChat login).
 
@@ -3194,6 +3246,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
             f"owner account:       {owner_mxid}",
             *password_lines,
             f"CLI/TUI mirror:      {_mirror_cli_card_line()}",
+            f"room encryption:     {_e2ee_card_line()}",
             "in FluffyChat:       add account → enter the homeserver URL",
             "                     manually → paste the URL above",
             "                     (use your own server, not matrix.org)",
@@ -3977,9 +4030,19 @@ def _run_observatory_acceptance(obs, status: dict, ts: dict | None) -> bool:
     sidecar-encrypted room, admin ping, synthetic transaction, poisoned
     rooms (+converge offer). The login card prints AFTER this (card
     last). Every gate degrades to fail/skip — never raises. Returns
-    all-pass."""
+    all-pass. When ``observatory.e2ee`` is false the crypto gates (crypto,
+    encrypted-room, poison-scan) skip: plaintext rooms assert nothing."""
     print_header("Observatory acceptance")
     results: list[tuple[str, str]] = []
+
+    # Plaintext mode: crypto gates assert nothing (rooms are unencrypted by
+    # operator choice) — they skip instead of failing. Reads the persisted
+    # flag; unreadable config means default-on (fail closed).
+    try:
+        from observatory.provision import observatory_e2ee_flag as _e2ee_flag
+        want_e2ee = bool(_e2ee_flag())
+    except Exception:  # noqa: BLE001 — probe, never kills setup
+        want_e2ee = True
 
     def _report(name: str, outcome: str) -> None:
         results.append((name, outcome))
@@ -4009,19 +4072,23 @@ def _run_observatory_acceptance(obs, status: dict, ts: dict | None) -> bool:
         _report("dual-bind", f"failed: {exc}")
 
     # 2. crypto assert (+live-gate hint).
-    try:
-        crypto_fn = getattr(obs, "assert_crypto_stack", None)
-        if crypto_fn is None:
-            from observatory.provision import assert_crypto_stack as crypto_fn
-        ok, missing = crypto_fn()
-        if ok:
-            _report("crypto", "passed: olm+mautrix.crypto+aiosqlite+aiohttp import "
-                    "(live: python -m observatory.scripts.e2ee_live_gate --fresh)")
-        else:
-            _report("crypto", f"failed: missing {', '.join(missing)} "
-                    "— E2EE stays ON; retry: mercury setup observatory")
-    except Exception as exc:  # noqa: BLE001
-        _report("crypto", f"failed: {exc}")
+    if not want_e2ee:
+        _report("crypto", "skipped: E2EE disabled (observatory.e2ee: false) "
+                "— plaintext rooms need no crypto stack")
+    else:
+        try:
+            crypto_fn = getattr(obs, "assert_crypto_stack", None)
+            if crypto_fn is None:
+                from observatory.provision import assert_crypto_stack as crypto_fn
+            ok, missing = crypto_fn()
+            if ok:
+                _report("crypto", "passed: olm+mautrix.crypto+aiosqlite+aiohttp import "
+                        "(live: python -m observatory.scripts.e2ee_live_gate --fresh)")
+            else:
+                _report("crypto", f"failed: missing {', '.join(missing)} "
+                        "— E2EE stays ON; retry: mercury setup observatory")
+        except Exception as exc:  # noqa: BLE001
+            _report("crypto", f"failed: {exc}")
 
     # 3. model resolve + inject ping.
     try:
@@ -4034,20 +4101,24 @@ def _run_observatory_acceptance(obs, status: dict, ts: dict | None) -> bool:
         _report("model", f"failed: {exc}")
 
     # 4. sidecar-encrypted room.
-    try:
-        enc_fn = getattr(obs, "gateway_room_encrypted", None)
-        if enc_fn is None:
-            from observatory.provision import gateway_room_encrypted as enc_fn
-        verdict = enc_fn()
-        if verdict is True:
-            _report("encrypted-room", "passed: gateway room is sidecar-encrypted")
-        elif verdict is None:
-            _report("encrypted-room", "skipped: no gateway room yet (converges on sidecar start)")
-        else:
-            _report("encrypted-room", "failed: gateway room exists but is not sidecar-encrypted "
-                    "— purge + re-converge, or wipe + re-provision")
-    except Exception as exc:  # noqa: BLE001
-        _report("encrypted-room", f"failed: {exc}")
+    if not want_e2ee:
+        _report("encrypted-room", "skipped: E2EE disabled (observatory.e2ee: false) "
+                "— rooms are plaintext by choice")
+    else:
+        try:
+            enc_fn = getattr(obs, "gateway_room_encrypted", None)
+            if enc_fn is None:
+                from observatory.provision import gateway_room_encrypted as enc_fn
+            verdict = enc_fn()
+            if verdict is True:
+                _report("encrypted-room", "passed: gateway room is sidecar-encrypted")
+            elif verdict is None:
+                _report("encrypted-room", "skipped: no gateway room yet (converges on sidecar start)")
+            else:
+                _report("encrypted-room", "failed: gateway room exists but is not sidecar-encrypted "
+                        "— purge + re-converge, or wipe + re-provision")
+        except Exception as exc:  # noqa: BLE001
+            _report("encrypted-room", f"failed: {exc}")
 
     # 5. admin ping (validate + self-heal).
     try:
@@ -4065,39 +4136,43 @@ def _run_observatory_acceptance(obs, status: dict, ts: dict | None) -> bool:
     _report("synthetic-txn", _synthetic_transaction())
 
     # 7. poisoned rooms (+converge offer).
-    try:
-        scan_fn = getattr(obs, "scan_poisoned_rooms", None)
-        if scan_fn is None:
-            from observatory.provision import scan_poisoned_rooms as scan_fn
-        problems = scan_fn()
-        if problems is None:
-            _report("poison-scan", "skipped: unscannable (unreachable or unprovisioned)")
-        elif not problems:
-            _report("poison-scan", "passed: no plaintext-history rooms")
-        else:
-            names = ", ".join(f"{p['key']} ({p['status']})" for p in problems)
-            print_error(f"[acceptance] poison-scan: failed: {names}")
-            results.append(("poison-scan", f"failed: {names}"))
-            try:
-                if prompt_yes_no(
-                    f"Purge {len(problems)} poisoned rooms and re-converge encrypted?",
-                    default=False,
-                ):
-                    fix_fn = getattr(obs, "reconverge_poisoned_rooms", None)
-                    if fix_fn is None:
-                        from observatory.provision import (
-                            reconverge_poisoned_rooms as fix_fn,
-                        )
-                    summary = fix_fn()
-                    print_success(f"[acceptance] reconverge: {summary}")
-            except KeyboardInterrupt:
-                raise
-            except Exception as exc:  # noqa: BLE001 — offer never kills setup
-                print_error(f"[acceptance] reconverge failed: {exc}")
-    except KeyboardInterrupt:
-        raise
-    except Exception as exc:  # noqa: BLE001 — gate, never kills setup
-        _report("poison-scan", f"failed: {exc}")
+    if not want_e2ee:
+        _report("poison-scan", "skipped: E2EE disabled (observatory.e2ee: false) "
+                "— plaintext history is expected, not poison")
+    else:
+        try:
+            scan_fn = getattr(obs, "scan_poisoned_rooms", None)
+            if scan_fn is None:
+                from observatory.provision import scan_poisoned_rooms as scan_fn
+            problems = scan_fn()
+            if problems is None:
+                _report("poison-scan", "skipped: unscannable (unreachable or unprovisioned)")
+            elif not problems:
+                _report("poison-scan", "passed: no plaintext-history rooms")
+            else:
+                names = ", ".join(f"{p['key']} ({p['status']})" for p in problems)
+                print_error(f"[acceptance] poison-scan: failed: {names}")
+                results.append(("poison-scan", f"failed: {names}"))
+                try:
+                    if prompt_yes_no(
+                        f"Purge {len(problems)} poisoned rooms and re-converge encrypted?",
+                        default=False,
+                    ):
+                        fix_fn = getattr(obs, "reconverge_poisoned_rooms", None)
+                        if fix_fn is None:
+                            from observatory.provision import (
+                                reconverge_poisoned_rooms as fix_fn,
+                            )
+                        summary = fix_fn()
+                        print_success(f"[acceptance] reconverge: {summary}")
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — offer never kills setup
+                    print_error(f"[acceptance] reconverge failed: {exc}")
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 — gate, never kills setup
+            _report("poison-scan", f"failed: {exc}")
 
     all_pass = all(outcome.startswith(("passed", "skipped")) for _, outcome in results)
     if all_pass:
@@ -4113,9 +4188,10 @@ def setup_observatory(config: dict, *, quick: bool = False):
     Shows current state, offers idempotent install/repair (provision +
     crypto + sidecar + heal/converge, all automatic) or skip (the
     --skip-observatory equivalent), offers the ``observatory.enabled``
-    toggle and the ``observatory.mirror_cli`` choice (off/observe/full,
-    default off), and prints the manual-only first-login card when
-    provisioned.
+    toggle, the ``observatory.mirror_cli`` choice (off/observe/full,
+    default off), and the ``observatory.e2ee`` room-encryption choice
+    (default on, explicit plaintext opt-in), and prints the manual-only
+    first-login card when provisioned.
     Never gates the rest of the wizard: every failure degrades to a
     printed hint and the section returns.
     """
@@ -4227,9 +4303,9 @@ def setup_observatory(config: dict, *, quick: bool = False):
     else:
         print_info("Skipped — same as installing with --skip-observatory.")
         print_info("Provision later with: mercury setup observatory")
-
     _prompt_observatory_enabled_toggle(config)
     _prompt_mirror_cli_mode(config)
+    _prompt_observatory_encrypt_rooms(config)
 
     if status.get("provisioned"):
         ts = _tailscale_status(obs)
@@ -4305,18 +4381,28 @@ def print_noninteractive_observatory_guidance() -> None:
     print()
 
 
-def run_headless_observatory_setup() -> None:
+def run_headless_observatory_setup(*, encrypt_rooms: bool = True) -> None:
     """Headless `mercury setup observatory`: provision + crypto + sidecar +
     heal/converge with zero prompts, then the manual-only login card.
 
     Same auto steps as the wizard Install path, minus every prompt (enabled
-    toggle, Tailscale bind offer). Failures degrade to printed hints —
-    never raises, never exits."""
+    toggle, Tailscale bind offer). ``encrypt_rooms=False`` (the
+    ``--no-encrypt-rooms`` flag) persists the explicit plaintext opt-in
+    before provisioning; the default keeps rooms encrypted. Failures
+    degrade to printed hints — never raises, never exits."""
     obs = _load_observatory_provision()
     if obs is None:
         print_warning("Bundled observatory package not found in this install.")
         print_info(_OBSERVATORY_GUIDE_LINE)
         return
+    if not encrypt_rooms:
+        try:
+            from observatory.provision import set_observatory_e2ee
+            set_observatory_e2ee(False)
+            print_warning(PLAINTEXT_WARNING)
+            print_success("observatory.e2ee = false persisted (headless --no-encrypt-rooms).")
+        except Exception as exc:  # noqa: BLE001 — opt-in persists best-effort
+            print_warning(f"Could not persist observatory.e2ee = false: {exc}")
     try:
         obs.provision_in_wizard()
         _run_observatory_auto_steps(obs)
@@ -5204,9 +5290,11 @@ def _run_setup_wizard_impl(args):
         _run_observatory_sidecar_repair()
         return
 
+    no_encrypt = bool(getattr(args, "no_encrypt_rooms", False))
+
     if non_interactive:
         if getattr(args, "section", None) == "observatory":
-            run_headless_observatory_setup()
+            run_headless_observatory_setup(encrypt_rooms=not no_encrypt)
             return
         print_noninteractive_setup_guidance(
             "Running in a non-interactive environment (no TTY detected)."
@@ -5218,6 +5306,19 @@ def _run_setup_wizard_impl(args):
     if bool(getattr(args, "portal", False)):
         _run_portal_one_shot(config)
         return
+
+    # --no-encrypt-rooms with an interactive section: seed the starting value
+    # so the encrypt prompt defaults to No (the operator can still flip it
+    # back to Yes — the flag never bypasses the explicit choice).
+    if no_encrypt and getattr(args, "section", None) == "observatory":
+        _obs_cfg = config.get("observatory")
+        if not isinstance(_obs_cfg, dict):
+            _obs_cfg = {}
+            config["observatory"] = _obs_cfg
+        if _obs_cfg.get("e2ee", True) is not False:
+            _obs_cfg["e2ee"] = False
+            save_config(config)
+            print_warning(PLAINTEXT_WARNING)
 
     # Check if a specific section was requested
     section = getattr(args, "section", None)

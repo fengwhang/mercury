@@ -71,4 +71,11 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
         help="With 'observatory': provision, then install/enable/start the "
         "mercury-observatory.service sidecar unit (repair path)",
     )
+    setup_parser.add_argument(
+        "--no-encrypt-rooms",
+        action="store_true",
+        help="With 'observatory': create rooms WITHOUT end-to-end encryption "
+        "(explicit plaintext opt-in — Matrix traffic including prompts is "
+ "unencrypted on the tailnet; headless default stays encrypted)",
+    )
     setup_parser.set_defaults(func=cmd_setup)

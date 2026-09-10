@@ -35,7 +35,7 @@ def test_fresh_install_custom_identity_passes_through(monkeypatch, capsys):
     fake = _FakeProvision([_status()])
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[False, True],  # custom password, toggle keep
+        yes_no=[False, True, True],  # custom password, toggle keep
         texts=["Example.COM ", "Custom.User", "my-very-strong-password"],
     )
     assert fake.provision_kwargs == {
@@ -52,7 +52,7 @@ def test_validation_loop_reprompts_until_valid(monkeypatch, capsys):
     fake = _FakeProvision([_status()])
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[True, True],
+        yes_no=[True, True, True],
         texts=["bad name!", "mercury.local", "merc_bot", "merc-owner"],
     )
     assert "invalid server name" in out
@@ -66,7 +66,7 @@ def test_weak_custom_password_reprompts(monkeypatch, capsys):
     fake = _FakeProvision([_status()])
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[False, True],
+        yes_no=[False, True, True],
         texts=["", "", "short", "long-enough-password-1"],
     )
     assert "at least 12 characters" in out
@@ -80,7 +80,7 @@ def test_provisioned_rerun_keeps_credentials_by_default(monkeypatch, capsys, tmp
     fake = _FakeProvision([_provisioned_status(creds)])
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[True],  # toggle keep
+        yes_no=[True, True],  # toggle keep
         texts=["", "", ""],  # server keep, username keep, password keep
     )
     assert fake.provision_kwargs == {}
@@ -94,7 +94,7 @@ def test_provisioned_rerun_rotate_accepted(monkeypatch, capsys, tmp_path):
     fake = _FakeProvision([_provisioned_status(creds)])
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[True],  # toggle keep
+        yes_no=[True, True],  # toggle keep
         texts=["", "", "rotated-password-99"],
     )
     assert fake.rotated == ["rotated-password-99"]
@@ -115,7 +115,7 @@ def test_rotate_failure_degrades_and_wizard_continues(monkeypatch, capsys, tmp_p
     monkeypatch.setattr(fake, "rotate_owner_password", boom)
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[True],
+        yes_no=[True, True],
         texts=["", "", "rotated-password-99"],
     )
     assert "Password rotation failed: homeserver refused" in out
@@ -171,7 +171,7 @@ def test_fresh_password_matching_username_reprompts(monkeypatch, capsys):
     fake = _FakeProvision([_status()])
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[False, True],  # custom password, toggle keep
+        yes_no=[False, True, True],  # custom password, toggle keep
         texts=["mybox.lan", "alicealice12", "alicealice12",
                "totally-different-password-1"],
     )
@@ -191,7 +191,7 @@ def test_rotate_password_matching_stored_username_reprompts(
     fake = _FakeProvision([_provisioned_status(creds)])
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[True],  # toggle keep
+        yes_no=[True, True],  # toggle keep
         texts=["", "", "alicealice12", "rotated-password-99"],
     )
     assert "must not be the username itself" in out
@@ -209,7 +209,7 @@ def test_rotate_without_credential_reader_keeps_length_floor(
     assert setup_mod._rotate_owner_localpart(fake) is None
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[True],
+        yes_no=[True, True],
         texts=["", "", "short", "rotated-password-99"],
     )
     assert "at least 12 characters" in out
@@ -222,7 +222,7 @@ def test_rerun_offers_full_triple_with_keep_defaults(monkeypatch, capsys, tmp_pa
     fake = _FakeProvision([_provisioned_status(creds)])
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[True],
+        yes_no=[True, True],
         texts=["", "", ""],
     )
     assert "Provisioned identity: @keepme:mercury.local" in out
@@ -239,7 +239,7 @@ def test_rerun_server_change_errors_loudly_without_forking(monkeypatch, capsys, 
     fake = _FakeProvision([_provisioned_status(creds)])
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[True],
+        yes_no=[True, True],
         texts=["newbox.lan", "", ""],
     )
     assert "immutable once provisioned" in out
@@ -256,7 +256,7 @@ def test_rerun_username_change_errors_loudly_without_forking(monkeypatch, capsys
     fake = _FakeProvision([_provisioned_status(creds)])
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[True],
+        yes_no=[True, True],
         texts=["", "brand-new-owner", ""],
     )
     assert "immutable once provisioned" in out
@@ -271,7 +271,7 @@ def test_rerun_typed_password_never_silently_drops(monkeypatch, capsys, tmp_path
     fake = _FakeProvision([_provisioned_status(creds)])
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[True],
+        yes_no=[True, True],
         texts=["", "", "typed-password-12345"],
     )
     applied = fake.rotated == ["typed-password-12345"]
@@ -295,7 +295,7 @@ def test_rerun_password_failure_is_loud_not_silent_keep(monkeypatch, capsys, tmp
     monkeypatch.setattr(fake, "rotate_owner_password", boom)
     out, _config, remaining = _run_section(
         monkeypatch, capsys, fake, choice=0,
-        yes_no=[True],
+        yes_no=[True, True],
         texts=["", "", "typed-password-12345"],
     )
     assert "Password rotation failed: login probe refused the new password" in out

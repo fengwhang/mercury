@@ -185,7 +185,7 @@ def test_wizard_install_runs_full_auto_path(monkeypatch, capsys, tmp_path):
                             homeserver_reachable=True, unit_active=True)],
         healed=HOMESERVER_URL,
     )
-    out, remaining = _run_install(monkeypatch, capsys, fake, yes_no=(True, True))
+    out, remaining = _run_install(monkeypatch, capsys, fake, yes_no=(True, True, True))
     assert fake.calls == {"provision": 1, "status": 3, "crypto": 1,
                           "sidecar": 1, "heal": 1, "tree": 1, "bind": 0}
     # fresh install: prompted identity (defaults) reaches provisioning
@@ -210,7 +210,7 @@ def test_wizard_install_failed_crypto_warns_and_keeps_e2ee(monkeypatch, capsys, 
                             owner_credentials_path=str(creds))],
         crypto="failed: no vendored python-olm wheel for this machine",
     )
-    out, _ = _run_install(monkeypatch, capsys, fake, yes_no=(True, True))
+    out, _ = _run_install(monkeypatch, capsys, fake, yes_no=(True, True, True))
     assert "Crypto stack not ready" in out
     assert "E2EE stays ON" in out
     assert "e2ee:false" not in out and "e2ee: false" not in out
@@ -227,7 +227,7 @@ def test_wizard_install_each_auto_failure_degrades_independently(monkeypatch, ca
         sidecar_error=RuntimeError("boom-sidecar"),
         tree_error=RuntimeError("boom-tree"),
     )
-    out, remaining = _run_install(monkeypatch, capsys, fake, yes_no=(True, True))
+    out, remaining = _run_install(monkeypatch, capsys, fake, yes_no=(True, True, True))
     assert "Crypto auto-setup skipped" in out
     assert "Sidecar unit install skipped" in out
     assert "Gateway tree converge skipped" in out
@@ -242,10 +242,10 @@ def test_wizard_install_idempotent_double_run(monkeypatch, capsys, tmp_path):
                  owner_credentials_path=str(creds))
     fake = _FakeProvision([st, st, st])
     out, remaining = _run_install(
-        monkeypatch, capsys, fake, yes_no=(True,), texts=("", "", ""))
+        monkeypatch, capsys, fake, yes_no=(True, True), texts=("", "", ""))
     assert remaining == []
     out, remaining = _run_install(
-        monkeypatch, capsys, fake, yes_no=(True,), texts=("", "", ""))
+        monkeypatch, capsys, fake, yes_no=(True, True), texts=("", "", ""))
     assert remaining == []
     # re-runs offer the triple (empty keeps) and pass no identity onwards.
     assert fake.provision_kwargs == {}

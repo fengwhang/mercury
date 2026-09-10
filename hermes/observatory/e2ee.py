@@ -143,6 +143,13 @@ E2EE_REMEDY = (
 CLIENT_V3 = "/_matrix/client/v3"
 
 
+def _is_virtual_user_id(user_id: str) -> bool:
+    """True when a user id falls in our exclusive ghost namespace
+    (``@merc_*`` — same predicate as the intake's ``is_ours`` and the
+    to-device router; the MSC3984 handlers only serve those)."""
+    return str(user_id or "").lstrip("@").startswith("merc_")
+
+
 class E2EEError(RuntimeError):
     """Fail-hard crypto error (same law as provision.ProvisionError)."""
 
@@ -1161,6 +1168,119 @@ class E2EEManager:
                     log.warning("otk-count route failed for %s", user_id, exc_info=True)
         return routed
 
+    # -- MSC3984 appservice key queries (HS fans @merc_* queries here) -----------
+
+    async def key_query(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Serve MSC3984 ``keys/query`` from live Olm account state.
+
+        The homeserver fans device-key queries for our namespace here
+        instead of serving them itself; without this surface every query
+        404s and clients encrypt blind. Returns REAL device keys (identity
+        + signing keys with a self-signature straight from the owning
+        ``OlmAccount``) for virtual users we own; foreign users are
+        omitted (the HS serves those itself) and per-user failures ride
+        ``failures``. Never raises — intake must survive crypto noise.
+        """
+        from mautrix.types import UserID
+
+        requested = (body or {}).get("device_keys") or {}
+        device_keys: dict[str, Any] = {}
+        failures: dict[str, Any] = {}
+        if not isinstance(requested, dict):
+            return {"device_keys": {}, "master_keys": {},
+                    "self_signing_keys": {}, "failures": failures}
+        for raw_user, devices in requested.items():
+            user_id = str(raw_user)
+            if not _is_virtual_user_id(user_id):
+                continue  # not ours — the HS serves those itself
+            try:
+                crypto = self.machine_for(user_id)
+                await crypto.load()
+                if devices and str(crypto.device_id) not in {
+                        str(d) for d in devices}:
+                    continue  # asked for other devices only — nothing to serve
+                dk = crypto.machine.account.get_device_keys(
+                    UserID(user_id), crypto.device_id)
+                device_keys.setdefault(user_id, {})[str(crypto.device_id)] = (
+                    dk.serialize())
+            except Exception as exc:  # noqa: BLE001 — one bad user never kills
+                log.warning("msc3984 key query failed for %s: %s",
+                            user_id, exc)
+                failures[user_id] = {"errcode": "M_UNKNOWN",
+                                     "error": "key lookup failed"}
+        return {"device_keys": device_keys, "master_keys": {},
+                "self_signing_keys": {}, "failures": failures}
+
+    async def key_claim(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Serve MSC3984 ``keys/claim`` with a FRESH signed one-time key.
+
+        Mints one ``signed_curve25519`` OTK from the owning account per
+        (user, device) pair and signs it exactly like the upload path
+        (``OlmAccount.get_one_time_keys`` shape). The private half stays
+        in the account until the inbound session consumes it, so the
+        claimed key establishes a working Olm session via the already-wired
+        to-device pipeline. Unknown devices / algorithms land in
+        ``failures``. Never raises.
+        """
+        from mautrix.crypto.signature import sign_olm
+
+        requested = (body or {}).get("one_time_keys") or {}
+        one_time_keys: dict[str, Any] = {}
+        failures: dict[str, Any] = {}
+        if not isinstance(requested, dict):
+            return {"one_time_keys": {}, "failures": failures}
+        for raw_user, devices in requested.items():
+            user_id = str(raw_user)
+            if not _is_virtual_user_id(user_id):
+                continue  # not ours — the HS serves those itself
+            if not isinstance(devices, dict):
+                continue
+            for raw_device, algorithm in devices.items():
+                device_id = str(raw_device)
+                try:
+                    crypto = self.machine_for(user_id)
+                    await crypto.load()
+                    if device_id != str(crypto.device_id):
+                        failures.setdefault(user_id, {})[device_id] = {
+                            "errcode": "M_NOT_FOUND",
+                            "error": f"unknown device {device_id}"}
+                        continue
+                    if str(algorithm) != "signed_curve25519":
+                        failures.setdefault(user_id, {})[device_id] = {
+                            "errcode": "M_UNRECOGNIZED",
+                            "error": f"unsupported algorithm {algorithm}"}
+                        continue
+                    account = crypto.machine.account
+                    account.generate_one_time_keys(1)
+                    unpublished = dict(
+                        account.one_time_keys.get("curve25519", {}))
+                    if not unpublished:
+                        failures.setdefault(user_id, {})[device_id] = {
+                            "errcode": "M_UNKNOWN",
+                            "error": "no one-time keys available"}
+                        continue
+                    key_id = sorted(unpublished)[0]
+                    pub = unpublished[key_id]
+                    sig = sign_olm({"key": pub}, account)
+                    one_time_keys.setdefault(user_id, {}).setdefault(
+                        device_id, {})[f"signed_curve25519:{key_id}"] = {
+                        "key": pub,
+                        "signatures": {
+                            user_id: {f"ed25519:{device_id}": str(sig)},
+                        },
+                    }
+                    # Real-server semantics (mirrors share_keys: generate →
+                    # publish → mark): a claimed key must never be handed out
+                    # twice, so mark it published — the next claim mints a
+                    # fresh one and the machine re-tops-up on its own cycle.
+                    account.mark_keys_as_published()
+                except Exception as exc:  # noqa: BLE001 — one bad claim never
+                    log.warning("msc3984 key claim failed for %s/%s: %s",
+                                user_id, device_id, exc)
+                    failures.setdefault(user_id, {}).setdefault(device_id, {
+                        "errcode": "M_UNKNOWN", "error": "key claim failed"})
+        return {"one_time_keys": one_time_keys, "failures": failures}
+
     # -- room registry (survives restarts; the executor consults it) -----------
 
     def mark_room_encrypted(self, key: str, room_id: str) -> None:
@@ -1514,19 +1634,26 @@ class E2EEManager:
 #: anything wider means plaintext history exists (poisoned, defect iii).
 POISON_GAP_SECONDS = 60.0
 
-#: Recovery steps surfaced with every decrypt failure (defect iii): the
-#: notice names the event + room and tells the owner exactly what to try,
-#: in order. Never a bare "unable to decrypt".
+#: Recovery steps surfaced with every decrypt failure: written for clients
+#: with no per-device verify screen and no key-request gesture, so the
+#: notice names neither. Recovery is force-close/rejoin + a FRESH message,
+#: with a re-converge offer for the reinstall-rotation case. Never a bare
+#: "unable to decrypt".
 DECRYPT_RECOVERY_STEPS = (
     "Recovery, in order: "
-    "1) in FluffyChat, verify the gateway-agent device (emoji/SAS or "
-    "fingerprint compare — the fingerprint is in every room's verify-howto "
-    "notice); "
-    "2) if the sidecar was reinstalled, the old messages need the OLD keys "
-    "— in FluffyChat open the undecryptable message → 'request keys'; "
-    "3) still failing: stop the sidecar, delete "
-    "$MERCURY_HOME/observatory/crypto, restart (fresh Olm account, keys "
-    "re-shared), then ask the sender to resend."
+    "1) force-close Element X completely, reopen it, rejoin this room, then "
+    "ask the sender to post a FRESH message (a new message, not a resend of "
+    "the undecryptable one) — fresh messages use the current Megolm session "
+    "and usually decrypt; "
+    "2) if this message was sent BEFORE the sidecar was last reinstalled, it "
+    "is UNRECOVERABLE by design — reinstalls ROTATE the Olm identity, so no "
+    "keys exist anywhere that can decrypt pre-reinstall messages; ask the "
+    "sender for a fresh message instead; "
+    "3) if even fresh messages fail, purge + re-converge this room encrypted "
+    "from the start (`mercury setup observatory` offers this automatically), "
+    "then ask the sender to post again. "
+    "Element X has no per-device verify screen and no key-request gesture — "
+    "do not look for them."
 )
 
 
