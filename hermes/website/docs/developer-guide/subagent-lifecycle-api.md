@@ -5,11 +5,14 @@ sidebar_label: Subagent lifecycle API
 
 # Public Subagent Lifecycle API
 
+> **Retired (DEAD DEPTH).** The hermes-side child-agent engine was removed;
+> `delegate_task` routes exclusively through the omp engine and
+> `SubagentLifecycleService.launch` fails loudly with
+> `SubagentLifecycleError`. Handle validation (`status`/`result`/`cancel`
+> on forged or foreign handles) still fails closed. Supervised in-process
+> launches are unsupported until the service is rewired to the omp engine.
+
 Plugins can launch and supervise fresh Hermes child sessions without importing
-`tools.delegate_tool`, gateway internals, TUI state, or `AIAgent` fields.
-The service resolves its parent from the current agent turn, so it works in
-CLI, gateway, non-interactive, and kanban-worker sessions. Launching outside an
-active agent turn fails closed with `No active Hermes parent session`.
 
 ```python
 from agent.subagent_lifecycle import SubagentLaunchRequest

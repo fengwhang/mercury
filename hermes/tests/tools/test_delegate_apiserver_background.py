@@ -75,35 +75,29 @@ def _fake_parent():
 
 def _patch_delegate(monkeypatch):
     import tools.delegate_tool as dt
+    import tools.omp_delegation as omp
 
-    fake_child = MagicMock()
-    fake_child._delegate_role = "leaf"
-    fake_child._subagent_id = "s1"
-
-    def fast_child(task_index, goal, child=None, parent_agent=None, **kw):
+    def fast_sync_run(tasks, *args, **kwargs):
         return {
-            "task_index": 0, "status": "completed", "summary": f"done: {goal}",
-            "api_calls": 1, "duration_seconds": 0.1, "model": "m",
-            "exit_reason": "completed",
+            "results": [
+                {
+                    "task_index": i, "status": "completed",
+                    "summary": f"done: {t.get('goal')}",
+                    "api_calls": 1, "duration_seconds": 0.1, "model": "m",
+                    "exit_reason": "completed",
+                }
+                for i, t in enumerate(tasks)
+            ],
+            "total_duration_seconds": 0.1,
         }
 
-    creds = {
-        "model": "m", "provider": None, "base_url": None, "api_key": None,
-        "api_mode": None, "command": None, "args": None,
-    }
-    def clobbering_build_child(**kw):
-        # Reproduce what the real _build_child_agent -> AIAgent -> agent_init
-        # path does: it synchronizes the child's internal session id into the
-        # HERMES_SESSION_ID ContextVar + os.environ, clobbering the spawner's
-        # id ~milliseconds before delegate_tool dispatches the batch.
-        from gateway.session_context import set_current_session_id
-
-        set_current_session_id("20260715_child1")
-        return fake_child
-
-    monkeypatch.setattr(dt, "_build_child_agent", clobbering_build_child)
-    monkeypatch.setattr(dt, "_run_single_child", fast_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    # Omp reality: no child agent is constructed before dispatch (the
+    # HERMES_SESSION_ID clobber the old builder caused cannot happen), so
+    # the origin id always comes from the request-scoped chat_id binding.
+    monkeypatch.setattr(omp, "_omp_delegate_env", lambda: ({"OMP_MODEL": "m"}, None))
+    monkeypatch.setattr(omp, "_resolve_omp_binary", lambda: "/fake/omp")
+    monkeypatch.setattr(omp, "_render_omp_config_once", lambda: None)
+    monkeypatch.setattr(omp, "_sync_run", fast_sync_run)
     return dt
 
 

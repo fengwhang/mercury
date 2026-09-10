@@ -29,9 +29,8 @@ why the subagent existed; the block lets it either use the result or
 re-dispatch if the world has moved on.
 
 This module owns ONLY the async lifecycle. The actual child build + run is
-delegated back to ``delegate_tool._run_single_child`` via an injected
-runner, so all the credential leasing, heartbeat, timeout, and result-shaping
-logic stays in one place.
+provided by the caller via an injected runner, so lifecycle bookkeeping
+(persistence, claim/delivery, watchers) stays in one place.
 """
 
 from __future__ import annotations

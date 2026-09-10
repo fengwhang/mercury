@@ -1294,6 +1294,16 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
             function_args.get("message"),
             parent_agent,
         )
+    # Operator pause kill-switch (shared with delegate_task): control actions
+    # above always run; new spawns refuse fast while paused.
+    from tools.delegate_tool import is_spawn_paused
+
+    if is_spawn_paused():
+        return tool_error(
+            "Delegation spawning is paused. Clear the pause via the TUI "
+            "(`p` in /agents) or the `delegation.pause` RPC before retrying."
+        )
+
 
     # --- spawn path -----------------------------------------------------------
     from tools.delegate_tool import (

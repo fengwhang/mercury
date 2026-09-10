@@ -1,4 +1,13 @@
-"""Contract tests for the public plugin subagent lifecycle API."""
+"""Contract tests for the public plugin subagent lifecycle API.
+
+RETIRED (DEAD DEPTH): the hermes-side child-agent engine was removed and
+``delegate_task`` routes exclusively through the omp engine, so
+``SubagentLifecycleService.launch`` fails loudly with
+``SubagentLifecycleError`` instead of forking a second engine. These tests
+pin the retired contract: launch refuses (after request validation),
+forged/foreign handles stay UNKNOWN, and the agent-turn parent binding
+still works.
+"""
 
 import time
 from types import SimpleNamespace
@@ -16,93 +25,55 @@ from agent.subagent_lifecycle import (
 )
 
 
-class FakeChild:
-    def __init__(self, ident="sa-test"):
-        self._subagent_id = ident
-        self._delegate_role = "leaf"
-        self._delegate_depth = 1
-        self.provider = "test"
-        self.model = "test-model"
-        self.interrupted = False
-        self.interrupt_kind = None
-        self.interrupt_message = None
-        self.tool_reason = None
-
-    def interrupt(self, _reason):
-        self.interrupted = True
-        self.interrupt_kind = "soft"
-
-    def hard_interrupt(self, reason, *, tool_reason=None):
-        self.interrupted = True
-        self.interrupt_kind = "hard"
-        self.interrupt_message = reason
-        self.tool_reason = tool_reason
-
-
 @pytest.fixture
-def lifecycle(monkeypatch):
+def lifecycle():
     parent = SimpleNamespace(session_id="parent-1", enabled_toolsets=["file"])
-    counter = iter(range(1000))
-
-    def build(**_kwargs):
-        return FakeChild(f"sa-{next(counter)}")
-
-    def run(_index, _goal, child, _parent):
-        for _ in range(20):
-            if child.interrupted:
-                return {
-                    "status": "interrupted",
-                    "summary": None,
-                    "api_calls": 0,
-                    "duration_seconds": 0,
-                }
-            time.sleep(0.002)
-        return {
-            "status": "completed",
-            "summary": "safe summary",
-            "api_calls": 1,
-            "duration_seconds": 0.01,
-        }
-
-    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
-    monkeypatch.setattr("tools.delegate_tool._run_single_child", run)
     return SubagentLifecycleService(lambda: parent)
 
 
+def _forged_handle():
+    from agent.subagent_lifecycle import SubagentHandle
+
+    return SubagentHandle(
+        contract_version=1,
+        subagent_id="sa-forged",
+        parent_session_id="parent-1",
+        correlation_id=None,
+        created_at=time.time(),
+        provider=None,
+        model=None,
+        role="leaf",
+        depth=1,
+        capability="forged",
+    )
 
 
+def test_launch_retired_fails_loudly(lifecycle):
+    with pytest.raises(SubagentLifecycleError, match="DEAD DEPTH"):
+        lifecycle.launch(SubagentLaunchRequest(goal="x"))
 
 
-def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):
-    handle = lifecycle.launch(SubagentLaunchRequest(goal="x"))
-    assert lifecycle.cancel(handle, reason="test").accepted
-    terminal = lifecycle.wait(handle, timeout_seconds=1)
-    assert terminal.state is SubagentState.CANCELLED
-    forged = handle.__class__(**{**handle.to_dict(), "capability": "forged"})
+def test_launch_validates_request_before_retiring(lifecycle):
+    # Field-level validation still runs first: a malformed request keeps
+    # its validation error, not the retirement message.
+    with pytest.raises(SubagentLifecycleError, match="goal must be"):
+        lifecycle.launch(SubagentLaunchRequest(goal="   "))
+
+
+def test_forged_and_foreign_handles_are_unknown(lifecycle):
+    forged = _forged_handle()
     assert lifecycle.status(forged).state is SubagentState.UNKNOWN
     assert lifecycle.result(forged).error_classification == "UNKNOWN_HANDLE"
+    assert lifecycle.cancel(forged, reason="test").unknown_handle
     other_parent = SimpleNamespace(session_id="different-parent")
     other_service = SubagentLifecycleService(lambda: other_parent)
-    assert other_service.status(handle).state is SubagentState.UNKNOWN
+    assert other_service.status(forged).state is SubagentState.UNKNOWN
 
 
-def test_cancel_uses_explicit_hard_interrupt(lifecycle):
-    handle = lifecycle.launch(SubagentLaunchRequest(goal="x"))
-    record = lifecycle._record(handle)
-    assert record is not None and record.agent is not None
-
-    assert lifecycle.cancel(handle, reason="explicit user cancel").accepted
-
-    assert record.agent.interrupt_kind == "hard"
-    assert "explicit user cancel" in record.agent.interrupt_message
-    assert record.agent.tool_reason == "subagent cancellation requested"
-    lifecycle.wait(handle, timeout_seconds=1)
-
-
-
-
-
-
+def test_launch_without_parent_still_reports_no_session():
+    service = SubagentLifecycleService(lambda: None)
+    with pytest.raises(SubagentLifecycleError, match="No active Mercury parent"):
+        service.launch(SubagentLaunchRequest(goal="x"))
 
 
 def test_public_lifecycle_runs_host_aggregation(monkeypatch):
@@ -116,51 +87,13 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
         session_cost_source="none",
         session_cost_status="unknown",
     )
-    child = FakeChild("sa-aggregate")
-    child.session_id = "child-session"
-    hook = Mock()
-
-    monkeypatch.setattr("tools.delegate_tool._build_child_agent", lambda **_kwargs: child)
-    monkeypatch.setattr(
-        "tools.delegate_tool._run_single_child",
-        lambda *_args, **_kwargs: {
-            "task_index": 0,
-            "status": "completed",
-            "summary": "aggregated",
-            "api_calls": 1,
-            "duration_seconds": 0.25,
-            "_child_role": "leaf",
-            "_child_cost_usd": 2.5,
-        },
-    )
-    monkeypatch.setattr("mercury_cli.plugins.invoke_hook", hook)
 
     service = SubagentLifecycleService(lambda: parent)
-    handle = service.launch(SubagentLaunchRequest(goal="aggregate me"))
-    assert service.wait(handle, timeout_seconds=1).state is SubagentState.SUCCEEDED
-
-    memory.on_delegation.assert_called_once_with(
-        task="aggregate me", result="aggregated", child_session_id="child-session"
-    )
-    hook.assert_called_once_with(
-        "subagent_stop",
-        parent_session_id="parent-aggregate",
-        parent_turn_id="turn-1",
-        child_session_id="child-session",
-        child_role="leaf",
-        child_summary="aggregated",
-        child_status="completed",
-        # Redacted tool history rides the shared finalization pipeline
-        # (#62011/#72403); empty here because the fabricated result carries
-        # no tool_trace.
-        tool_call_history=[],
-        duration_ms=250,
-    )
-    assert parent.session_estimated_cost_usd == 3.5
-    assert parent.session_cost_source == "subagent"
-    assert parent.session_cost_status == "estimated"
-
-
+    # Aggregation rode the hermes-side run path, which no longer exists:
+    # launch refuses before any child, hook, or cost mutation happens.
+    with pytest.raises(SubagentLifecycleError, match="DEAD DEPTH"):
+        service.launch(SubagentLaunchRequest(goal="aggregate me"))
+    memory.on_delegation.assert_not_called()
 
 
 def test_agent_turn_binds_and_clears_lifecycle_parent(monkeypatch):

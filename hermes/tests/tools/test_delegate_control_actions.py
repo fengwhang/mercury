@@ -238,7 +238,7 @@ def test_stop_foreign_child_is_refused(monkeypatch):
 
 def test_stop_unknown_id_mentions_completion_path():
     out = _handle_control_action("stop", "sid-gone", None, _StubParent())
-    assert "No live subagent" in out
+    assert "No live omp child" in out
     assert "completion message" in out
 
 

@@ -2113,11 +2113,11 @@ DEFAULT_CONFIG = {
                                        # delegation units. New async dispatches beyond the cap
                                        # fall back to synchronous execution. Floor of 1, no ceiling.
                                        # (Replaces the deprecated max_async_children.)
-        # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
-        # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
-        # raise deliberately, each level multiplies API cost.
-        "max_spawn_depth": 1,        # depth (1 = flat [default], 2 = orchestrator→leaf, 3+ = deeper)
-        "orchestrator_enabled": True,  # kill switch for role="orchestrator"
+        # Legacy no-ops (DEAD DEPTH): delegation runs on the omp engine, which
+        # nests subagents natively with no hermes-side depth guard. Keys kept
+        # so old config.yaml files still parse; nothing reads them as a cap.
+        "max_spawn_depth": 1,        # legacy, ignored (kept for wire/config compat)
+        "orchestrator_enabled": True,  # legacy, ignored (kept for wire/config compat)
         # When a subagent hits a dangerous-command approval prompt, the parent's
         # prompt_toolkit TUI owns stdin — a thread-local input() call from the
         # subagent worker would deadlock the parent UI. To avoid the deadlock,

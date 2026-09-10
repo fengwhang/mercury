@@ -1,8 +1,15 @@
 """Public, plugin-safe lifecycle API for delegated Mercury subagents.
 
-This module deliberately exposes immutable contracts, not ``AIAgent`` objects.
-It is the supported boundary for plugins that need to supervise fresh child
-sessions; plugins must obtain it from ``PluginContext.subagent_lifecycle``.
+RETIRED (DEAD DEPTH): the hermes-side child-agent engine was removed and
+``delegate_task`` routes exclusively through the omp engine
+(``run_agent._dispatch_delegate_task`` ->
+``tools/omp_delegation.dispatch_omp_delegation``). ``launch`` therefore
+fails loudly with :class:`SubagentLifecycleError` instead of forking a
+second engine. Handle validation (capability check, ``status``/``result``
+unknown-handle behavior) still holds so stale handles fail closed.
+Plugins that need to supervise fresh child sessions must obtain them via
+``PluginContext.subagent_lifecycle``; supervised in-process launches are
+unsupported until the service is rewired to the omp engine.
 """
 
 from __future__ import annotations
@@ -215,49 +222,18 @@ class SubagentLifecycleService:
                     "Duplicate correlation_id for this parent session."
                 )
 
-        # Delegate construction remains internal so plugin code never imports
-        # private delegation helpers or manipulates the active-child registry.
-        from tools.delegate_tool import (
-            _build_child_preserving_parent_tools,
-            DEFAULT_MAX_ITERATIONS,
+        # RETIRED (DEAD DEPTH): the hermes-side builders
+        # (_build_child_preserving_parent_tools and friends) were removed
+        # from tools/delegate_tool.py. Launching here would fork a second
+        # engine beside the omp one, so fail loudly and direct callers to
+        # delegate_task. Validation above still runs, so malformed requests
+        # keep their field-level errors.
+        raise SubagentLifecycleError(
+            "Subagent launches are retired (DEAD DEPTH): the hermes-side "
+            "child-agent engine was removed and delegate_task routes "
+            "exclusively through the omp engine. Supervised in-process "
+            "launches are unsupported until this service is rewired."
         )
-
-        child = _build_child_preserving_parent_tools(
-            task_index=0,
-            goal=request.goal,
-            context=request.context,
-            toolsets=list(request.allowed_toolsets)
-            if request.allowed_toolsets
-            else None,
-            model=request.model,
-            max_iterations=DEFAULT_MAX_ITERATIONS,
-            task_count=1,
-            parent_agent=parent,
-            role=request.role,
-        )
-        subagent_id = str(getattr(child, "_subagent_id", "") or "")
-        if not subagent_id:
-            raise SubagentLifecycleError("Mercury failed to assign a child identity.")
-        created = time.time()
-        handle = SubagentHandle(
-            PUBLIC_CONTRACT_VERSION,
-            subagent_id,
-            parent_session_id,
-            request.correlation_id,
-            created,
-            getattr(child, "provider", None),
-            getattr(child, "model", None),
-            getattr(child, "_delegate_role", request.role),
-            int(getattr(child, "_delegate_depth", 1) or 1),
-            self._capability(subagent_id, parent_session_id, created),
-        )
-        record = _Record(handle, SubagentState.PENDING, created, agent=child)
-        with _REGISTRY.lock:
-            _REGISTRY.records[subagent_id] = record
-            if request.correlation_id:
-                _REGISTRY.correlations[correlation_key] = subagent_id
-        record.future = _EXECUTOR.submit(self._run, record, request.goal, parent)
-        return handle
 
     def status(self, handle: SubagentHandle) -> SubagentStatus:
         record = self._record(handle)

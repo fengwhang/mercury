@@ -1,12 +1,13 @@
-"""T1-24: structured-output schema on delegate_task.
+"""T1-24: structured-output schema on delegate_task (omp reality).
 
-Per-task ``output_schema`` (JSON Schema object): the child receives the
-schema as an explicit output contract, the parent validates the child's
-final answer with jsonschema, and on failure sends exactly ONE bounded
-retry turn carrying the validation errors. Result entries gain
-``schema_valid`` / ``schema_errors`` / ``schema_retries`` ONLY when a
-schema was requested — schema-less calls keep a byte-identical result
-shape (wire-shape pinning).
+Per-task ``output_schema`` (JSON Schema object): the schema is coerced at
+dispatch (malformed schemas fail loudly before any spawn) and forwarded to
+the omp engine, which renders it into the child prompt via
+``_build_task_prompt``. The hermes-side child runner that used to validate
+answers and send a bounded retry turn is gone (DEAD DEPTH); there are no
+``schema_valid`` / ``schema_errors`` result keys hermes-side. Omp-side
+conformance is prompt-level (best-effort JSON instruction), not a
+validated retry loop.
 
 Pattern from: github/copilot-cli ctx.agent(prompt, {schema}) — PATTERN
 ONLY, zero code/prompt text copied (proprietary).
@@ -18,7 +19,6 @@ from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
-    _run_single_child,
     delegate_task,
 )
 from tools.delegation_output_schema import (
@@ -89,7 +89,7 @@ class TestCoerceOutputSchema:
         assert err is None
 
     def test_non_dict_is_rejected(self):
-        schema, err = coerce_output_schema("not a schema")
+        schema, err = coerce_output_schema("not-a-schema")
         assert schema is None
         assert err
 
@@ -144,174 +144,7 @@ class TestToolSchemaSurface:
 
 
 # ---------------------------------------------------------------------------
-# _run_single_child validation + bounded retry
-# ---------------------------------------------------------------------------
-
-
-class _StubChild:
-    """Minimal child agent double (mirrors test_delegate_kanban_isolation)."""
-
-    tool_progress_callback = None
-    _delegate_saved_tool_names: list = []
-    _credential_pool = None
-    _subagent_id = None  # skip registry
-    _delegate_depth = 1
-    _parent_subagent_id = None
-    _delegate_output_schema: dict | None = None
-    model = "test-model"
-    session_prompt_tokens = 0
-    session_completion_tokens = 0
-    session_estimated_cost_usd = 0.0
-    session_reasoning_tokens = 0
-
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.calls: list = []
-
-    def get_activity_summary(self):
-        return {"api_call_count": 1, "max_iterations": 5, "current_tool": None}
-
-    def run_conversation(self, user_message, task_id=None, **_kwargs):
-        self.calls.append(user_message)
-        text = self.responses.pop(0)
-        return {
-            "final_response": text,
-            "completed": True,
-            "api_calls": 1,
-            "messages": [],
-        }
-
-    def close(self):
-        return None
-
-
-class _StubParent:
-    _current_task_id = None
-    _delegate_depth = 0
-
-    def _touch_activity(self, _desc):
-        return None
-
-
-def _run(child):
-    return _run_single_child(0, "produce the address", child, _StubParent())
-
-
-class TestRunSingleChildSchemaValidation:
-    def test_valid_first_try_no_retry(self):
-        child = _StubChild(['{"city": "Berlin"}'])
-        child._delegate_output_schema = ADDRESS_SCHEMA
-        entry = _run(child)
-        assert entry["status"] == "completed"
-        assert entry["schema_valid"] is True
-        assert "schema_errors" not in entry
-        assert len(child.calls) == 1
-
-    def test_invalid_then_retry_then_valid(self):
-        child = _StubChild(["not json at all", '{"city": "Oslo"}'])
-        child._delegate_output_schema = ADDRESS_SCHEMA
-        entry = _run(child)
-        assert entry["schema_valid"] is True
-        assert entry["schema_retries"] == 1
-        # retry turn carried the validation errors
-        assert len(child.calls) == 2
-        assert "rejected" in child.calls[1] or "JSON" in child.calls[1]
-        # final summary is the retried (valid) answer
-        assert json.loads(entry["summary"])["city"] == "Oslo"
-
-    def test_invalid_twice_surfaces_errors_and_stops(self):
-        child = _StubChild(["nope", "still nope"])
-        child._delegate_output_schema = ADDRESS_SCHEMA
-        entry = _run(child)
-        assert entry["schema_valid"] is False
-        assert entry["schema_errors"]
-        assert entry["schema_retries"] == 1
-        # exactly ONE retry — bounded
-        assert len(child.calls) == 2
-
-    def test_retry_exception_degrades_to_invalid(self):
-        child = _StubChild(["nope"])
-        child._delegate_output_schema = ADDRESS_SCHEMA
-
-        original = child.run_conversation
-
-        def flaky(user_message, task_id=None, **kw):
-            if child.calls:
-                raise RuntimeError("child died on retry")
-            return original(user_message, task_id=task_id, **kw)
-
-        child.run_conversation = flaky
-        entry = _run(child)
-        assert entry["schema_valid"] is False
-        assert entry["schema_errors"]
-
-    def test_no_schema_keeps_legacy_result_shape(self):
-        """Schema-less calls must not gain new keys (wire-shape pinning)."""
-        child = _StubChild(['{"city": "Berlin"}'])
-        entry = _run(child)
-        assert "schema_valid" not in entry
-        assert "schema_errors" not in entry
-        assert "schema_retries" not in entry
-        assert len(child.calls) == 1
-
-    def test_failed_child_skips_validation(self):
-        """A child with no output never gets a schema retry turn."""
-        child = _StubChild([""])
-        child._delegate_output_schema = ADDRESS_SCHEMA
-        entry = _run(child)
-        assert entry["status"] == "failed"
-        assert len(child.calls) == 1
-        assert entry.get("schema_valid") is False
-
-    def test_schema_failure_reported_as_failed_not_completed(self):
-        """Regression: a final answer that still violates the declared
-        output contract after the bounded retry (here the classic empty
-        ``{}`` fallback) must be reported status="failed", not
-        "completed". Otherwise the batch report prints a ✓ and
-        orchestrators that read only status/icon accept an empty verdict
-        — schema_valid/schema_errors carry the detail, but status must
-        agree with them."""
-        child = _StubChild(["not json at all", "{}"])
-        child._delegate_output_schema = ADDRESS_SCHEMA
-        entry = _run(child)
-        assert entry["schema_valid"] is False
-        assert entry["schema_errors"]
-        assert entry["status"] == "failed"
-        # the failed entry names the schema violation, not the generic
-        # "no response" error — the child DID respond, unusably
-        assert "output_schema" in entry.get("error", "")
-        # the invalid final text is still propagated for debugging
-        assert entry["summary"] == "{}"
-
-    def test_schema_failure_without_retry_reported_as_failed(self):
-        """Same class, first-try path: retry turn raises, leaving the
-        original non-JSON answer in place — status must still be failed."""
-        child = _StubChild(["nope"])
-        child._delegate_output_schema = ADDRESS_SCHEMA
-
-        original = child.run_conversation
-
-        def flaky(user_message, task_id=None, **kw):
-            if child.calls:
-                raise RuntimeError("child died on retry")
-            return original(user_message, task_id=task_id, **kw)
-
-        child.run_conversation = flaky
-        entry = _run(child)
-        assert entry["schema_valid"] is False
-        assert entry["status"] == "failed"
-
-    def test_schema_valid_entry_still_completed(self):
-        """Guard: schema_valid=True keeps status="completed" untouched."""
-        child = _StubChild(['{"city": "Berlin"}'])
-        child._delegate_output_schema = ADDRESS_SCHEMA
-        entry = _run(child)
-        assert entry["status"] == "completed"
-        assert "error" not in entry
-
-
-# ---------------------------------------------------------------------------
-# delegate_task dispatch-time schema handling
+# delegate_task dispatch-time schema handling (omp forward)
 # ---------------------------------------------------------------------------
 
 
@@ -325,19 +158,7 @@ def _make_mock_parent():
 
 class TestDelegateTaskDispatch:
     def test_non_dict_output_schema_rejected(self):
-        with (
-            patch("tools.delegate_tool._load_config", return_value={}),
-            patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
-                return_value={
-                    "provider": None,
-                    "model": None,
-                    "base_url": None,
-                    "api_key": None,
-                    "api_mode": None,
-                },
-            ),
-        ):
+        with patch("tools.delegate_tool._load_config", return_value={}):
             out = delegate_task(
                 tasks=[
                     {"goal": "Summarize the release notes for module A", "output_schema": "not-a-dict"},
@@ -350,19 +171,7 @@ class TestDelegateTaskDispatch:
         assert "output_schema" in payload["error"]
 
     def test_invalid_json_schema_rejected_at_dispatch(self):
-        with (
-            patch("tools.delegate_tool._load_config", return_value={}),
-            patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
-                return_value={
-                    "provider": None,
-                    "model": None,
-                    "base_url": None,
-                    "api_key": None,
-                    "api_mode": None,
-                },
-            ),
-        ):
+        with patch("tools.delegate_tool._load_config", return_value={}):
             out = delegate_task(
                 tasks=[
                     {"goal": "Summarize the release notes for module A", "output_schema": {"type": 42}},
@@ -374,32 +183,21 @@ class TestDelegateTaskDispatch:
         assert payload.get("error")
         assert "output_schema" in payload["error"]
 
-    def test_child_receives_contract_and_schema_attr(self):
-        """The built child carries the schema attr and its context gains
-        the output-contract block."""
+    def test_schema_forwarded_to_omp_prompt(self):
+        """The coerced schema rides the omp forward payload and lands in
+        the child prompt (DEAD DEPTH: no hermes-side validate/retry turn,
+        no schema_valid result keys)."""
+        from tools import omp_delegation
+
         captured = {}
 
-        def fake_build(**kwargs):
-            captured.update(kwargs)
-            child = _StubChild(['{"city": "Rio"}'])
-            return child
+        def fake_dispatch(parent_agent, args):
+            captured.update(args)
+            return json.dumps({"status": "dispatched", "engine": "omp"})
 
         with (
             patch("tools.delegate_tool._load_config", return_value={}),
-            patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
-                return_value={
-                    "provider": None,
-                    "model": None,
-                    "base_url": None,
-                    "api_key": None,
-                    "api_mode": None,
-                },
-            ),
-            patch(
-                "tools.delegate_tool._build_child_preserving_parent_tools",
-                side_effect=fake_build,
-            ),
+            patch.object(omp_delegation, "dispatch_omp_delegation", fake_dispatch),
         ):
             out = delegate_task(
                 goal="produce the address",
@@ -407,7 +205,10 @@ class TestDelegateTaskDispatch:
                 output_schema=ADDRESS_SCHEMA,
                 parent_agent=_make_mock_parent(),
             )
-        payload = json.loads(out)
-        assert "OUTPUT CONTRACT" in (captured.get("context") or "")
-        results = payload.get("results") or []
-        assert results and results[0].get("schema_valid") is True
+        assert json.loads(out)["status"] == "dispatched"
+        forwarded = captured.get("tasks") or []
+        assert forwarded and forwarded[0].get("output_schema") == ADDRESS_SCHEMA
+        prompt = omp_delegation._build_task_prompt(
+            forwarded[0]["goal"], forwarded[0].get("context"), forwarded[0]["output_schema"]
+        )
+        assert '"city"' in prompt

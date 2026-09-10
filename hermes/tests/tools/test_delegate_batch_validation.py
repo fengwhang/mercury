@@ -46,6 +46,27 @@ def _call(tasks):
     return json.loads(delegate_task(tasks=tasks, parent_agent=_make_mock_parent()))
 
 
+def _omp_results(*summaries):
+    """Patch the omp dispatch to return a canned completed-results payload.
+
+    Validation must pass through to the engine; the engine itself is stubbed
+    (omp reality: delegate_task validates, omp executes)."""
+    import tools.omp_delegation as omp
+
+    entries = [
+        {
+            "task_index": i,
+            "status": "completed",
+            "summary": summary,
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        for i, summary in enumerate(summaries)
+    ]
+    payload = json.dumps({"results": entries, "total_duration_seconds": 2.0})
+    return patch.object(omp, "dispatch_omp_delegation", return_value=payload)
+
+
 GOOD_A = "Refactor the login handler to use the new session helper"
 GOOD_B = "Write regression tests for the session expiry watcher"
 
@@ -54,23 +75,17 @@ class TestBatchDuplicateGoalsAllowed(unittest.TestCase):
     """Identical-goal fan-outs are legitimate (best-of-N / ensemble sampling).
 
     The original gate from #81141 rejected duplicates; the post-merge audit
-    downgraded that — duplicates must pass validation.
+    downgraded that -- duplicates must pass validation.
     """
 
-    def _completed(self, idx):
-        return {"task_index": idx, "status": "completed", "summary": "ok",
-                "api_calls": 1, "duration_seconds": 1.0, "_child_role": None}
-
     def test_exact_duplicate_goals_accepted(self):
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_run.side_effect = [self._completed(0), self._completed(1)]
+        with _omp_results("ok", "ok"):
             result = _call([{"goal": GOOD_A}, {"goal": GOOD_A}])
         self.assertNotIn("error", result)
         self.assertEqual(len(result["results"]), 2)
 
     def test_case_whitespace_variant_duplicates_accepted(self):
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_run.side_effect = [self._completed(0), self._completed(1)]
+        with _omp_results("ok", "ok"):
             result = _call([{"goal": GOOD_A}, {"goal": "  " + GOOD_A.upper() + "  "}])
         self.assertNotIn("error", result)
         self.assertEqual(len(result["results"]), 2)
@@ -112,13 +127,7 @@ class TestBatchPlaceholderGoals(unittest.TestCase):
             "Rewrite the loop so {i} interpolates via f-strings correctly",
         ]
         for bad_free_goal in code_goals:
-            with patch("tools.delegate_tool._run_single_child") as mock_run:
-                mock_run.side_effect = [
-                    {"task_index": 0, "status": "completed", "summary": "ok",
-                     "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
-                    {"task_index": 1, "status": "completed", "summary": "ok",
-                     "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
-                ]
+            with _omp_results("ok", "ok"):
                 result = _call([{"goal": GOOD_A}, {"goal": bad_free_goal}])
             self.assertNotIn("error", result, bad_free_goal)
 
@@ -148,24 +157,14 @@ class TestSingleTaskBatch(unittest.TestCase):
         """A one-entry tasks[] array is the canonical single-task call (the
         advertised interface is tasks-only), so it must NOT be rejected —
         and short goals are legitimate for a single task."""
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_run.return_value = {
-                "task_index": 0, "status": "completed", "summary": "done",
-                "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,
-            }
+        with _omp_results("done"):
             result = _call([{"goal": GOOD_A}])
         self.assertNotIn("error", result)
 
 
 class TestValidBatchStillRuns(unittest.TestCase):
     def test_two_distinct_goals_pass_validation(self):
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_run.side_effect = [
-                {"task_index": 0, "status": "completed", "summary": "A done",
-                 "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
-                {"task_index": 1, "status": "completed", "summary": "B done",
-                 "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
-            ]
+        with _omp_results("A done", "B done"):
             result = _call([{"goal": GOOD_A}, {"goal": GOOD_B}])
         self.assertNotIn("error", result)
         self.assertEqual(len(result["results"]), 2)
@@ -173,11 +172,7 @@ class TestValidBatchStillRuns(unittest.TestCase):
     def test_single_goal_form_unaffected_by_batch_checks(self):
         # goal="test" is short — must NOT trip the batch-only length check.
         parent = _make_mock_parent()
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_run.return_value = {
-                "task_index": 0, "status": "completed", "summary": "ok",
-                "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,
-            }
+        with _omp_results("ok"):
             result = json.loads(delegate_task(goal="test", parent_agent=parent))
         self.assertNotIn("error", result)
 
