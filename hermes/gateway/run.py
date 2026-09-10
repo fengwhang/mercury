@@ -33107,7 +33107,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 text = params.get("text", "") if isinstance(params, dict) else ""
                 kind = params.get("kind", "prompt") if isinstance(params, dict) else "prompt"
                 node_id = params.get("node_id", "gw") if isinstance(params, dict) else "gw"
-                _reply, _events = _run_gateway_prompt_with_events(text, kind=kind, node_id=node_id or "gw")
+                internal = bool(params.get("internal", False)) if isinstance(params, dict) else False
+                _reply, _events = _run_gateway_prompt_with_events(text, kind=kind, node_id=node_id or "gw", internal=internal)
                 _out: dict = {"reply": _reply}
                 if _events:
                     # Cap events so the 512KB response guard cannot turn a
@@ -33117,6 +33118,25 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
             _control_server.register_handler(
                 "inject", _observatory_inject_handler, takes_params=True
+            )
+
+            def _observatory_interrupt_handler(params: dict) -> dict:
+                # BUG3 (/stop on the gateway room): hard-cancel the cached
+                # gateway-session agent's in-flight turn. Runs on the
+                # socket executor thread; interrupt() is thread-safe
+                # (sets the flag the agent loop polls at the next boundary).
+                reason = params.get("reason", "matrix /stop") if isinstance(params, dict) else "matrix /stop"
+                try:
+                    from observatory.gateway_session import (
+                        interrupt_gateway_agent as _interrupt_gateway_agent,
+                    )
+                    return dict(_interrupt_gateway_agent(str(reason or "matrix /stop")))
+                except Exception as exc:
+                    logger.debug("Observatory interrupt verb failed: %s", exc)
+                    return {"interrupted": False, "reason": f"interrupt failed: {exc}"}
+
+            _control_server.register_handler(
+                "interrupt", _observatory_interrupt_handler, takes_params=True
             )
             # Gateway-child feed (matrix-observatory cross-process feed):
             # forward the gateway's OWN omp live-child table as datagrams

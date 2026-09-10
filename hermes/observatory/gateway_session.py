@@ -274,15 +274,37 @@ def _normalize_text(text: Any) -> str:
     return " ".join(str(text).split())
 
 
-def _push_progress(node_id: str, seq: int, event: dict[str, Any]) -> None:
+def _strip_thinking_markup(text: Any) -> str:
+    """Blockquote-aware compare form (FOLLOW-UP A): Element X renders
+    thinking as a grey blockquote, so a thinking event carrying ``> foo``
+    (markdown) or ``<blockquote>…foo…</blockquote>`` (HTML) must still match
+    a final reply of ``foo``. Strips HTML tags, unescapes entities, drops
+    leading ``>`` markers per line, then normalizes whitespace."""
+    import html as _html
+    import re as _re
+
+    s = str(text or "")
+    s = _re.sub(r"<[^>]+>", " ", s)
+    s = _html.unescape(s)
+    lines = [_re.sub(r"^\s*(>\s*)+", "", ln) for ln in s.splitlines()]
+    return " ".join(" ".join(lines).split())
+
+
+def _push_progress(node_id: str, seq: int, event: dict[str, Any], *, internal: bool = False) -> None:
     """Fire-and-forget one live-progress datagram; never raises.
 
     Payload is ``{node_id, seq, event}`` where ``event`` is the existing
     shape (no ``seq`` inside — it rides beside it). No listener, missing
-    socket dir, or any send error = drop silently.
+    socket dir, or any send error = drop silently. ``internal=True`` marks
+    follow-up turns whose tool/thinking progress must collapse to ONE
+    liveness notice (BUG2): the live handler skips per-event render but
+    still records seqs for the replay dedupe.
     """
     try:
-        payload = json.dumps({"node_id": node_id, "seq": seq, "event": event}).encode("utf-8")
+        payload_obj: dict[str, Any] = {"node_id": node_id, "seq": seq, "event": event}
+        if internal:
+            payload_obj["internal"] = True
+        payload = json.dumps(payload_obj).encode("utf-8")
     except Exception:
         return
     try:
@@ -640,8 +662,9 @@ class _TurnEventCollector:
     on normalized text — first capture wins, the drop consumes no seq.
     """
 
-    def __init__(self, node_id: str = "gw") -> None:
+    def __init__(self, node_id: str = "gw", *, internal: bool = False) -> None:
         self._node_id = node_id or "gw"
+        self._internal = bool(internal)
         self._next_seq = 0
         self._records: list[dict[str, Any]] = []
         self._seen_thinking: set[str] = set()
@@ -652,11 +675,13 @@ class _TurnEventCollector:
         self._next_seq += 1
         stored = dict(event)
         stored["seq"] = seq
+        if self._internal:
+            stored["internal"] = True
         self._records.append(stored)
-        _push_progress(self._node_id, seq, event)
+        _push_progress(self._node_id, seq, event, internal=self._internal)
 
     def _add_thinking(self, text: str) -> None:
-        norm = _normalize_text(text)
+        norm = _strip_thinking_markup(text)
         if not norm or norm in self._seen_thinking:
             return
         self._seen_thinking.add(norm)
@@ -759,6 +784,7 @@ def run_gateway_prompt_with_events(
     agent_factory: Optional[Callable[[str], Any]] = None,
     turn: Optional[Callable[[Any, str], Any]] = None,
     slash_dispatch: Optional[Callable[[str], Optional[str]]] = None,
+    internal: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run one headless turn; return (reply text, batched display events).
 
@@ -772,10 +798,12 @@ def run_gateway_prompt_with_events(
     Every batched event carries its per-turn ``seq`` (0-based capture
     order, keys otherwise stable) and was already live-pushed as
     ``{node_id, seq, event}`` during the turn. Thinking events echoing
-    the final reply (normalized compare — the final message must not
+    the final reply (blockquote-aware compare — the final message must not
     appear twice, once plain once as reasoning) are dropped here; the
     live datagrams for them already went out and keep their seqs, so
-    final seqs may show gaps.
+    final seqs may show gaps. ``internal=True`` marks follow-up turns
+    (BUG2): events carry ``internal`` so the live handler collapses them
+    to ONE liveness notice while replay still records them for logs.
     """
     clean = (text or "").strip()
     if not clean:
@@ -805,7 +833,7 @@ def run_gateway_prompt_with_events(
                 agent = _default_agent(session_id)
                 with _locks_guard:
                     _session_agents[session_id] = agent
-        collector = _TurnEventCollector(node_id=node_id)
+        collector = _TurnEventCollector(node_id=node_id, internal=internal)
         restore = _install_collector(agent, collector)
         try:
             result = turn(agent, clean) if turn is not None else agent.run_conversation(clean)
@@ -828,14 +856,14 @@ def run_gateway_prompt_with_events(
         )
     reply = str(result.get("final_response") or "")
     events = collector.events()
-    norm_reply = _normalize_text(reply)
+    norm_reply = _strip_thinking_markup(reply)
     if norm_reply:
         events = [
             e
             for e in events
             if not (
                 e.get("type") == "thinking"
-                and _normalize_text(e.get("text", "")) == norm_reply
+                and _strip_thinking_markup(e.get("text", "")) == norm_reply
             )
         ]
     return reply, events
@@ -850,6 +878,7 @@ def run_gateway_prompt(
     agent_factory: Optional[Callable[[str], Any]] = None,
     turn: Optional[Callable[[Any, str], Any]] = None,
     slash_dispatch: Optional[Callable[[str], Optional[str]]] = None,
+    internal: bool = False,
 ) -> str:
     """Run one headless turn on the gateway session; return its reply text.
 
@@ -867,5 +896,32 @@ def run_gateway_prompt(
         agent_factory=agent_factory,
         turn=turn,
         slash_dispatch=slash_dispatch,
+        internal=internal,
     )
     return reply
+
+
+def interrupt_gateway_agent(reason: str = "matrix /stop", *, session_id: str = GATEWAY_SESSION_ID) -> dict[str, Any]:
+    """Interrupt the cached gateway-session agent (BUG3 /stop wiring).
+
+    Calls ``agent.interrupt(reason, hard_cancel=True)`` on the live cached
+    agent when present; no cached agent (idle, never prompted) is success
+    with ``interrupted=False`` — there is nothing to stop. Never raises:
+    the control-socket envelope reports the outcome dict.
+    """
+    with _locks_guard:
+        agent = _session_agents.get(session_id)
+    if agent is None:
+        return {"interrupted": False, "reason": "idle — nothing to stop"}
+    interrupt = getattr(agent, "interrupt", None)
+    if not callable(interrupt):
+        return {"interrupted": False, "reason": "agent has no interrupt surface"}
+    try:
+        try:
+            interrupt(reason, hard_cancel=True)
+        except TypeError:
+            interrupt(reason)
+    except Exception as exc:
+        logger.warning("gateway_session: interrupt failed: %s", exc)
+        return {"interrupted": False, "reason": f"interrupt failed: {exc}"}
+    return {"interrupted": True, "reason": str(reason or "")}

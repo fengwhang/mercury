@@ -1467,11 +1467,37 @@ class E2EEManager:
         machine = crypto.machine
         report = await self.ensure_owner_trust(sender)
         session = await machine.crypto_store.get_outbound_group_session(RoomID(room_id))
+        # BUG1 (VM round 2): a tracked user that gained a first-seen device
+        # id (``trusted``) or failed validation with changed keys
+        # (``refused``) since the outbound session was created means the
+        # live session never encrypted to that device. Rotate BEFORE the
+        # shared/expired check so the share below is fresh.
+        needs_rotate = bool(report.get("trusted") or report.get("refused"))
+        if needs_rotate and session is not None:
+            old_id = str(getattr(session, "id", getattr(session, "session_id", "?")))
+            old_created = str(getattr(session, "creation_time", "?"))
+            try:
+                await machine.crypto_store.remove_outbound_group_session(RoomID(room_id))
+            except Exception:
+                log.exception("e2ee reshare rotation failed for %s", room_id)
+            else:
+                log.info("e2ee reshare rotation for %s: dropped outbound %s (created %s) new %s refused %s", room_id, old_id, old_created, report.get("trusted"), report.get("refused"))
+            session = None
+            old_session_id = old_id
+        else:
+            old_session_id = None
         if (session is None or getattr(session, "expired", False)
                 or not getattr(session, "shared", True)):
             members = await self._room_members(room_id)
             await machine.share_group_session(RoomID(room_id), list(members))
             report["shared"] = [room_id]
+            if old_session_id is not None:
+                try:
+                    fresh = await machine.crypto_store.get_outbound_group_session(RoomID(room_id))
+                    new_id = str(getattr(fresh, "id", getattr(fresh, "session_id", "?"))) if fresh else "?"
+                except Exception:
+                    new_id = "?"
+                log.info("e2ee reshare rotation for %s: %s -> %s", room_id, old_session_id, new_id)
         else:
             report["shared"] = []
         return report

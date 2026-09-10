@@ -942,17 +942,35 @@ class IntentExecutor:
                 records.append({"op": "detach", "space": op.space_id, "child": op.child_id})
             elif isinstance(op, SendMessage):
                 rid = self.room_id(op.room_key)
-                event_id = await self.client.send_message(
-                    rid, op.body, sender=op.sender, formatted_body=op.formatted_body
-                )
+                try:
+                    event_id = await self.client.send_message(
+                        rid, op.body, sender=op.sender, formatted_body=op.formatted_body
+                    )
+                except Exception as exc:
+                    # BUG5 (403 discovery): the gateway/virtual user is not a
+                    # member of the target room (stale membership after a
+                    # wipe/reprovision). Skip the room instead of failing
+                    # the whole discovery event — log + record, never raise.
+                    if getattr(exc, "status", None) in (403, 404) or "403" in str(exc) or "not in room" in str(exc).lower() or "not a member" in str(exc).lower():
+                        log.warning("render_lifecycle: skipping non-member room %s sender %s: %s", rid, op.sender, exc)
+                        records.append({"op": "skipped", "room": rid, "reason": "not-member", "error": str(exc)})
+                        continue
+                    raise
                 if op.tag:
                     self.state.set_meta(op.tag, event_id)
                 records.append({"op": "send", "room": rid, "event_id": event_id, "tag": op.tag})
             elif isinstance(op, EditMessage):
                 rid = self.room_id(op.room_key)
-                event_id = await self.client.edit_message(
-                    rid, op.event_id, op.body, sender=op.sender, formatted_body=op.formatted_body
-                )
+                try:
+                    event_id = await self.client.edit_message(
+                        rid, op.event_id, op.body, sender=op.sender, formatted_body=op.formatted_body
+                    )
+                except Exception as exc:
+                    if getattr(exc, "status", None) in (403, 404) or "403" in str(exc) or "not in room" in str(exc).lower() or "not a member" in str(exc).lower():
+                        log.warning("render edit: skipping non-member room %s: %s", rid, exc)
+                        records.append({"op": "skipped", "room": rid, "reason": "not-member", "error": str(exc)})
+                        continue
+                    raise
                 records.append({"op": "edit", "room": rid, "replaces": op.event_id,
                                 "event_id": event_id})
             elif isinstance(op, InviteUser):
