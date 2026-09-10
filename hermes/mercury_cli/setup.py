@@ -3374,13 +3374,23 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
             "in FluffyChat:       add account → enter the homeserver URL",
             "                     manually → paste the URL above",
             "                     (use your own server, not matrix.org)",
+            "",
+            "after an identity reset in Element/Element X:",
+            "  run: mercury observatory trust-device",
         ]
     )
-    width = max(len(ln) for ln in lines) + 2
+    width = max(len(ln.rstrip()) for ln in lines) + 2
     print()
     print(color("┌" + "─" * width + "┐", Colors.CYAN))
-    for ln in lines:
-        print(color("│ " + ln.ljust(width - 2) + " │", Colors.CYAN))
+    trust_start = next(
+        (i for i, ln in enumerate(lines)
+         if ln.startswith("after an identity reset")), len(lines))
+    for i, ln in enumerate(lines):
+        padded = "│ " + ln.ljust(width - 2) + " │"
+        if i >= trust_start:
+            print(color(padded, Colors.RED, Colors.BOLD))
+        else:
+            print(color(padded, Colors.CYAN))
     print(color("└" + "─" * width + "┘", Colors.CYAN))
     print()
     print_info(_OBSERVATORY_GUIDE_LINE)
