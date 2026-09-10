@@ -160,6 +160,12 @@ GATEWAY_UNREACHABLE_NOTICE = (
 GATEWAY_PROMPT_FAILED_NOTICE = (
     "⚠ gateway prompt failed — see the sidecar log"
 )
+#: Long-turn liveness: one still-working notice after this many seconds,
+#: cancelled on completion, so long turns are never silence.
+GATEWAY_PROMPT_LIVENESS_AFTER_S = 90.0
+GATEWAY_PROMPT_WORKING_NOTICE = (
+    "… still working — long turn in progress, reply to follow"
+)
 
 SMOKE_MARKER = "MERCURY-M4C-OK"
 SMOKE_E2EE_MARKER = "MERCURY-M4C-E2EE-OK"
@@ -1150,23 +1156,66 @@ class SidecarDaemon:
             log.warning("gateway prompt dropped: no transport (node %s)", node_id)
             await self._post_notice(ControlNotice(node_id, GATEWAY_UNREACHABLE_NOTICE))
             return
-        prompt_with_events = getattr(transport, "prompt_with_events", None)
+
+        async def _liveness() -> None:
+            try:
+                await asyncio.sleep(GATEWAY_PROMPT_LIVENESS_AFTER_S)
+                await self._post_notice(
+                    ControlNotice(node_id, GATEWAY_PROMPT_WORKING_NOTICE)
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — liveness never kills delivery
+                log.debug("gateway prompt liveness notice failed", exc_info=True)
+
+        liveness: asyncio.Task | None = asyncio.create_task(
+            _liveness(), name=f"observatory-gateway-prompt-liveness-{node_id}"
+        )
         try:
-            if callable(prompt_with_events):
-                reply, events = await prompt_with_events(text, kind=kind, node_id=node_id)
-            else:
-                reply = await transport.prompt(text, kind=kind, node_id=node_id)
-                events = []
-        except GatewayTransportError as exc:
-            log.warning("gateway prompt delivery failed: %s", exc)
-            await self._post_notice(ControlNotice(node_id, GATEWAY_UNREACHABLE_NOTICE))
-            return
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 — delivery never kills the task host
-            log.exception("gateway prompt failed (node %s)", node_id)
-            await self._post_notice(ControlNotice(node_id, GATEWAY_PROMPT_FAILED_NOTICE))
-            return
+            prompt_with_events = getattr(transport, "prompt_with_events", None)
+            try:
+                if callable(prompt_with_events):
+                    reply, events = await prompt_with_events(text, kind=kind, node_id=node_id)
+                else:
+                    reply = await transport.prompt(text, kind=kind, node_id=node_id)
+                    events = []
+            except GatewayTransportError as exc:
+                log.warning("gateway prompt delivery failed: %s", exc)
+                try:
+                    from gateway.control_socket import resolve_client_socket_path
+                    from observatory.gateway_transport import gateway_socket_homes
+
+                    homes = gateway_socket_homes(self.mercury_home)
+                    if any(
+                        resolve_client_socket_path(home) is not None
+                        for home in homes
+                    ):
+                        await self._post_notice(
+                            ControlNotice(node_id, GATEWAY_PROMPT_FAILED_NOTICE)
+                        )
+                    else:
+                        await self._post_notice(
+                            ControlNotice(node_id, GATEWAY_UNREACHABLE_NOTICE)
+                        )
+                except Exception:  # noqa: BLE001 — probe failure keeps old notice
+                    log.debug("gateway socket probe failed", exc_info=True)
+                    await self._post_notice(
+                        ControlNotice(node_id, GATEWAY_UNREACHABLE_NOTICE)
+                    )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — delivery never kills the task host
+                log.exception("gateway prompt failed (node %s)", node_id)
+                await self._post_notice(ControlNotice(node_id, GATEWAY_PROMPT_FAILED_NOTICE))
+                return
+        finally:
+            if liveness is not None and not liveness.done():
+                liveness.cancel()
+                try:
+                    await liveness
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
         if not reply.strip():
             log.warning("gateway answered with an empty reply (node %s)", node_id)
             return

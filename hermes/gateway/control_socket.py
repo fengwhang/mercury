@@ -470,14 +470,15 @@ def query_gateway_control(
     verb: str,
     *,
     params: dict[str, Any] | None = None,
-    timeout: float = _DEFAULT_CLIENT_TIMEOUT,
+    timeout: float | None = _DEFAULT_CLIENT_TIMEOUT,
 ) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` a control verb; None when unanswered.
 
     Returns the verb's ``result`` payload on success. Any failure — no
     socket, stale socket nobody accepts on, timeout, malformed answer,
     ``ok: false`` — returns None so callers fall back to the scan layer.
-    Never raises.
+    Never raises. ``timeout`` None waits until reply or socket close
+    (no limit; observatory inject turns).
     """
     payload: dict[str, Any] = {"verb": verb, "id": 1, "protocol": CONTROL_PROTOCOL_VERSION}
     if params:
@@ -502,7 +503,9 @@ def query_gateway_control(
     return result if isinstance(result, dict) else None
 
 
-def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[bytes]:
+def _query_unix_socket(
+    home: Path, request: bytes, timeout: float | None
+) -> Optional[bytes]:
     path = resolve_client_socket_path(home)
     if path is None:
         return None
@@ -514,8 +517,8 @@ def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[b
             return None
         sock.sendall(request)
         chunks: list[bytes] = []
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while deadline is None or time.monotonic() < deadline:
             try:
                 chunk = sock.recv(65536)
             except socket.timeout:
@@ -533,10 +536,10 @@ def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[b
 
 
 def _query_windows_pipe(
-    home: Path, request: bytes, timeout: float
+    home: Path, request: bytes, timeout: float | None
 ) -> Optional[bytes]:  # pragma: no cover - exercised on the wine2e lane
     pipe_name = windows_pipe_name(home)
-    deadline = time.monotonic() + timeout
+    deadline = None if timeout is None else time.monotonic() + timeout
     handle = None
     while handle is None:
         try:
@@ -545,13 +548,13 @@ def _query_windows_pipe(
             return None
         except OSError:
             # Pipe busy (another client mid-handshake) — brief retry window.
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 return None
             time.sleep(0.05)
     try:
         handle.write(request)
         chunks: list[bytes] = []
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             chunk = handle.read(65536)
             if not chunk:
                 break
@@ -568,13 +571,15 @@ def _query_windows_pipe(
             handle.close()
 
 
-def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
+def identify_gateway(
+    home: Path, *, timeout: float | None = _DEFAULT_CLIENT_TIMEOUT
+) -> Optional[dict[str, Any]]:
     """Convenience wrapper: ``identify`` the gateway serving ``home``."""
     return query_gateway_control(home, "identify", timeout=timeout)
 
 
 def pause_gateway_for_update(
-    home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT
+    home: Path, *, timeout: float | None = _DEFAULT_CLIENT_TIMEOUT
 ) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` to drain and exit for an update.
 

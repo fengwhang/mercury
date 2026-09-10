@@ -33109,7 +33109,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 _reply, _events = _run_gateway_prompt_with_events(text, kind=kind)
                 _out: dict = {"reply": _reply}
                 if _events:
-                    _out["events"] = _events
+                    # Cap events so the 512KB response guard cannot turn a
+                    # good long turn into ok:false; reply text stays uncapped.
+                    _out["events"] = _events[-200:] if len(_events) > 200 else _events
                 return _out
 
             _control_server.register_handler(
