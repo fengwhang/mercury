@@ -107,7 +107,7 @@ from observatory.config_gen import (
     render_sidecar_unit,
 )
 from observatory.identity import assign_slug, virtual_mxid
-from observatory.control import QUEUED_STEER_NOTICE, InjectText
+from observatory.control import QUEUED_STEER_NOTICE, AbortSession, InjectText, STOP_CONFIRMED_NOTICE
 from observatory.gateway_transport import (
     ControlSocketGatewayTransport,
     GatewayTransportError,
@@ -167,9 +167,38 @@ GATEWAY_PROMPT_LIVENESS_AFTER_S = 90.0
 GATEWAY_PROMPT_WORKING_NOTICE = (
     "… still working — long turn in progress, reply to follow"
 )
+#: BUG2 follow-up spam gate: injected delegate summaries are truncated to
+#: this many chars (the gateway turn sees the gist, the room stays quiet).
+FOLLOWUP_SUMMARY_MAX_CHARS = 500
+#: Routine-success markers: a delegate summary carrying one of these and NO
+#: question/failure signal is maintenance noise (rotation/verify/complete)
+#: with nothing for the owner — the follow-up inject is skipped.
+FOLLOWUP_ROUTINE_MARKERS = ("verified", "complete", "completed", "success", "rotated", "updated", "done", "ok", "passed")
+FOLLOWUP_ATTENTION_MARKERS = ("fail", "error", "question", "help", "approve", "approval", "blocked", "needs", "todo", "fix", "?")
 
 #: Live-ingest datagram cap (unix SOCK_DGRAM payload ceiling).
 GATEWAY_LIVE_DATAGRAM_MAX = 65535
+
+
+def _needs_room_reply(summary: Any, status: str = "") -> bool:
+    """BUG2 needs-room-reply gate: False = routine success, skip the follow-up.
+
+    A delegate death needs a gateway turn only when the owner should see
+    something: failures/errors always qualify, as does any question/failure
+    marker in the summary. A summary that carries a routine-success marker
+    (verified/complete/…) and NO attention marker is maintenance noise —
+    skip it. Empty summaries carry nothing — skip those too.
+    """
+    text = str(summary or "").strip()
+    if str(status or "").strip().lower() not in ("", "completed", "complete", "success", "ok", "done"):
+        return True
+    if not text:
+        return False
+    lowered = text.lower()
+    has_attention = any(marker in lowered for marker in FOLLOWUP_ATTENTION_MARKERS)
+    if has_attention:
+        return True
+    return not any(marker in lowered for marker in FOLLOWUP_ROUTINE_MARKERS)
 
 
 def _coerce_live_seq(value: Any) -> int | None:
@@ -265,6 +294,10 @@ class SidecarDaemon:
         #: (events without seq always render). Best-effort: bind failure
         #: disables live only.
         self._gateway_live_seqs: dict[str, set[int]] = {}
+        #: BUG2: nodes with an internal follow-up turn in flight. Live
+        #: per-event renders collapse to ONE liveness notice while set;
+        #: replay still records the events for logs without room sends.
+        self._gateway_internal_turns: dict[str, bool] = {}
         #: Live-ingest unix datagram socket (None when disabled/failed).
         self._gateway_live_sock: Any = None
         self._gateway_live_enabled: bool = False
@@ -948,7 +981,7 @@ class SidecarDaemon:
         if event is None:
             event = {
                 k: v for k, v in payload.items()
-                if k not in ("node_id", "node", "seq", "kind")
+                if k not in ("node_id", "node", "seq", "kind", "internal")
             }
         if not node_id or not isinstance(event, dict) or not event:
             log.debug("gateway live datagram: missing node_id/event, skipped: %r", payload)
@@ -957,6 +990,15 @@ class SidecarDaemon:
         ev_seq = _coerce_live_seq(event.get("seq"))
         seqs = {s for s in (seq, ev_seq) if s is not None}
         primary = seq if seq is not None else ev_seq
+        # BUG2: internal follow-up turns collapse progress to ONE liveness
+        # notice, not per-event messages. Record seqs for the replay dedupe
+        # but skip the per-event render here; replay logs without room sends.
+        is_internal = bool(payload.get("internal") or event.get("internal") or self._gateway_internal_turns.get(node_id))
+        if is_internal:
+            if seqs:
+                self._gateway_live_seqs.setdefault(node_id, set()).update(seqs)
+            log.debug("gateway live internal event collapsed (node %s seq %s)", node_id, primary)
+            return
         try:
             await self._render_gateway_live_event(node_id, primary, event)
         except Exception:
@@ -971,6 +1013,10 @@ class SidecarDaemon:
         """Render one live event (same gates as batched replay)."""
         assert self.renderer is not None
         if not isinstance(event, dict):
+            return
+        # BUG2: internal events never render per-event live (ONE liveness
+        # notice covers the whole turn — posted by _deliver_gateway_prompt).
+        if event.get("internal") or self._gateway_internal_turns.get(node_id):
             return
         etype = str(event.get("type") or "")
         if etype in ("tool_call", "tool"):
@@ -1146,8 +1192,24 @@ class SidecarDaemon:
                 )
                 boxes[subagent_id] = await self._render_grandchild(node_id, adapted)
             elif ftype == "tool":
-                target = boxes.get(str(feed.get("subagent_id") or ""))
+                subagent_id = str(feed.get("subagent_id") or "")
+                target = boxes.get(subagent_id) if subagent_id else None
+                if not target and subagent_id:
+                    # FOLLOW-UP B: feed race/restart — boxes map lost but the
+                    # node row survives. Resolve via the deterministic id and
+                    # re-adopt instead of dropping (dropped frames = empty rooms).
+                    target = f"{node_id}/gc:{subagent_id}"
+                    try:
+                        self.state.get(target)
+                        boxes[subagent_id] = target
+                    except StateError:
+                        target = None
                 if not target:
+                    return
+                try:
+                    if self.state.get(target)["status"] != "live":
+                        return
+                except StateError:
                     return
                 tool = str(feed.get("tool") or "")
                 if not tool:
@@ -1155,9 +1217,22 @@ class SidecarDaemon:
                 await self.renderer.render_tool_call(
                     target, tool, _live_event_args_text(feed.get("args")))
             elif ftype == "thought":
-                target = boxes.get(str(feed.get("subagent_id") or ""))
+                subagent_id = str(feed.get("subagent_id") or "")
+                target = boxes.get(subagent_id) if subagent_id else None
+                if not target and subagent_id:
+                    target = f"{node_id}/gc:{subagent_id}"
+                    try:
+                        self.state.get(target)
+                        boxes[subagent_id] = target
+                    except StateError:
+                        target = None
                 text_val = feed.get("text")
                 if not target or not isinstance(text_val, str) or not text_val.strip():
+                    return
+                try:
+                    if self.state.get(target)["status"] != "live":
+                        return
+                except StateError:
                     return
                 router = self.control_router
                 if router is not None and not router.cot_enabled(target):
@@ -1553,12 +1628,56 @@ class SidecarDaemon:
                 if self._is_gateway_prompt(outcome):
                     await self._handle_gateway_prompt_outcome(outcome)
                     continue
+                if await self._handle_gateway_abort_outcome(outcome):
+                    for notice in outcome.notices:
+                        if "stop requested" not in str(getattr(notice, "body", "")):
+                            await self._post_notice(notice)
+                    continue
                 for notice in outcome.notices:
                     await self._post_notice(notice)
                 for action in outcome.actions:
                     # Engine transports (gateway WS injection, RPC steer)
                     # land with the M4a/M5 gateway-side wiring — logged here.
                     log.info("control action pending transport: %r", action)
+
+    async def _handle_gateway_abort_outcome(self, outcome: Any) -> bool:
+        """BUG3: AbortSession on the gateway node — cancel the in-flight
+        delivery task, hard-interrupt the cached gateway agent over the
+        control socket, and post STOP_CONFIRMED. True when handled (the
+        caller skips the generic notice/action loop)."""
+        try:
+            gw_id = self._gateway_node_id()
+        except Exception:
+            return False
+        if getattr(outcome, "node_id", None) != gw_id:
+            return False
+        aborts = [a for a in (getattr(outcome, "actions", ()) or ()) if isinstance(a, AbortSession)]
+        if not aborts:
+            return False
+        reason = str(getattr(aborts[0], "reason", "") or "matrix /stop")
+        for task in list(self._gateway_tasks):
+            if not task.done():
+                task.cancel()
+        transport = self.gateway_transport
+        interrupt_out: Any = None
+        if transport is not None:
+            try:
+                interrupt_fn = getattr(transport, "interrupt", None)
+                if callable(interrupt_fn):
+                    interrupt_out = await interrupt_fn(reason)
+            except Exception:
+                log.exception("gateway interrupt failed (node %s)", gw_id)
+        status = "interrupted"
+        if isinstance(interrupt_out, dict):
+            if interrupt_out.get("interrupted") is False:
+                status = str(interrupt_out.get("reason") or "idle — nothing to stop")
+        from observatory.control import ControlNotice
+        try:
+            await self._post_notice(ControlNotice(gw_id, STOP_CONFIRMED_NOTICE.format(status=status)))
+        except Exception:
+            log.exception("stop-confirmed notice failed (node %s)", gw_id)
+        self.routing_log.append(f"gateway-abort:{status}")
+        return True
 
     def _gateway_node_id(self) -> str:
         """The gateway agent's node (router-owned when wired)."""
@@ -1586,9 +1705,12 @@ class SidecarDaemon:
 
         When the parent is the gateway agent and no gateway delivery task
         is currently running (the turn already ended), send one labeled
-        follow-up inject (kind=prompt) so the gateway verifies the result
-        and replies to the room. Skipped when a delivery is in flight —
-        the summary then arrives via the delegate result.
+        follow-up inject (kind=prompt, internal) so the gateway verifies
+        the result and replies to the room. Skipped when a delivery is in
+        flight — the summary then arrives via the delegate result — and
+        behind the BUG2 needs-room-reply gate (routine success with
+        nothing for the owner never injects). Summaries truncate to
+        FOLLOWUP_SUMMARY_MAX_CHARS.
         """
         try:
             gw_id = self._gateway_node_id()
@@ -1598,15 +1720,20 @@ class SidecarDaemon:
             return
         if self._gateway_delivery_in_flight():
             return
+        if not _needs_room_reply(summary, status):
+            log.info("delegate followup skipped: routine success (child %s status %s)", node_id, status)
+            return
         transport = self.gateway_transport
         if transport is None:
             log.info("delegate followup skipped: no gateway transport (child %s)", node_id)
             return
         text_summary = str(summary or "").strip()
+        if len(text_summary) > FOLLOWUP_SUMMARY_MAX_CHARS:
+            text_summary = text_summary[:FOLLOWUP_SUMMARY_MAX_CHARS].rstrip() + "…"
         text = f"[subagent {name} {status}] {text_summary} verify the result and reply to the room"
         try:
             task = asyncio.create_task(
-                self._deliver_gateway_prompt(gw_id, text, kind="prompt"),
+                self._deliver_gateway_prompt(gw_id, text, kind="prompt", internal=True),
                 name=f"observatory-gateway-followup-{node_id}",
             )
         except RuntimeError:
@@ -1641,41 +1768,63 @@ class SidecarDaemon:
             else:
                 log.info("control action pending transport: %r", action)
 
-    async def _deliver_gateway_prompt(self, node_id: str, text: str, *, kind: str = "prompt") -> None:
+    async def _deliver_gateway_prompt(self, node_id: str, text: str, *, kind: str = "prompt", internal: bool = False) -> None:
         """One prompt → gateway session → batched replay + reply in the room."""
         from observatory.control import ControlNotice
         # Live-ingest seq-dedupe: fresh per-node live set for this turn —
         # datagrams arriving during the turn accumulate here, and the
         # batched replay below skips their seqs.
         self._gateway_live_seqs[node_id] = set()
+        if internal:
+            self._gateway_internal_turns[node_id] = True
 
         transport = self.gateway_transport
         if transport is None:
             log.warning("gateway prompt dropped: no transport (node %s)", node_id)
             await self._post_notice(ControlNotice(node_id, GATEWAY_UNREACHABLE_NOTICE))
+            if internal:
+                self._gateway_internal_turns.pop(node_id, None)
             return
 
-        async def _liveness() -> None:
+        # BUG2: internal follow-ups post their ONE liveness notice
+        # synchronously (a task races an instant fake transport and may
+        # never run before cancel).
+        if internal:
             try:
-                await asyncio.sleep(GATEWAY_PROMPT_LIVENESS_AFTER_S)
                 await self._post_notice(
                     ControlNotice(node_id, GATEWAY_PROMPT_WORKING_NOTICE)
                 )
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 — liveness never kills delivery
-                log.debug("gateway prompt liveness notice failed", exc_info=True)
+            except Exception:
+                log.debug("gateway internal liveness notice failed", exc_info=True)
+            liveness = None
+        else:
+            async def _liveness() -> None:
+                try:
+                    await asyncio.sleep(GATEWAY_PROMPT_LIVENESS_AFTER_S)
+                    await self._post_notice(
+                        ControlNotice(node_id, GATEWAY_PROMPT_WORKING_NOTICE)
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 — liveness never kills delivery
+                    log.debug("gateway prompt liveness notice failed", exc_info=True)
 
-        liveness: asyncio.Task | None = asyncio.create_task(
-            _liveness(), name=f"observatory-gateway-prompt-liveness-{node_id}"
-        )
+            liveness: asyncio.Task | None = asyncio.create_task(
+                _liveness(), name=f"observatory-gateway-prompt-liveness-{node_id}"
+            )
         try:
             prompt_with_events = getattr(transport, "prompt_with_events", None)
             try:
                 if callable(prompt_with_events):
-                    reply, events = await prompt_with_events(text, kind=kind, node_id=node_id)
+                    try:
+                        reply, events = await prompt_with_events(text, kind=kind, node_id=node_id, internal=internal)
+                    except TypeError:
+                        reply, events = await prompt_with_events(text, kind=kind, node_id=node_id)
                 else:
-                    reply = await transport.prompt(text, kind=kind, node_id=node_id)
+                    try:
+                        reply = await transport.prompt(text, kind=kind, node_id=node_id, internal=internal)
+                    except TypeError:
+                        reply = await transport.prompt(text, kind=kind, node_id=node_id)
                     events = []
             except GatewayTransportError as exc:
                 log.warning("gateway prompt delivery failed: %s", exc)
@@ -1700,12 +1849,18 @@ class SidecarDaemon:
                     await self._post_notice(
                         ControlNotice(node_id, GATEWAY_UNREACHABLE_NOTICE)
                     )
+                if internal:
+                    self._gateway_internal_turns.pop(node_id, None)
                 return
             except asyncio.CancelledError:
+                if internal:
+                    self._gateway_internal_turns.pop(node_id, None)
                 raise
             except Exception:  # noqa: BLE001 — delivery never kills the task host
                 log.exception("gateway prompt failed (node %s)", node_id)
                 await self._post_notice(ControlNotice(node_id, GATEWAY_PROMPT_FAILED_NOTICE))
+                if internal:
+                    self._gateway_internal_turns.pop(node_id, None)
                 return
         finally:
             if liveness is not None and not liveness.done():
@@ -1717,11 +1872,17 @@ class SidecarDaemon:
         assert self.renderer is not None
         # Empty-reply fix: replay first so tool history never drops on
         # empty replies; empty reply + empty events stays silent (no sends).
-        await self._replay_gateway_events(node_id, events or [])
-        if not reply.strip():
-            log.warning("gateway answered with an empty reply (node %s)", node_id)
-            return
-        await self.renderer.render_agent_message(node_id, reply)
+        # BUG2: the internal flag stays set through replay (live already
+        # collapsed; replay logs without room sends), then clears.
+        try:
+            await self._replay_gateway_events(node_id, events or [])
+            if not reply.strip():
+                log.warning("gateway answered with an empty reply (node %s)", node_id)
+                return
+            await self.renderer.render_agent_message(node_id, reply)
+        finally:
+            if internal:
+                self._gateway_internal_turns.pop(node_id, None)
 
     async def _replay_gateway_events(self, node_id: str, events: list) -> None:
         """Batched tool/thinking replay before the final reply renders.
@@ -1731,7 +1892,9 @@ class SidecarDaemon:
         same gate the omp feed path uses. Events whose ``seq`` was already
         rendered live (``_gateway_live_seqs``) are skipped; events without
         a seq always render. Unknown event shapes are skipped; one bad
-        event never kills the replay.
+        event never kills the replay. BUG2: ``internal`` follow-up events
+        never send room messages (ONE liveness notice covers the turn) —
+        they are recorded to the log only.
         """
         assert self.renderer is not None
         import json as _json
@@ -1744,6 +1907,9 @@ class SidecarDaemon:
                     continue
                 seq = _coerce_live_seq(event.get("seq"))
                 if seq is not None and seq in live:
+                    continue
+                if event.get("internal") or self._gateway_internal_turns.get(node_id):
+                    log.debug("gateway replay internal collapsed (node %s seq %s type %s)", node_id, seq, event.get("type"))
                     continue
                 etype = str(event.get("type") or "")
                 if etype in ("tool_call", "tool"):
