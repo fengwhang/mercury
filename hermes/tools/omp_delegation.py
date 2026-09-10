@@ -550,9 +550,26 @@ def _profile_context_env(parent_agent: Any) -> Dict[str, str]:
     return {"MERCURY_PROFILE_HOME": str(home)}
 
 
+def _vendored_omp_binary() -> Optional[str]:
+    """Return the repo-vendored omp build when present and executable."""
+    cand = _REPO_ROOT / "omp" / "packages" / "coding-agent" / "dist" / "omp"
+    try:
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    except OSError:
+        pass
+    return None
+
+
 def _resolve_omp_binary() -> Optional[str]:
-    cand = os.environ.get("HERMES_OMP_BIN") or "omp"
-    return shutil.which(cand)
+    explicit = (os.environ.get("HERMES_OMP_BIN") or "").strip()
+    if explicit:
+        # Fail-hard: a stale explicit pin must not silently fall back.
+        return shutil.which(explicit)
+    found = shutil.which("omp")
+    if found:
+        return found
+    return _vendored_omp_binary()
 
 
 def _render_omp_config_once() -> None:
@@ -910,7 +927,7 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
             "status": "failed",
             "summary": None,
             "error": (
-                "omp binary not found (HERMES_OMP_BIN or PATH). Build the "
+                "omp binary not found (HERMES_OMP_BIN, PATH, or vendored build). Build the "
                 f"patched tree: cd {_REPO_ROOT / 'omp'} && bun install && bun run build"
             ),
             "exit_reason": "error",
@@ -1331,7 +1348,7 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     if _resolve_omp_binary() is None:
         return tool_error(
             "delegation aborted: omp binary not found "
-            f"({os.environ.get('HERMES_OMP_BIN') or 'omp on PATH'}). Build "
+            f"({os.environ.get('HERMES_OMP_BIN') or 'omp on PATH or vendored build'}). Build "
             f"the patched tree: cd {_REPO_ROOT / 'omp'} && bun install && "
             "bun run build"
         )
