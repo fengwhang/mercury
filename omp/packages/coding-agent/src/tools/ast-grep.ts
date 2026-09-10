@@ -153,8 +153,7 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 	readonly label = "AST Grep";
 	readonly summary = "Search code with AST patterns (structural grep)";
 	get description(): string {
-		return prompt.render(astGrepDescription, {
-		});
+		return prompt.render(astGrepDescription, {});
 	}
 	readonly parameters = astGrepSchema;
 	readonly strict = true;

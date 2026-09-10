@@ -644,11 +644,17 @@ export async function dispatchRpcSubagentControl(
 	// Advisor transcripts are read-only observability; reject control by id even
 	// though snapshots exclude them (mirrors the collab host's defensive gate).
 	if (ref.kind === "advisor") {
-		return failure(`"${command.subagentId}" is a read-only advisor transcript — it cannot be steered or aborted.`, "advisor_readonly");
+		return failure(
+			`"${command.subagentId}" is a read-only advisor transcript — it cannot be steered or aborted.`,
+			"advisor_readonly",
+		);
 	}
 	// The main session already has first-class steer/abort commands.
 	if (ref.kind === "main") {
-		return failure(`"${command.subagentId}" is the main session — use the steer/abort commands for it.`, "main_session");
+		return failure(
+			`"${command.subagentId}" is the main session — use the steer/abort commands for it.`,
+			"main_session",
+		);
 	}
 
 	if (command.type === "subagent_steer") {

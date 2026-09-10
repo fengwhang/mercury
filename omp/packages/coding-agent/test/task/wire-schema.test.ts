@@ -76,7 +76,13 @@ describe("task wire schema", () => {
 	});
 
 	it("deletes stale caller keys (role, description) instead of rejecting", () => {
-		const parsed = taskSchema({ name: "StaleKeys", agent: "task", task: "x", role: "Rust specialist", description: "stale ui label" });
+		const parsed = taskSchema({
+			name: "StaleKeys",
+			agent: "task",
+			task: "x",
+			role: "Rust specialist",
+			description: "stale ui label",
+		});
 		expect(parsed instanceof type.errors).toBe(false);
 		if (!(parsed instanceof type.errors)) {
 			expect("role" in parsed).toBe(false);
@@ -94,14 +100,24 @@ describe("task wire schema", () => {
 
 	it("defaults batch item agents to the schema's defaultAgent", () => {
 		const batch = getTaskSchema({ isolationEnabled: false, batchEnabled: true, defaultAgent: "scout" });
-		const items = parsedItems(batch({ context: "ctx", tasks: [{ name: "First", task: "x" }, { name: "Second", agent: "reviewer", task: "y" }] }));
+		const items = parsedItems(
+			batch({
+				context: "ctx",
+				tasks: [
+					{ name: "First", task: "x" },
+					{ name: "Second", agent: "reviewer", task: "y" },
+				],
+			}),
+		);
 		expect(items[0]?.agent).toBe("scout");
 		expect(items[1]?.agent).toBe("reviewer");
 	});
 
 	it("deletes stale keys from batch items", () => {
 		const batch = getTaskSchema({ isolationEnabled: false, batchEnabled: true });
-		const items = parsedItems(batch({ context: "ctx", tasks: [{ name: "DbWork", task: "x", role: "DB migration specialist" }] }));
+		const items = parsedItems(
+			batch({ context: "ctx", tasks: [{ name: "DbWork", task: "x", role: "DB migration specialist" }] }),
+		);
 		const item = items[0] ?? {};
 		expect("role" in item).toBe(false);
 		expect(item.task).toBe("x");

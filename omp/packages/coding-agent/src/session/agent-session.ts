@@ -5675,7 +5675,6 @@ export class AgentSession {
 		};
 	}
 
-
 	async #buildPlanModeMessage(): Promise<CustomMessage | null> {
 		const state = this.#planModeState;
 		if (!state?.enabled) return null;

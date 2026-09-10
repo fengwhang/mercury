@@ -13,6 +13,9 @@ const dir = mkdtempSync(join(tmpdir(), "adv-probe-"));
 const modelRegistry = new ModelRegistry(authStorage, join(dir, "models.yml"));
 const available = modelRegistry.getAvailable();
 console.log("available count:", available.length);
-console.log("claude-sonnet present:", available.some(m => m.id.includes("claude-sonnet-4-5")));
+console.log(
+	"claude-sonnet present:",
+	available.some(m => m.id.includes("claude-sonnet-4-5")),
+);
 const sel = resolveAdvisorRoleSelection(settings, available);
 console.log("resolveAdvisorRoleSelection ->", sel ? sel.model.id : "undefined");

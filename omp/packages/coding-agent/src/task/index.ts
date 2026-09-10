@@ -358,7 +358,6 @@ function mergeSyncPayloads(
 // how models invented phantom roles like SpecScout/AuditScout in logs.
 const GENERIC_SPAWN_AGENTS: ReadonlySet<string> = new Set(["subagent"]);
 
-
 /**
  * Suggestion — never a rejection — nudging the spawner to coordinate via the
  * hub when one call creates ≥2 live siblings and it still holds spawn
@@ -395,9 +394,7 @@ export function composeSpawnAdvisory(args: {
 	willRunAsync: boolean;
 }): string | undefined {
 	return (
-		[
-			args.willRunAsync ? buildCoordinationAdvisory(args.items, args.depthCapacity, args.ircEnabled) : undefined,
-		]
+		[args.willRunAsync ? buildCoordinationAdvisory(args.items, args.depthCapacity, args.ircEnabled) : undefined]
 			.filter(Boolean)
 			.join("\n\n") || undefined
 	);

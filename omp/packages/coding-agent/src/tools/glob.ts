@@ -119,8 +119,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 	readonly loadMode = "essential";
 	readonly label = "Glob";
 	get description(): string {
-		return prompt.render(globDescription, {
-		});
+		return prompt.render(globDescription, {});
 	}
 	readonly parameters = findSchema;
 

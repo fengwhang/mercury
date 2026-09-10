@@ -233,7 +233,7 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 
 	scanSettings.override("task.agentPrewalk", {
 		...scanSettings.get("task.agentPrewalk"),
-		"subagent": "off",
+		subagent: "off",
 	});
 	const { session } = await createAgentSession({
 		cwd: input.executionRoot,

@@ -14,7 +14,6 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 // (DepthCapacity). It is gated on depth so a leaf at max recursion is never
 // nagged, and a lone generic spawn is never flagged.
 
-
 // Contract: the advisory rides the task-tool result for an interactive spawner,
 // but a session that opts out (`suppressSpawnAdvisory` — internal/programmatic
 // callers like the commit agent's file-analysis fan-out) gets a clean result so

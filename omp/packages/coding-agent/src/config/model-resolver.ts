@@ -2245,5 +2245,3 @@ export async function restoreModelFromSession(
 	// No models available
 	return { model: undefined, fallbackMessage: undefined };
 }
-
-
