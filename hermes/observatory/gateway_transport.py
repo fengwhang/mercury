@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -27,15 +28,34 @@ logger = logging.getLogger(__name__)
 #: (registered by the gateway process at boot; see gateway/run.py seam).
 GATEWAY_INJECT_VERB = "inject"
 
-#: Prompt kinds the wire carries. The sidecar always sends ``prompt``:
-#: gateway-room plain text starts a turn (there is no busy run to steer).
-#: ``gateway_session`` accepts the router's other kinds for stability.
+#: Prompt kinds the wire carries. The sidecar forwards the router's kind
+#: (``prompt``/``steer``/``command`` — gateway-room plain text arrives
+#: with the router's kind); ``gateway_session`` accepts all three.
 GATEWAY_PROMPT_KIND = "prompt"
 
-#: Bound on one prompt→reply round trip (turns run minutes; the socket
-#: default of 2s is a liveness probe budget, not a turn budget). The
-#: intake never blocks on this — delivery runs in its own task.
-GATEWAY_TRANSPORT_TIMEOUT_DEFAULT = 600.0
+#: Opt-in per-turn ceiling (seconds) via HERMES_OBSERVATORY_INJECT_TIMEOUT_S.
+HERMES_OBSERVATORY_INJECT_TIMEOUT_ENV = "HERMES_OBSERVATORY_INJECT_TIMEOUT_S"
+
+#: No-limit default: wait until the gateway replies or the socket closes
+#: (NO LIMITS law; turns run minutes). The socket default of 2s is a
+#: liveness-probe budget, not a turn budget. The intake never blocks on
+#: this — delivery runs in its own task.
+GATEWAY_TRANSPORT_TIMEOUT_DEFAULT: float | None = None
+
+
+def _inject_timeout_from_env() -> float | None:
+    """Opt-in inject timeout from env; None = no limit (fail open)."""
+    raw = os.environ.get(HERMES_OBSERVATORY_INJECT_TIMEOUT_ENV, "")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None
+    return value
 
 
 class GatewayTransportError(RuntimeError):
@@ -72,7 +92,7 @@ QueryFn = Callable[..., Optional[dict[str, Any]]]
 
 
 def _default_query(
-    home: Path, text: str, kind: str, node_id: str, timeout: float
+    home: Path, text: str, kind: str, node_id: str, timeout: float | None
 ) -> Optional[dict[str, Any]]:
     from gateway.control_socket import query_gateway_control
 
@@ -96,11 +116,13 @@ class ControlSocketGatewayTransport(GatewayTransport):
         self,
         mercury_home: str | Path,
         *,
-        timeout: float = GATEWAY_TRANSPORT_TIMEOUT_DEFAULT,
+        timeout: float | None = GATEWAY_TRANSPORT_TIMEOUT_DEFAULT,
         query_fn: Optional[QueryFn] = None,
     ) -> None:
         self.mercury_home = Path(mercury_home).expanduser()
-        self.timeout = float(timeout)
+        if timeout is None:
+            timeout = _inject_timeout_from_env()
+        self.timeout: float | None = None if timeout is None else float(timeout)
         self._query_fn: QueryFn = query_fn or _default_query
 
     async def prompt(
