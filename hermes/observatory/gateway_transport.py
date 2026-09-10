@@ -68,6 +68,17 @@ def gateway_socket_homes(mercury_home: str | Path) -> list[Path]:
     nested = home / "hermes"
     return [home] if nested == home else [home, nested]
 
+#: Unix datagram socket the gateway uses to push live turn progress
+#: (gateway_session turn collector + gateway-child feed forwarder) for
+#: the sidecar's live render. Path:
+#: ``$MERCURY_HOME/observatory/gateway-progress.sock``.
+GATEWAY_PROGRESS_SOCK_NAME = "gateway-progress.sock"
+
+
+def gateway_progress_sock_path(mercury_home: str | Path) -> Path:
+    """Live-ingest socket path: ``$MERCURY_HOME/observatory/<name>``."""
+    return Path(mercury_home).expanduser() / "observatory" / GATEWAY_PROGRESS_SOCK_NAME
+
 
 class GatewayTransport:
     """Deliver gateway-room prompts; return the agent's reply text."""

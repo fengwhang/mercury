@@ -33118,6 +33118,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _control_server.register_handler(
                 "inject", _observatory_inject_handler, takes_params=True
             )
+            # Gateway-child feed (matrix-observatory cross-process feed):
+            # forward the gateway's OWN omp live-child table as datagrams
+            # on gateway-progress.sock (lifecycle + OmpFeed frames) so the
+            # sidecar renders gateway-origin children without ever
+            # importing this process's memory. Best-effort daemon thread.
+            try:
+                from observatory.gateway_session import (
+                    ensure_child_feed_watcher as _ensure_child_feed,
+                )
+
+                _ensure_child_feed()
+            except Exception as _cf_exc:
+                logger.debug("Observatory child feed watcher not started: %s", _cf_exc)
         except Exception as _oi_exc:
             logger.debug("Observatory inject verb not registered: %s", _oi_exc)
         if not await _control_server.start():
