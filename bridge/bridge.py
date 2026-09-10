@@ -20,8 +20,13 @@ CONFIG = os.environ.get("HERMES_OMP_CONFIG", os.environ.get("MERCURY_CONFIG", DE
 
 SLOTS = ("default", "fallback", "delegate_model", "delegate_fallback")
 # MERCURY-OMP PATCH (user directive): thinking is a config parameter, not
-# agent-selected. models.delegate_thinking_level (omp side) defaults xhigh.
-THINKING_SLOTS = ("delegate_thinking_level",)
+# agent-selected. models.delegate_thinking_level (omp side, default xhigh)
+# pins subagent depth; models.delegate_fallback_thinking_level (omp fallback,
+# optional, inherits delegate when empty) and
+# models.orchestrator_thinking_level (hermes side, default xhigh) complete
+# the set. Empty fallback thinking = inherit, never auto-mirror at write
+# time (SKIP=EMPTY: skip leaves the slot untouched).
+THINKING_SLOTS = ("delegate_thinking_level", "delegate_fallback_thinking_level", "orchestrator_thinking_level")
 
 # omp interactive-onboarding version (omp/src/modes/setup-version.ts).
 # The Mercury wizard + omp-sync stamp this so `mercury omp` never demands
@@ -140,11 +145,17 @@ def validate(slots, need_delegate=False):
             errors.append("models.fallback_chain must not contain the default model itself")
         if slots["fallback"] and fchain[0] != slots["fallback"]:
             errors.append("models.fallback_chain must include models.fallback as its first entry")
-    raw_level = str(slots.get("delegate_thinking_level") or "").strip().lower()
-    if raw_level and thinking_level_from_config(raw_level) is None:
+    for _key in ("delegate_thinking_level", "delegate_fallback_thinking_level"):
+        raw_level = str(slots.get(_key) or "").strip().lower()
+        if raw_level and thinking_level_from_config(raw_level) is None:
+            errors.append(
+                f"models.{_key} '{raw_level}' invalid — "
+                "expected one of: " + ", ".join(VALID_THINKING_LEVELS))
+    _orch = str(slots.get("orchestrator_thinking_level") or "").strip().lower()
+    if _orch and thinking_level_from_config(_orch, allow_auto=False) is None:
         errors.append(
-            f"models.delegate_thinking_level '{raw_level}' invalid — "
-            "expected one of: " + ", ".join(VALID_THINKING_LEVELS))
+            f"models.orchestrator_thinking_level '{_orch}' invalid — "
+            "expected one of: " + ", ".join(HERMES_THINKING_LEVELS))
     chain = slots.get("delegate_fallback_chain") or []
     if chain:
         if len(set(chain)) != len(chain):
@@ -157,15 +168,23 @@ def validate(slots, need_delegate=False):
 
 
 DEFAULT_THINKING_LEVEL = "xhigh"
-VALID_THINKING_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
+# Base Effort ladder (omp Effort enum): minimal..max. The CLI flag adds off +
+# auto; the wizard picker offers off/minimal/low/medium/high/xhigh/max (+auto
+# omp-side only), default xhigh. There is NO ultra level — the valid set tops
+# at max. There is NO 512 budget in omp source (bench-only constant); any 512
+# observed is provider-side. Do not chase either.
+VALID_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
+# Per-engine picker vocabularies (ultra never offered; valid set tops at max).
+HERMES_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+OMP_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
 
 
-def thinking_level_from_config(raw):
-    """models.delegate_thinking_level -> validated level (default xhigh)."""
+def thinking_level_from_config(raw, allow_auto=True):
+    """models.*_thinking_level -> validated level (default xhigh)."""
     v = str(raw or "").strip().lower()
     if not v:
         return DEFAULT_THINKING_LEVEL
-    if v in VALID_THINKING_LEVELS:
+    if v in VALID_THINKING_LEVELS and (allow_auto or v != "auto"):
         return v
     return None  # invalid -> caller reports
 
@@ -178,9 +197,16 @@ def render(slots, delegation=False):
         print(f"OMP_FALLBACK_CHAIN={','.join(chain)}")
         # MERCURY-OMP PATCH (user directive): delegate thinking is a CONFIG
         # PARAMETER (models.delegate_thinking_level, default xhigh) — never
-        # agent-selected per spawn.
+        # agent-selected per spawn. Fallback thinking is optional: empty
+        # inherits the delegate level (SKIP=EMPTY, never auto-mirrored at
+        # write time); an explicit value rides as OMP_FALLBACK_THINKING_LEVEL
+        # for forward-compat (single-level runs keep using OMP_THINKING_LEVEL).
         level = thinking_level_from_config(slots.get("delegate_thinking_level"))
         print(f"OMP_THINKING_LEVEL={level or DEFAULT_THINKING_LEVEL}")
+        _fb_raw = str(slots.get("delegate_fallback_thinking_level") or "").strip().lower()
+        _fb = thinking_level_from_config(_fb_raw) if _fb_raw else ""
+        if _fb:
+            print(f"OMP_FALLBACK_THINKING_LEVEL={_fb}")
     else:
         for s in SLOTS:
             print(f"{s.upper()}={slots[s] or '<unset>'}")

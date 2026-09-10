@@ -12429,7 +12429,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "omp-sync",
         "migrate-hermes",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
+        "model", "monitoring", "observatory", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
         "project", "proxy",
         "prompt-size",
         "resume",
@@ -13772,6 +13772,13 @@ def main():
     from mercury_cli.subcommands.peer import build_peer_parser
 
     build_peer_parser(subparsers)
+
+    # =========================================================================
+    # observatory command — pending device-rotation approvals (trust-device)
+    # =========================================================================
+    from mercury_cli.subcommands.observatory import build_observatory_parser
+
+    build_observatory_parser(subparsers)
 
     # =========================================================================
     # portal command — Nous Portal status + Tool Gateway routing

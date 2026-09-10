@@ -1499,6 +1499,19 @@ def test_no_user_facing_string_recommends_element(rel):
         # string in the file.
         text = _re.sub(
             r"DECRYPT_RECOVERY_STEPS = \(.*?\)\n", "", text, flags=_re.DOTALL)
+        # Carve-out (2026-09-10 rotation-heal): identity-reset
+        # troubleshooting (pending-trust records, stale-OTK warning) names
+        # Element X for users already on it — never recommends it.
+        text = text.replace("Element/Element X", "Element-family")
+    if rel == "hermes/mercury_cli/setup.py":
+        # Carve-out (2026-09-10 rotation-heal): the standing trust-device
+        # remedy line + pending-rotation wizard troubleshoot identity
+        # resets for users already on Element X — never recommends it.
+        # (The standing line wraps across two source lines, so match the
+        # fragments, not the whole sentence.)
+        text = text.replace("identity in Element or ", "identity in Element-family ")
+        text = text.replace('"Element X, run: ', '"Element-family, run: ')
+        text = text.replace("Element/Element X", "Element-family")
     assert "Element X" not in text
     assert "Element Classic" not in text
 
