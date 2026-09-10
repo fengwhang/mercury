@@ -337,3 +337,99 @@ class TestQuerySurface:
             _authed("/_matrix/app/v1/ping"),
             data="{}", headers=headers)).status == 200
         assert intake.error_count() == 0
+
+
+# --- MSC-prefixed crypto side-channel (tuwunel 1.9.0 wire shape) --------------------
+
+
+MSC_TO_DEVICE = "de.sorunome.msc2409.to_device"
+MSC_DEVICE_LISTS = "org.matrix.msc3202.device_lists"
+MSC_OTK_COUNT = "org.matrix.msc3202.device_one_time_keys_count"
+MSC_FALLBACK_TYPES = "org.matrix.msc3202.device_unused_fallback_key_types"
+
+#: Canonical bare keys — nothing else may ever flow downstream.
+CANONICAL_CRYPTO_KEYS = frozenset({
+    "to_device",
+    "device_lists",
+    "device_one_time_keys_count",
+    "device_unused_fallback_key_types",
+})
+
+
+@pytest_asyncio.fixture
+async def crypto_wired():
+    """Intake with recording event + crypto handlers and a running consumer."""
+    seen_crypto: list[dict] = []
+
+    async def handler(txn_id: str, events: list[dict]) -> None:
+        return None
+
+    async def crypto(txn: dict) -> None:
+        seen_crypto.append(txn)
+
+    intake = TransactionIntake(
+        as_token=TOKEN, handler=handler, crypto_handler=crypto)
+    await intake.start()
+    app = make_app(intake)
+    async with TestClient(TestServer(app)) as c:
+        yield c, intake, seen_crypto
+    await intake.stop()
+
+
+class TestMscNormalization:
+    """tuwunel 1.9.0 emits the crypto side-channel under MSC-prefixed keys;
+    the intake normalizes to the bare canonical form (never new key names)."""
+
+    @staticmethod
+    async def _put(client: TestClient, txn_id: str, body: dict) -> None:
+        resp = await client.put(
+            _txn_url(txn_id), data=json.dumps(body),
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_msc_keys_normalize_to_bare(self, crypto_wired):
+        client, intake, seen_crypto = crypto_wired
+        td = {"@merc_a:hs": {"D1": {"type": "x"}}}
+        dl = {"changed": ["@owner:hs"], "left": []}
+        otk = {"@merc_a:hs": {"D1": {"signed_curve25519": 5}}}
+        fb = {"@merc_a:hs": {"D1": ["signed_curve25519"]}}
+        await self._put(client, "m1", {"events": [],
+                                       MSC_TO_DEVICE: td,
+                                       MSC_DEVICE_LISTS: dl,
+                                       MSC_OTK_COUNT: otk,
+                                       MSC_FALLBACK_TYPES: fb})
+        await intake.queue.join()
+        assert len(seen_crypto) == 1
+        crypto = seen_crypto[0]
+        assert crypto["to_device"] == td
+        assert crypto["device_lists"] == dl
+        assert crypto["device_one_time_keys_count"] == otk
+        assert crypto["device_unused_fallback_key_types"] == fb
+        assert set(crypto) <= CANONICAL_CRYPTO_KEYS
+
+    @pytest.mark.asyncio
+    async def test_bare_preferred_when_both_forms_present(self, crypto_wired):
+        # A body carrying both forms routes once, bare winning — never both.
+        client, intake, seen_crypto = crypto_wired
+        bare = {"@merc_bare:hs": {"D1": {"type": "bare"}}}
+        msc = {"@merc_msc:hs": {"D9": {"type": "msc"}}}
+        await self._put(client, "m2", {"events": [],
+                                       "to_device": bare,
+                                       MSC_TO_DEVICE: msc})
+        await intake.queue.join()
+        assert len(seen_crypto) == 1
+        assert seen_crypto[0]["to_device"] == bare
+
+    @pytest.mark.asyncio
+    async def test_msc_used_when_bare_empty(self, crypto_wired):
+        # Empty bare section + populated MSC section: present data wins.
+        client, intake, seen_crypto = crypto_wired
+        msc = {"@merc_msc:hs": {"D9": {"type": "msc"}}}
+        await self._put(client, "m3", {"events": [],
+                                       "to_device": {},
+                                       MSC_TO_DEVICE: msc})
+        await intake.queue.join()
+        assert len(seen_crypto) == 1
+        assert seen_crypto[0]["to_device"] == msc
