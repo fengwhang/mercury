@@ -136,19 +136,26 @@ def build_renderer(
     gateway_node_id: str,
     owner_mxid: str,
     server_name: str = "mercury.local",
+    gateway_mxid: str = "",
 ) -> Any:
     """Renderer + IntentExecutor bound to a live MatrixClient (the
     appservice token / admin token come from the provisioned home —
     sidecar_main's job to read; this stays a pure constructor)."""
     from observatory.renderer import IntentExecutor, Renderer
 
+    if not gateway_mxid:
+        try:
+            gateway_mxid = str(state.get(gateway_node_id)["mxid"])
+        except Exception:  # noqa: BLE001 — unseeded state keeps owner-only invites
+            gateway_mxid = ""
     return Renderer(
         state,
         gateway_node_id=gateway_node_id,
         server_name=server_name,
         owner_mxid=owner_mxid,
         executor=IntentExecutor(
-            client, state, owner_mxid=owner_mxid, server_name=server_name
+            client, state, owner_mxid=owner_mxid, server_name=server_name,
+            gateway_mxid=gateway_mxid,
         ),
     )
 
