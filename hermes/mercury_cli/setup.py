@@ -3311,14 +3311,46 @@ def _e2ee_card_line() -> str:
         return "ON (Megolm — rooms are end-to-end encrypted)"
     return "OFF (PLAINTEXT — messages travel unencrypted on the tailnet)"
 
+def _print_observatory_relogin_notice(owner_mxid: str) -> None:
+    """Post-wipe re-login notice — the old client session is dead by construction.
+
+    A wipe (archive/annihilate) issues new server keys and a new owner
+    password, so any Element / Element X / FluffyChat session minted against
+    the pre-wipe server can never reconnect: the client shows the dead
+    session as still-connected, then forces a fresh login + identity reset.
+    Loud red box (never a soft hint): log out / remove the old account,
+    log back in as the fresh MXID with the FRESH password, and expect
+    exactly ONE identity verification — a SECOND reset prompt means
+    something else is wrong (re-run ``mercury setup observatory``).
+    """
+    lines = [
+        "WIPED + RE-PROVISIONED — your OLD Element / FluffyChat session is DEAD BY CONSTRUCTION",
+        "",
+        f"log out / remove the old account, then log back in as {owner_mxid}",
+        "with the FRESH password (.env MATRIX_OBS_OWNER_PASSWORD, mode 0600 —",
+        "never the old one; the wipe issued new server keys and a new owner password).",
+        "Expect exactly ONE identity verification on the fresh login —",
+        "a SECOND reset prompt means something else is wrong,",
+        "re-run: mercury setup observatory",
+    ]
+    width = max(len(ln.rstrip()) for ln in lines) + 2
+    print()
+    print(color("┌" + "─" * width + "┐", Colors.RED, Colors.BOLD))
+    for ln in lines:
+        padded = "│ " + ln.ljust(width - 2) + " │"
+        print(color(padded, Colors.RED, Colors.BOLD))
+    print(color("└" + "─" * width + "┘", Colors.RED, Colors.BOLD))
+    print()
+
+
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
-    """First-login card — ONLY what remains truly manual (FluffyChat login).
+    """First-login card — ONLY what remains truly manual (FluffyChat / Element X login).
 
     Everything else (provision, crypto stack, sidecar unit, owner-URL heal,
     gateway ghost + tree converge) already ran automatically by the time
     this prints — so this card names just the homeserver URL, the owner
     account, where the password lives (NEVER the password itself), and the
-    FluffyChat add-account steps. Detect-and-assist only for Tailscale.
+    FluffyChat / Element X add-account steps. Detect-and-assist only for Tailscale.
     """
     creds_path = status["owner_credentials_path"]
     try:
@@ -3335,11 +3367,11 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         logger.debug("could not read observatory owner credentials: %s", exc)
 
     # Never printed: the owner password lives only in $MERCURY_HOME/.env
-    # (MATRIX_OBS_OWNER_PASSWORD, 0600 — paste it into FluffyChat) and
+    # (MATRIX_OBS_OWNER_PASSWORD, 0600 — paste it into FluffyChat / Element X) and
     # owner-credentials.json.
     password_lines = [
         "owner password:      your .env file (MATRIX_OBS_OWNER_PASSWORD,",
-        "                     mode 0600 — paste it into FluffyChat) and",
+        "                     mode 0600 — paste it into FluffyChat / Element X) and",
         f"                     {creds_path} — never printed here.",
     ]
 
@@ -3347,7 +3379,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         tailscale = _tailscale_status(_load_observatory_provision())
     phone_url = _tailscale_phone_url(tailscale, str(status.get("homeserver_url", "")))
     lines = [
-        "Matrix Observatory — first login (FluffyChat)",
+        "Matrix Observatory — first login (FluffyChat / Element X)",
         "",
         f"homeserver URL:      {status['homeserver_url']}",
         "on this machine:     paste the URL above (desktop)",
@@ -3373,7 +3405,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
             *password_lines,
             f"CLI/TUI mirror:      {_mirror_cli_card_line()}",
             f"room encryption:     {_e2ee_card_line()}",
-            "in FluffyChat:       add account → enter the homeserver URL",
+            "in FluffyChat / Element X: add account → enter the homeserver URL",
             "                     manually → paste the URL above",
             "                     (use your own server, not matrix.org)",
             "",
@@ -4004,6 +4036,11 @@ def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
                     f"Observatory re-provisioned as "
                     f"@{identity['owner_localpart']}:{identity['server_name']}."
                 )
+            # New server identity: the pre-wipe client session is dead —
+            # say so loudly (clients show the dead session as still-connected).
+            _print_observatory_relogin_notice(
+                f"@{identity['owner_localpart']}:{identity['server_name']}"
+            )
             return refreshed
         except KeyboardInterrupt:
             raise
@@ -4081,6 +4118,9 @@ def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
                             f"Observatory re-provisioned as "
                             f"@{new_local}:{new_server}."
                         )
+                    # New server identity: the pre-wipe client session is dead —
+                    # say so loudly (clients show the dead session as still-connected).
+                    _print_observatory_relogin_notice(f"@{new_local}:{new_server}")
                     return refreshed
                 except KeyboardInterrupt:
                     raise
@@ -4598,6 +4638,13 @@ def setup_observatory(config: dict, *, quick: bool = False):
                         )
                     else:
                         print_success("Observatory provisioning complete.")
+                    if wiped:
+                        # New server identity: the pre-wipe client session is
+                        # dead — say so loudly (clients show the dead session
+                        # as still-connected).
+                        _print_observatory_relogin_notice(
+                            f"@{identity['owner_localpart']}:{identity['server_name']}"
+                        )
                 except KeyboardInterrupt:
                     raise
                 except Exception as exc:

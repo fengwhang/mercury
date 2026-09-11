@@ -197,7 +197,7 @@ def test_wizard_install_runs_full_auto_path(monkeypatch, capsys, tmp_path):
     assert "Sidecar unit installed" in out
     assert "Owner homeserver URL healed" in out
     assert "Gateway tree converged-3" in out
-    assert "Matrix Observatory — first login (FluffyChat)" in out
+    assert "Matrix Observatory — first login (FluffyChat / Element X)" in out
     assert PASSWORD not in out
     assert remaining == []
 
@@ -214,7 +214,7 @@ def test_wizard_install_failed_crypto_warns_and_keeps_e2ee(monkeypatch, capsys, 
     assert "Crypto stack not ready" in out
     assert "E2EE stays ON" in out
     assert "e2ee:false" not in out and "e2ee: false" not in out
-    assert "Matrix Observatory — first login (FluffyChat)" in out
+    assert "Matrix Observatory — first login (FluffyChat / Element X)" in out
 
 
 def test_wizard_install_each_auto_failure_degrades_independently(monkeypatch, capsys, tmp_path):
@@ -231,7 +231,7 @@ def test_wizard_install_each_auto_failure_degrades_independently(monkeypatch, ca
     assert "Crypto auto-setup skipped" in out
     assert "Sidecar unit install skipped" in out
     assert "Gateway tree converge skipped" in out
-    assert "Matrix Observatory — first login (FluffyChat)" in out
+    assert "Matrix Observatory — first login (FluffyChat / Element X)" in out
     assert remaining == []
 
 
@@ -291,7 +291,7 @@ def test_headless_runs_auto_with_zero_prompts(monkeypatch, capsys, tmp_path):
     assert fake.calls["crypto"] == 1
     assert fake.calls["sidecar"] == 1
     assert fake.calls["tree"] == 1
-    assert "Matrix Observatory — first login (FluffyChat)" in out
+    assert "Matrix Observatory — first login (FluffyChat / Element X)" in out
     assert PASSWORD not in out
 
 
@@ -310,7 +310,7 @@ def test_headless_dispatch_via_run_setup_wizard(monkeypatch, capsys, tmp_path):
     setup_mod.run_setup_wizard(args)
     out = capsys.readouterr().out
     assert fake.calls["provision"] == 1
-    assert "Matrix Observatory — first login (FluffyChat)" in out
+    assert "Matrix Observatory — first login (FluffyChat / Element X)" in out
 
 
 # --- provision.ensure_crypto_stack (vendored, fail-closed) ---------------------
