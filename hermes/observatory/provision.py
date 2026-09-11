@@ -1622,7 +1622,8 @@ def ensure_systemd_unit(paths: ObservatoryPaths) -> str:
 
 def ensure_sidecar_unit(mercury_home: str | Path | None = None,
                         python_bin: str | None = None,
-                        hermes_root: str | Path | None = None) -> str:
+                        hermes_root: str | Path | None = None,
+                        omp_bin: str | Path | None = None) -> str:
     """Install/refresh the sidecar user unit; returns 'installed',
     'refreshed', 'started', or 'skipped' (no systemd — containers/CI;
     caller surfaces a hint).
@@ -1633,6 +1634,12 @@ def ensure_sidecar_unit(mercury_home: str | Path | None = None,
     re-exported from sidecar_main for back-compat — import here from
     config_gen so the unit installs even when the crypto stack
     (aiohttp) is missing.
+
+    The unit pins the gateway env block (MERCURY_HOME, MERCURY_CONFIG,
+    HERMES_HOME, PI_CODING_AGENT_DIR, HERMES_OMP_BIN, PATH, VIRTUAL_ENV):
+    after this fix the rendered content differs from pre-fix units, so the
+    next ensure reloads (daemon-reload) + restarts exactly once, then is
+    quiet again under the flap law below.
 
     Same flap law as :func:`ensure_systemd_unit`: an unchanged unit file
     never restarts (active → return, inactive → start); only a content
@@ -1652,6 +1659,7 @@ def ensure_sidecar_unit(mercury_home: str | Path | None = None,
         hermes_root=str(hermes_root),
         mercury_home=str(home),
         log_dir=str(paths.logs_dir),
+        **({"omp_bin": str(omp_bin)} if omp_bin is not None else {}),
     )
     unit_path = Path.home() / ".config" / "systemd" / "user" / SIDECAR_UNIT_NAME
     unit_path.parent.mkdir(parents=True, exist_ok=True)
