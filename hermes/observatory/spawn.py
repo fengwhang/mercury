@@ -75,6 +75,35 @@ OMP_SESSIONS_DIRNAME = "omp-sessions"
 
 #: Default omp startup wait — mirrors tools/omp_delegation.RPC_STARTUP_TIMEOUT.
 RPC_STARTUP_TIMEOUT = float(os.environ.get("HERMES_OMP_RPC_STARTUP", "20"))
+#: ``extra`` key marking whether the engine handle ever completed one turn.
+#: Both engines persist lazily (omp JSONL after the first assistant message,
+#: hermes SessionDB row on the first turn), so a freshly-spawned ref is
+#: NEVER on disk yet. ``False`` at spawn → ``True`` after the first
+#: completed child turn (sidecar marks it). Resume treats a missing
+#: file/row with ``False`` as never-materialized (build fresh, never the
+#: "deleted without /exit?" error); a missing file/row with ``True`` (or a
+#: legacy row without the key) is still a deletion.
+SESSION_MATERIALIZED_KEY = "session_materialized"
+
+
+def is_session_materialized(row: dict[str, Any] | Any) -> bool:
+    """True once the node's engine completed one turn (default True for
+    legacy rows without the key — only spawn-fresh rows read False)."""
+    try:
+        extra = (row.get("extra") or {}) if isinstance(row, dict) else {}
+    except Exception:
+        return True
+    if SESSION_MATERIALIZED_KEY not in extra:
+        return True
+    return bool(extra.get(SESSION_MATERIALIZED_KEY))
+
+
+def mark_session_materialized(state: Any, node_id: str) -> None:
+    """Best-effort flip to materialized after a completed turn; never raises."""
+    try:
+        state.update_extra(node_id, **{SESSION_MATERIALIZED_KEY: True})
+    except Exception:
+        pass
 
 
 def orchestrator_node_id() -> str:
@@ -555,6 +584,7 @@ async def spawn_orchestrator(
             # NO "kind" — see the convention note above (tree.desired_plan
             # includes only kind-"" agent roots as orchestrator subspaces).
             "model": model,
+            SESSION_MATERIALIZED_KEY: False,
         },
     )
     registry.register(OrchestratorHandle(

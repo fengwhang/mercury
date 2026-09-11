@@ -40,11 +40,13 @@ from typing import Any, Callable, Optional
 
 from observatory.renderer import Renderer
 from observatory.spawn import (
+    SESSION_MATERIALIZED_KEY,
     SKIP_RESPAWN_KINDS,
     OrchestratorHandle,
     OrchestratorRegistry,
     build_hermes_agent,
     build_omp_child,
+    is_session_materialized,
     omp_session_file,
     replay_purge_journal,
 )
@@ -87,7 +89,9 @@ def resume_hermes_orchestrator(
     Fails hard (raises) when the session row is gone — the respawn pass
     reports the failure WITHOUT touching the node (D18: only /exit or
     session reset kills a 0-agent; a failed resume is an operator event,
-    not a death).
+    not a death). A ref that never completed one turn raises the
+    never-materialized error (run on the live spawn handle, never resume);
+    only a previously-materialized ref raises "deleted without /exit?".
     """
     session_id = str(row.get("session_ref") or "")
     if not session_id:
@@ -106,6 +110,12 @@ def resume_hermes_orchestrator(
     session_db = SessionDB(db_path=db_path)
     try:
         if session_db.get_session(session_id) is None:
+            if not is_session_materialized(row):
+                raise RuntimeError(
+                    f"respawn: session {session_id} never materialized "
+                    f"in {db_path} (first turn pending — run on the live "
+                    "spawn handle, never resume)"
+                )
             raise RuntimeError(
                 f"respawn: session {session_id} not found in {db_path} "
                 "(deleted without /exit?)"
@@ -131,11 +141,18 @@ def restart_omp_orchestrator(
 
     The resumed child must land on the SAME file (D18: same session, same
     MXID/rooms); a mismatch is a hard failure and the child is stopped —
-    never silently fork a second session."""
+    never silently fork a second session. A ref that never completed one
+    turn raises the never-materialized error (run live, never resume).
+    """
     session_file = str(row.get("session_ref") or "")
     if not session_file:
         raise RuntimeError(f"respawn: node {row['node_id']} has no session_ref")
     if not Path(session_file).is_file():
+        if not is_session_materialized(row):
+            raise RuntimeError(
+                f"respawn: omp session file {session_file} never materialized "
+                "(first turn pending — run on the live spawn handle, never resume)"
+            )
         raise RuntimeError(
             f"respawn: omp session file {session_file} is gone "
             "(deleted without /exit?)"

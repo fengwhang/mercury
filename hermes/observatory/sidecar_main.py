@@ -2303,6 +2303,84 @@ class SidecarDaemon:
             users_default=int(raw.get("users_default") or 0),
         )
 
+    def _is_never_materialized(self, row: dict[str, Any]) -> bool:
+        """True when the ref never completed one turn (spawn-fresh lazy handle)."""
+        try:
+            from observatory.spawn import is_session_materialized
+
+            return not is_session_materialized(row)
+        except Exception:
+            return False
+
+    def _build_fresh_child_handle(self, row: dict[str, Any], node_id: str) -> Any | None:
+        """Build a FIRST-turn handle for a never-materialized ref (never resume).
+
+        The gateway process holds the live spawn handle cross-process; this
+        daemon cannot adopt that object, so it builds its own handle on the
+        same ref: hermes reuses the session id (the first turn materializes
+        the SessionDB row); omp starts fresh and repoints state at the real
+        file when the allocated path never hit disk. Never raises (None =
+        unavailable notice)."""
+        engine = str(row.get("engine") or "")
+        ref = str(row.get("session_ref") or "")
+        try:
+            if engine == "hermes":
+                from observatory.spawn import OrchestratorHandle, build_hermes_agent
+
+                agent = build_hermes_agent(
+                    mercury_home=self.mercury_home,
+                    session_id=ref,
+                    model=(row.get("extra") or {}).get("model"),
+                )
+                return OrchestratorHandle(
+                    node_id=node_id,
+                    engine="hermes",
+                    name=str(row.get("name") or node_id),
+                    session_ref=ref,
+                    model=(row.get("extra") or {}).get("model"),
+                    agent=agent,
+                )
+            if engine == "omp":
+                from pathlib import Path as _Path
+
+                from observatory.spawn import OrchestratorHandle, build_omp_child, omp_session_file
+
+                if ref and _Path(ref).is_file():
+                    from observatory.respawn import restart_omp_orchestrator
+
+                    child = restart_omp_orchestrator(row, mercury_home=self.mercury_home)
+                else:
+                    child = build_omp_child(
+                        model=(row.get("extra") or {}).get("model"),
+                        mercury_home=self.mercury_home,
+                    )
+                    try:
+                        live = omp_session_file(child)
+                    except Exception:
+                        live = ""
+                    if live and live != ref and self.state is not None:
+                        try:
+                            self.state.set_session_ref(node_id, live)
+                        except Exception:
+                            log.debug("fresh omp session_ref repoint failed (node %s)", node_id, exc_info=True)
+                        ref = live or ref
+                return OrchestratorHandle(
+                    node_id=node_id,
+                    engine="omp",
+                    name=str(row.get("name") or node_id),
+                    session_ref=ref,
+                    model=(row.get("extra") or {}).get("model"),
+                    rpc=child,
+                )
+        except Exception as exc:
+            log.exception("fresh child handle build failed (node %s)", node_id)
+            try:
+                self._child_resume_errors[node_id] = str(exc) or repr(exc)
+            except Exception:  # noqa: BLE001 — observability never raises
+                pass
+            return None
+        return None
+
     def _child_handle(self, node_id: str) -> Any | None:
         """Registry handle for a child node, resuming on demand.
 
@@ -2317,8 +2395,13 @@ class SidecarDaemon:
            against state.db (live row, matching session_ref — never
            resurrect an exited node via a stale entry) and handed into
            this daemon's registry, so post-boot spawns answer without a
-           sidecar restart;
-        3. single-node resume from state.db (mirrors ``respawn_pass``).
+           sidecar restart. Cross-process spawns never share this object
+           (gateway vs sidecar are separate processes sharing state.db);
+        3. never-materialized refs (spawn-fresh, zero completed turns):
+           build a FIRST-turn handle on the same ref — never cold resume
+           (the lazy file/row only materializes on the first turn, so a
+           resume would falsely report deletion);
+        4. single-node resume from state.db (mirrors ``respawn_pass``).
 
         omp handles always leave with their feed attached (registry hits
         postdate the boot attach pass — without it tool calls and
@@ -2345,6 +2428,26 @@ class SidecarDaemon:
             return None
         if row.get("status") != "live":
             return None
+        if self._is_never_materialized(row):
+            fresh = self._build_fresh_child_handle(row, node_id)
+            if fresh is None:
+                return None
+            try:
+                self._child_resume_errors.pop(node_id, None)
+            except Exception:  # noqa: BLE001 — observability never raises
+                pass
+            if registry is not None:
+                try:
+                    registry.register(fresh)
+                except Exception:
+                    log.debug("fresh child handle register failed (node %s)", node_id, exc_info=True)
+            try:
+                self.routing_log.append(f"child-fresh:{node_id}")
+            except Exception:  # noqa: BLE001 — observability never raises
+                pass
+            if str(getattr(fresh, "engine", "") or "") == "omp":
+                self._ensure_omp_feed(node_id, fresh)
+            return fresh
         engine = str(row.get("engine") or "")
         try:
             if engine == "hermes":
@@ -2704,6 +2807,13 @@ class SidecarDaemon:
                     ControlNotice(node_id, CHILD_PROMPT_FAILED_NOTICE)
                 )
                 return True
+        try:
+            if self.state is not None:
+                from observatory.spawn import mark_session_materialized
+
+                mark_session_materialized(self.state, node_id)
+        except Exception:  # noqa: BLE001 — marking never fails a turn
+            pass
         if not (reply or "").strip():
             return True
         if not quiet:
@@ -2743,6 +2853,13 @@ class SidecarDaemon:
                     ControlNotice(node_id, CHILD_PROMPT_FAILED_NOTICE)
                 )
                 return True
+            try:
+                if self.state is not None:
+                    from observatory.spawn import mark_session_materialized
+
+                    mark_session_materialized(self.state, node_id)
+            except Exception:  # noqa: BLE001 — marking never fails a turn
+                pass
             reply = ""
             if isinstance(result, dict):
                 reply = str(result.get("summary") or result.get("error") or "")
@@ -2998,8 +3115,19 @@ class SidecarDaemon:
         await self._followup_to_orchestrator(node_id, target, text, quiet=not notify)
 
     async def _followup_to_gateway(self, node_id: str, gw_id: str, text: str, *, quiet: bool = False) -> None:
-        """Gateway half of the delegate followup (transport inject)."""
+        """Gateway half of the delegate followup (transport inject).
+
+        A busy gateway still gets the child result: steer into the running
+        turn instead of dropping it (the reporter's item 2 — no report back
+        to gateway — was this early return)."""
         if self._gateway_delivery_in_flight():
+            if await self._steer_gateway_midturn(gw_id, text):
+                try:
+                    self.routing_log.append(f"gateway-followup-steer:{node_id}")
+                except Exception:
+                    pass
+                return
+            log.info("delegate followup skipped: gateway busy, steer missed (child %s)", node_id)
             return
         transport = self.gateway_transport
         if transport is None:

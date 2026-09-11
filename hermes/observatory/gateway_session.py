@@ -1058,17 +1058,30 @@ def steer_gateway_agent(text: str, *, session_id: str = GATEWAY_SESSION_ID) -> d
     soft-steer buffer lands in the running turn at the next tool boundary
     without cancelling it (CLI ``/busy steer`` parity). Never takes the
     per-session turn lock — a steer arriving mid-turn must reach the agent
-    holding it, not queue behind it. No cached agent (idle, never prompted)
-    reports ``steered=False`` so the caller falls back to a fresh prompt
-    turn. Never raises: the control-socket envelope reports the outcome.
+    holding it, not queue behind it. No cached agent after a short
+    build-window wait (idle, never prompted) reports ``steered=False`` so
+    the caller falls back to a fresh prompt turn. Never raises:
+    the control-socket envelope reports the outcome.
     """
+    import time as _time
+
     clean = (text or "").strip()
     if not clean:
         return {"steered": False, "reason": "empty steer text"}
-    with _locks_guard:
-        agent = _session_agents.get(session_id)
-    if agent is None:
-        return {"steered": False, "reason": "idle — nothing to steer"}
+    agent = None
+    deadline = _time.monotonic() + 2.0
+    while True:
+        with _locks_guard:
+            agent = _session_agents.get(session_id)
+        if agent is not None:
+            break
+        # Build-window race: the inject handler caches the agent only after
+        # taking the turn lock and building it (config + runtime, seconds).
+        # A steer landing in that window must wait for the agent, not
+        # report idle and fall back to a second turn blocked on the lock.
+        if _time.monotonic() >= deadline:
+            return {"steered": False, "reason": "idle — nothing to steer"}
+        _time.sleep(0.05)
     steer = getattr(agent, "steer", None)
     if not callable(steer):
         return {"steered": False, "reason": "agent has no steer surface"}
