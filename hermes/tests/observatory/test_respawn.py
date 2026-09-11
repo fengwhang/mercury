@@ -29,10 +29,8 @@ from observatory.spawn import (
 )
 from observatory.state import ObservatoryState, StateError
 
-# pytest-asyncio strict mode: every async test below carries the marker.
-pytestmark = pytest.mark.asyncio
-
 SERVER = "mercury.local"
+
 OWNER = "@owner:mercury.local"
 GW = "gw"
 
@@ -120,6 +118,7 @@ def make_renderer(state: ObservatoryState, client=None) -> Renderer:
 
 
 class TestRespawnPass:
+    @pytest.mark.asyncio
     async def test_resumes_hermes_and_omp_zero_agents(self, state, registry, tmp_path):
         session_file = tmp_path / "o.jsonl"
         session_file.write_text("{}\n")
@@ -143,6 +142,7 @@ class TestRespawnPass:
         assert registry.get("orch-o").rpc.session_file == str(session_file)
         assert report.failed == []
 
+    @pytest.mark.asyncio
     async def test_gateway_and_manual_runs_skipped_not_resumed(self, state, registry):
         calls: list[str] = []
 
@@ -163,6 +163,7 @@ class TestRespawnPass:
         assert report.resumed == [] and calls == []
         assert any("manual-run" in s["reason"] for s in report.skipped)
 
+    @pytest.mark.asyncio
     async def test_subagents_never_respawn(self, state, registry):
         add_node(state, "orch", "auth-refactor", engine="hermes")
         add_node(state, "sa", "test-sweep", engine="omp", parent="orch")
@@ -175,6 +176,7 @@ class TestRespawnPass:
         assert report.resumed == ["orch"]  # depth>=1 left to the stale monitor
         assert registry.get("sa") is None and registry.get("ssa") is None
 
+    @pytest.mark.asyncio
     async def test_failed_resume_reports_and_keeps_node_live(self, state, registry):
         add_node(state, "orch-o", "docs-sweep", engine="omp",
                  session_ref="/nonexistent/session.jsonl")
@@ -187,6 +189,7 @@ class TestRespawnPass:
         # D18: restart is not death — the row stays live for the operator
         assert state.get("orch-o")["status"] == "live"
 
+    @pytest.mark.asyncio
     async def test_pass_is_idempotent(self, state, registry):
         add_node(state, "orch-h", "auth-refactor", engine="hermes",
                  session_ref="sess-h")
@@ -205,6 +208,7 @@ class TestRespawnPass:
             {"node_id": "orch-h", "reason": "already resumed"},
         ]
 
+    @pytest.mark.asyncio
     async def test_journal_replay_runs_before_resumes(self, state, registry):
         add_node(state, "orch-dying", "docs-sweep", engine="omp",
                  session_ref="/tmp/obs/sessions/d.jsonl")
@@ -226,6 +230,7 @@ class TestRespawnPass:
             state.get("orch-dying")
         assert report.deferred_purges == []
 
+    @pytest.mark.asyncio
     async def test_renderer_reensure_reruns_after_resume(self, state, registry):
         add_node(state, "orch-h", "auth-refactor", engine="hermes")
         client = FakeClient()
@@ -239,6 +244,7 @@ class TestRespawnPass:
         fresh = state.get("orch-h")
         assert fresh["space_id"] and fresh["room_id"]
 
+    @pytest.mark.asyncio
     async def test_state_only_pass_without_renderer(self, state, registry):
         add_node(state, "orch-h", "auth-refactor", engine="hermes",
                  session_ref="sess-h")

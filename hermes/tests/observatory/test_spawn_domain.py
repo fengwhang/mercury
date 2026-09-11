@@ -23,7 +23,6 @@ from observatory.identity import assign_slug, virtual_mxid
 from observatory.spawn import OrchestratorRegistry, spawn_orchestrator
 from observatory.state import ObservatoryState
 
-pytestmark = pytest.mark.asyncio
 
 SERVER = "mercury.local"
 LIVE = "vm"
@@ -82,6 +81,7 @@ def _gw_event(args: str = ""):
 
 
 class TestSpawnDomain:
+    @pytest.mark.asyncio
     async def test_spawn_mints_passed_domain(self, live_state, registry):
         row = await spawn_orchestrator(
             "auth-refactor", "hermes",
@@ -92,6 +92,7 @@ class TestSpawnDomain:
         assert "mercury.local" not in row["mxid"]
         assert row["mxid"] == f"@merc_{row['slug']}:{LIVE}"
 
+    @pytest.mark.asyncio
     async def test_spawn_without_server_name_raises(self, live_state, registry):
         with pytest.raises(TypeError):
             await spawn_orchestrator(
@@ -100,6 +101,7 @@ class TestSpawnDomain:
                 agent_factory=lambda: _Agent(),
             )
 
+    @pytest.mark.asyncio
     async def test_spawn_empty_server_name_raises(self, live_state, registry):
         with pytest.raises(ValueError, match="server_name"):
             await spawn_orchestrator(
@@ -160,6 +162,7 @@ class TestHandlerDomainPrecedence:
         h = _mixin()
         assert h._observatory_server_name(None, None) == ""
 
+    @pytest.mark.asyncio
     async def test_handler_passes_live_domain(self, live_state, monkeypatch):
         import observatory.spawn as spawn_mod
         from observatory import platform_hook
@@ -179,6 +182,7 @@ class TestHandlerDomainPrecedence:
         assert seen.get("server_name") == LIVE, seen
         assert "orch-new" in out
 
+    @pytest.mark.asyncio
     async def test_handler_refuses_without_domain(self, tmp_path, monkeypatch):
         from observatory import platform_hook
 

@@ -267,6 +267,7 @@ class InjectText:
     node_id: str
     text: str
     kind: str  # "steer" | "command"
+    quiet: bool = False  # parent-continuation inject: run the turn, skip the room reply
 
 
 @dataclass(frozen=True)
@@ -292,6 +293,7 @@ class OmpPrompt:
 
     node_id: str
     text: str
+    quiet: bool = False  # parent-continuation inject: run the turn, skip the room reply
 
 
 @dataclass(frozen=True)

@@ -35,7 +35,6 @@ from observatory.gateway_session import GATEWAY_APPROVAL_SESSION_KEY
 from observatory.identity import assign_slug, virtual_mxid
 from observatory.state import ObservatoryState
 
-pytestmark = pytest.mark.asyncio
 
 SERVER = "mercury.local"
 OWNER = "@owner:mercury.local"
@@ -124,6 +123,7 @@ async def _poll(pred):
 
 
 class TestNotifyThenApprove:
+    @pytest.mark.asyncio
     async def test_notify_then_bare_approve_resolves(self, tmp_path):
         resolver = Resolver()
         bridge, poster = make_bridge(tmp_path, resolver=resolver)
@@ -139,6 +139,7 @@ class TestNotifyThenApprove:
         assert any("approved" in m["body"] for m in poster.sent
                    if m["room_id"] == SA_ROOM)
 
+    @pytest.mark.asyncio
     async def test_bare_approve_zero_pendings_still_no_pending(self, tmp_path):
         resolver = Resolver()
         bridge, poster = make_bridge(tmp_path, resolver=resolver)
@@ -148,6 +149,7 @@ class TestNotifyThenApprove:
         assert any("no pending approval" in m["body"] for m in poster.sent
                    if m["room_id"] == SA_ROOM)
 
+    @pytest.mark.asyncio
     async def test_reply_targeted_approve_hits_right_pending(self, tmp_path):
         resolver = Resolver()
         bridge, _poster = make_bridge(tmp_path, resolver=resolver)
@@ -235,6 +237,7 @@ class TestWireSiblings:
         except Exception:
             pass
 
+    @pytest.mark.asyncio
     async def test_frame_router_mirrors_single_omp_child(self, tmp_path, monkeypatch):
         import tools.omp_rpc_transport as rpc_transport
 
@@ -316,6 +319,7 @@ class TestSameRoomBareApprove:
     """A visible gateway prompt is always resolvable by a bare /approve
     in the SAME room; a bare /approve from another room denies."""
 
+    @pytest.mark.asyncio
     async def test_gateway_prompt_then_bare_approve_same_room(self, tmp_path):
         resolver = Resolver()
         bridge, poster = make_bridge(tmp_path, resolver=resolver)
@@ -331,6 +335,7 @@ class TestSameRoomBareApprove:
         assert any("approved" in m["body"] for m in poster.sent
                    if m["room_id"] == GW_ROOM)
 
+    @pytest.mark.asyncio
     async def test_bare_approve_from_other_room_denied(self, tmp_path):
         resolver = Resolver()
         bridge, _poster = make_bridge(tmp_path, resolver=resolver)
@@ -347,6 +352,7 @@ class TestUnknownReplyFallback:
     """Reply/thread metadata the bridge never observed (stripped clients,
     unobserved event ids) falls back to the room's sole pending."""
 
+    @pytest.mark.asyncio
     async def test_reply_to_unknown_event_resolves_sole_pending(self, tmp_path):
         resolver = Resolver()
         bridge, _poster = make_bridge(tmp_path, resolver=resolver)
@@ -360,6 +366,7 @@ class TestUnknownReplyFallback:
         assert resolver.calls == [(GATEWAY_APPROVAL_SESSION_KEY, "once", "gw-1", None)]
         assert bridge.pending_for(GW, "gw-1") is None
 
+    @pytest.mark.asyncio
     async def test_reply_to_unknown_event_with_two_pendings_is_ambiguous(self, tmp_path):
         resolver = Resolver()
         bridge, poster = make_bridge(tmp_path, resolver=resolver)
@@ -377,6 +384,7 @@ class TestUnknownReplyFallback:
         assert any("2 approvals pending" in m["body"] for m in poster.sent
                    if m["room_id"] == GW_ROOM)
 
+    @pytest.mark.asyncio
     async def test_reply_to_wrong_room_prompt_still_denied(self, tmp_path):
         resolver = Resolver()
         bridge, _poster = make_bridge(tmp_path, resolver=resolver)
@@ -393,6 +401,7 @@ class TestUnknownReplyFallback:
 class TestResolverErrorKeepsPending:
     """A broken gateway resolver never drops the pending (retryable)."""
 
+    @pytest.mark.asyncio
     async def test_bare_approve_resolver_error_keeps_pending(self, tmp_path):
         class _Boom:
             def __call__(self, *a):
@@ -406,6 +415,7 @@ class TestResolverErrorKeepsPending:
         assert action == "error:resolver"
         assert bridge.pending_for(GW, "gw-1") is not None
 
+    @pytest.mark.asyncio
     async def test_forward_failure_keeps_pending_for_retry(self, tmp_path, monkeypatch):
         from observatory.approvals import ApprovalBridge
         from observatory.gateway_transport import GatewayTransportError

@@ -334,17 +334,20 @@ async def test_bug2_followup_truncates_and_marks_internal(daemon: sm.SidecarDaem
 
 
 @pytest.mark.asyncio
-async def test_bug2_routine_followup_never_injects(daemon: sm.SidecarDaemon):
+async def test_bug2_routine_followup_continues_quietly(daemon: sm.SidecarDaemon):
+    """CLI parity: a routine child result still continues the parent
+    turn — quietly (no room-visible message)."""
     await daemon.boot()
     try:
         transport = FakeTransport(reply="ok")
         daemon.gateway_transport = transport
+        sends_before = len(_sends(daemon.client))
         await daemon._maybe_post_delegate_followup(
             "deleg/0", daemon._gateway_node_id(), "rotator",
             status="completed", summary="Nightly key rotation verified complete")
-        await asyncio.sleep(0.1)
-        assert transport.prompts == []
-        assert not daemon._gateway_tasks
+        await _drain(daemon)
+        assert len(transport.prompts) == 1, "routine result must still continue the parent"
+        assert len(_sends(daemon.client)) == sends_before, "quiet turn posts no room message"
     finally:
         await daemon.shutdown()
 

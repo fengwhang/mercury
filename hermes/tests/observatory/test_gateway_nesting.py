@@ -93,3 +93,94 @@ def test_provision_intents_create_subspace_before_room(tmp_path):
                         if isinstance(i, AttachSpace) and i.child_key == GWSA)
     assert child_attach.parent_key == "gw-agent"
     assert ("CreateRoom", GWSA) in labels
+
+ORCH_CHILD = "del-1"  # delegation child of a spawned orchestrator
+
+
+def _seed_orch_child(tmp_path: Path) -> ObservatoryState:
+    """Gateway + spawned orch + delegation child parented to the orch."""
+    state = ObservatoryState(tmp_path / "state.db")
+
+    def add(node_id, name, *, parent, extra=None):
+        slug = assign_slug(name, state)
+        return state.add_node(
+            node_id, engine="hermes", name=name, slug=slug,
+            mxid=virtual_mxid(slug), session_ref=f"session:{node_id}",
+            parent_node_id=parent, extra=extra,
+        )
+
+    add(GW, "gateway agent", parent=None, extra={"kind": "gateway"})
+    add(ORCH, "carlos", parent=None)
+    add(ORCH_CHILD, "test-sweep", parent=ORCH)
+    return state
+
+
+def test_orchestrator_child_nests_under_parent_space(tmp_path):
+    """Delegation children of a spawned orchestrator nest INSIDE the
+    parent's space — never as 0-level root spaces (gateway parity)."""
+    state = _seed_orch_child(tmp_path)
+    renderer = Renderer(state, gateway_node_id=GW, server_name=SERVER,
+                        owner_mxid=OWNER, executor=None)
+    plan = renderer.build_plan(host="gatehost")
+    orch = next(s for s in plan.subspaces if s.key == ORCH)
+    assert [r.key for r in orch.rooms] == [ORCH]
+    assert [s.key for s in orch.subspaces] == [ORCH_CHILD]
+    assert [r.key for r in orch.subspaces[0].rooms] == [ORCH_CHILD]
+    # Still exactly the root children: gw-agent + one orch subspace.
+    assert [s.key for s in plan.subspaces] == ["gw-agent", ORCH]
+
+
+def test_orchestrator_child_provision_attaches_under_parent(tmp_path):
+    """Provision intents attach the orch child's space to the orch space."""
+    state = _seed_orch_child(tmp_path)
+    renderer = Renderer(state, gateway_node_id=GW, server_name=SERVER,
+                        owner_mxid=OWNER, executor=None)
+    plan = renderer.build_plan(host="gatehost")
+    intents = renderer.plan_provision({"spaces": {}, "rooms": {}}, plan)
+    child_attach = next(i for i in intents
+                        if isinstance(i, AttachSpace) and i.child_key == ORCH_CHILD)
+    assert child_attach.parent_key == ORCH
+    assert ("CreateRoom", ORCH_CHILD) in [
+        (type(i).__name__, getattr(i, "key", None)) for i in intents
+    ]
+
+
+def test_orchestrator_child_death_clears_space(tmp_path):
+    """Depth-1 orch child death purges its own space+room, detaches from
+    the orch space, and lands the summary in the ORCH room."""
+    from observatory.renderer import DetachChild, PurgeRoom, SendMessage
+
+    state = _seed_orch_child(tmp_path)
+    state.set_space_id(GW, "!gw-space:x")
+    state.set_space_id(ORCH, "!sp-orch:x")
+    state.set_room_id(ORCH, "!room-orch:x")
+    state.set_space_id(ORCH_CHILD, "!sp-del:x")
+    state.set_room_id(ORCH_CHILD, "!room-del:x")
+    renderer = Renderer(state, gateway_node_id=GW, server_name=SERVER,
+                        owner_mxid=OWNER, executor=None)
+    intents = renderer.plan_death(ORCH_CHILD, status="failed", summary="boom")
+    purged = {i.room_id for i in intents if isinstance(i, PurgeRoom)}
+    assert purged == {"!sp-del:x", "!room-del:x"}
+    detach = next(i for i in intents if isinstance(i, DetachChild))
+    assert detach.space_id == "!sp-orch:x" and detach.child_id == "!sp-del:x"
+    summaries = [i for i in intents if isinstance(i, SendMessage)]
+    assert len(summaries) == 1 and summaries[0].room_key == ORCH
+
+
+def test_depth2_grandchild_settles_without_purge(tmp_path):
+    """Depth>=2 settles: marker in its own room, summary to the parent —
+    artifacts survive until the parent dies (D8)."""
+    from observatory.renderer import PurgeRoom, SendMessage
+
+    state = _seed_orch_child(tmp_path)
+    state.add_node(
+        "del-1/0", engine="hermes", name="lint", slug="lint-x",
+        mxid="@merc_lint:x", session_ref="session:del-1/0",
+        parent_node_id=ORCH_CHILD,
+    )
+    renderer = Renderer(state, gateway_node_id=GW, server_name=SERVER,
+                        owner_mxid=OWNER, executor=None)
+    intents = renderer.plan_death("del-1/0", status="completed", summary="ok")
+    assert not [i for i in intents if isinstance(i, PurgeRoom)]
+    rooms = {i.room_key for i in intents if isinstance(i, SendMessage)}
+    assert rooms == {"del-1/0", ORCH_CHILD}
