@@ -5496,28 +5496,29 @@ def run_setup_wizard(args):
     # models: block and re-render the omp: subtree so the omp engine inherits
     # the same models/approvals/deny rules. Non-fatal on failure (the engines
     # still run hermes-configured; `mercury omp-sync` retries by hand).
-    # Shared-bank default (no manual plugin step): fresh installs get
+    # Local mnemosyne default (no manual plugin step): fresh installs get
     # memory.provider=mnemosyne (in-tree wrapper, FTS-first) plus the
     # mnemosyne-hermes [embeddings] package re-verified; explicit user
-    # backends are never clobbered (silent keep).
+    # backends are never clobbered (silent keep). Render the omp subtree
+    # BEFORE the preflight so first boot already reads unified.
     try:
         from mercury_cli.memory_setup import ensure_mnemosyne_default
         _mem_provider = ensure_mnemosyne_default(verbose=True)
     except Exception as _exc:  # noqa: BLE001
         _mem_provider = ""
         print_info(f"memory default skipped ({_exc}) — run 'mercury memory setup' later")
-    if _mem_provider == "mnemosyne":
-        try:
-            from mercury_cli.memory_setup import _report_mnemosyne_preflight
-            _report_mnemosyne_preflight()
-        except Exception as _exc:  # noqa: BLE001
-            print_info(f"shared-bank preflight skipped ({_exc})")
     try:
         from mercury_cli.omp_sync import sync_omp_from_setup
         print()
         sync_omp_from_setup()
     except Exception as _exc:  # noqa: BLE001
         print_info(f"omp sync skipped ({_exc}) — run 'mercury omp-sync' later")
+    if _mem_provider == "mnemosyne":
+        try:
+            from mercury_cli.memory_setup import _report_mnemosyne_preflight
+            _report_mnemosyne_preflight()
+        except Exception as _exc:  # noqa: BLE001
+            print_info(f"local mnemosyne preflight skipped ({_exc})")
     return result
 
 

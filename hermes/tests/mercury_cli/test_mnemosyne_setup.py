@@ -203,3 +203,98 @@ def test_preflight_honors_omp_dbpath_pin(tmp_path, monkeypatch):
         tmp_path, monkeypatch)
     assert report["ok"] is True
     assert report["bank_path"] == str(custom)
+
+def test_ensure_stamps_both_sides_unified_fts_on_empty_config(tmp_path, monkeypatch, capsys):
+    """Fresh install (empty config) lands unified: mnemopi + FTS-only both sides."""
+    from plugins.memory.mnemosyne import format_preflight, preflight_shared_bank
+
+    cfg = tmp_path / "config.yaml"
+    _write_config(cfg, "models:\n  default: prov/m-1\n")
+    monkeypatch.setenv("MERCURY_CONFIG", str(cfg))
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+    monkeypatch.delenv("MNEMOSYNE_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("MNEMOSYNE_EMBEDDING_DIM", raising=False)
+    monkeypatch.delenv("MNEMOSYNE_DB_PATH", raising=False)
+
+    assert ensure_mnemosyne_default(install=False, verbose=True) == "mnemosyne"
+    out = capsys.readouterr().out
+    assert "local mnemosyne" in out
+    text = cfg.read_text(encoding="utf-8")
+    assert "provider: mnemosyne" in text
+    assert "backend: mnemopi" in text
+    assert "noEmbeddings: true" in text
+    assert "scoping: global" in text
+    assert "autoRecall: true" in text
+    assert "autoRetain: true" in text
+
+    report = preflight_shared_bank()
+    assert report["ok"] is True
+    assert report["layers"]["backend"]["status"] == "ok"
+    assert report["layers"]["embedding"]["status"] == "ok"
+    assert "both FTS-only" in report["layers"]["embedding"]["detail"]
+    assert "local mnemosyne bank UNIFIED" in format_preflight(report)
+
+
+def test_preflight_vm_shape_fails_loud_then_passes_after_render(tmp_path, monkeypatch):
+    """VM fresh v0.0.41 shape: partial omp block reads as off + embeddings-on.
+
+    The omp block exists (approvals/models stamped first) but carries no
+    memory section, so the effective settings leak via the omp schema
+    defaults: backend off, embeddings ON (BAAI/bge-base-en-v1.5 768d) while
+    hermes writes FTS-only. Preflight must fail loud pre-fix and pass
+    post-fix once the render pins the unified defaults.
+    """
+    from plugins.memory.mnemosyne import format_preflight, preflight_shared_bank
+
+    vm_shape = (
+        "models:\n  default: prov/m-1\n"
+        "omp:\n  setupVersion: 2\n  tools:\n    approvalMode: \"write\"\n"
+    )
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(vm_shape, encoding="utf-8")
+    monkeypatch.setenv("MERCURY_CONFIG", str(cfg))
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+    monkeypatch.delenv("MNEMOSYNE_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("MNEMOSYNE_EMBEDDING_DIM", raising=False)
+    monkeypatch.delenv("MNEMOSYNE_DB_PATH", raising=False)
+
+    report = preflight_shared_bank()
+    assert report["ok"] is False
+    assert report["layers"]["bank_file"]["status"] == "ok"
+    assert report["layers"]["bank_name"]["status"] == "ok"
+    assert report["layers"]["scoping"]["status"] == "ok"
+    assert report["layers"]["backend"]["status"] == "fail"
+    assert report["layers"]["backend"]["detail"] == "omp memory.backend='off': engines diverge; set mnemopi to unify"
+    assert report["layers"]["embedding"]["status"] == "warn"
+    assert "BAAI/bge-base-en-v1.5" in report["layers"]["embedding"]["detail"]
+    assert "768d" in report["layers"]["embedding"]["detail"]
+    assert "FTS-only" in report["layers"]["embedding"]["detail"]
+    assert "local mnemosyne bank NOT unified" in format_preflight(report)
+
+    # Post-fix: the ONE ensure pass stamps BOTH sides (hermes provider +
+    # omp backend/mnemopi FTS-only), so the same preflight now passes.
+    assert ensure_mnemosyne_default(install=False) == "mnemosyne"
+    fixed = preflight_shared_bank()
+    assert fixed["ok"] is True
+    assert fixed["layers"]["backend"]["status"] == "ok"
+    assert fixed["layers"]["embedding"]["status"] == "ok"
+    assert "local mnemosyne bank UNIFIED" in format_preflight(fixed)
+    text = cfg.read_text(encoding="utf-8")
+    assert "backend: mnemopi" in text
+    assert "noEmbeddings: true" in text
+
+
+def test_ensure_never_clobbers_explicit_off(tmp_path, monkeypatch, capsys):
+    """Explicit omp backend off survives the fresh-default pass."""
+    cfg = tmp_path / "config.yaml"
+    _write_config(cfg, "models:\n  default: prov/m-1\nomp:\n  memory:\n    backend: off\n")
+    monkeypatch.setenv("MERCURY_CONFIG", str(cfg))
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+
+    from mercury_cli.memory_setup import _ensure_omp_mnemopi_defaults
+
+    assert _ensure_omp_mnemopi_defaults() is False
+    text = cfg.read_text(encoding="utf-8")
+    assert "backend: off" in text
+    assert "backend: mnemopi" not in text
+    assert "mnemopi:" not in text
