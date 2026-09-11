@@ -349,62 +349,85 @@ def omp_session_file(child: Any) -> str:
     return str(session_file)
 
 
+def _ensure_writable_dir(path: Path, *, what: str) -> Path:
+    """mkdir -p ``path`` and fail LOUD when it is not writable.
+
+    Spawn-time gate for lazy sessions: the engine materializes its handle
+    (omp JSONL after the first assistant message, hermes SessionDB row on
+    the first turn) only AFTER spawn, so spawn can only promise a
+    writable home for it — never an existing file/row.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"spawn: {what} directory {path} cannot be created ({exc}) — "
+            "refusing a spawn whose session can never materialize"
+        ) from exc
+    if not os.access(path, os.W_OK | os.X_OK):
+        raise RuntimeError(
+            f"spawn: {what} directory {path} is not writable — "
+            "refusing a spawn whose session can never materialize"
+        )
+    return path
+
+
 def validate_spawn_session_ref(
     engine: str,
     session_ref: str,
     *,
     mercury_home: str | Path | None = None,
 ) -> None:
-    """Fail-closed session_ref check (spawn-ghost fix, defect 2).
-    The sidecar daemon resumes post-boot spawns on demand from state.db;
-    a dangling ``session_ref`` (hermes session row gone, omp JSONL never
-    written / under another home) resumes to None and the room hears only
-    CHILD_UNAVAILABLE. Raise :class:`RuntimeError` (operator-visible via
-    the gateway ``✗ /spawn failed`` reply) instead of persisting a row
-    that can never answer.
+    """Spawn-time session_ref check: dir-writable, never file-exists.
+
+    Both engines persist lazily (omp writes its session JSONL only after
+    the first assistant message — ``SessionManager.isSessionOnDisk`` /
+    issue #8860; hermes creates its SessionDB row on the first turn via
+    ``AIAgent._ensure_db_session``), so the allocated ref canNOT exist
+    yet at spawn time. This gate therefore checks:
+
+    - hermes: the ref is a non-empty session id and the home's
+      ``hermes/`` state dir is writable (the row's future home);
+    - omp: the ref is a non-empty path INSIDE this home's
+      ``observatory/omp-sessions`` dir (a ref escaping it means the
+      child was built under another home — e.g. omp defaults landing
+      under ``~/.mercury`` — and the sidecar daemon would resume to
+      nothing) and its parent dir is writable.
+
+    The FILE/ROW-exists check lives at RESUME time
+    (``respawn.restart_omp_orchestrator`` / ``resume_hermes_orchestrator``):
+    a handle that never materializes fails stale there, never silent.
+    Raise :class:`RuntimeError` (operator-visible via the gateway
+    ``✗ /spawn failed`` reply) instead of persisting a row that can
+    never answer.
     """
     ref = str(session_ref or "")
     if engine == "hermes":
         if not ref:
             raise RuntimeError("spawn: hermes agent built without a session id")
-        try:
-            from mercury_state import SessionDB
-            home = Path(mercury_home) if mercury_home is not None else None
-            if home is not None:
-                db_path = home / "hermes" / "state.db"
-            else:
-                db_path = SessionDB().db_path
-            db = SessionDB(db_path=db_path)
-            try:
-                found = db.get_session(ref)
-            finally:
-                try:
-                    db.close()
-                except Exception:  # noqa: BLE001 — validation owns no handle
-                    pass
-        except RuntimeError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — any doubt fails closed
-            raise RuntimeError(
-                f"spawn: cannot validate hermes session {ref!r} "
-                f"({exc}) — refusing a dangling session_ref"
-            ) from exc
-        if found is None:
-            raise RuntimeError(
-                f"spawn: hermes session {ref!r} not found in {db_path} "
-                "(deleted without /exit?) — refusing a dangling session_ref"
-            )
+        home = Path(mercury_home) if mercury_home is not None else None
+        if home is not None:
+            _ensure_writable_dir(home / "hermes", what="hermes session")
+        return
     elif engine == "omp":
         if not ref:
             raise RuntimeError("spawn: omp child reported no session file")
-        if not Path(ref).is_file():
+        expected_dir = omp_sessions_dir(mercury_home)
+        try:
+            Path(ref).expanduser().resolve().relative_to(expected_dir.resolve())
+            inside = True
+        except ValueError:
+            inside = False
+        if not inside:
             raise RuntimeError(
-                f"spawn: omp session file {ref!r} is gone "
-                "(never written or under another home?) "
-                "— refusing a dangling session_ref"
+                f"spawn: omp session file {ref!r} escapes this home's "
+                f"sessions dir ({expected_dir}) — the child was built "
+                "under another home and the sidecar daemon would resume "
+                "to nothing (pass the live boot's mercury home)"
             )
-    else:
-        raise ValueError(f"spawn: engine must be one of {ENGINES}, got {engine!r}")
+        _ensure_writable_dir(Path(ref).expanduser().parent, what="omp session")
+        return
+    raise ValueError(f"spawn: engine must be one of {ENGINES}, got {engine!r}")
 
 
 async def _register_spawn_ghost(renderer: Any, mxid: str) -> None:

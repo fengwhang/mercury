@@ -32,19 +32,19 @@ from observatory.spawn import (
     exit_orchestrator,
     finish_exit,
     omp_session_file,
+    omp_sessions_dir,
     omp_spawn_argv,
     read_purge_journal,
     replay_purge_journal,
     serialize_intents,
     spawn_orchestrator,
+    validate_spawn_session_ref,
 )
 from observatory.state import ObservatoryState, StateError
 
-# pytest-asyncio strict mode: every async test below carries the marker.
 SERVER = "mercury.local"
 OWNER = "@owner:mercury.local"
 GW = "gw"
-pytestmark = pytest.mark.asyncio
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +221,7 @@ def engines() -> Engines:
 
 
 class TestSpawn:
+    @pytest.mark.asyncio
     async def test_spawn_hermes_registers_depth0_node(self, state, registry, engines):
         row = await spawn_orchestrator(
             "auth-refactor",
@@ -242,6 +243,7 @@ class TestSpawn:
         assert handle.agent is engines.agents[0]
         assert handle.engine == "hermes"
 
+    @pytest.mark.asyncio
     async def test_spawn_omp_registers_session_file(self, state, registry, engines, tmp_path):
         row = await spawn_orchestrator(
             "docs-sweep",
@@ -259,6 +261,7 @@ class TestSpawn:
         handle = registry.get(row["node_id"])
         assert handle.rpc is engines.omps[0]
 
+    @pytest.mark.asyncio
     async def test_spawn_gets_space_and_room_via_renderer_intents(
         self, state, registry, engines
     ):
@@ -285,6 +288,7 @@ class TestSpawn:
             for c in client.calls
         )
 
+    @pytest.mark.asyncio
     async def test_spawn_slug_reuse_only_when_predecessor_dead(
         self, state, registry, engines
     ):
@@ -307,6 +311,7 @@ class TestSpawn:
         assert third["slug"] == "auth-2"
         assert third["mxid"] == second["mxid"]  # MXID inherited, nothing else
 
+    @pytest.mark.asyncio
     async def test_spawn_validates_name_and_engine(self, state, registry):
         with pytest.raises(ValueError, match="name"):
             await spawn_orchestrator("  ", "hermes", server_name=SERVER, state=state, registry=registry)
@@ -328,6 +333,46 @@ class TestSpawn:
         )
         assert "--resume" in resume and "/tmp/s.jsonl" in resume
         assert "--session-dir" not in resume
+
+class TestSpawnValidation:
+    """Spawn-time gate: dir-writable, never file-exists (lazy sessions
+    materialize only after the first turn)."""
+
+    def test_lazy_omp_file_passes(self, tmp_path):
+        ref = str(omp_sessions_dir(tmp_path) / "lazy.jsonl")
+        validate_spawn_session_ref("omp", ref, mercury_home=tmp_path)
+        assert not Path(ref).exists()  # still lazy — and still accepted
+
+    def test_omp_ref_outside_home_fails_loud(self, tmp_path):
+        with pytest.raises(RuntimeError, match="escapes this home"):
+            validate_spawn_session_ref(
+                "omp", str(tmp_path / "elsewhere" / "s.jsonl"),
+                mercury_home=tmp_path / "home",
+            )
+
+    def test_omp_empty_ref_fails(self, tmp_path):
+        with pytest.raises(RuntimeError, match="no session file"):
+            validate_spawn_session_ref("omp", "", mercury_home=tmp_path)
+
+    def test_fresh_hermes_id_passes_without_row(self, tmp_path):
+        validate_spawn_session_ref("hermes", "sess-fresh", mercury_home=tmp_path)
+
+    def test_hermes_empty_id_fails(self, tmp_path):
+        with pytest.raises(RuntimeError, match="without a session id"):
+            validate_spawn_session_ref("hermes", "", mercury_home=tmp_path)
+
+    def test_unknown_engine_fails(self, tmp_path):
+        with pytest.raises(ValueError, match="engine must be"):
+            validate_spawn_session_ref("telegram", "x", mercury_home=tmp_path)
+
+    def test_unwritable_parent_dir_fails(self, tmp_path):
+        blocker = omp_sessions_dir(tmp_path) / "blocker"
+        blocker.write_text("not a dir")
+        with pytest.raises(RuntimeError, match="cannot be created"):
+            validate_spawn_session_ref(
+                "omp", str(blocker / "s.jsonl"),
+                mercury_home=tmp_path,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +429,7 @@ def seed_orchestrator_with_children(state: ObservatoryState, engines_like="herme
 
 
 class TestExit:
+    @pytest.mark.asyncio
     async def test_exit_purges_whole_subtree_and_drops_rows(
         self, state, registry, engines
     ):
@@ -412,6 +458,7 @@ class TestExit:
         assert agent.closed  # engine killed after the durable mark
         assert out["deferred"] == []
 
+    @pytest.mark.asyncio
     async def test_exit_rejects_nonzero_depth(self, state, registry):
         seed_orchestrator_with_children(state)
         with pytest.raises(ValueError, match="depth"):
@@ -423,6 +470,7 @@ class TestExit:
         assert state.get("sa")["status"] == "live"
         assert read_purge_journal(state) == []
 
+    @pytest.mark.asyncio
     async def test_begin_exit_is_one_atomic_commit(self, state):
         seed_orchestrator_with_children(state)
         commits: list[str] = []
@@ -445,6 +493,7 @@ class TestExit:
             assert state.get(node)["status"] == "dead"
         assert record.node_id == "orch"
 
+    @pytest.mark.asyncio
     async def test_replay_completes_journaled_exit_even_if_marked_live(self, state):
         # A journaled exit is dead-or-deleted in every observable state: even
         # if the rows are flipped back to 'live' under it, replay still purges.
@@ -461,6 +510,7 @@ class TestExit:
             state.get("orch")
         assert record.node_id == "orch"
 
+    @pytest.mark.asyncio
     async def test_replay_defers_on_persistent_purge_failure(self, state):
         seed_orchestrator_with_children(state)
         begin_exit(state, "orch", renderer=make_renderer(state))
@@ -482,6 +532,7 @@ class TestExit:
         with pytest.raises(StateError):
             state.get("orch")
 
+    @pytest.mark.asyncio
     async def test_replay_without_executor_defers(self, state):
         seed_orchestrator_with_children(state)
         begin_exit(state, "orch", renderer=make_renderer(state))
@@ -489,6 +540,7 @@ class TestExit:
         assert len(deferred) == 1
         assert state.get("orch")["status"] == "dead"
 
+    @pytest.mark.asyncio
     async def test_finish_exit_is_atomic_single_commit(self, state):
         seed_orchestrator_with_children(state)
         record = begin_exit(state, "orch", renderer=make_renderer(state))

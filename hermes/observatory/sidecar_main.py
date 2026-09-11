@@ -175,7 +175,7 @@ GATEWAY_PROMPT_WORKING_NOTICE = (
 #: child's own voice when its engine handle cannot be reached or a turn
 #: fails. Replies themselves render via the renderer, never these.
 CHILD_UNAVAILABLE_NOTICE = (
-    "⚠ this room's session is unavailable — restart the sidecar to resume it."
+    "⚠ this room's session is unavailable — retry shortly; still failing? see the sidecar log."
 )
 CHILD_PROMPT_FAILED_NOTICE = (
     "⚠ prompt failed — see the sidecar log"
@@ -1686,6 +1686,17 @@ class SidecarDaemon:
                         if self.state.get(target)["status"] == "live":
                             await self.renderer.render_death(
                                 target, status=str(feed.get("status") or "completed"))
+                            try:
+                                row = self.state.get(target)
+                            except StateError:
+                                row = None
+                            if row is not None:
+                                await self._maybe_post_delegate_followup(
+                                    target, str(row.get("parent_node_id") or ""),
+                                    str(row.get("name") or target),
+                                    status=str(feed.get("status") or "completed"),
+                                    summary=None,
+                                )
                     except StateError:
                         pass
                     return
@@ -1985,6 +1996,12 @@ class SidecarDaemon:
             try:
                 if self.state.get(node_id)["status"] == "live":
                     await self.renderer.render_death(node_id, status=event.status)
+                    await self._maybe_post_delegate_followup(
+                        node_id, parent_node_id,
+                        str(event.agent or event.task or event.subagent_id),
+                        status=str(event.status or ""),
+                        summary=None,
+                    )
             except StateError:
                 pass
             return node_id
@@ -2187,8 +2204,16 @@ class SidecarDaemon:
                 # Spawn-ghost decoupling (defect 2): the engine turn runs FIRST
                 # and independent of notices — a child-voice notice send that
                 # fails (unknown ghost, dead crypto) must never veto delivery.
-                await self._execute_child_actions(outcome)
+                missing = await self._execute_child_actions(outcome)
                 for notice in outcome.notices:
+                    if (
+                        missing
+                        and getattr(notice, "body", "") == QUEUED_STEER_NOTICE
+                        and getattr(notice, "node_id", "") in missing
+                    ):
+                        # Nothing was queued (no live session to steer into);
+                        # the session-unavailable notice is the truthful ack.
+                        continue
                     try:
                         await self._post_notice(notice)
                     except Exception:  # noqa: BLE001 — notices never veto delivery
@@ -2282,12 +2307,23 @@ class SidecarDaemon:
     def _child_handle(self, node_id: str) -> Any | None:
         """Registry handle for a child node, resuming on demand.
 
-        The spawn path registers into the gateway-thread boot registry
-        (``platform_hook.LAST_BOOT``), which the daemon adopts at boot —
-        but a child spawned after boot, or a handle lost to a restart
-        without respawn, is visible in state.db with no live handle.
-        That single-node resume mirrors ``respawn_pass`` (never raises:
-        None means the room hears CHILD_UNAVAILABLE).
+        Lookup order (never raises — None means the room hears the
+        session-unavailable notice):
+
+        1. this daemon's ``registry`` (adopted at boot from
+           ``platform_hook.LAST_BOOT``);
+        2. the LIVE ``platform_hook.LAST_BOOT`` registry — a child
+           spawned after boot registers on the gateway thread, which the
+           boot-time adopt cannot see. A handle found here is verified
+           against state.db (live row, matching session_ref — never
+           resurrect an exited node via a stale entry) and handed into
+           this daemon's registry, so post-boot spawns answer without a
+           sidecar restart;
+        3. single-node resume from state.db (mirrors ``respawn_pass``).
+
+        omp handles always leave with their feed attached (registry hits
+        postdate the boot attach pass — without it tool calls and
+        thinking never stream into the room).
         """
         registry = self.registry
         if registry is not None:
@@ -2296,7 +2332,12 @@ class SidecarDaemon:
             except Exception:
                 handle = None
             if handle is not None:
+                if str(getattr(handle, "engine", "") or "") == "omp":
+                    self._ensure_omp_feed(node_id, handle)
                 return handle
+        live = self._adopt_live_spawn_handle(node_id)
+        if live is not None:
+            return live
         if self.state is None:
             return None
         try:
@@ -2361,6 +2402,66 @@ class SidecarDaemon:
             self._ensure_omp_feed(node_id, handle)
         return handle
 
+    def _adopt_live_spawn_handle(self, node_id: str) -> Any | None:
+        """Adopt a post-boot spawn handle from the live boot registry.
+
+        The gateway thread registers every spawn into
+        ``platform_hook.LAST_BOOT.registry``; this daemon adopted that
+        object only once at boot, so a LATER boot (gateway update,
+        re-provision) or a daemon started before the gateway boot leaves
+        this daemon looking at a different registry object. Consult the
+        live one on every miss, verify it against state.db, and hand it
+        over. Never raises (None = fall through to on-demand resume).
+        """
+        try:
+            from observatory import platform_hook
+        except Exception:
+            return None
+        try:
+            last = getattr(platform_hook, "LAST_BOOT", None)
+            live_registry = getattr(last, "registry", None)
+            if live_registry is None or live_registry is self.registry:
+                return None
+            handle = live_registry.get(node_id)
+        except Exception:
+            return None
+        if handle is None:
+            return None
+        try:
+            if self.state is None:
+                return None
+            row = self.state.get(node_id)
+        except StateError:
+            return None
+        if row.get("status") != "live":
+            return None
+        try:
+            if str(getattr(handle, "session_ref", "") or "") != str(row.get("session_ref") or ""):
+                log.warning(
+                    "live spawn handle session mismatch (node %s) — "
+                    "ignoring stale gateway entry, resuming on demand",
+                    node_id,
+                )
+                return None
+        except Exception:
+            return None
+        try:
+            self._child_resume_errors.pop(node_id, None)
+        except Exception:  # noqa: BLE001 — observability never raises
+            pass
+        if self.registry is not None:
+            try:
+                self.registry.register(handle)
+            except Exception:
+                log.debug("live spawn handle register failed (node %s)", node_id, exc_info=True)
+        try:
+            self.routing_log.append(f"child-adopted:{node_id}")
+        except Exception:  # noqa: BLE001 — observability never raises
+            pass
+        if str(getattr(handle, "engine", "") or "") == "omp":
+            self._ensure_omp_feed(node_id, handle)
+        return handle
+
     def _ensure_omp_feed(self, node_id: str, handle: Any) -> None:
         """Attach one OmpFeed for an omp handle missing it (spawn-time
         handles postdate the boot attach pass). Never raises."""
@@ -2399,7 +2500,7 @@ class SidecarDaemon:
         if exc is not None:
             log.error("child delivery task failed: %r", exc)
 
-    async def _execute_child_actions(self, outcome: Any) -> None:
+    async def _execute_child_actions(self, outcome: Any) -> set[str]:
         """Run non-gateway control actions against the daemon registry.
 
         Reached only for outcomes the gateway/verb handlers did not claim:
@@ -2407,14 +2508,20 @@ class SidecarDaemon:
         fan-out. Previously these were only logged ("pending transport")
         — the spawned orchestrator never answered. Per-action isolation:
         one bad action never blocks its siblings or the intake.
+
+        Returns the node ids whose action found NO live handle (the
+        caller drops their "queued steer" notice — nothing was queued,
+        and the session-unavailable notice already posted is the
+        truthful ack).
         """
+        missing: set[str] = set()
         try:
             actions = list(getattr(outcome, "actions", ()) or ())
         except Exception:
-            return
+            return missing
         for action in actions:
             try:
-                await self._execute_child_action(action)
+                node_id = await self._execute_child_action(action)
             except Exception:  # noqa: BLE001 — intake survives handler bugs
                 log.exception("child action failed: %r", action)
                 try:
@@ -2423,74 +2530,98 @@ class SidecarDaemon:
                     )
                 except Exception:
                     pass
+            else:
+                if node_id:
+                    missing.add(node_id)
+        return missing
 
-    async def _execute_child_action(self, action: Any) -> None:
-        """Dispatch one routed action to its engine transport."""
+    async def _execute_child_action(self, action: Any) -> str | None:
+        """Dispatch one routed action to its engine transport.
+
+        Returns the action's node id when its handle is MISSING (the
+        session-unavailable notice was posted instead of delivery),
+        else None. Task-dispatched turns (InjectText/OmpPrompt) peek
+        the handle up front — a missing handle there would only
+        surface later inside the task, after the "queued steer"
+        notice already lied. ``quiet`` turn actions run the turn but
+        skip the room reply (parent-continuation injects).
+        """
         if isinstance(action, InjectText):
             # Hermes-side child (steer, or a session-scoped command that
             # is not a gateway-lifecycle verb). Long turn — background
             # task so the intake never blocks.
             node_id = str(action.node_id)
+            quiet = bool(getattr(action, "quiet", False))
             try:
                 task = asyncio.create_task(
                     self._run_hermes_child_turn(
                         node_id,
                         str(action.text),
                         kind=str(getattr(action, "kind", "") or "steer"),
+                        quiet=quiet,
                     ),
                     name=f"observatory-child-turn-{node_id}",
                 )
             except RuntimeError:
-                await self._run_hermes_child_turn(
+                return node_id if await self._run_hermes_child_turn(
                     node_id,
                     str(action.text),
                     kind=str(getattr(action, "kind", "") or "steer"),
-                )
-                return
+                    quiet=quiet,
+                ) is False else None
             self._child_tasks.add(task)
             task.add_done_callback(self._child_task_done)
+            return node_id if self._child_handle(node_id) is None else None
         elif isinstance(action, OmpPrompt):
             # Omp main idle: a new turn. Busy-marked synchronously so a
             # message arriving mid-turn routes to steer, not a second
             # turn; cleared when the turn task ends (or is cancelled).
             node_id = str(action.node_id)
+            quiet = bool(getattr(action, "quiet", False))
             self._child_busy.add(node_id)
             try:
                 task = asyncio.create_task(
-                    self._run_omp_child_prompt(node_id, str(action.text)),
+                    self._run_omp_child_prompt(node_id, str(action.text), quiet=quiet),
                     name=f"observatory-child-prompt-{node_id}",
                 )
             except RuntimeError:
-                await self._run_omp_child_prompt(node_id, str(action.text))
-                return
+                return node_id if await self._run_omp_child_prompt(node_id, str(action.text), quiet=quiet) is False else None
             self._child_tasks.add(task)
             task.add_done_callback(self._child_task_done)
+            return node_id if self._child_handle(node_id) is None else None
         elif isinstance(action, OmpSteer):
-            await self._steer_omp_child(str(action.node_id), str(action.text))
+            ok = await self._steer_omp_child(str(action.node_id), str(action.text))
+            return None if ok else str(action.node_id)
         elif isinstance(action, OmpSubagentSteer):
-            await self._steer_omp_subagent(str(action.node_id), str(action.text))
+            ok = await self._steer_omp_subagent(str(action.node_id), str(action.text))
+            return None if ok else str(action.node_id)
         elif isinstance(action, AbortSession):
             await self._abort_hermes_child(
                 str(action.node_id),
                 str(getattr(action, "reason", "") or "matrix /stop"),
             )
+            return None
         elif isinstance(action, OmpAbortMain):
             await self._abort_omp_child(
                 str(action.node_id),
                 str(getattr(action, "reason", "") or "matrix /stop"),
             )
+            return None
         elif isinstance(action, OmpSubagentAbort):
             await self._abort_omp_subagent(
                 str(action.node_id),
                 str(getattr(action, "reason", "") or "matrix /stop"),
             )
+            return None
         elif isinstance(action, ResolveApproval):
             # The bridge owns approval resolution (the router table is
             # never fed — see _wire_approval_ingest); a ResolveApproval
             # reaching here has no queue behind it.
             log.info("control action pending transport: %r", action)
+            return None
         else:
             log.info("control action pending transport: %r", action)
+            return None
 
     @staticmethod
     def _run_hermes_child_turn_sync(
@@ -2528,10 +2659,13 @@ class SidecarDaemon:
         return "" if result is None else str(result)
 
     async def _run_hermes_child_turn(
-        self, node_id: str, text: str, *, kind: str = "steer"
-    ) -> None:
+        self, node_id: str, text: str, *, kind: str = "steer", quiet: bool = False
+    ) -> bool:
         """One headless turn on a hermes child's own session; the reply
-        renders in its room, in its own voice."""
+        renders in its room, in its own voice — unless ``quiet`` (a
+        routine parent-continuation: the turn still runs, the room stays
+        silent). False when no handle
+        (the session-unavailable notice posted instead)."""
         from observatory.control import ControlNotice
 
         handle = self._child_handle(node_id)
@@ -2544,7 +2678,7 @@ class SidecarDaemon:
                 cause = ""
             log.warning("hermes child turn dropped: no handle (node %s%s)", node_id, f": {cause}" if cause else "")
             await self._post_notice(ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE))
-            return
+            return False
         room_id = ""
         try:
             if self.state is not None:
@@ -2570,17 +2704,21 @@ class SidecarDaemon:
                 await self._post_notice(
                     ControlNotice(node_id, CHILD_PROMPT_FAILED_NOTICE)
                 )
-                return
+                return True
         if not (reply or "").strip():
-            return
-        try:
-            await self.renderer.render_agent_message(node_id, reply)
-        except Exception:
-            log.exception("child reply render failed (node %s)", node_id)
+            return True
+        if not quiet:
+            try:
+                await self.renderer.render_agent_message(node_id, reply)
+            except Exception:
+                log.exception("child reply render failed (node %s)", node_id)
+        return True
 
-    async def _run_omp_child_prompt(self, node_id: str, text: str) -> None:
+    async def _run_omp_child_prompt(self, node_id: str, text: str, quiet: bool = False) -> bool:
         """One omp turn (idle prompt): RPC task → summary renders in the
-        child's room, in its own voice."""
+        child's room, in its own voice — unless ``quiet`` (a routine
+        parent-continuation: the turn still runs, the room stays silent).
+        False when no handle."""
         from observatory.control import ControlNotice
 
         try:
@@ -2596,7 +2734,7 @@ class SidecarDaemon:
                 await self._post_notice(
                     ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE)
                 )
-                return
+                return False
             self._ensure_omp_feed(node_id, handle)
             try:
                 result = await asyncio.to_thread(rpc.run_task, text)
@@ -2605,36 +2743,40 @@ class SidecarDaemon:
                 await self._post_notice(
                     ControlNotice(node_id, CHILD_PROMPT_FAILED_NOTICE)
                 )
-                return
+                return True
             reply = ""
             if isinstance(result, dict):
                 reply = str(result.get("summary") or result.get("error") or "")
             elif result is not None:
                 reply = str(result)
             if not reply.strip():
-                return
-            try:
-                await self.renderer.render_agent_message(node_id, reply)
-            except Exception:
-                log.exception("child reply render failed (node %s)", node_id)
+                return True
+            if not quiet:
+                try:
+                    await self.renderer.render_agent_message(node_id, reply)
+                except Exception:
+                    log.exception("child reply render failed (node %s)", node_id)
+            return True
         finally:
             self._child_busy.discard(node_id)
 
-    async def _steer_omp_child(self, node_id: str, text: str) -> None:
+    async def _steer_omp_child(self, node_id: str, text: str) -> bool:
         """Mid-run steer over the child's RPC transport (fire-and-forget:
-        the queued-steer notice already posted is the ack)."""
+        the queued-steer notice already posted is the ack). False when
+        no handle (the session-unavailable notice posted instead)."""
         from observatory.control import ControlNotice
 
         handle = self._child_handle(node_id)
         rpc = getattr(handle, "rpc", None) if handle is not None else None
         if rpc is None:
             await self._post_notice(ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE))
-            return
+            return False
         try:
             await asyncio.to_thread(rpc.steer, text)
         except Exception:
             log.exception("omp child steer failed (node %s)", node_id)
             await self._post_notice(ControlNotice(node_id, CHILD_STEER_FAILED_NOTICE))
+        return True
 
     def _omp_subagent_target(self, node_id: str) -> tuple[Any | None, str]:
         """(ancestor rpc, subagent_id) for a grandchild node; (None, "")
@@ -2654,18 +2796,19 @@ class SidecarDaemon:
         rpc = getattr(handle, "rpc", None) if handle is not None else None
         return rpc, subagent_id
 
-    async def _steer_omp_subagent(self, node_id: str, text: str) -> None:
+    async def _steer_omp_subagent(self, node_id: str, text: str) -> bool:
         from observatory.control import ControlNotice
 
         rpc, subagent_id = self._omp_subagent_target(node_id)
         if rpc is None or not subagent_id:
             await self._post_notice(ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE))
-            return
+            return False
         try:
             await asyncio.to_thread(rpc.subagent_steer, subagent_id, text)
         except Exception:
             log.exception("omp subagent steer failed (node %s)", node_id)
             await self._post_notice(ControlNotice(node_id, CHILD_STEER_FAILED_NOTICE))
+        return True
 
     async def _abort_hermes_child(self, node_id: str, reason: str) -> None:
         """Interrupt a hermes child's in-flight turn; confirm in-room."""
@@ -2799,48 +2942,116 @@ class SidecarDaemon:
         except Exception:
             return bool(self._gateway_tasks)
 
+    def _followup_target(self, parent_id: str) -> str | None:
+        """Nearest steerable ancestor for a dead child's summary: the
+        closest ancestor at depth 0 (gateway agent or a spawned
+        orchestrator — the only nodes holding engine handles).
+        None when the chain is broken. Never raises."""
+        if self.state is None or not parent_id:
+            return None
+        try:
+            cur = str(parent_id)
+            seen: set[str] = set()
+            while cur and cur not in seen:
+                seen.add(cur)
+                try:
+                    row = self.state.get(cur)
+                except StateError:
+                    return None
+                if int(row.get("depth", 0) or 0) == 0:
+                    return cur
+                cur = str(row.get("parent_node_id") or "")
+        except Exception:  # noqa: BLE001 — followup is best-effort
+            return None
+        return None
+
     async def _maybe_post_delegate_followup(
         self, node_id: str, parent_id: str, name: str, *, status: str, summary: Any
     ) -> None:
-        """Post-delegate narration: child death under the gateway node.
+        """Post-delegate narration: child death resumes the parent.
 
-        When the parent is the gateway agent and no gateway delivery task
-        is currently running (the turn already ended), send one labeled
-        follow-up inject (kind=prompt, internal) so the gateway verifies
-        the result and replies to the room. Skipped when a delivery is in
-        flight — the summary then arrives via the delegate result — and
-        behind the BUG2 needs-room-reply gate (routine success with
-        nothing for the owner never injects). Summaries truncate to
-        FOLLOWUP_SUMMARY_MAX_CHARS.
+        CLI parity: the parent ALWAYS continues with the child result —
+        gateway and spawned orchestrators alike. The BUG2 needs-room-reply
+        gate decides only whether the ROOM sees a visible message
+        (``quiet`` continuation turns run but skip the room reply);
+        it NEVER decides whether the parent continues. Never raises.
         """
         try:
             gw_id = self._gateway_node_id()
         except Exception:
             gw_id = GATEWAY_NODE_ID
-        if parent_id != gw_id:
+        target = self._followup_target(parent_id)
+        if target is None:
             return
+        notify = bool(_needs_room_reply(summary, status))
+        if not notify:
+            log.info(
+                "delegate followup quiet continuation (child %s status %s)",
+                node_id, status,
+            )
+        text_summary = str(summary or "").strip()
+        if len(text_summary) > FOLLOWUP_SUMMARY_MAX_CHARS:
+            text_summary = text_summary[:FOLLOWUP_SUMMARY_MAX_CHARS].rstrip() + "…"
+        text = f"[subagent {name} {status}] {text_summary} verify the result and reply to the room"
+        if target == gw_id:
+            await self._followup_to_gateway(node_id, gw_id, text, quiet=not notify)
+            return
+        await self._followup_to_orchestrator(node_id, target, text, quiet=not notify)
+
+    async def _followup_to_gateway(self, node_id: str, gw_id: str, text: str, *, quiet: bool = False) -> None:
+        """Gateway half of the delegate followup (transport inject)."""
         if self._gateway_delivery_in_flight():
-            return
-        if not _needs_room_reply(summary, status):
-            log.info("delegate followup skipped: routine success (child %s status %s)", node_id, status)
             return
         transport = self.gateway_transport
         if transport is None:
             log.info("delegate followup skipped: no gateway transport (child %s)", node_id)
             return
-        text_summary = str(summary or "").strip()
-        if len(text_summary) > FOLLOWUP_SUMMARY_MAX_CHARS:
-            text_summary = text_summary[:FOLLOWUP_SUMMARY_MAX_CHARS].rstrip() + "…"
-        text = f"[subagent {name} {status}] {text_summary} verify the result and reply to the room"
         try:
             task = asyncio.create_task(
-                self._deliver_gateway_prompt(gw_id, text, kind="prompt", internal=True),
+                self._deliver_gateway_prompt(gw_id, text, kind="prompt", internal=True, quiet=quiet),
                 name=f"observatory-gateway-followup-{node_id}",
             )
         except RuntimeError:
             return
         self._gateway_tasks.add(task)
         task.add_done_callback(self._gateway_tasks.discard)
+
+    async def _followup_to_orchestrator(self, node_id: str, target_id: str, text: str, *, quiet: bool = False) -> None:
+        """Orchestrator half: steer/prompt the live parent engine."""
+        if self.state is None:
+            return
+        try:
+            row = self.state.get(target_id)
+        except StateError:
+            return
+        if row.get("status") != "live":
+            return
+        engine = str(row.get("engine") or "")
+        if engine == "hermes":
+            action: Any = InjectText(target_id, text, "steer", quiet)
+        elif engine == "omp":
+            if target_id in self._child_busy:
+                action = OmpSteer(target_id, text)
+            else:
+                action = OmpPrompt(target_id, text, quiet)
+        else:
+            return
+        if self._child_handle(target_id) is None:
+            # Resume already logged child-resume-failed; a followup the
+            # parent never asked for must not spam its room with an
+            # unavailable notice — drop it and let the next steer surface
+            # the stale session loudly instead.
+            log.info("delegate followup skipped: no parent handle (child %s)", node_id)
+            return
+        try:
+            await self._execute_child_action(action)
+        except Exception:  # noqa: BLE001 — followup never breaks death rendering
+            log.exception("orchestrator followup failed (child %s)", node_id)
+            return
+        try:
+            self.routing_log.append(f"parent-followup:{target_id}")
+        except Exception:  # noqa: BLE001 — observability never raises
+            pass
 
     async def _handle_gateway_prompt_outcome(self, outcome: Any) -> None:
         """Gateway-room text → prompt delivery (never a steer notice).
@@ -2869,8 +3080,12 @@ class SidecarDaemon:
             else:
                 log.info("control action pending transport: %r", action)
 
-    async def _deliver_gateway_prompt(self, node_id: str, text: str, *, kind: str = "prompt", internal: bool = False, room_id: str | None = None) -> None:
-        """One prompt → gateway session → batched replay + reply in the room."""
+    async def _deliver_gateway_prompt(self, node_id: str, text: str, *, kind: str = "prompt", internal: bool = False, room_id: str | None = None, quiet: bool = False) -> None:
+        """One prompt → gateway session → batched replay + reply in the room.
+
+        ``quiet`` (a routine parent-continuation): the turn still runs and
+        replays, but the room stays silent — no liveness notice, no final
+        reply render."""
         from observatory.control import ControlNotice
         # Live-ingest seq-dedupe: fresh per-node live set for this turn —
         # datagrams arriving during the turn accumulate here, and the
@@ -2909,14 +3124,16 @@ class SidecarDaemon:
 
         # BUG2: internal follow-ups post their ONE liveness notice
         # synchronously (a task races an instant fake transport and may
-        # never run before cancel).
-        if internal:
+        # never run before cancel). Quiet continuations post nothing.
+        if internal and not quiet:
             try:
                 await self._post_notice(
                     ControlNotice(node_id, GATEWAY_PROMPT_WORKING_NOTICE)
                 )
             except Exception:
                 log.debug("gateway internal liveness notice failed", exc_info=True)
+            liveness = None
+        elif internal:
             liveness = None
         else:
             async def _liveness() -> None:
@@ -3023,7 +3240,7 @@ class SidecarDaemon:
                 except Exception:
                     pass
                 return
-            if self._cot_status_event.get(node_id) and cot_status_seal_short(reply):
+            if not quiet and self._cot_status_event.get(node_id) and cot_status_seal_short(reply):
                 try:
                     if await self._cot_status_seal(node_id, reply):
                         return
@@ -3033,7 +3250,8 @@ class SidecarDaemon:
                 self._cot_status_event.pop(node_id, None)
             except Exception:
                 pass
-            await self.renderer.render_agent_message(node_id, reply)
+            if not quiet:
+                await self.renderer.render_agent_message(node_id, reply)
         finally:
             if internal:
                 self._gateway_internal_turns.pop(node_id, None)

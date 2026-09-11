@@ -531,52 +531,92 @@ async def test_notice_failure_does_not_veto_child_turn(daemon: sm.SidecarDaemon,
     finally:
         await daemon.shutdown()
 @pytest.mark.asyncio
-async def test_dangling_omp_session_ref_fails_closed(daemon: sm.SidecarDaemon):
-    """Fail-closed spawn: an omp handle with no session file raises, no row."""
+async def test_lazy_omp_session_passes_spawn_then_fails_resume(daemon: sm.SidecarDaemon):
+    """Lazy law: a not-yet-written omp JSONL PASSES spawn validation
+    (the file only materializes after the first assistant message) and
+    fails stale at RESUME time — never a loud spawn refusal."""
+    from observatory.spawn import omp_sessions_dir
+
     await daemon.boot()
     try:
         live_before = {r["node_id"] for r in daemon.state.get_live()}
-        child = FakeOmpChild(str(daemon.mercury_home / "omp-sessions" / "never-written.jsonl"))
-        with pytest.raises(RuntimeError, match="dangling session_ref"):
+        lazy_ref = str(omp_sessions_dir(daemon.mercury_home) / "lazy-not-yet-written.jsonl")
+        child = FakeOmpChild(lazy_ref)
+        row = await spawn_orchestrator(
+            "lazy",
+            "omp",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            mercury_home=daemon.mercury_home,
+            omp_child_factory=lambda: child,
+            validate_session_ref=True,
+        )
+        assert row["session_ref"] == lazy_ref
+        assert {r["node_id"] for r in daemon.state.get_live()} == live_before | {row["node_id"]}
+        assert not child.stopped  # no teardown on a passing gate
+        # Resume is where the missing file still fails (stale, never silent).
+        from observatory.respawn import restart_omp_orchestrator
+
+        with pytest.raises(RuntimeError, match="is gone"):
+            restart_omp_orchestrator(daemon.state.get(row["node_id"]))
+    finally:
+        await daemon.shutdown()
+@pytest.mark.asyncio
+async def test_fresh_hermes_session_passes_spawn_without_row(daemon: sm.SidecarDaemon):
+    """Same laziness hermes-side: the SessionDB row is created on the
+    first turn, so a fresh session id PASSES spawn validation."""
+    await daemon.boot()
+    try:
+        live_before = {r["node_id"] for r in daemon.state.get_live()}
+        agent = FakeHermesAgent("sess-fresh-zzz")
+        row = await spawn_orchestrator(
+            "fresh",
+            "hermes",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            mercury_home=daemon.mercury_home,
+            agent_factory=lambda: agent,
+            validate_session_ref=True,
+        )
+        assert row["session_ref"] == "sess-fresh-zzz"
+        assert {r["node_id"] for r in daemon.state.get_live()} == live_before | {row["node_id"]}
+        assert not agent.closed
+    finally:
+        await daemon.shutdown()
+@pytest.mark.asyncio
+async def test_omp_ref_outside_home_fails_loud_at_spawn(daemon: sm.SidecarDaemon, tmp_path):
+    """A session file escaping this home's omp-sessions dir (built under
+    another home) still fails LOUD at spawn — the daemon could never
+    resume it."""
+    await daemon.boot()
+    try:
+        live_before = {r["node_id"] for r in daemon.state.get_live()}
+        child = FakeOmpChild(str(tmp_path / "elsewhere" / "s.jsonl"))
+        with pytest.raises(RuntimeError, match="escapes this home"):
             await spawn_orchestrator(
-                "dang",
+                "stray",
                 "omp",
                 server_name=SERVER,
                 state=daemon.state,
                 registry=daemon.registry,
                 renderer=daemon.renderer,
+                mercury_home=daemon.mercury_home,
                 omp_child_factory=lambda: child,
                 validate_session_ref=True,
             )
-        assert {r["node_id"] for r in daemon.state.get_live()} == live_before
-    finally:
-        await daemon.shutdown()
-@pytest.mark.asyncio
-async def test_dangling_hermes_session_ref_fails_closed(daemon: sm.SidecarDaemon):
-    """Fail-closed spawn: a hermes session id with no SessionDB row raises."""
-    await daemon.boot()
-    try:
-        live_before = {r["node_id"] for r in daemon.state.get_live()}
-        agent = FakeHermesAgent("sess-dangling-zzz")
-        with pytest.raises(RuntimeError, match="dangling session_ref"):
-            await spawn_orchestrator(
-                "dangling",
-                "hermes",
-                server_name=SERVER,
-                state=daemon.state,
-                registry=daemon.registry,
-                renderer=daemon.renderer,
-                mercury_home=daemon.mercury_home,
-                agent_factory=lambda: agent,
-                validate_session_ref=True,
-            )
+        assert child.stopped  # dangling child torn down, never leaked
         assert {r["node_id"] for r in daemon.state.get_live()} == live_before
     finally:
         await daemon.shutdown()
 @pytest.mark.asyncio
 async def test_dangling_resume_surfaces_operator_visible_error(daemon: sm.SidecarDaemon):
     """A live row whose session is gone logs child-resume-failed and still
-    tells the room (CHILD_UNAVAILABLE) — never silence."""
+    tells the room (session-unavailable) — never silence, and never a
+    false 'queued steer' alongside it."""
     await daemon.boot()
     try:
         agent = FakeHermesAgent("sess-gone-zzz")
@@ -595,8 +635,250 @@ async def test_dangling_resume_surfaces_operator_visible_error(daemon: sm.Sideca
         await daemon._on_transaction("tx-1", [_msg(room["room_id"], "hello?")])
         await _drain(daemon)
         assert f"child-resume-failed:{node_id}" in daemon.routing_log
-        assert any(
-            "unavailable" in c[2] for c in _room_sends(daemon, room["room_id"])
+        sends = _room_sends(daemon, room["room_id"])
+        assert any("unavailable" in c[2] for c in sends)
+        assert not any("queued steer" in c[2] for c in sends)
+    finally:
+        await daemon.shutdown()
+# ---------------------------------------------------------------------------
+# Child-lost regressions: post-boot spawns answer without a restart.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_post_boot_spawn_visible_without_restart(daemon: sm.SidecarDaemon, monkeypatch):
+    """A spawn landing in the gateway-thread boot registry AFTER the
+    daemon's boot adopt is still served: the daemon adopts the live
+    handle on first use (no restart), with no unavailable notice."""
+    from observatory import platform_hook
+    from observatory.spawn import OrchestratorRegistry
+
+    await daemon.boot()
+    try:
+        agent = FakeHermesAgent("sess-postboot")
+        gateway_registry = OrchestratorRegistry()
+        row = await spawn_orchestrator(
+            "postboot",
+            "hermes",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=gateway_registry,
+            renderer=daemon.renderer,
+            agent_factory=lambda: agent,
         )
+        node_id = row["node_id"]
+        room = daemon.state.get(node_id)
+        assert daemon.registry.get(node_id) is None  # boot adopt cannot see it
+        monkeypatch.setattr(
+            platform_hook, "LAST_BOOT",
+            SimpleNamespace(registry=gateway_registry, mercury_home=str(daemon.mercury_home)),
+        )
+        await daemon._on_transaction("tx-1", [_msg(room["room_id"], "hello postboot")])
+        await _drain(daemon)
+        assert agent.turns == ["hello postboot"]
+        assert daemon.registry.get(node_id) is not None
+        assert f"child-adopted:{node_id}" in daemon.routing_log
+        sends = _room_sends(daemon, room["room_id"])
+        assert any(c[2] == "echo:hello postboot" for c in sends)
+        assert not any("unavailable" in c[2] for c in sends)
+    finally:
+        await daemon.shutdown()
+@pytest.mark.asyncio
+async def test_steer_working_child_never_posts_unavailable(daemon: sm.SidecarDaemon):
+    """Steering a WORKING (busy) child posts queued-steer and steers —
+    never the session-unavailable notice alongside it."""
+    await daemon.boot()
+    try:
+        child = FakeOmpChild(str(daemon.mercury_home / "omp-sessions" / "working.jsonl"))
+        row = await spawn_orchestrator(
+            "working",
+            "omp",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            mercury_home=daemon.mercury_home,
+            omp_child_factory=lambda: child,
+        )
+        node_id = row["node_id"]
+        room = daemon.state.get(node_id)
+        daemon._child_busy.add(node_id)  # mid-turn: the next message steers
+        try:
+            await daemon._on_transaction("tx-1", [_msg(room["room_id"], "keep going")])
+        finally:
+            daemon._child_busy.discard(node_id)
+        assert child.steers == ["keep going"]
+        sends = _room_sends(daemon, room["room_id"])
+        assert any("queued steer" in c[2] for c in sends)
+        assert not any("unavailable" in c[2] for c in sends)
+    finally:
+        await daemon.shutdown()
+def test_registry_hit_attaches_omp_feed(daemon: sm.SidecarDaemon):
+    """Same-process registry hits (adopted at boot) still get their omp
+    feed — otherwise tool calls and thinking never stream."""
+    from observatory.spawn import OrchestratorHandle, OrchestratorRegistry
+
+    daemon.registry = OrchestratorRegistry()
+    child = FakeOmpChild(str(daemon.mercury_home / "omp-sessions" / "fed.jsonl"))
+    handle = OrchestratorHandle(
+        node_id="orch-fed", engine="omp", name="fed",
+        session_ref=child.session_file, rpc=child,
+    )
+    daemon.registry.register(handle)
+    assert daemon._child_handle("orch-fed") is handle
+    assert "orch-fed" in daemon.omp_feeds
+def test_unavailable_notice_needs_no_restart():
+    """The unavailable notice never orders a sidecar restart the user
+    should never need — it says retry."""
+    assert "restart the sidecar" not in sm.CHILD_UNAVAILABLE_NOTICE
+    assert "retry" in sm.CHILD_UNAVAILABLE_NOTICE
+
+
+async def _seed_orch_with_child(daemon, *, engine, handle):
+    """Spawned orch (registered handle) + live delegation child row."""
+    from observatory.identity import assign_slug, virtual_mxid
+
+    row = await spawn_orchestrator(
+        "carlos",
+        engine,
+        server_name=SERVER,
+        state=daemon.state,
+        registry=daemon.registry,
+        renderer=daemon.renderer,
+        mercury_home=daemon.mercury_home,
+        **handle,
+    )
+    orch_id = row["node_id"]
+    slug = assign_slug("test-sweep", daemon.state)
+    daemon.state.add_node(
+        "del-1", engine="hermes", name="test-sweep", slug=slug,
+        mxid=virtual_mxid(slug, server_name=SERVER),
+        session_ref="delegation:del-1", parent_node_id=orch_id,
+        extra={"delegation_id": "del-1", "task_index": 0},
+    )
+    return orch_id
+
+
+@pytest.mark.asyncio
+async def test_parent_resume_injects_into_hermes_orchestrator(daemon: sm.SidecarDaemon):
+    """Child death under a spawned hermes orch continues the parent's
+    turn: the summary injects as a steer and the reply lands in the
+    parent's room."""
+    await daemon.boot()
+    try:
+        agent = FakeHermesAgent("sess-orch")
+        orch_id = await _seed_orch_with_child(
+            daemon, engine="hermes", handle={"agent_factory": lambda: agent})
+        orch_room = daemon.state.get(orch_id)["room_id"]
+        await daemon._maybe_post_delegate_followup(
+            "del-1", orch_id, "test-sweep",
+            status="failed", summary="error: tests failed, approval needed",
+        )
+        await _drain(daemon)
+        assert len(agent.turns) == 1
+        assert agent.turns[0].startswith("[subagent test-sweep failed]")
+        assert f"parent-followup:{orch_id}" in daemon.routing_log
+        assert any(
+            c[2].startswith("echo:[subagent test-sweep failed]")
+            for c in _room_sends(daemon, orch_room)
+        )
+    finally:
+        await daemon.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_parent_resume_prompts_idle_omp_orchestrator(daemon: sm.SidecarDaemon):
+    """Idle omp orch parent takes the summary as a new prompt turn."""
+    from observatory.spawn import omp_sessions_dir
+
+    await daemon.boot()
+    try:
+        ref = str(omp_sessions_dir(daemon.mercury_home) / "orch-parent.jsonl")
+        child = FakeOmpChild(ref)
+        orch_id = await _seed_orch_with_child(
+            daemon, engine="omp", handle={"omp_child_factory": lambda: child})
+        await daemon._maybe_post_delegate_followup(
+            "del-1", orch_id, "test-sweep",
+            status="failed", summary="error: build failed, fix needed",
+        )
+        await _drain(daemon)
+        assert len(child.prompts) == 1
+        assert child.prompts[0].startswith("[subagent test-sweep failed]")
+        assert f"parent-followup:{orch_id}" in daemon.routing_log
+    finally:
+        await daemon.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_parent_resume_steers_busy_omp_orchestrator(daemon: sm.SidecarDaemon):
+    """Busy omp orch parent takes the summary as a steer, not a turn."""
+    from observatory.spawn import omp_sessions_dir
+
+    await daemon.boot()
+    try:
+        ref = str(omp_sessions_dir(daemon.mercury_home) / "orch-busy.jsonl")
+        child = FakeOmpChild(ref)
+        orch_id = await _seed_orch_with_child(
+            daemon, engine="omp", handle={"omp_child_factory": lambda: child})
+        daemon._child_busy.add(orch_id)
+        try:
+            await daemon._maybe_post_delegate_followup(
+                "del-1", orch_id, "test-sweep",
+                status="failed", summary="error: build failed, fix needed",
+            )
+        finally:
+            daemon._child_busy.discard(orch_id)
+        assert child.steers and child.steers[0].startswith("[subagent test-sweep failed]")
+        assert not child.prompts
+    finally:
+        await daemon.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_routine_child_death_continues_parent_quietly(daemon: sm.SidecarDaemon):
+    """Routine-success child death still continues the orch parent —
+    quietly (turn runs, room stays silent)."""
+    await daemon.boot()
+    try:
+        agent = FakeHermesAgent("sess-quiet-orch")
+        orch_id = await _seed_orch_with_child(
+            daemon, engine="hermes", handle={"agent_factory": lambda: agent})
+        orch_room = daemon.state.get(orch_id)["room_id"]
+        sends_before = len(_room_sends(daemon, orch_room))
+        await daemon._maybe_post_delegate_followup(
+            "del-1", orch_id, "test-sweep",
+            status="completed", summary="tests passed",
+        )
+        await _drain(daemon)
+        assert len(agent.turns) == 1
+        assert agent.turns[0].startswith("[subagent test-sweep completed]")
+        assert f"parent-followup:{orch_id}" in daemon.routing_log
+        assert len(_room_sends(daemon, orch_room)) == sends_before
+    finally:
+        await daemon.shutdown()
+
+@pytest.mark.asyncio
+async def test_grandchild_death_walks_up_to_orchestrator(daemon: sm.SidecarDaemon):
+    """A depth-2 death resolves past its delegation parent to the live
+    orchestrator holding the engine handle."""
+    from observatory.identity import assign_slug, virtual_mxid
+
+    await daemon.boot()
+    try:
+        agent = FakeHermesAgent("sess-walkup")
+        orch_id = await _seed_orch_with_child(
+            daemon, engine="hermes", handle={"agent_factory": lambda: agent})
+        slug = assign_slug("lint", daemon.state)
+        daemon.state.add_node(
+            "del-1/0", engine="hermes", name="lint", slug=slug,
+            mxid=virtual_mxid(slug, server_name=SERVER),
+            session_ref="delegation:del-1/0", parent_node_id="del-1",
+            extra={"delegation_id": "del-1", "task_index": 1},
+        )
+        await daemon._maybe_post_delegate_followup(
+            "del-1/0", "del-1", "lint",
+            status="failed", summary="error: lint failed, fix needed",
+        )
+        await _drain(daemon)
+        assert len(agent.turns) == 1
+        assert agent.turns[0].startswith("[subagent lint failed]")
     finally:
         await daemon.shutdown()
