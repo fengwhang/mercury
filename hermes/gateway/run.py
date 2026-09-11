@@ -4075,6 +4075,11 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
         except Exception:
             logger.debug("Could not load gateway config from %s", config_path)
             raw = {}
+        try:
+            from mercury_cli.config import unwrap_hermes_subtree
+            raw = unwrap_hermes_subtree(raw)
+        except Exception:
+            pass
 
     # Overlay managed scope. read_raw_config() returns the user's raw YAML
     # WITHOUT the managed merge (that lives in load_config/_load_config_impl),
@@ -4096,6 +4101,21 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
     try:
         from mercury_cli.config import _normalize_root_model_keys
         raw = _normalize_root_model_keys(raw)
+    except Exception:
+        pass
+    try:
+        _model_cfg = raw.get("model") if isinstance(raw, dict) else None
+        _has_default = isinstance(_model_cfg, dict) and str(_model_cfg.get("default") or "").strip()
+        _unified = bool(os.environ.get("MERCURY_CONFIG", "").strip())
+        if not _has_default and not used_canonical and _unified:
+            from mercury_cli.config import get_config_path, read_raw_config
+            _canon = get_config_path()
+            if _canon != config_path:
+                _canon_cfg = read_raw_config()
+                _canon_model = _canon_cfg.get("model") if isinstance(_canon_cfg, dict) else None
+                if isinstance(_canon_model, dict) and str(_canon_model.get("default") or "").strip():
+                    raw = dict(raw)
+                    raw["model"] = _canon_model
     except Exception:
         pass
     return raw

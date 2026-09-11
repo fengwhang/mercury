@@ -1932,6 +1932,26 @@ class GatewaySlashCommandsMixin:
                                 # (merged defaults must not be persisted).
                                 from mercury_cli.config import read_user_config_raw
                                 _persist_cfg = read_user_config_raw(config_path)
+                                _persist_whole = None
+                                _persist_to_path = None
+                                _persist_unified = bool(os.environ.get("MERCURY_CONFIG", "").strip())
+                                if _persist_unified:
+                                    if _picker_profile_home is None:
+                                        try:
+                                            from mercury_cli.config import get_config_path as _canon_fn
+                                            _persist_canon = _canon_fn()
+                                        except Exception:
+                                            _persist_canon = None
+                                        if _persist_canon is not None and config_path != _persist_canon:
+                                            from mercury_cli.config import read_raw_config as _raw_fn
+                                            _persist_cfg = _raw_fn()
+                                    else:
+                                        _persist_to_path = config_path
+                                    if isinstance(_persist_cfg, dict) and "model" not in _persist_cfg:
+                                        _sub = _persist_cfg.get("hermes")
+                                        if isinstance(_sub, dict):
+                                            _persist_whole = _persist_cfg
+                                            _persist_cfg = _sub
                                 _raw_model = _persist_cfg.get("model")
                                 if isinstance(_raw_model, dict):
                                     _persist_model_cfg = _raw_model
@@ -1978,7 +1998,14 @@ class GatewaySlashCommandsMixin:
                                 else:
                                     clear_model_endpoint_credentials(_persist_model_cfg, clear_base_url=True)
                                 from mercury_cli.config import save_config
-                                save_config(_persist_cfg)
+                                if _persist_to_path is not None:
+                                    if _persist_whole is not None:
+                                        _persist_whole["hermes"] = _persist_cfg
+                                        atomic_config_write(_persist_to_path, _persist_whole)
+                                    else:
+                                        atomic_config_write(_persist_to_path, _persist_cfg)
+                                else:
+                                    save_config(_persist_cfg)
                             except Exception as e:
                                 logger.warning("Failed to persist model switch: %s", e)
 
@@ -2261,6 +2288,26 @@ class GatewaySlashCommandsMixin:
                     # defaults must not be persisted back to the user's file).
                     from mercury_cli.config import read_user_config_raw
                     cfg = read_user_config_raw(config_path)
+                    _persist_whole = None
+                    _persist_to_path = None
+                    _persist_unified = bool(os.environ.get("MERCURY_CONFIG", "").strip())
+                    if _persist_unified:
+                        if _command_profile_home is None:
+                            try:
+                                from mercury_cli.config import get_config_path as _canon_fn
+                                _persist_canon = _canon_fn()
+                            except Exception:
+                                _persist_canon = None
+                            if _persist_canon is not None and config_path != _persist_canon:
+                                from mercury_cli.config import read_raw_config as _raw_fn
+                                cfg = _raw_fn()
+                        else:
+                            _persist_to_path = config_path
+                        if isinstance(cfg, dict) and "model" not in cfg:
+                            _sub = cfg.get("hermes")
+                            if isinstance(_sub, dict):
+                                _persist_whole = cfg
+                                cfg = _sub
                     # Coerce scalar/None ``model:`` into a dict before mutation —
                     # otherwise ``cfg.setdefault("model", {})`` returns the existing
                     # scalar and the next assignment raises
@@ -2307,7 +2354,14 @@ class GatewaySlashCommandsMixin:
                     else:
                         clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
                     from mercury_cli.config import save_config
-                    save_config(cfg)
+                    if _persist_to_path is not None:
+                        if _persist_whole is not None:
+                            _persist_whole["hermes"] = cfg
+                            atomic_config_write(_persist_to_path, _persist_whole)
+                        else:
+                            atomic_config_write(_persist_to_path, cfg)
+                    else:
+                        save_config(cfg)
                 except Exception as e:
                     logger.warning("Failed to persist model switch: %s", e)
 

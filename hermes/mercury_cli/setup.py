@@ -1178,6 +1178,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     in the unified config, which both engines read.
     """
     from mercury_cli.omp_sync import qualify_omp_model as _qualify_omp_model
+    from mercury_cli.omp_sync import derive_slot_provider as _derive_slot_provider
 
     slots = _read_model_slots()
 
@@ -1188,6 +1189,7 @@ def _prompt_mercury_slots(config: dict) -> None:
         provider = str(model_cfg.get("provider") or "").strip()
         default_qualified = _qualify_omp_model(default, provider)
     except Exception:
+        provider = ""
         default_qualified = ""
 
     if default_qualified and not slots["default"]:
@@ -1223,7 +1225,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     from mercury_cli.auth import _prompt_model_selection
     from mercury_cli.models import provider_model_ids, get_pricing_for_provider
 
-    provider = slots["default"].split("/", 1)[0] if "/" in slots["default"] else ""
+    provider = provider or _derive_slot_provider(slots["default"])
     try:
         catalog = provider_model_ids(provider, force_refresh=False)
     except Exception:

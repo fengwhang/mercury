@@ -429,8 +429,16 @@ def load_cli_config() -> Dict[str, Any]:
     Credentials in ``.env`` are still loaded — this flag only suppresses
     behavioral/config settings.
     """
-    # Check user config first ({HERMES_HOME}/config.yaml)
+    # Check user config first ({HERMES_HOME}/config.yaml, or the unified
+    # Mercury file when MERCURY_CONFIG is set — that file nests the hermes
+    # config under hermes:, unwrapped below after load).
     user_config_path = _hermes_home / 'config.yaml'
+    try:
+        if os.environ.get("MERCURY_CONFIG", "").strip():
+            from mercury_cli.config import get_config_path as _canon_path_fn
+            user_config_path = _canon_path_fn()
+    except Exception:
+        pass
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
 
     # --ignore-user-config: force-skip the user config.yaml (still honor project
@@ -568,9 +576,9 @@ def load_cli_config() -> Dict[str, Any]:
     if config_path.exists():
         try:
             with open(config_path, "r", encoding="utf-8") as f:
-                from mercury_cli.config import _normalize_root_model_keys
-
-                file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
+                from mercury_cli.config import _normalize_root_model_keys, unwrap_hermes_subtree
+                file_config = unwrap_hermes_subtree(fast_safe_load(f) or {})
+                file_config = _normalize_root_model_keys(file_config)
             
             _file_has_terminal_config = "terminal" in file_config
 

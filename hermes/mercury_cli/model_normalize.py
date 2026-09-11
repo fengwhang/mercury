@@ -495,6 +495,9 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     # --- Aggregators: need vendor/model format ---
     if provider in _AGGREGATOR_PROVIDERS:
+        _self_prefix = (provider.strip().lower() + "/") if provider else ""
+        if _self_prefix and name.lower().startswith(_self_prefix):
+            name = name[len(_self_prefix):].strip() or name
         return _prepend_vendor(name)
 
     # --- OpenCode Zen / OpenCode Go: flat-namespace resellers.
