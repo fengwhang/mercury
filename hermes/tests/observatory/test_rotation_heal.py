@@ -15,9 +15,9 @@ server keeps serving old-signed OTKs. Two defenses, both fail-closed:
   ``mercury observatory trust-device --device <id>``. Approval re-trusts
   the new keys and forces Megolm rotation on the next share. Genuinely
   ambiguous keys (two DIFFERENT device IDs colliding) refuse with no
-  pending record. No room notice is ever posted for pendings (the room is
-  undecryptable in exactly this state); the setup acceptance wizard carries
-  the remedy instead.
+  pending record. Refused/pending shares post the client-agnostic
+  verify-howto notice to the gateway room only (never directives or
+  agent rooms); routine first-sight TOFU trust never posts.
 """
 
 from __future__ import annotations
@@ -532,13 +532,32 @@ class TestPendingRotation:
 @needs_stack
 class TestNoRoomNotice:
     @pytest.mark.asyncio
-    async def test_pending_report_posts_no_notice(self, tmp_path):
+    async def test_pending_report_posts_gateway_notice_only(self, tmp_path):
+        from types import SimpleNamespace
+
         mgr = _manager(tmp_path, machines={}, members=[OWNER])
+        mgr.state.add_node(
+            "gw", engine="hermes", name="gateway agent", slug="gateway-agent",
+            mxid=GW, session_ref="session:gateway", parent_node_id=None,
+            extra={"kind": "gateway"},
+        )
+        mgr.state.set_room_id("gw", ROOM)
+        mgr._machines[GW] = FakeVirtual(
+            GW, "GWDEV1",
+            SimpleNamespace(account=SimpleNamespace(fingerprint="AB12 CD34")))
+        sent: list = []
+
+        async def fake_send(room_id, *, sender, body, **_kwargs) -> str:
+            sent.append((room_id, sender, body))
+            return "$notice1"
+
+        mgr.send_encrypted_message = fake_send  # type: ignore[method-assign]
         report = {"trusted": [], "known": [], "refused": ["PHONE1"],
                   "pending": ["PHONE1"], "fetched": ["PHONE1"], "shared": []}
         assert await mgr.maybe_post_verify_notice(
-            ROOM, sender=GW, room_key="gw", report=report) is False
-        assert mgr.client.calls == []  # nothing posted to the room
+            ROOM, sender=GW, room_key="gw", report=report) is True
+        assert len(sent) == 1 and sent[0][0] == ROOM
+        assert trust_device_command("PHONE1") in sent[0][2]
 
 
 # ---------------------------------------------------------------------------
