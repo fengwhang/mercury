@@ -695,7 +695,10 @@ def _wipe_observatory(mercury_home, mode: str) -> None:
 
 def _remove_observatory_units_only() -> None:
     """Full uninstall: the home rmtree covers data, but the user units live
-    outside it — stop + remove them so no zombie homeserver survives."""
+    outside it — stop + remove them so no zombie homeserver survives.
+    Also kills stray tuwunel pids (a server started outside the unit, or
+    one that survived the unit stop, would otherwise keep running with
+    its DB deleted from under it — or recreate the DB mid-wipe)."""
     try:
         from observatory.provision import _stop_and_remove_units
         removed = _stop_and_remove_units()
@@ -703,6 +706,13 @@ def _remove_observatory_units_only() -> None:
             log_success(f"Removed observatory units: {', '.join(removed)}")
     except Exception as e:  # noqa: BLE001 — best-effort, never kills uninstall
         log_warn(f"Could not remove observatory units: {e}")
+    try:
+        from observatory.provision import _kill_stray_tuwunel
+        killed = _kill_stray_tuwunel()
+        if killed:
+            log_success(f"Stopped stray tuwunel server(s): {', '.join(map(str, killed))}")
+    except Exception as e:  # noqa: BLE001 — best-effort, never kills uninstall
+        log_warn(f"Could not stop stray tuwunel servers: {e}")
 
 
 def _ask_observatory_wipe(mercury_home) -> str | None:
