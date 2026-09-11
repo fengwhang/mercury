@@ -148,7 +148,7 @@ class TestSpawnHandlers:
         set_boot(monkeypatch, state)
         called = []
         monkeypatch.setattr(
-            spawn_mod, "run_spawn", lambda *a, **k: called.append((a, k)) or {}
+            spawn_mod, "spawn_orchestrator", lambda *a, **k: called.append((a, k)) or {}
         )
         h = _MixinHarness()
         out = await h._handle_spawn_command(gw_event())
@@ -163,7 +163,7 @@ class TestSpawnHandlers:
         set_boot(monkeypatch, state)
         seen = {}
 
-        def fake_run_spawn(name, engine, *, state=None, registry=None, **kwargs):
+        async def fake_spawn(name, engine, *, state=None, registry=None, **kwargs):
             seen["name"] = name
             seen["engine"] = engine
             node_id = "orch-new"
@@ -181,7 +181,7 @@ class TestSpawnHandlers:
             state.set_room_id(node_id, "!room-new:mercury.local")
             return row
 
-        monkeypatch.setattr(spawn_mod, "run_spawn", fake_run_spawn)
+        monkeypatch.setattr(spawn_mod, "spawn_orchestrator", fake_spawn)
         h = _MixinHarness()
         out = await h._handle_spawn_command(gw_event("docs-sweep"))
         assert seen["engine"] == "hermes"
@@ -196,11 +196,11 @@ class TestSpawnHandlers:
         set_boot(monkeypatch, state)
         seen = {}
 
-        def fake_run_spawn(name, engine, *, state=None, registry=None, **kwargs):
+        async def fake_spawn(name, engine, *, state=None, registry=None, **kwargs):
             seen["engine"] = engine
             return {"node_id": "orch-omp", "name": name}
 
-        monkeypatch.setattr(spawn_mod, "run_spawn", fake_run_spawn)
+        monkeypatch.setattr(spawn_mod, "spawn_orchestrator", fake_spawn)
         h = _MixinHarness()
         await h._handle_spawnomp_command(gw_event("lint-sweep"))
         assert seen["engine"] == "omp"
@@ -213,7 +213,7 @@ class TestSpawnHandlers:
         set_boot(monkeypatch, state)
         called = []
         monkeypatch.setattr(
-            spawn_mod, "run_spawn", lambda *a, **k: called.append((a, k)) or {}
+            spawn_mod, "spawn_orchestrator", lambda *a, **k: called.append((a, k)) or {}
         )
         h = _MixinHarness()
         out = await h._handle_spawn_command(orch_event("sneaky"))
@@ -243,7 +243,7 @@ class TestExitHandler:
         set_boot(monkeypatch, state)
         called = []
         monkeypatch.setattr(
-            spawn_mod, "run_exit", lambda *a, **k: called.append((a, k)) or {}
+            spawn_mod, "exit_orchestrator", lambda *a, **k: called.append((a, k)) or {}
         )
         h = _MixinHarness()
         out = await h._handle_exit_command(gw_event())
@@ -259,11 +259,11 @@ class TestExitHandler:
         set_boot(monkeypatch, state)
         seen = {}
 
-        def fake_run_exit(node_id, *, state=None, registry=None, renderer=None, **k):
+        async def fake_exit(node_id, *, state=None, registry=None, renderer=None, **k):
             seen["node_id"] = node_id
             return {"record": None, "records": [], "deferred": []}
 
-        monkeypatch.setattr(spawn_mod, "run_exit", fake_run_exit)
+        monkeypatch.setattr(spawn_mod, "exit_orchestrator", fake_exit)
         h = _MixinHarness()
         out = await h._handle_exit_command(orch_event())
         assert seen["node_id"] == ORCH
@@ -277,7 +277,7 @@ class TestExitHandler:
         set_boot(monkeypatch, state)
         called = []
         monkeypatch.setattr(
-            spawn_mod, "run_exit", lambda *a, **k: called.append((a, k)) or {}
+            spawn_mod, "exit_orchestrator", lambda *a, **k: called.append((a, k)) or {}
         )
         h = _MixinHarness()
         out = await h._handle_exit_command(

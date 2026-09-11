@@ -6431,7 +6431,7 @@ class GatewaySlashCommandsMixin:
         return None
 
     async def _handle_observatory_spawn(self, event: MessageEvent, *, engine: str, verb: str) -> str:
-        from observatory.spawn import run_spawn
+        from observatory.spawn import spawn_orchestrator
         name = (event.get_command_args() or "").strip()
         if not name:
             return f"usage: /{verb} <name> — name is required (D6; no goal — D9)"
@@ -6450,7 +6450,7 @@ class GatewaySlashCommandsMixin:
             where = f"gateway agent's room ({gw_room})" if gw_room else "the gateway agent's room"
             return f"🚫 /{verb} is a gateway-room-only command — accepted only from {where} (D13)."
         try:
-            row = run_spawn(name, engine, state=state, registry=registry, renderer=renderer)
+            row = await spawn_orchestrator(name, engine, state=state, registry=registry, renderer=renderer)
         except Exception as exc:
             return f"✗ /{verb} failed: {exc}"
         node_id = str((row or {}).get("node_id") or "")
@@ -6478,7 +6478,7 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_exit_command(self, event: MessageEvent) -> str:
         """Handle /exit — end the caller's spawned 0-agent (D8 cascade)."""
-        from observatory.spawn import run_exit
+        from observatory.spawn import exit_orchestrator
         handles, reason = self._observatory_handles()
         if handles is None:
             return f"✗ /exit failed: {reason}"
@@ -6499,7 +6499,7 @@ class GatewaySlashCommandsMixin:
         if target_id == gw_id or (gw_room and str(target.get("room_id") or "") == gw_room):
             return "🚫 no /exit on the gateway agent — the gateway room has no /exit (it would break the observatory surface); use /restart."
         try:
-            run_exit(target_id, state=state, registry=registry, renderer=renderer)
+            await exit_orchestrator(target_id, state=state, registry=registry, renderer=renderer)
         except Exception as exc:
             return f"✗ /exit failed: {exc}"
         name = str(target.get("name") or target_id)
