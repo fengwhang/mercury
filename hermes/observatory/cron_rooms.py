@@ -288,7 +288,7 @@ class CronRooms:
                     engine="hermes",  # the cron scheduler is hermes-side
                     name=f"cron:{display}",
                     slug=slug,
-                    mxid=virtual_mxid(slug),
+                    mxid=virtual_mxid(slug, server_name=self.renderer.server_name),
                     session_ref=f"cronjob:{job['id']}",
                     parent_node_id=self.gateway_node_id,
                     extra={"kind": tree.KIND_CRON_JOB, "job_id": job["id"]},

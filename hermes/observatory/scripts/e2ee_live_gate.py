@@ -315,7 +315,7 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
     if not have_gw:
         slug = assign_slug("e2ee-gate-gateway", state)
         state.add_node(GW, engine="hermes", name="e2ee gate gateway", slug=slug,
-                       mxid=virtual_mxid(slug), session_ref=f"session:{GW}",
+                       mxid=virtual_mxid(slug, server_name=server_name), session_ref=f"session:{GW}",
                        parent_node_id=None, extra={"kind": "gateway"})
     gw_row = state.get(GW)
     gw_mxid = gw_row["mxid"]

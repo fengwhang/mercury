@@ -426,7 +426,7 @@ class ManualRunsWatcher:
                         engine="omp",
                         name=name,
                         slug=slug,
-                        mxid=virtual_mxid(slug),
+                        mxid=virtual_mxid(slug, server_name=self.renderer.server_name),
                         session_ref=str(path),
                         extra={
                             "kind": tree.KIND_MANUAL_RUN,
