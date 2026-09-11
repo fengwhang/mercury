@@ -42,8 +42,12 @@ Assembly, in boot order:
    feeds (one :class:`~observatory.omp_feed.OmpFeed` per live RPC child).
    Gateway-node InjectText delivers over the gateway control socket
    (``inject`` verb → one headless turn → reply renders in the room);
-   the remaining engine transports (RPC steer/prompt fan-out, aborts)
-   are still pending — those ACTIONS stay logged in ``routing_log``.
+   spawned 0-agent child actions deliver against the daemon registry
+   (hermes turns run on the child's own handle, omp prompts/steers go
+   over its RPC transport, aborts interrupt) — see
+   ``_execute_child_action``. Grandchild subagent actions fan out over
+   the ancestor child's transport. Anything still without a transport
+   stays logged in ``routing_log``.
 10. **Graceful shutdown** (SIGINT/SIGTERM): stop loops + feeds +
     discovery, stop the intake, flush state, terminate an owned
     homeserver. The systemd unit never owns homeserver lifetime here
@@ -107,7 +111,7 @@ from observatory.config_gen import (
     render_sidecar_unit,
 )
 from observatory.identity import assign_slug, virtual_mxid
-from observatory.control import QUEUED_STEER_NOTICE, AbortSession, InjectText, STOP_CONFIRMED_NOTICE
+from observatory.control import QUEUED_STEER_NOTICE, AbortSession, InjectText, OmpAbortMain, OmpPrompt, OmpSteer, OmpSubagentAbort, OmpSubagentSteer, ResolveApproval, STOP_CONFIRMED_NOTICE
 from observatory.gateway_transport import (
     ControlSocketGatewayTransport,
     GatewayTransportError,
@@ -166,6 +170,18 @@ GATEWAY_PROMPT_FAILED_NOTICE = (
 GATEWAY_PROMPT_LIVENESS_AFTER_S = 90.0
 GATEWAY_PROMPT_WORKING_NOTICE = (
     "… still working — long turn in progress, reply to follow"
+)
+#: Spawned-child delivery notices (spawn-silent fix), posted in the
+#: child's own voice when its engine handle cannot be reached or a turn
+#: fails. Replies themselves render via the renderer, never these.
+CHILD_UNAVAILABLE_NOTICE = (
+    "⚠ this room's session is unavailable — restart the sidecar to resume it."
+)
+CHILD_PROMPT_FAILED_NOTICE = (
+    "⚠ prompt failed — see the sidecar log"
+)
+CHILD_STEER_FAILED_NOTICE = (
+    "⚠ steer failed — see the sidecar log"
 )
 #: BUG2 follow-up spam gate: injected delegate summaries are truncated to
 #: this many chars (the gateway turn sees the gist, the room stays quiet).
@@ -392,6 +408,16 @@ class SidecarDaemon:
         #: notice per room per process — failures after the first only log).
         self._decrypt_notified: set[str] = set()
         self.omp_feeds: dict[str, Any] = {}  # node_id -> OmpFeed
+        #: Spawned-child delivery (spawn-silent fix): in-flight child-turn
+        #: tasks (drained/cancelled like ``_gateway_tasks``), per-node
+        #: turn locks (one hermes turn at a time per child), and the
+        #: busyness set the control router's ``busy_probe`` reads (an omp
+        #: main with a turn in flight takes ``steer``; an idle one takes
+        #: ``prompt`` — without this every idle omp child steered into
+        #: the void and never answered).
+        self._child_tasks: set[asyncio.Task] = set()
+        self._child_locks: dict[str, asyncio.Lock] = {}
+        self._child_busy: set[str] = set()
 
         self._homeserver_proc: subprocess.Popen | None = None
         self._discovery_task: asyncio.Task | None = None
@@ -923,10 +949,19 @@ class SidecarDaemon:
         def pl_snapshot(room_id: str):
             return self._pl_cache.get(room_id)
 
+        def _child_busy_probe(node_id: str) -> bool:
+            # Omp mains: steer mid-run, prompt a new turn when idle. The
+            # set holds exactly the nodes with a child-turn task in
+            # flight (marked synchronously at dispatch, cleared at task
+            # end) — without a probe the router assumes busy and an idle
+            # spawned omp child steers into the void forever.
+            return node_id in self._child_busy
+
         self.control_router = ControlRouter(
             self.state,
             gateway_node_id=GATEWAY_NODE_ID,
             pl_provider=pl_snapshot,
+            busy_probe=_child_busy_probe,
         )
         # Gateway-session prompt transport FIRST: the approval resolver
         # below forwards cross-process resolutions over it.
@@ -2114,6 +2149,16 @@ class SidecarDaemon:
                 self.routing_log.append(f"approvals:{bridge_action}")
         # M4a control routing (steer/stop/verbs/commands)
         if self.control_router is not None:
+            if isinstance(event, dict) and event.get("type") == "m.room.message":
+                # Cold-start heal: rooms converged after boot (freshly
+                # spawned children) have no PL snapshot yet, and the
+                # router fails CLOSED — one live fetch per unknown room
+                # so the first message routes instead of bouncing with
+                # "still starting up". Failure keeps fail-closed.
+                try:
+                    await self._ensure_pl_for_room(str(event.get("room_id") or ""))
+                except Exception:  # noqa: BLE001 — warm failure keeps closed
+                    log.debug("pl warm failed (keeping fail-closed)", exc_info=True)
             outcomes = await self.control_router.handle_transaction(txn_id, [event])
             bridge_resolved = bridge_action in ("resolved:approve", "resolved:deny")
             for outcome in outcomes:
@@ -2139,10 +2184,7 @@ class SidecarDaemon:
                     continue
                 for notice in outcome.notices:
                     await self._post_notice(notice)
-                for action in outcome.actions:
-                    # Engine transports (gateway WS injection, RPC steer)
-                    # land with the M4a/M5 gateway-side wiring — logged here.
-                    log.info("control action pending transport: %r", action)
+                await self._execute_child_actions(outcome)
 
     def _observatory_verb(self, text: str) -> str:
         """Lowercase /verb or !verb head of an EngineCommand text, else ''."""
@@ -2164,8 +2206,8 @@ class SidecarDaemon:
         """Spawned-room /spawn+/spawnomp+/exit via the generic gateway slash
         dispatch (same transport + inject verb as gateway prompts — no second
         Matrix path). Only these observatory verbs route here; every other
-        non-gateway InjectText (child steers, session-scoped commands) stays
-        on its pending engine transport. True when handled."""
+        non-gateway InjectText (child steers, session-scoped commands)
+        delivers via _execute_child_actions. True when handled."""
         try:
             actions = list(getattr(outcome, "actions", ()) or ())
         except Exception:
@@ -2201,6 +2243,473 @@ class SidecarDaemon:
         except Exception:
             pass
         return True
+
+    async def _ensure_pl_for_room(self, room_id: str) -> None:
+        """One live PL fetch for a room missing from the D7 snapshot.
+
+        Rooms converged after boot (freshly spawned children) have no
+        snapshot entry yet, and the router fails CLOSED — without this
+        the first message in a new room always bounces with "still
+        starting up". A failed fetch keeps fail-closed (never guesses).
+        """
+        if not room_id or room_id in self._pl_cache:
+            return
+        client = self.client
+        if client is None:
+            return
+        try:
+            raw = await client.get_power_levels(room_id, sender=self.gateway_mxid)
+        except Exception:  # noqa: BLE001 — keep fail-closed
+            return
+        if not isinstance(raw, dict):
+            return
+        from observatory.control import RoomPowerLevels
+
+        self._pl_cache[room_id] = RoomPowerLevels(
+            users=dict(raw.get("users") or {}),
+            events_default=int(raw.get("events_default") or 0),
+            users_default=int(raw.get("users_default") or 0),
+        )
+
+    def _child_handle(self, node_id: str) -> Any | None:
+        """Registry handle for a child node, resuming on demand.
+
+        The spawn path registers into the gateway-thread boot registry
+        (``platform_hook.LAST_BOOT``), which the daemon adopts at boot —
+        but a child spawned after boot, or a handle lost to a restart
+        without respawn, is visible in state.db with no live handle.
+        That single-node resume mirrors ``respawn_pass`` (never raises:
+        None means the room hears CHILD_UNAVAILABLE).
+        """
+        registry = self.registry
+        if registry is not None:
+            try:
+                handle = registry.get(node_id)
+            except Exception:
+                handle = None
+            if handle is not None:
+                return handle
+        if self.state is None:
+            return None
+        try:
+            row = self.state.get(node_id)
+        except StateError:
+            return None
+        if row.get("status") != "live":
+            return None
+        engine = str(row.get("engine") or "")
+        try:
+            if engine == "hermes":
+                from observatory.respawn import resume_hermes_orchestrator
+                from observatory.spawn import OrchestratorHandle
+
+                agent = resume_hermes_orchestrator(row, mercury_home=self.mercury_home)
+                handle = OrchestratorHandle(
+                    node_id=node_id,
+                    engine="hermes",
+                    name=str(row.get("name") or node_id),
+                    session_ref=str(row.get("session_ref") or ""),
+                    model=(row.get("extra") or {}).get("model"),
+                    agent=agent,
+                )
+            elif engine == "omp":
+                from observatory.respawn import restart_omp_orchestrator
+                from observatory.spawn import OrchestratorHandle
+
+                child = restart_omp_orchestrator(row, mercury_home=self.mercury_home)
+                handle = OrchestratorHandle(
+                    node_id=node_id,
+                    engine="omp",
+                    name=str(row.get("name") or node_id),
+                    session_ref=str(row.get("session_ref") or ""),
+                    model=(row.get("extra") or {}).get("model"),
+                    rpc=child,
+                )
+            else:
+                return None
+        except Exception:
+            log.exception("child resume failed on demand (node %s)", node_id)
+            return None
+        if registry is not None:
+            try:
+                registry.register(handle)
+            except Exception:
+                log.debug(
+                    "child handle register failed (node %s)", node_id, exc_info=True
+                )
+        if engine == "omp":
+            self._ensure_omp_feed(node_id, handle)
+        return handle
+
+    def _ensure_omp_feed(self, node_id: str, handle: Any) -> None:
+        """Attach one OmpFeed for an omp handle missing it (spawn-time
+        handles postdate the boot attach pass). Never raises."""
+        try:
+            if node_id in self.omp_feeds:
+                return
+            rpc = getattr(handle, "rpc", None)
+            if rpc is None:
+                return
+            from observatory.omp_feed import OmpFeed
+
+            feed = OmpFeed(rpc)
+            self.omp_feeds[node_id] = feed
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            self._loops.append(
+                loop.create_task(
+                    self._run_omp_feed(node_id, feed),
+                    name=f"observatory-omp-feed-{node_id}",
+                )
+            )
+        except Exception:
+            log.exception("omp feed attach failed (node %s)", node_id)
+
+    def _child_task_done(self, task: asyncio.Task) -> None:
+        """Drop a finished child-turn task; surface unhandled failures."""
+        self._child_tasks.discard(task)
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+        if exc is not None:
+            log.error("child delivery task failed: %r", exc)
+
+    async def _execute_child_actions(self, outcome: Any) -> None:
+        """Run non-gateway control actions against the daemon registry.
+
+        Reached only for outcomes the gateway/verb handlers did not claim:
+        child-room steers, session-scoped commands, child stops, subagent
+        fan-out. Previously these were only logged ("pending transport")
+        — the spawned orchestrator never answered. Per-action isolation:
+        one bad action never blocks its siblings or the intake.
+        """
+        try:
+            actions = list(getattr(outcome, "actions", ()) or ())
+        except Exception:
+            return
+        for action in actions:
+            try:
+                await self._execute_child_action(action)
+            except Exception:  # noqa: BLE001 — intake survives handler bugs
+                log.exception("child action failed: %r", action)
+                try:
+                    self.routing_log.append(
+                        f"child-action-error:{type(action).__name__}"
+                    )
+                except Exception:
+                    pass
+
+    async def _execute_child_action(self, action: Any) -> None:
+        """Dispatch one routed action to its engine transport."""
+        if isinstance(action, InjectText):
+            # Hermes-side child (steer, or a session-scoped command that
+            # is not a gateway-lifecycle verb). Long turn — background
+            # task so the intake never blocks.
+            node_id = str(action.node_id)
+            try:
+                task = asyncio.create_task(
+                    self._run_hermes_child_turn(
+                        node_id,
+                        str(action.text),
+                        kind=str(getattr(action, "kind", "") or "steer"),
+                    ),
+                    name=f"observatory-child-turn-{node_id}",
+                )
+            except RuntimeError:
+                await self._run_hermes_child_turn(
+                    node_id,
+                    str(action.text),
+                    kind=str(getattr(action, "kind", "") or "steer"),
+                )
+                return
+            self._child_tasks.add(task)
+            task.add_done_callback(self._child_task_done)
+        elif isinstance(action, OmpPrompt):
+            # Omp main idle: a new turn. Busy-marked synchronously so a
+            # message arriving mid-turn routes to steer, not a second
+            # turn; cleared when the turn task ends (or is cancelled).
+            node_id = str(action.node_id)
+            self._child_busy.add(node_id)
+            try:
+                task = asyncio.create_task(
+                    self._run_omp_child_prompt(node_id, str(action.text)),
+                    name=f"observatory-child-prompt-{node_id}",
+                )
+            except RuntimeError:
+                await self._run_omp_child_prompt(node_id, str(action.text))
+                return
+            self._child_tasks.add(task)
+            task.add_done_callback(self._child_task_done)
+        elif isinstance(action, OmpSteer):
+            await self._steer_omp_child(str(action.node_id), str(action.text))
+        elif isinstance(action, OmpSubagentSteer):
+            await self._steer_omp_subagent(str(action.node_id), str(action.text))
+        elif isinstance(action, AbortSession):
+            await self._abort_hermes_child(
+                str(action.node_id),
+                str(getattr(action, "reason", "") or "matrix /stop"),
+            )
+        elif isinstance(action, OmpAbortMain):
+            await self._abort_omp_child(
+                str(action.node_id),
+                str(getattr(action, "reason", "") or "matrix /stop"),
+            )
+        elif isinstance(action, OmpSubagentAbort):
+            await self._abort_omp_subagent(
+                str(action.node_id),
+                str(getattr(action, "reason", "") or "matrix /stop"),
+            )
+        elif isinstance(action, ResolveApproval):
+            # The bridge owns approval resolution (the router table is
+            # never fed — see _wire_approval_ingest); a ResolveApproval
+            # reaching here has no queue behind it.
+            log.info("control action pending transport: %r", action)
+        else:
+            log.info("control action pending transport: %r", action)
+
+    @staticmethod
+    def _run_hermes_child_turn_sync(
+        agent: Any, node_id: str, room_id: str, text: str, kind: str
+    ) -> str:
+        """Worker-thread body: session-scoped slash dispatch, else a turn.
+
+        ``kind == "command"`` first tries the gateway slash dispatch with
+        the child's observability scope (D13 session-scoped registry).
+        There is no running loop in this thread, so a live gateway runner
+        dispatches for real; without one — or for unknown verbs — this
+        returns None and the verbatim text falls through to a model turn
+        (the same fallback the async gateway path uses).
+        """
+        if kind == "command":
+            try:
+                from observatory.gateway_session import _dispatch_slash_command
+            except Exception:
+                _dispatch_slash_command = None  # type: ignore[assignment]
+            if _dispatch_slash_command is not None:
+                try:
+                    reply = _dispatch_slash_command(
+                        text, node_id=node_id, room_id=room_id or None
+                    )
+                except Exception:
+                    reply = None
+                if reply is not None:
+                    return reply
+        result = agent.run_conversation(text)
+        if isinstance(result, dict):
+            reply = result.get("final_response", "")
+            if reply is None:
+                return ""
+            return reply if isinstance(reply, str) else str(reply)
+        return "" if result is None else str(result)
+
+    async def _run_hermes_child_turn(
+        self, node_id: str, text: str, *, kind: str = "steer"
+    ) -> None:
+        """One headless turn on a hermes child's own session; the reply
+        renders in its room, in its own voice."""
+        from observatory.control import ControlNotice
+
+        handle = self._child_handle(node_id)
+        agent = getattr(handle, "agent", None) if handle is not None else None
+        if agent is None:
+            log.warning("hermes child turn dropped: no handle (node %s)", node_id)
+            await self._post_notice(ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE))
+            return
+        room_id = ""
+        try:
+            if self.state is not None:
+                room_id = str(self.state.get(node_id).get("room_id") or "")
+        except Exception:
+            room_id = ""
+        lock = self._child_locks.get(node_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._child_locks[node_id] = lock
+        async with lock:
+            try:
+                reply = await asyncio.to_thread(
+                    self._run_hermes_child_turn_sync,
+                    agent,
+                    node_id,
+                    room_id,
+                    text,
+                    kind,
+                )
+            except Exception:
+                log.exception("hermes child turn failed (node %s)", node_id)
+                await self._post_notice(
+                    ControlNotice(node_id, CHILD_PROMPT_FAILED_NOTICE)
+                )
+                return
+        if not (reply or "").strip():
+            return
+        try:
+            await self.renderer.render_agent_message(node_id, reply)
+        except Exception:
+            log.exception("child reply render failed (node %s)", node_id)
+
+    async def _run_omp_child_prompt(self, node_id: str, text: str) -> None:
+        """One omp turn (idle prompt): RPC task → summary renders in the
+        child's room, in its own voice."""
+        from observatory.control import ControlNotice
+
+        try:
+            handle = self._child_handle(node_id)
+            rpc = getattr(handle, "rpc", None) if handle is not None else None
+            if rpc is None:
+                log.warning("omp child prompt dropped: no handle (node %s)", node_id)
+                await self._post_notice(
+                    ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE)
+                )
+                return
+            self._ensure_omp_feed(node_id, handle)
+            try:
+                result = await asyncio.to_thread(rpc.run_task, text)
+            except Exception:
+                log.exception("omp child prompt failed (node %s)", node_id)
+                await self._post_notice(
+                    ControlNotice(node_id, CHILD_PROMPT_FAILED_NOTICE)
+                )
+                return
+            reply = ""
+            if isinstance(result, dict):
+                reply = str(result.get("summary") or result.get("error") or "")
+            elif result is not None:
+                reply = str(result)
+            if not reply.strip():
+                return
+            try:
+                await self.renderer.render_agent_message(node_id, reply)
+            except Exception:
+                log.exception("child reply render failed (node %s)", node_id)
+        finally:
+            self._child_busy.discard(node_id)
+
+    async def _steer_omp_child(self, node_id: str, text: str) -> None:
+        """Mid-run steer over the child's RPC transport (fire-and-forget:
+        the queued-steer notice already posted is the ack)."""
+        from observatory.control import ControlNotice
+
+        handle = self._child_handle(node_id)
+        rpc = getattr(handle, "rpc", None) if handle is not None else None
+        if rpc is None:
+            await self._post_notice(ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE))
+            return
+        try:
+            await asyncio.to_thread(rpc.steer, text)
+        except Exception:
+            log.exception("omp child steer failed (node %s)", node_id)
+            await self._post_notice(ControlNotice(node_id, CHILD_STEER_FAILED_NOTICE))
+
+    def _omp_subagent_target(self, node_id: str) -> tuple[Any | None, str]:
+        """(ancestor rpc, subagent_id) for a grandchild node; (None, "")
+        when unresolvable (never raises)."""
+        if self.state is None:
+            return None, ""
+        try:
+            row = self.state.get(node_id)
+        except StateError:
+            return None, ""
+        extra = row.get("extra") or {}
+        subagent_id = str(extra.get("subagent_id") or "")
+        parent_id = str(row.get("parent_node_id") or "")
+        if not subagent_id or not parent_id:
+            return None, ""
+        handle = self._child_handle(parent_id)
+        rpc = getattr(handle, "rpc", None) if handle is not None else None
+        return rpc, subagent_id
+
+    async def _steer_omp_subagent(self, node_id: str, text: str) -> None:
+        from observatory.control import ControlNotice
+
+        rpc, subagent_id = self._omp_subagent_target(node_id)
+        if rpc is None or not subagent_id:
+            await self._post_notice(ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE))
+            return
+        try:
+            await asyncio.to_thread(rpc.subagent_steer, subagent_id, text)
+        except Exception:
+            log.exception("omp subagent steer failed (node %s)", node_id)
+            await self._post_notice(ControlNotice(node_id, CHILD_STEER_FAILED_NOTICE))
+
+    async def _abort_hermes_child(self, node_id: str, reason: str) -> None:
+        """Interrupt a hermes child's in-flight turn; confirm in-room."""
+        from observatory.control import ControlNotice
+
+        handle = self._child_handle(node_id)
+        agent = getattr(handle, "agent", None) if handle is not None else None
+        if agent is None:
+            await self._post_notice(ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE))
+            return
+        interrupt = getattr(agent, "interrupt", None)
+        if callable(interrupt):
+            try:
+                await asyncio.to_thread(interrupt, reason, hard_cancel=True)
+            except TypeError:
+                try:
+                    await asyncio.to_thread(interrupt, reason)
+                except Exception:
+                    log.exception("hermes child interrupt failed (node %s)", node_id)
+            except Exception:
+                log.exception("hermes child interrupt failed (node %s)", node_id)
+        try:
+            self.routing_log.append(f"child-abort:{node_id}")
+        except Exception:
+            pass
+        await self._post_notice(
+            ControlNotice(node_id, STOP_CONFIRMED_NOTICE.format(status="interrupted"))
+        )
+
+    async def _abort_omp_child(self, node_id: str, reason: str) -> None:
+        from observatory.control import ControlNotice
+
+        handle = self._child_handle(node_id)
+        rpc = getattr(handle, "rpc", None) if handle is not None else None
+        if rpc is None:
+            await self._post_notice(ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE))
+            return
+        abort = getattr(rpc, "abort", None)
+        if callable(abort):
+            try:
+                await asyncio.to_thread(abort, reason)
+            except TypeError:
+                try:
+                    await asyncio.to_thread(abort)
+                except Exception:
+                    log.exception("omp child abort failed (node %s)", node_id)
+            except Exception:
+                log.exception("omp child abort failed (node %s)", node_id)
+        try:
+            self.routing_log.append(f"child-abort:{node_id}")
+        except Exception:
+            pass
+        await self._post_notice(
+            ControlNotice(node_id, STOP_CONFIRMED_NOTICE.format(status="interrupted"))
+        )
+
+    async def _abort_omp_subagent(self, node_id: str, reason: str) -> None:
+        from observatory.control import ControlNotice
+
+        rpc, subagent_id = self._omp_subagent_target(node_id)
+        if rpc is None or not subagent_id:
+            await self._post_notice(ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE))
+            return
+        try:
+            await asyncio.to_thread(rpc.subagent_abort, subagent_id, reason)
+        except Exception:
+            log.exception("omp subagent abort failed (node %s)", node_id)
+        try:
+            self.routing_log.append(f"child-abort:{node_id}")
+        except Exception:
+            pass
+        await self._post_notice(
+            ControlNotice(node_id, STOP_CONFIRMED_NOTICE.format(status="interrupted"))
+        )
 
     async def _handle_gateway_abort_outcome(self, outcome: Any) -> bool:
         """BUG3: AbortSession on the gateway node — cancel the in-flight
@@ -2607,6 +3116,15 @@ class SidecarDaemon:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         self._gateway_tasks.clear()
+        # In-flight spawned-child turns alongside them (same staleness law).
+        for task in list(self._child_tasks):
+            task.cancel()
+        for task in list(self._child_tasks):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        self._child_tasks.clear()
         try:
             self._stop_gateway_live_listener()
         except Exception:
