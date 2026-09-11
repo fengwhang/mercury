@@ -2345,6 +2345,7 @@ class EncryptedIntentExecutor:
         e2ee: "E2EEManager | Any",
         space_preset: str = "private_chat",
         room_preset: str = "trusted_private_chat",
+        gateway_mxid: str = "",
     ) -> None:
         from observatory.renderer import IntentExecutor
 
@@ -2355,11 +2356,13 @@ class EncryptedIntentExecutor:
             server_name=server_name,
             space_preset=space_preset,
             room_preset=room_preset,
+            gateway_mxid=gateway_mxid,
         )
         self.client = client
         self.state = state
         self.owner_mxid = owner_mxid
         self.server_name = server_name
+        self.gateway_mxid = gateway_mxid
         self.e2ee = e2ee
 
     # --- IntentExecutor API (duck-typed — the renderer only calls these) ----
@@ -2429,18 +2432,33 @@ class EncryptedIntentExecutor:
             name=op.name,
             sender=op.sender,
             preset=inner.room_preset,
-            invite=(inner.owner_mxid,),
+            invite=inner._create_invites(op, space=False),
             initial_state=[{
                 "type": "m.room.encryption",
                 "state_key": "",
                 "content": dict(ENCRYPTION_CONTENT),
             }],
         )
-        await inner.client.set_power_levels(
-            room_id, {inner.owner_mxid: 100}, sender=op.sender)
+        try:
+            await inner.client.set_power_levels(
+                room_id, {inner.owner_mxid: 100}, sender=op.sender)
+        except Exception as exc:  # noqa: BLE001 — power failure never orphans the id
+            if inner._is_not_member_error(exc):
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "create power skipped for %s (not-member): %s", room_id, exc)
+            else:
+                raise
         # Owner auto-join like the base executor (VM round 2): the creation
         # invite alone leaves a pending invite the owner must tap.
         await inner.ensure_owner_in_room(room_id)
+        # Gateway-ghost membership at creation (parity with the base
+        # executor): gateway ghost + parent voice join best-effort.
+        if inner.gateway_mxid and inner.gateway_mxid != op.sender:
+            await inner.ensure_ghost_in_room(room_id, inner.gateway_mxid)
+        parent_voice = inner._parent_voice_for_create(op, space=False)
+        if parent_voice and parent_voice != inner.gateway_mxid:
+            await inner.ensure_ghost_in_room(room_id, parent_voice)
         inner._record_room(op.key, room_id)
         self.e2ee.mark_room_encrypted(op.key, room_id)
         return room_id
@@ -2449,3 +2467,9 @@ class EncryptedIntentExecutor:
         """Converge-time owner-membership heal (delegates to the wrapped
         executor — same surface the renderer calls on the plain one)."""
         return await self._inner.ensure_owner_in_plan(plan)
+
+    async def ensure_owner_in_room(self, room_id: str) -> bool:
+        return await self._inner.ensure_owner_in_room(room_id)
+
+    async def ensure_ghost_in_room(self, room_id: str, mxid: str) -> bool:
+        return await self._inner.ensure_ghost_in_room(room_id, mxid)

@@ -609,6 +609,7 @@ class SidecarDaemon:
                 self.state,
                 owner_mxid=self.owner_mxid,
                 server_name=self.server_name,
+                gateway_mxid=self.gateway_mxid,
             )
         self.e2ee = e2ee_mod.E2EEManager(
             self.client,
@@ -632,6 +633,7 @@ class SidecarDaemon:
             self.state,
             owner_mxid=self.owner_mxid,
             server_name=self.server_name,
+            gateway_mxid=self.gateway_mxid,
             e2ee=self.e2ee,
         )
 
@@ -1751,7 +1753,10 @@ class SidecarDaemon:
         """Surface one undecryptable event with recovery steps (defect iii).
 
         One notice per room per process (later failures only log) — the
-        intake never dies on a notice failure. Never raises.
+        intake never dies on a notice failure. Never raises. Membership is
+        checked first: the gateway ghost is only a member of rooms it was
+        joined to at creation, so a notice into a room it never joined
+        skips silently at debug (no 403 traceback spam).
         """
         try:
             room_id = str(event.get("room_id") or "")
@@ -1765,13 +1770,26 @@ class SidecarDaemon:
                 self._decrypt_notified.pop()
             if self.client is None or not self.gateway_mxid:
                 return
+            try:
+                members = await self._room_members(room_id)
+            except Exception as exc:  # noqa: BLE001 — unreadable == not-member
+                log.debug("decrypt-failure notice skipped (members unreadable %s): %s",
+                          room_id, exc)
+                return
+            if self.gateway_mxid not in (members or []):
+                log.debug("decrypt-failure notice skipped (gateway not in %s)", room_id)
+                return
             from observatory.e2ee import decrypt_failure_notice
 
-            await self.client.send_message(
-                room_id, decrypt_failure_notice(event_id, room_id),
-                sender=self.gateway_mxid)
-        except Exception:  # noqa: BLE001 — notices never kill the intake
-            log.exception("decrypt-failure notice failed")
+            try:
+                await self.client.send_message(
+                    room_id, decrypt_failure_notice(event_id, room_id),
+                    sender=self.gateway_mxid)
+            except Exception as exc:  # noqa: BLE001 — notices never kill the intake
+                log.debug("decrypt-failure notice skipped for %s: %s", room_id, exc)
+                return
+        except Exception as exc:  # noqa: BLE001 — notices never kill the intake
+            log.debug("decrypt-failure notice skipped: %s", exc)
 
     async def _route_inbound(self, txn_id: str, event: dict, directives_room: str) -> None:
         # §6 directives room: owner-only mention-gated fan-out

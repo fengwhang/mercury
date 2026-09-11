@@ -148,8 +148,11 @@ def test_sidecar_notifies_once_per_room():
             sent.append({"room_id": room_id, "body": body, "sender": sender})
             return "$n"
 
+    async def _members(room_id: str) -> list[str]:
+        return ["@gw:x"]
+
     self = SimpleNamespace(_decrypt_notified=set(), client=_C(),
-                           gateway_mxid="@gw:x")
+                           gateway_mxid="@gw:x", _room_members=_members)
     event = {"type": "m.room.encrypted", "room_id": "!r:x",
              "event_id": "$e1", "content": {}}
     asyncio.run(SidecarDaemon._notice_decrypt_failure(self, event))

@@ -496,9 +496,14 @@ class TestIntentExecutor:
         assert state.get(GW)["space_id"] == "!room1"
         assert state.get_meta("room:directives") == "!room2"
         assert state.get(CRON)["room_id"] == "!room3"
-        # every creation invites the owner and pins owner PL 100 (D7)
+        # every creation invites the owner and pins owner PL 100 (D7);
+        # child rooms also invite the gateway ghost + parent voice
+        # (gateway-ghost membership at creation).
         creates = [c for c in fake.calls if c[0] == "create_room"]
-        assert all(c[4] == (OWNER,) for c in creates)
+        assert all(OWNER in c[4] for c in creates)
+        gw_mxid = state.get(GW)["mxid"]
+        cron_invite = next(c[4] for c in creates if c[1] == "nightly")
+        assert gw_mxid in cron_invite
         powers = [c for c in fake.calls if c[0] == "power"]
         assert all(p[2] == {OWNER: 100} for p in powers)
         assert len(powers) == len(creates)

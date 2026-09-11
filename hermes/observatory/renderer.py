@@ -805,6 +805,7 @@ class IntentExecutor:
         server_name: str,
         space_preset: str = "private_chat",
         room_preset: str = "trusted_private_chat",
+        gateway_mxid: str = "",
     ):
         self.client = client
         self.state = state
@@ -812,6 +813,109 @@ class IntentExecutor:
         self.server_name = server_name
         self.space_preset = space_preset
         self.room_preset = room_preset
+        self.gateway_mxid = gateway_mxid
+
+    @staticmethod
+    def _is_not_member_error(exc: BaseException) -> bool:
+        """True for membership-shaped 403/404 failures (never a real error)."""
+        if getattr(exc, "status", None) in (403, 404):
+            return True
+        text = str(exc).lower()
+        return (
+            "403" in text
+            or "404" in text
+            or "not in room" in text
+            or "not a member" in text
+            or "not joined" in text
+        )
+
+    def _mxid_for_key(self, key: str) -> str | None:
+        """Voice mxid for a space/room key: node mxid, else gateway ghost."""
+        node = self._node_or_none(key)
+        if node is not None:
+            mxid = node.get("mxid")
+            if mxid:
+                return str(mxid)
+        return self.gateway_mxid or None
+
+    def _parent_voice_for_create(
+        self, op: CreateSpace | CreateRoom, *, space: bool
+    ) -> str | None:
+        """Parent node's voice for a creation op (invited + joined)."""
+        if not space:
+            assert isinstance(op, CreateRoom)
+            # Node-backed rooms (agent children): the PARENT NODE's voice —
+            # not the room's own space (which is the child's own ghost and
+            # therefore self). Pseudo rooms (directives/cron) have no node
+            # and fall back to their containing space's voice.
+            node = self._node_or_none(op.key)
+            if node is not None:
+                parent_id = node.get("parent_node_id")
+                if parent_id:
+                    voice = self._mxid_for_key(str(parent_id))
+                    if voice and voice != op.sender:
+                        return voice
+            voice = self._mxid_for_key(op.space_key)
+            if voice and voice != op.sender:
+                return voice
+            return None
+        node = self._node_or_none(op.key)
+        if node is not None:
+            parent_id = node.get("parent_node_id")
+            if parent_id:
+                voice = self._mxid_for_key(str(parent_id))
+                if voice and voice != op.sender:
+                    return voice
+        # Pseudo spaces (gw-agent) and roots: the gateway ghost is the parent.
+        if self.gateway_mxid and self.gateway_mxid != op.sender:
+            return self.gateway_mxid
+        return None
+
+    def _create_invites(
+        self, op: CreateSpace | CreateRoom, *, space: bool
+    ) -> tuple[str, ...]:
+        """Creation invite list: owner + gateway ghost + parent voice."""
+        invites: list[str] = []
+        for mxid in (
+            self.owner_mxid,
+            self.gateway_mxid or "",
+            self._parent_voice_for_create(op, space=space) or "",
+        ):
+            if not mxid or mxid == op.sender or mxid in invites:
+                continue
+            invites.append(mxid)
+        return tuple(invites)
+
+    async def ensure_ghost_in_room(self, room_id: str, mxid: str) -> bool:
+        """Best-effort ghost join (gateway / parent voice). Never raises."""
+        if not mxid:
+            return False
+        try:
+            await self.client.join_room(room_id, sender=mxid)
+            return True
+        except AttributeError:
+            log.debug("ghost auto-join unavailable for %s (%s)", room_id, mxid)
+            return False
+        except Exception as exc:  # noqa: BLE001 — best-effort membership
+            log.warning("ghost auto-join failed for %s (%s): %s", room_id, mxid, exc)
+            return False
+
+    def _attach_fallback_senders(self, op: AttachSpace | AttachRoom) -> list[str]:
+        """Fallback senders for an attach: child ghost, then owner."""
+        fallbacks: list[str] = []
+        child_key = op.child_key if isinstance(op, AttachSpace) else op.room_key
+        node = self._node_or_none(child_key)
+        if node is not None:
+            mxid = node.get("mxid")
+            if mxid and str(mxid) != op.sender and str(mxid) not in fallbacks:
+                fallbacks.append(str(mxid))
+        if (
+            self.owner_mxid
+            and self.owner_mxid != op.sender
+            and self.owner_mxid not in fallbacks
+        ):
+            fallbacks.append(self.owner_mxid)
+        return fallbacks
 
     # --- id resolution -----------------------------------------------------------------
 
@@ -866,15 +970,30 @@ class IntentExecutor:
             name=op.name,
             sender=op.sender,
             preset=self.space_preset if space else self.room_preset,
-            invite=(self.owner_mxid,),
+            invite=self._create_invites(op, space=space),
             space=space,
         )
-        await self.client.set_power_levels(room_id, {self.owner_mxid: 100}, sender=op.sender)
+        try:
+            await self.client.set_power_levels(room_id, {self.owner_mxid: 100}, sender=op.sender)
+        except Exception as exc:  # noqa: BLE001 — power failure never orphans the id
+            if self._is_not_member_error(exc):
+                log.warning("create power skipped for %s (not-member): %s", room_id, exc)
+            else:
+                raise
         # Owner auto-join (VM defect: the owner saw invites / join prompts
         # on their own spaces+rooms): the sidecar accepts the creation
         # invite on the owner's behalf with the owner's own credential —
         # the same POST /join Element/FluffyChat send on a Join tap.
         await self.ensure_owner_in_room(room_id)
+        # Gateway-ghost membership at creation: the gateway ghost performs
+        # members reads, decrypt-failure notices and attach sends as sender,
+        # so it must be joined (not merely invited) to every child room and
+        # space. The parent node's voice joins too — never raises.
+        if self.gateway_mxid and self.gateway_mxid != op.sender:
+            await self.ensure_ghost_in_room(room_id, self.gateway_mxid)
+        parent_voice = self._parent_voice_for_create(op, space=space)
+        if parent_voice and parent_voice != self.gateway_mxid:
+            await self.ensure_ghost_in_room(room_id, parent_voice)
         if space:
             self._record_space(op.key, room_id)
         else:
@@ -918,23 +1037,69 @@ class IntentExecutor:
         records: list[dict[str, Any]] = []
         for op in intents:
             if isinstance(op, CreateSpace):
-                rid = await self._create(op, space=True)
+                try:
+                    rid = await self._create(op, space=True)
+                except Exception as exc:  # noqa: BLE001 — tolerant converge batch
+                    if self._is_not_member_error(exc):
+                        log.warning("converge: skipping non-member create_space %r: %s", op.key, exc)
+                        records.append({"op": "skipped", "key": op.key, "reason": "not-member", "error": str(exc)})
+                        continue
+                    raise
                 records.append({"op": "create_space", "key": op.key, "space_id": rid})
             elif isinstance(op, CreateRoom):
-                rid = await self._create(op, space=False)
+                try:
+                    rid = await self._create(op, space=False)
+                except Exception as exc:  # noqa: BLE001 — tolerant converge batch
+                    if self._is_not_member_error(exc):
+                        log.warning("converge: skipping non-member create_room %r: %s", op.key, exc)
+                        records.append({"op": "skipped", "key": op.key, "reason": "not-member", "error": str(exc)})
+                        continue
+                    raise
                 records.append({"op": "create_room", "key": op.key, "room_id": rid})
             elif isinstance(op, AttachSpace):
                 parent, child = self.space_id(op.parent_key), self.space_id(op.child_key)
-                await self.client.set_space_child(
-                    parent, child, sender=op.sender, via=(self.server_name,)
-                )
-                records.append({"op": "attach_space", "parent": parent, "child": child})
+                senders = [op.sender, *self._attach_fallback_senders(op)]
+                attached = False
+                last_exc: Exception | None = None
+                for sender in senders:
+                    try:
+                        await self.client.set_space_child(
+                            parent, child, sender=sender, via=(self.server_name,)
+                        )
+                        attached = True
+                        records.append({"op": "attach_space", "parent": parent, "child": child})
+                        break
+                    except Exception as exc:  # noqa: BLE001 — member fallback, then skip
+                        if not self._is_not_member_error(exc):
+                            raise
+                        last_exc = exc
+                        continue
+                if not attached:
+                    log.warning("converge: skipping non-member attach_space %s -> %s: %s", parent, child, last_exc)
+                    records.append({"op": "skipped", "parent": parent, "child": child, "reason": "not-member", "error": str(last_exc)})
+                    continue
             elif isinstance(op, AttachRoom):
                 space, room = self.space_id(op.space_key), self.room_id(op.room_key)
-                await self.client.set_space_child(
-                    space, room, sender=op.sender, via=(self.server_name,)
-                )
-                records.append({"op": "attach_room", "space": space, "room": room})
+                senders = [op.sender, *self._attach_fallback_senders(op)]
+                attached = False
+                last_exc = None
+                for sender in senders:
+                    try:
+                        await self.client.set_space_child(
+                            space, room, sender=sender, via=(self.server_name,)
+                        )
+                        attached = True
+                        records.append({"op": "attach_room", "space": space, "room": room})
+                        break
+                    except Exception as exc:  # noqa: BLE001 — member fallback, then skip
+                        if not self._is_not_member_error(exc):
+                            raise
+                        last_exc = exc
+                        continue
+                if not attached:
+                    log.warning("converge: skipping non-member attach_room %s -> %s: %s", space, room, last_exc)
+                    records.append({"op": "skipped", "space": space, "room": room, "reason": "not-member", "error": str(last_exc)})
+                    continue
             elif isinstance(op, DetachChild):
                 await self.client.set_space_child(
                     op.space_id, op.child_id, sender=op.sender, remove=True

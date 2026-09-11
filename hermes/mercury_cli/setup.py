@@ -3396,6 +3396,90 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     print_info(_OBSERVATORY_GUIDE_LINE)
 
 
+def _sqlite3_install_oneliner() -> str:
+    """Distro-specific one-liner that provides the sqlite3 CLI."""
+    try:
+        which = getattr(shutil, "which", None)
+        if callable(which):
+            if which("dnf") is not None:
+                return "sudo dnf install -y sqlite"
+            if which("apt-get") is not None or which("apt") is not None:
+                return "sudo apt install -y sqlite3"
+    except Exception:  # noqa: BLE001 — detection never kills setup
+        pass
+    return "sudo dnf install -y sqlite  # or: sudo apt install -y sqlite3"
+
+
+def _ensure_sqlite3_cli() -> str:
+    """Ensure the sqlite3 CLI exists for human debugging (observatory path).
+
+    The Python stdlib ``sqlite3`` module is NOT a substitute — operators
+    debug state.db by hand with the CLI. Best-effort: when missing, try a
+    sudo distro install (dnf/apt); otherwise print the exact one-liner.
+    Non-fatal, warn-only, never raises. Returns "present" | "installed" |
+    "missing".
+    """
+    try:
+        which = getattr(shutil, "which", None)
+        if callable(which) and which("sqlite3") is not None:
+            return "present"
+    except Exception:  # noqa: BLE001 — a broken shutil reads as absent
+        pass
+    oneliner = ""
+    try:
+        oneliner = _sqlite3_install_oneliner()
+    except Exception:  # noqa: BLE001 — oneliner best-effort
+        oneliner = "sudo dnf install -y sqlite  # or: sudo apt install -y sqlite3"
+    # Best-effort sudo install (dnf preferred, apt fallback). Any failure
+    # degrades to the printed one-liner — never raises, never prompts.
+    try:
+        import subprocess as _sp
+
+        which = getattr(shutil, "which", None)
+        has_dnf = False
+        has_apt = False
+        try:
+            has_dnf = callable(which) and which("dnf") is not None
+            has_apt = callable(which) and (
+                which("apt-get") is not None or which("apt") is not None
+            )
+        except Exception:  # noqa: BLE001 — detection failure means no install
+            has_dnf = has_apt = False
+        cmd: list[str] | None = None
+        if has_dnf:
+            cmd = ["sudo", "dnf", "install", "-y", "sqlite"]
+        elif has_apt:
+            apt_bin = "apt-get"
+            try:
+                if callable(which) and which("apt-get") is None:
+                    apt_bin = "apt"
+            except Exception:  # noqa: BLE001
+                pass
+            cmd = ["sudo", apt_bin, "install", "-y", "sqlite3"]
+        if cmd is not None:
+            try:
+                result = _sp.run(cmd, capture_output=True, text=True, timeout=120)
+            except (FileNotFoundError, OSError, _sp.SubprocessError):
+                result = None
+            except Exception:  # noqa: BLE001 — install never kills setup
+                result = None
+            if result is not None and result.returncode == 0:
+                try:
+                    if callable(getattr(shutil, "which", None)) and shutil.which("sqlite3") is not None:
+                        print_success("sqlite3 CLI installed (human debugging aid).")
+                        return "installed"
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception:  # noqa: BLE001 — install path never kills setup
+        pass
+    try:
+        print_warning("sqlite3 CLI not found (needed for human state.db debugging).")
+        print_info(f"Install with: {oneliner}")
+    except Exception:  # noqa: BLE001
+        pass
+    return "missing"
+
+
 def _auto_ensure_crypto(obs) -> str:
     """Auto crypto step: install the E2EE crypto stack from the vendored
     wheels (hermes/observatory/wheels/) — no compiler, no container
@@ -3530,6 +3614,10 @@ def _run_observatory_auto_steps(obs, *, sidecar_loud: bool = False) -> dict:
     command) instead of warning. Callers must then NOT print a blanket
     success — check ``steps["sidecar"]`` via :func:`_sidecar_failed`.
     """
+    try:
+        _ensure_sqlite3_cli()
+    except Exception:  # noqa: BLE001 — debugging aid never kills setup
+        pass
     crypto = _auto_ensure_crypto(obs)
     sidecar = _auto_ensure_sidecar_unit(obs, loud=sidecar_loud)
     tree = _auto_heal_and_converge(obs)

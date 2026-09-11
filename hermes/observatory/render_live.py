@@ -192,7 +192,7 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
             gateway_node_id=GW,
             server_name=server_name,
             owner_mxid=owner_mxid,
-            executor=IntentExecutor(client, state, owner_mxid=owner_mxid, server_name=server_name),
+            executor=IntentExecutor(client, state, owner_mxid=owner_mxid, server_name=server_name, gateway_mxid=gw_mxid),
         )
 
         # --- 1. §3 provisioning ------------------------------------------------

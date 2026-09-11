@@ -1997,7 +1997,8 @@ def verify_and_converge_gateway(mercury_home: str | Path | None = None) -> str:
             if not ghost_ok:
                 return "verified-ghost-only"
             executor: object = IntentExecutor(client, state, owner_mxid=owner_mxid,
-                                             server_name=server_name)
+                                             server_name=server_name,
+                                             gateway_mxid=gateway_mxid)
             if want_e2ee:
                 # MANDATORY (defect ii): with E2EE on, rooms MUST be
                 # sidecar-created encrypted from the start (defect iii) — a
@@ -2022,7 +2023,8 @@ def verify_and_converge_gateway(mercury_home: str | Path | None = None) -> str:
                     await mgr.start(enabled=True)
                     executor = _e2ee.EncryptedIntentExecutor(
                         client, state, owner_mxid=owner_mxid,
-                        server_name=server_name, e2ee=mgr)
+                        server_name=server_name, gateway_mxid=gateway_mxid,
+                        e2ee=mgr)
                 except Exception as exc:  # noqa: BLE001 — never plaintext
                     try:
                         state.close()
