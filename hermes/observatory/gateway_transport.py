@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 #: (registered by the gateway process at boot; see gateway/run.py seam).
 GATEWAY_INJECT_VERB = "inject"
 
+#: Control-socket verb resolving a gateway-process approval queue entry
+#: from a Matrix room decision (registered by the gateway process at boot;
+#: see gateway/run.py seam). Params: ``{session_key, choice[, request_id,
+#: reason]}`` → ``{"resolved": int}``.
+GATEWAY_RESOLVE_APPROVAL_VERB = "resolve-approval"
+
 #: Prompt kinds the wire carries. The sidecar forwards the router's kind
 #: (``prompt``/``steer``/``command`` — gateway-room plain text arrives
 #: with the router's kind); ``gateway_session`` accepts all three.
@@ -186,6 +192,7 @@ class ControlSocketGatewayTransport(GatewayTransport):
         return reply, [e for e in events if isinstance(e, dict)]
 
     async def interrupt(self, reason: str = "matrix /stop") -> dict[str, Any]:
+
         """Send the ``interrupt`` verb (BUG3): hard-cancel the in-flight
         gateway turn. Never raises — failures report as not-interrupted."""
         from gateway.control_socket import query_gateway_control
@@ -205,6 +212,48 @@ class ControlSocketGatewayTransport(GatewayTransport):
                 return result
             last_error = "empty interrupt answer"
         return {"interrupted": False, "reason": last_error}
+
+    async def resolve_approval(
+        self,
+        session_key: str,
+        choice: str,
+        *,
+        request_id: str | None = None,
+        reason: str | None = None,
+    ) -> int:
+        """Resolve a gateway-process approval queue entry (room decision).
+
+        Returns the count resolved (0 when nothing is pending there or no
+        gateway answers). Never raises — the bridge treats 0 as
+        already-resolved elsewhere (its ``late`` path). Short bounded
+        timeout: queue resolution is instant (unlike inject turns)."""
+        params: dict[str, Any] = {"session_key": session_key, "choice": choice}
+        if request_id:
+            params["request_id"] = request_id
+        if reason:
+            params["reason"] = reason
+        try:
+            result = await asyncio.to_thread(self._query_resolve, params)
+        except Exception:
+            return 0
+        try:
+            return int((result or {}).get("resolved", 0) or 0)
+        except Exception:
+            return 0
+
+    def _query_resolve(self, params: dict[str, Any]) -> dict[str, Any] | None:
+        from gateway.control_socket import query_gateway_control
+
+        for home in gateway_socket_homes(self.mercury_home):
+            try:
+                result = query_gateway_control(
+                    home, GATEWAY_RESOLVE_APPROVAL_VERB, params=params, timeout=10,
+                )
+            except Exception:
+                continue
+            if result is not None:
+                return result
+        return None
 
     def _query_all_homes(
         self, text: str, kind: str, node_id: str, internal: bool = False, room_id: str | None = None

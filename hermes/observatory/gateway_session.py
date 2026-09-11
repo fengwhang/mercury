@@ -70,6 +70,22 @@ CHILD_LIFECYCLE_KIND = "child_lifecycle"
 #: ``OmpFeed`` typed event (node/tool/thought; message frames are skipped,
 #: matching the sidecar ``_run_omp_feed`` parity) for a live child.
 CHILD_EVENT_KIND = "child_event"
+#: ``{"kind": "approval_prompt", "node_id", "request_id", "command",
+#: "description", "session_key"}`` — one guard approval raised by a gateway
+#: Matrix turn, forwarded so the sidecar mirrors it into the node's room.
+#: The turn blocks in ``tools.approval``'s gateway queue under
+#: :data:`GATEWAY_APPROVAL_SESSION_KEY`; the room /approve resolves that
+#: same queue (via the sidecar bridge + ``resolve-approval`` control verb).
+APPROVAL_PROMPT_KIND = "approval_prompt"
+
+#: Canonical ``tools.approval`` session key for gateway Matrix turns
+#: (``session:gateway`` — the gateway node's ``session_ref`` in state.db).
+#: BOTH processes use this one value: the gateway turn sets it as the
+#: ambient approval key and registers the datagram forwarder under it;
+#: the sidecar registers the bridge ingest (``gateway_notify``) under it.
+#: One shared constant — never recompute per side — so the key the turn
+#: blocks on is always the key the room resolves.
+GATEWAY_APPROVAL_SESSION_KEY = "session:gateway"
 
 #: Gateway-child feed watcher poll cadence (seconds).
 CHILD_FEED_POLL_S = 1.0
@@ -353,6 +369,51 @@ def _send_child_datagram(payload: dict[str, Any]) -> None:
                 pass
     except Exception:
         pass
+
+
+def push_approval_prompt(
+    node_id: str,
+    *,
+    request_id: str,
+    command: str,
+    description: str = "",
+    session_key: str = GATEWAY_APPROVAL_SESSION_KEY,
+) -> None:
+    """Fire-and-forget one approval-prompt datagram; never raises.
+
+    Same best-effort law as the other gateway→sidecar datagrams: no
+    listener or send error = drop silently (the turn still blocks in the
+    gateway queue until timeout — fail-closed deny — it just never
+    surfaces in the room)."""
+    _send_child_datagram({
+        "kind": APPROVAL_PROMPT_KIND,
+        "node_id": node_id,
+        "request_id": request_id,
+        "command": command,
+        "description": description,
+        "session_key": session_key,
+    })
+
+
+def gateway_approval_notify(node_id: str):
+    """``tools.approval.register_gateway_notify`` callback for gateway
+    Matrix turns: mirrors the guard prompt to the sidecar over the
+    progress socket. Runs on the blocked agent thread; the send is
+    fire-and-forget datagram I/O (the socket pattern the
+    register_gateway_notify docstring prescribes — never block here)."""
+    def _notify(approval_data) -> None:
+        try:
+            data = dict(approval_data or {})
+        except Exception:
+            return
+        push_approval_prompt(
+            node_id,
+            request_id=str(data.get("request_id") or ""),
+            command=str(data.get("command") or ""),
+            description=str(data.get("description") or ""),
+            session_key=str(data.get("session_key") or GATEWAY_APPROVAL_SESSION_KEY),
+        )
+    return _notify
 
 
 def push_child_lifecycle(
@@ -791,7 +852,7 @@ def _install_collector(agent: Any, collector: _TurnEventCollector) -> Callable[[
     return _restore
 
 
-def run_gateway_prompt_with_events(
+def _run_gateway_prompt_with_events_inner(
     text: str,
     *,
     kind: str = "prompt",
@@ -887,6 +948,73 @@ def run_gateway_prompt_with_events(
             )
         ]
     return reply, events
+
+
+def run_gateway_prompt_with_events(
+    text: str,
+    *,
+    kind: str = "prompt",
+    session_id: str = GATEWAY_SESSION_ID,
+    node_id: str = "gw",
+    room_id: str | None = None,
+    agent_factory: Optional[Callable[[str], Any]] = None,
+    turn: Optional[Callable[[Any, str], Any]] = None,
+    slash_dispatch: Optional[Callable[..., Optional[str]]] = None,
+    internal: bool = False,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Run one headless turn; return (reply text, batched display events).
+
+    Thin scope around :func:`_run_gateway_prompt_with_events_inner`: the
+    turn blocks in ``tools.approval`` under the canonical
+    :data:`GATEWAY_APPROVAL_SESSION_KEY` with
+    :func:`gateway_approval_notify` registered, so every guard prompt is
+    forwarded to the sidecar (which mirrors it into the node's room and
+    resolves this exact queue on /approve|/deny). Registration is undone
+    when the turn ends (same register/unregister law as the gateway's own
+    ``_run_agent_turn``). When ``tools.approval`` is unavailable the turn
+    runs unwrapped (approvals take their existing default path)."""
+    try:
+        from tools.approval import (
+            register_gateway_notify,
+            reset_current_session_key,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+    except Exception:
+        return _run_gateway_prompt_with_events_inner(
+            text, kind=kind, session_id=session_id, node_id=node_id,
+            room_id=room_id, agent_factory=agent_factory, turn=turn,
+            slash_dispatch=slash_dispatch, internal=internal,
+        )
+    token = None
+    try:
+        token = set_current_session_key(GATEWAY_APPROVAL_SESSION_KEY)
+    except Exception:
+        token = None
+    registered = False
+    try:
+        register_gateway_notify(
+            GATEWAY_APPROVAL_SESSION_KEY, gateway_approval_notify(node_id))
+        registered = True
+    except Exception:
+        logger.debug("gateway_session: approval forward not registered", exc_info=True)
+    try:
+        return _run_gateway_prompt_with_events_inner(
+            text, kind=kind, session_id=session_id, node_id=node_id,
+            room_id=room_id, agent_factory=agent_factory, turn=turn,
+            slash_dispatch=slash_dispatch, internal=internal,
+        )
+    finally:
+        if registered:
+            try:
+                unregister_gateway_notify(GATEWAY_APPROVAL_SESSION_KEY)
+            except Exception:
+                pass
+        if token is not None:
+            try:
+                reset_current_session_key(token)
+            except Exception:
+                pass
 
 
 def run_gateway_prompt(

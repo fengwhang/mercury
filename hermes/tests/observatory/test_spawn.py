@@ -225,6 +225,7 @@ class TestSpawn:
         row = await spawn_orchestrator(
             "auth-refactor",
             "hermes",
+            server_name=SERVER,
             state=state,
             registry=registry,
             agent_factory=engines.hermes_factory(),
@@ -245,6 +246,7 @@ class TestSpawn:
         row = await spawn_orchestrator(
             "docs-sweep",
             "omp",
+            server_name=SERVER,
             state=state,
             registry=registry,
             omp_child_factory=engines.omp_factory(tmp_path / "omp-sessions"),
@@ -265,6 +267,7 @@ class TestSpawn:
         row = await spawn_orchestrator(
             "auth-refactor",
             "hermes",
+            server_name=SERVER,
             state=state,
             registry=registry,
             renderer=renderer,
@@ -286,11 +289,11 @@ class TestSpawn:
         self, state, registry, engines
     ):
         first = await spawn_orchestrator(
-            "auth", "hermes", state=state, registry=registry,
+            "auth", "hermes", server_name=SERVER, state=state, registry=registry,
             agent_factory=engines.hermes_factory(),
         )
         second = await spawn_orchestrator(
-            "auth", "hermes", state=state, registry=registry,
+            "auth", "hermes", server_name=SERVER, state=state, registry=registry,
             agent_factory=engines.hermes_factory(),
         )
         # both live → D17 collision suffix
@@ -298,7 +301,7 @@ class TestSpawn:
         # predecessor dead → invisible to collisions (D17)
         state.mark_dead(second["node_id"])
         third = await spawn_orchestrator(
-            "auth", "hermes", state=state, registry=registry,
+            "auth", "hermes", server_name=SERVER, state=state, registry=registry,
             agent_factory=engines.hermes_factory(),
         )
         assert third["slug"] == "auth-2"
@@ -306,9 +309,9 @@ class TestSpawn:
 
     async def test_spawn_validates_name_and_engine(self, state, registry):
         with pytest.raises(ValueError, match="name"):
-            await spawn_orchestrator("  ", "hermes", state=state, registry=registry)
+            await spawn_orchestrator("  ", "hermes", server_name=SERVER, state=state, registry=registry)
         with pytest.raises(ValueError, match="engine"):
-            await spawn_orchestrator("x", "telegram", state=state, registry=registry)
+            await spawn_orchestrator("x", "telegram", server_name=SERVER, state=state, registry=registry)
 
     def test_omp_argv_fresh_vs_resume(self, tmp_path):
         fresh = omp_spawn_argv(

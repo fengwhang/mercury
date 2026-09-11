@@ -358,6 +358,7 @@ async def spawn_orchestrator(
     name: str,
     engine: str,
     *,
+    server_name: str,
     state: ObservatoryState,
     registry: OrchestratorRegistry,
     renderer: Optional[Renderer] = None,
@@ -375,7 +376,20 @@ async def spawn_orchestrator(
     builders (tests inject doubles; they must return started objects with
     ``session_id`` / ``rpc``-shaped handles respectively). No cap on live
     orchestrators (D9).
+
+    ``server_name`` is REQUIRED (no default — fail loud, never fall back):
+    the spawned ghost is minted as ``virtual_mxid(slug,
+    server_name=server_name)`` and MUST live on the operator's live domain.
+    A silent ``mercury.local`` fallback mints an off-domain sender; tuwunel
+    answers every createRoom as that sender with HTTP 400 M_EXCLUSIVE
+    (namespace ``^@merc_.*$`` is localpart-only) so the node never gets
+    its space/room (IDs stay NULL, 257-error retry loop). The only
+    production caller (gateway ``_handle_observatory_spawn``) derives it
+    from the live boot (gateway ghost mxid domain, else renderer
+    ``server_name``); tests pass ``"mercury.local"`` explicitly.
     """
+    if not str(server_name or "").strip():
+        raise ValueError("spawn: server_name is required (live domain — never default)")
     clean = str(name or "").strip()
     if not clean:
         raise ValueError("spawn: name is required (D6)")
@@ -405,7 +419,7 @@ async def spawn_orchestrator(
         engine=engine,
         name=clean,
         slug=slug,
-        mxid=virtual_mxid(slug),
+        mxid=virtual_mxid(slug, server_name=server_name),
         session_ref=session_ref,
         parent_node_id=None,  # depth 0 by next_depth()
         extra={
@@ -765,11 +779,11 @@ def run_spawn(
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Sync ``/spawn`` entry for command handlers without a loop:
-    runs :func:`spawn_orchestrator` on a private event loop."""
+    runs :func:`spawn_orchestrator` on a private event loop. ``kwargs``
+    MUST carry the live ``server_name`` (required — no default)."""
     return asyncio.run(spawn_orchestrator(
         name, engine, state=state, registry=registry, **kwargs
     ))
-
 
 def run_exit(
     node_id: str,

@@ -140,7 +140,13 @@ def build_renderer(
 ) -> Any:
     """Renderer + IntentExecutor bound to a live MatrixClient (the
     appservice token / admin token come from the provisioned home —
-    sidecar_main's job to read; this stays a pure constructor)."""
+    sidecar_main's job to read; this stays a pure constructor).
+
+    The ``server_name="mercury.local"`` default is TEST/SMOKE-ONLY.
+    Production MUST pass the live domain (the sidecar daemon builds its
+    renderer from the toml-derived ``self.server_name``); the default
+    exists so unit tests can construct renderers without a provisioned
+    home."""
     from observatory.renderer import IntentExecutor, Renderer
 
     if not gateway_mxid:
@@ -205,7 +211,12 @@ async def boot_sidecar(
     the gateway loop). Builds state + renderer (when ``client`` given),
     replays the purge journal and runs the respawn pass. The discovery
     engine is CONSTRUCTED here (ready to start) but not started: its
-    poll task lifecycle belongs to the daemon."""
+    poll task lifecycle belongs to the daemon.
+
+    The ``server_name="mercury.local"`` default is TEST/SMOKE-ONLY (same
+    law as :func:`build_renderer`): production callers MUST pass the live
+    domain — the sidecar daemon never uses this default (it builds its
+    renderer directly from the toml-derived ``self.server_name``)."""
     home = mercury_home_path(mercury_home)
     result = BootResult(mercury_home=str(home))
 

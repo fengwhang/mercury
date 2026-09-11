@@ -895,7 +895,14 @@ class SidecarDaemon:
         never edits). Gateway-node prompts deliver over the gateway
         control socket (``inject``); the remaining engine transports
         (RPC steer fan-out, aborts) are not landed — those ACTIONS stay
-        logged in ``routing_log``."""
+        logged in ``routing_log``.
+
+        M4b approval ingest is wired here too (see
+        :meth:`_wire_approval_ingest`): every guard prompt becomes a room
+        prompt in the bridge (the approval source of truth), and room
+        /approve|/deny resolves the exact queue the blocked turn waits on
+        — same-process queues directly, gateway-process queues over the
+        control socket ``resolve-approval`` verb."""
         from observatory.approvals import ApprovalBridge, MatrixAuthority
         from observatory.control import ControlRouter, RoomPowerLevels
         from observatory.cron_rooms import CronRooms, CronStore
@@ -921,12 +928,8 @@ class SidecarDaemon:
             gateway_node_id=GATEWAY_NODE_ID,
             pl_provider=pl_snapshot,
         )
-        self.approvals = ApprovalBridge(
-            state=self.state,
-            poster=self.client,
-            authority=MatrixAuthority(self.client, reader_mxid=self.gateway_mxid),
-        )
-        # Gateway-session prompt transport (control-socket ``inject``).
+        # Gateway-session prompt transport FIRST: the approval resolver
+        # below forwards cross-process resolutions over it.
         # Construction is side-effect free (no I/O until a prompt sends);
         # None only when the package itself is unavailable.
         try:
@@ -934,6 +937,13 @@ class SidecarDaemon:
         except Exception:  # noqa: BLE001 — delivery reports unreachable instead
             log.exception("gateway transport unavailable (prompts will not deliver)")
             self.gateway_transport = None
+        self.approvals = ApprovalBridge(
+            state=self.state,
+            poster=self.client,
+            authority=MatrixAuthority(self.client, reader_mxid=self.gateway_mxid),
+            resolve_gateway=self._resolve_gateway_approval,
+        )
+        self._wire_approval_ingest()
         self.directives = DirectivesManager(self.renderer)
         self.cron_rooms = CronRooms(
             self.renderer,
@@ -945,6 +955,189 @@ class SidecarDaemon:
             # never get rooms unless the operator opts into observe/full.
             mode=provision.mirror_cli_mode(self.mercury_home),
         )
+
+    def _wire_approval_ingest(self) -> None:
+        """Feed every approval stream into the bridge (never raises).
+
+        - gateway hermes turns (THIS process): ``gateway_notify`` under the
+          canonical :data:`gateway_session.GATEWAY_APPROVAL_SESSION_KEY`
+          (the key gateway Matrix turns block on — one shared constant,
+          never recomputed per side);
+        - gateway Matrix turns (GATEWAY process): ``approval_prompt``
+          datagrams → ``bridge.submit`` (see
+          :meth:`_handle_approval_prompt_datagram`);
+        - sidecar omp children: the global approval-frame hook routes each
+          frame to its room (see :meth:`_omp_approval_frame_router`).
+
+        The control router's own approval table is deliberately NOT fed:
+        the bridge owns resolution and its resolved notice; feeding both
+        would double-post every decision (the stale router no-pending
+        notice is suppressed instead — see ``_route_inbound``).
+        Re-wire is idempotent (previous registrations replaced)."""
+        from observatory.gateway_session import GATEWAY_APPROVAL_SESSION_KEY
+
+        bridge = self.approvals
+        if bridge is None:
+            return
+        try:
+            bridge.capture_loop()
+        except RuntimeError:
+            pass  # no running loop (unit tests) — ingest captures on first use
+        try:
+            from tools.approval import register_gateway_notify, unregister_gateway_notify
+        except Exception:
+            register_gateway_notify = None  # type: ignore[assignment]
+            unregister_gateway_notify = None  # type: ignore[assignment]
+        if register_gateway_notify is not None:
+            try:
+                from observatory.approvals import gateway_notify
+                if unregister_gateway_notify is not None:
+                    try:
+                        unregister_gateway_notify(GATEWAY_APPROVAL_SESSION_KEY)
+                    except Exception:
+                        pass
+                register_gateway_notify(
+                    GATEWAY_APPROVAL_SESSION_KEY,
+                    gateway_notify(bridge, GATEWAY_NODE_ID, GATEWAY_APPROVAL_SESSION_KEY),
+                )
+            except Exception:
+                log.exception("approval ingest: gateway notify not registered")
+        try:
+            from tools.omp_rpc_transport import set_approval_frame_hook
+        except Exception:
+            set_approval_frame_hook = None  # type: ignore[assignment]
+        if set_approval_frame_hook is not None:
+            try:
+                set_approval_frame_hook(self._omp_approval_frame_router)
+            except Exception:
+                log.exception("approval ingest: frame hook not registered")
+
+    async def _resolve_gateway_approval(
+        self,
+        session_key: str,
+        choice: str,
+        request_id: str,
+        reason: str | None = None,
+    ) -> int:
+        """ApprovalBridge gateway resolver: same-process queue first, else
+        forward to the gateway process over the control socket
+        (``resolve-approval`` verb). Never raises (0 = already resolved
+        elsewhere → the bridge takes its ``late`` path)."""
+        try:
+            from tools.approval import resolve_gateway_approval as _local_resolve
+        except Exception:
+            _local_resolve = None  # type: ignore[assignment]
+        if _local_resolve is not None:
+            try:
+                settled = int(
+                    _local_resolve(
+                        session_key, choice,
+                        reason=reason, request_id=request_id or None,
+                    ) or 0
+                )
+            except Exception:
+                log.exception("approval resolve: local resolver failed")
+                settled = 0
+            if settled:
+                return settled
+        transport = self.gateway_transport
+        resolve_fn = getattr(transport, "resolve_approval", None)
+        if not callable(resolve_fn):
+            return 0
+        try:
+            return int(await resolve_fn(
+                session_key, choice, request_id=request_id or None,
+                reason=reason,
+            ) or 0)
+        except Exception:
+            log.exception("approval resolve: gateway forward failed")
+            return 0
+
+    def _unwire_approval_ingest(self) -> None:
+        """Undo :meth:`_wire_approval_ingest` (shutdown; never raises).
+
+        Unregistering the gateway notify also releases any thread still
+        blocked in the gateway wait loop (``unregister_gateway_notify``
+        sets their events) so shutdown never hangs on a pending approval.
+        The frame hook is cleared only when it is still ours (never yank
+        a hook someone else installed after us)."""
+        try:
+            from observatory.gateway_session import GATEWAY_APPROVAL_SESSION_KEY
+        except Exception:
+            GATEWAY_APPROVAL_SESSION_KEY = "session:gateway"  # type: ignore[assignment]
+        try:
+            from tools.approval import unregister_gateway_notify
+        except Exception:
+            unregister_gateway_notify = None  # type: ignore[assignment]
+        if unregister_gateway_notify is not None:
+            try:
+                unregister_gateway_notify(GATEWAY_APPROVAL_SESSION_KEY)
+            except Exception:
+                pass
+        try:
+            from tools.omp_rpc_transport import set_approval_frame_hook
+        except Exception:
+            set_approval_frame_hook = None  # type: ignore[assignment]
+        if set_approval_frame_hook is not None:
+            try:
+                import tools.omp_rpc_transport as _rpc_transport
+                current = getattr(_rpc_transport, "_approval_frame_hook", None)
+                # Bound methods compare unequal across attribute reads —
+                # compare the underlying instance + function instead.
+                if (getattr(current, "__self__", None) is self
+                        and getattr(current, "__func__", None)
+                        is type(self)._omp_approval_frame_router):
+                    set_approval_frame_hook(None)
+            except Exception:
+                pass
+
+    def _omp_approval_frame_router(
+        self, request_id: str, method: str, title: str, options: tuple
+    ) -> None:
+        """Global omp approval-frame hook → bridge (never raises, never
+        affects the guard decision — purely observational).
+
+        Attributes the frame to the single live omp node when unambiguous;
+        drops it (debug log) when zero or several omp nodes are live — a
+        prompt in the wrong room is worse than none. The submission
+        carries the responder thread's ambient approval key (the queue the
+        guard blocks on), read at fire time, so room /approve resolves the
+        exact waiter through the bridge resolver above."""
+        bridge = self.approvals
+        state = self.state
+        if bridge is None or state is None:
+            return
+        try:
+            from observatory.approvals import rpc_frame_callback
+            from tools.approval import get_current_session_key
+        except Exception:
+            return
+        try:
+            candidates = [
+                row for row in state.get_live()
+                if str(row.get("engine") or "") == "omp"
+            ]
+        except Exception:
+            return
+        if len(candidates) != 1:
+            log.debug(
+                "omp approval frame %r: %d live omp nodes — skipped (ambiguous)",
+                request_id, len(candidates),
+            )
+            return
+        node_id = str(candidates[0].get("node_id") or "")
+        if not node_id:
+            return
+        try:
+            session_key = get_current_session_key()
+        except Exception:
+            session_key = ""
+        try:
+            rpc_frame_callback(bridge, node_id, session_key)(
+                request_id, method, title, options)
+        except Exception:
+            log.exception("omp approval frame submit failed")
+
     def _attach_omp_feeds(self) -> None:
         """One OmpFeed per live spawned omp RPC child (registry handles).
 
@@ -1108,10 +1301,12 @@ class SidecarDaemon:
     async def _handle_gateway_live_datagram(self, data: bytes) -> None:
         """Parse one live-ingest datagram → live render (never raises).
 
-        Three shapes share the socket: legacy turn-progress
-        ``{node_id, seq, event}`` (no ``kind``) plus the gateway-child
+        Four shapes share the socket: legacy turn-progress
+        ``{node_id, seq, event}`` (no ``kind``), the gateway-child
         feed ``{"kind": "child_lifecycle" | "child_event", "node_id",
-        ...}``. Unknown or malformed payloads are skipped.
+        ...}``, and guard approvals ``{"kind": "approval_prompt", ...}``
+        (gateway-turn prompts → room mirror). Unknown or malformed
+        payloads are skipped.
         """
         try:
             payload = json.loads(data.decode("utf-8"))
@@ -1128,10 +1323,47 @@ class SidecarDaemon:
                 await self._handle_child_lifecycle_datagram(payload)
             elif kind == "child_event":
                 await self._handle_child_feed_datagram(payload)
+            elif kind == "approval_prompt":
+                await self._handle_approval_prompt_datagram(payload)
             else:
                 log.debug("gateway live datagram: unknown kind %r, skipped", kind)
         except Exception:
             log.debug("gateway live datagram handling failed", exc_info=True)
+
+    async def _handle_approval_prompt_datagram(self, payload: dict) -> None:
+        """Gateway-process guard prompt → bridge room mirror (never raises).
+
+        The bridge is the approval source of truth (its pendings are what
+        room /approve|/deny resolves); the control router's own approval
+        table is deliberately NOT fed — feeding both would double-post
+        every decision (see ``_wire_approval_ingest`` / ``_route_inbound``).
+        """
+        try:
+            from observatory.gateway_session import GATEWAY_APPROVAL_SESSION_KEY
+        except Exception:
+            GATEWAY_APPROVAL_SESSION_KEY = "session:gateway"  # type: ignore[assignment]
+        try:
+            bridge = self.approvals
+            if bridge is None:
+                return
+            node_id = str(payload.get("node_id") or "")
+            request_id = str(payload.get("request_id") or "")
+            command = str(payload.get("command") or "")
+            context = str(payload.get("description") or "")
+            session_key = str(
+                payload.get("session_key") or GATEWAY_APPROVAL_SESSION_KEY)
+            if not node_id or not request_id:
+                log.debug(
+                    "approval prompt datagram: missing node/request, skipped")
+                return
+            await bridge.submit(
+                node_id, request_id, backend="gateway",
+                session_key=session_key,
+                command=command or "(approval)",
+                context=context,
+            )
+        except Exception:
+            log.debug("approval prompt datagram handling failed", exc_info=True)
 
     async def _handle_turn_progress_datagram(self, payload: dict) -> None:
         """One ``{node_id, seq, event}`` turn frame → live render."""
@@ -1875,15 +2107,26 @@ class SidecarDaemon:
                 self.routing_log.append(f"directives:{len(outcome.targets) if outcome.targets else 'none'}")
             return
         # M4b approval replies (reply-to-prompt resolution)
+        bridge_action: str | None = None
         if self.approvals is not None:
-            action = await self.approvals.handle_event(event)
-            if action is not None:
-                self.routing_log.append(f"approvals:{action}")
+            bridge_action = await self.approvals.handle_event(event)
+            if bridge_action is not None:
+                self.routing_log.append(f"approvals:{bridge_action}")
         # M4a control routing (steer/stop/verbs/commands)
         if self.control_router is not None:
             outcomes = await self.control_router.handle_transaction(txn_id, [event])
+            bridge_resolved = bridge_action in ("resolved:approve", "resolved:deny")
             for outcome in outcomes:
                 self.routing_log.append(outcome.disposition)
+                if bridge_resolved and outcome.disposition == "notice:no-approval-pending":
+                    # The bridge owns approval resolution (its pendings are
+                    # fed by gateway_notify / the frame hook / gateway
+                    # approval_prompt datagrams; the router's own approval
+                    # table is never fed — see _wire_approval_ingest). The
+                    # bridge just posted the ✔/🚫 decision; the router's
+                    # stale "no pending approval" notice would contradict
+                    # it in the same room — drop the notice, keep the log.
+                    continue
                 if self._is_gateway_prompt(outcome):
                     await self._handle_gateway_prompt_outcome(outcome)
                     continue
@@ -2407,6 +2650,10 @@ class SidecarDaemon:
         if self.state is not None:
             self.state.close()  # final state flush (WAL checkpoint + close)
             self.state = None
+        try:
+            self._unwire_approval_ingest()
+        except Exception:
+            log.debug("approval ingest unwire failed", exc_info=True)
         log.info("observatory sidecar shut down cleanly")
 
 

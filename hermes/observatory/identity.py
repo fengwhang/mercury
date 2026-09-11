@@ -52,7 +52,15 @@ VIRTUAL_USER_PREFIX = _prefix_from_namespace_regex(APPSERVICE_NAMESPACE_REGEX)
 
 def virtual_mxid(slug: str, *, server_name: str = SERVER_NAME_DEFAULT) -> str:
     """``@merc_<slug>:<server>`` — always inside the appservice's exclusive
-    user namespace (the contract test asserts this against the regex)."""
+    user namespace (the contract test asserts this against the regex).
+
+    The ``SERVER_NAME_DEFAULT`` (``mercury.local``) fallback exists ONLY so
+    unit tests can mint names cheaply. Every production path MUST pass the
+    live ``server_name`` explicitly (sidecar toml-derived
+    ``self.server_name`` / ``renderer.server_name`` / the gateway ghost
+    mxid domain) — minting a ghost off-domain makes tuwunel answer every
+    createRoom as that sender with HTTP 400 M_EXCLUSIVE and the node never
+    gets its space/room."""
     return f"@{VIRTUAL_USER_PREFIX}{slug}:{server_name}"
 
 

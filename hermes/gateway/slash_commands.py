@@ -6430,6 +6430,38 @@ class GatewaySlashCommandsMixin:
                 continue
         return None
 
+    def _observatory_server_name(self, state, renderer=None):
+        """Live Matrix domain for minting spawn ghosts (never a default).
+
+        Precedence (most authoritative first):
+        1. the gateway ghost mxid domain from the state row — the live
+           minted identity on this homeserver (written by the sidecar
+           from its toml-derived ``self.server_name``, so it is the
+           sidecar toml value projected through shared state.db);
+        2. the boot renderer's ``server_name``.
+        ``""`` when neither is available — the caller fails loud (no
+        ``mercury.local`` fallback: an off-domain ghost 400s every
+        createRoom with M_EXCLUSIVE). The sidecar toml itself is not read
+        here: this handler runs in the gateway process and the daemon's
+        memory is not visible; the ghost mxid in shared state.db IS its
+        live projection."""
+        try:
+            gw_id, _ = self._observatory_gateway_ids(state, renderer)
+            mxid = str((state.get(gw_id) or {}).get("mxid") or "")
+            if ":" in mxid:
+                domain = mxid.rsplit(":", 1)[1].strip()
+                if domain:
+                    return domain
+        except Exception:
+            pass
+        try:
+            domain = str(getattr(renderer, "server_name", "") or "").strip()
+            if domain:
+                return domain
+        except Exception:
+            pass
+        return ""
+
     async def _handle_observatory_spawn(self, event: MessageEvent, *, engine: str, verb: str) -> str:
         from observatory.spawn import spawn_orchestrator
         name = (event.get_command_args() or "").strip()
@@ -6439,6 +6471,9 @@ class GatewaySlashCommandsMixin:
         if handles is None:
             return f"✗ /{verb} failed: {reason}"
         state, registry, renderer = handles
+        server_name = self._observatory_server_name(state, renderer)
+        if not server_name:
+            return f"✗ /{verb} failed: live server_name unavailable (no gateway ghost mxid domain, no renderer server_name — refusing to mint an off-domain ghost)"
         gw_id, gw_room = self._observatory_gateway_ids(state, renderer)
         caller_node, caller_room = self._observatory_caller(event)
         scoped = False
@@ -6450,7 +6485,7 @@ class GatewaySlashCommandsMixin:
             where = f"gateway agent's room ({gw_room})" if gw_room else "the gateway agent's room"
             return f"🚫 /{verb} is a gateway-room-only command — accepted only from {where} (D13)."
         try:
-            row = await spawn_orchestrator(name, engine, state=state, registry=registry, renderer=renderer)
+            row = await spawn_orchestrator(name, engine, server_name=server_name, state=state, registry=registry, renderer=renderer)
         except Exception as exc:
             return f"✗ /{verb} failed: {exc}"
         node_id = str((row or {}).get("node_id") or "")

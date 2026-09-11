@@ -33156,6 +33156,41 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _control_server.register_handler(
                 "interrupt", _observatory_interrupt_handler, takes_params=True
             )
+            # M4b room-side approval resolution (matrix-observatory §5):
+            # the sidecar mirrors gateway-turn guard prompts into rooms
+            # (approval_prompt datagrams); /approve|/deny there resolves
+            # THIS process's guard queue (the queue the blocked turn waits
+            # on) via resolve_gateway_approval. Best-effort: unknown keys
+            # resolve 0 (the room then hears "already resolved").
+            def _observatory_resolve_approval_handler(params: dict) -> dict:
+                try:
+                    from tools.approval import resolve_gateway_approval
+                except Exception as exc:
+                    logger.debug("Observatory resolve-approval unavailable: %s", exc)
+                    return {"resolved": 0}
+                if not isinstance(params, dict):
+                    params = {}
+                session_key = str(params.get("session_key") or "")
+                choice = str(params.get("choice") or "deny")
+                request_id = params.get("request_id")
+                reason = params.get("reason")
+                try:
+                    count = resolve_gateway_approval(
+                        session_key, choice,
+                        reason=str(reason) if reason else None,
+                        request_id=str(request_id) if request_id else None,
+                    )
+                except Exception:
+                    logger.debug("Observatory resolve-approval failed", exc_info=True)
+                    return {"resolved": 0}
+                try:
+                    return {"resolved": int(count or 0)}
+                except Exception:
+                    return {"resolved": 0}
+
+            _control_server.register_handler(
+                "resolve-approval", _observatory_resolve_approval_handler, takes_params=True
+            )
             # Gateway-child feed (matrix-observatory cross-process feed):
             # forward the gateway's OWN omp live-child table as datagrams
             # on gateway-progress.sock (lifecycle + OmpFeed frames) so the

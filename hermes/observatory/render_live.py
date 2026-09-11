@@ -107,10 +107,17 @@ def load_runtime(paths: ObservatoryPaths) -> tuple[dict, str]:
     return cfg, paths.homeserver_url(address=address, port=int(cfg.get("port", 18008)))
 
 
-def seed_nodes(state: ObservatoryState) -> None:
+def seed_nodes(state: ObservatoryState, *, server_name: str) -> None:
     """The scripted §3 tree: gateway + cron job + gateway-origin delegate
     child + orchestrator (depth 0) -> delegate child (depth 1) -> omp
-    grandchild (depth 2)."""
+    grandchild (depth 2).
+
+    ``server_name`` is REQUIRED (no default — fail loud): the live gate
+    passes the toml-derived domain so seeded ghosts match the homeserver
+    it boots (an off-domain ghost 400s every createRoom with
+    M_EXCLUSIVE)."""
+    if not str(server_name or "").strip():
+        raise ValueError("seed_nodes: server_name is required (live domain — never default)")
 
     def add(node_id: str, name: str, *, engine: str, parent: str | None, extra: dict | None = None):
         slug = assign_slug(name, state)
@@ -119,7 +126,7 @@ def seed_nodes(state: ObservatoryState) -> None:
             engine=engine,
             name=name,
             slug=slug,
-            mxid=virtual_mxid(slug),
+            mxid=virtual_mxid(slug, server_name=server_name),
             session_ref=f"session:{node_id}",
             parent_node_id=parent,
             extra=extra,
@@ -178,7 +185,7 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
 
     state = ObservatoryState(paths.root / "state.db")
     if not state.get_live():
-        seed_nodes(state)
+        seed_nodes(state, server_name=server_name)
     gw_row = state.get(GW)
     gw_mxid = gw_row["mxid"]
 
