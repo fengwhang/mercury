@@ -487,7 +487,14 @@ async def test_unregistered_ghost_login_400s():
     assert excinfo.value.errcode == "M_INVALID_PARAM"
 @pytest.mark.asyncio
 async def test_notice_failure_does_not_veto_child_turn(daemon: sm.SidecarDaemon, monkeypatch):
-    """Decoupling: a child-voice notice crash still delivers the engine turn."""
+    """Decoupling: a child-voice notice crash still delivers the engine turn.
+
+    Mid-turn steer (hermes turn lock held, so the router reports busy and
+    emits the queued-steer notice): the child-voice send crashes, the
+    gateway-voice fallback still tells the room, and the engine turn runs.
+    Idle new turns post no queued notice at all (router fix) — this test
+    pins the busy path where the notice exists to fail over.
+    """
     await daemon.boot()
     try:
         agent = FakeHermesAgent("sess-decouple")
@@ -520,7 +527,16 @@ async def test_notice_failure_does_not_veto_child_turn(daemon: sm.SidecarDaemon,
                 )
             return await real_execute(intents)
         monkeypatch.setattr(daemon.renderer.executor, "execute", flaky)
-        await daemon._on_transaction("tx-1", [_msg(room["room_id"], "hello child")])
+        node_id = row["node_id"]
+        lock = daemon._child_locks.get(node_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            daemon._child_locks[node_id] = lock
+        await lock.acquire()
+        try:
+            await daemon._on_transaction("tx-1", [_msg(room["room_id"], "hello child")])
+        finally:
+            lock.release()
         await _drain(daemon)
         assert attempted["n"] == 1, "flaky child-voice notice was never attempted"
         assert agent.turns == ["hello child"], "notice crash vetoed the engine turn"

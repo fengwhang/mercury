@@ -169,8 +169,8 @@ def _deny(client: Any, request_id: str) -> None:
     client.cancel_ui_request(request_id)
 
 
-def _approve_command_select(client: Any, request: Any) -> None:
-    """Answer an Approve/Deny select via the hermes guard stack."""
+def _approve_command_select(client: Any, request: Any) -> bool:
+    """Answer an Approve/Deny select via the hermes guard stack (True=approve)."""
     # requestRpcSelect (rpc-mode.ts) serializes the prompt as the TITLE:
     # the wrapper calls select(safetyPrompt, ["Approve","Deny"]) and only
     # {method, title, options} go on the wire — there is no message field
@@ -185,10 +185,11 @@ def _approve_command_select(client: Any, request: Any) -> None:
             (request.message or "")[:120],
         )
         _deny(client, request.id)
-        return
+        return False
     approved = hermes_approval_decision(command)
     logger.info("C1: omp approval %s: %r", "APPROVED" if approved else "DENIED", command[:120])
     client.send_ui_value(request.id, "Approve" if approved else "Deny")
+    return bool(approved)
 
 
 # M4b (matrix observatory §5/D10): optional approval-frame observer. The
@@ -198,22 +199,60 @@ def _approve_command_select(client: Any, request: Any) -> None:
 # registered (the default) this module behaves exactly as before.
 ApprovalFrameHook = Callable[[str, str, str, tuple], None]
 _approval_frame_hook: Optional[ApprovalFrameHook] = None
-
-
+ApprovalSettleHook = Callable[[str, bool], None]
+_approval_settle_hook: Optional[ApprovalSettleHook] = None
 def set_approval_frame_hook(cb: Optional[ApprovalFrameHook]) -> Optional[ApprovalFrameHook]:
     """Register/replace (``None`` unregisters) the approval-frame observer.
 
     The hook is called with ``(request_id, method, title, options)``
     whenever the responder thread sees a UI request that
     ``looks_like_approval_select`` matches, BEFORE the guard stack is
-    consulted. Observational only: return values are ignored, exceptions
-    are swallowed, and the guard decision below is unchanged. Returns the
-    previously registered hook (for restore-on-unregister).
+    consulted — unless the guard would auto-decide without a human (see
+    :func:`tools.approval.guard_requires_human_approval`), in which case
+    the mirror is skipped so the room never carries a prompt no /approve
+    could resolve. Observational only: return values are ignored,
+    exceptions are swallowed, and the guard decision below is unchanged.
+    Returns the previously registered hook (for restore-on-unregister).
     """
     global _approval_frame_hook
     previous = _approval_frame_hook
     _approval_frame_hook = cb
     return previous
+
+
+def set_approval_settle_hook(cb: Optional[ApprovalSettleHook]) -> Optional[ApprovalSettleHook]:
+    """Register/replace (``None`` unregisters) the approval-settle observer.
+
+    Called with ``(request_id, approved)`` AFTER the guard stack answers an
+    approval select, so an observational mirror can settle the Matrix
+    pending it created to the guard outcome instead of leaving it stale
+    for a later /approve to hit the late path. Observational only.
+    """
+    global _approval_settle_hook
+    previous = _approval_settle_hook
+    _approval_settle_hook = cb
+    return previous
+
+
+def _mirror_wanted(request: Any) -> bool:
+    """True when an approval select deserves a Matrix mirror (M4b).
+
+    False when the guard would auto-decide without a human — mirroring
+    then only creates a stale pending. Errors fail OPEN (mirror) so a
+    real prompt is never skipped by a broken pre-check.
+    """
+    try:
+        from tools.approval import guard_requires_human_approval
+    except Exception:
+        return True
+    try:
+        text = str(getattr(request, "title", None) or getattr(request, "message", None) or "")
+        command = extract_command_from_prompt(text)
+        if command is None:
+            return True
+        return bool(guard_requires_human_approval(command))
+    except Exception:
+        return True
 
 
 def _notify_approval_frame(request: Any) -> None:
@@ -230,6 +269,17 @@ def _notify_approval_frame(request: Any) -> None:
         )
     except Exception:
         logger.exception("M4b: approval-frame hook raised (ignored)")
+
+
+def _notify_approval_settled(request_id: str, approved: bool) -> None:
+    """Fire the M4b settle hook — never affects the decision."""
+    hook = _approval_settle_hook
+    if hook is None:
+        return
+    try:
+        hook(str(request_id or ""), bool(approved))
+    except Exception:
+        logger.exception("M4b: approval-settle hook raised (ignored)")
 
 
 def serve_approvals(client: Any, stop: threading.Event,
@@ -265,8 +315,15 @@ def serve_approvals(client: Any, stop: threading.Event,
             continue  # queue timeout — loop and re-check stop
         try:
             if looks_like_approval_select(request.options, request.method):
-                _notify_approval_frame(request)  # M4b observatory mirror
-                _approve_command_select(client, request)
+                # M4b mirror only when a human could answer it; auto-decided
+                # guards resolve in ms and a mirrored prompt would go stale.
+                mirrored = False
+                if _mirror_wanted(request):
+                    _notify_approval_frame(request)
+                    mirrored = True
+                approved = _approve_command_select(client, request)
+                if mirrored:
+                    _notify_approval_settled(str(getattr(request, "id", "") or ""), approved)
             elif request.method in ("cancel",) or request.is_passive():
                 continue  # passive frames are not answered
             else:

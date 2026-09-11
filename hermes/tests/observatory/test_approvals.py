@@ -860,8 +860,25 @@ class TestRpcApprovalFrameHook:
     )
 
     def _run_serve(self, client, decision, hook):
+        import os
         from tools import omp_rpc_transport as transport
 
+        # Human-gated mirror: the frame hook only fires when the guard could
+        # wait for a human. Give the responder thread a notify surface via
+        # env session key (threads share env, not contextvars).
+        key = "sess-hook-surface"
+        old_env = os.environ.get("HERMES_SESSION_KEY")
+        os.environ["HERMES_SESSION_KEY"] = key
+        try:
+            from tools.approval import register_gateway_notify, unregister_gateway_notify
+        except Exception:
+            register_gateway_notify = None  # type: ignore[assignment]
+            unregister_gateway_notify = None  # type: ignore[assignment]
+        if register_gateway_notify is not None:
+            try:
+                register_gateway_notify(key, lambda _data: None)
+            except Exception:
+                pass
         transport.set_approval_frame_hook(hook)
         recorded = {}
         real = transport.hermes_approval_decision
@@ -887,6 +904,16 @@ class TestRpcApprovalFrameHook:
         finally:
             transport.hermes_approval_decision = real
             transport.set_approval_frame_hook(None)
+            transport.set_approval_settle_hook(None)
+            if unregister_gateway_notify is not None:
+                try:
+                    unregister_gateway_notify(key)
+                except Exception:
+                    pass
+            if old_env is None:
+                os.environ.pop("HERMES_SESSION_KEY", None)
+            else:
+                os.environ["HERMES_SESSION_KEY"] = old_env
         return recorded
 
     def test_hook_fires_and_decision_unchanged(self):
@@ -925,3 +952,43 @@ class TestRpcApprovalFrameHook:
             assert transport.set_approval_frame_hook(second) is first
         finally:
             transport.set_approval_frame_hook(None)
+    def test_hook_skipped_for_auto_decision(self):
+        # Hardline auto-deny never mirrors, even with a human surface: the
+        # guard resolves in ms and no /approve could decide it.
+        import os
+        from tools import omp_rpc_transport as transport
+
+        key = "sess-hook-auto"
+        old_env = os.environ.get("HERMES_SESSION_KEY")
+        os.environ["HERMES_SESSION_KEY"] = key
+        try:
+            from tools.approval import register_gateway_notify, unregister_gateway_notify
+        except Exception:
+            register_gateway_notify = None  # type: ignore[assignment]
+            unregister_gateway_notify = None  # type: ignore[assignment]
+        if register_gateway_notify is not None:
+            try:
+                register_gateway_notify(key, lambda _data: None)
+            except Exception:
+                pass
+        frames: list = []
+        prev = transport.set_approval_frame_hook(lambda *f: frames.append(f))
+        try:
+            req = _StubRequest(
+                id="ui_auto", method="select",
+                title="Allow tool: bash\nCommand: rm -rf /",
+                options=("Approve", "Deny"), message=None,
+            )
+            assert transport._mirror_wanted(req) is False
+        finally:
+            transport.set_approval_frame_hook(prev)
+            if unregister_gateway_notify is not None:
+                try:
+                    unregister_gateway_notify(key)
+                except Exception:
+                    pass
+            if old_env is None:
+                os.environ.pop("HERMES_SESSION_KEY", None)
+            else:
+                os.environ["HERMES_SESSION_KEY"] = old_env
+        assert frames == []

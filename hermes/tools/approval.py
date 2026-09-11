@@ -377,6 +377,97 @@ def _should_fall_through_to_cli_approval(
     immediately and skip the CLI panel the user can actually answer.
     """
     return bool(is_cli and approval_callback is not None and notify_cb is None)
+def has_human_approval_surface(session_key: str = "") -> bool:
+    """True when the guard could actually reach a human for *session_key*.
+
+    Mirrors the human-wait branch of :func:`_run_approval_gate` without any
+    side effect (no enqueue, no prompt, no hooks): a registered gateway
+    notify callback, or an interactive CLI with a prompt callback. Used by
+    observational mirrors (observatory M4b) to skip Matrix prompts the
+    guard would auto-decide in milliseconds.
+    """
+    try:
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key or get_current_session_key(default=""))
+    except Exception:
+        notify_cb = None
+    if notify_cb is not None:
+        return True
+    try:
+        if _is_interactive_cli() and _resolve_cli_approval_callback() is not None:
+            return True
+    except Exception:
+        pass
+    return bool(env_var_enabled("HERMES_EXEC_ASK") and notify_cb is not None)
+
+
+def guard_requires_human_approval(command: str, session_key: str = "") -> bool:
+    """True when the guard would actually wait for a human for *command*.
+
+    Non-blocking, side-effect-free pre-check replicating the auto-decision
+    fast paths of :func:`check_all_command_guards` / :func:`_run_approval_gate`
+    (yolo / mode=off bypass, permanent allowlist, session approval,
+    hardline / sudo-stdin / user-deny auto-denies, container skip,
+    cron / single-query / unattended auto modes, and the non-interactive
+    fail-open / fail-closed tail). False means the guard auto-resolves in
+    milliseconds — an observational mirror must NOT submit a Matrix prompt
+    for it (the pending could never be human-resolved and a later /approve
+    would land on the stale late path).
+    """
+    key = session_key or get_current_session_key(default="")
+    try:
+        if _YOLO_MODE_FROZEN or is_session_yolo_enabled(key):
+            return False
+    except Exception:
+        pass
+    try:
+        if _get_approval_mode() == "off":
+            return False
+    except Exception:
+        pass
+    try:
+        if _command_matches_permanent_allowlist(command):
+            return False
+    except Exception:
+        pass
+    try:
+        is_dangerous, pattern_key, _desc = detect_dangerous_command(command)
+    except Exception:
+        return True
+    if pattern_key:
+        try:
+            if is_approved(key, pattern_key):
+                return False
+        except Exception:
+            pass
+    try:
+        hardline, _ = detect_hardline_command(command)
+        if hardline:
+            return False
+    except Exception:
+        pass
+    try:
+        if _check_sudo_stdin_guard(command)[0]:
+            return False
+    except Exception:
+        pass
+    try:
+        if _match_user_deny_rule(command) is not None:
+            return False
+    except Exception:
+        pass
+    if not is_dangerous:
+        # No dangerous pattern matched: the guard still runs tirith/smart
+        # below, but an omp approval select always carries a Command: line
+        # the wrapper only sends for gated prompts — treat uncertainty as
+        # human-gated so a real prompt is never skipped (fail-closed
+        # direction for visibility).
+        return has_human_approval_surface(key)
+    # Dangerous and not fast-pathed: human-gated only when a surface exists
+    # for the guard to block on (gateway notify / interactive CLI panel).
+    # Without one the guard takes its non-interactive tail (fail-open
+    # approve or fail-closed deny) in milliseconds.
+    return has_human_approval_surface(key)
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME, or by the resolved absolute

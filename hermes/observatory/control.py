@@ -605,14 +605,58 @@ class ControlRouter:
     def _route_steer(self, node: Mapping[str, Any], text: str) -> RoutingOutcome:
         node_id = node["node_id"]
         agent_class = self.agent_class_of(node_id)
-        if agent_class in (AgentClass.GATEWAY, AgentClass.HERMES_SESSION):
+        if agent_class is AgentClass.GATEWAY:
+            # Gateway room: sidecar defers this notice until a mid-turn steer
+            # lands; idle starts drop it downstream, so router keeps emitting.
             actions: tuple[Action, ...] = (InjectText(node_id, text, "steer"),)
-        elif agent_class is AgentClass.OMP_MAIN:
-            actions = (
-                (OmpPrompt(node_id, text) if not self._is_busy(node_id) else OmpSteer(node_id, text),)
+            pending = self._enqueue_steer(node_id, text)
+            if pending is None:
+                return self._notice(
+                    node_id, "notice:steer-queue-full", STEER_QUEUE_FULL_NOTICE
+                )
+            return RoutingOutcome(
+                node_id,
+                "steer",
+                actions,
+                (ControlNotice(node_id, QUEUED_STEER_NOTICE),),
             )
-        else:
-            actions = (OmpSubagentSteer(node_id, text),)
+        if agent_class is AgentClass.HERMES_SESSION:
+            # Hermes child idle InjectText starts a new turn (reply renders);
+            # only a busy mid-turn inject queues. No probe -> assume busy.
+            actions = (InjectText(node_id, text, "steer"),)
+            if self.busy_probe is not None and not self._is_busy(node_id):
+                return RoutingOutcome(node_id, "steer", actions, ())
+            pending = self._enqueue_steer(node_id, text)
+            if pending is None:
+                return self._notice(
+                    node_id, "notice:steer-queue-full", STEER_QUEUE_FULL_NOTICE
+                )
+            return RoutingOutcome(
+                node_id,
+                "steer",
+                actions,
+                (ControlNotice(node_id, QUEUED_STEER_NOTICE),),
+            )
+        if agent_class is AgentClass.OMP_MAIN:
+            # Omp idle starts a NEW turn (OmpPrompt): no queue, no notice.
+            # Only busy mid-run OmpSteer queues with the notice.
+            if not self._is_busy(node_id):
+                return RoutingOutcome(
+                    node_id, "steer", (OmpPrompt(node_id, text),), ()
+                )
+            actions = (OmpSteer(node_id, text),)
+            pending = self._enqueue_steer(node_id, text)
+            if pending is None:
+                return self._notice(
+                    node_id, "notice:steer-queue-full", STEER_QUEUE_FULL_NOTICE
+                )
+            return RoutingOutcome(
+                node_id,
+                "steer",
+                actions,
+                (ControlNotice(node_id, QUEUED_STEER_NOTICE),),
+            )
+        actions = (OmpSubagentSteer(node_id, text),)
         pending = self._enqueue_steer(node_id, text)
         if pending is None:
             return self._notice(
