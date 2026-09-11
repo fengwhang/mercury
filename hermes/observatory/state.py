@@ -374,3 +374,28 @@ class ObservatoryState:
                 f"UPDATE nodes SET {column} = ? WHERE node_id = ?", (value, node_id)
             )
             self._db.commit()
+    def update_extra(self, node_id: str, **kv: Any) -> dict[str, Any]:
+        """Merge ``kv`` into the node's ``extra`` JSON (never raises KeyError
+        for missing keys — unknown node still raises :class:`StateError`)."""
+        with self._lock:
+            row = self.get(node_id)
+            extra = dict(row.get("extra") or {})
+            extra.update(kv)
+            self._db.execute(
+                "UPDATE nodes SET extra_json = ? WHERE node_id = ?",
+                (json.dumps(extra, ensure_ascii=False), node_id),
+            )
+            self._db.commit()
+        return self.get(node_id)
+
+    def set_session_ref(self, node_id: str, session_ref: str) -> None:
+        """Repoint the node's engine handle (spawn-race: a never-materialized
+        omp ref that never hit disk is replaced by the fresh child's real
+        file so later resumes converge)."""
+        with self._lock:
+            self.get(node_id)  # fail hard on unknown node
+            self._db.execute(
+                "UPDATE nodes SET session_ref = ? WHERE node_id = ?",
+                (str(session_ref), node_id),
+            )
+            self._db.commit()

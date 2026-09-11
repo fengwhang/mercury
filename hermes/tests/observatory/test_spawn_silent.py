@@ -407,6 +407,10 @@ async def test_missing_handle_resumes_on_demand(daemon: sm.SidecarDaemon, monkey
         )
         node_id = row["node_id"]
         room = daemon.state.get(node_id)
+        # Materialized row (a completed turn already happened): the on-demand
+        # path is a cold resume, not the spawn-fresh path (see
+        # test_spawn_race.py for the never-materialized law).
+        daemon.state.update_extra(node_id, session_materialized=True)
         # Simulate the adopt gap: the row is live but no process holds a handle.
         daemon.registry.unregister(node_id)
         resumed = FakeHermesAgent("sess-5")
@@ -533,8 +537,10 @@ async def test_notice_failure_does_not_veto_child_turn(daemon: sm.SidecarDaemon,
 @pytest.mark.asyncio
 async def test_lazy_omp_session_passes_spawn_then_fails_resume(daemon: sm.SidecarDaemon):
     """Lazy law: a not-yet-written omp JSONL PASSES spawn validation
-    (the file only materializes after the first assistant message) and
-    fails stale at RESUME time — never a loud spawn refusal."""
+    (the file only materializes after the first assistant message). A
+    spawn-fresh ref reports never-materialized at RESUME time (run live,
+    never the deleted error); only a previously-materialized ref reports
+    deletion — never a loud spawn refusal either way."""
     from observatory.spawn import omp_sessions_dir
 
     await daemon.boot()
@@ -556,9 +562,13 @@ async def test_lazy_omp_session_passes_spawn_then_fails_resume(daemon: sm.Sideca
         assert row["session_ref"] == lazy_ref
         assert {r["node_id"] for r in daemon.state.get_live()} == live_before | {row["node_id"]}
         assert not child.stopped  # no teardown on a passing gate
-        # Resume is where the missing file still fails (stale, never silent).
+        # Spawn-fresh resume reports never-materialized (not deletion).
         from observatory.respawn import restart_omp_orchestrator
 
+        with pytest.raises(RuntimeError, match="never materialized"):
+            restart_omp_orchestrator(daemon.state.get(row["node_id"]))
+        # Previously-materialized refs keep the deletion error.
+        daemon.state.update_extra(row["node_id"], session_materialized=True)
         with pytest.raises(RuntimeError, match="is gone"):
             restart_omp_orchestrator(daemon.state.get(row["node_id"]))
     finally:
@@ -614,9 +624,10 @@ async def test_omp_ref_outside_home_fails_loud_at_spawn(daemon: sm.SidecarDaemon
         await daemon.shutdown()
 @pytest.mark.asyncio
 async def test_dangling_resume_surfaces_operator_visible_error(daemon: sm.SidecarDaemon):
-    """A live row whose session is gone logs child-resume-failed and still
-    tells the room (session-unavailable) — never silence, and never a
-    false 'queued steer' alongside it."""
+    """A live MATERIALIZED row whose session is gone logs child-resume-failed
+    and still tells the room (session-unavailable) — never silence, and
+    never a false 'queued steer' alongside it. (Spawn-fresh rows take the
+    fresh-handle path instead — see test_spawn_race.py.)"""
     await daemon.boot()
     try:
         agent = FakeHermesAgent("sess-gone-zzz")
@@ -631,6 +642,7 @@ async def test_dangling_resume_surfaces_operator_visible_error(daemon: sm.Sideca
         )
         node_id = row["node_id"]
         room = daemon.state.get(node_id)
+        daemon.state.update_extra(node_id, session_materialized=True)
         daemon.registry.unregister(node_id)
         await daemon._on_transaction("tx-1", [_msg(room["room_id"], "hello?")])
         await _drain(daemon)
