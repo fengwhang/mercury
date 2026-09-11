@@ -577,6 +577,7 @@ class Renderer:
         ]
         gw_space = self._gateway.get("space_id")
         purge_ids = {r["node_id"] for r in purge}
+        tail: list[RenderIntent] = []
         for r in purge:
             # Detach ONLY from a parent space that SURVIVES this purge — a
             # purged parent takes its whole space (and the child state with
@@ -595,10 +596,41 @@ class Renderer:
                     # detach voice = the PARENT space owner (a member of
                     # that space; the gateway agent for roots)
                     detach_sender = self._sender_for_key(r.get("parent_node_id") or "")
-                    intents.append(DetachChild(parent_space, r["space_id"], detach_sender))
+                    tail.append(DetachChild(parent_space, r["space_id"], detach_sender))
             for rid in (r.get("room_id"), r.get("space_id")):
                 if rid:
-                    intents.append(PurgeRoom(rid))
+                    tail.append(PurgeRoom(rid))
+        # Leave-then-purge (Element X iOS zombie-room fix): admin-DELETEing a
+        # room while the owner is still joined vanishes it server-side
+        # (sends 500 with no forward extremities) but the client keeps a
+        # zombie no Leave tap can drop. Every purged id is left FIRST —
+        # owner plus each ghost that could be joined (gateway, purge-row
+        # voices, surviving parents) — while the room still exists, so
+        # clients drop it cleanly. Order matters: leaves precede the
+        # DetachChild/PurgeRoom tail (the death batch executes in order).
+        leavers: list[str] = []
+        for mxid in (self.owner_mxid, self.gateway_mxid):
+            if mxid and mxid not in leavers:
+                leavers.append(mxid)
+        for r in purge:
+            mxid = r.get("mxid")
+            if mxid and str(mxid) not in leavers:
+                leavers.append(str(mxid))
+            parent_id = r.get("parent_node_id")
+            if parent_id and parent_id not in purge_ids:
+                try:
+                    parent_mxid = self._node(parent_id).get("mxid")
+                except StateError:
+                    parent_mxid = None
+                if parent_mxid and str(parent_mxid) not in leavers:
+                    leavers.append(str(parent_mxid))
+        seen_rids: set[str] = set()
+        for op in tail:
+            if isinstance(op, PurgeRoom) and op.room_id not in seen_rids:
+                seen_rids.add(op.room_id)
+                for leaver in leavers:
+                    intents.append(LeaveRoom(op.room_id, leaver))
+        intents.extend(tail)
         return tuple(intents)
 
     # --- §5.4 dashboard -------------------------------------------------------------------
@@ -720,9 +752,12 @@ class Renderer:
         404-already-gone records gone:true (the desired end state — a retried
         room purge must never abort its space purge); any other PurgeRoom
         error is collected as fatal but still lets siblings attempt (one wedged
-        room must not orphan the rest); Send/Detach errors are soft (cosmetic
-        once rooms purge) and never block. Non-404 purge failures raise at the
-        end so rows survive for retry; 404/soft never block row removal.
+        room must not orphan the rest); LeaveRoom failures are always soft —
+        a 404-not-member records gone:true, any other leave error is
+        cosmetic (the purge still annihilates the room) and never blocks;
+        Send/Detach errors are soft (cosmetic once rooms purge) and never
+        block. Non-404 purge failures raise at the end so rows survive for
+        retry; 404/soft never block row removal.
         """
         from observatory.matrix_client import MatrixError  # lazy: no aiohttp at import
 
@@ -739,12 +774,23 @@ class Renderer:
                     fatal.append(f"{type(op).__name__} {getattr(op, 'room_id', '')}: {exc}")
                     records.append({"op": "purge-failed", "room_id": getattr(op, "room_id", ""), "error": str(exc)})
                     continue
+                if isinstance(op, LeaveRoom) and exc.status == 404:
+                    records.append({"op": "leave", "room_id": op.room_id, "user": op.sender, "gone": True})
+                    continue
+                if isinstance(op, LeaveRoom):
+                    log.warning("death batch leave soft failure %r: %s", op, exc)
+                    records.append({"op": "leave-failed", "room_id": op.room_id, "user": op.sender, "error": str(exc)})
+                    continue
                 log.warning("death batch soft failure %r: %s", op, exc)
                 records.append({"op": "soft-failed", "error": str(exc)})
             except Exception as exc:  # noqa: BLE001 — classified, not swallowed
                 if isinstance(op, PurgeRoom):
                     fatal.append(f"{type(op).__name__} {getattr(op, 'room_id', '')}: {exc}")
                     records.append({"op": "purge-failed", "room_id": getattr(op, "room_id", ""), "error": str(exc)})
+                    continue
+                if isinstance(op, LeaveRoom):
+                    log.warning("death batch leave soft failure %r: %s", op, exc)
+                    records.append({"op": "leave-failed", "room_id": op.room_id, "user": op.sender, "error": str(exc)})
                     continue
                 log.warning("death batch soft failure %r: %s", op, exc)
                 records.append({"op": "soft-failed", "error": str(exc)})
@@ -1165,7 +1211,16 @@ class IntentExecutor:
                 rid = await self.client.join_room(op.room_id, sender=op.sender)
                 records.append({"op": "join", "room": rid, "user": op.sender})
             elif isinstance(op, LeaveRoom):
-                await self.client.leave_room(op.room_id, sender=op.sender)
+                if op.sender == self.owner_mxid and callable(
+                    getattr(self.client, "leave_room_as_owner", None)
+                ):
+                    # Owner is outside the appservice ghost namespace, so a
+                    # masqueraded leave 403s — ride the owner credential
+                    # (same POST /leave as the client's Leave tap). Older
+                    # fakes without the surface fall through below.
+                    await self.client.leave_room_as_owner(op.room_id)
+                else:
+                    await self.client.leave_room(op.room_id, sender=op.sender)
                 records.append({"op": "leave", "room": op.room_id, "user": op.sender})
             elif isinstance(op, SetUserPower):
                 rid = self.room_id(op.room_key)

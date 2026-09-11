@@ -47,6 +47,7 @@ from observatory.config_gen import ObservatoryPaths
 from observatory.identity import assign_slug, virtual_mxid
 from observatory.renderer import (
     DetachChild,
+    LeaveRoom,
     PurgeRoom,
     RenderIntent,
     Renderer,
@@ -584,9 +585,9 @@ async def spawn_orchestrator(
 
 # RenderIntent union members the journal must round-trip. Serialized by
 # dataclass field; reconstructed as the real renderer dataclasses so the
-# executor runs them unmodified.
 _INTENT_SPECS: tuple[tuple[type, str, tuple[str, ...]], ...] = (
     (SendMessage, "send", ("room_key", "sender", "body", "formatted_body", "tag")),
+    (LeaveRoom, "leave", ("room_id", "sender")),
     (DetachChild, "detach", ("space_id", "child_id", "sender")),
     (PurgeRoom, "purge", ("room_id",)),
 )
@@ -740,7 +741,7 @@ class PurgeOutcome:
     ``fatal`` — a PurgeRoom that did NOT verifiably die (any error other
     than 404-already-gone): annihilation has not converged, the journal
     entry must survive and retry.
-    ``soft`` — send/detach failures (cosmetic once rooms are purged);
+    ``soft`` — send/detach/leave failures (cosmetic once rooms are purged);
     logged, never block row removal (D17: lingering tombstones are the
     worse leak)."""
 

@@ -416,6 +416,16 @@ class MatrixClient:
             "POST", f"{CLIENT_V3}/rooms/{_q(room_id)}/leave", sender=sender, json_body={}
         )
 
+    async def leave_room_as_owner(self, room_id: str) -> None:
+        """Leave a room AS THE OWNER (owner access token).
+
+        Mirror of join_room_as_owner for the leave-then-purge path: the
+        appservice as_token can only masquerade ``@merc_*`` ghosts, never
+        the real owner — so the owner's pre-purge leave rides the owner
+        credential, the same POST /leave Element sends on a Leave tap.
+        """
+        await self.admin_api("POST", f"{CLIENT_V3}/rooms/{_q(room_id)}/leave", json_body={})
+
     # --- reads (snapshot) --------------------------------------------------------------------
 
     async def room_hierarchy(self, room_id: str, *, sender: str, suggested_only: bool = False) -> dict[str, Any]:

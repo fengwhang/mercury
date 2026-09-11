@@ -22,6 +22,7 @@ from observatory.matrix_client import MatrixError
 from observatory.renderer import (
     DetachChild,
     IntentExecutor,
+    LeaveRoom,
     PurgeRoom,
     Renderer,
     SendMessage,
@@ -43,13 +44,13 @@ def _matrix_error(status: int, message: str) -> MatrixError:
         status, {"errcode": "M_NOT_FOUND" if status == 404 else "M_UNKNOWN", "error": message},
     )
 
-
 @dataclass
 class FakeClient:
     """Recording MatrixClient surface the death batch touches."""
 
     calls: list = field(default_factory=list)
     fail_purge: dict = field(default_factory=dict)  # room_id -> HTTP status
+    fail_leave: dict = field(default_factory=dict)  # room_id -> HTTP status
     fail_detach: int | None = None
     fail_send: int | None = None
     _n: int = 0
@@ -71,6 +72,18 @@ class FakeClient:
         if room_id in self.fail_purge:
             raise _matrix_error(self.fail_purge[room_id], f"wedged {room_id}")
         return {}
+
+    async def leave_room(self, room_id, *, sender):
+        self.calls.append(("leave", room_id, sender))
+        if room_id in self.fail_leave:
+            raise _matrix_error(self.fail_leave[room_id], f"leave wedged {room_id}")
+        return None
+
+    async def leave_room_as_owner(self, room_id):
+        self.calls.append(("leave-owner", room_id, OWNER))
+        if room_id in self.fail_leave:
+            raise _matrix_error(self.fail_leave[room_id], f"leave wedged {room_id}")
+        return None
 
 
 def seed_state(tmp_path: Path) -> ObservatoryState:
@@ -224,3 +237,84 @@ async def test_depth1_purge_frees_mxid_for_successor(tmp_path):
     )
     assert state.get(SA)["status"] == "live"
     assert state.get(SA)["mxid"] == mxid
+
+
+def test_depth1_plan_leaves_owner_and_ghosts_before_detach_and_purge(tmp_path):
+    """Leave-then-purge: every purged id is left (owner first, then member
+    ghosts) BEFORE any DetachChild/PurgeRoom, while the room still exists —
+    so Element X drops it instead of keeping an undeletable zombie."""
+    state = seed_state(tmp_path)
+    renderer = Renderer(state, gateway_node_id=GW, server_name=SERVER, owner_mxid=OWNER, executor=None)
+    intents = renderer.plan_death(SA, status="completed", summary="3 tests green")
+    leaves = [i for i in intents if isinstance(i, LeaveRoom)]
+    purges = [i for i in intents if isinstance(i, PurgeRoom)]
+    detaches = [i for i in intents if isinstance(i, DetachChild)]
+    assert purges, "purge path must still purge"
+    assert detaches, "purge path must still detach from the surviving parent"
+    purge_ids = [p.room_id for p in purges]
+    assert set(purge_ids) == {"!r-sa-tests:x", "!s-sa-tests:x", "!r-ssa-lint:x", "!s-ssa-lint:x"}
+    for rid in purge_ids:
+        room_leaves = [lv.sender for lv in leaves if lv.room_id == rid]
+        assert room_leaves[0] == OWNER  # owner leave lands first per room
+        assert state.get(GW)["mxid"] in room_leaves  # gateway ghost joined at creation
+        assert state.get(SA)["mxid"] in room_leaves  # purge-row voices
+        assert state.get(SSA)["mxid"] in room_leaves
+        assert state.get(ORCH)["mxid"] in room_leaves  # surviving parent voice
+    first_detach = min(intents.index(d) for d in detaches)
+    first_purge = min(intents.index(p) for p in purges)
+    assert all(intents.index(lv) < first_detach for lv in leaves)
+    assert all(intents.index(lv) < first_purge for lv in leaves)
+
+
+@pytest.mark.asyncio
+async def test_depth1_leaves_execute_before_deletes(tmp_path):
+    """Execution order mirrors the plan: all leaves land before the first
+    detach/delete, while the rooms still exist."""
+    state = seed_state(tmp_path)
+    client = FakeClient()
+    await make_renderer(state, client).render_death(SA, status="completed", summary="x")
+    kinds = [c[0] for c in client.calls]
+    assert kinds[0] == "send"
+    leaves_idx = [i for i, k in enumerate(kinds) if k in ("leave", "leave-owner")]
+    assert leaves_idx, "death batch must attempt leaves"
+    assert max(leaves_idx) < kinds.index("detach") < kinds.index("delete")
+
+
+@pytest.mark.asyncio
+async def test_owner_leave_rides_owner_token_ghosts_masquerade(tmp_path):
+    """Owner leaves go through the owner credential (outside the appservice
+    ghost namespace); member ghosts leave via masquerade."""
+    state = seed_state(tmp_path)
+    client = FakeClient()
+    await make_renderer(state, client).render_death(SA, status="completed", summary="x")
+    owner_calls = [c for c in client.calls if c[0] == "leave-owner"]
+    ghost_calls = [c for c in client.calls if c[0] == "leave"]
+    assert {c[1] for c in owner_calls} == {
+        "!r-sa-tests:x", "!s-sa-tests:x", "!r-ssa-lint:x", "!s-ssa-lint:x"}
+    assert ghost_calls, "member ghosts must leave via masquerade"
+    assert all(c[2] != OWNER for c in ghost_calls)
+
+
+@pytest.mark.asyncio
+async def test_depth1_leave_404_still_purges_everything(tmp_path):
+    """A leave 404 (already left / never joined) never aborts the purge."""
+    state = seed_state(tmp_path)
+    client = FakeClient(fail_leave={"!r-sa-tests:x": 404})
+    await make_renderer(state, client).render_death(SA, status="completed", summary="x")
+    assert deletes(client) == {"!r-sa-tests:x", "!s-sa-tests:x", "!r-ssa-lint:x", "!s-ssa-lint:x"}
+    for node in (SA, SSA):
+        with pytest.raises(StateError):
+            state.get(node)
+
+
+@pytest.mark.asyncio
+async def test_depth1_leave_500_is_soft_and_purges(tmp_path):
+    """A wedged leave is cosmetic (the purge still annihilates the room):
+    siblings are attempted and rows drop — never a fatal retry loop."""
+    state = seed_state(tmp_path)
+    client = FakeClient(fail_leave={"!s-sa-tests:x": 500, "!r-ssa-lint:x": 500})
+    await make_renderer(state, client).render_death(SA, status="completed", summary="x")
+    assert deletes(client) == {"!r-sa-tests:x", "!s-sa-tests:x", "!r-ssa-lint:x", "!s-ssa-lint:x"}
+    for node in (SA, SSA):
+        with pytest.raises(StateError):
+            state.get(node)

@@ -137,6 +137,12 @@ class FakeClient:
     async def delete_room(self, room_id, *, block=False, purge=True):
         self.calls.append(("delete", room_id))
 
+    async def leave_room(self, room_id, *, sender):
+        self.calls.append(("leave", room_id, sender))
+
+    async def leave_room_as_owner(self, room_id):
+        self.calls.append(("leave-owner", room_id))
+
     async def room_hierarchy(self, room_id, *, sender, suggested_only=False):
         return {"rooms": [{"room_id": room_id, "children_state": []}]}
 
