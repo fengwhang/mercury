@@ -224,7 +224,7 @@ gateway:
     home:                  "📂 **المجلد الرئيسي:** `{home}`"
 
   reasoning:
-    level_default:             "medium (افتراضي)"
+    level_default:             "xhigh (افتراضي)"
     level_disabled:            "none (مُعطّل)"
     scope_session:             "تجاوز الجلسة"
     scope_global:              "الإعدادات العامة"

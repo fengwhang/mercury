@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **Kezdőkönyvtár:** `{home}`"
 
   reasoning:
-    level_default:             "medium (alapértelmezett)"
+    level_default:             "xhigh (alapértelmezett)"
     level_disabled:            "none (kikapcsolva)"
     scope_session:             "munkamenet-felülbírálás"
     scope_global:              "globális konfiguráció"

@@ -398,7 +398,7 @@ def _parse_reasoning_config(effort) -> dict | None:
     from mercury_constants import parse_reasoning_effort
     result = parse_reasoning_effort(effort)
     if effort and str(effort).strip() and result is None:
-        logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
+        logger.warning("Unknown reasoning_effort '%s', using default (xhigh)", effort)
     return result
 
 

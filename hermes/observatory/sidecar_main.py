@@ -571,13 +571,87 @@ class SidecarDaemon:
             log.warning("owner membership heal skipped: %s", exc)
             report["owner_joined"] = 0
 
+        # VM round 3 — first-login cold start: the first E2EE share + power
+        # snapshot above were built BEFORE the owner ever joined (this heal
+        # runs at boot when the owner has no session). When the heal joined
+        # anything, drop every pre-join outbound Megolm session so the next
+        # send re-shares fresh (fresh TOFU trust + fresh OTK verify) — no
+        # pre-join session is ever reused.
+        try:
+            live_rows = self.state.get_live()
+            live_rooms = sorted({
+                rid for row in live_rows
+                for rid in (row.get("room_id"), row.get("space_id")) if rid
+            })
+            directives_room = self._directives_room_id()
+            if directives_room and directives_room not in live_rooms:
+                live_rooms.append(directives_room)
+            live_senders = sorted({
+                str(row.get("mxid") or "") for row in live_rows
+                if str(row.get("mxid") or "")
+            })
+            if self.gateway_mxid and self.gateway_mxid not in live_senders:
+                live_senders.append(self.gateway_mxid)
+            report["megolm_rotated_rooms"] = len(live_rooms)
+            rotated: dict[str, int] = {}
+            if report.get("owner_joined") and self.e2ee is not None:
+                rotated = await self.e2ee.drop_outbound_sessions(
+                    live_rooms, senders=live_senders)
+            report["megolm_rotated"] = rotated
+            log.info("post-join heal: joined=%s rotated=%s over %d live room(s)",
+                     report.get("owner_joined"), rotated, len(live_rooms))
+        except Exception as exc:  # noqa: BLE001 — rotation never fails boot
+            log.warning("post-join rotation skipped: %s", exc)
+            report["megolm_rotated"] = {}
+
+        # VM round 3 — stale OTK after annihilate: the NEXT boot after a
+        # wipe force-drops ALL outbound Megolm sessions (the crypto dir may
+        # have survived a partial wipe with pre-wipe sessions) + re-runs
+        # owner trust fresh per sender with no snapshot to compare against
+        # (first sight). One-shot: the marker is unlinked after use.
+        try:
+            marker = self.paths.root / provision.POST_WIPE_MARKER_NAME
+            if marker.exists():
+                if self.e2ee is not None:
+                    live_rows2 = self.state.get_live()
+                    rooms2 = sorted({
+                        rid for row in live_rows2
+                        for rid in (row.get("room_id"), row.get("space_id")) if rid
+                    })
+                    senders2 = sorted({
+                        str(row.get("mxid") or "") for row in live_rows2
+                        if str(row.get("mxid") or "")
+                    })
+                    if self.gateway_mxid and self.gateway_mxid not in senders2:
+                        senders2.append(self.gateway_mxid)
+                    report["post_wipe_rotation"] = await self.e2ee.post_wipe_rotation(
+                        rooms2, senders2)
+                else:
+                    report["post_wipe_rotation"] = {
+                        "dropped": {}, "trust": {}, "e2ee": "off"}
+                try:
+                    marker.unlink()
+                    report["post_wipe_consumed"] = True
+                except Exception:  # noqa: BLE001 — stale marker retries next boot
+                    report["post_wipe_consumed"] = False
+                    log.warning("post-wipe marker unlink failed: %s", marker)
+                log.info("post-wipe rotation consumed: %s",
+                         report.get("post_wipe_rotation"))
+            else:
+                report["post_wipe_rotation"] = {}
+        except Exception as exc:  # noqa: BLE001 — post-wipe hook never fails boot
+            log.warning("post-wipe rotation skipped: %s", exc)
+            report["post_wipe_rotation"] = {}
         # 7. sibling subsystems (M4a/M4b/M5) — integrate, never edit
         self.wire_siblings()
         # directives membership reconcile + D7 snapshot warm (BEFORE the
-        # intake serves: first steer must not fail-closed on a cold cache)
+        # intake serves: first steer must not fail-closed on a cold cache).
+        # AFTER the owner-join heal above — a pre-join snapshot misses the
+        # owner and reads stale until the next tick (first-login cold start).
         await self._sync_directives_membership()
         await self._refresh_power_levels()
         report["directives_members"] = len(self._directives_members())
+        report["power_rooms"] = len(self._pl_cache)
 
         # 8. intake endpoint (this loop) — LAST: traffic only after recovery
         await self._serve_intake()

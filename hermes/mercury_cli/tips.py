@@ -101,7 +101,7 @@ TIPS = [
     "mercury memory setup lets you configure an external memory provider (Honcho, Mem0, etc.).",
     "mercury webhook subscribe creates event-driven webhook routes with HMAC validation.",
     "Save money: mercury tools disables unused tools, mercury skills config trims skills down.",
-    "/reasoning low or /reasoning minimal cuts thinking depth below the default (medium) — faster, cheaper responses.",
+    "/reasoning low or /reasoning minimal cuts thinking depth below the default (xhigh) — faster, cheaper responses.",
     "mercury models routes vision, compression, and aux tasks to cheaper models — cuts background token cost 85%+ without downgrading your main chat model.",
 
     # --- Configuration ---

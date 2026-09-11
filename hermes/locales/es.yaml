@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **Inicio:** `{home}`"
 
   reasoning:
-    level_default:             "medium (predeterminado)"
+    level_default:             "xhigh (predeterminado)"
     level_disabled:            "none (deshabilitado)"
     scope_session:             "anulación de sesión"
     scope_global:              "configuración global"

@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **홈:** `{home}`"
 
   reasoning:
-    level_default:             "medium (기본값)"
+    level_default:             "xhigh (기본값)"
     level_disabled:            "none (비활성화됨)"
     scope_session:             "세션 재정의"
     scope_global:              "전역 설정"

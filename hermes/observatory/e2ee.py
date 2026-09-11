@@ -163,10 +163,11 @@ def list_pending_trusts(state: ObservatoryState) -> list[dict[str, Any]]:
     """Every pending device-rotation record, oldest first. Never raises —
     CLI/setup surfaces degrade to "none" when state is unreadable."""
     try:
-        rows = state._db.execute(  # noqa: SLF001 — same-package state scan
-            "SELECT key, value FROM meta WHERE key LIKE ? ORDER BY key",
-            (PENDING_TRUST_META_PREFIX + "%",),
-        ).fetchall()
+        with state.locked() as db:  # noqa: SLF001 — same-package state scan
+            rows = db.execute(
+                "SELECT key, value FROM meta WHERE key LIKE ? ORDER BY key",
+                (PENDING_TRUST_META_PREFIX + "%",),
+            ).fetchall()
     except Exception:  # noqa: BLE001 — unreadable state reads as no pendings
         return []
     out: list[dict[str, Any]] = []
@@ -187,10 +188,11 @@ def list_approved_trusts(state: ObservatoryState) -> list[dict[str, Any]]:
     """Every unconsumed rotation approval. Same never-raises law as
     :func:`list_pending_trusts`."""
     try:
-        rows = state._db.execute(  # noqa: SLF001 — same-package state scan
-            "SELECT key, value FROM meta WHERE key LIKE ? ORDER BY key",
-            (APPROVED_TRUST_META_PREFIX + "%",),
-        ).fetchall()
+        with state.locked() as db:  # noqa: SLF001 — same-package state scan
+            rows = db.execute(
+                "SELECT key, value FROM meta WHERE key LIKE ? ORDER BY key",
+                (APPROVED_TRUST_META_PREFIX + "%",),
+            ).fetchall()
     except Exception:  # noqa: BLE001
         return []
     out: list[dict[str, Any]] = []
@@ -608,9 +610,10 @@ class _EncryptionStateStore:
         and every crypt-registry room has owner + virtual users as
         members, so all of them qualify.
         """
-        rows = self._state._db.execute(  # noqa: SLF001 — registry scan, no scan API
-            "SELECT value FROM meta WHERE key LIKE ?", (CRYPT_ROOM_META_PREFIX + "%",)
-        ).fetchall()
+        with self._state.locked() as db:  # noqa: SLF001 — registry scan, no scan API
+            rows = db.execute(
+                "SELECT value FROM meta WHERE key LIKE ?", (CRYPT_ROOM_META_PREFIX + "%",)
+            ).fetchall()
         return [value for (value,) in rows]
 
 
@@ -1549,6 +1552,93 @@ class E2EEManager:
         log.info("e2ee warmup: %s device %s keys published",
                  self.gateway_mxid, crypto.device_id)
         return {self.gateway_mxid: str(crypto.device_id)}
+
+    async def drop_outbound_sessions(self, rooms, senders=()) -> dict[str, int]:
+        """Drop cached outbound Megolm sessions for ``rooms`` on every
+        relevant sender machine. First-login cold start: the first E2EE
+        share + power snapshot are built BEFORE the owner has ever
+        joined (owner auto-join heal runs at boot when the owner has no
+        session), so a pre-join outbound session never encrypted to the
+        owner — dropping forces the next send to re-share fresh via
+        :meth:`ensure_room_share` (fresh TOFU trust + fresh OTK verify).
+        ``senders`` are loaded on demand (a pre-join session from a
+        PREVIOUS boot persists in that sender's crypto file while this
+        process never loaded its machine); already-loaded machines are
+        always covered; machines are never created for anyone else.
+        Removal of a missing session is a no-op. Returns
+        ``{sender_mxid: actually_dropped_count}``."""
+        from mautrix.types import RoomID
+
+        targets = set(self._machines) | set(senders or ())
+        if self.gateway_mxid:
+            targets.add(self.gateway_mxid)
+        owner = (self.owner_mxid or "").strip()
+        targets = {t for t in targets if t and t != owner}
+        dropped: dict[str, int] = {}
+        for sender in sorted(targets):
+            try:
+                crypto = self.machine_for(sender)
+                await crypto.load()
+                store = crypto.machine.crypto_store
+            except Exception:  # noqa: BLE001 — one sick store never blocks rest
+                log.warning("post-join rotation: store load failed for %s",
+                            sender, exc_info=True)
+                continue
+            n = 0
+            for room_id in rooms:
+                try:
+                    session = await store.get_outbound_group_session(
+                        RoomID(str(room_id)))
+                    if session is None:
+                        continue
+                    await store.remove_outbound_group_session(RoomID(str(room_id)))
+                    n += 1
+                except Exception:  # noqa: BLE001 — per-room best effort
+                    log.warning("post-join rotation failed for %s in %s",
+                                sender, room_id, exc_info=True)
+            if n:
+                dropped[str(sender)] = n
+                log.info("post-join rotation: dropped %d outbound session(s) "
+                         "for %s", n, sender)
+        return dropped
+
+    async def post_wipe_rotation(self, rooms, senders=()) -> dict[str, Any]:
+        """One-shot first boot after an annihilate wipe: force-drop ALL
+        outbound Megolm sessions for ``rooms`` (the crypto dir may have
+        survived a partial wipe with pre-wipe sessions) + re-run
+        :meth:`ensure_owner_trust` fresh per sender with NO snapshot to
+        compare against — stored owner devices are cleared first, so
+        whatever the fresh server returns is first sight. Never raises:
+        every sender/room is best-effort; the report carries counts."""
+        from mautrix.types import UserID
+
+        report: dict[str, Any] = {"dropped": {}, "trust": {}, "errors": []}
+        dropped = await self.drop_outbound_sessions(rooms, senders=senders)
+        report["dropped"] = dropped
+        owner = (self.owner_mxid or "").strip()
+        if not owner:
+            return report
+        targets = set(self._machines) | set(senders or ())
+        if self.gateway_mxid:
+            targets.add(self.gateway_mxid)
+        targets = {t for t in targets if t and t != owner}
+        for sender in sorted(targets):
+            try:
+                crypto = self.machine_for(sender)
+                await crypto.load()
+                try:
+                    await crypto.machine.crypto_store.put_devices(UserID(owner), {})
+                except Exception:  # noqa: BLE001 — store without device API
+                    pass
+                report["trust"][str(sender)] = await self.ensure_owner_trust(sender)
+            except Exception as exc:  # noqa: BLE001 — per-sender best effort
+                report["errors"].append(f"{sender}: {exc}")
+                log.warning("post-wipe trust refresh failed for %s: %s",
+                            sender, exc)
+        log.info("post-wipe rotation: dropped=%s trust_senders=%s",
+                 dropped, sorted(report["trust"]))
+        return report
+
 
     async def gateway_fingerprint(self, mxid: str) -> str:
         """This device's ed25519 fingerprint as clients display it — the

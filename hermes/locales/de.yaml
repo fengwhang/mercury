@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **Stammverzeichnis:** `{home}`"
 
   reasoning:
-    level_default:             "medium (Standard)"
+    level_default:             "xhigh (Standard)"
     level_disabled:            "none (deaktiviert)"
     scope_session:             "Sitzungs-Override"
     scope_global:              "Globale Konfiguration"

@@ -7828,10 +7828,10 @@ class AIAgent:
             if self.reasoning_config.get("enabled") is False:
                 return None
             requested_effort = str(
-                self.reasoning_config.get("effort", "medium")
+                self.reasoning_config.get("effort", "xhigh")
             ).strip().lower()
         else:
-            requested_effort = "medium"
+            requested_effort = "xhigh"
 
         if requested_effort == "xhigh" and "xhigh" not in supported_efforts and "high" in supported_efforts:
             requested_effort = "high"

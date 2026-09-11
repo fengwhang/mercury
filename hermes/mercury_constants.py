@@ -1525,7 +1525,7 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     if effort and str(effort).strip() and result is None:
         import logging
         logging.getLogger(__name__).warning(
-            "Unknown reasoning_effort '%s', using default (medium)", effort
+            "Unknown reasoning_effort '%s', using default (xhigh)", effort
         )
     return result
 

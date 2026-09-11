@@ -49,12 +49,12 @@ class NebiusTokenFactoryProfile(ProviderProfile):
 
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled", True)
-            raw_effort = reasoning_config.get("effort", "medium")
+            raw_effort = reasoning_config.get("effort", "xhigh")
         else:
             enabled = True
-            raw_effort = "medium"
+            raw_effort = "xhigh"
 
-        effort = str(raw_effort or "medium").strip().lower()
+        effort = str(raw_effort or "xhigh").strip().lower()
         if enabled is False or effort in {"none", "off", "disabled"}:
             return {}, {}
         # Canonical clamp (nearest weaker supported level, never escalate,

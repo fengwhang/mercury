@@ -2911,9 +2911,9 @@ class TestCodexAdapterReasoningTranslation:
 
 
 
-    def test_reasoning_effort_null_falls_back_to_medium(self):
+    def test_reasoning_effort_null_falls_back_to_xhigh(self):
         """Parity with agent/transports/codex.py::build_kwargs() — falsy
-        ``effort`` (None / empty / 0) keeps the default ``medium`` instead
+        ``effort`` (None / empty / 0) keeps the default ``xhigh`` instead
         of being forwarded to Codex.  Codex rejects ``{"effort": null}``
         with HTTP 400 (Invalid value for parameter `reasoning.effort`)."""
         adapter, captured = self._build_adapter()
@@ -2921,7 +2921,7 @@ class TestCodexAdapterReasoningTranslation:
             messages=[{"role": "user", "content": "hi"}],
             extra_body={"reasoning": {"effort": None}},
         )
-        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("reasoning") == {"effort": "xhigh", "summary": "auto"}
         assert captured.get("include") == ["reasoning.encrypted_content"]
 
 

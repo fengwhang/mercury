@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -96,27 +99,47 @@ def purge_on_death(depth: int) -> bool:
 
 
 class ObservatoryState:
-    """SQLite-backed agent tree. One connection, sync I/O — the sidecar is a
-    single-threaded asyncio process; call sites that must not block the loop
-    wrap calls in ``asyncio.to_thread`` (the repo's ASYNC-lint pattern)."""
+    """SQLite-backed agent tree. One connection, sync I/O — thread-safe
+    via an internal ``threading.RLock`` (``check_same_thread=False``).
+
+    The ``/spawn`` + ``/spawnomp`` Matrix pass-through runs INSIDE the
+    gateway event loop while ``try_boot_sidecar`` opens the same state on
+    a daemon boot thread — sqlite objects are created on one thread and
+    used on another, so every ``_db`` access takes the lock. Call sites
+    that must not block the loop wrap calls in ``asyncio.to_thread``
+    (the repo's ASYNC-lint pattern). External same-package ``state._db``
+    users MUST hold ``state._lock`` (or use :meth:`locked`)."""
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(self.db_path)
+        self._lock = threading.RLock()
+        self._db = sqlite3.connect(self.db_path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         # WAL: the renderer/respawn pass reads while discovery writes, and a
         # crashed sidecar must never leave a torn journal (D18 restart story).
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA foreign_keys=ON")
-        self._db.executescript(_SCHEMA)
-        self._migrate()
-        self._db.commit()
+        with self._lock:
+            self._db.execute("PRAGMA journal_mode=WAL")
+            self._db.execute("PRAGMA foreign_keys=ON")
+            self._db.executescript(_SCHEMA)
+            self._migrate_locked()
+            self._db.commit()
 
     # --- lifecycle ------------------------------------------------------------
 
+    @contextmanager
+    def locked(self) -> Iterator[sqlite3.Connection]:
+        """Hold the state lock and yield the raw connection.
+
+        Same-package direct ``state._db`` users (spawn/e2ee/cron_rooms)
+        MUST wrap their transaction blocks in this — the connection is
+        shared across the boot thread and the gateway event loop."""
+        with self._lock:
+            yield self._db
+
     def close(self) -> None:
-        self._db.close()
+        with self._lock:
+            self._db.close()
 
     def __enter__(self) -> "ObservatoryState":
         return self
@@ -128,6 +151,11 @@ class ObservatoryState:
         """Version-gate the schema. Unknown FUTURE versions fail hard (an
         older sidecar must not write into a newer store); older versions
         walk forward through explicit steps — none yet at v1."""
+        with self._lock:
+            self._migrate_locked()
+
+    def _migrate_locked(self) -> None:
+        """_migrate without locking (caller holds ``_lock``)."""
         row = self._db.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
         ).fetchone()
@@ -148,30 +176,33 @@ class ObservatoryState:
     # --- meta KV --------------------------------------------------------------
 
     def get_meta(self, key: str) -> str:
-        row = self._db.execute(
-            "SELECT value FROM meta WHERE key = ?", (key,)
-        ).fetchone()
-        if row is None:
-            raise StateError(f"no meta key {key!r}")
-        return row["value"]
+        with self._lock:
+            row = self._db.execute(
+                "SELECT value FROM meta WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                raise StateError(f"no meta key {key!r}")
+            return row["value"]
 
     def set_meta(self, key: str, value: str) -> None:
-        self._db.execute(
-            "INSERT INTO meta (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
-        self._db.commit()
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+            self._db.commit()
 
     def delete_meta(self, key: str) -> bool:
         """Drop one meta entry (poisoned-room reconverge); True when one
         existed. Never raises for absent keys."""
-        try:
-            cur = self._db.execute("DELETE FROM meta WHERE key = ?", (key,))
-            self._db.commit()
-            return (cur.rowcount or 0) > 0
-        except Exception:  # noqa: BLE001 — best-effort delete
-            return False
+        with self._lock:
+            try:
+                cur = self._db.execute("DELETE FROM meta WHERE key = ?", (key,))
+                self._db.commit()
+                return (cur.rowcount or 0) > 0
+            except Exception:  # noqa: BLE001 — best-effort delete
+                return False
 
     # --- nodes ----------------------------------------------------------------
 
@@ -183,12 +214,13 @@ class ObservatoryState:
 
     def get(self, node_id: str) -> dict[str, Any]:
         """Full row as a dict (``extra_json`` parsed into ``extra``)."""
-        row = self._db.execute(
-            "SELECT * FROM nodes WHERE node_id = ?", (node_id,)
-        ).fetchone()
-        if row is None:
-            raise StateError(f"no node {node_id!r}")
-        return self._row_to_dict(row)
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM nodes WHERE node_id = ?", (node_id,)
+            ).fetchone()
+            if row is None:
+                raise StateError(f"no node {node_id!r}")
+            return self._row_to_dict(row)
 
     def next_depth(self, parent_node_id: str | None) -> int:
         """D8 depth for a new node: roots (gateway agent, spawned
@@ -218,28 +250,29 @@ class ObservatoryState:
         the tree position (the value is still frozen verbatim at insert)."""
         if engine not in ENGINES:
             raise ValueError(f"engine must be one of {ENGINES}, got {engine!r}")
-        if depth is None:
-            depth = self.next_depth(parent_node_id)
-        self._db.execute(
-            "INSERT INTO nodes (node_id, parent_node_id, engine, depth, name,"
-            " slug, mxid, session_ref, delegation_id, status, created_epoch,"
-            " extra_json)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'live', ?, ?)",
-            (
-                node_id,
-                parent_node_id,
-                engine,
-                depth,
-                name,
-                slug,
-                mxid,
-                session_ref,
-                delegation_id,
-                created_epoch if created_epoch is not None else time.time(),
-                json.dumps(extra or {}, ensure_ascii=False),
-            ),
-        )
-        self._db.commit()
+        with self._lock:
+            if depth is None:
+                depth = self.next_depth(parent_node_id)
+            self._db.execute(
+                "INSERT INTO nodes (node_id, parent_node_id, engine, depth, name,"
+                " slug, mxid, session_ref, delegation_id, status, created_epoch,"
+                " extra_json)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'live', ?, ?)",
+                (
+                    node_id,
+                    parent_node_id,
+                    engine,
+                    depth,
+                    name,
+                    slug,
+                    mxid,
+                    session_ref,
+                    delegation_id,
+                    created_epoch if created_epoch is not None else time.time(),
+                    json.dumps(extra or {}, ensure_ascii=False),
+                ),
+            )
+            self._db.commit()
         return self.get(node_id)
 
     def mark_dead(self, node_id: str, *, died_epoch: float | None = None) -> dict[str, Any]:
@@ -247,14 +280,15 @@ class ObservatoryState:
         their history (D8) and >=2-agents keep their reading grace until the
         parent dies; matrix purge + row removal are always the caller's
         explicit ``mark_deleted_and_purge``."""
-        row = self.get(node_id)
-        if row["status"] == "deleted":
-            raise StateError(f"node {node_id!r} is already deleted")
-        self._db.execute(
-            "UPDATE nodes SET status = 'dead', died_epoch = ? WHERE node_id = ?",
-            (died_epoch if died_epoch is not None else time.time(), node_id),
-        )
-        self._db.commit()
+        with self._lock:
+            row = self.get(node_id)
+            if row["status"] == "deleted":
+                raise StateError(f"node {node_id!r} is already deleted")
+            self._db.execute(
+                "UPDATE nodes SET status = 'dead', died_epoch = ? WHERE node_id = ?",
+                (died_epoch if died_epoch is not None else time.time(), node_id),
+            )
+            self._db.commit()
         return self.get(node_id)
 
     def mark_deleted_and_purge(self, node_id: str) -> dict[str, Any]:
@@ -263,59 +297,64 @@ class ObservatoryState:
         delete (needs space_id/room_id) and log the annihilation. The row is
         deleted — per D17 a successor with the same name inherits the MXID
         and NOTHING else, so no tombstone may survive to leak state."""
-        row = self.get(node_id)
-        with self._db:
-            # Transient 'deleted' status: same transaction, observable only
-            # to CHECK-constraint readers; keeps the enum honest.
-            self._db.execute(
-                "UPDATE nodes SET status = 'deleted' WHERE node_id = ?", (node_id,)
-            )
-            self._db.execute("DELETE FROM nodes WHERE node_id = ?", (node_id,))
+        with self._lock:
+            row = self.get(node_id)
+            with self._db:
+                # Transient 'deleted' status: same transaction, observable only
+                # to CHECK-constraint readers; keeps the enum honest.
+                self._db.execute(
+                    "UPDATE nodes SET status = 'deleted' WHERE node_id = ?", (node_id,)
+                )
+                self._db.execute("DELETE FROM nodes WHERE node_id = ?", (node_id,))
         return row
 
     def get_live(self) -> list[dict[str, Any]]:
         """All live nodes, deterministic order (depth, created_epoch, node_id)."""
-        rows = self._db.execute(
-            "SELECT * FROM nodes WHERE status = 'live'"
-            " ORDER BY depth, created_epoch, node_id"
-        ).fetchall()
-        return [self._row_to_dict(r) for r in rows]
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM nodes WHERE status = 'live'"
+                " ORDER BY depth, created_epoch, node_id"
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
 
     def find_live_by_slug(self, slug: str) -> list[dict[str, Any]]:
         """D17: collision detection counts LIVE agents only — dead and
         purged predecessors are invisible here, so their MXID is inherited
         freely (with zero context inheritance)."""
-        rows = self._db.execute(
-            "SELECT * FROM nodes WHERE slug = ? AND status = 'live'"
-            " ORDER BY created_epoch, node_id",
-            (slug,),
-        ).fetchall()
-        return [self._row_to_dict(r) for r in rows]
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM nodes WHERE slug = ? AND status = 'live'"
+                " ORDER BY created_epoch, node_id",
+                (slug,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
 
     def children_of(self, node_id: str) -> list[dict[str, Any]]:
         """Direct children (any status), spawn order."""
-        rows = self._db.execute(
-            "SELECT * FROM nodes WHERE parent_node_id = ?"
-            " ORDER BY created_epoch, node_id",
-            (node_id,),
-        ).fetchall()
-        return [self._row_to_dict(r) for r in rows]
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM nodes WHERE parent_node_id = ?"
+                " ORDER BY created_epoch, node_id",
+                (node_id,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
 
     def get_subtree(self, node_id: str) -> list[dict[str, Any]]:
         """The node plus every descendant (any status), breadth-first in
         spawn order — the set a parent-death cascade (D8) must consider."""
-        out = [self.get(node_id)]
-        frontier = [node_id]
-        while frontier:
-            placeholders = ",".join("?" * len(frontier))
-            rows = self._db.execute(
-                f"SELECT * FROM nodes WHERE parent_node_id IN ({placeholders})"
-                " ORDER BY created_epoch, node_id",
-                frontier,
-            ).fetchall()
-            frontier = [r["node_id"] for r in rows]
-            out.extend(self._row_to_dict(r) for r in rows)
-        return out
+        with self._lock:
+            out = [self.get(node_id)]
+            frontier = [node_id]
+            while frontier:
+                placeholders = ",".join("?" * len(frontier))
+                rows = self._db.execute(
+                    f"SELECT * FROM nodes WHERE parent_node_id IN ({placeholders})"
+                    " ORDER BY created_epoch, node_id",
+                    frontier,
+                ).fetchall()
+                frontier = [r["node_id"] for r in rows]
+                out.extend(self._row_to_dict(r) for r in rows)
+            return out
 
     # --- matrix id upsert -----------------------------------------------------
 
@@ -329,8 +368,9 @@ class ObservatoryState:
 
     def _set_matrix_id(self, node_id: str, column: str, value: str) -> None:
         assert column in ("space_id", "room_id")
-        self.get(node_id)  # fail hard on unknown node
-        self._db.execute(
-            f"UPDATE nodes SET {column} = ? WHERE node_id = ?", (value, node_id)
-        )
-        self._db.commit()
+        with self._lock:
+            self.get(node_id)  # fail hard on unknown node
+            self._db.execute(
+                f"UPDATE nodes SET {column} = ? WHERE node_id = ?", (value, node_id)
+            )
+            self._db.commit()

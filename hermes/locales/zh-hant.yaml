@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **主目錄：** `{home}`"
 
   reasoning:
-    level_default:             "medium（預設）"
+    level_default:             "xhigh（預設）"
     level_disabled:            "none（已停用）"
     scope_session:             "工作階段覆寫"
     scope_global:              "全域設定"

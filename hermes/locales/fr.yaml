@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **Dossier personnel :** `{home}`"
 
   reasoning:
-    level_default:             "medium (par défaut)"
+    level_default:             "xhigh (par défaut)"
     level_disabled:            "none (désactivé)"
     scope_session:             "remplacement de session"
     scope_global:              "configuration globale"

@@ -573,18 +573,20 @@ def begin_exit(
     entries.append(record.to_entry())
     died = time.time()
     # The atomic core: journal write + every dead-mark commit together.
-    db = state._db
-    with db:
-        db.execute(
-            "INSERT INTO meta (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (PURGE_JOURNAL_KEY, json.dumps(entries, ensure_ascii=False)),
-        )
-        for r in subtree:
+    # Locked: this state is shared with the gateway event loop (/spawn
+    # pass-through) while boot opened it on another thread.
+    with state.locked() as db:
+        with db:
             db.execute(
-                "UPDATE nodes SET status = 'dead', died_epoch = ? WHERE node_id = ?",
-                (died, r["node_id"]),
+                "INSERT INTO meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (PURGE_JOURNAL_KEY, json.dumps(entries, ensure_ascii=False)),
             )
+            for r in subtree:
+                db.execute(
+                    "UPDATE nodes SET status = 'dead', died_epoch = ? WHERE node_id = ?",
+                    (died, r["node_id"]),
+                )
     return record
 
 
@@ -644,17 +646,17 @@ def finish_exit(state: ObservatoryState, record: ExitRecord) -> None:
         e for e in read_purge_journal(state)
         if e.get("journal_id") != record.journal_id
     ]
-    db = state._db
-    with db:
-        for r in reversed(record.rows):
+    with state.locked() as db:
+        with db:
+            for r in reversed(record.rows):
+                db.execute(
+                    "DELETE FROM nodes WHERE node_id = ?", (r["node_id"],)
+                )
             db.execute(
-                "DELETE FROM nodes WHERE node_id = ?", (r["node_id"],)
+                "INSERT INTO meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (PURGE_JOURNAL_KEY, json.dumps(remaining, ensure_ascii=False)),
             )
-        db.execute(
-            "INSERT INTO meta (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (PURGE_JOURNAL_KEY, json.dumps(remaining, ensure_ascii=False)),
-        )
 
 
 async def replay_purge_journal(

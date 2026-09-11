@@ -205,7 +205,7 @@ gateway:
     home:                  "📂 **Baile:** `{home}`"
 
   reasoning:
-    level_default:             "medium (réamhshocraithe)"
+    level_default:             "xhigh (réamhshocraithe)"
     level_disabled:            "none (díchumasaithe)"
     scope_session:             "sárú seisiúin"
     scope_global:              "cumraíocht dhomhanda"

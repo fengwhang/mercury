@@ -729,6 +729,13 @@ def rotate_owner_password(
 # artifacts, not data — both modes keep them.
 #
 
+#: One-shot marker written by :func:`wipe_observatory_data` after a verified
+#: wipe; the NEXT sidecar boot consumes it (force-drop ALL outbound Megolm
+#: sessions + fresh owner trust, no snapshot) and unlinks it. Lives directly
+#: under the observatory root — never a wipe target, never a zip, invisible
+#: to ``observatory_wipe_targets`` / ``observatory_data_present``.
+POST_WIPE_MARKER_NAME = ".annihilated"
+
 #: Wipeable tuwunel data, resolved per home: toml (identity pin), DB dir
 #: (RocksDB + archived WALs), owner credentials, appservice registrations
 #: (tokens), renderer state (room/space ids of deleted rooms), crypto stores
@@ -810,6 +817,117 @@ def _strip_owner_env_mirror(home: Path) -> list[str]:
         return []
 
 
+def _stray_tuwunel_pids() -> list[int]:
+    """PIDs running the tuwunel server binary (excluding this process).
+    Never raises. Matches on argv[0]'s basename starting with ``tuwunel``
+    (the server binary) — never a bare cmdline substring, so test runners
+    or shells that merely mention tuwunel in arguments are never matched."""
+    me = os.getpid()
+    found: list[int] = []
+    proc = Path("/proc")
+    if proc.is_dir():
+        try:
+            entries = list(proc.iterdir())
+        except Exception:  # noqa: BLE001 — /proc unreadable
+            return []
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            if pid == me:
+                continue
+            try:
+                raw = (entry / "cmdline").read_bytes().split(b"\0")
+            except Exception:  # noqa: BLE001 — raced exit / permission
+                continue
+            if not raw or not raw[0]:
+                continue
+            first = raw[0].decode("utf-8", "replace")
+            base = first.rsplit("/", 1)[-1]
+            if base == "tuwunel" or base.startswith("tuwunel-"):
+                found.append(pid)
+        return found
+    if shutil.which("pgrep") is None:
+        return []
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", r"(^|/)tuwunel(-[^ /]*)?( |$)"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:  # noqa: BLE001 — pgrep missing/failed
+        return []
+    for line in (out.stdout or "").splitlines():
+        try:
+            pid = int(line.strip())
+        except ValueError:
+            continue
+        if pid != me:
+            found.append(pid)
+    return found
+
+
+def _kill_stray_tuwunel(*, timeout: float = 10.0) -> list[int]:
+    """SIGTERM (then SIGKILL) stray tuwunel servers so the DB dir cannot be
+    recreated mid-wipe by a still-running homeserver (the stale-OTK shape:
+    old-signed one-time keys served after an annihilate that never landed).
+    Best-effort: returns signaled pids; survivors are only LOGGED here —
+    :func:`wipe_observatory_data`'s post-delete verify still fails loud on
+    a resurrected target. Never raises."""
+    import signal as _signal
+
+    pids = _stray_tuwunel_pids()
+    if not pids:
+        return []
+    for pid in pids:
+        try:
+            os.kill(pid, _signal.SIGTERM)
+        except Exception:  # noqa: BLE001 — raced exit / permission
+            pass
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        survivors = [p for p in pids if _pid_alive(p)]
+        if not survivors:
+            return pids
+        time.sleep(0.2)
+    for pid in pids:
+        if _pid_alive(pid):
+            try:
+                os.kill(pid, _signal.SIGKILL)
+            except Exception:  # noqa: BLE001
+                pass
+    survivors = [p for p in pids if _pid_alive(p)]
+    if survivors:
+        print(f"  ! stray tuwunel pids survived SIGKILL: {survivors} "
+              f"(wipe verify below still fails loud on resurrection)")
+    return pids
+
+
+def _pid_alive(pid: int) -> bool:
+    """True when ``pid`` exists (and is not this process). Never raises."""
+    if pid == os.getpid():
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _assert_wipe_deleted(target: Path) -> None:
+    """Fail LOUD when a wipe target survived deletion (a half-wipe must
+    never pass as clean — the stale-OTK shape is exactly a server DB the
+    annihilate did not actually delete)."""
+    if target.exists() or target.is_symlink():
+        raise ProvisionError(
+            f"wipe FAILED: {target} survived deletion — stop the homeserver "
+            f"(`systemctl --user stop {HOMESERVER_UNIT_NAME}`), kill stray "
+            f"tuwunel pids, and re-run the wipe")
+
+
 def wipe_observatory_data(
     mercury_home: str | Path | None = None,
     *,
@@ -823,14 +941,17 @@ def wipe_observatory_data(
     the loose dir — archives accumulate as inert zip files, never loose dirs, and
     neither mode ever deletes a ``*.zip``. Annihilate deletes the live targets
     PLUS the bootstrap toml PLUS any loose (unzipped) ``wiped-archive-*`` dirs.
-    Both stop the units, remove generated unit files, and strip the stale .env
-    owner mirror. Keeps the tuwunel binary + logs. Returns a summary dict
-    (``mode``, ``moved``/``deleted``, ``archived_to`` — archive: the ``.zip``
-    path, ``units_removed``, ``env_stripped``); every moved and deleted name is
+    Both stop the units, kill stray tuwunel pids, remove generated unit files,
+    and strip the stale .env owner mirror. Keeps the tuwunel binary + logs.
+    Returns a summary dict (``mode``, ``moved``/``deleted``, ``archived_to``
+    — archive: the ``.zip`` path, ``units_removed``, ``stray_killed``,
+    ``env_stripped``, ``post_wipe_marker``); every moved and deleted name is
     listed. ``observatory_wipe_targets`` / ``observatory_data_present`` never
     match ``*.zip`` (inert forensics, invisible to provisioning). Raises
-    ProvisionError on an unknown mode; per-target failures raise (loud — a
-    half-wipe must never pass as clean).
+    ProvisionError on an unknown mode; per-target failures AND post-delete
+    survivors raise (loud — a half-wipe must never pass as clean). On
+    success a one-shot ``.annihilated`` marker lands under the observatory
+    root for the NEXT sidecar boot (force-drop sessions + fresh trust).
     """
     if mode not in ("archive", "annihilate"):
         raise ProvisionError(
@@ -849,8 +970,13 @@ def wipe_observatory_data(
         except Exception:  # noqa: BLE001 — absent unit, nothing to snapshot
             pass
     removed_units = _stop_and_remove_units(unit_dir=unit_dir)
+    # VM round 3 — stale OTK after annihilate: a still-running homeserver
+    # recreates the DB dir mid-wipe and keeps serving old-signed one-time
+    # keys. Units are stopped above; stray tuwunel pids (no systemd in
+    # containers, manual launches) die here, BEFORE any target is deleted.
     summary: dict = {"mode": mode, "units_removed": removed_units,
-                     "moved": [], "deleted": []}
+                     "moved": [], "deleted": [],
+                     "stray_killed": _kill_stray_tuwunel()}
     if mode == "archive":
         base = time.strftime("wiped-archive-%Y%m%d-%H%M%S")
         dest = paths.root / base
@@ -864,10 +990,12 @@ def wipe_observatory_data(
         summary["archived_to"] = f"{dest}.zip"
         for target in targets:
             shutil.move(str(target), str(dest / target.name))
+            _assert_wipe_deleted(target)
             summary["moved"].append(target.name)
         if paths.bootstrap_toml.is_symlink() or paths.bootstrap_toml.exists():
             shutil.move(
                 str(paths.bootstrap_toml), str(dest / paths.bootstrap_toml.name))
+            _assert_wipe_deleted(paths.bootstrap_toml)
             summary["moved"].append(paths.bootstrap_toml.name)
         # Inert forensics: zip the snapshot, drop the loose dir. Prior
         # archives (zips or pre-zip loose dirs) are never touched here.
@@ -880,6 +1008,7 @@ def wipe_observatory_data(
                 shutil.rmtree(target)
             else:
                 target.unlink()
+            _assert_wipe_deleted(target)
             summary["deleted"].append(target.name)
         # Loose leftovers only: *.zip archives are inert forensics and are
         # NEVER deleted. The bootstrap toml always dies (registration token).
@@ -893,11 +1022,20 @@ def wipe_observatory_data(
                     shutil.rmtree(stale)
                 else:
                     stale.unlink()
+                _assert_wipe_deleted(stale)
                 summary["deleted"].append(stale.name)
         if paths.bootstrap_toml.is_symlink() or paths.bootstrap_toml.exists():
             paths.bootstrap_toml.unlink()
+            _assert_wipe_deleted(paths.bootstrap_toml)
             summary["deleted"].append(paths.bootstrap_toml.name)
     summary["env_stripped"] = _strip_owner_env_mirror(home)
+    # One-shot post-wipe marker for the NEXT sidecar boot (force-drop ALL
+    # outbound Megolm sessions + fresh owner trust). Written only after
+    # every delete verified — a half-wipe raises above and leaves no marker.
+    paths.root.mkdir(parents=True, exist_ok=True)
+    (paths.root / POST_WIPE_MARKER_NAME).write_text(
+        time.strftime("%Y-%m-%dT%H:%M:%S"), encoding="utf-8")
+    summary["post_wipe_marker"] = POST_WIPE_MARKER_NAME
     return summary
 
 

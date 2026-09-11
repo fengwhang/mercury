@@ -1032,7 +1032,7 @@ def build_anthropic_kwargs(
             if _accepts_thinking_disable(model):
                 kwargs["thinking"] = {"type": "disabled"}
         elif "haiku" not in model.lower():
-            effort = str(reasoning_config.get("effort", "medium")).lower()
+            effort = str(reasoning_config.get("effort", "xhigh")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):
                 kwargs["thinking"] = {

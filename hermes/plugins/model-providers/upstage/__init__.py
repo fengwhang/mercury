@@ -16,11 +16,11 @@ _NON_REASONING_MODEL_MARKERS = ("solar-mini", "syn-pro")
 # When the user hasn't picked a reasoning effort, Mercury passes
 # reasoning_config=None. Solar's own server default is "minimal" (reasoning
 # off), which is the wrong default for an agentic workload. We default reasoning
-# ON at this effort — matching the "medium (default)" that Mercury' /reasoning
-# panel shows for an unset config, so the displayed default and the real wire
-# value agree. An explicit saved setting or a `/reasoning <level>` change is
-# always honored over this default; `/reasoning none` disables it.
-_DEFAULT_REASONING_EFFORT = "medium"
+# ON at Solar's maximum ("high" — Solar accepts only low/medium/high, so the
+# xhigh runtime default clamps here; same "full strength" precedent as the
+# bespoke-level branch below). An explicit saved setting or a `/reasoning <level>`
+# change is always honored over this default; `/reasoning none` disables it.
+_DEFAULT_REASONING_EFFORT = "high"
 
 
 def _model_supports_reasoning(model: str | None) -> bool:

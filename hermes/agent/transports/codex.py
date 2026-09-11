@@ -593,7 +593,7 @@ class ResponsesApiTransport(ProviderTransport):
         self._last_issuer_kind = issuer_kind
 
         # Resolve reasoning effort
-        reasoning_effort = "medium"
+        reasoning_effort = "xhigh"
         reasoning_enabled = True
         reasoning_config = params.get("reasoning_config")
         if reasoning_config and isinstance(reasoning_config, dict):

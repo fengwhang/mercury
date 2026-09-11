@@ -1670,7 +1670,7 @@ class _CodexCompletionsAdapter:
                     # to the default rather than being forwarded to the
                     # Codex backend, which rejects e.g. {"effort": null}
                     # with a 400.
-                    effort = reasoning_cfg.get("effort") or "medium"
+                    effort = reasoning_cfg.get("effort") or "xhigh"
                     # Same declared vocabulary + shared clamp as the main
                     # Codex transport (agent.reasoning_effort): per-model —
                     # "max" is gpt-5.6-only, "minimal"/"ultra" always
@@ -9143,7 +9143,7 @@ def _build_call_kwargs(
         if reasoning_config.get("enabled") is False:
             merged_extra["reasoning"] = {"enabled": False}
         else:
-            effort = reasoning_config.get("effort") or "medium"
+            effort = reasoning_config.get("effort") or "xhigh"
             merged_extra["reasoning"] = {"enabled": True, "effort": effort}
     # Portal product tags + sticky session_id. The provider profile usually
     # supplies both; this fallback covers profile-load failures and alias

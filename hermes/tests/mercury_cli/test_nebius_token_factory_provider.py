@@ -194,7 +194,7 @@ def test_nebius_effort_clamp_is_monotonic():
     assert wire("minimal") == "low"
 
 
-def test_nebius_reasoning_defaults_to_medium_for_known_reasoning_model():
+def test_nebius_reasoning_defaults_to_provider_max_for_known_reasoning_model():
     from providers import get_provider_profile
 
     profile = get_provider_profile("nebius-token-factory")
@@ -205,7 +205,7 @@ def test_nebius_reasoning_defaults_to_medium_for_known_reasoning_model():
         model="deepseek-ai/DeepSeek-V4-Pro",
     )
     assert extra_body == {}
-    assert top_level == {"reasoning_effort": "medium"}
+    assert top_level == {"reasoning_effort": "high"}
 
 
 def test_nebius_reasoning_skips_disabled_and_non_reasoning_models():

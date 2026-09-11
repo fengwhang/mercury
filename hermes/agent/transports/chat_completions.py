@@ -214,7 +214,7 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         # happens; omit thinkingLevel to avoid model-specific validation quirks.
         return {"includeThoughts": False}
 
-    effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
+    effort = str(reasoning_config.get("effort", "xhigh") or "xhigh").strip().lower()
     if effort == "none":
         return {"includeThoughts": False}
 
@@ -753,9 +753,9 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                _effort = "medium"
+                _effort = "xhigh"
                 if reasoning_config and isinstance(reasoning_config, dict):
-                    _effort = reasoning_config.get("effort", "medium") or "medium"
+                    _effort = reasoning_config.get("effort", "xhigh") or "xhigh"
                 extra_body["reasoning"] = {"enabled": True, "effort": _effort}
 
         if provider_name == "gemini":

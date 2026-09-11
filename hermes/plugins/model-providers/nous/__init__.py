@@ -120,7 +120,7 @@ class NousProfile(ProviderProfile):
                 else:
                     extra_body["reasoning"] = rc
             else:
-                extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+                extra_body["reasoning"] = {"enabled": True, "effort": "xhigh"}
         return extra_body, {}
 
 

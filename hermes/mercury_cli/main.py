@@ -5335,6 +5335,8 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         default_idx = len(ordered)
     elif current_effort in ordered:
         default_idx = ordered.index(current_effort)
+    elif "xhigh" in ordered:
+        default_idx = ordered.index("xhigh")
     elif "medium" in ordered:
         default_idx = ordered.index("medium")
     else:
