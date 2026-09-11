@@ -6,13 +6,17 @@ ingest (no ``gateway_notify`` registration, no approval-frame hook), so
 the room prompt never became a ``PendingApproval`` and /approve answered
 ``no pending approval``.
 
-Contract:
 - notify-then-approve resolves via the gateway resolver (bare /approve
-  with exactly one pending resolves it);
-- bare /approve with zero pendings still says no-pending;
-- reply-targeted /approve hits the right pending with several live;
+-   with exactly one pending resolves it);
+- a gateway prompt is resolvable by a bare /approve in the SAME room,
+-   while a bare /approve from another room denies (pending retained);
+- a reply/thread target the bridge never observed falls back to the
+-   room's sole pending (multi/no pendings keep the room-scoped answer;
+-   known cross-room targets still deny);
+- a broken gateway resolver (sync raise or cross-process forward failure)
+-   keeps the pending for retry (``error:resolver``);
 - ``wire_siblings`` registers the gateway notify (canonical session key)
-  plus the omp frame hook, and unwires both on shutdown;
+-   plus the omp frame hook, and unwires both on shutdown;
 - gateway Matrix turns block on the canonical key shared with the sidecar.
 """
 from __future__ import annotations
@@ -306,3 +310,129 @@ class TestGatewayTurnSessionKey:
         assert seen["during"] is not None
         assert GATEWAY_APPROVAL_SESSION_KEY not in approval_mod._gateway_notify_cbs
         assert real_unregister is not None
+
+
+class TestSameRoomBareApprove:
+    """A visible gateway prompt is always resolvable by a bare /approve
+    in the SAME room; a bare /approve from another room denies."""
+
+    async def test_gateway_prompt_then_bare_approve_same_room(self, tmp_path):
+        resolver = Resolver()
+        bridge, poster = make_bridge(tmp_path, resolver=resolver)
+        pending = await bridge.submit(
+            GW, "gw-1", backend="gateway",
+            session_key=GATEWAY_APPROVAL_SESSION_KEY,
+            command="rm -rf /tmp/gw-probe", context="gateway guard")
+        assert pending.room_id == GW_ROOM
+        action = await bridge.handle_event(room_event(GW_ROOM, OWNER, "/approve"))
+        assert action == "resolved:approve"
+        assert resolver.calls == [(GATEWAY_APPROVAL_SESSION_KEY, "once", "gw-1", None)]
+        assert bridge.pending_for(GW, "gw-1") is None
+        assert any("approved" in m["body"] for m in poster.sent
+                   if m["room_id"] == GW_ROOM)
+
+    async def test_bare_approve_from_other_room_denied(self, tmp_path):
+        resolver = Resolver()
+        bridge, _poster = make_bridge(tmp_path, resolver=resolver)
+        await bridge.submit(
+            SA, "req-1", backend="gateway", session_key=KEY,
+            command="rm -rf /tmp/other-room", context="sa guard")
+        action = await bridge.handle_event(room_event(GW_ROOM, OWNER, "/approve"))
+        assert action == "denied:no_pending"
+        assert resolver.calls == []
+        assert bridge.pending_for(SA, "req-1") is not None
+
+
+class TestUnknownReplyFallback:
+    """Reply/thread metadata the bridge never observed (stripped clients,
+    unobserved event ids) falls back to the room's sole pending."""
+
+    async def test_reply_to_unknown_event_resolves_sole_pending(self, tmp_path):
+        resolver = Resolver()
+        bridge, _poster = make_bridge(tmp_path, resolver=resolver)
+        await bridge.submit(
+            GW, "gw-1", backend="gateway",
+            session_key=GATEWAY_APPROVAL_SESSION_KEY,
+            command="rm -rf /tmp/gw-fallback", context="gateway guard")
+        action = await bridge.handle_event(room_event(
+            GW_ROOM, OWNER, "/approve", reply_to="$never-observed"))
+        assert action == "resolved:approve"
+        assert resolver.calls == [(GATEWAY_APPROVAL_SESSION_KEY, "once", "gw-1", None)]
+        assert bridge.pending_for(GW, "gw-1") is None
+
+    async def test_reply_to_unknown_event_with_two_pendings_is_ambiguous(self, tmp_path):
+        resolver = Resolver()
+        bridge, poster = make_bridge(tmp_path, resolver=resolver)
+        await bridge.submit(
+            GW, "gw-1", backend="gateway",
+            session_key=GATEWAY_APPROVAL_SESSION_KEY, command="one")
+        await bridge.submit(
+            GW, "gw-2", backend="gateway",
+            session_key=GATEWAY_APPROVAL_SESSION_KEY, command="two")
+        action = await bridge.handle_event(room_event(
+            GW_ROOM, OWNER, "/approve", reply_to="$never-observed"))
+        assert action == "denied:ambiguous"
+        assert resolver.calls == []
+        assert bridge.pending_count == 2
+        assert any("2 approvals pending" in m["body"] for m in poster.sent
+                   if m["room_id"] == GW_ROOM)
+
+    async def test_reply_to_wrong_room_prompt_still_denied(self, tmp_path):
+        resolver = Resolver()
+        bridge, _poster = make_bridge(tmp_path, resolver=resolver)
+        pending = await bridge.submit(
+            SA, "req-1", backend="gateway", session_key=KEY,
+            command="rm -rf /tmp/sa-probe", context="sa guard")
+        action = await bridge.handle_event(room_event(
+            GW_ROOM, OWNER, "/approve", reply_to=pending.prompt_event_id))
+        assert action == "denied:wrong_room"
+        assert resolver.calls == []
+        assert bridge.pending_for(SA, "req-1") is not None
+
+
+class TestResolverErrorKeepsPending:
+    """A broken gateway resolver never drops the pending (retryable)."""
+
+    async def test_bare_approve_resolver_error_keeps_pending(self, tmp_path):
+        class _Boom:
+            def __call__(self, *a):
+                raise RuntimeError("resolver down")
+
+        bridge, _poster = make_bridge(tmp_path, resolver=_Boom())
+        await bridge.submit(
+            GW, "gw-1", backend="gateway",
+            session_key=GATEWAY_APPROVAL_SESSION_KEY, command="rm -rf /tmp/boom")
+        action = await bridge.handle_event(room_event(GW_ROOM, OWNER, "/approve"))
+        assert action == "error:resolver"
+        assert bridge.pending_for(GW, "gw-1") is not None
+
+    async def test_forward_failure_keeps_pending_for_retry(self, tmp_path, monkeypatch):
+        from observatory.approvals import ApprovalBridge
+        from observatory.gateway_transport import GatewayTransportError
+
+        sm, daemon = _daemon(monkeypatch, tmp_path)
+        try:
+            class _FailingTransport:
+                async def resolve_approval(self, *a, **k):
+                    raise GatewayTransportError("gateway down")
+
+            daemon.gateway_transport = _FailingTransport()
+            poster = FakePoster()
+            bridge = ApprovalBridge(
+                state=daemon.state, poster=poster,
+                authority=SetAuthority(OWNER, WRITER),
+                resolve_gateway=daemon._resolve_gateway_approval,
+                timeout=600.0,
+            )
+            await bridge.submit(
+                GW, "gw-1", backend="gateway",
+                session_key=GATEWAY_APPROVAL_SESSION_KEY,
+                command="rm -rf /tmp/gw-down", context="gateway guard")
+            action = await bridge.handle_event(room_event(GW_ROOM, OWNER, "/approve"))
+            assert action == "error:resolver"
+            assert bridge.pending_for(GW, "gw-1") is not None
+        finally:
+            try:
+                daemon.state.close()
+            except Exception:
+                pass

@@ -223,19 +223,23 @@ class ControlSocketGatewayTransport(GatewayTransport):
     ) -> int:
         """Resolve a gateway-process approval queue entry (room decision).
 
-        Returns the count resolved (0 when nothing is pending there or no
-        gateway answers). Never raises — the bridge treats 0 as
-        already-resolved elsewhere (its ``late`` path). Short bounded
+        Returns the count resolved (0 only when a gateway answered that
+        nothing is pending there — the bridge takes its ``late`` path).
+        Raises :class:`GatewayTransportError` when no gateway answers
+        (down, unknown verb, timeout): the caller must keep the pending
+        for retry, never drop it as already-resolved. Short bounded
         timeout: queue resolution is instant (unlike inject turns)."""
         params: dict[str, Any] = {"session_key": session_key, "choice": choice}
         if request_id:
             params["request_id"] = request_id
         if reason:
             params["reason"] = reason
-        try:
-            result = await asyncio.to_thread(self._query_resolve, params)
-        except Exception:
-            return 0
+        result = await asyncio.to_thread(self._query_resolve, params)
+        if result is None:
+            raise GatewayTransportError(
+                "no gateway answered resolve-approval "
+                f"for {self.mercury_home} (gateway down or predates the verb)"
+            )
         try:
             return int((result or {}).get("resolved", 0) or 0)
         except Exception:

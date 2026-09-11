@@ -613,7 +613,11 @@ class ApprovalBridge:
         approval prompt's event id first; a BARE command is accepted only
         while exactly one approval is pending in this room. A reply that
         targets a prompt living in ANOTHER room is denied with a notice —
-        never resolved (wrong-room rule)."""
+        never resolved (wrong-room rule). A reply/thread matching NO live
+        prompt (stale target, stripped metadata, or an event id the bridge
+        never observed) falls back to the room's sole pending so a visible
+        prompt stays resolvable by /approve in the SAME room; with zero or
+        several pendings there the room-scoped answer stands."""
         rel = content.get("m.relates_to") or {}
         candidates: list[str] = []
         reply = rel.get("m.in_reply_to") or {}
@@ -632,12 +636,19 @@ class ApprovalBridge:
                 await self._notice(room_id, *wrong_room_notice())
                 return None, "denied:wrong_room"
             return pending, f"targeted:{event_id}"
-        if candidates:
-            # A reply/thread matching no live prompt: stale or already
-            # resolved — same answer as an empty room.
-            await self._notice(room_id, *no_pending_notice())
-            return None, "denied:no_pending"
         here = self.pendings_in_room(room_id)
+        if candidates:
+            # Reply/thread matching no live prompt: stale, already resolved,
+            # stripped, or never observed — the user still typed /approve in
+            # a room with a visible prompt. Resolve the sole pending; keep
+            # the empty/ambiguous answers otherwise.
+            if len(here) == 1:
+                return here[0], "targeted:sole-fallback"
+            if not here:
+                await self._notice(room_id, *no_pending_notice())
+                return None, "denied:no_pending"
+            await self._notice(room_id, *ambiguous_notice(len(here)))
+            return None, "denied:ambiguous"
         if not here:
             await self._notice(room_id, *no_pending_notice())
             return None, "denied:no_pending"

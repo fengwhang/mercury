@@ -1021,8 +1021,11 @@ class SidecarDaemon:
     ) -> int:
         """ApprovalBridge gateway resolver: same-process queue first, else
         forward to the gateway process over the control socket
-        (``resolve-approval`` verb). Never raises (0 = already resolved
-        elsewhere → the bridge takes its ``late`` path)."""
+        (``resolve-approval`` verb). A forward failure (gateway down,
+        unknown verb, timeout) RAISES so the bridge keeps the pending for
+        retry (its ``error:resolver`` path); 0 is returned only when a
+        resolver answered that nothing is pending (the bridge takes its
+        ``late`` path)."""
         try:
             from tools.approval import resolve_gateway_approval as _local_resolve
         except Exception:
@@ -1044,14 +1047,10 @@ class SidecarDaemon:
         resolve_fn = getattr(transport, "resolve_approval", None)
         if not callable(resolve_fn):
             return 0
-        try:
-            return int(await resolve_fn(
-                session_key, choice, request_id=request_id or None,
-                reason=reason,
-            ) or 0)
-        except Exception:
-            log.exception("approval resolve: gateway forward failed")
-            return 0
+        return int(await resolve_fn(
+            session_key, choice, request_id=request_id or None,
+            reason=reason,
+        ) or 0)
 
     def _unwire_approval_ingest(self) -> None:
         """Undo :meth:`_wire_approval_ingest` (shutdown; never raises).
@@ -2115,15 +2114,17 @@ class SidecarDaemon:
         # M4a control routing (steer/stop/verbs/commands)
         if self.control_router is not None:
             outcomes = await self.control_router.handle_transaction(txn_id, [event])
-            bridge_resolved = bridge_action in ("resolved:approve", "resolved:deny")
+            bridge_claimed = bridge_action is not None and bridge_action.split(":", 1)[0] in (
+                "resolved", "denied", "late", "error")
             for outcome in outcomes:
                 self.routing_log.append(outcome.disposition)
-                if bridge_resolved and outcome.disposition == "notice:no-approval-pending":
+                if bridge_claimed and outcome.disposition == "notice:no-approval-pending":
                     # The bridge owns approval resolution (its pendings are
                     # fed by gateway_notify / the frame hook / gateway
                     # approval_prompt datagrams; the router's own approval
                     # table is never fed — see _wire_approval_ingest). The
-                    # bridge just posted the ✔/🚫 decision; the router's
+                    # bridge just answered the /approve|/deny itself (✔/🚫
+                    # decision, denial, or late/error notice); the router's
                     # stale "no pending approval" notice would contradict
                     # it in the same room — drop the notice, keep the log.
                     continue
