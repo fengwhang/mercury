@@ -169,7 +169,7 @@ async def test_batch_continues_past_403_attach_with_owner_fallback(tmp_path):
 
 @pytest.mark.asyncio
 async def test_creation_invites_gateway_ghost_and_parent_voice(tmp_path):
-    """(b) Child creation invites the owner, the gateway ghost and the parent."""
+    """(b) Child creation invites the owner + parent voice — never the gateway ghost."""
     state = _seed(tmp_path)
     gw_mxid = state.get(GW)["mxid"]
     orch_mxid = state.get(ORCH)["mxid"]
@@ -185,12 +185,12 @@ async def test_creation_invites_gateway_ghost_and_parent_voice(tmp_path):
     assert len(creates) == 2
     for _, _, sender, _, invite, _ in creates:
         assert OWNER in invite
-        assert gw_mxid in invite
+        assert gw_mxid not in invite
         assert orch_mxid in invite
         assert sender not in invite
     joins = [(c[1], c[2]) for c in fake.calls if c[0] == "join"]
     joined_mxids = {mxid for _, mxid in joins}
-    assert gw_mxid in joined_mxids
+    assert gw_mxid not in joined_mxids
     assert orch_mxid in joined_mxids
 
 

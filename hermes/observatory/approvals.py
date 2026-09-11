@@ -731,15 +731,32 @@ class MatrixAuthority:
     """Async authority check backed by live ``m.room.power_levels``.
 
     Reads state as ``reader`` (any member virtual user — production: the
-    gateway agent); write == PL >= the room's m.room.message threshold."""
+    gateway agent for gateway rooms, the member ghost elsewhere via the
+    sidecar's ``_authority_check`` wrapper). Write == PL >= the room's
+    m.room.message threshold. Ghost-not-member retries once as the
+    sender itself (when the sender is a ghost); every other failure
+    raises for the bridge to fail closed (never a hard crash)."""
 
     def __init__(self, client: Any, *, reader_mxid: str):
         self.client = client
         self.reader_mxid = reader_mxid
 
     async def __call__(self, room_id: str, sender: str) -> bool:
-        pl = await self.client.get_power_levels(room_id, sender=self.reader_mxid)
-        return can_write(pl or {}, sender)
+        try:
+            pl = await self.client.get_power_levels(room_id, sender=self.reader_mxid)
+            return can_write(pl or {}, sender)
+        except Exception:
+            # Gateway stays out of child rooms: a gateway-masqueraded PL
+            # read 403s there. Retry as the sender when it is a ghost
+            # (a member of its own room); the owner can never masquerade,
+            # so owner checks rely on the sidecar wrapper's member reader.
+            if str(sender or "").startswith("@merc_") and sender != self.reader_mxid:
+                try:
+                    pl = await self.client.get_power_levels(room_id, sender=sender)
+                    return can_write(pl or {}, sender)
+                except Exception:
+                    pass
+            raise
 
 
 # ============================================================================

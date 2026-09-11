@@ -988,7 +988,7 @@ class SidecarDaemon:
         self.approvals = ApprovalBridge(
             state=self.state,
             poster=self.client,
-            authority=MatrixAuthority(self.client, reader_mxid=self.gateway_mxid),
+            authority=self._authority_check,
             resolve_gateway=self._resolve_gateway_approval,
         )
         self._wire_approval_ingest()
@@ -1949,9 +1949,65 @@ class SidecarDaemon:
             await self.approvals.check_expiry()
         await self._refresh_power_levels()
 
+    def _member_reader_for(self, room_id: str) -> str:
+        """Member ghost that can read ``room_id`` state (PL/members).
+
+        The gateway ghost stays OUT of child rooms, so gateway-masqueraded
+        state reads 403 there. The room's own ghost (creator, always a
+        member) reads instead; rooms with no node row (directives/root)
+        fall back to the gateway (a member there). Never raises.
+        """
+        try:
+            if self.state is not None and room_id:
+                for row in self.state.get_live():
+                    try:
+                        if row.get("room_id") == room_id or row.get("space_id") == room_id:
+                            mxid = str(row.get("mxid") or "")
+                            if mxid:
+                                return mxid
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return self.gateway_mxid
+
+    async def _authority_check(self, room_id: str, sender: str) -> bool:
+        """D7 authority read that survives ghost-not-member.
+
+        Tries the member reader first (child ghost in child rooms,
+        gateway in gateway rooms), then the gateway, then the sender
+        itself when it is a ghost. Fail-closed (False) when every read
+        fails — never raises, so the bridge never crashes on membership.
+        """
+        from observatory.approvals import can_write
+
+        if self.client is None:
+            return False
+        readers: list[str] = []
+        try:
+            member = self._member_reader_for(room_id)
+        except Exception:
+            member = ""
+        for cand in (member, self.gateway_mxid, sender):
+            if cand and cand not in readers:
+                # The owner is outside the appservice namespace and can
+                # never masquerade — only ghosts read.
+                if cand == sender and not str(sender or "").startswith("@merc_"):
+                    continue
+                readers.append(cand)
+        for reader in readers:
+            try:
+                pl = await self.client.get_power_levels(room_id, sender=reader)
+                return bool(can_write(pl or {}, sender))
+            except Exception:
+                continue
+        return False
+
     async def _refresh_power_levels(self) -> None:
         """Warm/refresh the D7 snapshot from the homeserver (authoritative).
-        Failures keep the previous snapshot (stale beats closed)."""
+        Failures keep the previous snapshot (stale beats closed).
+        Reads ride the room's member ghost (gateway stays out of child
+        rooms); a member-read failure retries once as the gateway."""
         from observatory.control import RoomPowerLevels
 
         if self.client is None or self.state is None:
@@ -1965,8 +2021,16 @@ class SidecarDaemon:
         if directives:
             rooms.add(directives)
         for room_id in rooms:
+            raw: object = None
             try:
-                raw = await self.client.get_power_levels(room_id, sender=self.gateway_mxid)
+                reader = self._member_reader_for(room_id)
+                try:
+                    raw = await self.client.get_power_levels(room_id, sender=reader)
+                except Exception:
+                    if reader != self.gateway_mxid:
+                        raw = await self.client.get_power_levels(room_id, sender=self.gateway_mxid)
+                    else:
+                        raise
             except Exception:  # noqa: BLE001 — keep prior snapshot on failure
                 continue
             if isinstance(raw, dict):
@@ -2096,15 +2160,37 @@ class SidecarDaemon:
             return []
         from urllib.parse import quote
 
-        out = await self.client.client_api(
-            "GET", f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/members",
-            sender=self.gateway_mxid,
-        )
-        chunk = (out or {}).get("chunk", []) if isinstance(out, dict) else []
-        return [
-            e["state_key"] for e in chunk
-            if isinstance(e, dict) and (e.get("content") or {}).get("membership") in ("join", "invite")
-        ]
+        # Gateway stays out of child rooms, so a gateway-masqueraded
+        # members read 403s there. Try the member ghost first (child
+        # voice in child rooms, gateway in gateway rooms), then the
+        # gateway. Callers treat unreadable as not-member (decrypt
+        # notices skip silently) — never raises for membership alone.
+        readers: list[str] = []
+        try:
+            member = self._member_reader_for(room_id)
+        except Exception:
+            member = ""
+        for cand in (member, self.gateway_mxid):
+            if cand and cand not in readers:
+                readers.append(cand)
+        last_exc: Exception | None = None
+        for reader in readers:
+            try:
+                out = await self.client.client_api(
+                    "GET", f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/members",
+                    sender=reader,
+                )
+                chunk = (out or {}).get("chunk", []) if isinstance(out, dict) else []
+                return [
+                    e["state_key"] for e in chunk
+                    if isinstance(e, dict) and (e.get("content") or {}).get("membership") in ("join", "invite")
+                ]
+            except Exception as exc:  # noqa: BLE001 — try next reader
+                last_exc = exc
+                continue
+        if last_exc is not None:
+            raise last_exc
+        return []
 
     # --- inbound transactions ---------------------------------------------------
     async def _on_crypto(self, txn: dict[str, Any]) -> None:
@@ -2342,7 +2428,9 @@ class SidecarDaemon:
         Rooms converged after boot (freshly spawned children) have no
         snapshot entry yet, and the router fails CLOSED — without this
         the first message in a new room always bounces with "still
-        starting up". A failed fetch keeps fail-closed (never guesses).
+        starting up". Reads ride the member ghost (gateway stays out of
+        child rooms) with one gateway retry. A failed fetch keeps
+        fail-closed (never guesses).
         """
         if not room_id or room_id in self._pl_cache:
             return
@@ -2350,7 +2438,14 @@ class SidecarDaemon:
         if client is None:
             return
         try:
-            raw = await client.get_power_levels(room_id, sender=self.gateway_mxid)
+            reader = self._member_reader_for(room_id)
+            try:
+                raw = await client.get_power_levels(room_id, sender=reader)
+            except Exception:
+                if reader != self.gateway_mxid:
+                    raw = await client.get_power_levels(room_id, sender=self.gateway_mxid)
+                else:
+                    raise
         except Exception:  # noqa: BLE001 — keep fail-closed
             return
         if not isinstance(raw, dict):
