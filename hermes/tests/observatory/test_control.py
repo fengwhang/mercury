@@ -17,7 +17,7 @@ homeserver, gateway WS, or omp child. Laws under test:
 - §5 honesty: "⏳ queued steer" -> "✔ applied" on the feed echo / synthetic
   ack, "/stop" -> "🛑 stop requested — waiting for boundary" until a
   lifecycle frame reports the death;
-- /cot on|off persisted in state.db meta (default on);
+- /cot on|off persisted in state.db meta (default off);
 - invalid targets (unknown room, settled rooms, cron/manual-run kinds,
   own-echo virtual users, edits, non-text bodies) answered honestly;
 - the canned :class:`~observatory.sim.ScriptedTimeline` drives the
@@ -359,7 +359,7 @@ class TestStatusVerb:
         text = outcome.notices[0].body
         assert "lint-fix" in text
         assert "omp/omp-subagent" in text
-        assert "thinking display: on" in text
+        assert "thinking display: off" in text
 
     def test_status_reflects_ledger(self, router):
         router.route(msg(GC, "watch the boundaries"))
@@ -378,8 +378,8 @@ class TestStatusVerb:
 
 
 class TestCotVerb:
-    def test_cot_defaults_on(self, router):
-        assert router.cot_enabled(GC) is True
+    def test_cot_defaults_off(self, router):
+        assert router.cot_enabled(GC) is False
 
     @pytest.mark.parametrize("prefix", ["/", "!"])
     def test_cot_off_persists_in_state_meta(self, router, state, prefix):
