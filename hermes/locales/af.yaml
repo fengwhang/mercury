@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **Tuiste:** `{home}`"
 
   reasoning:
-    level_default:             "medium (verstek)"
+    level_default:             "xhigh (verstek)"
     level_disabled:            "none (gedeaktiveer)"
     scope_session:             "sessie-oorskryf"
     scope_global:              "globale konfigurasie"

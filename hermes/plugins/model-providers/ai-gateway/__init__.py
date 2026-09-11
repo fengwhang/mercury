@@ -24,7 +24,7 @@ class VercelAIGatewayProfile(ProviderProfile):
         if supports_reasoning and reasoning_config is not None:
             extra_body["reasoning"] = dict(reasoning_config)
         elif supports_reasoning:
-            extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+            extra_body["reasoning"] = {"enabled": True, "effort": "xhigh"}
         return extra_body, {}
 
 

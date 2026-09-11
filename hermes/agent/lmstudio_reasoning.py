@@ -18,11 +18,11 @@ _LM_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 
 # Toggle-style models publish allowed_options as ["off","on"] in /api/v1/models.
 # Map them onto the OpenAI-compatible request vocabulary.
-_LM_EFFORT_ALIASES = {"off": "none", "on": "medium"}
+_LM_EFFORT_ALIASES = {"off": "none", "on": "xhigh"}
 
 # Mercury' generic effort ladder grew past LM Studio's vocabulary ("max",
 # "ultra"). Clamp the stronger generic levels onto LM Studio's ceiling: left
-# alone they miss _LM_VALID_EFFORTS, keep the initialized "medium" default and
+# alone they miss _LM_VALID_EFFORTS, keep the initialized "xhigh" default and
 # are thereby conflated with unparseable input, so asking for more reasoning
 # yields less than "xhigh". Mirrors the ceiling clamp every other provider
 # applies (see agent/transports/codex.py).
@@ -43,7 +43,7 @@ def resolve_lmstudio_effort(
     than silently substituting a different effort. When ``allowed_options`` is
     falsy (probe failed), skip clamping and send the resolved effort anyway.
     """
-    effort = "medium"
+    effort = "xhigh"
     if reasoning_config and isinstance(reasoning_config, dict):
         if reasoning_config.get("enabled") is False:
             effort = "none"

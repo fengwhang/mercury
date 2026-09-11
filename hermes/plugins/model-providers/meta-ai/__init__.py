@@ -40,19 +40,20 @@ def _resolve_effort(reasoning_config: dict | None) -> str:
 
     Meta's vocabulary (minimal..xhigh; rejects ``none``) is declared in
     agent.reasoning_effort. Disabled/"none" maps to ``minimal`` (the closest
-    Meta has to off); unset/bespoke levels fall to ``medium``.
+    Meta has to off); unset/bespoke levels fall to ``xhigh`` (the runtime
+    default — valid on Meta's wire).
     """
     rc = reasoning_config or {}
     if rc.get("enabled") is False:
         return "minimal"
     effort = str(rc.get("effort") or "").strip().lower()
     if effort in {"", "none"}:
-        return "minimal" if effort == "none" else "medium"
+        return "minimal" if effort == "none" else "xhigh"
 
     from agent.reasoning_effort import META_AI_EFFORTS, clamp_effort
 
     clamped = clamp_effort(effort, META_AI_EFFORTS)
-    return clamped if clamped in META_AI_EFFORTS else "medium"
+    return clamped if clamped in META_AI_EFFORTS else "xhigh"
 
 
 class MetaAIProfile(ProviderProfile):

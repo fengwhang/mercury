@@ -479,10 +479,11 @@ class CronRooms:
         return out
 
     def _cronexec_meta_keys(self) -> list[str]:
-        rows = self.state._db.execute(
-            "SELECT key FROM meta WHERE key LIKE ?", (CRON_EXEC_META_PREFIX + "%",)
-        ).fetchall()
-        return [r["key"] for r in rows]
+        with self.state.locked():
+            rows = self.state._db.execute(
+                "SELECT key FROM meta WHERE key LIKE ?", (CRON_EXEC_META_PREFIX + "%",)
+            ).fetchall()
+            return [r["key"] for r in rows]
 
     def _fired_intent(
         self, node: Mapping[str, Any], job: Optional[Mapping[str, Any]]

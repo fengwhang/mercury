@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **ホーム:** `{home}`"
 
   reasoning:
-    level_default:             "medium (デフォルト)"
+    level_default:             "xhigh (デフォルト)"
     level_disabled:            "none (無効)"
     scope_session:             "セッションのオーバーライド"
     scope_global:              "グローバル設定"

@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **Домашний каталог:** `{home}`"
 
   reasoning:
-    level_default:             "medium (по умолчанию)"
+    level_default:             "xhigh (по умолчанию)"
     level_disabled:            "none (отключено)"
     scope_session:             "переопределение сеанса"
     scope_global:              "глобальная конфигурация"

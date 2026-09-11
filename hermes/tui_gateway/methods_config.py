@@ -255,15 +255,15 @@ def _(rid, params: dict) -> dict:
             if reasoning_config.get("enabled") is False:
                 effort = "none"
             else:
-                effort = str(reasoning_config.get("effort") or "medium")
+                effort = str(reasoning_config.get("effort") or "xhigh")
         else:
             raw_effort = (cfg.get("agent") or {}).get("reasoning_effort", "")
             if raw_effort is False:
                 # YAML `reasoning_effort: false`/`off`/`no` — thinking
-                # disabled, not "unset, show the medium default".
+                # disabled, not "unset, show the xhigh default".
                 effort = "none"
             else:
-                effort = str(raw_effort or "medium")
+                effort = str(raw_effort or "xhigh")
         display = (
             "show"
             if bool((cfg.get("display") or {}).get("show_reasoning", True))

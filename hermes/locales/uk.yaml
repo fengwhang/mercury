@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **Домашня тека:** `{home}`"
 
   reasoning:
-    level_default:             "medium (за замовчуванням)"
+    level_default:             "xhigh (за замовчуванням)"
     level_disabled:            "none (вимкнено)"
     scope_session:             "перевизначення сеансу"
     scope_global:              "глобальна конфігурація"

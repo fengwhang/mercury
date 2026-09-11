@@ -3819,12 +3819,12 @@ class GatewaySlashCommandsMixin:
             rc = self._reasoning_config
             if rc is None:
                 level = t("gateway.reasoning.level_default")
-                current_effort = "medium"
+                current_effort = "xhigh"
             elif rc.get("enabled") is False:
                 level = t("gateway.reasoning.level_disabled")
                 current_effort = "none"
             else:
-                level = rc.get("effort", "medium")
+                level = rc.get("effort", "xhigh")
                 current_effort = level
             display_state = (
                 t("gateway.reasoning.display_on")

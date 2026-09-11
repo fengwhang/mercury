@@ -34,7 +34,7 @@ class CopilotProfile(ProviderProfile):
 
                 supported_efforts = github_model_reasoning_efforts(model)
                 if supported_efforts and reasoning_config:
-                    effort = reasoning_config.get("effort", "medium")
+                    effort = reasoning_config.get("effort", "xhigh")
                     # Honor the requested level when the live Copilot catalog
                     # lists it as supported: gpt-5.5/gpt-5.4 DO support
                     # ``xhigh``. Otherwise clamp to the nearest WEAKER
@@ -63,7 +63,15 @@ class CopilotProfile(ProviderProfile):
                     if effort in supported_efforts:
                         extra_body["reasoning"] = {"effort": effort}
                 elif supported_efforts:
-                    extra_body["reasoning"] = {"effort": "medium"}
+                    # No config: default xhigh, clamped to the live catalog
+                    # (never emit a level the model rejects).
+                    from mercury_cli.models import (
+                        clamp_reasoning_effort_to_supported as _clamp,
+                    )
+
+                    _default = _clamp("xhigh", list(supported_efforts))
+                    if _default in supported_efforts:
+                        extra_body["reasoning"] = {"effort": _default}
             except Exception:
                 pass
         return extra_body, {}

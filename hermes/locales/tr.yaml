@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **Ana dizin:** `{home}`"
 
   reasoning:
-    level_default:             "medium (varsayılan)"
+    level_default:             "xhigh (varsayılan)"
     level_disabled:            "none (devre dışı)"
     scope_session:             "oturum geçersiz kılma"
     scope_global:              "genel yapılandırma"

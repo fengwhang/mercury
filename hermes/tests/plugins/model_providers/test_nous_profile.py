@@ -112,13 +112,13 @@ class TestNousReasoningWireShape:
         )
         assert extra_body["reasoning"] == {"enabled": True, "effort": "high"}
 
-    def test_no_config_defaults_to_medium(self, nous_profile, portal_catalog):
+    def test_no_config_defaults_to_xhigh(self, nous_profile, portal_catalog):
         extra_body, _ = nous_profile.build_api_kwargs_extras(
             reasoning_config=None,
             supports_reasoning=True,
             model="deepseek/deepseek-v4-pro",
         )
-        assert extra_body["reasoning"] == {"enabled": True, "effort": "medium"}
+        assert extra_body["reasoning"] == {"enabled": True, "effort": "xhigh"}
 
     def test_nothing_emitted_without_reasoning_support(self, nous_profile, portal_catalog):
         extra_body, top_level = nous_profile.build_api_kwargs_extras(

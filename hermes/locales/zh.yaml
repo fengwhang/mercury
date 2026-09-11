@@ -201,7 +201,7 @@ gateway:
     home:                  "📂 **主目录：** `{home}`"
 
   reasoning:
-    level_default:             "medium（默认）"
+    level_default:             "xhigh（默认）"
     level_disabled:            "none（已禁用）"
     scope_session:             "会话覆盖"
     scope_global:              "全局配置"
