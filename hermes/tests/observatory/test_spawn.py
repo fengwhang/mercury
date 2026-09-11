@@ -20,6 +20,7 @@ from observatory.matrix_client import MatrixError
 from observatory.renderer import (
     DetachChild,
     IntentExecutor,
+    LeaveRoom,
     PurgeRoom,
     Renderer,
     SendMessage,
@@ -161,6 +162,9 @@ class FakeClient:
 
     async def leave_room(self, room_id: str, *, sender):
         self.calls.append(("leave", room_id, sender))
+
+    async def leave_room_as_owner(self, room_id: str):
+        self.calls.append(("leave-owner", room_id))
 
     async def delete_room(self, room_id: str, *, block=False, purge=True):
         self.calls.append(("delete", room_id, block, purge))
@@ -380,15 +384,15 @@ class TestSpawnValidation:
 # ---------------------------------------------------------------------------
 
 
-class TestJournalSerialization:
     def test_serialize_deserialize_round_trip(self):
         intents = (
             SendMessage("gw", "@merc_gw:x", "bye", "<b>bye</b>"),
+            LeaveRoom("!room", "@owner:mercury.local"),
             DetachChild("!space", "!child", "@merc_gw:x"),
             PurgeRoom("!room"),
         )
         payload = serialize_intents(intents)
-        assert [p["op"] for p in payload] == ["send", "detach", "purge"]
+        assert [p["op"] for p in payload] == ["send", "leave", "detach", "purge"]
         assert deserialize_intents(payload) == intents
 
     def test_unknown_intent_rejected(self):
