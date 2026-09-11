@@ -103,8 +103,8 @@ READ_ONLY_NOTICE = (
     "need write power in this room — ask the owner (D7)."
 )
 PL_UNAVAILABLE_NOTICE = (
-    "🔒 power-level snapshot unavailable for this room — treating you as "
-    "read-only (fail-closed)."
+    "⏳ still starting up — your message arrived before the room was ready; "
+    "resend it in a few seconds."
 )
 SETTLED_STEER_NOTICE = f"{SETTLED_MARKER} — steering disabled"
 CRON_ROOM_NOTICE = (
