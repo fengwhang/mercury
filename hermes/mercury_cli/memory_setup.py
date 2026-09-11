@@ -18,6 +18,70 @@ from mercury_cli.secret_prompt import masked_secret_prompt
 _CANCELLED = -1
 
 
+MNEMOSYNE_PROVIDER = "mnemosyne"
+
+# memory.provider values that mean "no external backend chosen" (fresh
+# install or built-in-only). ensure_mnemosyne_default() treats these as
+# "apply the shared-bank default"; any other value is an explicit user
+# backend and is never clobbered (silent keep).
+_UNSET_MEMORY_PROVIDERS = frozenset({"", "built-in", "builtin", "default", "none"})
+
+
+def _wizard_default_index(names: list, current: str, builtin_idx: int) -> int:
+    """Picker default: current backend on re-runs, mnemosyne when fresh."""
+    if current in names:
+        return names.index(current)
+    if MNEMOSYNE_PROVIDER in names and (not current or current in _UNSET_MEMORY_PROVIDERS):
+        return names.index(MNEMOSYNE_PROVIDER)
+    return builtin_idx
+
+def ensure_mnemosyne_default(*, install: bool = True, verbose: bool = False) -> str:
+    """Auto-enable the shared-bank provider on fresh installs.
+
+    Sets ``memory.provider=mnemosyne`` when no external backend is chosen.
+    Silent (no output, no write) when another backend is already active —
+    an explicit user backend is never clobbered. Returns the effective
+    provider name ("" when the config could not be read/written).
+
+    With ``install=True`` (``mercury setup`` tail), also re-verifies the
+    ``mnemosyne-hermes`` package (Mercury default ``[embeddings]`` profile,
+    pulled as a dependency of ``mnemosyne-hermes`` — never ``[all]``):
+    a venv rebuild that stripped it is detected via the import probe and
+    reinstalled warn-only. The provider itself is in-tree stdlib-only, so
+    memory keeps working via FTS even when the install fails offline.
+    """
+    from mercury_cli.config import load_config, save_config
+
+    try:
+        config = load_config()
+    except Exception:
+        return ""
+    if not isinstance(config, dict):
+        return ""
+    mem = config.get("memory")
+    if not isinstance(mem, dict):
+        mem = {}
+        config["memory"] = mem
+    current = str(mem.get("provider", "") or "").strip()
+    if current not in _UNSET_MEMORY_PROVIDERS:
+        # Explicit user backend (or already mnemosyne): never clobber, silent.
+        return current
+    mem["provider"] = MNEMOSYNE_PROVIDER
+    try:
+        save_config(config)
+    except Exception:
+        return ""
+    if verbose:
+        print(f"\n  Memory provider: {MNEMOSYNE_PROVIDER} (shared bank default)")
+    if install:
+        # Re-verify + repair the package on every setup run (venv rebuilds
+        # must not silently drop it); warn-only, FTS works regardless.
+        try:
+            _install_dependencies(MNEMOSYNE_PROVIDER)
+        except Exception:
+            pass
+    return MNEMOSYNE_PROVIDER
+
 def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
     """Return the pip deps a provider actually needs on THIS install.
 
@@ -241,6 +305,23 @@ def _get_available_providers() -> list:
 # Setup wizard
 # ---------------------------------------------------------------------------
 
+def _report_mnemosyne_preflight() -> bool:
+    """Run the shared-bank preflight and print unified-or-loud-failure."""
+    try:
+        from plugins.memory.mnemosyne import format_preflight, preflight_shared_bank
+    except Exception as exc:
+        print(f"  Shared-bank preflight skipped (provider not importable: {exc})")
+        return False
+    try:
+        report = preflight_shared_bank()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  Shared-bank preflight failed to run: {exc}")
+        return False
+    for line in format_preflight(report).splitlines():
+        print(f"  {line}")
+    print()
+    return bool(report.get("ok"))
+
 def cmd_setup_provider(provider_name: str) -> None:
     """Run memory setup for a specific provider, skipping the picker."""
     from mercury_cli.config import load_config, save_config
@@ -277,6 +358,8 @@ def cmd_setup_provider(provider_name: str) -> None:
     save_config(config)
     print(f"\n  Memory provider: {name}")
     print("  Activation saved to config.yaml\n")
+    if name == MNEMOSYNE_PROVIDER:
+        _report_mnemosyne_preflight()
 
 
 def cmd_setup(args) -> None:
@@ -294,10 +377,19 @@ def cmd_setup(args) -> None:
     items = []
     for name, desc, _ in providers:
         items.append((name, f"— {desc}"))
-    items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
+    items.append(("Built-in only", "— MEMORY.md / USER.md"))
 
+    # Default selection: the current backend on re-runs (offer mnemosyne
+    # alongside it); the shared-bank default on fresh installs.
     builtin_idx = len(items) - 1
-    selected = _curses_select("Memory provider setup", items, default=builtin_idx, cancel_returns=_CANCELLED)
+    try:
+        _mem = load_config().get("memory", {})
+        _cur = _mem.get("provider", "") if isinstance(_mem, dict) else ""
+        _cur = _cur if isinstance(_cur, str) else ""
+    except Exception:
+        _cur = ""
+    default_idx = _wizard_default_index([n for n, _, _ in providers], _cur, builtin_idx)
+    selected = _curses_select("Memory provider setup", items, default=default_idx, cancel_returns=_CANCELLED)
     if selected == _CANCELLED:
         _print_cancelled_setup()
         return
@@ -420,6 +512,9 @@ def cmd_setup(args) -> None:
         print("  Provider config saved")
     if env_writes:
         print("  API keys saved to .env")
+    if name == MNEMOSYNE_PROVIDER:
+        print()
+        _report_mnemosyne_preflight()
     print("\n  Start a new session to activate.\n")
 
 

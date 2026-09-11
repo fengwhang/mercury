@@ -2049,7 +2049,8 @@ DEFAULT_CONFIG = {
         # store reserved for explicit high-frequency operational facts.
         "nudge_interval": 10,
         # External memory provider plugin (empty = built-in only).
-        # Set to a provider name to activate: "openviking", "mem0",
+        # Set to a provider name to activate: "mnemosyne" (shared-bank
+        # default, hermes + omp read one SQLite file), "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",

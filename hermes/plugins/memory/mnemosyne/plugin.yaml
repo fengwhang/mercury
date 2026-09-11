@@ -1,0 +1,5 @@
+name: hermes-mnemosyne
+version: 1.0.0
+description: "Mnemosyne — shared SQLite bank (hermes + omp, FTS-first). Canonical plugin hermes-mnemosyne; activate via memory.provider=mnemosyne. No built-in-tool override."
+pip_dependencies:
+  - mnemosyne-hermes

@@ -9,13 +9,13 @@ BRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridge.py")
 PY = sys.executable
 
 
-def run(args, cfg):
+def run(args, cfg, home=None):
     # MERCURY-OMP PATCH (skills bridge union): --render-omp also refreshes
     # omp's engine-root symlink view of the shared library. Point the
     # skills-bridge env at throwaway dirs so tests never touch the real
     # ~/.mercury or ~/.omp trees.
     env = {**os.environ, "HERMES_OMP_CONFIG": cfg}
-    scratch = tempfile.mkdtemp(prefix="bridge-skills-")
+    scratch = home or tempfile.mkdtemp(prefix="bridge-skills-")
     env["MERCURY_HOME"] = scratch
     env["MERCURY_SKILLS_DIR"] = os.path.join(scratch, "skills")
     env["PI_CODING_AGENT_DIR"] = os.path.join(scratch, "omp")
@@ -143,6 +143,46 @@ def main():
 
     r = run(["--check"], cfg)
     expect("--check: silent exit 0", r.returncode == 0 and r.stdout == "")
+
+    # --- Shared mnemosyne/mnemopi bank: default-on fresh, explicit respected ---
+    home = tempfile.mkdtemp(prefix="bridge-mnemopi-")
+    fresh = write_cfg(tmp, base())
+    r = run(["--render-omp"], fresh, home)
+    out = open(fresh).read()
+    expect("mnemopi: default-on exit 0", r.returncode == 0, r.stderr)
+    expect("mnemopi: backend pinned", "backend: mnemopi" in out, out)
+    expect("mnemopi: global scoping (one bank)", "scoping: global" in out, out)
+    expect("mnemopi: FTS-only default", "noEmbeddings: true" in out, out)
+    expect("mnemopi: autoRecall/autoRetain on",
+           "autoRecall: true" in out and "autoRetain: true" in out, out)
+    expect("mnemopi: shared dbPath pinned",
+           f"dbPath: '{home}/memories/mnemopi.db'" in out, out)
+    expect("mnemopi: bank pinned", "bank: 'default'" in out, out)
+
+    # idempotent re-render with the same home: byte-identical
+    r = run(["--render-omp"], fresh, home)
+    out2 = open(fresh).read()
+    expect("mnemopi: idempotent same-home", r.returncode == 0 and out2 == out, out2)
+
+    # explicit backend off: never clobbered, no mnemopi block injected
+    off = write_cfg(tmp, base() + "\nomp:\n  memory:\n    backend: off\n")
+    r = run(["--render-omp"], off, home)
+    out = open(off).read()
+    expect("mnemopi: explicit-off exit 0", r.returncode == 0, r.stderr)
+    expect("mnemopi: explicit-off kept",
+           "backend: off" in out and "backend: mnemopi" not in out, out)
+    expect("mnemopi: explicit-off injects no mnemopi block",
+           "mnemopi:" not in out, out)
+
+    # explicit mnemopi with custom dbPath: custom pin preserved, defaults filled
+    custom = write_cfg(tmp, base() + "\nomp:\n  memory:\n    backend: mnemopi\n"
+                       "  mnemopi:\n    dbPath: '/custom/x.db'\n    bank: 'shared'\n")
+    r = run(["--render-omp"], custom, home)
+    out = open(custom).read()
+    expect("mnemopi: custom exit 0", r.returncode == 0, r.stderr)
+    expect("mnemopi: custom dbPath preserved", "dbPath: '/custom/x.db'" in out, out)
+    expect("mnemopi: custom bank preserved", "bank: 'shared'" in out, out)
+    expect("mnemopi: custom gains global scoping", "scoping: global" in out, out)
 
     print()
     if failures:

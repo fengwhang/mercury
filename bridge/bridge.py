@@ -389,6 +389,67 @@ def _hermes_deny_globs(text: str) -> list:
     return globs
 
 
+# Shared mnemosyne/mnemopi bank (Mercury default memory system).
+# ONE SQLite file shared by hermes + omp: ~/.mercury/memories/mnemopi.db
+# (MERCURY_HOME-aware so tests stay hermetic). Omp pins it via explicit
+# mnemopi.dbPath + scoping:global (no per-project sibling DBs split the
+# bank). FTS-only default (noEmbeddings:true) keeps fresh installs light;
+# embeddings are opt-in later via mnemopi.noEmbeddings=false.
+_VALID_OMP_MEMORY_BACKENDS = {"off", "local", "hindsight", "mnemopi", "sharpshooter", "mnemosyne"}
+_VALID_MNEMOPI_SCOPINGS = {"global", "per-project", "per-project-tagged"}
+
+
+def _shared_mnemopi_db_path() -> str:
+    home = os.environ.get("MERCURY_HOME", os.path.expanduser("~/.mercury"))
+    return os.path.join(home, "memories", "mnemopi.db")
+
+
+def _existing_omp_memory_backend(text: str):
+    """Return the explicit omp.memory.backend value, or None when unset."""
+    m = re.search(r"^omp:(.*?)(?=^\S|\Z)", text, flags=re.M | re.S)
+    if not m:
+        return None
+    block = m.group(1)
+    mm = re.search(r"^[ \t]+memory:[ \t]*\n((?:^[ \t]+.*\n?)*)", block, flags=re.M)
+    if mm:
+        bm = re.search(r"backend\s*:\s*[\"']?([A-Za-z0-9_-]+)", mm.group(1))
+        if bm:
+            return bm.group(1)
+        return None
+    dm = re.search(r"memory\.backend\s*:\s*[\"']?([A-Za-z0-9_-]+)", block)
+    if dm:
+        return dm.group(1)
+    return None
+
+
+def _parse_yaml_bool_or_none(value):
+    if value is None:
+        return None
+    s = str(value).strip().strip("'\"").lower()
+    if s in ("true", "yes", "on", "1"):
+        return True
+    if s in ("false", "no", "off", "0"):
+        return False
+    return None
+
+
+def _existing_omp_mnemopi_values(text: str) -> dict:
+    """Return explicitly set mnemopi keys from the existing omp: subtree."""
+    m = re.search(r"^omp:(.*?)(?=^\S|\Z)", text, flags=re.M | re.S)
+    if not m:
+        return {}
+    block = m.group(1)
+    mm = re.search(r"^[ \t]+mnemopi:[ \t]*\n((?:^[ \t]+.*\n?)*)", block, flags=re.M)
+    if not mm:
+        return {}
+    chunk = mm.group(1)
+    out: dict = {}
+    for key in ("dbPath", "bank", "scoping", "autoRecall", "autoRetain", "noEmbeddings"):
+        km = re.search(r"(?m)^\s*" + re.escape(key) + r"\s*:\s*(.+?)\s*$", chunk)
+        if km:
+            out[key] = km.group(1).strip()
+    return out
+
 def render_omp_subtree(slots, target=None):
     """Write omp settings into the unified file's omp: subtree, preserving
     models: and hermes: subtrees. No modelRoles (dead feature).
@@ -442,6 +503,44 @@ def render_omp_subtree(slots, target=None):
             "  providers:\n"
             f'    webSearchOrder: ["{omp_provider}"]\n'
         )
+    # Shared mnemosyne/mnemopi bank: default-on for fresh installs, never
+    # clobber an explicit user-set memory.backend. Fresh installs get
+    # memory.backend=mnemopi + mnemopi {dbPath bank scoping:global
+    # autoRecall/autoRetain/noEmbeddings} (FTS-only, no embedding deps).
+    # Scoping global keeps ONE bank file (no per-project sibling DBs).
+    _old_backend = _existing_omp_memory_backend(text)
+    _new_backend = _old_backend if _old_backend is not None else "mnemopi"
+    if _new_backend == "mnemosyne":
+        _new_backend = "mnemopi"
+    if _new_backend == "mnemopi":
+        _old_mn = _existing_omp_mnemopi_values(text)
+        _db_path = (_old_mn.get("dbPath") or "").strip().strip("'\"") or _shared_mnemopi_db_path()
+        _bank = (_old_mn.get("bank") or "").strip().strip("'\"") or "default"
+        _scoping = (_old_mn.get("scoping") or "").strip().strip("'\"")
+        if _scoping not in _VALID_MNEMOPI_SCOPINGS:
+            _scoping = "global"
+        _auto_recall = _parse_yaml_bool_or_none(_old_mn.get("autoRecall"))
+        if _auto_recall is None:
+            _auto_recall = True
+        _auto_retain = _parse_yaml_bool_or_none(_old_mn.get("autoRetain"))
+        if _auto_retain is None:
+            _auto_retain = True
+        _no_emb = _parse_yaml_bool_or_none(_old_mn.get("noEmbeddings"))
+        if _no_emb is None:
+            _no_emb = True
+        omp_block += (
+            "  memory:\n"
+            "    backend: mnemopi\n"
+            "  mnemopi:\n"
+            f"    dbPath: {_yaml_sq(_db_path)}\n"
+            f"    bank: {_yaml_sq(_bank)}\n"
+            f"    scoping: {_scoping}\n"
+            f"    autoRecall: {str(_auto_recall).lower()}\n"
+            f"    autoRetain: {str(_auto_retain).lower()}\n"
+            f"    noEmbeddings: {str(_no_emb).lower()}\n"
+        )
+    elif _old_backend in _VALID_OMP_MEMORY_BACKENDS:
+        omp_block += f"  memory:\n    backend: {_old_backend}\n"
     if deny_globs:
         omp_block += "  bash:\n    patterns:\n"
         for g in deny_globs:
