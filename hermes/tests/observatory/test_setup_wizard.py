@@ -297,7 +297,7 @@ def test_section_install_calls_provision_then_card(monkeypatch, capsys, tmp_path
     assert "→ Matrix Observatory provisioning (Tuwunel)" in out
     assert "✓ tuwunel: current v1.9.0" in out
     # manual-only card printed after provisioning
-    assert "Matrix Observatory — first login (FluffyChat)" in out
+    assert "Matrix Observatory — first login (FluffyChat / Element X)" in out
     assert f"homeserver URL:      {HOMESERVER_URL}" in out
     assert f"owner account:       {MXID}" in out
     assert str(creds) in out
@@ -329,13 +329,13 @@ def test_section_provisioned_enabled_state_and_card(monkeypatch, capsys, tmp_pat
     assert "Homeserver reachable: yes" in out
     assert "Unit active:          yes" in out
     assert "observatory.enabled:  yes  (config.yaml)" in out
-    assert "Matrix Observatory — first login (FluffyChat)" in out
+    assert "Matrix Observatory — first login (FluffyChat / Element X)" in out
     assert "Tailscale not detected" in out
     assert "https://tailscale.com" in out
     assert "headscale" in out
     assert "on this machine:" in out  # localhost line kept for desktop
     assert fake.calls["bind"] == 0  # absent tailnet: no bind offer, no prompt
-    assert "in FluffyChat:" in out and "add account" in out
+    assert "in FluffyChat / Element X:" in out and "add account" in out
     # manual-only card: E2EE/tree/network lines never print
     assert "E2EE:" not in out
     assert "space tree:" not in out
@@ -1319,7 +1319,7 @@ def test_reprint_card_after_summary_when_provisioned(
     setup_mod._reprint_observatory_login_card()
     out = capsys.readouterr().out
     assert "Save this — Matrix login" in out
-    assert "Matrix Observatory — first login (FluffyChat)" in out
+    assert "Matrix Observatory — first login (FluffyChat / Element X)" in out
     assert f"homeserver URL:      {HOMESERVER_URL}" in out
     assert PASSWORD not in out
 
@@ -1453,8 +1453,8 @@ def test_setup_telemetry_persistent_failure_degrades_to_env_line(
 
 
 def test_card_renders_fluffychat_flow(capsys, tmp_path):
-    """First-login card names FluffyChat with its generic add-account flow —
-    plus the identity-reset trust-device line naming Element/Element X."""
+    """First-login card names FluffyChat AND Element X with the generic add-account
+    flow — plus the identity-reset trust-device line naming Element/Element X."""
     creds = _write_credentials(tmp_path)
     setup_mod._print_observatory_setup_card(
         {
@@ -1465,8 +1465,8 @@ def test_card_renders_fluffychat_flow(capsys, tmp_path):
         dict(_TS_ABSENT),
     )
     out = capsys.readouterr().out
-    assert "Matrix Observatory — first login (FluffyChat)" in out
-    assert "in FluffyChat:" in out
+    assert "Matrix Observatory — first login (FluffyChat / Element X)" in out
+    assert "in FluffyChat / Element X:" in out
     assert "add account" in out
     assert "homeserver URL" in out
     assert "after an identity reset in Element/Element X:" in out
@@ -1513,6 +1513,14 @@ def test_no_user_facing_string_recommends_element(rel):
         text = text.replace("identity in Element or ", "identity in Element-family ")
         text = text.replace('"Element X, run: ', '"Element-family, run: ')
         text = text.replace("Element/Element X", "Element-family")
+        # Carve-out (2026-09-11 post-wipe re-login): the first-login card
+        # titles/steps name FluffyChat AND Element X side by side (the user
+        # is on Element X), and the post-wipe re-login notice names the
+        # Element / FluffyChat session it just killed — neither RECOMMENDS
+        # Element X over the tested FluffyChat default.
+        text = text.replace("FluffyChat / Element X", "FluffyChat")
+        text = text.replace("Element / Element X / FluffyChat", "Element-family")
+        text = text.replace("Element / FluffyChat", "Element-family")
     assert "Element X" not in text
     assert "Element Classic" not in text
 
