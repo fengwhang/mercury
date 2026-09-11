@@ -493,7 +493,10 @@ class TestIntentExecutor:
     async def test_create_space_and_room_record_ids_and_pin_owner(
         self, state: ObservatoryState, fake: FakeClient
     ):
-        ex = IntentExecutor(fake, state, owner_mxid=OWNER, server_name=SERVER)
+        ex = IntentExecutor(
+            fake, state, owner_mxid=OWNER, server_name=SERVER,
+            gateway_mxid=state.get(GW)["mxid"],
+        )
         await ex.execute(
             [
                 CreateSpace(GW, "Mercury — gatehost", state.get(GW)["mxid"]),
@@ -506,13 +509,15 @@ class TestIntentExecutor:
         assert state.get_meta("room:directives") == "!room2"
         assert state.get(CRON)["room_id"] == "!room3"
         # every creation invites the owner and pins owner PL 100 (D7);
-        # child rooms also invite the gateway ghost + parent voice
-        # (gateway-ghost membership at creation).
+        # the gateway ghost is NEVER invited to child rooms/spaces
+        # (it stays in its OWN room/space + directives/root only) —
+        # gateway-parented cron rooms invite the owner only.
         creates = [c for c in fake.calls if c[0] == "create_room"]
         assert all(OWNER in c[4] for c in creates)
         gw_mxid = state.get(GW)["mxid"]
         cron_invite = next(c[4] for c in creates if c[1] == "nightly")
-        assert gw_mxid in cron_invite
+        assert gw_mxid not in cron_invite
+        assert tuple(cron_invite) == (OWNER,)
         powers = [c for c in fake.calls if c[0] == "power"]
         assert all(p[2] == {OWNER: 100} for p in powers)
         assert len(powers) == len(creates)

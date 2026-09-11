@@ -580,13 +580,28 @@ class _SidecarCryptoClient:
 class _EncryptionStateStore:
     """mautrix ``crypto.store.StateStore`` over sidecar bookkeeping: room
     encryption state comes from the homeserver (authoritative; read as the
-    gateway agent — a member of every room the sidecar creates), shared
+    room's member ghost — the gateway stays out of child rooms), shared
     rooms from the ``crypt:`` registry in ``observatory/state.db``."""
 
     def __init__(self, client: Any, state: ObservatoryState, *, reader_mxid: str) -> None:
         self._client = client
         self._state = state
         self._reader_mxid = reader_mxid
+
+    def _member_reader_for(self, room_id: str) -> str:
+        """Member ghost for ``room_id`` (child voice in child rooms)."""
+        try:
+            for row in self._state.get_live():
+                try:
+                    if row.get("room_id") == room_id or row.get("space_id") == room_id:
+                        mxid = str(row.get("mxid") or "")
+                        if mxid:
+                            return mxid
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return self._reader_mxid
 
     async def is_encrypted(self, room_id) -> bool:
         info = await self.get_encryption_info(room_id)
@@ -596,14 +611,23 @@ class _EncryptionStateStore:
         from mautrix.types import RoomEncryptionStateEventContent
 
         path = f"{CLIENT_V3}/rooms/{room_id}/state/m.room.encryption/"
+        readers: list[str] = []
         try:
-            out = await self._client.client_api("GET", path, sender=self._reader_mxid)
-        except Exception:  # noqa: BLE001 — 404 == not encrypted
-            return None
-        if not isinstance(out, dict):
-            return None
-        return RoomEncryptionStateEventContent.deserialize(out)
-
+            member = self._member_reader_for(str(room_id))
+        except Exception:
+            member = ""
+        for cand in (member, self._reader_mxid):
+            if cand and cand not in readers:
+                readers.append(cand)
+        for reader in readers or [self._reader_mxid]:
+            try:
+                out = await self._client.client_api("GET", path, sender=reader)
+            except Exception:  # noqa: BLE001 — try next reader; 404 == not encrypted
+                continue
+            if not isinstance(out, dict):
+                return None
+            return RoomEncryptionStateEventContent.deserialize(out)
+        return None
     async def find_shared_rooms(self, user_id) -> list:
         """Encrypted rooms ``user_id`` could share keys in — the safe
         direction for ``remove_outbound_group_sessions`` is a superset,
@@ -2038,7 +2062,7 @@ class E2EEManager:
             old_session_id = None
         if (session is None or getattr(session, "expired", False)
                 or not getattr(session, "shared", True)):
-            members = await self._room_members(room_id)
+            members = await self._room_members(room_id, fallback_sender=sender)
             guard = await self.verify_recipient_otks(machine, list(members))
             if guard["stale"]:
                 report["stale_excluded"] = list(guard["stale"])
@@ -2270,22 +2294,38 @@ class E2EEManager:
         self.state.set_meta(meta_key, json.dumps(picture, sort_keys=True))
         return True
 
-    async def _room_members(self, room_id: str) -> list[str]:
+    async def _room_members(self, room_id: str, *, fallback_sender: str = "") -> list[str]:
         from urllib.parse import quote
 
         path = f"{CLIENT_V3}/rooms/{quote(room_id, safe='')}/members"
-        # read as the GATEWAY (a member of every sidecar room, and inside
-        # the appservice namespace — the owner is NOT masqueradeable)
-        out = await self.client.client_api(
-            "GET", path, sender=self.gateway_mxid or self.owner_mxid or None)
-        chunk = (out or {}).get("chunk", []) if isinstance(out, dict) else []
-        return [
-            e["state_key"]
-            for e in chunk
-            if isinstance(e, dict) and e.get("type") == "m.room.member"
-            and (e.get("content") or {}).get("membership") in ("join", "invite")
-            and e.get("state_key")
-        ]
+        # The gateway stays OUT of child rooms, so a gateway-masqueraded
+        # members read 403s there (the owner is NOT masqueradeable).
+        # Try the sender (always a member on the share path) first, then
+        # the gateway. Never raises for membership alone — callers treat
+        # failure as empty.
+        readers: list[str | None] = []
+        for cand in (fallback_sender or "", self.gateway_mxid or "", self.owner_mxid or "", None):
+            if cand not in readers:
+                # None (appservice sender, no masquerade) goes last.
+                readers.append(cand)
+        last_exc: Exception | None = None
+        for reader in readers:
+            try:
+                out = await self.client.client_api("GET", path, sender=reader)
+                chunk = (out or {}).get("chunk", []) if isinstance(out, dict) else []
+                return [
+                    e["state_key"]
+                    for e in chunk
+                    if isinstance(e, dict) and e.get("type") == "m.room.member"
+                    and (e.get("content") or {}).get("membership") in ("join", "invite")
+                    and e.get("state_key")
+                ]
+            except Exception as exc:  # noqa: BLE001 — try next reader
+                last_exc = exc
+                continue
+        if last_exc is not None:
+            raise last_exc
+        return []
 
     # -- inbound decryption (appservice transaction pipeline) ----------------------
     async def decrypt_event(self, event: dict[str, Any]) -> dict[str, Any] | None:
@@ -2543,12 +2583,10 @@ class EncryptedIntentExecutor:
         # Owner auto-join like the base executor (VM round 2): the creation
         # invite alone leaves a pending invite the owner must tap.
         await inner.ensure_owner_in_room(room_id)
-        # Gateway-ghost membership at creation (parity with the base
-        # executor): gateway ghost + parent voice join best-effort.
-        if inner.gateway_mxid and inner.gateway_mxid != op.sender:
-            await inner.ensure_ghost_in_room(room_id, inner.gateway_mxid)
+        # Parent-voice membership at creation (parity with the base
+        # executor): the gateway ghost stays OUT of child rooms.
         parent_voice = inner._parent_voice_for_create(op, space=False)
-        if parent_voice and parent_voice != inner.gateway_mxid:
+        if parent_voice:
             await inner.ensure_ghost_in_room(room_id, parent_voice)
         inner._record_room(op.key, room_id)
         self.e2ee.mark_room_encrypted(op.key, room_id)
@@ -2558,6 +2596,11 @@ class EncryptedIntentExecutor:
         """Converge-time owner-membership heal (delegates to the wrapped
         executor — same surface the renderer calls on the plain one)."""
         return await self._inner.ensure_owner_in_plan(plan)
+
+    async def ensure_gateway_leaves_plan(self, plan) -> int:
+        """Converge-time gateway-leave heal (delegates to the wrapped
+        executor — removes the gateway ghost from child rooms/spaces)."""
+        return await self._inner.ensure_gateway_leaves_plan(plan)
 
     async def ensure_owner_in_room(self, room_id: str) -> bool:
         return await self._inner.ensure_owner_in_room(room_id)

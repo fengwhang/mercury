@@ -792,10 +792,17 @@ class Renderer:
 
     async def apply_plan(self, plan: tree.SpacePlan) -> list[RenderIntent]:
         """Converge matrix onto the plan (idempotent). Returns the applied
-        intents (empty when already converged)."""
+        intents (empty when already converged). The gateway-leave heal
+        runs on EVERY converge (best-effort, never fails): live child
+        rooms the gateway still occupies are left so the fix applies to
+        pre-existing deployments, not just fresh spawns."""
         intents = self.plan_provision(await self.snapshot(plan), plan)
         if intents:
             await self._execute(intents)
+        try:
+            await self.executor.ensure_gateway_leaves_plan(plan)
+        except Exception:  # noqa: BLE001 — heal never fails converge
+            log.debug("gateway-leave heal skipped", exc_info=True)
         return list(intents)
 
     async def render_lifecycle(self, node_id: str) -> list[RenderIntent]:
@@ -920,8 +927,10 @@ class IntentExecutor:
       meta;
     - tagged sends (dashboards) -> ``dash:`` meta (the event id).
 
-    Room/space creation ALWAYS invites the owner and pins owner PL 100
-    (D7 — owner is admin everywhere; invited users per config later).
+    Room/space creation ALWAYS invites the owner (+ non-gateway parent
+    voice) and pins owner PL 100 (D7 — owner is admin everywhere;
+    invited users per config later). The gateway ghost is NEVER invited
+    to or joined into spawned child rooms/spaces.
     """
 
     def __init__(
@@ -969,7 +978,13 @@ class IntentExecutor:
     def _parent_voice_for_create(
         self, op: CreateSpace | CreateRoom, *, space: bool
     ) -> str | None:
-        """Parent node's voice for a creation op (invited + joined)."""
+        """Parent node's voice for a creation op (invited + joined).
+
+        The gateway ghost is NEVER a parent voice: it stays a member of
+        its OWN room/space + directives/root only, so child rooms/spaces
+        invite/join owner + parent voice where the parent is not the
+        gateway. A resolved gateway voice reads as no parent voice.
+        """
         if not space:
             assert isinstance(op, CreateRoom)
             # Node-backed rooms (agent children): the PARENT NODE's voice —
@@ -981,10 +996,14 @@ class IntentExecutor:
                 parent_id = node.get("parent_node_id")
                 if parent_id:
                     voice = self._mxid_for_key(str(parent_id))
-                    if voice and voice != op.sender:
+                    if voice and voice != op.sender and voice != self.gateway_mxid:
                         return voice
+                    # Parent is the gateway (or self): no parent voice —
+                    # the gateway stays out of child rooms.
+                    if voice == self.gateway_mxid:
+                        return None
             voice = self._mxid_for_key(op.space_key)
-            if voice and voice != op.sender:
+            if voice and voice != op.sender and voice != self.gateway_mxid:
                 return voice
             return None
         node = self._node_or_none(op.key)
@@ -992,21 +1011,23 @@ class IntentExecutor:
             parent_id = node.get("parent_node_id")
             if parent_id:
                 voice = self._mxid_for_key(str(parent_id))
-                if voice and voice != op.sender:
+                if voice and voice != op.sender and voice != self.gateway_mxid:
                     return voice
-        # Roots (gateway agent space itself, orchestrators): the gateway ghost is the parent.
-        if self.gateway_mxid and self.gateway_mxid != op.sender:
-            return self.gateway_mxid
+                # Gateway-parented subspaces (gateway-origin delegations):
+                # no parent voice — the gateway stays out.
+                return None
+        # Roots (gateway agent space itself, orchestrators): no parent
+        # voice — the gateway stays out of spawned child spaces. Its OWN
+        # space needs none either (it is the sender there).
         return None
 
     def _create_invites(
         self, op: CreateSpace | CreateRoom, *, space: bool
     ) -> tuple[str, ...]:
-        """Creation invite list: owner + gateway ghost + parent voice."""
+        """Creation invite list: owner + parent voice (gateway excluded)."""
         invites: list[str] = []
         for mxid in (
             self.owner_mxid,
-            self.gateway_mxid or "",
             self._parent_voice_for_create(op, space=space) or "",
         ):
             if not mxid or mxid == op.sender or mxid in invites:
@@ -1015,7 +1036,7 @@ class IntentExecutor:
         return tuple(invites)
 
     async def ensure_ghost_in_room(self, room_id: str, mxid: str) -> bool:
-        """Best-effort ghost join (gateway / parent voice). Never raises."""
+        """Best-effort ghost join (parent voice). Never raises."""
         if not mxid:
             return False
         try:
@@ -1132,14 +1153,15 @@ class IntentExecutor:
         # invite on the owner's behalf with the owner's own credential —
         # the same POST /join Element/FluffyChat send on a Join tap.
         await self.ensure_owner_in_room(room_id)
-        # Gateway-ghost membership at creation: the gateway ghost performs
-        # members reads, decrypt-failure notices and attach sends as sender,
-        # so it must be joined (not merely invited) to every child room and
-        # space. The parent node's voice joins too — never raises.
-        if self.gateway_mxid and self.gateway_mxid != op.sender:
-            await self.ensure_ghost_in_room(room_id, self.gateway_mxid)
+        # Parent-voice membership at creation: the parent node's voice
+        # joins best-effort (never raises). The gateway ghost stays OUT
+        # of spawned child rooms/spaces — it remains a member of its OWN
+        # room/space + directives/root only. All member-guarded reads
+        # (power snapshot, members, hierarchy) route via the room's own
+        # voice or skip silently on ghost-not-member; attach sends ride
+        # the parent voice with child/owner fallbacks.
         parent_voice = self._parent_voice_for_create(op, space=space)
-        if parent_voice and parent_voice != self.gateway_mxid:
+        if parent_voice:
             await self.ensure_ghost_in_room(room_id, parent_voice)
         if space:
             self._record_space(op.key, room_id)
@@ -1177,6 +1199,83 @@ class IntentExecutor:
             if await self.ensure_owner_in_room(rid):
                 joined += 1
         return joined
+
+    async def ensure_gateway_leaves_plan(self, plan: "tree.SpacePlan") -> int:
+        """Converge-time heal: gateway ghost LEAVES child rooms/spaces.
+
+        One-time heal for live deployments (fresh spawns never invite the
+        gateway): every planned space/room id EXCEPT the gateway's OWN
+        ids + root/directives/manual-runs is left best-effort. Already-out
+        (403/404 not-member) counts as healed, any other failure only
+        logs. Never raises — a heal failure must never fail converge.
+        Returns the leave-attempt success count (including already-out).
+        """
+        if not self.gateway_mxid:
+            return 0
+        try:
+            spaces, rooms = tree.plan_index(plan)
+        except Exception:
+            return 0
+        keep: set[str] = set()
+        try:
+            for row in self.state.get_live():
+                try:
+                    if row.get("mxid") == self.gateway_mxid:
+                        for rid in (row.get("room_id"), row.get("space_id")):
+                            if rid:
+                                keep.add(str(rid))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        for meta_key in (
+            SPACE_META_PREFIX + tree.ROOT_SPACE_KEY,
+            ROOM_META_PREFIX + tree.DIRECTIVES_ROOM_KEY,
+            SPACE_META_PREFIX + tree.MANUAL_RUNS_SPACE_KEY,
+            SPACE_META_PREFIX + tree.GATEWAY_AGENT_SPACE_KEY,
+        ):
+            try:
+                val = self.state.get_meta(meta_key)
+            except Exception:
+                continue
+            if val:
+                keep.add(str(val))
+        for key in (
+            tree.ROOT_SPACE_KEY,
+            tree.DIRECTIVES_ROOM_KEY,
+            tree.MANUAL_RUNS_SPACE_KEY,
+        ):
+            try:
+                if key in spaces and spaces[key].matrix_id:
+                    keep.add(str(spaces[key].matrix_id))
+                if key in rooms and rooms[key].matrix_id:
+                    keep.add(str(rooms[key].matrix_id))
+            except Exception:
+                continue
+        ids: list[str] = []
+        seen: set[str] = set()
+        for coll in (spaces.values(), rooms.values()):
+            for spec in coll:
+                mid = spec.matrix_id
+                if mid and mid not in seen:
+                    seen.add(str(mid))
+                    if str(mid) not in keep:
+                        ids.append(str(mid))
+        left = 0
+        for rid in ids:
+            try:
+                await self.client.leave_room(rid, sender=self.gateway_mxid)
+                left += 1
+            except AttributeError:
+                log.debug("gateway leave unavailable for %s (no leave surface)", rid)
+                continue
+            except Exception as exc:  # noqa: BLE001 — best-effort heal
+                if self._is_not_member_error(exc):
+                    left += 1
+                    continue
+                log.debug("gateway leave skipped for %s: %s", rid, exc)
+                continue
+        return left
 
     async def execute(self, intents: Iterable[RenderIntent]) -> list[dict[str, Any]]:
         """Run intents in order; returns an execution log (one record per
@@ -1306,7 +1405,14 @@ class IntentExecutor:
                 records.append({"op": "leave", "room": op.room_id, "user": op.sender})
             elif isinstance(op, SetUserPower):
                 rid = self.room_id(op.room_key)
-                await self.client.set_power_levels(rid, {op.user_id: op.level}, sender=op.sender)
+                try:
+                    await self.client.set_power_levels(rid, {op.user_id: op.level}, sender=op.sender)
+                except Exception as exc:  # noqa: BLE001 — ghost-not-member skips, never fails converge
+                    if self._is_not_member_error(exc):
+                        log.warning("converge: skipping non-member power %s sender %s: %s", rid, op.sender, exc)
+                        records.append({"op": "skipped", "room": rid, "reason": "not-member", "error": str(exc)})
+                        continue
+                    raise
                 records.append({"op": "power", "room": rid, "user": op.user_id,
                                 "level": op.level})
             elif isinstance(op, PurgeRoom):
