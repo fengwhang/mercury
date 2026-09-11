@@ -3319,9 +3319,10 @@ def _print_observatory_relogin_notice(owner_mxid: str) -> None:
     the pre-wipe server can never reconnect: the client shows the dead
     session as still-connected, then forces a fresh login + identity reset.
     Loud red box (never a soft hint): log out / remove the old account,
-    log back in as the fresh MXID with the FRESH password, and expect
-    exactly ONE identity verification — a SECOND reset prompt means
-    something else is wrong (re-run ``mercury setup observatory``).
+    log back in as the fresh MXID with the FRESH password. If the app
+    asks for a second identity reset, complete it in the app — never
+    answer it with another setup run (that just re-issues the identity
+    and you do the two resets again).
     """
     lines = [
         "WIPED + RE-PROVISIONED — your OLD Element / FluffyChat session is DEAD BY CONSTRUCTION",
@@ -3329,9 +3330,8 @@ def _print_observatory_relogin_notice(owner_mxid: str) -> None:
         f"log out / remove the old account, then log back in as {owner_mxid}",
         "with the FRESH password (.env MATRIX_OBS_OWNER_PASSWORD, mode 0600 —",
         "never the old one; the wipe issued new server keys and a new owner password).",
-        "Expect exactly ONE identity verification on the fresh login —",
-        "a SECOND reset prompt means something else is wrong,",
-        "re-run: mercury setup observatory",
+        "If the app asks for a second identity reset, complete it in the app —",
+        "never answer it with another setup run.",
     ]
     width = max(len(ln.rstrip()) for ln in lines) + 2
     print()

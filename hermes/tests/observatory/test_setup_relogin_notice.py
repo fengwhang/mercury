@@ -2,8 +2,9 @@
 against the new server identity after annihilate + re-provision).
 
 Pins: every wipe+reprovision path prints the loud DEAD-BY-CONSTRUCTION
-re-login block (fresh MXID, fresh password, exactly ONE identity
-verification), and the first-login card names FluffyChat AND Element X.
+re-login block (fresh MXID, fresh password, second reset completed in
+the app — never another setup run), and the first-login card names
+FluffyChat AND Element X.
 """
 
 from __future__ import annotations
@@ -124,10 +125,8 @@ def _assert_notice(out: str, mxid: str = MXID) -> None:
     assert mxid in out
     assert "FRESH password" in out
     assert "MATRIX_OBS_OWNER_PASSWORD" in out
-    assert "exactly ONE identity verification" in out
-    assert "SECOND reset prompt" in out
-    assert "something else is wrong" in out
-    assert "mercury setup observatory" in out
+    assert "second identity reset" in out
+    assert "never" in out and "another setup run" in out
 
 
 def test_relogin_notice_pins_required_phrases(capsys):
