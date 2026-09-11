@@ -1,10 +1,10 @@
-"""VM-report slice 3: gateway agent owns a subspace (gw-space parity).
+"""VM-report slice 3: gateway agent owns a subspace (unified planner).
 
 VM symptom: the gateway agent had a room but no space; spawned subagents
 had nowhere to nest. Spec: every agent gets room+space, the gateway agent
 included, with its delegation children nested under its subspace.
 
-``Renderer.build_plan`` must yield: root space → [gw-agent subspace (room
+``Renderer.build_plan`` must yield: root space → [gateway subspace (room
 gw + one subspace per gateway-origin child), directives, cron rooms,
 orchestrator subspaces]. This pins the exact VM shape (room present but
 space absent) at the build_plan level — tree-level parity alone would not
@@ -55,7 +55,8 @@ def _plan(tmp_path: Path):
 
 def test_gateway_agent_has_own_subspace_with_room(tmp_path):
     plan = _plan(tmp_path)
-    assert [s.key for s in plan.subspaces][0] == "gw-agent"
+    assert plan.key == "root"
+    assert [s.key for s in plan.subspaces][0] == GW
     gw_agent = plan.subspaces[0]
     # The gateway room lives in its subspace — never directly in root.
     assert [r.key for r in gw_agent.rooms] == [GW]
@@ -65,6 +66,7 @@ def test_gateway_agent_has_own_subspace_with_room(tmp_path):
 def test_gateway_origin_child_nests_under_gateway_subspace(tmp_path):
     plan = _plan(tmp_path)
     gw_agent = plan.subspaces[0]
+    assert gw_agent.key == GW
     assert [s.key for s in gw_agent.subspaces] == [GWSA]
     assert [r.key for r in gw_agent.subspaces[0].rooms] == [GWSA]
     # Cron pseudo-rooms never nest under the agent subspace (D11).
@@ -84,14 +86,16 @@ def test_provision_intents_create_subspace_before_room(tmp_path):
         for i in intents
     ]
     # Subspace exists before its room; the gateway child nests inside it.
-    assert labels.index(("CreateSpace", "gw-agent")) < labels.index(("CreateRoom", GW))
+    # Unified planner: the gateway subspace key is the gateway node id.
+    assert labels.index(("CreateSpace", "root")) < labels.index(("CreateSpace", GW))
+    assert labels.index(("CreateSpace", GW)) < labels.index(("CreateRoom", GW))
     assert ("AttachRoom", GW) in labels
     gw_attach = next(i for i in intents
-                     if isinstance(i, AttachSpace) and i.child_key == "gw-agent")
-    assert gw_attach.parent_key == GW
+                     if isinstance(i, AttachSpace) and i.child_key == GW)
+    assert gw_attach.parent_key == "root"
     child_attach = next(i for i in intents
                         if isinstance(i, AttachSpace) and i.child_key == GWSA)
-    assert child_attach.parent_key == "gw-agent"
+    assert child_attach.parent_key == GW
     assert ("CreateRoom", GWSA) in labels
 
 ORCH_CHILD = "del-1"  # delegation child of a spawned orchestrator
@@ -126,8 +130,8 @@ def test_orchestrator_child_nests_under_parent_space(tmp_path):
     assert [r.key for r in orch.rooms] == [ORCH]
     assert [s.key for s in orch.subspaces] == [ORCH_CHILD]
     assert [r.key for r in orch.subspaces[0].rooms] == [ORCH_CHILD]
-    # Still exactly the root children: gw-agent + one orch subspace.
-    assert [s.key for s in plan.subspaces] == ["gw-agent", ORCH]
+    # Still exactly the root children: gateway + one orch subspace.
+    assert [s.key for s in plan.subspaces] == [GW, ORCH]
 
 
 def test_orchestrator_child_provision_attaches_under_parent(tmp_path):
@@ -184,3 +188,56 @@ def test_depth2_grandchild_settles_without_purge(tmp_path):
     assert not [i for i in intents if isinstance(i, PurgeRoom)]
     rooms = {i.room_key for i in intents if isinstance(i, SendMessage)}
     assert rooms == {"del-1/0", ORCH_CHILD}
+
+
+def test_gateway_child_death_purges_like_orch_child(tmp_path):
+    """Unified planner regression: a gateway-origin depth-1 child dies
+    exactly like a spawned-orchestrator child — instant purge of its own
+    space+room, detach from the GATEWAY space (not the root), summary in
+    the gateway room, leave-then-delete before the purge."""
+    from observatory.renderer import DetachChild, LeaveRoom, PurgeRoom, SendMessage
+
+    state = _seed(tmp_path)
+    state.set_space_id(GW, "!gw-sub:x")
+    state.set_room_id(GW, "!gw-room:x")
+    state.set_space_id(GWSA, "!sp-gwsa:x")
+    state.set_room_id(GWSA, "!room-gwsa:x")
+    state.set_meta("space:root", "!root:x")
+    renderer = Renderer(state, gateway_node_id=GW, server_name=SERVER,
+                        owner_mxid=OWNER, executor=None)
+    intents = renderer.plan_death(GWSA, status="completed", summary="audit done")
+    purged = {i.room_id for i in intents if isinstance(i, PurgeRoom)}
+    assert purged == {"!sp-gwsa:x", "!room-gwsa:x"}
+    detach = next(i for i in intents if isinstance(i, DetachChild))
+    assert detach.space_id == "!gw-sub:x" and detach.child_id == "!sp-gwsa:x"
+    summaries = [i for i in intents if isinstance(i, SendMessage)]
+    assert len(summaries) == 1 and summaries[0].room_key == GW
+    leaves = [i for i in intents if isinstance(i, LeaveRoom)]
+    assert leaves, "leave-then-delete must precede the purge"
+    assert {i.room_id for i in leaves} == purged
+    first_purge = next(n for n, i in enumerate(intents) if isinstance(i, PurgeRoom))
+    assert all(n < first_purge for n, i in enumerate(intents) if isinstance(i, LeaveRoom))
+
+
+def test_legacy_gateway_space_migrates_to_unified(tmp_path):
+    """Pre-unification rows (gateway row holds ROOT, meta holds subspace)
+    migrate once: gateway row takes its own subspace, root moves to meta."""
+    from observatory.renderer import migrate_legacy_gateway_space
+
+    state = _seed(tmp_path)
+    state.set_space_id(GW, "!root:x")
+    state.set_meta("space:gw-agent", "!gw-sub:x")
+    assert migrate_legacy_gateway_space(state, GW) is True
+    assert state.get(GW)["space_id"] == "!gw-sub:x"
+    assert state.get_meta("space:root") == "!root:x"
+    # Idempotent: second run is a no-op.
+    assert migrate_legacy_gateway_space(state, GW) is False
+    # The unified plan keys the gateway subspace by its node id.
+    renderer = Renderer(state, gateway_node_id=GW, server_name=SERVER,
+                        owner_mxid=OWNER, executor=None)
+    plan = renderer.build_plan(host="gatehost")
+    assert plan.key == "root"
+    assert plan.matrix_id == "!root:x"
+    gw_agent = plan.subspaces[0]
+    assert gw_agent.key == GW and gw_agent.matrix_id == "!gw-sub:x"
+    assert [s.key for s in gw_agent.subspaces] == [GWSA]

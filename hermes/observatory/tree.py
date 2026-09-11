@@ -32,10 +32,16 @@ from observatory.identity import sanitize_display_name
 #: ids, which discovery prefixes — e.g. ``hermes:``/``omp:``).
 DIRECTIVES_ROOM_KEY = "directives"
 MANUAL_RUNS_SPACE_KEY = "manual-runs"
-#: The gateway agent's own subspace (gw-space parity): a pseudo key like
-#: the directives room — its matrix id persists in state meta, while the
-#: ROOT space id stays on the gateway node row (the root is what roots
-#: attach to and what the hierarchy snapshot is read from).
+#: The Mercury root space (owns directives/cron rooms plus every depth-0
+#: agent subspace, gateway first). Its matrix id persists in state meta
+#: (``space:root``); every agent subspace — gateway included — lives on
+#: its own node row like any other agent.
+ROOT_SPACE_KEY = "root"
+#: Legacy pseudo-key for the gateway agent's own subspace (pre-unification:
+#: the gateway row held the ROOT id while its subspace id lived in state
+#: meta). The planner no longer reads it — ``migrate_legacy_gateway_space``
+#: (renderer) swaps the ids into the unified shape once — but the constant
+#: stays so old deployments resolve the migration source.
 GATEWAY_AGENT_SPACE_KEY = "gw-agent"
 
 KIND_GATEWAY = "gateway"
@@ -148,30 +154,17 @@ def _room(node: dict[str, Any], *, kind: str = "chat") -> RoomPlan:
     )
 
 
-def _gateway_agent_space(
-    node: dict[str, Any],
-    children: dict[str, list[dict[str, Any]]],
-    fixed_space_ids: dict[str, str],
-) -> SpacePlan:
-    """The gateway agent as a FULL 0-agent (parity with /spawn): its own
-    subspace holding its chat room, gateway-origin delegation children
-    nested inside as subspaces. Cron pseudo-rooms never nest here — they
-    sit directly in the root space (D11)."""
-    return SpacePlan(
-        key=GATEWAY_AGENT_SPACE_KEY,
-        name=sanitize_display_name(node["name"]),
-        matrix_id=fixed_space_ids.get(GATEWAY_AGENT_SPACE_KEY),
-        rooms=(_room(node),),
-        subspaces=tuple(
-            _agent_space(child, children)
-            for child in children.get(node["node_id"], [])
-            if _kind(child) != KIND_CRON_JOB
-        ),
-    )
-
-
 def _agent_space(node: dict[str, Any], children: dict[str, list[dict[str, Any]]]) -> SpacePlan:
-    """Every agent = one space + its chat room, children spaces nested."""
+    """Every agent = one space + its chat room, children spaces nested.
+
+    THE single nesting rule (gateway included): the gateway agent is a
+    normal depth-0 node — its key/matrix id come from its own row exactly
+    like any spawned orchestrator, and its delegation children nest inside
+    identically. The gateway's only differences are command scoping
+    (accepts /spawn /spawnomp /restart, refuses /exit), enforced at the
+    command-routing layer (control + gateway slash handlers), never here.
+    Cron pseudo-rooms never nest — they sit directly in the root (D11).
+    """
     return SpacePlan(
         key=node["node_id"],
         name=sanitize_display_name(node["name"]),
@@ -193,10 +186,13 @@ def desired_plan(
     fixed_room_ids: dict[str, str] | None = None,
     fixed_space_ids: dict[str, str] | None = None,
 ) -> SpacePlan:
-    """Forest → desired gateway-rooted space hierarchy (spec §3).
+    """Forest → desired Mercury-rooted space hierarchy (spec §3).
 
-    ``fixed_room_ids`` / ``fixed_space_ids`` carry matrix ids for pseudo
-    targets (``directives``, ``manual-runs``, ``gw-agent``) that have no
+    The gateway agent is a normal depth-0 agent subspace (same
+    :func:`_agent_space` rule as every spawned orchestrator); the ROOT space
+    owns directives/cron rooms plus every depth-0 agent subspace, gateway
+    first. ``fixed_room_ids`` / ``fixed_space_ids`` carry matrix ids for
+    pseudo targets (``directives``, ``manual-runs``, ``root``) that have no
     node row — the sidecar persists them in state meta; nodes carry their
     own ids.
     """
@@ -206,7 +202,7 @@ def desired_plan(
     fixed_space_ids = fixed_space_ids or {}
     gateway = forest.by_id[gateway_node_id]
 
-    gateway_agent = _gateway_agent_space(gateway, forest.children, fixed_space_ids)
+    gateway_agent = _agent_space(gateway, forest.children)
     cron_rooms = tuple(
         _room(child, kind="cron")
         for child in forest.children.get(gateway_node_id, [])
@@ -235,9 +231,9 @@ def desired_plan(
     )
 
     return SpacePlan(
-        key=gateway_node_id,
+        key=ROOT_SPACE_KEY,
         name=f"Mercury — {host if host is not None else socket.gethostname()}",
-        matrix_id=gateway.get("space_id"),
+        matrix_id=fixed_space_ids.get(ROOT_SPACE_KEY),
         rooms=(
             RoomPlan(
                 key=DIRECTIVES_ROOM_KEY,

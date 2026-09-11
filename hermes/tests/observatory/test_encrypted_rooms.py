@@ -63,7 +63,7 @@ def _executor(tmp_path, client, e2ee):
 def test_create_is_encrypted_from_first_event(tmp_path):
     client, e2ee = _FakeClient(), _FakeE2EE()
     ex = _executor(tmp_path, client, e2ee)
-    op = CreateRoom(key="gw", name="g", space_key="gw-agent",
+    op = CreateRoom(key="gw", name="g", space_key="gw",
                     sender="@gw:x")
     rid = asyncio.run(ex.execute([op]))
     assert rid[0]["room_id"] == "!room:x"

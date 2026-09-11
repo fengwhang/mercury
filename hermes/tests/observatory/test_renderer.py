@@ -127,14 +127,14 @@ class TestPlanProvision:
         intents = renderer.plan_provision(EMPTY_SNAPSHOT, plan)
 
         kinds = [_label(i) for i in intents]
-        # §3 order inside the gateway space: gateway agent subspace first,
+        # §3 order inside the root space: gateway agent subspace first,
         # then directives, cron rooms, orchestrator subspaces — op order IS
-        # the m.space.child order. The gateway agent is a full 0-agent
-        # (gw-space parity): its room nests in its own subspace.
+        # the m.space.child order. The gateway agent is a normal depth-0
+        # node (unified): its room nests in its own subspace keyed by node id.
         assert kinds == [
+            ("CreateSpace", "root"),
             ("CreateSpace", GW),
-            ("CreateSpace", "gw-agent"),
-            ("AttachSpace", "gw-agent"),   # child_key; parent = gateway space
+            ("AttachSpace", GW),   # child_key; parent = root space
             ("CreateRoom", GW),            # gateway agent room
             ("AttachRoom", GW),
             ("CreateRoom", "directives"),
@@ -142,7 +142,7 @@ class TestPlanProvision:
             ("CreateRoom", CRON),
             ("AttachRoom", CRON),
             ("CreateSpace", ORCH),
-            ("AttachSpace", ORCH),         # child_key; parent = gateway space
+            ("AttachSpace", ORCH),         # child_key; parent = root space
             ("CreateRoom", ORCH),
             ("AttachRoom", ORCH),
             ("CreateSpace", SA),
@@ -176,23 +176,26 @@ class TestPlanProvision:
         assert renderer.plan_provision(snap, plan) == ()
 
     def test_missing_room_only_recreates_that_room(self, state, renderer):
-        state.set_space_id(GW, f"!s-gw:{SERVER}")
+        state.set_space_id(GW, f"!s-gwsub:{SERVER}")
         state.set_room_id(GW, f"!r-gw:{SERVER}")
+        state.set_meta("space:root", f"!s-root:{SERVER}")
         plan = renderer.build_plan()
         snap = {
-            "spaces": {f"!s-gw:{SERVER}": {"name": "x", "children": [f"!r-gw:{SERVER}"]}},
+            "spaces": {
+                f"!s-root:{SERVER}": {"name": "x", "children": [f"!r-gw:{SERVER}"]},
+                f"!s-gwsub:{SERVER}": {"name": "x", "children": []},
+            },
             "rooms": {f"!r-gw:{SERVER}": {"name": "y"}},
         }
         intents = renderer.plan_provision(snap, plan)
-        # §3 nests the gateway room inside the gw-agent subspace, so the
-        # stale direct child (!r-gw under !s-gw) is detached first; the
-        # known gw space/room themselves are never recreated.
+        # §3 nests the gateway room inside its own subspace, so the
+        # stale direct child (!r-gw under the root) is detached first; the
+        # known gateway space/room themselves are never recreated.
         detach, rest = intents[0], intents[1:]
         assert isinstance(detach, DetachChild)
-        assert (detach.space_id, detach.child_id) == (f"!s-gw:{SERVER}", f"!r-gw:{SERVER}")
+        assert (detach.space_id, detach.child_id) == (f"!s-root:{SERVER}", f"!r-gw:{SERVER}")
         assert [_label(i) for i in rest] == [
-            ("CreateSpace", "gw-agent"),
-            ("AttachSpace", "gw-agent"),
+            ("AttachSpace", GW),
             ("AttachRoom", GW),
             ("CreateRoom", "directives"),
             ("AttachRoom", "directives"),

@@ -33176,6 +33176,26 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _control_server.register_handler(
                 "interrupt", _observatory_interrupt_handler, takes_params=True
             )
+
+            def _observatory_steer_handler(params: dict) -> dict:
+                # Gateway-room mid-turn steer: soft-inject into the running
+                # turn via agent.steer() (no lock, no cancel — CLI steer
+                # parity). Runs on the socket executor thread; steer() is
+                # thread-safe (appends to the pending-steer buffer the loop
+                # drains at the next tool boundary).
+                text = params.get("text", "") if isinstance(params, dict) else ""
+                try:
+                    from observatory.gateway_session import (
+                        steer_gateway_agent as _steer_gateway_agent,
+                    )
+                    return dict(_steer_gateway_agent(str(text or "")))
+                except Exception as exc:
+                    logger.debug("Observatory steer verb failed: %s", exc)
+                    return {"steered": False, "reason": f"steer failed: {exc}"}
+
+            _control_server.register_handler(
+                "steer", _observatory_steer_handler, takes_params=True
+            )
             # M4b room-side approval resolution (matrix-observatory §5):
             # the sidecar mirrors gateway-turn guard prompts into rooms
             # (approval_prompt datagrams); /approve|/deny there resolves

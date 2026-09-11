@@ -83,8 +83,8 @@ def test_converge_defers_never_plaintext_without_stack(tmp_path, monkeypatch):
         gw = state.get("gw")
         assert not gw.get("room_id") and not gw.get("space_id")
         try:
-            state.get_meta("space:gw-agent")
-            raise AssertionError("gw-agent space must not exist after deferral")
+            state.get_meta("space:root")
+            raise AssertionError("root space must not exist after deferral")
         except Exception as exc:
             assert "no meta" in str(exc).lower() or "StateError" in type(exc).__name__
     finally:

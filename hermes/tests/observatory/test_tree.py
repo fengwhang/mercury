@@ -10,8 +10,8 @@ import pytest
 
 from observatory.tree import (
     DIRECTIVES_ROOM_KEY,
-    GATEWAY_AGENT_SPACE_KEY,
     MANUAL_RUNS_SPACE_KEY,
+    ROOT_SPACE_KEY,
     AddRoom,
     AttachChild,
     CreateRoom,
@@ -22,7 +22,7 @@ from observatory.tree import (
     diff_plan,
     plan_index,
     space_child_order,
-)
+ )
 
 
 def _node(
@@ -120,17 +120,19 @@ class TestDesiredPlan:
         tree = _gateway_tree()
         plan = desired_plan(build_forest(tree), gateway_node_id="gw", host="box", **kw)
         return plan
+
     def test_gateway_space_order_is_spec_order(self):
         # §3 rule: gateway-agent subspace FIRST, then directives room,
         # cron rooms, orchestrator subspaces, manual runs LAST. The plan
         # carries rooms/subspaces separately; space_child_order is the
-        # m.space.child send order (gw-space parity: the gateway agent is
-        # a FULL 0-agent with its own subspace holding its room).
+        # m.space.child send order (unified: the gateway agent is a normal
+        # depth-0 node with its own subspace holding its room).
         root = self._plan()
+        assert root.key == ROOT_SPACE_KEY
         assert [r.key for r in root.rooms] == ["directives", "cron-backup"]
-        assert [s.key for s in root.subspaces] == ["gw-agent", "orch", MANUAL_RUNS_SPACE_KEY]
+        assert [s.key for s in root.subspaces] == ["gw", "orch", MANUAL_RUNS_SPACE_KEY]
         assert [c.key for c in space_child_order(root)] == [
-            "gw-agent", "directives", "cron-backup", "orch", MANUAL_RUNS_SPACE_KEY,
+            "gw", "directives", "cron-backup", "orch", MANUAL_RUNS_SPACE_KEY,
         ]
 
     def test_root_space_name_carries_host(self):
@@ -139,7 +141,7 @@ class TestDesiredPlan:
     def test_every_agent_is_space_plus_room_nested_by_parent(self):
         root = self._plan()
         gw_agent = root.subspaces[0]
-        assert gw_agent.key == "gw-agent"
+        assert gw_agent.key == "gw"
         assert (gw_agent.rooms[0].key, gw_agent.rooms[0].name) == ("gw", "gateway")
         orch = root.subspaces[1]
         assert (orch.key, orch.rooms[0].key, orch.rooms[0].name) == (
@@ -164,18 +166,18 @@ class TestDesiredPlan:
         # Without manual nodes the subspace disappears entirely:
         tree = [n for n in _gateway_tree() if n["node_id"] != "manual1"]
         plan = desired_plan(build_forest(tree), gateway_node_id="gw", host="box")
-        assert [s.key for s in plan.subspaces] == ["gw-agent", "orch"]
+        assert [s.key for s in plan.subspaces] == ["gw", "orch"]
 
     def test_fixed_ids_flow_into_pseudo_specs(self):
         root = self._plan(
             fixed_room_ids={DIRECTIVES_ROOM_KEY: "!rdir"},
             fixed_space_ids={
-                GATEWAY_AGENT_SPACE_KEY: "!sgw-agent",
+                ROOT_SPACE_KEY: "!sroot",
                 MANUAL_RUNS_SPACE_KEY: "!smanual",
             },
         )
         assert root.rooms[0].matrix_id == "!rdir"
-        assert root.subspaces[0].matrix_id == "!sgw-agent"
+        assert root.matrix_id == "!sroot"
         assert root.subspaces[-1].matrix_id == "!smanual"
 
     def test_node_matrix_ids_flow_into_specs(self):
@@ -183,8 +185,10 @@ class TestDesiredPlan:
         tree[0]["room_id"] = "!rgw"
         tree[0]["space_id"] = "!sgw"
         tree[2]["space_id"] = "!sorch"
-        root = desired_plan(build_forest(tree), gateway_node_id="gw", host="box")
-        assert root.matrix_id == "!sgw"
+        root = desired_plan(build_forest(tree), gateway_node_id="gw", host="box",
+                            fixed_space_ids={ROOT_SPACE_KEY: "!sroot"})
+        assert root.matrix_id == "!sroot"
+        assert root.subspaces[0].matrix_id == "!sgw"
         assert root.subspaces[0].rooms[0].matrix_id == "!rgw"
         assert root.subspaces[1].matrix_id == "!sorch"
     def test_unknown_gateway_fails_hard(self):
@@ -198,7 +202,7 @@ class TestDesiredPlan:
 
     def test_plan_index_flattens(self):
         spaces, rooms = plan_index(self._plan())
-        assert set(spaces) == {"gw", "gw-agent", "orch", "sub", "gc", "manual-runs"}
+        assert set(spaces) == {"root", "gw", "orch", "sub", "gc", "manual-runs"}
         assert {"gw", "directives", "cron-backup", "orch", "sub", "gc", "manual1"} <= set(rooms)
 
 # --- diff_plan ------------------------------------------------------------------------
@@ -213,7 +217,7 @@ class TestDiffPlan:
         kinds = [type(o).__name__ for o in ops]
         # Root first, then the gateway-agent subspace (spec §3: gateway
         # agent FIRST), then its room, directives, cron, subspaces depth-first:
-        assert ops[0] == CreateSpace(key="gw", name="Mercury — box")
+        assert ops[0] == CreateSpace(key="root", name="Mercury — box")
         assert kinds[:7] == [
             "CreateSpace",  # root (no attach — top of the hierarchy)
             "CreateSpace", "AttachChild",  # gateway-agent subspace first
@@ -223,9 +227,9 @@ class TestDiffPlan:
         ]
         # (the block above is positional context; the real law:)
         assert CreateRoom(key="cron-backup", name="cron:backup") in ops
-        assert AttachChild(parent_key="gw", child_key="gw-agent") in ops
-        assert AddRoom(space_key="gw-agent", room_key="gw") in ops
-        assert AttachChild(parent_key="gw", child_key="orch") in ops
+        assert AttachChild(parent_key="root", child_key="gw") in ops
+        assert AddRoom(space_key="gw", room_key="gw") in ops
+        assert AttachChild(parent_key="root", child_key="orch") in ops
         assert AddRoom(space_key="orch", room_key="orch") in ops
         assert AttachChild(parent_key="orch", child_key="sub") in ops
         assert AttachChild(parent_key="sub", child_key="gc") in ops
@@ -246,14 +250,14 @@ class TestDiffPlan:
             host="box",
             fixed_room_ids={DIRECTIVES_ROOM_KEY: "!rdir"},
             fixed_space_ids={
-                GATEWAY_AGENT_SPACE_KEY: "!sgw-agent",
+                ROOT_SPACE_KEY: "!sroot",
                 MANUAL_RUNS_SPACE_KEY: "!smanual",
             },
         )
         snapshot = {
             "spaces": {
-                "!sgw": {"name": "x", "children": ["!sgw-agent", "!rdir", "!rcron", "!sorch", "!smanual"]},
-                "!sgw-agent": {"name": "x", "children": ["!rgw"]},
+                "!sroot": {"name": "x", "children": ["!sgw", "!rdir", "!rcron", "!sorch", "!smanual"]},
+                "!sgw": {"name": "x", "children": ["!rgw"]},
                 "!sorch": {"name": "x", "children": ["!rorch", "!ssub"]},
                 "!ssub": {"name": "x", "children": ["!rsub", "!sgc"]},
                 "!sgc": {"name": "x", "children": ["!rgc"]},
@@ -269,18 +273,18 @@ class TestDiffPlan:
         tree = [_node("gw", extra={"kind": "gateway"}, room_id="!rgw", space_id="!sgw")]
         root = desired_plan(build_forest(tree), gateway_node_id="gw", host="b",
                             fixed_room_ids={DIRECTIVES_ROOM_KEY: "!rdir"},
-                            fixed_space_ids={GATEWAY_AGENT_SPACE_KEY: "!sgw-agent"})
+                            fixed_space_ids={ROOT_SPACE_KEY: "!sroot"})
         snapshot = {
             "spaces": {
-                "!sgw": {"name": "x", "children": ["!sgw-agent", "!rdir", "!sstale", "!rstale"]},
-                "!sgw-agent": {"name": "x", "children": ["!rgw"]},
+                "!sroot": {"name": "x", "children": ["!sgw", "!rdir", "!sstale", "!rstale"]},
+                "!sgw": {"name": "x", "children": ["!rgw"]},
             },
             "rooms": {"!rgw": {"name": "x"}, "!rdir": {"name": "x"}, "!rstale": {"name": "x"}},
         }
         ops = diff_plan(snapshot, root)
         assert set(ops) == {
-            DetachChild(parent_id="!sgw", child_id="!sstale"),
-            DetachChild(parent_id="!sgw", child_id="!rstale"),
+            DetachChild(parent_id="!sroot", child_id="!sstale"),
+            DetachChild(parent_id="!sroot", child_id="!rstale"),
         }
     def test_detached_agent_space_reattaches(self):
         # D18 respawn re-ensures the tree: membership drifted (space no
@@ -288,41 +292,46 @@ class TestDiffPlan:
         tree = _gateway_tree()
         tree[0]["space_id"] = "!sgw"
         tree[2]["space_id"] = "!sorch"
-        root = desired_plan(build_forest(tree), gateway_node_id="gw", host="b")
+        root = desired_plan(build_forest(tree), gateway_node_id="gw", host="b",
+                            fixed_space_ids={ROOT_SPACE_KEY: "!sroot"})
         snapshot = {
             "spaces": {
+                "!sroot": {"name": "x", "children": ["!sgw"]},
                 "!sgw": {"name": "x", "children": []},
                 "!sorch": {"name": "x", "children": []},
             },
             "rooms": {},
         }
-        assert AttachChild(parent_key="gw", child_key="orch") in diff_plan(snapshot, root)
+        assert AttachChild(parent_key="root", child_key="orch") in diff_plan(snapshot, root)
+        assert AttachChild(parent_key="root", child_key="gw") in diff_plan(
+            {"spaces": {"!sroot": {"name": "x", "children": []},
+                        "!sgw": {"name": "x", "children": []}}, "rooms": {}}, root)
 
     def test_room_missing_from_space_gets_room_add(self):
         # Room exists globally but is not a child of its space → room-add.
-        # (The gateway agent's room lives in its own subspace, gw-space parity.)
+        # (The gateway agent's room lives in its own subspace, unified.)
         tree = [_node("gw", extra={"kind": "gateway"}, room_id="!rgw", space_id="!sgw")]
         root = desired_plan(build_forest(tree), gateway_node_id="gw", host="b",
                             fixed_room_ids={DIRECTIVES_ROOM_KEY: "!rdir"},
-                            fixed_space_ids={GATEWAY_AGENT_SPACE_KEY: "!sgw-agent"})
+                            fixed_space_ids={ROOT_SPACE_KEY: "!sroot"})
         snapshot = {
             "spaces": {
-                "!sgw": {"name": "x", "children": ["!sgw-agent", "!rdir"]},
-                "!sgw-agent": {"name": "x", "children": []},
+                "!sroot": {"name": "x", "children": ["!sgw", "!rdir"]},
+                "!sgw": {"name": "x", "children": []},
             },
             "rooms": {"!rgw": {"name": "x"}, "!rdir": {"name": "x"}},
         }
-        assert diff_plan(snapshot, root) == (AddRoom(space_key="gw-agent", room_key="gw"),)
+        assert diff_plan(snapshot, root) == (AddRoom(space_key="gw", room_key="gw"),)
 
     def test_known_ids_skip_creation(self):
         tree = [_node("gw", extra={"kind": "gateway"}, room_id="!rgw", space_id="!sgw")]
         root = desired_plan(build_forest(tree), gateway_node_id="gw", host="b",
                             fixed_room_ids={DIRECTIVES_ROOM_KEY: "!rdir"},
-                            fixed_space_ids={GATEWAY_AGENT_SPACE_KEY: "!sgw-agent"})
+                            fixed_space_ids={ROOT_SPACE_KEY: "!sroot"})
         snapshot = {
             "spaces": {
-                "!sgw": {"name": "x", "children": ["!sgw-agent", "!rdir"]},
-                "!sgw-agent": {"name": "x", "children": ["!rgw"]},
+                "!sroot": {"name": "x", "children": ["!sgw", "!rdir"]},
+                "!sgw": {"name": "x", "children": ["!rgw"]},
             },
             "rooms": {"!rgw": {"name": "x"}, "!rdir": {"name": "x"}},
         }

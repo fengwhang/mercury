@@ -502,10 +502,9 @@ class SidecarDaemon:
     def ensure_gateway_node(self) -> str:
         """Idempotent gateway agent row; returns its mxid. ``extra.kind``
         is what respawn/spawn/scan key on — the node id is ours. The
-        node's ``space_id`` stays the ROOT space; the gateway agent's own
-        subspace (gw-space parity) is provisioned by the boot/respawn
-        ``apply_plan`` pass and persists in state meta under
-        ``space:gw-agent``."""
+        node's ``space_id`` is its OWN subspace (like any agent); the
+        Mercury root space id persists in state meta ``space:root``
+        (unified planner — see renderer.migrate_legacy_gateway_space)."""
         assert self.state is not None
         try:
             return str(self.state.get(GATEWAY_NODE_ID)["mxid"])
@@ -3054,24 +3053,54 @@ class SidecarDaemon:
             pass
 
     async def _handle_gateway_prompt_outcome(self, outcome: Any) -> None:
-        """Gateway-room text → prompt delivery (never a steer notice).
+        """Gateway-room text → prompt delivery, or mid-turn steer.
 
-        Replies are the acknowledgement: the router's "queued steer"
-        notice is skipped here (plain text starts a turn — there is no
-        busy run to steer into) and the agent's reply renders when the
-        turn completes. Delivery runs in its own task so the intake
-        never blocks on a multi-minute turn.
+        Idle: plain text starts a turn — the router's "queued steer" notice
+        is skipped and the agent's reply renders when the turn completes.
+        In-flight (a gateway delivery task is running): the text steers into
+        the running turn via the ``steer`` verb (soft, no cancel — CLI steer
+        parity). The queued-steer notice posts as the ack and no new delivery
+        task spawns; the running turn's reply carries the steered context.
+        Steer miss (idle race, old gateway, transport error) falls back to
+        interrupt-then-inject so the text never queues silently behind the
+        finished turn (/stop path proves interrupt works). Delivery runs in
+        its own task so the intake never blocks on a multi-minute turn.
         """
+        deferred: list = []
         for notice in outcome.notices:
             if notice.body == QUEUED_STEER_NOTICE:
+                deferred.append(notice)
                 continue
             await self._post_notice(notice)
         for action in outcome.actions:
             if isinstance(action, InjectText):
+                node_id = str(action.node_id)
+                text = str(action.text)
+                kind = str(getattr(action, "kind", None) or "prompt")
+                quiet = bool(getattr(action, "quiet", False))
+                if kind == "steer" and not quiet and self._gateway_delivery_in_flight():
+                    if await self._steer_gateway_midturn(node_id, text):
+                        for notice in deferred:
+                            try:
+                                await self._post_notice(notice)
+                            except Exception:
+                                log.debug("gateway steer ack failed (node %s)", node_id, exc_info=True)
+                        deferred.clear()
+                        try:
+                            self.routing_log.append(f"gateway-steer:{node_id}")
+                        except Exception:
+                            pass
+                        continue
+                    await self._interrupt_gateway_for_steer(node_id)
+                    try:
+                        self.routing_log.append(f"gateway-steer-fallback:{node_id}")
+                    except Exception:
+                        pass
                 task = asyncio.create_task(
                     self._deliver_gateway_prompt(
-                        str(action.node_id), str(action.text),
-                        kind=str(getattr(action, "kind", None) or "prompt"),
+                        node_id, text,
+                        kind=kind,
+                        quiet=quiet,
                     ),
                     name=f"observatory-gateway-prompt-{action.node_id}",
                 )
@@ -3079,6 +3108,44 @@ class SidecarDaemon:
                 task.add_done_callback(self._gateway_tasks.discard)
             else:
                 log.info("control action pending transport: %r", action)
+
+    async def _steer_gateway_midturn(self, node_id: str, text: str) -> bool:
+        """Try the ``steer`` verb on the in-flight gateway turn. Never raises."""
+        transport = self.gateway_transport
+        if transport is None:
+            return False
+        steer_fn = getattr(transport, "steer", None)
+        if not callable(steer_fn):
+            return False
+        try:
+            try:
+                out = await steer_fn(text, node_id=node_id)
+            except TypeError:
+                out = await steer_fn(text)  # type: ignore[call-arg]
+        except Exception:
+            log.debug("gateway mid-turn steer failed (node %s)", node_id, exc_info=True)
+            return False
+        return bool(isinstance(out, dict) and out.get("steered") is True)
+
+    async def _interrupt_gateway_for_steer(self, node_id: str) -> None:
+        """Cancel in-flight gateway deliveries and hard-interrupt the agent.
+
+        Steer-miss fallback so the new text runs as the next turn instead of
+        queueing silently behind the finished turn. Never raises.
+        """
+        for task in list(self._gateway_tasks):
+            if not task.done():
+                task.cancel()
+        transport = self.gateway_transport
+        if transport is None:
+            return
+        interrupt_fn = getattr(transport, "interrupt", None)
+        if not callable(interrupt_fn):
+            return
+        try:
+            await interrupt_fn("matrix steer")
+        except Exception:
+            log.debug("gateway steer-fallback interrupt failed (node %s)", node_id, exc_info=True)
 
     async def _deliver_gateway_prompt(self, node_id: str, text: str, *, kind: str = "prompt", internal: bool = False, room_id: str | None = None, quiet: bool = False) -> None:
         """One prompt → gateway session → batched replay + reply in the room.
