@@ -1454,7 +1454,7 @@ def test_setup_telemetry_persistent_failure_degrades_to_env_line(
 
 def test_card_renders_fluffychat_flow(capsys, tmp_path):
     """First-login card names FluffyChat with its generic add-account flow —
-    no Element-specific labels anywhere in the output."""
+    plus the identity-reset trust-device line naming Element/Element X."""
     creds = _write_credentials(tmp_path)
     setup_mod._print_observatory_setup_card(
         {
@@ -1469,7 +1469,8 @@ def test_card_renders_fluffychat_flow(capsys, tmp_path):
     assert "in FluffyChat:" in out
     assert "add account" in out
     assert "homeserver URL" in out
-    assert "Element X" not in out
+    assert "after an identity reset in Element/Element X:" in out
+    assert "mercury observatory trust-device" in out
     assert "Element Classic" not in out
     assert "Use account instead" not in out
     assert PASSWORD not in out
