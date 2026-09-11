@@ -43,14 +43,13 @@ remains as the documented MANUAL rebuild path only, never auto-invoked.
    (:meth:`E2EEManager.warmup` — device + one-time keys), so the owner's
    clients see a live device immediately instead of "the other party is
    currently not logged in".
-2. The owner logs in on a second device (device O1 — FluffyChat is the
-   tested client) and — once — verifies the
-   gateway agent's device in the gateway room ("Verify manually" /
-   emoji/SAS or fingerprint compare): the fingerprint to compare is
-   posted in every room's verify-howto notice
+2. The owner logs in on a second device and — once — verifies the
+   gateway agent's device in the gateway room by comparing the
+   fingerprint: the fingerprint to compare is posted in the gateway
+   room's verify-howto notice
    (:meth:`E2EEManager.verify_notice_text`, via
-   :meth:`E2EEManager.gateway_fingerprint`) the first time the sidecar
-   shares a Megolm session there. This pins
+   :meth:`E2EEManager.gateway_fingerprint`) the first time a share
+   reports a refused or pending device. This pins
    the root of the observatory's trust. The store makes this a ONE-TIME
    step: the gateway's Olm identity survives sidecar restarts, so the
    owner's verification stays valid.
@@ -122,9 +121,10 @@ CRYPTO_DIR_NAME = "crypto"
 #: rooms the executor must keep encrypting.
 CRYPT_ROOM_META_PREFIX = "crypt:"
 
-#: State-meta prefix recording that a room already got its verify-howto
-#: notice (``e2ee-notice:<room_key> -> json`` of the device picture);
-#: reposted only when the picture changes (new TOFU device, key refusal).
+#: State-meta prefix recording that a triggering room key already got its
+#: verify-howto notice in the GATEWAY room
+#: (``e2ee-notice:<room_key> -> json`` of the device picture);
+#: reposted only when the picture changes (key refusal or pending rotation).
 NOTICE_META_PREFIX = "e2ee-notice:"
 #: State-meta prefix for pending device-rotation trust records
 #: (``pending-trust:<user_id>/<device_id> -> json`` with old/new key
@@ -2079,26 +2079,28 @@ class E2EEManager:
 
     def verify_notice_text(self, *, gateway_mxid: str, device_id: str,
                            fingerprint: str, trusted: list[str],
-                           refused: list[str]) -> str:
-        """The user-facing notice posted when the owner has unverified
-        devices: exact FluffyChat tap path plus the fingerprint to compare.
-        Single source so the room text and any operator docs never drift."""
+                           refused: list[str],
+                           pending: list[str] | None = None) -> str:
+        """The user-facing notice posted to the gateway room when a share
+        reports refused or pending devices: what happened, the fingerprint
+        to compare against the phone's device details screen, and the
+        exact trust-device command for refused devices. Client-agnostic —
+        no per-client steps. Single source so the room text and any
+        operator docs never drift."""
+        pending = list(pending or [])
         lines = [
             "Encrypted chat is on, but one verification step remains — until then",
             "your phone may show these messages as unverified or refuse to send its own.",
             "",
             f"This room is served by {gateway_mxid}, device {device_id}.",
-            "To verify it in FluffyChat:",
-            "1. Tap the room name at the top to open the chat details.",
-            f"2. Tap {gateway_mxid} in the member list, then open Devices.",
-            f"3. Tap device {device_id}, choose Verify, and compare the",
-            "   fingerprint shown with this one:",
+            "Compare this fingerprint against the fingerprint shown on your phone's",
+            "device details screen for that device:",
             f"   {fingerprint}",
             "",
         ]
         if trusted:
             lines += [
-                f"New owner device(s) auto-trusted on first sight (TOFU): "
+                f"New owner device(s) trusted on first sight: "
                 f"{', '.join(trusted)}.",
                 "If a device key ever changes, messages fail closed — never silently re-trusted.",
                 "",
@@ -2107,40 +2109,63 @@ class E2EEManager:
             lines += [
                 "WARNING: these owner device(s) presented CHANGED keys and were NOT trusted:",
                 f"   {', '.join(refused)}.",
-                "If you reinstalled the app, confirm the new device in person; messages",
-                "to those devices stay blocked until then.",
-                "",
+                "Messages to those devices stay blocked until you confirm the new device",
+                "in person and approve it with:",
             ]
+            for did in refused:
+                lines.append(f"   {trust_device_command(did)}")
+            lines.append("")
+        extra_pending = sorted(set(pending) - set(refused))
+        if extra_pending:
+            lines += [
+                "These device(s) await approval:",
+                f"   {', '.join(extra_pending)}.",
+            ]
+            for did in extra_pending:
+                lines.append(f"   {trust_device_command(did)}")
+            lines.append("")
         lines += ["After verifying, new messages arrive without warnings."]
         return "\n".join(lines)
 
+    def _gateway_room_id(self) -> str:
+        """Gateway room id from state (the ``gw`` node row). Empty when the
+        gateway has not converged yet — callers skip instead of posting
+        elsewhere (never directives, never agent rooms)."""
+        try:
+            gw = self.state.get("gw")
+        except StateError:
+            return ""
+        return str((gw or {}).get("room_id") or "")
+
     async def maybe_post_verify_notice(self, room_id: str, *, sender: str,
                                        room_key: str, report: dict[str, Any]) -> bool:
-        """Post the verify-howto notice when the share report shows fresh
-        TOFU trust or a key-change refusal. Deduped per ``room_key`` via
+        """Post the verify-howto notice to the GATEWAY room only, and only
+        when the share report shows refused or pending devices. Routine
+        first-sight TOFU trust never posts. Deduped per ``room_key`` via
         state meta: reposts only when the device picture (fingerprint,
-        trusted, refused) changes. The notice itself goes out encrypted —
-        the owner reads it once the just-shared room key arrives. Returns
-        True when a notice was posted."""
+        device, trusted, refused, pending) changes. The ``room_id``
+        argument names the triggering room (dedupe scope only) — the
+        notice itself always targets the gateway room resolved via state
+        and is skipped when that room is unknown. Returns True when a
+        notice was posted."""
         import json
 
-        # Pending rotations NEVER post here: the room is undecryptable in
-        # exactly this state (no shared room key reaches the rotated device),
-        # so the owner could not read the remedy. The setup acceptance
-        # surface (`mercury setup observatory`) and the standalone
-        # `mercury observatory trust-device` command carry it instead.
-        if report.get("pending"):
-            return False
         trusted = [str(d) for d in (report.get("trusted") or [])]
         refused = [str(d) for d in (report.get("refused") or [])]
-        if not trusted and not refused:
+        pending = [str(d) for d in (report.get("pending") or [])]
+        if not refused and not pending:
             return False
-        crypto = self.machine_for(sender)
+        gw_room = self._gateway_room_id()
+        if not gw_room:
+            return False
+        gateway_sender = self.gateway_mxid or sender
+        crypto = self.machine_for(gateway_sender)
         await crypto.load()
         fingerprint = str(crypto.machine.account.fingerprint)
         device_id = str(crypto.device_id)
         picture = {"fp": fingerprint, "dev": device_id,
-                   "trusted": sorted(trusted), "refused": sorted(refused)}
+                   "trusted": sorted(trusted), "refused": sorted(refused),
+                   "pending": sorted(pending)}
         meta_key = NOTICE_META_PREFIX + room_key
         try:
             seen_raw = self.state.get_meta(meta_key)
@@ -2149,9 +2174,9 @@ class E2EEManager:
         if seen_raw == json.dumps(picture, sort_keys=True):
             return False
         body = self.verify_notice_text(
-            gateway_mxid=sender, device_id=device_id, fingerprint=fingerprint,
-            trusted=trusted, refused=refused)
-        await self.send_encrypted_message(room_id, sender=sender, body=body)
+            gateway_mxid=gateway_sender, device_id=device_id, fingerprint=fingerprint,
+            trusted=trusted, refused=refused, pending=pending)
+        await self.send_encrypted_message(gw_room, sender=gateway_sender, body=body)
         self.state.set_meta(meta_key, json.dumps(picture, sort_keys=True))
         return True
 

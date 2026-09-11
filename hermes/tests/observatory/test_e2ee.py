@@ -1055,8 +1055,8 @@ class TestTofuTrust:
 
 @needs_stack
 class TestVerifyNotice:
-    """The unverified-device notice: exact FluffyChat tap path +
-    fingerprint, posted once per device picture, reposted on change."""
+    """Refused/pending-only notice to the gateway room: client-agnostic
+    copy + fingerprint, posted once per device picture, reposted on change."""
 
     GW = "@merc_gateway:hs"
     ROOM = "!room:hs"
@@ -1074,6 +1074,12 @@ class TestVerifyNotice:
         net.peers[self.GW] = gw_machine
         await gw_machine.load()
         state = ObservatoryState(tmp_path / "state.db")
+        state.add_node(
+            "gw", engine="hermes", name="gateway agent", slug="gateway-agent",
+            mxid=self.GW, session_ref="session:gateway", parent_node_id=None,
+            extra={"kind": "gateway"},
+        )
+        state.set_room_id("gw", self.ROOM)
         mgr = E2EEManager(
             FakeClient(), state, crypto_dir=tmp_path / "crypto",
             owner_mxid="@owner:hs", gateway_mxid=self.GW)
@@ -1082,56 +1088,72 @@ class TestVerifyNotice:
         return mgr
 
     @pytest.mark.asyncio
-    async def test_notice_text_names_device_and_tap_path(self, tmp_path):
+    async def test_notice_text_names_device_and_command(self, tmp_path):
+        from observatory.e2ee import trust_device_command
+
         mgr = await self._rig(tmp_path)
         text = mgr.verify_notice_text(
             gateway_mxid=self.GW, device_id="GWDEV1",
-            fingerprint="AB12 CD34", trusted=["PHONE1"], refused=[])
+            fingerprint="AB12 CD34", trusted=["PHONE1"], refused=["TABLET2"])
         assert self.GW in text and "GWDEV1" in text
         assert "AB12 CD34" in text
-        assert "FluffyChat" in text and "Verify" in text
-        assert "PHONE1" in text  # the TOFU device is named
+        assert "device details screen" in text
+        assert "PHONE1" in text and "TABLET2" in text
+        assert trust_device_command("TABLET2") in text
+        assert "FluffyChat" not in text and "Element" not in text
         warned = mgr.verify_notice_text(
             gateway_mxid=self.GW, device_id="GWDEV1",
             fingerprint="AB12 CD34", trusted=[], refused=["PHONE1"])
         assert "WARNING" in warned and "PHONE1" in warned
+        assert trust_device_command("PHONE1") in warned
 
     @pytest.mark.asyncio
     async def test_notice_posts_once_per_device_picture(self, tmp_path):
         mgr = await self._rig(tmp_path)
-        sent: list[str] = []
+        sent: list[tuple[str, str, str]] = []
 
         async def fake_send(room_id, *, sender, body, **_kwargs) -> str:
-            sent.append(body)
+            sent.append((room_id, sender, body))
             return "$notice1"
 
         mgr.send_encrypted_message = fake_send  # type: ignore[method-assign]
-        report = {"trusted": ["PHONE1"], "known": [],
-                  "refused": [], "fetched": ["PHONE1"], "shared": []}
+        # routine first-sight TOFU trust never posts
+        trust_only = {"trusted": ["PHONE1"], "known": [],
+                      "refused": [], "pending": [],
+                      "fetched": ["PHONE1"], "shared": []}
         assert await mgr.maybe_post_verify_notice(
             self.ROOM, sender=self.GW, room_key="gw",
+            report=trust_only) is False
+        assert sent == []
+        # refusal posts to the gateway room even when triggered elsewhere
+        report = {"trusted": [], "known": [],
+                  "refused": ["PHONE1"], "pending": [],
+                  "fetched": ["PHONE1"], "shared": []}
+        assert await mgr.maybe_post_verify_notice(
+            "!other:hs", sender=self.GW, room_key="gw",
             report=report) is True
-        assert len(sent) == 1
+        assert len(sent) == 1 and sent[0][0] == self.ROOM
         fingerprint = await mgr.gateway_fingerprint(self.GW)
-        assert fingerprint in sent[0]  # the compare-string is usable
+        assert fingerprint in sent[0][2]  # the compare-string is usable
         # same picture → no repost
         assert await mgr.maybe_post_verify_notice(
             self.ROOM, sender=self.GW, room_key="gw",
             report=report) is False
         assert len(sent) == 1
         # changed picture (second device) → repost
-        report2 = {"trusted": ["PHONE1", "TABLET2"], "known": [],
-                   "refused": [], "fetched": ["PHONE1", "TABLET2"],
+        report2 = {"trusted": [], "known": [],
+                   "refused": ["PHONE1", "TABLET2"], "pending": [],
+                   "fetched": ["PHONE1", "TABLET2"],
                    "shared": []}
         assert await mgr.maybe_post_verify_notice(
             self.ROOM, sender=self.GW, room_key="gw",
             report=report2) is True
-        assert len(sent) == 2 and "TABLET2" in sent[1]
+        assert len(sent) == 2 and "TABLET2" in sent[1][2]
         # clean report → nothing to say
         assert await mgr.maybe_post_verify_notice(
             self.ROOM, sender=self.GW, room_key="gw",
             report={"trusted": [], "known": ["PHONE1"], "refused": [],
-                    "fetched": ["PHONE1"], "shared": []}) is False
+                    "pending": [], "fetched": ["PHONE1"], "shared": []}) is False
         assert len(sent) == 2
 
 
