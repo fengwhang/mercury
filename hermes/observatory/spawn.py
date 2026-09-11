@@ -551,6 +551,14 @@ async def spawn_orchestrator(
             workdir=workdir,
         )))()
         session_ref = omp_session_file(handle_rpc)
+    # Per-node model fallback: stamp the EFFECTIVE model (the live handle's
+    # resolved value — explicit arg → HERMES_INFERENCE_MODEL / OMP_MODEL →
+    # ambient config) into extra.model, so respawn/resume (
+    # respawn.resume_hermes_orchestrator, sidecar_main) never depends solely
+    # on ambient config. Doubles without a .model attr fall back to the arg.
+    _handle = handle_agent if engine == "hermes" else handle_rpc
+    stamped_model = (str(getattr(_handle, "model", "") or "").strip()
+                     or (model or "").strip() or None)
     _auto_validate = validate_session_ref
     if _auto_validate is None:
         _auto_validate = agent_factory is None and omp_child_factory is None
@@ -583,7 +591,7 @@ async def spawn_orchestrator(
         extra={
             # NO "kind" — see the convention note above (tree.desired_plan
             # includes only kind-"" agent roots as orchestrator subspaces).
-            "model": model,
+            "model": stamped_model,
             SESSION_MATERIALIZED_KEY: False,
         },
     )
@@ -592,7 +600,7 @@ async def spawn_orchestrator(
         engine=engine,
         name=clean,
         session_ref=session_ref,
-        model=model,
+        model=stamped_model,
         agent=handle_agent,
         rpc=handle_rpc,
     ))

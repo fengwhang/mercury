@@ -211,13 +211,45 @@ def render_sidecar_unit(
     mercury_home: str,
     log_dir: str,
     description: str = SIDECAR_UNIT_DESCRIPTION,
+    hermes_home: str | None = None,
+    mercury_config: str | None = None,
+    agent_dir: str | None = None,
+    omp_bin: str | None = None,
+    venv_dir: str | None = None,
+    sane_path: str | None = None,
 ) -> str:
     """Render the sidecar systemd USER unit from the checked-in template
     (``observatory/templates/mercury-observatory.service``). Mirrors
     :func:`render_homeserver_unit`'s law: pure string templating, no
     I/O beyond reading the template — importable WITHOUT the matrix
     extra (aiohttp), so ``provision.ensure_sidecar_unit`` can install
-    the unit file even when the crypto stack is missing."""
+    the unit file even when the crypto stack is missing.
+
+    Env mirrors ``mercury-gateway.service`` (``mercury_cli.gateway``): the
+    sidecar MUST see the unified ``MERCURY_CONFIG`` (never the
+    onboarding-only ``HERMES_HOME/config.yaml``) so approvals.mode and
+    model.default resolve identically inside and outside a login shell.
+    Every new pin is an optional override defaulting to the layout
+    derived from ``mercury_home``/``hermes_root``/``python_bin``.
+    """
+    if hermes_home is None:
+        hermes_home = f"{mercury_home}/hermes"
+    if mercury_config is None:
+        mercury_config = f"{mercury_home}/config.yaml"
+    if agent_dir is None:
+        agent_dir = f"{mercury_home}/omp"
+    if omp_bin is None:
+        omp_bin = str(
+            Path(hermes_root).parent / "omp" / "packages" / "coding-agent" / "dist" / "omp"
+        )
+    if venv_dir is None:
+        _pb = Path(python_bin)
+        venv_dir = str(_pb.parent.parent if _pb.parent.name == "bin" else _pb.parent)
+    if sane_path is None:
+        sane_path = (
+            f"{venv_dir}/bin:/usr/local/sbin:/usr/local/bin"
+            ":/usr/sbin:/usr/bin:/sbin:/bin"
+        )
     template = (Path(__file__).parent / "templates" / "mercury-observatory.service").read_text(encoding="utf-8")
     return template.format(
         description=description,
@@ -225,6 +257,12 @@ def render_sidecar_unit(
         hermes_root=hermes_root,
         mercury_home=mercury_home,
         log_dir=log_dir,
+        hermes_home=hermes_home,
+        mercury_config=mercury_config,
+        agent_dir=agent_dir,
+        omp_bin=omp_bin,
+        venv_dir=venv_dir,
+        sane_path=sane_path,
     )
 
 
