@@ -812,6 +812,10 @@ def init_agent(
 
         if agent.provider not in _AGGREGATOR_PROVIDERS:
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
+        else:
+            _prefix = (agent.provider or "").strip().lower() + "/"
+            if isinstance(agent.model, str) and agent.model.lower().startswith(_prefix):
+                agent.model = agent.model[len(_prefix):].strip() or agent.model
     except Exception:
         pass
 

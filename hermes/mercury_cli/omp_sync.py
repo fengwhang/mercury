@@ -69,6 +69,17 @@ def qualify_omp_model(model_id: str, provider: str) -> str:
     return mid
 
 
+def derive_slot_provider(default_slot: str, hermes_provider: str = "") -> str:
+    """Resolve the provider a shared models: default slot belongs to."""
+    prov = (hermes_provider or "").strip()
+    if prov:
+        return prov
+    slot = (default_slot or "").strip()
+    if "/" in slot:
+        return slot.split("/", 1)[0].strip()
+    return ""
+
+
 def _read_model_default() -> tuple[str, str] | None:
     """Resolve the EFFECTIVE default model from the hermes config view.
 
@@ -136,6 +147,22 @@ def _current_slots() -> dict[str, str]:
     return slots
 
 
+def _current_chains() -> dict[str, list[str]]:
+    """Read the ordered models: fallback chains as lists of ids."""
+    chains: dict[str, list[str]] = {"fallback_chain": [], "delegate_fallback_chain": []}
+    try:
+        import yaml
+        whole = yaml.safe_load(_unified_path().read_text()) or {}
+        models = whole.get("models") or {}
+        for k in chains:
+            v = models.get(k) or []
+            if isinstance(v, (list, tuple)):
+                chains[k] = [str(x).strip() for x in v if str(x).strip()]
+    except Exception:
+        pass
+    return chains
+
+
 def _strip_hermes_fallback_mirror(lines: list[str]) -> list[str]:
     """Remove hermes.subtree fallback_providers (block-seq list of dicts).
 
@@ -188,11 +215,16 @@ def _write_slots(update: dict[str, str]) -> bool:
     in_models = False
     seen: dict[str, bool] = {k: False for k in update}
     wrote_any = False
+    _skip_seq = False
     for line in lines:
         if re.match(r"^models:\s*$", line):
             in_models = True
+            _skip_seq = False
             out.append(line)
             continue
+        if _skip_seq and re.match(r"^  -(\s|$)", line):
+            continue
+        _skip_seq = False
         if in_models and re.match(r"^\S", line):
             # leaving the block: append any never-seen slots before the next top-level key
             for k, v in update.items():
@@ -212,6 +244,7 @@ def _write_slots(update: dict[str, str]) -> bool:
             if isinstance(v, (list, tuple)):
                 items = ", ".join(f"'{x}'" for x in v)
                 out.append(f"  {m.group(1)}: [{items}]")
+                _skip_seq = True
             else:
                 out.append(f"  {m.group(1)}: {v}")
             seen[m.group(1)] = True
@@ -289,11 +322,27 @@ def sync_omp_from_setup(quiet: bool = False) -> bool:
     slots = _current_slots()
     if slots["default"] != qualified:
         update["default"] = qualified
-    # If the wizard left fallback unset, keep existing slots; do NOT
-    # invent a fallback (unset means the user chose none — never invent).
-    fb = _read_fallback()
-    if fb and slots["fallback"] != fb and not slots["fallback"]:
-        update["fallback"] = fb
+    # Repair bare pre-fix fallback entries in place (same model, missing
+    # provider prefix, e.g. openrouter meta/... with a slash). SKIP=EMPTY:
+    # empties stay empty and delegate slots are never touched here.
+    if slots["fallback"]:
+        _repaired_fb = qualify_omp_model(slots["fallback"], provider)
+        if _repaired_fb != slots["fallback"]:
+            update["fallback"] = _repaired_fb
+    else:
+        # If the wizard left fallback unset, keep existing slots; do NOT
+        # invent a fallback (unset means the user chose none — never invent).
+        fb = _read_fallback()
+        if fb and slots["fallback"] != fb:
+            update["fallback"] = fb
+
+    if provider:
+        _chains = _current_chains()
+        _fb_chain = _chains.get("fallback_chain") or []
+        if _fb_chain:
+            _repaired_chain = [qualify_omp_model(x, provider) for x in _fb_chain]
+            if _repaired_chain != _fb_chain:
+                update["fallback_chain"] = _repaired_chain
     # SKIP EQUALS EMPTY (user directive 2026-09-05): delegate slots are
     # NEVER auto-filled from default/fallback mirrors. Silently writing a
     # model the user skipped is exactly the "stale slot resurrection" that

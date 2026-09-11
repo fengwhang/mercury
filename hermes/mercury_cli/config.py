@@ -3229,6 +3229,18 @@ def split_model_config_default(raw_default: Any) -> tuple[str, str]:
     return (str(raw_default or "").strip(), "")
 
 
+def unwrap_hermes_subtree(data: Any) -> Any:
+    """Return the hermes config view for unified-file reads."""
+    try:
+        if isinstance(data, dict) and "model" not in data:
+            sub = data.get("hermes")
+            if isinstance(sub, dict) and isinstance(sub.get("model"), (dict, str)):
+                return sub
+    except Exception:
+        pass
+    return data
+
+
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     """Move stale root-level provider/base_url/context_length into model section.
 

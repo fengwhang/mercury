@@ -85,6 +85,7 @@ from mercury_cli.config import (
     get_hermes_home,
     get_config_path,
     read_raw_config,
+    read_user_config_raw,
     require_readable_config_before_write,
 )
 from mercury_constants import OPENROUTER_BASE_URL, secure_parent_dir
@@ -7580,12 +7581,21 @@ def _update_config_for_provider(
         auth_store["active_provider"] = provider_id
         _save_auth_store(auth_store)
 
-    # Update config.yaml model section
+    # Update config.yaml model section. Under MERCURY_CONFIG the ONE Mercury
+    # file nests hermes config under hermes: while read_raw_config() returns
+    # it unwrapped, so a raw write-back would flatten the whole file and
+    # drop models:/omp: — mutate the nested subtree and write the whole
+    # file back instead. Plain installs keep the original raw round-trip.
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     require_readable_config_before_write(config_path)
-
-    config = read_raw_config()
+    _whole = None
+    if os.environ.get("MERCURY_CONFIG", "").strip():
+        _whole = read_user_config_raw(config_path)
+        _sub = _whole.get("hermes") if isinstance(_whole, dict) else None
+        config = dict(_sub) if isinstance(_sub, dict) else {}
+    else:
+        config = read_raw_config()
 
     current_model = config.get("model")
     if isinstance(current_model, dict):
@@ -7609,17 +7619,18 @@ def _update_config_for_provider(
 
     clear_model_endpoint_credentials(model_cfg)
 
-    # When switching to a non-OpenRouter provider, ensure model.default is
-    # valid for the new provider.  An OpenRouter-formatted name like
-    # "anthropic/claude-opus-4.6" will fail on direct-API providers.
+    # An explicit default only fills an empty slot. Every openrouter id
+    # carries a slash (meta/..., openai/...), so a slash test here would
+    # clobber a just-selected default on every provider touch.
     if default_model:
-        cur_default = model_cfg.get("default", "")
-        if not cur_default or "/" in cur_default:
+        if not model_cfg.get("default", ""):
             model_cfg["default"] = default_model
-
     config["model"] = model_cfg
-
-    atomic_yaml_write(config_path, config, sort_keys=False)
+    if _whole is not None:
+        _whole["hermes"] = config
+        atomic_yaml_write(config_path, _whole, sort_keys=False)
+    else:
+        atomic_yaml_write(config_path, config, sort_keys=False)
     return config_path
 
 
