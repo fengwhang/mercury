@@ -418,6 +418,7 @@ class SidecarDaemon:
         self._child_tasks: set[asyncio.Task] = set()
         self._child_locks: dict[str, asyncio.Lock] = {}
         self._child_busy: set[str] = set()
+        self._child_resume_errors: dict[str, str] = {}
 
         self._homeserver_proc: subprocess.Popen | None = None
         self._discovery_task: asyncio.Task | None = None
@@ -2183,9 +2184,15 @@ class SidecarDaemon:
                     continue
                 if await self._handle_observatory_verb_outcome(outcome):
                     continue
-                for notice in outcome.notices:
-                    await self._post_notice(notice)
+                # Spawn-ghost decoupling (defect 2): the engine turn runs FIRST
+                # and independent of notices — a child-voice notice send that
+                # fails (unknown ghost, dead crypto) must never veto delivery.
                 await self._execute_child_actions(outcome)
+                for notice in outcome.notices:
+                    try:
+                        await self._post_notice(notice)
+                    except Exception:  # noqa: BLE001 — notices never veto delivery
+                        log.exception("child notice failed (node %s)", getattr(outcome, "node_id", ""))
 
     def _observatory_verb(self, text: str) -> str:
         """Lowercase /verb or !verb head of an EngineCommand text, else ''."""
@@ -2328,9 +2335,21 @@ class SidecarDaemon:
                 )
             else:
                 return None
-        except Exception:
+        except Exception as exc:
             log.exception("child resume failed on demand (node %s)", node_id)
+            try:
+                self.routing_log.append(f"child-resume-failed:{node_id}")
+            except Exception:  # noqa: BLE001 — observability never raises
+                pass
+            try:
+                self._child_resume_errors[node_id] = str(exc) or repr(exc)
+            except Exception:  # noqa: BLE001 — observability never raises
+                pass
             return None
+        try:
+            self._child_resume_errors.pop(node_id, None)
+        except Exception:  # noqa: BLE001 — observability never raises
+            pass
         if registry is not None:
             try:
                 registry.register(handle)
@@ -2518,7 +2537,12 @@ class SidecarDaemon:
         handle = self._child_handle(node_id)
         agent = getattr(handle, "agent", None) if handle is not None else None
         if agent is None:
-            log.warning("hermes child turn dropped: no handle (node %s)", node_id)
+            cause = ""
+            try:
+                cause = str(self._child_resume_errors.get(node_id) or "")
+            except Exception:  # noqa: BLE001 — observability never raises
+                cause = ""
+            log.warning("hermes child turn dropped: no handle (node %s%s)", node_id, f": {cause}" if cause else "")
             await self._post_notice(ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE))
             return
         room_id = ""
@@ -2563,7 +2587,12 @@ class SidecarDaemon:
             handle = self._child_handle(node_id)
             rpc = getattr(handle, "rpc", None) if handle is not None else None
             if rpc is None:
-                log.warning("omp child prompt dropped: no handle (node %s)", node_id)
+                cause = ""
+                try:
+                    cause = str(self._child_resume_errors.get(node_id) or "")
+                except Exception:  # noqa: BLE001 — observability never raises
+                    cause = ""
+                log.warning("omp child prompt dropped: no handle (node %s%s)", node_id, f": {cause}" if cause else "")
                 await self._post_notice(
                     ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE)
                 )
@@ -3078,15 +3107,28 @@ class SidecarDaemon:
                 log.exception("gateway event replay failed (node %s)", node_id)
 
     async def _post_notice(self, notice: Any) -> None:
-        """ControlNotice → room message in the agent's own voice."""
+        # ControlNotice -> room message in the agent's own voice. Never raises:
+        # a child-voice send that fails (unknown ghost, dead crypto) retries
+        # once as the gateway voice, so the room still hears the notice and a
+        # notice failure can never veto the engine turn (defect 2 decoupling).
         assert self.renderer is not None and self.state is not None
         try:
             voice = self.state.get(notice.node_id)["mxid"]
         except StateError:
             voice = self.gateway_mxid
-        await self.renderer.executor.execute(
-            [SendMessage(notice.node_id, voice, notice.body)]
-        )
+        try:
+            await self.renderer.executor.execute(
+                [SendMessage(notice.node_id, voice, notice.body)]
+            )
+        except Exception:
+            log.exception("child-voice notice failed (node %s) — gateway fallback", getattr(notice, "node_id", ""))
+            try:
+                if self.gateway_mxid and voice != self.gateway_mxid:
+                    await self.renderer.executor.execute(
+                        [SendMessage(notice.node_id, self.gateway_mxid, notice.body)]
+                    )
+            except Exception:
+                log.exception("gateway-voice notice fallback failed (node %s)", getattr(notice, "node_id", ""))
 
     # --- run/shutdown ---------------------------------------------------------------
 

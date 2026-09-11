@@ -2518,6 +2518,7 @@ class EncryptedIntentExecutor:
         events stay undecryptable forever). Owner PL + registry entry
         follow the base executor's law."""
         inner = self._inner
+        await inner._ensure_sender_registered(op.sender)
         room_id = await inner.client.create_room(
             name=op.name,
             sender=op.sender,

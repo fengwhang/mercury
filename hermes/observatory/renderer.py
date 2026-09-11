@@ -965,7 +965,26 @@ class IntentExecutor:
 
     # --- execution -----------------------------------------------------------------------
 
+    async def _ensure_sender_registered(self, sender: str) -> None:
+        # Spawn-ghost fix (defect 1): a masqueraded createRoom as an
+        # unregistered ghost auto-provisions on tuwunel, but the ghost's
+        # later appservice login 400s M_INVALID_PARAM — register the
+        # sender up-front (best-effort, mirroring the datagram paths).
+        try:
+            localpart = str(sender or "").lstrip("@").split(":", 1)[0]
+            if not localpart:
+                return
+            try:
+                await self.client.register_virtual_user(localpart)
+            except AttributeError:
+                log.debug("sender pre-register unavailable (no register surface)")
+            except Exception as exc:  # noqa: BLE001 — ghost may auto-provision
+                log.info("register %s: %s (continuing)", localpart, exc)
+        except Exception:  # noqa: BLE001 — pre-register never fails converge
+            log.debug("sender pre-register skipped", exc_info=True)
+    # --- room/space creation (sender pre-registered above) ---
     async def _create(self, op: CreateSpace | CreateRoom, *, space: bool) -> str:
+        await self._ensure_sender_registered(op.sender)
         room_id = await self.client.create_room(
             name=op.name,
             sender=op.sender,

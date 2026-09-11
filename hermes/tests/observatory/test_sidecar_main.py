@@ -70,6 +70,7 @@ class FakeMatrixClient:
     on_admin_401: Any = None
     calls: list = field(default_factory=list)
     next_id: int = 0
+    registered: set = field(default_factory=set)
 
     def _id(self, prefix: str) -> str:
         self.next_id += 1
@@ -77,6 +78,7 @@ class FakeMatrixClient:
 
     async def register_virtual_user(self, localpart: str) -> str:
         self.calls.append(("register", localpart))
+        self.registered.add(localpart)
         return f"@{localpart}:{self.server_name}"
 
     async def create_room(self, *, name, sender, preset, invite, space=False,
@@ -102,6 +104,18 @@ class FakeMatrixClient:
 
     async def client_api(self, method, path, *, sender=None, params=None, json_body=None):
         self.calls.append(("client_api", method, path, sender, json_body))
+        if method == "POST" and str(path).endswith("/login"):
+            # Tuwunel law: AS-login (m.login.application_service) for a
+            # never-registered ghost 400s M_INVALID_PARAM ("Called
+            # create_device for non-existent user") — masqueraded
+            # createRoom alone does NOT provision the user.
+            try:
+                user = str(((json_body or {}).get("identifier") or {}).get("user") or "")
+            except Exception:  # noqa: BLE001 — malformed body reads as unknown
+                user = ""
+            localpart = user.lstrip("@").split(":", 1)[0]
+            if localpart and localpart not in self.registered:
+                raise MatrixError(method, path, 400, {"errcode": "M_INVALID_PARAM", "error": "Called create_device for non-existent user"})
         return {"event_id": self._id("$ev")}
 
     async def room_hierarchy(self, room_id, *, sender, suggested_only=False):
@@ -740,7 +754,7 @@ class TestGatewayGhostVerify:
             gw_local = daemon.gateway_mxid.lstrip("@").split(":", 1)[0]
             registers = [c for c in client.calls
                          if c[0] == "register" and c[1] == gw_local]
-            assert len(registers) == 2  # _ensure once + verify retry once
+            assert len(registers) >= 2  # _ensure once + verify retry once, plus converge-time sender pre-registers (spawn-ghost fix; idempotent)
         finally:
             await daemon.shutdown()
 
