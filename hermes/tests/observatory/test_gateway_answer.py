@@ -138,6 +138,7 @@ async def test_gateway_room_hello_delivers_prompt_and_renders_reply(
         fake = FakeGatewayTransport(reply="hello yourself")
         daemon.gateway_transport = fake
         assert daemon.state is not None and daemon.client is not None
+        daemon.state.set_meta("cot:" + sm.GATEWAY_NODE_ID, "on")
 
         await daemon._on_transaction("tx-gw-1", [_gw_event(daemon, "hello?")])
         await _drain_gateway_tasks(daemon)
@@ -197,7 +198,7 @@ async def test_missing_transport_posts_unreachable(daemon: sm.SidecarDaemon):
 
 
 @pytest.mark.asyncio
-async def test_empty_reply_renders_nothing(daemon: sm.SidecarDaemon):
+async def test_empty_reply_posts_only_status(daemon: sm.SidecarDaemon):
     await daemon.boot()
     try:
         daemon.gateway_transport = FakeGatewayTransport(reply="   ")
@@ -207,7 +208,9 @@ async def test_empty_reply_renders_nothing(daemon: sm.SidecarDaemon):
         await daemon._on_transaction("tx-gw-4", [_gw_event(daemon, "hello?")])
         await _drain_gateway_tasks(daemon)
 
-        assert len(_sends(daemon.client)) == before
+        after = _sends(daemon.client)[before:]
+        assert len(after) == 1
+        assert after[0][2].endswith("…")
     finally:
         await daemon.shutdown()
 

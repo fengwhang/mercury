@@ -37,7 +37,7 @@ Layers:
    answers "🛑 stop requested — waiting for boundary" until an abort is
    observed on a lifecycle frame (:meth:`observe_death`).
 
-``/cot on|off`` persists per room in ``state.db`` meta (§5.2, default on)
+``/cot on|off`` persists per room in ``state.db`` meta (§5.2, default off)
 and is read back by :meth:`ControlRouter.cot_enabled`.
 """
 from __future__ import annotations
@@ -488,11 +488,11 @@ class ControlRouter:
 
     def cot_enabled(self, node_id: str) -> bool:
         """§5.2 per-room thinking toggle, persisted in state meta. Default
-        ON; anything but an explicit ``off`` reads as on."""
+        OFF; anything but an explicit ``on`` reads as off."""
         try:
-            return self.state.get_meta(COT_META_PREFIX + node_id) != COT_OFF
+            return self.state.get_meta(COT_META_PREFIX + node_id) == COT_ON
         except StateError:
-            return True
+            return False
 
     @property
     def pending_steers(self) -> tuple[PendingSteer, ...]:

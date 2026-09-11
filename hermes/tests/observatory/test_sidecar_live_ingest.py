@@ -159,18 +159,20 @@ async def test_live_thinking_gated_by_cot(daemon: sm.SidecarDaemon):
     try:
         assert daemon.state is not None and daemon.client is not None
         room = _gw_room(daemon)
+        daemon.state.set_meta("cot:" + sm.GATEWAY_NODE_ID, "on")
         think = {"node_id": sm.GATEWAY_NODE_ID, "seq": 11,
                  "event": {"type": "thinking", "text": "hmm live", "seq": 11}}
         await daemon._handle_gateway_live_datagram(json.dumps(think).encode())
         bodies = [c[2] for c in _sends(daemon.client) if c[1] == room]
         assert any("hmm live" in b for b in bodies)
-        # cot off → no render, no seq-recorded send for the skipped event
+        # cot off (default) → thinking collapses to status edits, never separate sends
         daemon.state.set_meta("cot:" + sm.GATEWAY_NODE_ID, "off")
-        before = len(_sends(daemon.client))
         think2 = {"node_id": sm.GATEWAY_NODE_ID, "seq": 12,
                   "event": {"type": "thinking", "text": "hidden thought", "seq": 12}}
         await daemon._handle_gateway_live_datagram(json.dumps(think2).encode())
-        assert len(_sends(daemon.client)) == before
+        bodies2 = [c[2] for c in _sends(daemon.client) if c[1] == room]
+        assert not any("hidden thought" in b for b in bodies2)
+        assert any(b.endswith("…") for b in bodies2)
     finally:
         await daemon.shutdown()
 
@@ -276,20 +278,24 @@ async def test_empty_reply_still_replays_events(daemon: sm.SidecarDaemon):
         await daemon._deliver_gateway_prompt(sm.GATEWAY_NODE_ID, "hi?", kind="prompt")
         bodies = [c[2] for c in _sends(daemon.client) if c[1] == room][before:]
         assert any("kept" in b for b in bodies)  # tool history not dropped
-        assert len(bodies) == 1  # no empty reply render
+        # default OFF: turn status + tool history, no empty reply render
+        assert len(bodies) == 2
+        assert any(b.endswith("…") for b in bodies)
     finally:
         await daemon.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_empty_reply_empty_events_stays_silent(daemon: sm.SidecarDaemon):
+async def test_empty_reply_empty_events_posts_only_status(daemon: sm.SidecarDaemon):
     await daemon.boot()
     try:
         assert daemon.client is not None
         before = len(_sends(daemon.client))
         daemon.gateway_transport = FakeLiveTransport(reply="  ", events=[])
         await daemon._deliver_gateway_prompt(sm.GATEWAY_NODE_ID, "hi?", kind="prompt")
-        assert len(_sends(daemon.client)) == before
+        after = _sends(daemon.client)[before:]
+        assert len(after) == 1
+        assert after[0][2].endswith("…")
     finally:
         await daemon.shutdown()
 
@@ -392,6 +398,7 @@ async def test_child_feed_datagrams_render_grandchildren(
         }).encode())
         gc_node = f"{child}/gc:sa-1"
         assert daemon.state.get(gc_node)["status"] == "live"
+        daemon.state.set_meta("cot:" + gc_node, "on")
         await daemon._handle_gateway_live_datagram(json.dumps({
             "kind": "child_event", "node_id": child,
             "feed": {"feed": "tool", "subagent_id": "sa-1",

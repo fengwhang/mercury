@@ -113,7 +113,7 @@ from observatory.gateway_transport import (
     GatewayTransportError,
     gateway_progress_sock_path,
 )
-from observatory.renderer import IntentExecutor, Renderer, SendMessage
+from observatory.renderer import EditMessage, IntentExecutor, Renderer, SendMessage
 from observatory.state import ObservatoryState, StateError
 from observatory.tree import DIRECTIVES_ROOM_KEY
 
@@ -178,6 +178,85 @@ FOLLOWUP_ATTENTION_MARKERS = ("fail", "error", "question", "help", "approve", "a
 
 #: Live-ingest datagram cap (unix SOCK_DGRAM payload ceiling).
 GATEWAY_LIVE_DATAGRAM_MAX = 65535
+
+#: /cot status (§5.2, default OFF): Telegram-shaped single status per
+#: gateway turn. Short replies seal by editing the status into the reply;
+#: longer replies leave the last status and send separately.
+COT_STATUS_SEAL_SHORT_MAX_CHARS = 280
+
+
+def _cot_thinking_faces() -> list:
+    """Out-of-box faces (display.py KawaiiSpinner.get_thinking_faces)."""
+    for holder in ("Display", "KawaiiSpinner"):
+        try:
+            mod = __import__("agent.display", fromlist=[holder])
+            cls = getattr(mod, holder, None)
+            if cls is None:
+                continue
+            get = getattr(cls, "get_thinking_faces", None)
+            if callable(get):
+                faces = get()
+                if faces:
+                    return list(faces)
+            base = list(getattr(cls, "KAWAII_THINKING", []) or [])
+            if base:
+                return base
+        except Exception:
+            continue
+    return []
+
+
+def _cot_thinking_verbs() -> list:
+    """Out-of-box verbs (display.py KawaiiSpinner.get_thinking_verbs)."""
+    for holder in ("Display", "KawaiiSpinner"):
+        try:
+            mod = __import__("agent.display", fromlist=[holder])
+            cls = getattr(mod, holder, None)
+            if cls is None:
+                continue
+            get = getattr(cls, "get_thinking_verbs", None)
+            if callable(get):
+                verbs = get()
+                if verbs:
+                    return list(verbs)
+            base = list(getattr(cls, "THINKING_VERBS", []) or [])
+            if base:
+                return base
+        except Exception:
+            continue
+    return []
+
+
+def cot_status_text(seq: int = 0) -> str:
+    """One status line: face + verb + ellipsis, deterministic by seq.
+
+    Strings come ONLY from display.py thinking faces/verbs (never invented);
+    the pick cycles by seq (no random import).
+    """
+    faces = _cot_thinking_faces()
+    verbs = _cot_thinking_verbs()
+    if not faces or not verbs:
+        return "…"
+    try:
+        idx = int(seq)
+    except Exception:
+        idx = 0
+    return f"{faces[idx % len(faces)]} {verbs[idx % len(verbs)]}…"
+
+
+def cot_status_seal_short(reply: str, max_chars: int = COT_STATUS_SEAL_SHORT_MAX_CHARS) -> bool:
+    """True when a final reply is short enough to seal the status into."""
+    try:
+        stripped = (reply or "").strip()
+    except Exception:
+        return False
+    if not stripped:
+        return False
+    try:
+        limit = int(max_chars)
+    except Exception:
+        limit = COT_STATUS_SEAL_SHORT_MAX_CHARS
+    return len(stripped) <= limit
 
 
 def _needs_room_reply(summary: Any, status: str = "") -> bool:
@@ -298,6 +377,10 @@ class SidecarDaemon:
         #: per-event renders collapse to ONE liveness notice while set;
         #: replay still records the events for logs without room sends.
         self._gateway_internal_turns: dict[str, bool] = {}
+        #: /cot status (default OFF): in-flight gateway-turn status event id
+        #: per node (original send id; edits always target it). Posted at
+        #: turn start, edited in place on thinking, sealed at turn end.
+        self._cot_status_event: dict[str, str] = {}
         #: Live-ingest unix datagram socket (None when disabled/failed).
         self._gateway_live_sock: Any = None
         self._gateway_live_enabled: bool = False
@@ -1007,6 +1090,80 @@ class SidecarDaemon:
         if seqs:
             self._gateway_live_seqs.setdefault(node_id, set()).update(seqs)
 
+    async def _cot_status_post(self, node_id: str, seq: int = 0) -> str | None:
+        """Post ONE Telegram-shaped status message for a gateway turn."""
+        try:
+            if self.renderer is None or self.state is None:
+                return None
+            body = cot_status_text(seq)
+            try:
+                voice = self.state.get(node_id)["mxid"]
+            except Exception:
+                voice = self.gateway_mxid
+            records = await self.renderer.executor.execute(
+                [SendMessage(node_id, voice, body)]
+            )
+            event_id = None
+            try:
+                if records and isinstance(records[0], dict) and records[0].get("op") == "send":
+                    event_id = records[0].get("event_id")
+            except Exception:
+                event_id = None
+            if event_id:
+                self._cot_status_event[node_id] = str(event_id)
+                return str(event_id)
+            return None
+        except Exception:
+            log.debug("cot status post failed (node %s)", node_id, exc_info=True)
+            return None
+
+    async def _cot_status_edit(self, node_id: str, seq: int = 0) -> bool:
+        """Edit the turn's status in place (same event id, new face/verb)."""
+        try:
+            if self.renderer is None or self.state is None:
+                return False
+            event_id = self._cot_status_event.get(node_id)
+            if not event_id:
+                return bool(await self._cot_status_post(node_id, seq))
+            body = cot_status_text(seq)
+            try:
+                voice = self.state.get(node_id)["mxid"]
+            except Exception:
+                voice = self.gateway_mxid
+            await self.renderer.executor.execute(
+                [EditMessage(node_id, voice, str(event_id), body)]
+            )
+            return True
+        except Exception:
+            log.debug("cot status edit failed (node %s)", node_id, exc_info=True)
+            return False
+
+    async def _cot_status_seal(self, node_id: str, reply: str) -> bool:
+        """Seal the status into the final reply when short. True when sealed."""
+        try:
+            if self.renderer is None or self.state is None:
+                return False
+            event_id = self._cot_status_event.get(node_id)
+            if not event_id:
+                return False
+            if not cot_status_seal_short(reply):
+                return False
+            try:
+                voice = self.state.get(node_id)["mxid"]
+            except Exception:
+                voice = self.gateway_mxid
+            await self.renderer.executor.execute(
+                [EditMessage(node_id, voice, str(event_id), reply)]
+            )
+            try:
+                self._cot_status_event.pop(node_id, None)
+            except Exception:
+                pass
+            return True
+        except Exception:
+            log.debug("cot status seal failed (node %s)", node_id, exc_info=True)
+            return False
+
     async def _render_gateway_live_event(
         self, node_id: str, seq: int | None, event: dict
     ) -> None:
@@ -1030,9 +1187,19 @@ class SidecarDaemon:
             if not isinstance(text_val, str) or not text_val.strip():
                 return
             router = self.control_router
-            if router is not None and not router.cot_enabled(node_id):
+            cot_on = bool(router.cot_enabled(node_id)) if router is not None else False
+            if cot_on:
+                await self.renderer.render_thinking(node_id, text_val)
                 return
-            await self.renderer.render_thinking(node_id, text_val)
+            try:
+                s = seq if isinstance(seq, int) else 0
+            except Exception:
+                s = 0
+            try:
+                await self._cot_status_edit(node_id, s)
+            except Exception:
+                log.debug("cot status edit failed (node %s)", node_id, exc_info=True)
+            return
         else:
             return
 
@@ -1850,6 +2017,21 @@ class SidecarDaemon:
             if internal:
                 self._gateway_internal_turns.pop(node_id, None)
             return
+        try:
+            self._cot_status_event.pop(node_id, None)
+        except Exception:
+            pass
+        router0 = self.control_router
+        try:
+            _cot_on_at_start = bool(router0.cot_enabled(node_id)) if router0 is not None else False
+        except Exception:
+            _cot_on_at_start = False
+        _status_active = (not internal) and (not _cot_on_at_start)
+        if _status_active:
+            try:
+                await self._cot_status_post(node_id, 0)
+            except Exception:
+                log.debug("cot status post failed (node %s)", node_id, exc_info=True)
 
         # BUG2: internal follow-ups post their ONE liveness notice
         # synchronously (a task races an instant fake transport and may
@@ -1920,16 +2102,28 @@ class SidecarDaemon:
                     await self._post_notice(
                         ControlNotice(node_id, GATEWAY_UNREACHABLE_NOTICE)
                     )
+                try:
+                    self._cot_status_event.pop(node_id, None)
+                except Exception:
+                    pass
                 if internal:
                     self._gateway_internal_turns.pop(node_id, None)
                 return
             except asyncio.CancelledError:
+                try:
+                    self._cot_status_event.pop(node_id, None)
+                except Exception:
+                    pass
                 if internal:
                     self._gateway_internal_turns.pop(node_id, None)
                 raise
             except Exception:  # noqa: BLE001 — delivery never kills the task host
                 log.exception("gateway prompt failed (node %s)", node_id)
                 await self._post_notice(ControlNotice(node_id, GATEWAY_PROMPT_FAILED_NOTICE))
+                try:
+                    self._cot_status_event.pop(node_id, None)
+                except Exception:
+                    pass
                 if internal:
                     self._gateway_internal_turns.pop(node_id, None)
                 return
@@ -1942,14 +2136,29 @@ class SidecarDaemon:
                     pass
         assert self.renderer is not None
         # Empty-reply fix: replay first so tool history never drops on
-        # empty replies; empty reply + empty events stays silent (no sends).
-        # BUG2: the internal flag stays set through replay (live already
-        # collapsed; replay logs without room sends), then clears.
+        # empty replies. /cot status (default OFF): the turn's status was
+        # posted at turn start; thinking collapsed into edits of that same
+        # event. BUG2: the internal flag stays set through replay (live
+        # already collapsed; replay logs without room sends), then clears.
         try:
             await self._replay_gateway_events(node_id, events or [])
             if not reply.strip():
                 log.warning("gateway answered with an empty reply (node %s)", node_id)
+                try:
+                    self._cot_status_event.pop(node_id, None)
+                except Exception:
+                    pass
                 return
+            if self._cot_status_event.get(node_id) and cot_status_seal_short(reply):
+                try:
+                    if await self._cot_status_seal(node_id, reply):
+                        return
+                except Exception:
+                    log.debug("cot status seal failed (node %s)", node_id, exc_info=True)
+            try:
+                self._cot_status_event.pop(node_id, None)
+            except Exception:
+                pass
             await self.renderer.render_agent_message(node_id, reply)
         finally:
             if internal:
@@ -1958,14 +2167,17 @@ class SidecarDaemon:
     async def _replay_gateway_events(self, node_id: str, events: list) -> None:
         """Batched tool/thinking replay before the final reply renders.
 
-        Tool calls render unconditionally; thinking renders iff the room
-        has thinking display on (``control_router.cot_enabled``) — the
-        same gate the omp feed path uses. Events whose ``seq`` was already
-        rendered live (``_gateway_live_seqs``) are skipped; events without
-        a seq always render. Unknown event shapes are skipped; one bad
-        event never kills the replay. BUG2: ``internal`` follow-up events
-        never send room messages (ONE liveness notice covers the turn) —
-        they are recorded to the log only.
+        Tool calls render unconditionally; thinking renders as separate
+        quoted messages iff the room has thinking display on
+        (``control_router.cot_enabled``) — the same gate the omp feed path
+        uses. When off (default), thinking collapses into edits of the
+        turn's single status message (never separate sends). Events whose
+        ``seq`` was already rendered live (``_gateway_live_seqs``) are
+        skipped; events without a seq always render. Unknown event shapes
+        are skipped; one bad event never kills the replay. BUG2:
+        ``internal`` follow-up events never send room messages (ONE
+        liveness notice covers the turn) — they are recorded to the log
+        only.
         """
         assert self.renderer is not None
         import json as _json
@@ -2004,9 +2216,19 @@ class SidecarDaemon:
                     text_val = event.get("text")
                     if not isinstance(text_val, str) or not text_val.strip():
                         continue
-                    if router is not None and not router.cot_enabled(node_id):
+                    cot_on = bool(router.cot_enabled(node_id)) if router is not None else False
+                    if cot_on:
+                        await self.renderer.render_thinking(node_id, text_val)
                         continue
-                    await self.renderer.render_thinking(node_id, text_val)
+                    try:
+                        s = seq if isinstance(seq, int) else 0
+                    except Exception:
+                        s = 0
+                    try:
+                        await self._cot_status_edit(node_id, s)
+                    except Exception:
+                        log.debug("cot status edit failed (node %s)", node_id, exc_info=True)
+                    continue
             except Exception:  # noqa: BLE001 — one bad event must not kill replay
                 log.exception("gateway event replay failed (node %s)", node_id)
 
