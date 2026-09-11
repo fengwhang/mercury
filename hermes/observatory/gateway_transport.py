@@ -116,6 +116,10 @@ class GatewayTransport:
         """Interrupt the in-flight gateway turn (BUG3 /stop). Base: no-op."""
         return {"interrupted": False, "reason": "no interrupt transport"}
 
+    async def steer(self, text: str, *, node_id: str = "gw") -> dict[str, Any]:
+        """Steer the in-flight gateway turn (mid-turn gateway-room text). Base: no-op."""
+        return {"steered": False, "reason": "no steer transport"}
+
 
 QueryFn = Callable[..., Optional[dict[str, Any]]]
 
@@ -212,6 +216,36 @@ class ControlSocketGatewayTransport(GatewayTransport):
                 return result
             last_error = "empty interrupt answer"
         return {"interrupted": False, "reason": last_error}
+
+    async def steer(self, text: str, *, node_id: str = "gw") -> dict[str, Any]:
+        """Send the ``steer`` verb: soft-steer the in-flight gateway turn.
+
+        Never raises — failures report as not-steered so the caller falls
+        back to interrupt-then-inject (or a fresh prompt when idle). Short
+        bounded call: the gateway answers from the cached agent without
+        taking the per-session turn lock.
+        """
+        from gateway.control_socket import query_gateway_control
+
+        clean = (text or "").strip()
+        if not clean:
+            return {"steered": False, "reason": "empty steer text"}
+        last_error: str = "no gateway answered steer"
+        for home in gateway_socket_homes(self.mercury_home):
+            try:
+                result = await asyncio.to_thread(
+                    query_gateway_control, home, "steer",
+                    {"text": clean, "node_id": node_id}, self.timeout,
+                )
+            except Exception as exc:
+                logger.debug("gateway_transport: steer home %s failed: %s", home, exc)
+                last_error = str(exc)
+                continue
+            if isinstance(result, dict):
+                return result
+            last_error = "empty steer answer"
+        return {"steered": False, "reason": last_error}
+
 
     async def resolve_approval(
         self,

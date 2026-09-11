@@ -1051,6 +1051,37 @@ def run_gateway_prompt(
     return reply
 
 
+def steer_gateway_agent(text: str, *, session_id: str = GATEWAY_SESSION_ID) -> dict[str, Any]:
+    """Steer the cached gateway-session agent mid-turn (gateway-room steer).
+
+    Calls ``agent.steer(text)`` on the live cached agent when present; the
+    soft-steer buffer lands in the running turn at the next tool boundary
+    without cancelling it (CLI ``/busy steer`` parity). Never takes the
+    per-session turn lock — a steer arriving mid-turn must reach the agent
+    holding it, not queue behind it. No cached agent (idle, never prompted)
+    reports ``steered=False`` so the caller falls back to a fresh prompt
+    turn. Never raises: the control-socket envelope reports the outcome.
+    """
+    clean = (text or "").strip()
+    if not clean:
+        return {"steered": False, "reason": "empty steer text"}
+    with _locks_guard:
+        agent = _session_agents.get(session_id)
+    if agent is None:
+        return {"steered": False, "reason": "idle — nothing to steer"}
+    steer = getattr(agent, "steer", None)
+    if not callable(steer):
+        return {"steered": False, "reason": "agent has no steer surface"}
+    try:
+        accepted = steer(clean)
+    except Exception as exc:
+        logger.warning("gateway_session: steer failed: %s", exc)
+        return {"steered": False, "reason": f"steer failed: {exc}"}
+    if accepted is False:
+        return {"steered": False, "reason": "steer not accepted"}
+    return {"steered": True, "reason": ""}
+
+
 def interrupt_gateway_agent(reason: str = "matrix /stop", *, session_id: str = GATEWAY_SESSION_ID) -> dict[str, Any]:
     """Interrupt the cached gateway-session agent (BUG3 /stop wiring).
 

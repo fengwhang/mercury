@@ -249,9 +249,9 @@ class TestRegistry:
         ).build_plan(host="h")
         top = [r.key for r in plan.rooms] + [s.key for s in plan.subspaces]
         assert top == [tree.DIRECTIVES_ROOM_KEY, "cron:j1", "cron:j2",
-                       tree.GATEWAY_AGENT_SPACE_KEY, ORCH]
+                       GW, ORCH]
         assert [c.key for c in tree.space_child_order(plan)] == [
-            tree.GATEWAY_AGENT_SPACE_KEY, tree.DIRECTIVES_ROOM_KEY,
+            GW, tree.DIRECTIVES_ROOM_KEY,
             "cron:j1", "cron:j2", ORCH,
         ]
     def test_sync_idempotent(self, tmp_path):

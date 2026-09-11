@@ -58,6 +58,60 @@ SETTLED_MARKER = "🪦 settled — transcript only"
 DASHBOARD_META_PREFIX = "dash:"
 ROOM_META_PREFIX = "room:"
 SPACE_META_PREFIX = "space:"
+#: State meta key for the Mercury root space (unified planner: the gateway
+#: row holds its OWN subspace id like any agent; the root id lives here).
+ROOT_SPACE_META_KEY = SPACE_META_PREFIX + tree.ROOT_SPACE_KEY
+#: Legacy gateway-subspace meta key (pre-unification shape — migrated once).
+LEGACY_GATEWAY_SPACE_META_KEY = SPACE_META_PREFIX + tree.GATEWAY_AGENT_SPACE_KEY
+
+
+def migrate_legacy_gateway_space(state: ObservatoryState, gateway_node_id: str) -> bool:
+    """Swap legacy gateway space ids into the unified shape (idempotent).
+
+    Pre-unification: the gateway row's ``space_id`` held the ROOT space id
+    while its own subspace id lived in state meta ``space:gw-agent``.
+    Unified: the gateway row holds its OWN subspace id (like any agent)
+    and the root id lives in ``space:root``. Gateway delegation children
+    then nest/detach/purge through the SAME node-row path as spawned
+    orchestrator children — no second planner path.
+
+    Returns True when a swap happened. Never raises (migration failure only
+    logs — the planner's legacy fallbacks keep the old shape working).
+    """
+    try:
+        try:
+            gateway = state.get(gateway_node_id)
+        except StateError:
+            return False
+        try:
+            legacy_sub = state.get_meta(LEGACY_GATEWAY_SPACE_META_KEY)
+        except StateError:
+            legacy_sub = None
+        if not legacy_sub:
+            return False
+        current = gateway.get("space_id")
+        if not current or current == legacy_sub:
+            return False
+        try:
+            existing_root = state.get_meta(ROOT_SPACE_META_KEY)
+        except StateError:
+            existing_root = None
+        if not existing_root or existing_root == current:
+            try:
+                state.set_meta(ROOT_SPACE_META_KEY, str(current))
+            except Exception:
+                log.warning("gateway space migration: root meta write failed", exc_info=True)
+                return False
+        try:
+            state.set_space_id(gateway_node_id, str(legacy_sub))
+        except Exception:
+            log.warning("gateway space migration: gateway row write failed", exc_info=True)
+            return False
+        return True
+    except Exception:
+        log.warning("gateway space migration failed", exc_info=True)
+        return False
+
 
 
 # ============================================================================
@@ -426,16 +480,40 @@ class Renderer:
                 pass
         return self.gateway_node_id  # roots summarize to the gateway room
 
+    def _root_space_id(self) -> str | None:
+        """Mercury root space id: state meta (unified) with legacy fallback.
+
+        Unified shape stores the root in ``space:root`` and the gateway's
+        own subspace on its node row (like any agent). Pre-migration rows
+        still hold the root on the gateway row — fall back there so an
+        unmigrated boot keeps today's hierarchy until the swap lands.
+        """
+        try:
+            root = self.state.get_meta(ROOT_SPACE_META_KEY)
+            if root:
+                return str(root)
+        except StateError:
+            pass
+        try:
+            return self._gateway.get("space_id") or None
+        except StateError:
+            return None
+
+
     # --- §3 provisioning ----------------------------------------------------------------
 
     def build_plan(self, *, host: str | None = None) -> tree.SpacePlan:
         """Desired space plan from CURRENT state (fixed pseudo ids from
         meta so re-apply never duplicates the directives room etc.)."""
+        try:
+            migrate_legacy_gateway_space(self.state, self.gateway_node_id)
+        except Exception:
+            log.warning("gateway space migration failed", exc_info=True)
         fixed_room_ids: dict[str, str] = {}
         fixed_space_ids: dict[str, str] = {}
         for key, prefix, target in (
             (tree.DIRECTIVES_ROOM_KEY, ROOM_META_PREFIX, fixed_room_ids),
-            (tree.GATEWAY_AGENT_SPACE_KEY, SPACE_META_PREFIX, fixed_space_ids),
+            (tree.ROOT_SPACE_KEY, SPACE_META_PREFIX, fixed_space_ids),
             (tree.MANUAL_RUNS_SPACE_KEY, SPACE_META_PREFIX, fixed_space_ids),
         ):
             try:
@@ -576,12 +654,16 @@ class Renderer:
             SendMessage(parent_key, parent_sender, body, formatted)
         ]
         gw_space = self._gateway.get("space_id")
+        root_space = self._root_space_id()
         purge_ids = {r["node_id"] for r in purge}
         tail: list[RenderIntent] = []
         for r in purge:
             # Detach ONLY from a parent space that SURVIVES this purge — a
             # purged parent takes its whole space (and the child state with
-            # it) down via the same admin DELETE.
+            # it) down via the same admin DELETE. Parent spaces resolve
+            # through the SAME node-row path for gateway children and
+            # spawned-orchestrator children (unified planner: the gateway
+            # row holds its own subspace id like any agent).
             parent_in_purge = r.get("parent_node_id") in purge_ids
             if not parent_in_purge and r.get("space_id"):
                 parent_space = None
@@ -591,7 +673,7 @@ class Renderer:
                     except StateError:
                         parent_space = None
                 if parent_space is None:
-                    parent_space = gw_space  # roots attach to the gateway space
+                    parent_space = root_space or gw_space  # roots attach to the root space
                 if parent_space:
                     # detach voice = the PARENT space owner (a member of
                     # that space; the gateway agent for roots)
@@ -675,9 +757,9 @@ class Renderer:
         failure.
         """
         snap: dict[str, Any] = {"spaces": {}, "rooms": {}}
-        gw_space = self._gateway.get("space_id")
-        if gw_space:
-            hierarchy = await self.executor.client.room_hierarchy(gw_space, sender=self.gateway_mxid)
+        root_space = self._root_space_id()
+        if root_space:
+            hierarchy = await self.executor.client.room_hierarchy(root_space, sender=self.gateway_mxid)
             snap = snapshot_from_hierarchy(hierarchy)
         spaces_by_key, rooms_by_key = tree.plan_index(plan)
         probe = getattr(self.executor.client, "admin_room_alive", None)
@@ -912,7 +994,7 @@ class IntentExecutor:
                 voice = self._mxid_for_key(str(parent_id))
                 if voice and voice != op.sender:
                     return voice
-        # Pseudo spaces (gw-agent) and roots: the gateway ghost is the parent.
+        # Roots (gateway agent space itself, orchestrators): the gateway ghost is the parent.
         if self.gateway_mxid and self.gateway_mxid != op.sender:
             return self.gateway_mxid
         return None

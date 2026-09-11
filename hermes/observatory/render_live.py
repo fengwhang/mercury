@@ -209,39 +209,39 @@ async def scenario(gate: Gate, paths: ObservatoryPaths, base_url: str, cfg: dict
         ids = {n: (state.get(n)["space_id"], state.get(n)["room_id"])
                for n in (GW, GWSA, CRON, ORCH, SA, SSA)}
         directives = state.get_meta("room:directives")
+        root_space = state.get_meta("space:root")
         gw_space, gw_room = ids[GW]
-        gw_agent_space = state.get_meta("space:gw-agent")
         gwsa_space, gwsa_room = ids[GWSA]
         orch_space, orch_room = ids[ORCH]
         sa_space, sa_room = ids[SA]
         ssa_space, ssa_room = ids[SSA]
-        gate.line(f"ids: root=({gw_space}, gw_room={gw_room}) "
-                  f"gw-agent-space={gw_agent_space} gwsa=({gwsa_space}, {gwsa_room}) "
+        gate.line(f"ids: root={root_space} gw=({gw_space}, gw_room={gw_room}) "
+                  f"gwsa=({gwsa_space}, {gwsa_room}) "
                   f"directives={directives} cron={ids[CRON]} "
                   f"orch=({orch_space}, {orch_room}) sa=({sa_space}, {sa_room}) "
                   f"ssa=({ssa_space}, {ssa_room})")
 
         # check 1 — root space exists
-        gate.check("root space exists", await client.admin_room_alive(gw_space),
-                   gw_space)
+        gate.check("root space exists", await client.admin_room_alive(root_space),
+                   root_space)
 
-        # check 2 — gateway agent subspace exists (gw-space parity)
+        # check 2 — gateway agent subspace exists (unified: normal depth-0 node space)
         gate.check("gateway agent subspace exists",
-                   bool(gw_agent_space) and await client.admin_room_alive(gw_agent_space),
-                   gw_agent_space or "MISSING")
+                   bool(gw_space) and await client.admin_room_alive(gw_space),
+                   gw_space or "MISSING")
 
         # check 3 — §3 child ORDER in the root space: gateway agent
         # subspace FIRST, then directives, cron rooms, orchestrators.
-        order = await space_children_in_order(client, gw_space, gw_mxid)
+        order = await space_children_in_order(client, root_space, gw_mxid)
         gate.check(
             "root space child order (gateway subspace, directives, cron, orchestrator)",
-            order == [gw_agent_space, directives, ids[CRON][1], orch_space],
+            order == [gw_space, directives, ids[CRON][1], orch_space],
             f"got {order}",
         )
 
         # check 4 — gateway agent subspace holds the gateway room + the
         # gateway-origin delegation child's space, nested.
-        gwa_order = await space_children_in_order(client, gw_agent_space, gw_mxid)
+        gwa_order = await space_children_in_order(client, gw_space, gw_mxid)
         gate.check(
             "gateway subspace children (gateway room + delegation-child space)",
             gwa_order == [gw_room, gwsa_space],
