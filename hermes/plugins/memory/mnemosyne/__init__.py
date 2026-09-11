@@ -1095,7 +1095,7 @@ def preflight_shared_bank(
 
 def format_preflight(report: Dict[str, Any]) -> str:
     """One loud block: unified-or-failure per layer (for setup output)."""
-    head = "Shared bank UNIFIED" if report.get("ok") else "Shared bank NOT unified"
+    head = "local mnemosyne bank UNIFIED" if report.get("ok") else "local mnemosyne bank NOT unified"
     lines = [f"{head}: {report.get('bank_path', '')}"]
     for name, layer in (report.get("layers") or {}).items():
         lines.append(f"  [{layer.get('status', '?').upper()}] {name}: {layer.get('detail', '')}")

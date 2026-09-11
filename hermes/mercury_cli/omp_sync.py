@@ -295,20 +295,68 @@ def _write_slots(update: dict[str, str]) -> bool:
 
 def _render_omp() -> bool:
     """Run the config bridge --render-omp so the omp subtree inherits."""
+    # Repo checkout: subprocess the bridge (preserves skills-union side effect).
     root = _repo_root()
-    if root is None:
-        return False
-    bridge = root / "bridge" / "bridge.py"
-    if not bridge.exists():
-        return False
+    if root is not None:
+        bridge = root / "bridge" / "bridge.py"
+        if bridge.exists():
+            try:
+                r = subprocess.run(
+                    [sys.executable, str(bridge), "--render-omp"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if r.returncode == 0:
+                    return True
+            except Exception:
+                pass
+    # Installed layout (no repo root): import the bridge file directly by
+    # path (HERMES_OMP_BRIDGE override first, then alongside this package).
+    # Falls back to the ensure helper's surgical omp pin, so memory still
+    # lands unified even when the full bridge cannot run.
+    candidates: list[Path] = []
+    env_bridge = os.environ.get("HERMES_OMP_BRIDGE", "").strip()
+    if env_bridge:
+        candidates.append(Path(env_bridge))
     try:
-        r = subprocess.run(
-            [sys.executable, str(bridge), "--render-omp"],
-            capture_output=True, text=True, timeout=30,
-        )
-        return r.returncode == 0
+        here = Path(__file__).resolve()
+        for parent in here.parents:
+            cand = parent / "bridge" / "bridge.py"
+            if cand not in candidates:
+                candidates.append(cand)
+            repo_cand = parent / "bin" / "mercury"
+            _ = repo_cand
     except Exception:
-        return False
+        pass
+    for cand in candidates:
+        try:
+            if not cand.is_file():
+                continue
+            import importlib.util as _ilu
+
+            spec = _ilu.spec_from_file_location("mercury_bridge_fallback", str(cand))
+            if spec is None or spec.loader is None:
+                continue
+            mod = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            slots = mod.parse_config()
+            errors = mod.validate(slots, need_delegate=True)
+            if errors:
+                continue
+            mod.render_omp_subtree(slots)
+            try:
+                mod._refresh_omp_skills_union()
+            except Exception:
+                pass
+            return True
+        except Exception:
+            continue
+    try:
+        from mercury_cli.memory_setup import _ensure_omp_mnemopi_defaults
+
+        _ensure_omp_mnemopi_defaults()
+    except Exception:
+        pass
+    return False
 
 
 def sync_omp_from_setup(quiet: bool = False) -> bool:
@@ -316,7 +364,7 @@ def sync_omp_from_setup(quiet: bool = False) -> bool:
 
     Returns True when both engines now resolve models.
 
-    Also ensures the shared-bank memory default (config only, no pip):
+    Also ensures the local mnemosyne memory default (config only, no pip):
     fresh installs get memory.provider=mnemosyne; explicit user backends
     are never clobbered. The bridge render below pins the matching omp
     memory.backend=mnemopi subtree.

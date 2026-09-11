@@ -16,7 +16,7 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         help="Configure external memory provider",
         description=(
             "Set up and manage external memory provider plugins.\n\n"
-            "Available providers: mnemosyne (shared-bank default), honcho,\n"
+            "Available providers: mnemosyne (local mnemosyne default), honcho,\n"
             "openviking, mem0, hindsight, holographic, retaindb, byterover.\n\n"
             "Only one external provider can be active at a time.\n"
             "Built-in memory (MEMORY.md/USER.md) is always active."

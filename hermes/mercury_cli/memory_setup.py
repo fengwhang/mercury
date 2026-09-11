@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import shlex
+from pathlib import Path
 
 from mercury_constants import get_hermes_home
 from mercury_cli.secret_prompt import masked_secret_prompt
@@ -19,12 +20,197 @@ _CANCELLED = -1
 
 
 MNEMOSYNE_PROVIDER = "mnemosyne"
+LOCAL_MNEMOSYNE_LABEL = "local mnemosyne"
 
 # memory.provider values that mean "no external backend chosen" (fresh
 # install or built-in-only). ensure_mnemosyne_default() treats these as
-# "apply the shared-bank default"; any other value is an explicit user
+# "apply the local mnemosyne default"; any other value is an explicit user
 # backend and is never clobbered (silent keep).
 _UNSET_MEMORY_PROVIDERS = frozenset({"", "built-in", "builtin", "default", "none"})
+
+# omp memory backends that count as an explicit user choice (never clobbered
+# by the fresh-install default). Absent/empty means "bridge has not pinned
+# yet" and defaults to mnemopi. Mirrors bridge/bridge.py so the ONE
+# ensure_mnemosyne_default() pass stamps BOTH sides even when the bridge
+# render has not run yet (setup-tail ordering, installed-layout fallback).
+_VALID_OMP_MEMORY_BACKENDS = {"off", "local", "hindsight", "mnemopi", "sharpshooter", "mnemosyne"}
+_VALID_MNEMOPI_SCOPINGS = {"global", "per-project", "per-project-tagged"}
+
+
+def _yaml_sq_ensure(s: str) -> str:
+    return "'" + s.replace("'", "''") + "'"
+
+
+def _parse_yaml_bool_or_none_ensure(value):
+    if value is None:
+        return None
+    s = str(value).strip().strip("'\"").lower()
+    if s in ("true", "yes", "on", "1"):
+        return True
+    if s in ("false", "no", "off", "0"):
+        return False
+    return None
+
+
+def _unified_config_path_for_ensure() -> str:
+    explicit = os.environ.get("MERCURY_CONFIG", "").strip()
+    if explicit:
+        return explicit
+    home = os.environ.get("MERCURY_HOME", "").strip()
+    if home:
+        return os.path.join(home, "config.yaml")
+    try:
+        return str(Path(get_hermes_home()) / "config.yaml")
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), ".mercury", "config.yaml")
+
+
+def _shared_mnemopi_db_path_for_ensure() -> str:
+    home = os.environ.get("MERCURY_HOME", os.path.expanduser("~/.mercury"))
+    return os.path.join(home, "memories", "mnemopi.db")
+
+
+def _existing_omp_memory_backend_ensure(text: str):
+    m = re.search(r"^omp:(.*?)(?=^\S|\Z)", text, flags=re.M | re.S)
+    if not m:
+        return None
+    block = m.group(1)
+    mm = re.search(r"^[ \t]+memory:[ \t]*\n((?:^[ \t]+.*\n?)*)", block, flags=re.M)
+    if mm:
+        bm = re.search(r"backend\s*:\s*[\"']?([A-Za-z0-9_-]+)", mm.group(1))
+        if bm:
+            return bm.group(1)
+        return None
+    dm = re.search(r"memory\.backend\s*:\s*[\"']?([A-Za-z0-9_-]+)", block)
+    if dm:
+        return dm.group(1)
+    return None
+
+
+def _existing_omp_mnemopi_values_ensure(text: str) -> dict:
+    m = re.search(r"^omp:(.*?)(?=^\S|\Z)", text, flags=re.M | re.S)
+    if not m:
+        return {}
+    block = m.group(1)
+    mm = re.search(r"^[ \t]+mnemopi:[ \t]*\n((?:^[ \t]+.*\n?)*)", block, flags=re.M)
+    if not mm:
+        return {}
+    chunk = mm.group(1)
+    out: dict = {}
+    for key in ("dbPath", "bank", "scoping", "autoRecall", "autoRetain", "noEmbeddings"):
+        km = re.search(r"(?m)^\s*" + re.escape(key) + r"\s*:\s*(.+?)\s*$", chunk)
+        if km:
+            out[key] = km.group(1).strip()
+    return out
+
+
+def _ensure_omp_mnemopi_defaults() -> bool:
+    """Pin omp memory.backend=mnemopi + FTS-only mnemopi defaults when unset.
+
+    Fresh installs land unified (mnemopi, FTS-only both sides) even before
+    the bridge render runs. Explicit user backends (off/local/hindsight/…)
+    are never clobbered; explicit mnemopi keys (custom dbPath/bank, valid
+    scoping, explicit noEmbeddings false opt-in) are preserved. The omp
+    schema defaults to backend off + embeddings ON when keys are absent, so
+    the noEmbeddings:true key is always rendered explicitly on the default
+    path. Returns True when the file was created/updated, False when left
+    as an explicit user backend or on any I/O failure.
+    """
+    try:
+        path = _unified_config_path_for_ensure()
+        text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+    except Exception:
+        return False
+    try:
+        old_backend = _existing_omp_memory_backend_ensure(text)
+        new_backend = old_backend if old_backend is not None else "mnemopi"
+        if new_backend == "mnemosyne":
+            new_backend = "mnemopi"
+        if new_backend != "mnemopi":
+            # Explicit user backend (off/local/…): never clobber, no block.
+            return False
+        old_mn = _existing_omp_mnemopi_values_ensure(text)
+        db_path = (old_mn.get("dbPath") or "").strip().strip("'\"") or _shared_mnemopi_db_path_for_ensure()
+        bank = (old_mn.get("bank") or "").strip().strip("'\"") or "default"
+        scoping = (old_mn.get("scoping") or "").strip().strip("'\"")
+        if scoping not in _VALID_MNEMOPI_SCOPINGS:
+            scoping = "global"
+        auto_recall = _parse_yaml_bool_or_none_ensure(old_mn.get("autoRecall"))
+        if auto_recall is None:
+            auto_recall = True
+        auto_retain = _parse_yaml_bool_or_none_ensure(old_mn.get("autoRetain"))
+        if auto_retain is None:
+            auto_retain = True
+        no_emb = _parse_yaml_bool_or_none_ensure(old_mn.get("noEmbeddings"))
+        if no_emb is None:
+            no_emb = True
+        mem_block = (
+            "  memory:\n"
+            "    backend: mnemopi\n"
+            "  mnemopi:\n"
+            f"    dbPath: {_yaml_sq_ensure(db_path)}\n"
+            f"    bank: {_yaml_sq_ensure(bank)}\n"
+            f"    scoping: {scoping}\n"
+            f"    autoRecall: {str(auto_recall).lower()}\n"
+            f"    autoRetain: {str(auto_retain).lower()}\n"
+            f"    noEmbeddings: {str(no_emb).lower()}\n"
+        )
+        m = re.search(r"^omp:(.*?)(?=^\S|\Z)", text, flags=re.M | re.S)
+        if not m:
+            # No omp block yet (truly fresh): append a minimal unified block.
+            new_text = text.rstrip("\n") + ("\n\n" if text.strip() else "") + "omp:\n" + mem_block
+        else:
+            old_omp = m.group(0)
+            if "memory:" in m.group(1) or "mnemopi:" in m.group(1):
+                # Has a memory/mnemopi section already: normalize backend to
+                # mnemopi and fill only missing mnemopi keys, preserving
+                # every other omp key (approvalMode/retry/providers/…).
+                new_omp = old_omp
+                new_omp = re.sub(
+                    r"(^[ \t]+backend\s*:\s*[\"']?)([A-Za-z0-9_-]+)",
+                    r"\1mnemopi",
+                    new_omp, count=1, flags=re.M,
+                )
+                # Ensure a mnemopi: block exists.
+                if not re.search(r"^[ \t]+mnemopi:[ \t]*\n", new_omp, flags=re.M):
+                    new_omp = new_omp.rstrip("\n") + "\n" + mem_block.split("  memory:\n    backend: mnemopi\n", 1)[1]
+                else:
+                    # Fill missing keys inside the existing mnemopi block.
+                    mm = re.search(r"(^[ \t]+mnemopi:[ \t]*\n((?:^[ \t]+.*\n?)*))", new_omp, flags=re.M)
+                    if mm:
+                        chunk = mm.group(0)
+                        missing_lines = ""
+                        if not re.search(r"(?m)^\s*dbPath\s*:", chunk):
+                            missing_lines += f"    dbPath: {_yaml_sq_ensure(db_path)}\n"
+                        if not re.search(r"(?m)^\s*bank\s*:", chunk):
+                            missing_lines += f"    bank: {_yaml_sq_ensure(bank)}\n"
+                        if not re.search(r"(?m)^\s*scoping\s*:", chunk):
+                            missing_lines += f"    scoping: {scoping}\n"
+                        if not re.search(r"(?m)^\s*autoRecall\s*:", chunk):
+                            missing_lines += f"    autoRecall: {str(auto_recall).lower()}\n"
+                        if not re.search(r"(?m)^\s*autoRetain\s*:", chunk):
+                            missing_lines += f"    autoRetain: {str(auto_retain).lower()}\n"
+                        if not re.search(r"(?m)^\s*noEmbeddings\s*:", chunk):
+                            # Schema defaults embeddings ON when absent:
+                            # render explicitly so fresh stays FTS-only.
+                            missing_lines += f"    noEmbeddings: {str(no_emb).lower()}\n"
+                        if missing_lines:
+                            new_omp = new_omp[:mm.end()] + missing_lines + new_omp[mm.end():]
+                new_text = text[:m.start()] + new_omp + text[m.end():]
+            else:
+                # omp block exists without any memory section (setup wrote
+                # approvals/models first): append the unified section,
+                # preserving everything already there.
+                new_omp = old_omp.rstrip("\n") + "\n" + mem_block
+                new_text = text[:m.start()] + new_omp + text[m.end():]
+        if new_text == text:
+            return True
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(new_text)
+        return True
+    except Exception:
+        return False
 
 
 def _wizard_default_index(names: list, current: str, builtin_idx: int) -> int:
@@ -36,12 +222,15 @@ def _wizard_default_index(names: list, current: str, builtin_idx: int) -> int:
     return builtin_idx
 
 def ensure_mnemosyne_default(*, install: bool = True, verbose: bool = False) -> str:
-    """Auto-enable the shared-bank provider on fresh installs.
+    """Auto-enable the local mnemosyne provider on fresh installs.
 
-    Sets ``memory.provider=mnemosyne`` when no external backend is chosen.
-    Silent (no output, no write) when another backend is already active —
-    an explicit user backend is never clobbered. Returns the effective
-    provider name ("" when the config could not be read/written).
+    ONE place stamps BOTH sides so fresh installs land unified: hermes
+    ``memory.provider=mnemosyne`` plus omp ``memory.backend=mnemopi`` with
+    ``mnemopi{dbPath,bank,scoping:global,noEmbeddings:true,autoRecall,
+    autoRetain}`` (FTS-only both sides). Silent (no output, no write) when
+    another backend is already active — an explicit user backend is never
+    clobbered. Returns the effective provider name ("" when the config
+    could not be read/written).
 
     With ``install=True`` (``mercury setup`` tail), also re-verifies the
     ``mnemosyne-hermes`` package (Mercury default ``[embeddings]`` profile,
@@ -65,14 +254,23 @@ def ensure_mnemosyne_default(*, install: bool = True, verbose: bool = False) -> 
     current = str(mem.get("provider", "") or "").strip()
     if current not in _UNSET_MEMORY_PROVIDERS:
         # Explicit user backend (or already mnemosyne): never clobber, silent.
+        # Omp convergence on reruns rides the bridge render in sync_omp (which
+        # preserves explicit backends); the fresh path below stamps BOTH sides
+        # so first boot lands unified.
         return current
     mem["provider"] = MNEMOSYNE_PROVIDER
     try:
         save_config(config)
     except Exception:
         return ""
+    # Fresh default: pin the omp side in the same pass so the preflight
+    # passes on first boot (bridge render later is idempotent).
+    try:
+        _ensure_omp_mnemopi_defaults()
+    except Exception:
+        pass
     if verbose:
-        print(f"\n  Memory provider: {MNEMOSYNE_PROVIDER} (shared bank default)")
+        print(f"\n  Memory provider: {LOCAL_MNEMOSYNE_LABEL} (shared bank default)")
     if install:
         # Re-verify + repair the package on every setup run (venv rebuilds
         # must not silently drop it); warn-only, FTS works regardless.
@@ -306,16 +504,16 @@ def _get_available_providers() -> list:
 # ---------------------------------------------------------------------------
 
 def _report_mnemosyne_preflight() -> bool:
-    """Run the shared-bank preflight and print unified-or-loud-failure."""
+    """Run the local mnemosyne preflight and print unified-or-loud-failure."""
     try:
         from plugins.memory.mnemosyne import format_preflight, preflight_shared_bank
     except Exception as exc:
-        print(f"  Shared-bank preflight skipped (provider not importable: {exc})")
+        print(f"  local mnemosyne preflight skipped (provider not importable: {exc})")
         return False
     try:
         report = preflight_shared_bank()
     except Exception as exc:  # noqa: BLE001
-        print(f"  Shared-bank preflight failed to run: {exc}")
+        print(f"  local mnemosyne preflight failed to run: {exc}")
         return False
     for line in format_preflight(report).splitlines():
         print(f"  {line}")
@@ -356,9 +554,11 @@ def cmd_setup_provider(provider_name: str) -> None:
     # Fallback: generic schema-based setup (same as cmd_setup)
     config["memory"]["provider"] = name
     save_config(config)
-    print(f"\n  Memory provider: {name}")
+    display = LOCAL_MNEMOSYNE_LABEL if name == MNEMOSYNE_PROVIDER else name
+    print(f"\n  Memory provider: {display}")
     print("  Activation saved to config.yaml\n")
     if name == MNEMOSYNE_PROVIDER:
+        _ensure_omp_mnemopi_defaults()
         _report_mnemosyne_preflight()
 
 
@@ -377,10 +577,8 @@ def cmd_setup(args) -> None:
     items = []
     for name, desc, _ in providers:
         items.append((name, f"— {desc}"))
-    items.append(("Built-in only", "— MEMORY.md / USER.md"))
-
     # Default selection: the current backend on re-runs (offer mnemosyne
-    # alongside it); the shared-bank default on fresh installs.
+    # alongside it); the local mnemosyne default on fresh installs.
     builtin_idx = len(items) - 1
     try:
         _mem = load_config().get("memory", {})
@@ -506,7 +704,8 @@ def cmd_setup(args) -> None:
     if env_writes:
         _write_env_vars(env_writes)
 
-    print(f"\n  Memory provider: {name}")
+    display = LOCAL_MNEMOSYNE_LABEL if name == MNEMOSYNE_PROVIDER else name
+    print(f"\n  Memory provider: {display}")
     print("  Activation saved to config.yaml")
     if provider_config:
         print("  Provider config saved")
@@ -514,6 +713,7 @@ def cmd_setup(args) -> None:
         print("  API keys saved to .env")
     if name == MNEMOSYNE_PROVIDER:
         print()
+        _ensure_omp_mnemopi_defaults()
         _report_mnemosyne_preflight()
     print("\n  Start a new session to activate.\n")
 
