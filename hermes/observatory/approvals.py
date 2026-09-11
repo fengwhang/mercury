@@ -421,9 +421,13 @@ class ApprovalBridge:
     # --- lookups ---------------------------------------------------------------
 
     def effective_timeout(self) -> float:
-        if self._timeout is None:
-            self._timeout = default_approval_timeout()
-        return self._timeout
+        # Live read (no cache) when no explicit timeout was given: the
+        # bridge budget must track config approvals.timeout (default 300)
+        # — a cached first read drifts from the guard wait loop and the
+        # room prompt expires on a different clock than the waiter.
+        if self._timeout is not None:
+            return self._timeout
+        return default_approval_timeout()
 
     def _room_voice(self, node_id: str) -> tuple[str, str]:
         """(room_id, virtual-user mxid) of an agent node — StateError when
@@ -682,6 +686,28 @@ class ApprovalBridge:
     def _drop(self, pending: PendingApproval) -> None:
         self._pending.pop(pending.key, None)
         self._by_prompt_event.pop(pending.prompt_event_id, None)
+    def discard_pending(self, node_id: str, request_id: str) -> bool:
+        """Drop one mirrored pending the guard already decided (M4b stale fix).
+
+        The omp guard owns the decision inline; when it auto-resolves, the
+        Matrix prompt submitted just before it can never be human-resolved.
+        Dropping it (no late notice — nothing is late, the guard decided)
+        keeps a later /approve honest (no_pending, not late:already_resolved
+        against a moot prompt). Returns True when something was dropped.
+        """
+        pending = self._pending.get((node_id, request_id))
+        if pending is None:
+            return False
+        self._drop(pending)
+        return True
+
+    def discard_node_request(self, request_id: str) -> bool:
+        """Drop any pending carrying *request_id* regardless of node (settle hook)."""
+        for key, pending in list(self._pending.items()):
+            if pending.request_id == request_id:
+                self._drop(pending)
+                return True
+        return False
 
     # --- teardown -----------------------------------------------------------------------
 
@@ -765,7 +791,10 @@ class ObservatoryApprovalServer:
     ):
         self._bridge = bridge
         self._node_id = node_id
-        self._timeout = timeout if timeout is not None else bridge.effective_timeout()
+        # None = live bridge budget (tracks approvals.timeout); an explicit
+        # value pins the socket wait (tests). Never snapshot the bridge
+        # default at construction — that freezes a stale budget.
+        self._timeout: Optional[float] = timeout
         self._dir = tempfile.mkdtemp(prefix="mercury-approval-")
         self._path = os.path.join(self._dir, "approval.sock")
         self._counter = itertools.count(1)
@@ -800,8 +829,10 @@ class ObservatoryApprovalServer:
             daemon=True,
             name="mercury-observatory-approvals",
         )
-
-    # --- decision -------------------------------------------------------------------
+    def _budget(self) -> float:
+        if self._timeout is not None:
+            return self._timeout
+        return self._bridge.effective_timeout()
 
     def _decide(self, payload: Mapping[str, Any]) -> tuple[str, bool]:
         """Mirror one POST into the agent's room; wait for the Matrix
@@ -815,6 +846,7 @@ class ObservatoryApprovalServer:
             command, context = title, message
         answer = SocketAnswer()
         assert self._loop is not None  # start() ran on the sidecar loop
+        budget = self._budget()
         future = asyncio.run_coroutine_threadsafe(
             self._bridge.submit(
                 self._node_id,
@@ -823,17 +855,18 @@ class ObservatoryApprovalServer:
                 command=command,
                 context=context or message,
                 answer=answer,
+                timeout=budget,
             ),
             self._loop,
         )
         try:
-            pending = future.result(timeout=self._timeout + 5.0)
+            pending = future.result(timeout=budget + 5.0)
         except Exception:
             log.exception("M4b: approval submit failed (fail-closed deny)")
             return "Deny", False
         if pending is None:
             return "Deny", False  # no room: nobody can answer — existing default
-        if not answer.wait(self._timeout):
+        if not answer.wait(budget):
             answer.set_result("Deny", False)  # local expiry — existing default path
         return answer.snapshot()
 

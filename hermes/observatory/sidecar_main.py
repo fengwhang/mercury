@@ -955,7 +955,20 @@ class SidecarDaemon:
             # flight (marked synchronously at dispatch, cleared at task
             # end) — without a probe the router assumes busy and an idle
             # spawned omp child steers into the void forever.
-            return node_id in self._child_busy
+            # Hermes children: a held per-node turn lock means a turn is
+            # already running, so an InjectText is a mid-turn inject
+            # (queued steer); a free lock means an idle new turn (no
+            # queued notice — the reply renders). Gateway mid-turn is
+            # owned downstream by _gateway_delivery_in_flight, not here.
+            if node_id in self._child_busy:
+                return True
+            try:
+                lock = self._child_locks.get(node_id)
+                if lock is not None and lock.locked():
+                    return True
+            except Exception:
+                pass
+            return False
 
         self.control_router = ControlRouter(
             self.state,
@@ -1038,14 +1051,20 @@ class SidecarDaemon:
             except Exception:
                 log.exception("approval ingest: gateway notify not registered")
         try:
-            from tools.omp_rpc_transport import set_approval_frame_hook
+            from tools.omp_rpc_transport import set_approval_frame_hook, set_approval_settle_hook
         except Exception:
             set_approval_frame_hook = None  # type: ignore[assignment]
+            set_approval_settle_hook = None  # type: ignore[assignment]
         if set_approval_frame_hook is not None:
             try:
                 set_approval_frame_hook(self._omp_approval_frame_router)
             except Exception:
                 log.exception("approval ingest: frame hook not registered")
+        if set_approval_settle_hook is not None:
+            try:
+                set_approval_settle_hook(self._omp_approval_settle_router)
+            except Exception:
+                log.exception("approval ingest: settle hook not registered")
 
     async def _resolve_gateway_approval(
         self,
@@ -1109,9 +1128,10 @@ class SidecarDaemon:
             except Exception:
                 pass
         try:
-            from tools.omp_rpc_transport import set_approval_frame_hook
+            from tools.omp_rpc_transport import set_approval_frame_hook, set_approval_settle_hook
         except Exception:
             set_approval_frame_hook = None  # type: ignore[assignment]
+            set_approval_settle_hook = None  # type: ignore[assignment]
         if set_approval_frame_hook is not None:
             try:
                 import tools.omp_rpc_transport as _rpc_transport
@@ -1122,6 +1142,16 @@ class SidecarDaemon:
                         and getattr(current, "__func__", None)
                         is type(self)._omp_approval_frame_router):
                     set_approval_frame_hook(None)
+            except Exception:
+                pass
+        if set_approval_settle_hook is not None:
+            try:
+                import tools.omp_rpc_transport as _rpc_transport2
+                current = getattr(_rpc_transport2, "_approval_settle_hook", None)
+                if (getattr(current, "__self__", None) is self
+                        and getattr(current, "__func__", None)
+                        is type(self)._omp_approval_settle_router):
+                    set_approval_settle_hook(None)
             except Exception:
                 pass
 
@@ -1171,6 +1201,22 @@ class SidecarDaemon:
                 request_id, method, title, options)
         except Exception:
             log.exception("omp approval frame submit failed")
+    def _omp_approval_settle_router(self, request_id: str, approved: bool) -> None:
+        """Guard-outcome settle for mirrored omp frames (never raises).
+
+        The omp guard owns the decision inline; when it resolves, the Matrix
+        pending submitted just before it is moot. Drop it so a later
+        /approve stays honest (no_pending, not late against a decided
+        prompt). No notice — the guard outcome already reaches the agent;
+        the room prompt simply stops being resolvable.
+        """
+        bridge = self.approvals
+        if bridge is None or not request_id:
+            return
+        try:
+            bridge.discard_node_request(str(request_id))
+        except Exception:
+            log.exception("omp approval settle failed")
 
     def _attach_omp_feeds(self) -> None:
         """One OmpFeed per live spawned omp RPC child (registry handles).
@@ -2200,18 +2246,32 @@ class SidecarDaemon:
                     continue
                 if await self._handle_observatory_verb_outcome(outcome):
                     continue
-                # Spawn-ghost decoupling (defect 2): the engine turn runs FIRST
-                # and independent of notices — a child-voice notice send that
-                # fails (unknown ghost, dead crypto) must never veto delivery.
+                # Spawn-ghost decoupling (defect 2): engine turn runs FIRST;
+                # child-room parity with gateway path: "queued steer" defers
+                # until delivery confirms a mid-turn steer. Idle OmpPrompt
+                # new turns never post it; missing-handle drops it too.
+                try:
+                    _actions = list(getattr(outcome, "actions", ()) or ())
+                except Exception:
+                    _actions = []
+                _has_idle_prompt = any(isinstance(a, OmpPrompt) for a in _actions)
+                _deferred: list = []
+                _immediate: list = []
+                for _n in (getattr(outcome, "notices", ()) or ()):
+                    if getattr(_n, "body", "") == QUEUED_STEER_NOTICE:
+                        _deferred.append(_n)
+                    else:
+                        _immediate.append(_n)
                 missing = await self._execute_child_actions(outcome)
-                for notice in outcome.notices:
-                    if (
-                        missing
-                        and getattr(notice, "body", "") == QUEUED_STEER_NOTICE
-                        and getattr(notice, "node_id", "") in missing
-                    ):
-                        # Nothing was queued (no live session to steer into);
-                        # the session-unavailable notice is the truthful ack.
+                for notice in _immediate:
+                    try:
+                        await self._post_notice(notice)
+                    except Exception:  # noqa: BLE001 — notices never veto delivery
+                        log.exception("child notice failed (node %s)", getattr(outcome, "node_id", ""))
+                for notice in _deferred:
+                    if _has_idle_prompt:
+                        continue
+                    if missing and getattr(notice, "node_id", "") in missing:
                         continue
                     try:
                         await self._post_notice(notice)

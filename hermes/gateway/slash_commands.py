@@ -6413,19 +6413,66 @@ class GatewaySlashCommandsMixin:
     # -> plain table here) — no second Matrix-only dispatch path. Sidecar
     # handles come from platform_hook.LAST_BOOT (never a second state).
     def _observatory_handles(self):
-        """Live sidecar state+registry+renderer or (None, reason)."""
+        """Live sidecar state+registry(+renderer) or (None, reason).
+
+        Cross-process law: this runs in the GATEWAY process, while the
+        Matrix renderer lives in the sidecar daemon. LAST_BOOT here is the
+        gateway-thread boot (state-only: renderer None) — never mistake its
+        absence for "observatory missing". Resolve shared handles instead:
+        state via the shared state.db file when the boot object is absent
+        or stale, registry from the boot when live else a fresh handle
+        table (exit still journals via shared state), renderer when the
+        sidecar boot supplied one else None (callers build a planning-only
+        renderer or defer purges to sidecar replay — never assume
+        mercury.local, never send plaintext).
+        """
         try:
             from observatory import platform_hook
         except Exception as exc:
             return None, f"observatory sidecar unavailable ({exc}) — run `mercury setup observatory`"
         boot = getattr(platform_hook, "LAST_BOOT", None)
-        if boot is None:
-            return None, "no observatory sidecar boot found — run `mercury setup observatory`"
-        state = getattr(boot, "state", None)
-        registry = getattr(boot, "registry", None)
-        renderer = getattr(boot, "renderer", None)
-        if state is None or registry is None:
-            return None, "observatory sidecar has no live state — run `mercury setup observatory`"
+        state = getattr(boot, "state", None) if boot is not None else None
+        registry = getattr(boot, "registry", None) if boot is not None else None
+        renderer = getattr(boot, "renderer", None) if boot is not None else None
+        had_boot_state = state is not None
+        if state is None:
+            # Shared-state fallback: open the canonical state.db file for
+            # this mercury home (same file the sidecar daemon reads).
+            try:
+                home = self._observatory_mercury_home()
+                if home:
+                    state = platform_hook.open_state(home)
+                else:
+                    state = platform_hook.open_state(None)
+            except Exception as exc:
+                state = None
+                return None, f"no observatory sidecar boot found and shared state unreadable ({exc}) — run `mercury setup observatory`"
+            if state is None:
+                return None, "no observatory sidecar boot found — run `mercury setup observatory`"
+            # A fallback state without a live gateway node is not an
+            # observatory home (wrong home / never provisioned) — keep the
+            # honest setup message instead of a downstream server_name error.
+            try:
+                live = state.get_live()
+            except Exception:
+                live = []
+            try:
+                has_gw = any(str((r or {}).get("node_id") or "") == "gw" for r in (live or []))
+                if not has_gw:
+                    has_gw = any(
+                        isinstance((r or {}).get("extra"), dict) and (r or {}).get("extra", {}).get("kind") == "gateway"
+                        for r in (live or [])
+                    )
+            except Exception:
+                has_gw = False
+            if not has_gw and not had_boot_state:
+                return None, "no observatory sidecar boot found — run `mercury setup observatory`"
+        if registry is None:
+            try:
+                from observatory.spawn import OrchestratorRegistry
+                registry = OrchestratorRegistry()
+            except Exception as exc:
+                return None, f"observatory sidecar has no live state ({exc}) — run `mercury setup observatory`"
         return (state, registry, renderer), ""
 
     def _observatory_gateway_ids(self, state, renderer=None):
@@ -6589,8 +6636,6 @@ class GatewaySlashCommandsMixin:
         if handles is None:
             return f"✗ /exit failed: {reason}"
         state, registry, renderer = handles
-        if renderer is None:
-            return "✗ /exit failed: observatory sidecar has no renderer — run `mercury setup observatory`"
         gw_id, gw_room = self._observatory_gateway_ids(state, renderer)
         caller_node, caller_room = self._observatory_caller(event)
         target = self._observatory_find_by_room(state, caller_room) if caller_room else None
@@ -6604,6 +6649,32 @@ class GatewaySlashCommandsMixin:
         target_id = str(target.get("node_id") or "")
         if target_id == gw_id or (gw_room and str(target.get("room_id") or "") == gw_room):
             return "🚫 no /exit on the gateway agent — the gateway room has no /exit (it would break the observatory surface); use /restart."
+        if renderer is None:
+            # Gateway-process path: no live Matrix renderer here (it lives
+            # in the sidecar daemon). Build a planning-only renderer from
+            # shared state (live server_name from the gateway ghost mxid —
+            # never mercury.local) so begin_exit can journal + dead-mark
+            # atomically; the sidecar replays the purge journal (D18) to
+            # annihilate rooms with its encrypted executor. Fail-closed:
+            # unknown server_name refuses rather than minting off-domain.
+            server_name = self._observatory_server_name(state, None)
+            if not server_name:
+                return "✗ /exit failed: live server_name unavailable (no gateway ghost mxid domain — refusing to plan an exit against an off-domain default)"
+            try:
+                from observatory.renderer import Renderer
+                renderer = Renderer(state, gateway_node_id=gw_id or "gw", server_name=server_name, owner_mxid="", executor=None)
+            except Exception as exc:
+                return f"✗ /exit failed: {exc}"
+            try:
+                result = await exit_orchestrator(target_id, state=state, registry=registry, renderer=renderer)
+            except Exception as exc:
+                return f"✗ /exit failed: {exc}"
+            name = str(target.get("name") or target_id)
+            deferred = (result or {}).get("deferred") or []
+            if deferred:
+                detail = "; ".join(str(d) for d in deferred)
+                return f"👋 exited '{name}' (node {target_id}) — state marked dead via shared state, room purge deferred to the sidecar replay (D8/D18: {detail})."
+            return f"👋 exited '{name}' (node {target_id}) — space+room purged (D8)."
         try:
             await exit_orchestrator(target_id, state=state, registry=registry, renderer=renderer)
         except Exception as exc:
