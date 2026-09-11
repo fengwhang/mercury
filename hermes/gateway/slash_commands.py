@@ -6484,6 +6484,23 @@ class GatewaySlashCommandsMixin:
                 continue
         return None
 
+    def _observatory_mercury_home(self):
+        # Spawn-ghost fix (defect 2): the daemon resolves session handles
+        # (hermes SessionDB rows, omp JSONLs) under ITS mercury home. The
+        # gateway must build spawn children under that same home (from the
+        # live boot), or the state.db session_ref dangles cross-process and
+        # the room hears only CHILD_UNAVAILABLE. None when no boot is live
+        # (spawn_orchestrator then keeps its default resolution).
+        try:
+            from observatory import platform_hook
+        except Exception:
+            return None
+        try:
+            boot = getattr(platform_hook, "LAST_BOOT", None)
+            home = str(getattr(boot, "mercury_home", "") or "").strip()
+            return home or None
+        except Exception:
+            return None
     def _observatory_server_name(self, state, renderer=None):
         """Live Matrix domain for minting spawn ghosts (never a default).
 
@@ -6539,7 +6556,7 @@ class GatewaySlashCommandsMixin:
             where = f"gateway agent's room ({gw_room})" if gw_room else "the gateway agent's room"
             return f"🚫 /{verb} is a gateway-room-only command — accepted only from {where} (D13)."
         try:
-            row = await spawn_orchestrator(name, engine, server_name=server_name, state=state, registry=registry, renderer=renderer)
+            row = await spawn_orchestrator(name, engine, server_name=server_name, state=state, registry=registry, renderer=renderer, mercury_home=self._observatory_mercury_home())
         except Exception as exc:
             return f"✗ /{verb} failed: {exc}"
         node_id = str((row or {}).get("node_id") or "")

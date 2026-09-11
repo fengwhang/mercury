@@ -20,6 +20,7 @@ import observatory.sidecar_main as sm
 from observatory.spawn import spawn_orchestrator
 
 from tests.observatory.test_sidecar_main import FakeMatrixClient
+from observatory.matrix_client import MatrixError
 
 SERVER = "mercury.local"
 OWNER = "@owner:mercury.local"
@@ -422,6 +423,180 @@ async def test_missing_handle_resumes_on_demand(daemon: sm.SidecarDaemon, monkey
         assert any(
             c[2] == "echo:hello again" and c[3] == room["mxid"]
             for c in _room_sends(daemon, room["room_id"])
+        )
+    finally:
+        await daemon.shutdown()
+# ---------------------------------------------------------------------------
+# Spawn-ghost regressions (2026-09-11 VM incident: /spawnomp + /spawn rooms
+# went silent — unregistered ghosts 400 every child-voice E2EE send, the
+# queued-steer notice crash vetoed the engine turn, and dangling
+# session_refs resumed to silent CHILD_UNAVAILABLE).
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_spawn_registers_ghost_before_converge(daemon: sm.SidecarDaemon):
+    """Register-then-converge: the minted ghost registers BEFORE createRoom."""
+    await daemon.boot()
+    try:
+        mark = len(daemon.client.calls)
+        agent = FakeHermesAgent("sess-reg")
+        row = await spawn_orchestrator(
+            "reggie",
+            "hermes",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            agent_factory=lambda: agent,
+        )
+        room = daemon.state.get(row["node_id"])
+        localpart = room["mxid"].lstrip("@").split(":", 1)[0]
+        spawned = daemon.client.calls[mark:]
+        kinds = [c[0] for c in spawned]
+        assert "register" in kinds and "create_room" in kinds
+        assert kinds.index("register") < kinds.index("create_room")
+        assert ("register", localpart) in spawned
+        out = await daemon.client.client_api(
+            "POST",
+            "/_matrix/client/v3/login",
+            json_body={
+                "type": "m.login.application_service",
+                "identifier": {"type": "m.id.user", "user": room["mxid"]},
+            },
+        )
+        assert "event_id" in out
+    finally:
+        await daemon.shutdown()
+@pytest.mark.asyncio
+async def test_unregistered_ghost_login_400s():
+    """The fake holds the tuwunel law: AS-login for an unknown ghost 400s."""
+    client = FakeMatrixClient()
+    with pytest.raises(MatrixError) as excinfo:
+        await client.client_api(
+            "POST",
+            "/_matrix/client/v3/login",
+            json_body={
+                "type": "m.login.application_service",
+                "identifier": {"type": "m.id.user", "user": "@merc_nobody:mercury.local"},
+            },
+        )
+    assert excinfo.value.status == 400
+    assert excinfo.value.errcode == "M_INVALID_PARAM"
+@pytest.mark.asyncio
+async def test_notice_failure_does_not_veto_child_turn(daemon: sm.SidecarDaemon, monkeypatch):
+    """Decoupling: a child-voice notice crash still delivers the engine turn."""
+    await daemon.boot()
+    try:
+        agent = FakeHermesAgent("sess-decouple")
+        row = await spawn_orchestrator(
+            "decouple",
+            "hermes",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            agent_factory=lambda: agent,
+        )
+        room = daemon.state.get(row["node_id"])
+        real_execute = daemon.renderer.executor.execute
+        attempted = {"n": 0}
+        async def flaky(intents):
+            intents = list(intents)
+            if (
+                not attempted["n"]
+                and len(intents) == 1
+                and getattr(intents[0], "sender", "") == room["mxid"]
+                and "queued steer" in str(getattr(intents[0], "body", ""))
+            ):
+                attempted["n"] += 1
+                raise MatrixError(
+                    "POST",
+                    "/_matrix/client/v3/login",
+                    400,
+                    {"errcode": "M_INVALID_PARAM", "error": "Called create_device for non-existent user"},
+                )
+            return await real_execute(intents)
+        monkeypatch.setattr(daemon.renderer.executor, "execute", flaky)
+        await daemon._on_transaction("tx-1", [_msg(room["room_id"], "hello child")])
+        await _drain(daemon)
+        assert attempted["n"] == 1, "flaky child-voice notice was never attempted"
+        assert agent.turns == ["hello child"], "notice crash vetoed the engine turn"
+        assert any(
+            c[2] == "echo:hello child" and c[3] == room["mxid"]
+            for c in _room_sends(daemon, room["room_id"])
+        )
+        assert any(
+            "queued steer" in c[2] and c[3] == daemon.gateway_mxid
+            for c in _room_sends(daemon, room["room_id"])
+        )
+    finally:
+        await daemon.shutdown()
+@pytest.mark.asyncio
+async def test_dangling_omp_session_ref_fails_closed(daemon: sm.SidecarDaemon):
+    """Fail-closed spawn: an omp handle with no session file raises, no row."""
+    await daemon.boot()
+    try:
+        live_before = {r["node_id"] for r in daemon.state.get_live()}
+        child = FakeOmpChild(str(daemon.mercury_home / "omp-sessions" / "never-written.jsonl"))
+        with pytest.raises(RuntimeError, match="dangling session_ref"):
+            await spawn_orchestrator(
+                "dang",
+                "omp",
+                server_name=SERVER,
+                state=daemon.state,
+                registry=daemon.registry,
+                renderer=daemon.renderer,
+                omp_child_factory=lambda: child,
+                validate_session_ref=True,
+            )
+        assert {r["node_id"] for r in daemon.state.get_live()} == live_before
+    finally:
+        await daemon.shutdown()
+@pytest.mark.asyncio
+async def test_dangling_hermes_session_ref_fails_closed(daemon: sm.SidecarDaemon):
+    """Fail-closed spawn: a hermes session id with no SessionDB row raises."""
+    await daemon.boot()
+    try:
+        live_before = {r["node_id"] for r in daemon.state.get_live()}
+        agent = FakeHermesAgent("sess-dangling-zzz")
+        with pytest.raises(RuntimeError, match="dangling session_ref"):
+            await spawn_orchestrator(
+                "dangling",
+                "hermes",
+                server_name=SERVER,
+                state=daemon.state,
+                registry=daemon.registry,
+                renderer=daemon.renderer,
+                mercury_home=daemon.mercury_home,
+                agent_factory=lambda: agent,
+                validate_session_ref=True,
+            )
+        assert {r["node_id"] for r in daemon.state.get_live()} == live_before
+    finally:
+        await daemon.shutdown()
+@pytest.mark.asyncio
+async def test_dangling_resume_surfaces_operator_visible_error(daemon: sm.SidecarDaemon):
+    """A live row whose session is gone logs child-resume-failed and still
+    tells the room (CHILD_UNAVAILABLE) — never silence."""
+    await daemon.boot()
+    try:
+        agent = FakeHermesAgent("sess-gone-zzz")
+        row = await spawn_orchestrator(
+            "gone",
+            "hermes",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            agent_factory=lambda: agent,
+        )
+        node_id = row["node_id"]
+        room = daemon.state.get(node_id)
+        daemon.registry.unregister(node_id)
+        await daemon._on_transaction("tx-1", [_msg(room["room_id"], "hello?")])
+        await _drain(daemon)
+        assert f"child-resume-failed:{node_id}" in daemon.routing_log
+        assert any(
+            "unavailable" in c[2] for c in _room_sends(daemon, room["room_id"])
         )
     finally:
         await daemon.shutdown()
