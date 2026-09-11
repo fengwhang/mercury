@@ -359,7 +359,7 @@ class TestStatusVerb:
         text = outcome.notices[0].body
         assert "lint-fix" in text
         assert "omp/omp-subagent" in text
-        assert "thinking display: off" in text
+        assert "thinking display: on" in text  # delegation children default on
 
     def test_status_reflects_ledger(self, router):
         router.route(msg(GC, "watch the boundaries"))
@@ -378,8 +378,13 @@ class TestStatusVerb:
 
 
 class TestCotVerb:
-    def test_cot_defaults_off(self, router):
-        assert router.cot_enabled(GC) is False
+    def test_cot_defaults_off_for_zero_agents(self, router):
+        assert router.cot_enabled(GW) is False
+        assert router.cot_enabled(ORCH) is False
+
+    def test_cot_defaults_on_for_children(self, router):
+        assert router.cot_enabled(SA) is True
+        assert router.cot_enabled(GC) is True
 
     @pytest.mark.parametrize("prefix", ["/", "!"])
     def test_cot_off_persists_in_state_meta(self, router, state, prefix):

@@ -163,8 +163,11 @@ Streaming into a room:
    ~200 chars + `[full]` marker; results elided except errors. Full text
    lives in local transcripts only (state.db for hermes, session JSONL
    for omp).
-2. **Thinking (omp-side only)**: separate quoted/italic messages between
-   tool-call messages; toggle per room `/cot on|off` (default on).
+2. **Thinking**: separate quoted/italic messages between tool-call
+   messages; toggle per room `/cot on|off` (default off for 0-agents,
+   on for delegation children). 0-agent rooms show a single status
+   message (out-of-box hermes thinking faces/verbs) edited in place
+   and sealed into short replies.
    Source: `subagent_event` frames carrying `thinking_delta` /
    `message_end` (already in the RPC stream at subscription level
    "events"; mercury's TUI hides thinking at display layer only).

@@ -488,11 +488,23 @@ class ControlRouter:
 
     def cot_enabled(self, node_id: str) -> bool:
         """§5.2 per-room thinking toggle, persisted in state meta. Default
-        OFF; anything but an explicit ``on`` reads as off."""
+        OFF for 0-agents (gateway + spawned orchestrators); ON for
+        delegation children — subagent rooms show thinking traces without
+        the owner asking, while 0-agent rooms stay status-only. An explicit
+        per-room ``/cot on|off`` always wins over the default."""
         try:
-            return self.state.get_meta(COT_META_PREFIX + node_id) == COT_ON
+            meta = self.state.get_meta(COT_META_PREFIX + node_id)
+        except StateError:
+            meta = None
+        if meta == COT_ON:
+            return True
+        if meta == COT_OFF:
+            return False
+        try:
+            row = self.state.get(node_id)
         except StateError:
             return False
+        return bool(row.get("parent_node_id"))
 
     @property
     def pending_steers(self) -> tuple[PendingSteer, ...]:
