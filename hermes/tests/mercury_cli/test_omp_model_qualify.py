@@ -90,10 +90,52 @@ def test_sync_writes_qualified_default_slot(tmp_path, monkeypatch):
     assert "openrouter/openrouter" not in text
 
 
+def test_sync_drops_stale_block_seq_chain_items(tmp_path, monkeypatch):
+    """Block-seq fallback_chain + sync must stay valid YAML (no stale items).
+
+    Regression: save_config normalizes flow chains to 4-space block-seq;
+    _write_slots replaced the key line but only skipped 2-space items,
+    leaving stale `- item` lines behind -> corrupt YAML. The shared-bank
+    ensure runs save_config on every fresh setup, so this path is hot.
+    """
+    import yaml
+
+    cfg = tmp_path / "config.yaml"
+    _write_config(
+        cfg,
+        "hermes:\n"
+        "  memory:\n"
+        "    provider: mnemosyne\n"
+        "models:\n"
+        "  default: openrouter/meta/muse-spark-1.3-contributor\n"
+        "  fallback: openrouter/meta/other-model\n"
+        "  fallback_chain:\n"
+        "    - meta/other-model\n"
+        "    - openai/gpt-5\n",
+    )
+    monkeypatch.setenv("MERCURY_CONFIG", str(cfg))
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        omp_sync, "_read_model_default", lambda: ("openrouter", "meta/muse-spark-1.3-contributor")
+    )
+    monkeypatch.setattr(omp_sync, "_read_fallback", lambda: None)
+    monkeypatch.setattr(omp_sync, "_render_omp", lambda: True)
+
+    assert omp_sync.sync_omp_from_setup(quiet=True) is True
+    models = yaml.safe_load(cfg.read_text(encoding="utf-8"))["models"]
+    assert models["fallback_chain"] == [
+        "openrouter/meta/other-model",
+        "openrouter/openai/gpt-5",
+    ]
+
+
 def test_sync_is_idempotent_on_qualified_slots(tmp_path, monkeypatch):
     cfg = tmp_path / "config.yaml"
     _write_config(
         cfg,
+        "hermes:\n"
+        "  memory:\n"
+        "    provider: mnemosyne\n"
         "models:\n"
         "  default: openrouter/meta/muse-spark-1.3-contributor\n"
         "  delegate_thinking_level: xhigh\n"

@@ -222,9 +222,15 @@ def _write_slots(update: dict[str, str]) -> bool:
             _skip_seq = False
             out.append(line)
             continue
-        if _skip_seq and re.match(r"^  -(\s|$)", line):
-            continue
-        _skip_seq = False
+        if _skip_seq:
+            # Drop the replaced chain's stale block-sequence items. Indent
+            # is 2+ spaces (save_config normalizes flow chains to 4-space
+            # block-seq); blanks inside the run are skipped with it. The
+            # first non-blank non-item line ends the run and is processed
+            # normally below (comments reset the run — preserved, never eaten).
+            if line.strip() == "" or re.match(r"^  +-(\s|$)", line):
+                continue
+            _skip_seq = False
         if in_models and re.match(r"^\S", line):
             # leaving the block: append any never-seen slots before the next top-level key
             for k, v in update.items():
@@ -309,7 +315,17 @@ def sync_omp_from_setup(quiet: bool = False) -> bool:
     """Entry point: slots <- wizard result, then bridge render.
 
     Returns True when both engines now resolve models.
+
+    Also ensures the shared-bank memory default (config only, no pip):
+    fresh installs get memory.provider=mnemosyne; explicit user backends
+    are never clobbered. The bridge render below pins the matching omp
+    memory.backend=mnemopi subtree.
     """
+    try:
+        from mercury_cli.memory_setup import ensure_mnemosyne_default
+        ensure_mnemosyne_default(install=False)
+    except Exception:
+        pass
     default = _read_model_default()
     if default is None:
         if not quiet:
