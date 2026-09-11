@@ -852,7 +852,6 @@ class _StubClient:
         self.cancelled.append(request_id)
 
 
-@pytest.mark.xfail(strict=False, reason="tools-owned hook surface (tools.omp_rpc_transport.set_approval_frame_hook absent) — sibling scope")
 class TestRpcApprovalFrameHook:
     REQUEST = _StubRequest(
         id="ui_1", method="select",
