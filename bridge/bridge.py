@@ -110,6 +110,17 @@ def parse_config(path=None):
                 item = s[1:].strip().strip("'\"")
                 if item:
                     active.append(item)
+            elif s.startswith("[") and active is not None and line[:1] in (" ", "\t"):
+                # Standalone flow list on its own line (e.g. `[]` under an
+                # empty chain key): fold its items into the active chain and
+                # keep the models: block open — otherwise the generic
+                # column-0 guard below fires and every key after the chains
+                # (thinking levels) is silently dropped.
+                inner = s[1:-1] if s.endswith("]") else s[1:]
+                for item in inner.split(","):
+                    item = item.strip().strip("'\"")
+                    if item:
+                        active.append(item)
             elif not s.startswith((" ", "\t")):
                 in_models = False
                 active = None
@@ -496,6 +507,14 @@ def render_omp_subtree(slots, target=None):
         # single legacy slot remains the default when no chain is set.
         f'    fallbackChains: {{"{slots["delegate_model"]}": {json.dumps([m for m in (slots.get("delegate_fallback_chain") or []) if m] or [slots["delegate_fallback"]])}}}\n'
     )
+    # HERMES-OMP PATCH (thinking pin): interactive omp's /model picker shows
+    # defaultThinkingLevel (omp schema default "high"). Pin it from the single
+    # source of truth models.delegate_thinking_level (default xhigh) so the
+    # TUI default matches delegated children (OMP_THINKING_LEVEL). "off" has
+    # no meaning in that enum — omit it and let the schema default apply.
+    _think = thinking_level_from_config(slots.get("delegate_thinking_level"))
+    if _think and _think != "off":
+        omp_block += f"  defaultThinkingLevel: {_think}\n"
     omp_provider = _hermes_web_omp_provider(text)
     if omp_provider:
         # PIN the inherited provider first; omp appends its remaining chain.
