@@ -183,6 +183,11 @@ CHILD_PROMPT_FAILED_NOTICE = (
 CHILD_STEER_FAILED_NOTICE = (
     "⚠ steer failed — see the sidecar log"
 )
+CHILD_ORPHAN_NOTICE = (
+    "⚠ this agent never finished its first turn before the last restart, "
+    "so there is no saved session to resume — send a message to start it "
+    "fresh here, or /exit to remove it (nothing was lost: no turn had completed yet)."
+)
 #: BUG2 follow-up spam gate: injected delegate summaries are truncated to
 #: this many chars (the gateway turn sees the gist, the room stays quiet).
 FOLLOWUP_SUMMARY_MAX_CHARS = 500
@@ -606,6 +611,14 @@ class SidecarDaemon:
         except Exception as exc:  # noqa: BLE001 — membership heal never fails boot
             log.warning("owner membership heal skipped: %s", exc)
             report["owner_joined"] = 0
+        # Spawn-durability O3: handle-less never-materialized 0-agents get
+        # an explicit room notice here — never a silent live-empty room
+        # after a restart. Best-effort; boot never fails on it.
+        try:
+            report["orphan_marked"] = await self._mark_never_materialized_orphans()
+        except Exception as exc:  # noqa: BLE001 — orphan marking never fails boot
+            log.warning("orphan marking skipped: %s", exc)
+            report["orphan_marked"] = []
 
         # VM round 3 — first-login cold start: the first E2EE share + power
         # snapshot above were built BEFORE the owner ever joined (this heal
@@ -768,6 +781,73 @@ class SidecarDaemon:
         except Exception as exc:  # noqa: BLE001 — respawn reports, never blocks boot
             log.exception("respawn pass failed (continuing — D18 best-effort)")
             return {"error": str(exc)}
+
+    async def _mark_never_materialized_orphans(self) -> list[str]:
+        """Boot orphan-marking (spawn-durability O3): never silent live-empty rooms.
+
+        A 0-agent whose first turn never completed holds its only handle in
+        the dead process's memory; the D18 respawn pass correctly refuses to
+        resume it (nothing durable exists). Without this pass its room would
+        sit live and empty until someone messages it. Mark each such node
+        with an explicit room notice (rebuild-or-exit affordance) plus a
+        ``child-orphan:<node_id>`` routing-log entry.
+
+        Scope: live depth-0 nodes only (subagents get NO respawn), skipping
+        ``SKIP_RESPAWN_KINDS`` and any node already holding a handle. One
+        notice per boot while the orphan persists (the next completed turn
+        flips ``session_materialized`` and silences it; /exit removes the
+        row). D18 intact: no session_ref/MXID change (never a fork), no
+        liveness change, exited nodes never touched. Never raises.
+        """
+        marked: list[str] = []
+        try:
+            state = self.state
+            registry = self.registry
+            if state is None or registry is None or self.renderer is None:
+                return marked
+            try:
+                from observatory.spawn import SKIP_RESPAWN_KINDS, is_session_materialized
+            except Exception:
+                return marked
+            try:
+                live = state.get_live()
+            except Exception:
+                log.exception("orphan marking: state read failed (continuing)")
+                return marked
+            from observatory.control import ControlNotice
+
+            for row in live:
+                try:
+                    node_id = str(row.get("node_id") or "")
+                    if not node_id or row.get("depth") != 0:
+                        continue
+                    if row.get("status") != "live":
+                        continue
+                    if (row.get("extra") or {}).get("kind", "") in SKIP_RESPAWN_KINDS:
+                        continue
+                    if is_session_materialized(row):
+                        continue
+                    try:
+                        if registry.get(node_id) is not None:
+                            continue
+                    except Exception:  # noqa: BLE001 — uncertain handle state: skip
+                        continue
+                    try:
+                        await self._post_notice(ControlNotice(node_id, CHILD_ORPHAN_NOTICE))
+                    except Exception:  # noqa: BLE001 — notice failure never fails boot
+                        log.exception("orphan notice failed (node %s)", node_id)
+                        continue
+                    try:
+                        self.routing_log.append(f"child-orphan:{node_id}")
+                    except Exception:  # noqa: BLE001 — observability never raises
+                        pass
+                    marked.append(node_id)
+                except Exception:  # noqa: BLE001 — per-node isolation
+                    log.exception("orphan marking failed for a node (continuing)")
+                    continue
+        except Exception:  # noqa: BLE001 — marking never fails boot
+            log.exception("orphan marking pass failed (continuing)")
+        return marked
 
     def _load_owner(self) -> tuple[str, str]:
         doc = json.loads(self.paths.owner_credentials.read_text(encoding="utf-8"))
