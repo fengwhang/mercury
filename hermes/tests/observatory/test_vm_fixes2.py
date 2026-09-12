@@ -249,7 +249,7 @@ async def test_bug1_rotates_on_first_seen_device():
     async def _trust_a(sender):
         return {"trusted": ["NEWD"], "known": [], "refused": [], "fetched": ["NEWD"]}
     mgr.ensure_owner_trust = _trust_a  # type: ignore[method-assign]
-    async def _members_a(room_id):
+    async def _members_a(room_id, **kwargs):
         return ["@owner:hs"]
     mgr._room_members = _members_a  # type: ignore[method-assign]
     report = await mgr.ensure_room_share("!room:hs", "@merc_gw:hs")
@@ -270,7 +270,7 @@ async def test_bug1_rotates_on_changed_keys_refused():
     async def _trust_b(sender):
         return {"trusted": [], "known": [], "refused": ["CHANGED"], "fetched": ["CHANGED"]}
     mgr.ensure_owner_trust = _trust_b  # type: ignore[method-assign]
-    async def _members_b(room_id):
+    async def _members_b(room_id, **kwargs):
         return ["@owner:hs"]
     mgr._room_members = _members_b  # type: ignore[method-assign]
     report = await mgr.ensure_room_share("!room:hs", "@merc_gw:hs")
