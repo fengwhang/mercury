@@ -192,6 +192,30 @@ class TestHandlerDomainPrecedence:
             monkeypatch.setattr(platform_hook, "LAST_BOOT", boot)
             h = _mixin()
             out = await h._handle_spawn_command(_gw_event("docs-sweep"))
+            # No gateway row + no provisioned home: the honest setup
+            # message (BUG1-SPAWN-SERVERNAME), never an off-domain ghost.
+            assert "mercury setup observatory" in out
+        finally:
+            s.close()
+
+    @pytest.mark.asyncio
+    async def test_handler_refuses_bare_mxid_without_domain(self, tmp_path, monkeypatch):
+        from observatory import platform_hook
+
+        s = ObservatoryState(tmp_path / "state.db")
+        try:
+            slug = assign_slug("gateway agent", s)
+            s.add_node(
+                "gw", engine="hermes", name="gateway agent", slug=slug,
+                mxid="@merc_bare-nodomain", session_ref="session:gw",
+                parent_node_id=None, extra={"kind": "gateway"},
+            )
+            boot = SimpleNamespace(state=s, registry=SimpleNamespace(), renderer=None)
+            monkeypatch.setattr(platform_hook, "LAST_BOOT", boot)
+            h = _mixin()
+            out = await h._handle_spawn_command(_gw_event("docs-sweep"))
+            # Gateway row exists but carries no domain and no other leg is
+            # live: fail loud, never mint off-domain.
             assert "server_name unavailable" in out
         finally:
             s.close()

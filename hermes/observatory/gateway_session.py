@@ -471,8 +471,10 @@ def _feed_event_to_dict(event: Any) -> dict[str, Any] | None:
     """One ``OmpFeed`` typed event → datagram ``feed`` dict; None to skip.
 
     Message frames forward as ``feed="message"`` (the sidecar renders
-    non-blank text into the grandchild room). Unknown shapes are skipped;
-    never raises.
+    non-blank text into the child/grandchild room). Self frames
+    (``subagent_id == ""`` — the child's OWN main-session tools/thoughts)
+    forward unchanged; the sidecar maps the empty id to the child's own
+    room. Unknown shapes are skipped; never raises.
     """
     try:
         import dataclasses

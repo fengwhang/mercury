@@ -280,6 +280,111 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
+#: state.db meta key projecting the live homeserver domain (the sidecar
+#: toml value) into shared state, so the gateway process — which has no
+#: live renderer — can mint spawn ghosts on the live domain without ever
+#: assuming a ``mercury.local`` default. Written at provision/boot; read
+#: by the gateway spawn path as a fallback leg behind the gateway ghost
+#: mxid domain.
+SERVER_NAME_META_KEY = "server_name"
+
+#: Gateway node identity (mirrors sidecar_main GATEWAY_NODE_ID/NAME so the
+#: provision/boot seam and the daemon never fork the gateway row).
+GATEWAY_NODE_ID = "gw"
+GATEWAY_NODE_NAME = "gateway agent"
+
+
+def live_server_name(mercury_home: str | Path | None = None) -> str | None:
+    """Live homeserver domain from the closed tuwunel.toml, or None when
+    unprovisioned/unreadable. NEVER a default: None means the caller must
+    fail loud (setup message), never mint an off-domain ghost."""
+    try:
+        paths = ObservatoryPaths(_mercury_home(mercury_home))
+        if not paths.toml.is_file():
+            return None
+        cfg = _load_toml(paths.toml).get("global", {})
+        name = str(cfg.get("server_name") or "").strip()
+        return name or None
+    except Exception:
+        return None
+
+
+def ensure_gateway_node_in_state(state: Any, *, server_name: str) -> str:
+    """Idempotent gateway row + server_name meta projection (shared-state
+    seam for provision/boot/gateway paths). Creates the ``gw`` node minted
+    on ``server_name`` when absent; repairs a bare mxid (no ``:domain``)
+    preserving its slug; stamps ``server_name`` meta. Returns the mxid.
+    Raises ValueError on an empty server_name (never a default)."""
+    clean = str(server_name or "").strip()
+    if not clean:
+        raise ValueError("ensure_gateway_node_in_state: server_name is required (live domain — never default)")
+    from observatory.identity import assign_slug, virtual_mxid
+    from observatory.state import StateError
+
+    try:
+        row = state.get(GATEWAY_NODE_ID)
+        mxid = str((row or {}).get("mxid") or "")
+        if ":" in mxid and mxid.rsplit(":", 1)[1].strip():
+            try:
+                state.set_meta(SERVER_NAME_META_KEY, clean)
+            except Exception:
+                pass
+            return mxid
+        slug = str((row or {}).get("slug") or "") or assign_slug(GATEWAY_NODE_NAME, state)
+        mxid = virtual_mxid(slug, server_name=clean)
+        try:
+            with state.locked() as db:
+                with db:
+                    db.execute("UPDATE nodes SET mxid = ?, slug = ? WHERE node_id = ?", (mxid, slug, GATEWAY_NODE_ID))
+        except Exception:
+            pass
+        try:
+            state.set_meta(SERVER_NAME_META_KEY, clean)
+        except Exception:
+            pass
+        return mxid
+    except StateError:
+        slug = assign_slug(GATEWAY_NODE_NAME, state)
+        mxid = virtual_mxid(slug, server_name=clean)
+        state.add_node(
+            GATEWAY_NODE_ID, engine="hermes", name=GATEWAY_NODE_NAME, slug=slug,
+            mxid=mxid, session_ref="session:gateway",
+            parent_node_id=None, extra={"kind": "gateway"},
+        )
+        try:
+            state.set_meta(SERVER_NAME_META_KEY, clean)
+        except Exception:
+            pass
+        return mxid
+
+
+def project_live_server_name(
+    mercury_home: str | Path | None = None, state: Any | None = None,
+) -> str | None:
+    """Best-effort projection: read the live toml domain and ensure the
+    gateway row + meta in ``state`` (opened on demand when None). Returns
+    the mxid, or None when unprovisioned. Never raises, never defaults."""
+    live = live_server_name(mercury_home)
+    if not live:
+        return None
+    own = False
+    try:
+        if state is None:
+            from observatory.state import ObservatoryState, default_state_db_path
+
+            state = ObservatoryState(default_state_db_path(_mercury_home(mercury_home)))
+            own = True
+        mxid = ensure_gateway_node_in_state(state, server_name=live)
+        return mxid
+    except Exception:
+        return None
+    finally:
+        if own:
+            try:
+                state.close()
+            except Exception:
+                pass
+
 def _http_json(method: str, url: str, payload: dict | None = None,
                token: str | None = None) -> tuple[int, dict]:
     data = json.dumps(payload).encode() if payload is not None else None
@@ -2074,7 +2179,7 @@ def verify_and_converge_gateway(mercury_home: str | Path | None = None) -> str:
     if not paths.toml.is_file() or not paths.owner_credentials.is_file():
         return "deferred: unprovisioned (tuwunel.toml or owner-credentials.json missing)"
     try:
-        from observatory.state import ObservatoryState, StateError
+        from observatory.state import ObservatoryState
     except Exception as exc:  # noqa: BLE001
         return f"deferred: state store unavailable ({exc})"
     try:
@@ -2082,19 +2187,10 @@ def verify_and_converge_gateway(mercury_home: str | Path | None = None) -> str:
     except Exception as exc:  # noqa: BLE001
         return f"deferred: could not open state.db ({exc})"
     try:
-        try:
-            gateway_mxid = str(state.get("gw")["mxid"])
-        except StateError:
-            from observatory.identity import assign_slug, virtual_mxid
-            cfg = _load_toml(paths.toml).get("global", {})
-            server_name = str(cfg.get("server_name", config_gen.SERVER_NAME_DEFAULT))
-            slug = assign_slug("gateway agent", state)
-            gateway_mxid = virtual_mxid(slug, server_name=server_name)
-            state.add_node(
-                "gw", engine="hermes", name="gateway agent", slug=slug,
-                mxid=gateway_mxid, session_ref="session:gateway",
-                parent_node_id=None, extra={"kind": "gateway"},
-            )
+        live = live_server_name(home)
+        if not live:
+            raise ProvisionError("tuwunel.toml pins no server_name (unprovisioned identity)")
+        gateway_mxid = ensure_gateway_node_in_state(state, server_name=live)
     except Exception as exc:  # noqa: BLE001
         try:
             state.close()
@@ -2284,6 +2380,30 @@ def provision(mercury_home: str | Path | None = None,
         "owner": ensure_owner_account(paths, owner_localpart, owner_password),
         "unit": ensure_systemd_unit(paths) if systemd else "skipped (--no-systemd)",
     }
+    # Gateway ghost projection (BUG1-SPAWN-SERVERNAME): the gateway process
+    # has no live renderer, so /spawn resolves the live domain from the
+    # shared state.db gateway mxid. Seed it here from the closed toml (the
+    # live value just ensured above — never a default) so a fresh install
+    # can spawn before the sidecar ever boots. Fail-hard like every other
+    # provision step.
+    try:
+        live = live_server_name(paths.root.parent)
+        if not live:
+            raise ProvisionError("tuwunel.toml pins no server_name (unprovisioned identity)")
+        from observatory.state import ObservatoryState
+
+        _gw_state = ObservatoryState(paths.root / "state.db")
+        try:
+            summary["gateway"] = ensure_gateway_node_in_state(_gw_state, server_name=live)
+        finally:
+            try:
+                _gw_state.close()
+            except Exception:
+                pass
+    except ProvisionError:
+        raise
+    except Exception as exc:
+        raise ProvisionError(f"gateway node seeding failed: {exc}") from exc
     return summary
 
 

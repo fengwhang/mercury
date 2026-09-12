@@ -231,6 +231,22 @@ async def boot_sidecar(
         result.errors.append(f"state open failed: {exc}")
         logger.exception("observatory: state open failed")
         return result
+    # BUG1-SPAWN-SERVERNAME: the gateway process has no live renderer (it
+    # lives in the sidecar daemon), so /spawn resolves the live domain from
+    # the shared state.db gateway ghost mxid. The gateway-thread boot runs
+    # with client=None (renderer None) — project the live toml domain +
+    # gateway ghost into shared state HERE so the spawn legs hit even when
+    # the sidecar daemon has not booted yet. Live toml value only, never
+    # the ``mercury.local`` param default; unprovisioned homes stay
+    # untouched (callers fail loud with the setup message). Best-effort:
+    # projection problems are reported, never fatal to the boot.
+    try:
+        from observatory.provision import project_live_server_name
+
+        project_live_server_name(home, result.state)
+    except Exception as exc:  # noqa: BLE001 — boot must report, not raise
+        result.errors.append(f"gateway projection failed: {exc}")
+        logger.exception("observatory: gateway projection failed")
 
     if client is not None:
         try:
