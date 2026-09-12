@@ -910,3 +910,151 @@ async def test_grandchild_death_walks_up_to_orchestrator(daemon: sm.SidecarDaemo
         assert agent.turns[0].startswith("[subagent lint failed]")
     finally:
         await daemon.shutdown()
+
+
+class FakeRedirectHermesAgent(FakeHermesAgent):
+    """Hermes child double with a CLI-style live-request redirect surface."""
+
+    def __init__(self, session_id: str, *, redirect_ok: bool = True):
+        super().__init__(session_id)
+        self.redirects: list[str] = []
+        self.steers: list[str] = []
+        self._redirect_ok = redirect_ok
+
+    def redirect(self, text: str):
+        self.redirects.append(text)
+        return self._redirect_ok
+
+    def steer(self, text: str):
+        self.steers.append(text)
+        return True
+
+
+def test_redirect_helper_falls_back_without_surface():
+    """No redirect surface (legacy agent) or a declined redirect reads as
+    miss — the caller queues a fresh turn so nothing is lost."""
+    assert sm.SidecarDaemon._redirect_live_hermes_child(FakeHermesAgent("s"), "hi") is False
+    assert sm.SidecarDaemon._redirect_live_hermes_child(object(), "hi") is False
+    assert sm.SidecarDaemon._redirect_live_hermes_child(
+        FakeRedirectHermesAgent("s", redirect_ok=False), "hi") is False
+    assert sm.SidecarDaemon._redirect_live_hermes_child(
+        FakeRedirectHermesAgent("s"), "hi") is True
+
+
+@pytest.mark.asyncio
+async def test_midturn_hermes_steer_redirects_live_turn(daemon: sm.SidecarDaemon):
+    """Mid-turn hermes steer redirects the live turn — no second turn, no
+    extra room render. The live turn's own reply still renders normally."""
+    await daemon.boot()
+    try:
+        agent = FakeRedirectHermesAgent("sess-redirect")
+        row = await spawn_orchestrator(
+            "redirector",
+            "hermes",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            agent_factory=lambda: agent,
+        )
+        node_id = row["node_id"]
+        lock = daemon._child_locks.get(node_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            daemon._child_locks[node_id] = lock
+        await lock.acquire()  # a live turn owns the agent
+        try:
+            assert await daemon._run_hermes_child_turn(node_id, "turn left") is True
+        finally:
+            lock.release()
+        assert agent.redirects == ["turn left"]
+        assert agent.turns == [], "mid-turn steer queued a second turn"
+        assert agent.steers == [], "redirect absorbed the steer — no double delivery"
+        assert not [c for c in _room_sends(daemon, daemon.state.get(node_id)["room_id"])
+                    if "turn left" in c[2]], "steer text rendered as a reply"
+    finally:
+        await daemon.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_quiet_continuation_takes_fresh_turn_during_live_child(
+    daemon: sm.SidecarDaemon,
+):
+    """Quiet parent-continuations never steer: even with a live turn and a
+    redirect surface they queue a fresh turn and stay silent in-room."""
+    await daemon.boot()
+    try:
+        agent = FakeRedirectHermesAgent("sess-quietlive")
+        row = await spawn_orchestrator(
+            "quietlive",
+            "hermes",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            agent_factory=lambda: agent,
+        )
+        node_id = row["node_id"]
+        room_id = daemon.state.get(node_id)["room_id"]
+        lock = daemon._child_locks.get(node_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            daemon._child_locks[node_id] = lock
+        await lock.acquire()  # a live turn owns the agent
+        task = asyncio.create_task(
+            daemon._run_hermes_child_turn(node_id, "sibling finished: ok", quiet=True)
+        )
+        try:
+            await asyncio.sleep(0.05)
+            assert not task.done(), "quiet turn must wait for the live turn"
+            assert agent.redirects == [], "quiet continuation must never steer"
+        finally:
+            lock.release()
+        await asyncio.wait_for(task, timeout=10.0)
+        assert task.result() is True
+        assert agent.turns == ["sibling finished: ok"]
+        assert not [c for c in _room_sends(daemon, room_id)
+                    if "sibling finished: ok" in c[2]], "quiet turn must stay silent"
+    finally:
+        await daemon.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_member_voice_outage_still_renders_child_turn(
+    daemon: sm.SidecarDaemon, monkeypatch
+):
+    """Ghost-not-member everywhere: the members read degrades to empty and
+    the child turn still runs with its reply rendered — never dies silent."""
+    await daemon.boot()
+    try:
+        agent = FakeHermesAgent("sess-outage")
+        row = await spawn_orchestrator(
+            "outage",
+            "hermes",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            agent_factory=lambda: agent,
+        )
+        room = daemon.state.get(row["node_id"])
+        real_client_api = daemon.client.client_api
+
+        async def _no_members(method, path, *, sender=None, params=None, json_body=None):
+            if "/members" in str(path):
+                raise MatrixError(
+                    "GET", path, 403, {"errcode": "M_FORBIDDEN", "error": "not a member"})
+            return await real_client_api(
+                method, path, sender=sender, params=params, json_body=json_body)
+
+        monkeypatch.setattr(daemon.client, "client_api", _no_members)
+        assert await daemon._room_members(room["room_id"]) == []
+        await daemon._on_transaction("tx-outage", [_msg(room["room_id"], "hello child")])
+        await _drain(daemon)
+        assert agent.turns == ["hello child"], "member-voice outage vetoed the engine turn"
+        assert any(
+            c[2] == "echo:hello child" and c[3] == room["mxid"]
+            for c in _room_sends(daemon, room["room_id"])
+        ), "child reply never rendered during member-voice outage"
+    finally:
+        await daemon.shutdown()

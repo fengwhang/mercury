@@ -432,3 +432,63 @@ def test_steer_kind_turn_still_registers_approval_forward(monkeypatch):
     assert reply == "ok"
     assert calls and calls[0][0] == "register"
     assert calls[-1][0] == "unregister"
+
+
+# --- redirect-then-steer (mid-turn gateway text interrupts) -------------------
+
+
+class FakeRedirectAgent(FakeSteerAgent):
+    """Steer agent with a CLI-style live-request redirect surface."""
+
+    def __init__(self, *, redirect_ok: bool = True, redirect_raises: bool = False):
+        super().__init__()
+        self.redirects: list[str] = []
+        self._redirect_ok = redirect_ok
+        self._redirect_raises = redirect_raises
+
+    def redirect(self, text: str):
+        self.redirects.append(text)
+        if self._redirect_raises:
+            raise RuntimeError("redirect boom")
+        return self._redirect_ok
+
+
+def test_steer_redirects_live_turn_first():
+    """A live request absorbs the steer via redirect — no double delivery."""
+    agent = FakeRedirectAgent(redirect_ok=True)
+    gs._session_agents["gateway"] = agent
+    out = gs.steer_gateway_agent("turn left now")
+    assert out == {"steered": True, "reason": ""}
+    assert agent.redirects == ["turn left now"]
+    assert agent.steers == []
+
+
+def test_steer_falls_back_when_no_live_turn():
+    """redirect=False (turn ended in the race) degrades to the steer buffer."""
+    agent = FakeRedirectAgent(redirect_ok=False)
+    gs._session_agents["gateway"] = agent
+    out = gs.steer_gateway_agent("after all, go right")
+    assert out == {"steered": True, "reason": ""}
+    assert agent.redirects == ["after all, go right"]
+    assert agent.steers == ["after all, go right"]
+
+
+def test_steer_falls_back_when_redirect_raises():
+    """A redirect failure never loses the steer — the buffer still takes it."""
+    agent = FakeRedirectAgent(redirect_raises=True)
+    gs._session_agents["gateway"] = agent
+    out = gs.steer_gateway_agent("steady as she goes")
+    assert out == {"steered": True, "reason": ""}
+    assert agent.steers == ["steady as she goes"]
+
+
+def test_steer_miss_when_redirect_declines_and_no_steer_surface():
+    """redirect=False with no steer surface still reports a clean miss."""
+
+    class RedirectOnly:
+        def redirect(self, text):
+            return False
+
+    gs._session_agents["gateway"] = RedirectOnly()
+    out = gs.steer_gateway_agent("hi")
+    assert out == {"steered": False, "reason": "agent has no steer surface"}

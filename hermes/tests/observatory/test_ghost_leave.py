@@ -345,3 +345,84 @@ async def test_heal_never_fails_converge(tmp_path):
         state, gateway_node_id=GW, server_name=SERVER, owner_mxid=OWNER, executor=None,
     ).build_plan(host="gatehost")
     assert await ex.ensure_gateway_leaves_plan(plan) == 0
+
+
+@dataclass
+class MembersClient:
+    """Members-read double: per-sender 403s plus a canned member chunk."""
+    calls: list = field(default_factory=list)
+    fail_senders: set = field(default_factory=set)
+    chunk: list = field(default_factory=list)
+
+    async def client_api(self, method, path, *, sender=None, params=None, json_body=None):
+        self.calls.append(("client_api", method, str(path), sender))
+        if sender in self.fail_senders:
+            raise MatrixError("GET", path, 403, {"errcode": "M_FORBIDDEN"})
+        return {"chunk": list(self.chunk)}
+
+
+def _member_event(user_id: str) -> dict:
+    return {"type": "m.room.member", "state_key": user_id,
+            "content": {"membership": "join"}}
+
+
+@pytest.mark.asyncio
+async def test_sidecar_room_members_falls_back_past_member_voice_raise(tmp_path):
+    """Member-voice 403 (gateway left the child room) falls back to the
+    gateway reader — the member voice is tried first, never skipped."""
+    import observatory.sidecar_main as sm
+
+    state = _seed_gateway_child(tmp_path)
+    gw_mxid = state.get(GW)["mxid"]
+    child_mxid = state.get(CHILD)["mxid"]
+    state.set_room_id(CHILD, "!r-child:x")
+    fake = MembersClient(fail_senders={child_mxid},
+                         chunk=[_member_event(child_mxid), _member_event(OWNER)])
+    daemon = sm.SidecarDaemon.__new__(sm.SidecarDaemon)
+    daemon.client = fake  # type: ignore[assignment]
+    daemon.state = state  # type: ignore[assignment]
+    daemon.gateway_mxid = gw_mxid
+    assert await daemon._room_members("!r-child:x") == [child_mxid, OWNER]
+    senders = [c[3] for c in fake.calls]
+    assert senders == [child_mxid, gw_mxid], "member voice must be tried before fallback"
+
+
+@pytest.mark.asyncio
+async def test_sidecar_room_members_all_readers_fail_returns_empty(tmp_path):
+    """Ghost-not-member everywhere reads as not-member — never raises, so a
+    members failure cannot veto the child turn or kill the reconcile."""
+    import observatory.sidecar_main as sm
+
+    state = _seed_gateway_child(tmp_path)
+    gw_mxid = state.get(GW)["mxid"]
+    child_mxid = state.get(CHILD)["mxid"]
+    state.set_room_id(CHILD, "!r-child:x")
+    fake = MembersClient(fail_senders={child_mxid, gw_mxid})
+    daemon = sm.SidecarDaemon.__new__(sm.SidecarDaemon)
+    daemon.client = fake  # type: ignore[assignment]
+    daemon.state = state  # type: ignore[assignment]
+    daemon.gateway_mxid = gw_mxid
+    assert await daemon._room_members("!r-child:x") == []
+
+
+@pytest.mark.asyncio
+async def test_e2ee_room_members_sender_first_then_gateway(tmp_path):
+    """E2EE share path: the sender (always a member there) reads first,
+    then the gateway; total failure reads as empty — never raises."""
+    from observatory import e2ee as e2ee_mod
+
+    state = _seed_gateway_child(tmp_path)
+    gw_mxid = state.get(GW)["mxid"]
+    child_mxid = state.get(CHILD)["mxid"]
+    mgr = e2ee_mod.E2EEManager.__new__(e2ee_mod.E2EEManager)
+    mgr.gateway_mxid = gw_mxid
+    mgr.owner_mxid = OWNER
+    # Sender-first: sender 403s, gateway chunk wins.
+    mgr.client = MembersClient(fail_senders={child_mxid},
+                               chunk=[_member_event(child_mxid)])
+    assert await mgr._room_members("!r-child:x", fallback_sender=child_mxid) == [child_mxid]
+    senders = [c[3] for c in mgr.client.calls]
+    assert senders[0] == child_mxid and gw_mxid in senders
+    # Total outage: empty, no raise — the share path fails closed downstream.
+    mgr.client = MembersClient(fail_senders={child_mxid, gw_mxid, OWNER, None})
+    assert await mgr._room_members("!r-child:x", fallback_sender=child_mxid) == []

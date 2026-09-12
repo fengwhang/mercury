@@ -1054,9 +1054,13 @@ def run_gateway_prompt(
 def steer_gateway_agent(text: str, *, session_id: str = GATEWAY_SESSION_ID) -> dict[str, Any]:
     """Steer the cached gateway-session agent mid-turn (gateway-room steer).
 
-    Calls ``agent.steer(text)`` on the live cached agent when present; the
-    soft-steer buffer lands in the running turn at the next tool boundary
-    without cancelling it (CLI ``/busy steer`` parity). Never takes the
+    Redirect-then-steer: tries ``agent.redirect(text)`` first so a steer
+    landing mid-generation interrupts the live model request like the CLI
+    ``interrupt`` path — a long generation with no tool calls would
+    otherwise sit buffered until turn end. ``redirect()`` itself degrades
+    to the steer buffer during tool execution, and when there is no live
+    turn (or no redirect surface) this falls back to ``agent.steer(text)``
+    with the same buffer semantics. Never takes the
     per-session turn lock — a steer arriving mid-turn must reach the agent
     holding it, not queue behind it. No cached agent after a short
     build-window wait (idle, never prompted) reports ``steered=False`` so
@@ -1082,6 +1086,13 @@ def steer_gateway_agent(text: str, *, session_id: str = GATEWAY_SESSION_ID) -> d
         if _time.monotonic() >= deadline:
             return {"steered": False, "reason": "idle — nothing to steer"}
         _time.sleep(0.05)
+    redirect = getattr(agent, "redirect", None)
+    if callable(redirect):
+        try:
+            if bool(redirect(clean)):
+                return {"steered": True, "reason": ""}
+        except Exception as exc:
+            logger.warning("gateway_session: redirect failed, trying steer: %s", exc)
     steer = getattr(agent, "steer", None)
     if not callable(steer):
         return {"steered": False, "reason": "agent has no steer surface"}

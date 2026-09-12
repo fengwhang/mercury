@@ -2324,7 +2324,11 @@ class E2EEManager:
                 last_exc = exc
                 continue
         if last_exc is not None:
-            raise last_exc
+            # Every reader failed (ghost-not-member everywhere): unreadable
+            # is empty, never a raise — the share path treats failure as
+            # empty and fails closed downstream, and a members failure must
+            # never veto the child turn's render. Loud at debug.
+            log.debug("room members unreadable for %s: %s", room_id, last_exc)
         return []
 
     # -- inbound decryption (appservice transaction pipeline) ----------------------

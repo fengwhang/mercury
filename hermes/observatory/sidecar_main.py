@@ -2189,7 +2189,11 @@ class SidecarDaemon:
                 last_exc = exc
                 continue
         if last_exc is not None:
-            raise last_exc
+            # Every reader failed (ghost-not-member everywhere): unreadable
+            # is not-member, never a raise — a members failure must not
+            # veto the turn or kill boot's directives reconcile. Loud at
+            # debug, empty upstream.
+            log.debug("room members unreadable for %s: %s", room_id, last_exc)
         return []
 
     # --- inbound transactions ---------------------------------------------------
@@ -2915,13 +2919,36 @@ class SidecarDaemon:
             return reply if isinstance(reply, str) else str(reply)
         return "" if result is None else str(result)
 
+    @staticmethod
+    def _redirect_live_hermes_child(agent: Any, text: str) -> bool:
+        """Redirect-then-steer a hermes child with a turn already in flight.
+
+        Interrupts the live model request like the CLI ``interrupt`` path
+        (``redirect()`` degrades to the steer buffer during tool exec, so
+        one call covers both). True when the live turn absorbed the text
+        (no second turn needed); False when there is no live turn to steer
+        (the turn ended in the race) or no redirect surface — the caller
+        falls back to a queued fresh turn so nothing is lost. Never raises.
+        """
+        redirect = getattr(agent, "redirect", None)
+        if not callable(redirect):
+            return False
+        try:
+            return bool(redirect(text))
+        except Exception:
+            log.debug("live hermes child redirect failed — queued turn fallback", exc_info=True)
+            return False
+
     async def _run_hermes_child_turn(
         self, node_id: str, text: str, *, kind: str = "steer", quiet: bool = False
     ) -> bool:
         """One headless turn on a hermes child's own session; the reply
         renders in its room, in its own voice — unless ``quiet`` (a
         routine parent-continuation: the turn still runs, the room stays
-        silent). False when no handle
+        silent). A steer arriving while the child's turn is already live
+        redirects it instead of queueing a second turn behind the lock
+        (quiet continuations always take a fresh turn, never a steer).
+        False when no handle
         (the session-unavailable notice posted instead)."""
         from observatory.control import ControlNotice
 
@@ -2946,6 +2973,13 @@ class SidecarDaemon:
         if lock is None:
             lock = asyncio.Lock()
             self._child_locks[node_id] = lock
+        if not quiet and lock.locked():
+            # Mid-turn steer: the live turn owns the agent — interrupt its
+            # request rather than serializing a second turn behind it. A
+            # miss (turn ended in the race, no redirect surface) falls
+            # through to the queued fresh turn below.
+            if self._redirect_live_hermes_child(agent, text):
+                return True
         async with lock:
             try:
                 reply = await asyncio.to_thread(
