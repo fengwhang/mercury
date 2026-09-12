@@ -6425,6 +6425,15 @@ class GatewaySlashCommandsMixin:
         sidecar boot supplied one else None (callers build a planning-only
         renderer or defer purges to sidecar replay — never assume
         mercury.local, never send plaintext).
+
+        BUG1-SPAWN-SERVERNAME: home resolution is single-derived (boot home
+        else the shared ``_mercury_home`` chain — never a second derivation),
+        and a provisioned home with an empty/bare state gets the live toml
+        domain + gateway ghost projected before the gateway-node gate, so
+        /spawn can mint on the live domain before the sidecar ever boots.
+        No live gateway row after projection means this is not an
+        observatory home (wrong home / never provisioned) — the honest
+        setup message, never a downstream server_name error.
         """
         try:
             from observatory import platform_hook
@@ -6434,7 +6443,6 @@ class GatewaySlashCommandsMixin:
         state = getattr(boot, "state", None) if boot is not None else None
         registry = getattr(boot, "registry", None) if boot is not None else None
         renderer = getattr(boot, "renderer", None) if boot is not None else None
-        had_boot_state = state is not None
         if state is None:
             # Shared-state fallback: open the canonical state.db file for
             # this mercury home (same file the sidecar daemon reads).
@@ -6449,24 +6457,29 @@ class GatewaySlashCommandsMixin:
                 return None, f"no observatory sidecar boot found and shared state unreadable ({exc}) — run `mercury setup observatory`"
             if state is None:
                 return None, "no observatory sidecar boot found — run `mercury setup observatory`"
-            # A fallback state without a live gateway node is not an
-            # observatory home (wrong home / never provisioned) — keep the
-            # honest setup message instead of a downstream server_name error.
-            try:
-                live = state.get_live()
-            except Exception:
-                live = []
-            try:
-                has_gw = any(str((r or {}).get("node_id") or "") == "gw" for r in (live or []))
-                if not has_gw:
-                    has_gw = any(
-                        isinstance((r or {}).get("extra"), dict) and (r or {}).get("extra", {}).get("kind") == "gateway"
-                        for r in (live or [])
-                    )
-            except Exception:
-                has_gw = False
-            if not has_gw and not had_boot_state:
-                return None, "no observatory sidecar boot found — run `mercury setup observatory`"
+        try:
+            home = self._observatory_mercury_home()
+            if home:
+                from observatory.provision import project_live_server_name
+
+                project_live_server_name(home, state)
+        except Exception:
+            pass
+        try:
+            live = state.get_live()
+        except Exception:
+            live = []
+        try:
+            has_gw = any(str((r or {}).get("node_id") or "") == "gw" for r in (live or []))
+            if not has_gw:
+                has_gw = any(
+                    isinstance((r or {}).get("extra"), dict) and (r or {}).get("extra", {}).get("kind") == "gateway"
+                    for r in (live or [])
+                )
+        except Exception:
+            has_gw = False
+        if not has_gw:
+            return None, "no observatory sidecar boot found — run `mercury setup observatory`"
         if registry is None:
             try:
                 from observatory.spawn import OrchestratorRegistry
@@ -6557,12 +6570,13 @@ class GatewaySlashCommandsMixin:
            from its toml-derived ``self.server_name``, so it is the
            sidecar toml value projected through shared state.db);
         2. the boot renderer's ``server_name``.
-        ``""`` when neither is available — the caller fails loud (no
-        ``mercury.local`` fallback: an off-domain ghost 400s every
-        createRoom with M_EXCLUSIVE). The sidecar toml itself is not read
-        here: this handler runs in the gateway process and the daemon's
-        memory is not visible; the ghost mxid in shared state.db IS its
-        live projection."""
+        3. the ``server_name`` state meta (provision/boot projection of the
+           live toml value — covers bare-mxid rows predating the repair);
+        4. the live tuwunel.toml ``server_name`` for this mercury home
+           (explicit boot home only — never an ambient read, never a
+           ``mercury.local`` fallback: an off-domain ghost 400s every
+           createRoom with M_EXCLUSIVE).
+        ``""`` when none is available — the caller fails loud."""
         try:
             gw_id, _ = self._observatory_gateway_ids(state, renderer)
             mxid = str((state.get(gw_id) or {}).get("mxid") or "")
@@ -6576,6 +6590,22 @@ class GatewaySlashCommandsMixin:
             domain = str(getattr(renderer, "server_name", "") or "").strip()
             if domain:
                 return domain
+        except Exception:
+            pass
+        try:
+            meta = str((state.get_meta("server_name") if state is not None else "") or "").strip()
+            if meta:
+                return meta
+        except Exception:
+            pass
+        try:
+            home = self._observatory_mercury_home()
+            if home:
+                from observatory.provision import live_server_name
+
+                live = live_server_name(home)
+                if live:
+                    return live
         except Exception:
             pass
         return ""
