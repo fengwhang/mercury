@@ -2828,6 +2828,16 @@ class SidecarDaemon:
 
     def _child_task_done(self, task: asyncio.Task) -> None:
         """Drop a finished child-turn task; surface unhandled failures."""
+        self._child_tasks.discard(task)
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+        if exc is not None:
+            log.error("child delivery task failed: %r", exc)
+
     async def _execute_child_actions(self, outcome: Any) -> tuple[set[str], set[str]]:
         """Run non-gateway control actions against the daemon registry.
 
