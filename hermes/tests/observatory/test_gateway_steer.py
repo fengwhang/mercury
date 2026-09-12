@@ -19,7 +19,7 @@ import pytest
 from observatory import gateway_session as gs
 from observatory import sidecar_main as sm
 from observatory.config_gen import HOMESERVER_ADDRESS, ObservatoryPaths
-from observatory.control import QUEUED_STEER_NOTICE, ControlNotice, InjectText
+from observatory.control import APPLIED_STEER_NOTICE, QUEUED_STEER_NOTICE, ControlNotice, InjectText
 from observatory.gateway_transport import (
     ControlSocketGatewayTransport,
     GatewayTransport,
@@ -286,8 +286,10 @@ async def test_midturn_steer_reaches_running_turn(daemon: sm.SidecarDaemon):
         assert transport.steers == [("turn left", gw_id)]
         assert transport.prompts == [] or transport.prompts == [("slow", "prompt", gw_id)]
         assert len([t for t in list(daemon._gateway_tasks) if not t.done()]) == 1
-        # Queued-steer notice is the ack for a mid-turn steer.
-        assert any(c[2] == QUEUED_STEER_NOTICE for c in _sends(daemon.client))
+        # Landed steer acks applied; the deferred queued notice is dropped.
+        bodies = [c[2] for c in _sends(daemon.client)]
+        assert APPLIED_STEER_NOTICE in bodies
+        assert QUEUED_STEER_NOTICE not in bodies
         assert f"gateway-steer:{gw_id}" in daemon.routing_log
         slow.cancel()
         try:

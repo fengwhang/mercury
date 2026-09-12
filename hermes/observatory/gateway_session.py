@@ -1054,22 +1054,56 @@ def run_gateway_prompt(
     return reply
 
 
+def _gateway_agent_turn_live(session_id: str, agent: Any) -> bool:
+    """True when the cached agent has a turn that can drain a steer."""
+    try:
+        if _session_lock(session_id).locked():
+            return True
+    except Exception:
+        pass
+    model_active = getattr(agent, "_model_request_active", None)
+    executing = getattr(agent, "_executing_tools", None)
+    if model_active is None and executing is None:
+        return True  # legacy agent: no liveness surface, fail open
+    try:
+        if model_active is not None and bool(model_active.is_set()):
+            return True
+    except Exception:
+        pass
+    try:
+        if bool(executing):
+            return True
+    except Exception:
+        pass
+    try:
+        if bool(getattr(agent, "_pending_redirect", None)):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def steer_gateway_agent(text: str, *, session_id: str = GATEWAY_SESSION_ID) -> dict[str, Any]:
     """Steer the cached gateway-session agent mid-turn (gateway-room steer).
-
-    Redirect-then-steer: tries ``agent.redirect(text)`` first so a steer
-    landing mid-generation interrupts the live model request like the CLI
+ 
+     Redirect-then-steer: tries ``agent.redirect(text)`` first so a steer
+     landing mid-generation interrupts the live model request like the CLI
     ``interrupt`` path — a long generation with no tool calls would
     otherwise sit buffered until turn end. ``redirect()`` itself degrades
     to the steer buffer during tool execution, and when there is no live
     turn (or no redirect surface) this falls back to ``agent.steer(text)``
-    with the same buffer semantics. Never takes the
-    per-session turn lock — a steer arriving mid-turn must reach the agent
-    holding it, not queue behind it. No cached agent after a short
-    build-window wait (idle, never prompted) reports ``steered=False`` so
-    the caller falls back to a fresh prompt turn. Never raises:
-    the control-socket envelope reports the outcome.
-    """
+    with the same buffer semantics — but only when a turn is live enough
+    to drain that buffer (turn lock held, model request active, tools
+    executing, or a redirect already admitted). A cached-but-idle agent
+    would absorb the text and report success while nothing drains it, so
+    it reports ``steered=False`` and the caller queues a fresh turn.
+    Never takes the
+     per-session turn lock — a steer arriving mid-turn must reach the agent
+     holding it, not queue behind it. No cached agent after a short
+     build-window wait (idle, never prompted) reports ``steered=False`` so
+     the caller falls back to a fresh prompt turn. Never raises:
+     the control-socket envelope reports the outcome.
+     """
     import time as _time
 
     clean = (text or "").strip()
@@ -1096,6 +1130,8 @@ def steer_gateway_agent(text: str, *, session_id: str = GATEWAY_SESSION_ID) -> d
                 return {"steered": True, "reason": ""}
         except Exception as exc:
             logger.warning("gateway_session: redirect failed, trying steer: %s", exc)
+    if not _gateway_agent_turn_live(session_id, agent):
+        return {"steered": False, "reason": "no live turn — queue a fresh turn"}
     steer = getattr(agent, "steer", None)
     if not callable(steer):
         return {"steered": False, "reason": "agent has no steer surface"}
