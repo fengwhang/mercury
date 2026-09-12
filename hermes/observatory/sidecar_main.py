@@ -418,6 +418,16 @@ class SidecarDaemon:
         self._child_tasks: set[asyncio.Task] = set()
         self._child_locks: dict[str, asyncio.Lock] = {}
         self._child_busy: set[str] = set()
+        #: BUG3: hermes-side live-turn count per node, marked synchronously
+        #: at InjectText dispatch and held across the full turn (incl model
+        #: request). The per-node asyncio lock alone misses liveness: it is
+        #: only held once the turn task runs, so a steer landing in the
+        #: dispatch window — or a live turn that never held this daemon's
+        #: lock — reads lock.free and queues a second turn instead of
+        #: redirecting. The counter makes busyness reflect the actual live
+        #: turn; redirect itself is attempted before queueing (the agent's
+        #: redirect() reports live/idle truthfully).
+        self._hermes_inflight: dict[str, int] = {}
         self._child_resume_errors: dict[str, str] = {}
 
         self._homeserver_proc: subprocess.Popen | None = None
@@ -958,10 +968,19 @@ class SidecarDaemon:
             # Hermes children: a held per-node turn lock means a turn is
             # already running, so an InjectText is a mid-turn inject
             # (queued steer); a free lock means an idle new turn (no
-            # queued notice — the reply renders). Gateway mid-turn is
-            # owned downstream by _gateway_delivery_in_flight, not here.
+            # queued notice — the reply renders). BUG3: the lock alone
+            # misses the dispatch window and lock-free live turns, so the
+            # synchronously-marked _hermes_inflight count also reports
+            # busy (held across the full turn incl model request).
+            # Gateway mid-turn is owned downstream by
+            # _gateway_delivery_in_flight, not here.
             if node_id in self._child_busy:
                 return True
+            try:
+                if self._hermes_inflight.get(node_id, 0) > 0:
+                    return True
+            except Exception:
+                pass
             try:
                 lock = self._child_locks.get(node_id)
                 if lock is not None and lock.locked():
@@ -2378,6 +2397,10 @@ class SidecarDaemon:
                 # child-room parity with gateway path: "queued steer" defers
                 # until delivery confirms a mid-turn steer. Idle OmpPrompt
                 # new turns never post it; missing-handle drops it too.
+                # BUG3: a hermes live redirect likewise posts none — nothing
+                # was queued, the live turn carries the instruction (the
+                # ledger entry flips to applied silently; the live reply is
+                # the ack).
                 try:
                     _actions = list(getattr(outcome, "actions", ()) or ())
                 except Exception:
@@ -2390,7 +2413,7 @@ class SidecarDaemon:
                         _deferred.append(_n)
                     else:
                         _immediate.append(_n)
-                missing = await self._execute_child_actions(outcome)
+                missing, redirected = await self._execute_child_actions(outcome)
                 for notice in _immediate:
                     try:
                         await self._post_notice(notice)
@@ -2400,6 +2423,8 @@ class SidecarDaemon:
                     if _has_idle_prompt:
                         continue
                     if missing and getattr(notice, "node_id", "") in missing:
+                        continue
+                    if redirected and getattr(notice, "node_id", "") in redirected:
                         continue
                     try:
                         await self._post_notice(notice)
@@ -2789,17 +2814,7 @@ class SidecarDaemon:
 
     def _child_task_done(self, task: asyncio.Task) -> None:
         """Drop a finished child-turn task; surface unhandled failures."""
-        self._child_tasks.discard(task)
-        try:
-            exc = task.exception()
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            return
-        if exc is not None:
-            log.error("child delivery task failed: %r", exc)
-
-    async def _execute_child_actions(self, outcome: Any) -> set[str]:
+    async def _execute_child_actions(self, outcome: Any) -> tuple[set[str], set[str]]:
         """Run non-gateway control actions against the daemon registry.
 
         Reached only for outcomes the gateway/verb handlers did not claim:
@@ -2808,16 +2823,19 @@ class SidecarDaemon:
         — the spawned orchestrator never answered. Per-action isolation:
         one bad action never blocks its siblings or the intake.
 
-        Returns the node ids whose action found NO live handle (the
-        caller drops their "queued steer" notice — nothing was queued,
-        and the session-unavailable notice already posted is the
-        truthful ack).
+        Returns ``(missing, redirected)``: node ids whose action found NO
+        live handle (the caller drops their "queued steer" notice —
+        nothing was queued, and the session-unavailable notice already
+        posted is the truthful ack), and node ids whose hermes steer was
+        absorbed live via redirect (likewise no queued notice — nothing
+        was queued; the live turn carries the instruction).
         """
         missing: set[str] = set()
+        redirected: set[str] = set()
         try:
             actions = list(getattr(outcome, "actions", ()) or ())
         except Exception:
-            return missing
+            return missing, redirected
         for action in actions:
             try:
                 node_id = await self._execute_child_action(action)
@@ -2830,15 +2848,22 @@ class SidecarDaemon:
                 except Exception:
                     pass
             else:
-                if node_id:
+                if node_id is True:
+                    try:
+                        redirected.add(str(getattr(action, "node_id", "") or ""))
+                    except Exception:
+                        pass
+                elif node_id:
                     missing.add(node_id)
-        return missing
+        return missing, redirected
 
-    async def _execute_child_action(self, action: Any) -> str | None:
+    async def _execute_child_action(self, action: Any) -> str | bool | None:
         """Dispatch one routed action to its engine transport.
 
         Returns the action's node id when its handle is MISSING (the
         session-unavailable notice was posted instead of delivery),
+        True when a hermes steer was absorbed live via redirect (no fresh
+        turn queued — the caller drops the "queued steer" notice),
         else None. Task-dispatched turns (InjectText/OmpPrompt) peek
         the handle up front — a missing handle there would only
         surface later inside the task, after the "queued steer"
@@ -2847,16 +2872,49 @@ class SidecarDaemon:
         """
         if isinstance(action, InjectText):
             # Hermes-side child (steer, or a session-scoped command that
-            # is not a gateway-lifecycle verb). Long turn — background
-            # task so the intake never blocks.
+            # is not a gateway-lifecycle verb). BUG3 redirect-before-queue:
+            # attempt the live redirect synchronously FIRST — the agent's
+            # redirect() reports live/idle truthfully even when this
+            # daemon's lock is free (dispatch window, lock-free live turn
+            # elsewhere). Only a miss queues a fresh turn behind the lock.
+            # Quiet continuations never steer: fresh turn, never redirect.
             node_id = str(action.node_id)
             quiet = bool(getattr(action, "quiet", False))
+            text = str(action.text)
+            kind = str(getattr(action, "kind", "") or "steer")
+            if not quiet:
+                try:
+                    handle = self._child_handle(node_id)
+                except Exception:
+                    handle = None
+                agent = getattr(handle, "agent", None) if handle is not None else None
+                if agent is not None and self._redirect_live_hermes_child(agent, text):
+                    try:
+                        router = self.control_router
+                        if router is not None and hasattr(router, "observe_ack"):
+                            router.observe_ack(node_id, text)
+                    except Exception:
+                        pass
+                    try:
+                        self.routing_log.append(f"child-redirect:{node_id}")
+                    except Exception:
+                        pass
+                    return True
+            # Miss (idle, race lost, no redirect surface): queue one fresh
+            # turn. Busyness marked synchronously so a message arriving
+            # mid-turn routes to steer, not a second prompt; cleared when
+            # the turn task ends. Long turn — background task so the
+            # intake never blocks.
+            try:
+                self._hermes_inflight[node_id] = self._hermes_inflight.get(node_id, 0) + 1
+            except Exception:
+                pass
             try:
                 task = asyncio.create_task(
                     self._run_hermes_child_turn(
                         node_id,
-                        str(action.text),
-                        kind=str(getattr(action, "kind", "") or "steer"),
+                        text,
+                        kind=kind,
                         quiet=quiet,
                     ),
                     name=f"observatory-child-turn-{node_id}",
@@ -2864,8 +2922,8 @@ class SidecarDaemon:
             except RuntimeError:
                 return node_id if await self._run_hermes_child_turn(
                     node_id,
-                    str(action.text),
-                    kind=str(getattr(action, "kind", "") or "steer"),
+                    text,
+                    kind=kind,
                     quiet=quiet,
                 ) is False else None
             self._child_tasks.add(task)
@@ -2977,15 +3035,28 @@ class SidecarDaemon:
             log.debug("live hermes child redirect failed — queued turn fallback", exc_info=True)
             return False
 
+    def _release_hermes_inflight(self, node_id: str) -> None:
+        """Drop one dispatch-time liveness mark (never raises, never negative)."""
+        try:
+            left = self._hermes_inflight.get(node_id, 0) - 1
+            if left <= 0:
+                self._hermes_inflight.pop(node_id, None)
+            else:
+                self._hermes_inflight[node_id] = left
+        except Exception:
+            pass
+
     async def _run_hermes_child_turn(
         self, node_id: str, text: str, *, kind: str = "steer", quiet: bool = False
     ) -> bool:
         """One headless turn on a hermes child's own session; the reply
         renders in its room, in its own voice — unless ``quiet`` (a
         routine parent-continuation: the turn still runs, the room stays
-        silent). A steer arriving while the child's turn is already live
-        redirects it instead of queueing a second turn behind the lock
-        (quiet continuations always take a fresh turn, never a steer).
+        silent). BUG3: the intake attempts the live redirect synchronously
+        before queueing (_execute_child_action); the lock-gated attempt
+        below remains for direct callers. A miss (turn ended in the race,
+        no redirect surface) falls through to the queued fresh turn.
+        Quiet continuations always take a fresh turn, never a steer.
         False when no handle
         (the session-unavailable notice posted instead)."""
         from observatory.control import ControlNotice
@@ -3000,6 +3071,7 @@ class SidecarDaemon:
                 cause = ""
             log.warning("hermes child turn dropped: no handle (node %s%s)", node_id, f": {cause}" if cause else "")
             await self._post_notice(ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE))
+            self._release_hermes_inflight(node_id)
             return False
         room_id = ""
         try:
@@ -3017,6 +3089,7 @@ class SidecarDaemon:
             # miss (turn ended in the race, no redirect surface) falls
             # through to the queued fresh turn below.
             if self._redirect_live_hermes_child(agent, text):
+                self._release_hermes_inflight(node_id)
                 return True
         async with lock:
             try:
@@ -3033,6 +3106,7 @@ class SidecarDaemon:
                 await self._post_notice(
                     ControlNotice(node_id, CHILD_PROMPT_FAILED_NOTICE)
                 )
+                self._release_hermes_inflight(node_id)
                 return True
         try:
             if self.state is not None:
@@ -3042,12 +3116,14 @@ class SidecarDaemon:
         except Exception:  # noqa: BLE001 — marking never fails a turn
             pass
         if not (reply or "").strip():
+            self._release_hermes_inflight(node_id)
             return True
         if not quiet:
             try:
                 await self.renderer.render_agent_message(node_id, reply)
             except Exception:
                 log.exception("child reply render failed (node %s)", node_id)
+        self._release_hermes_inflight(node_id)
         return True
 
     async def _run_omp_child_prompt(self, node_id: str, text: str, quiet: bool = False) -> bool:

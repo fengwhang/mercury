@@ -1058,3 +1058,122 @@ async def test_member_voice_outage_still_renders_child_turn(
         ), "child reply never rendered during member-voice outage"
     finally:
         await daemon.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# BUG3-MATRIX-INTERRUPT RED: live redirect-before-queue (hermes child).
+# A Matrix message arriving while the child's turn is live must attempt
+# agent.redirect() (CLI-like interrupt+instruction in one turn) instead of
+# queueing a second turn behind the lock. Lock-free liveness (live turn in
+# another task/process that never held this daemon's _child_locks) is the
+# production miss: lock.locked() is False mid-turn so the old gate never
+# fires. These tests simulate that with a liveness-aware fake.
+# ---------------------------------------------------------------------------
+
+
+class FakeLiveRedirectHermesAgent(FakeHermesAgent):
+    """Liveness-aware redirect double (mirrors real AIAgent.redirect):
+    True only while a turn is live, False when idle — never an always-True
+    stub. ``live`` simulates the model's _model_request_active flag."""
+
+    def __init__(self, session_id: str, *, live: bool = False):
+        super().__init__(session_id)
+        self.live = live
+        self.redirects: list[str] = []
+
+    def redirect(self, text: str):
+        self.redirects.append(text)
+        return bool(self.live)
+
+
+@pytest.mark.asyncio
+async def test_bug3_live_redirect_without_lock_calls_redirect_no_second_turn(
+    daemon: sm.SidecarDaemon,
+):
+    """RED: live turn (lock free — never held this daemon's lock) redirects.
+    Message during live turn calls redirect with no second turn queued."""
+    await daemon.boot()
+    try:
+        agent = FakeLiveRedirectHermesAgent("sess-bug3-live", live=True)
+        row = await spawn_orchestrator(
+            "bug3live",
+            "hermes",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            agent_factory=lambda: agent,
+        )
+        node_id = row["node_id"]
+        room = daemon.state.get(node_id)
+        # Production miss state: live turn elsewhere, this daemon's lock free.
+        assert not daemon._child_locks.get(node_id, asyncio.Lock()).locked()
+        await daemon._on_transaction("tx-bug3-1", [_msg(room["room_id"], "turn left now")])
+        await _drain(daemon)
+        assert agent.redirects == ["turn left now"], "live steer never attempted redirect"
+        assert agent.turns == [], "live steer queued a second turn instead of redirecting"
+    finally:
+        await daemon.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_bug3_redirect_false_queues_exactly_one_turn(
+    daemon: sm.SidecarDaemon,
+):
+    """RED guard: redirect False (idle / race lost) queues exactly one turn."""
+    await daemon.boot()
+    try:
+        agent = FakeLiveRedirectHermesAgent("sess-bug3-idle", live=False)
+        row = await spawn_orchestrator(
+            "bug3idle",
+            "hermes",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            agent_factory=lambda: agent,
+        )
+        node_id = row["node_id"]
+        room = daemon.state.get(node_id)
+        await daemon._on_transaction("tx-bug3-2", [_msg(room["room_id"], "fresh idea")])
+        await _drain(daemon)
+        assert agent.turns == ["fresh idea"], "redirect miss must queue exactly one turn"
+    finally:
+        await daemon.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_bug3_redirect_suppresses_queued_notice(
+    daemon: sm.SidecarDaemon,
+):
+    """RED: a live redirect posts no 'queued steer' (nothing was queued)."""
+    await daemon.boot()
+    try:
+        agent = FakeLiveRedirectHermesAgent("sess-bug3-notice", live=True)
+        row = await spawn_orchestrator(
+            "bug3notice",
+            "hermes",
+            server_name=SERVER,
+            state=daemon.state,
+            registry=daemon.registry,
+            renderer=daemon.renderer,
+            agent_factory=lambda: agent,
+        )
+        node_id = row["node_id"]
+        room = daemon.state.get(node_id)
+        lock = daemon._child_locks.get(node_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            daemon._child_locks[node_id] = lock
+        await lock.acquire()  # busy: router emits the queued-steer notice
+        try:
+            await daemon._on_transaction("tx-bug3-3", [_msg(room["room_id"], "cut in now")])
+            await _drain(daemon)  # redirect absorbs while the live turn holds the lock
+        finally:
+            lock.release()
+        assert agent.redirects == ["cut in now"], "busy steer never attempted redirect"
+        assert agent.turns == [], "busy steer queued a second turn instead of redirecting"
+        sends = _room_sends(daemon, room["room_id"])
+        assert not any("queued steer" in c[2] for c in sends), "redirect posted a lying queued notice"
+    finally:
+        await daemon.shutdown()
