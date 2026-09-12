@@ -1882,12 +1882,21 @@ class SidecarDaemon:
         orchestrator subspaces of the root space, gateway-origin
         delegation children as subspaces nested under the gateway agent's
         own subspace (gw-space parity) — so every add provisions a space
-        + room before its lifecycle message renders. The room-existence
+        + room before its lifecycle message renders. A failed lifecycle
+        send queues a bounded renderer retry (drained on the next event)
+        instead of aborting the add. The room-existence
         guard stays as defense (a plan that cannot place a node logs and
         skips the lifecycle render rather than crashing)."""
         from observatory.discovery import NodeEvent
 
         assert isinstance(event, NodeEvent) and self.state is not None and self.renderer is not None
+        # E2EE-tolerance: redeliver live sends queued by earlier events
+        # whose first send failed (wedged group session) — the next tick
+        # heals the room without any new event. Never fails this event.
+        try:
+            await self.renderer.retry_pending_sends()
+        except Exception:  # noqa: BLE001 — retry never fails the event
+            log.debug("discovery send retry skipped", exc_info=True)
         node_id = f"{event.delegation_id}/{event.task_index}"
         if event.kind == "add":
             try:
@@ -1919,7 +1928,11 @@ class SidecarDaemon:
             )
             row = self.state.get(node_id)
             if row.get("room_id"):
-                await self.renderer.render_lifecycle(node_id)
+                try:
+                    await self.renderer.render_lifecycle(node_id)
+                except Exception as exc:  # noqa: BLE001 — send failure never aborts the add
+                    log.warning("discovery lifecycle send failed for %s — retry queued: %s",
+                                node_id, exc)
             else:
                 log.info(
                     "delegation %s observed without a planned room — "
