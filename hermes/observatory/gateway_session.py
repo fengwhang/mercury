@@ -67,8 +67,7 @@ TURN_PROGRESS_KIND = "turn_progress"
 #: when a ``_live_children`` entry appears, stop when it disappears.
 CHILD_LIFECYCLE_KIND = "child_lifecycle"
 #: ``{"kind": "child_event", "node_id", "feed": {...}}`` — one forwarded
-#: ``OmpFeed`` typed event (node/tool/thought; message frames are skipped,
-#: matching the sidecar ``_run_omp_feed`` parity) for a live child.
+#: ``OmpFeed`` typed event (node/tool/thought/message) for a live child.
 CHILD_EVENT_KIND = "child_event"
 #: ``{"kind": "approval_prompt", "node_id", "request_id", "command",
 #: "description", "session_key"}`` — one guard approval raised by a gateway
@@ -328,9 +327,8 @@ def _push_progress(node_id: str, seq: int, event: dict[str, Any], *, internal: b
     Payload is ``{node_id, seq, event}`` where ``event`` is the existing
     shape (no ``seq`` inside — it rides beside it). No listener, missing
     socket dir, or any send error = drop silently. ``internal=True`` marks
-    follow-up turns whose tool/thinking progress must collapse to ONE
-    liveness notice (BUG2): the live handler skips per-event render but
-    still records seqs for the replay dedupe.
+    follow-up turns (quiet gates only the final reply — the live stream
+    renders like a normal turn; seqs still feed the replay dedupe).
     """
     try:
         payload_obj: dict[str, Any] = {"node_id": node_id, "seq": seq, "event": event}
@@ -472,8 +470,9 @@ def push_child_feed_event(node_id: str, feed_event: dict[str, Any]) -> None:
 def _feed_event_to_dict(event: Any) -> dict[str, Any] | None:
     """One ``OmpFeed`` typed event → datagram ``feed`` dict; None to skip.
 
-    Message frames are skipped (the sidecar ``_run_omp_feed`` ignores them
-    too — parity, not loss). Unknown shapes are skipped; never raises.
+    Message frames forward as ``feed="message"`` (the sidecar renders
+    non-blank text into the grandchild room). Unknown shapes are skipped;
+    never raises.
     """
     try:
         import dataclasses
@@ -489,10 +488,12 @@ def _feed_event_to_dict(event: Any) -> dict[str, Any] | None:
     except Exception:
         return None
     try:
-        # Message frames (role-bearing) are skipped before shape probes:
-        # they share subagent_id/text keys with thought frames.
+        # Message frames (role-bearing) forward as feed="message": they
+        # share subagent_id/text keys with thought frames, so probe them
+        # first. Blank text is filtered consumer-side.
         if shape == "MessageEvent" or "role" in data:
-            return None
+            data["feed"] = "message"
+            return data
         if shape == "NodeEvent" or (
             "subagent_id" in data and "status" in data and "tool" not in data
             and "text" not in data
@@ -879,9 +880,9 @@ def _run_gateway_prompt_with_events_inner(
     the final reply (blockquote-aware compare — the final message must not
     appear twice, once plain once as reasoning) are dropped here; the
     live datagrams for them already went out and keep their seqs, so
-    final seqs may show gaps. ``internal=True`` marks follow-up turns
-    (BUG2): events carry ``internal`` so the live handler collapses them
-    to ONE liveness notice while replay still records them for logs.
+    final seqs may show gaps. ``internal=True`` marks follow-up turns:
+    events carry ``internal`` (quiet gates only the final reply — live
+    and replay render like a normal turn).
     """
     clean = (text or "").strip()
     if not clean:
