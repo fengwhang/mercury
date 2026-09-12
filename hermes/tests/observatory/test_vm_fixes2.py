@@ -336,24 +336,28 @@ async def test_bug2_followup_truncates_and_marks_internal(daemon: sm.SidecarDaem
 @pytest.mark.asyncio
 async def test_bug2_routine_followup_continues_quietly(daemon: sm.SidecarDaemon):
     """CLI parity: a routine child result still continues the parent
-    turn — quietly (no room-visible message)."""
+    turn — quietly (live working stream renders, only the final reply
+    is suppressed)."""
     await daemon.boot()
     try:
         transport = FakeTransport(reply="ok")
         daemon.gateway_transport = transport
-        sends_before = len(_sends(daemon.client))
         await daemon._maybe_post_delegate_followup(
             "deleg/0", daemon._gateway_node_id(), "rotator",
             status="completed", summary="Nightly key rotation verified complete")
         await _drain(daemon)
         assert len(transport.prompts) == 1, "routine result must still continue the parent"
-        assert len(_sends(daemon.client)) == sends_before, "quiet turn posts no room message"
+        bodies = [c[2] for c in _sends(daemon.client)]
+        assert "ok" not in bodies, "quiet turn suppresses the final reply"
     finally:
         await daemon.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_bug2_internal_collapses_live_and_replay(daemon: sm.SidecarDaemon):
+async def test_bug2_internal_renders_live_and_replay(daemon: sm.SidecarDaemon):
+    """Resumed (internal) turns render their working stream like normal
+    turns — liveness notice + tool history + final reply. Only quiet
+    suppresses the final reply, never the live stream."""
     await daemon.boot()
     try:
         daemon.gateway_transport = FakeTransport(
@@ -364,19 +368,23 @@ async def test_bug2_internal_collapses_live_and_replay(daemon: sm.SidecarDaemon)
                       "internal": True}])
         sends_before = len(_sends(daemon.client))
         await daemon._deliver_gateway_prompt(daemon._gateway_node_id(), "followup", internal=True)
-        # ONE liveness notice + final reply; zero per-event room messages
+        # liveness notice + tool history + final reply (short replies seal
+        # into the turn status edit instead of a separate send)
         bodies = [c[2] for c in _sends(daemon.client)[sends_before:]]
         assert any("still working" in b for b in bodies)
-        assert not any("bash" in b for b in bodies)
-        assert bodies[-1] == "done"
-        # live datagrams for internal turns record seqs but render nothing
+        assert any("bash" in b for b in bodies)
+        edits = [c for c in daemon.client.calls if c[0] == "edit"]
+        assert bodies[-1] == "done" or any("done" in e[3] for e in edits), (
+            f"reply missing from sends and edits: {bodies}")
+        # live datagrams for internal turns record seqs AND render
         daemon._gateway_live_seqs[daemon._gateway_node_id()] = set()
+        room_sends = len([c for c in _sends(daemon.client)])
         await daemon._handle_turn_progress_datagram(
             {"node_id": daemon._gateway_node_id(), "seq": 7,
              "event": {"type": "tool_call", "tool": "bash", "args": {}},
              "internal": True})
         assert 7 in daemon._gateway_live_seqs[daemon._gateway_node_id()]
-        assert len(_sends(daemon.client)) == len(bodies) + sends_before
+        assert len(_sends(daemon.client)) == room_sends + 1
     finally:
         await daemon.shutdown()
 

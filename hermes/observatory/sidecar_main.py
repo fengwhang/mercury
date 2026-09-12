@@ -389,9 +389,9 @@ class SidecarDaemon:
         #: (events without seq always render). Best-effort: bind failure
         #: disables live only.
         self._gateway_live_seqs: dict[str, set[int]] = {}
-        #: BUG2: nodes with an internal follow-up turn in flight. Live
-        #: per-event renders collapse to ONE liveness notice while set;
-        #: replay still records the events for logs without room sends.
+        #: Nodes with an internal follow-up turn in flight (marker only —
+        #: resumed turns render their live stream like normal turns; only
+        #: the quiet final-reply render is gated).
         self._gateway_internal_turns: dict[str, bool] = {}
         #: /cot status (default OFF): in-flight gateway-turn status event id
         #: per node (original send id; edits always target it). Posted at
@@ -1461,15 +1461,10 @@ class SidecarDaemon:
         ev_seq = _coerce_live_seq(event.get("seq"))
         seqs = {s for s in (seq, ev_seq) if s is not None}
         primary = seq if seq is not None else ev_seq
-        # BUG2: internal follow-up turns collapse progress to ONE liveness
-        # notice, not per-event messages. Record seqs for the replay dedupe
-        # but skip the per-event render here; replay logs without room sends.
-        is_internal = bool(payload.get("internal") or event.get("internal") or self._gateway_internal_turns.get(node_id))
-        if is_internal:
-            if seqs:
-                self._gateway_live_seqs.setdefault(node_id, set()).update(seqs)
-            log.debug("gateway live internal event collapsed (node %s seq %s)", node_id, primary)
-            return
+        # Resumed (internal/quiet) turns render live exactly like normal
+        # turns — status + tool calls as they happen. Only the FINAL reply
+        # render is gated (quiet); the live stream never is. Seqs are
+        # recorded for the replay dedupe either way.
         try:
             await self._render_gateway_live_event(node_id, primary, event)
         except Exception:
@@ -1559,10 +1554,8 @@ class SidecarDaemon:
         assert self.renderer is not None
         if not isinstance(event, dict):
             return
-        # BUG2: internal events never render per-event live (ONE liveness
-        # notice covers the whole turn — posted by _deliver_gateway_prompt).
-        if event.get("internal") or self._gateway_internal_turns.get(node_id):
-            return
+        # Resumed (internal/quiet) turns render here too — only the final
+        # reply is gated, never the live stream.
         etype = str(event.get("type") or "")
         if etype in ("tool_call", "tool"):
             tool = str(event.get("tool") or "")
@@ -1804,6 +1797,25 @@ class SidecarDaemon:
                 if router is not None and not router.cot_enabled(target):
                     return
                 await self.renderer.render_thinking(target, text_val)
+            elif ftype == "message":
+                subagent_id = str(feed.get("subagent_id") or "")
+                target = boxes.get(subagent_id) if subagent_id else None
+                if not target and subagent_id:
+                    target = f"{node_id}/gc:{subagent_id}"
+                    try:
+                        self.state.get(target)
+                        boxes[subagent_id] = target
+                    except StateError:
+                        target = None
+                text_val = feed.get("text")
+                if not target or not isinstance(text_val, str) or not text_val.strip():
+                    return
+                try:
+                    if self.state.get(target)["status"] != "live":
+                        return
+                except StateError:
+                    return
+                await self.renderer.render_agent_message(target, text_val)
             else:
                 log.debug("child feed datagram: unknown feed %r, skipped", ftype)
         except Exception:
@@ -2069,10 +2081,28 @@ class SidecarDaemon:
         if self.manual_runs is not None:
             await self.manual_runs.render_poll()
 
+    def _feed_target(self, grandchild_nodes: dict[str, str], node_id: str, subagent_id: str) -> str | None:
+        """Grandchild room target for a feed frame: the boxes map, else
+        re-adopt via the deterministic id when the node row survives
+        (feed restart — boxes lost, room provisioned). None when the
+        grandchild was never added (add frame still in flight)."""
+        target = grandchild_nodes.get(subagent_id)
+        if target:
+            return target
+        if not subagent_id or self.state is None:
+            return None
+        target = f"{node_id}/gc:{subagent_id}"
+        try:
+            self.state.get(target)
+        except StateError:
+            return None
+        grandchild_nodes[subagent_id] = target
+        return target
+
     async def _run_omp_feed(self, node_id: str, feed: Any) -> None:
         """Consume one omp child's typed events: grandchildren lifecycle,
-        tool calls, thinking (§5)."""
-        from observatory.omp_feed import NodeEvent, ThoughtEvent, ToolEvent
+        tool calls, thinking, messages (§5)."""
+        from observatory.omp_feed import MessageEvent, NodeEvent, ThoughtEvent, ToolEvent
 
         await feed.start()
         grandchild_nodes: dict[str, str] = {}
@@ -2084,14 +2114,22 @@ class SidecarDaemon:
                             node_id, event
                         )
                     elif isinstance(event, ToolEvent):
-                        target = grandchild_nodes.get(event.subagent_id)
+                        if not event.tool:
+                            continue
+                        target = self._feed_target(grandchild_nodes, node_id, event.subagent_id)
                         if target:
                             await self.renderer.render_tool_call(target, event.tool, event.args)
                     elif isinstance(event, ThoughtEvent):
-                        target = grandchild_nodes.get(event.subagent_id)
-                        if target and self.control_router is not None \
-                                and self.control_router.cot_enabled(target):
+                        target = self._feed_target(grandchild_nodes, node_id, event.subagent_id)
+                        router = self.control_router
+                        if target and (router is None or router.cot_enabled(target)):
                             await self.renderer.render_thinking(target, event.text)
+                    elif isinstance(event, MessageEvent):
+                        if not event.text or not event.text.strip():
+                            continue
+                        target = self._feed_target(grandchild_nodes, node_id, event.subagent_id)
+                        if target:
+                            await self.renderer.render_agent_message(target, event.text)
                 except Exception:  # noqa: BLE001 — one bad frame must not kill the feed
                     log.exception("omp feed event failed: %r", event)
         finally:
@@ -3467,9 +3505,9 @@ class SidecarDaemon:
     async def _deliver_gateway_prompt(self, node_id: str, text: str, *, kind: str = "prompt", internal: bool = False, room_id: str | None = None, quiet: bool = False) -> None:
         """One prompt → gateway session → batched replay + reply in the room.
 
-        ``quiet`` (a routine parent-continuation): the turn still runs and
-        replays, but the room stays silent — no liveness notice, no final
-        reply render."""
+        ``quiet`` (a routine parent-continuation): the turn still runs with
+        its full live stream (status + tool calls as they happen) — only
+        the final reply render is skipped."""
         from observatory.control import ControlNotice
         # Live-ingest seq-dedupe: fresh per-node live set for this turn —
         # datagrams arriving during the turn accumulate here, and the
@@ -3499,16 +3537,18 @@ class SidecarDaemon:
             _cot_on_at_start = bool(router0.cot_enabled(node_id)) if router0 is not None else False
         except Exception:
             _cot_on_at_start = False
-        _status_active = (not internal) and (not _cot_on_at_start)
+        # Resumed (internal) turns post the same turn-start status as normal
+        # turns, so the room shows the parent working.
+        _status_active = not _cot_on_at_start
         if _status_active:
             try:
                 await self._cot_status_post(node_id, 0)
             except Exception:
                 log.debug("cot status post failed (node %s)", node_id, exc_info=True)
 
-        # BUG2: internal follow-ups post their ONE liveness notice
-        # synchronously (a task races an instant fake transport and may
-        # never run before cancel). Quiet continuations post nothing.
+        # Internal follow-ups post their ONE liveness notice synchronously
+        # (a task races an instant fake transport and may never run before
+        # cancel). Quiet continuations post nothing.
         if internal and not quiet:
             try:
                 await self._post_notice(
@@ -3650,10 +3690,9 @@ class SidecarDaemon:
         turn's single status message (never separate sends). Events whose
         ``seq`` was already rendered live (``_gateway_live_seqs``) are
         skipped; events without a seq always render. Unknown event shapes
-        are skipped; one bad event never kills the replay. BUG2:
-        ``internal`` follow-up events never send room messages (ONE
-        liveness notice covers the turn) — they are recorded to the log
-        only.
+        are skipped; one bad event never kills the replay. Resumed
+        (internal/quiet) turns replay here too — only the final reply is
+        gated, never the tool/thinking history.
         """
         assert self.renderer is not None
         import json as _json
@@ -3666,9 +3705,6 @@ class SidecarDaemon:
                     continue
                 seq = _coerce_live_seq(event.get("seq"))
                 if seq is not None and seq in live:
-                    continue
-                if event.get("internal") or self._gateway_internal_turns.get(node_id):
-                    log.debug("gateway replay internal collapsed (node %s seq %s type %s)", node_id, seq, event.get("type"))
                     continue
                 etype = str(event.get("type") or "")
                 if etype in ("tool_call", "tool"):

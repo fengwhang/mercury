@@ -720,9 +720,11 @@ def test_feed_event_to_dict_translation():
     thought = gs._feed_event_to_dict(ThoughtEvent(subagent_id="sa-1", text="hmm"))
     assert thought is not None and thought["feed"] == "thought"
 
-    # message frames are skipped (sidecar _run_omp_feed parity), junk too
-    assert gs._feed_event_to_dict(MessageEvent(
-        subagent_id="sa-1", role="assistant", text="hi")) is None
+    # message frames forward (subagent rooms stream text live); junk skipped
+    message = gs._feed_event_to_dict(MessageEvent(
+        subagent_id="sa-1", role="assistant", text="hi"))
+    assert message is not None and message["feed"] == "message"
+    assert message["text"] == "hi"
     assert gs._feed_event_to_dict({"nope": True}) is None
     assert gs._feed_event_to_dict(None) is None
 
