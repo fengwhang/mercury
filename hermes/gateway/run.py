@@ -33178,11 +33178,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
 
             def _observatory_steer_handler(params: dict) -> dict:
-                # Gateway-room mid-turn steer: soft-inject into the running
-                # turn via agent.steer() (no lock, no cancel — CLI steer
-                # parity). Runs on the socket executor thread; steer() is
-                # thread-safe (appends to the pending-steer buffer the loop
-                # drains at the next tool boundary).
+                # Gateway-room mid-turn steer: redirect-then-steer into the
+                # running turn (interrupts the live request like CLI;
+                # steer buffer as fallback during tool exec). Runs on the
+                # socket executor thread; both surfaces are thread-safe.
                 text = params.get("text", "") if isinstance(params, dict) else ""
                 try:
                     from observatory.gateway_session import (
