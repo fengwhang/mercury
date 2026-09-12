@@ -1701,8 +1701,38 @@ class SidecarDaemon:
         except Exception:
             log.debug("post-delegate followup failed for %s", node_id, exc_info=True)
 
+    def _datagram_feed_target(
+        self, node_id: str, boxes: dict[str, str], subagent_id: str
+    ) -> str | None:
+        """Room target for one forwarded feed frame (§5 per-agent rooms).
+
+        Empty ``subagent_id`` is the SELF stream — the child's OWN main
+        session tools/thoughts (``run_task`` is prompt-and-wait, so the
+        OmpFeed main-session listener is their only live source) — and
+        renders into the CHILD's own room. A non-empty id is a grandchild:
+        the boxes map first, else re-adopt via the deterministic id when
+        the node row survives (feed race/restart — boxes lost, room
+        provisioned). None when the grandchild was never added (add frame
+        still in flight) — the frame drops rather than misposting.
+        """
+        if not subagent_id:
+            return node_id
+        target = boxes.get(subagent_id)
+        if target:
+            return target
+        target = f"{node_id}/gc:{subagent_id}"
+        try:
+            assert self.state is not None
+            self.state.get(target)
+            boxes[subagent_id] = target
+            return target
+        except StateError:
+            return None
+        except Exception:
+            return None
+
     async def _handle_child_feed_datagram(self, payload: dict) -> None:
-        """Forwarded child feed frame → grandchild-mapped render."""
+        """Forwarded child feed frame → child/grandchild-mapped render."""
         node_id = str(payload.get("node_id") or "")
         feed = payload.get("feed")
         if not node_id or not isinstance(feed, dict) or not feed:
@@ -1752,17 +1782,10 @@ class SidecarDaemon:
                 boxes[subagent_id] = await self._render_grandchild(node_id, adapted)
             elif ftype == "tool":
                 subagent_id = str(feed.get("subagent_id") or "")
-                target = boxes.get(subagent_id) if subagent_id else None
-                if not target and subagent_id:
-                    # FOLLOW-UP B: feed race/restart — boxes map lost but the
-                    # node row survives. Resolve via the deterministic id and
-                    # re-adopt instead of dropping (dropped frames = empty rooms).
-                    target = f"{node_id}/gc:{subagent_id}"
-                    try:
-                        self.state.get(target)
-                        boxes[subagent_id] = target
-                    except StateError:
-                        target = None
+                # Empty id = SELF stream (the child's own main-session tool);
+                # otherwise the grandchild map with deterministic re-adopt
+                # (FOLLOW-UP B: feed race/restart — boxes lost, room kept).
+                target = self._datagram_feed_target(node_id, boxes, subagent_id)
                 if not target:
                     return
                 try:
@@ -1777,14 +1800,7 @@ class SidecarDaemon:
                     target, tool, _live_event_args_text(feed.get("args")))
             elif ftype == "thought":
                 subagent_id = str(feed.get("subagent_id") or "")
-                target = boxes.get(subagent_id) if subagent_id else None
-                if not target and subagent_id:
-                    target = f"{node_id}/gc:{subagent_id}"
-                    try:
-                        self.state.get(target)
-                        boxes[subagent_id] = target
-                    except StateError:
-                        target = None
+                target = self._datagram_feed_target(node_id, boxes, subagent_id)
                 text_val = feed.get("text")
                 if not target or not isinstance(text_val, str) or not text_val.strip():
                     return
@@ -1799,14 +1815,7 @@ class SidecarDaemon:
                 await self.renderer.render_thinking(target, text_val)
             elif ftype == "message":
                 subagent_id = str(feed.get("subagent_id") or "")
-                target = boxes.get(subagent_id) if subagent_id else None
-                if not target and subagent_id:
-                    target = f"{node_id}/gc:{subagent_id}"
-                    try:
-                        self.state.get(target)
-                        boxes[subagent_id] = target
-                    except StateError:
-                        target = None
+                target = self._datagram_feed_target(node_id, boxes, subagent_id)
                 text_val = feed.get("text")
                 if not target or not isinstance(text_val, str) or not text_val.strip():
                     return
@@ -2082,14 +2091,18 @@ class SidecarDaemon:
             await self.manual_runs.render_poll()
 
     def _feed_target(self, grandchild_nodes: dict[str, str], node_id: str, subagent_id: str) -> str | None:
-        """Grandchild room target for a feed frame: the boxes map, else
-        re-adopt via the deterministic id when the node row survives
-        (feed restart — boxes lost, room provisioned). None when the
-        grandchild was never added (add frame still in flight)."""
+        """Room target for a feed frame: the child's own room for the SELF
+        stream (empty ``subagent_id`` — the child's main-session tools and
+        thinking); else the boxes map, else re-adopt via the deterministic
+        id when the node row survives (feed restart — boxes lost, room
+        provisioned). None when the grandchild was never added (add frame
+        still in flight)."""
+        if not subagent_id:
+            return node_id
         target = grandchild_nodes.get(subagent_id)
         if target:
             return target
-        if not subagent_id or self.state is None:
+        if self.state is None:
             return None
         target = f"{node_id}/gc:{subagent_id}"
         try:
@@ -2100,8 +2113,9 @@ class SidecarDaemon:
         return target
 
     async def _run_omp_feed(self, node_id: str, feed: Any) -> None:
-        """Consume one omp child's typed events: grandchildren lifecycle,
-        tool calls, thinking, messages (§5)."""
+        """Consume one omp child's typed events: its OWN tool calls,
+        thinking, messages (SELF stream, empty subagent id → own room) plus
+        grandchildren lifecycle, tool calls, thinking, messages (§5)."""
         from observatory.omp_feed import MessageEvent, NodeEvent, ThoughtEvent, ToolEvent
 
         await feed.start()
