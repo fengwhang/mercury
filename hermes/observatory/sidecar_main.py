@@ -111,7 +111,7 @@ from observatory.config_gen import (
     render_sidecar_unit,
 )
 from observatory.identity import assign_slug, virtual_mxid
-from observatory.control import QUEUED_STEER_NOTICE, AbortSession, InjectText, OmpAbortMain, OmpPrompt, OmpSteer, OmpSubagentAbort, OmpSubagentSteer, ResolveApproval, STOP_CONFIRMED_NOTICE
+from observatory.control import APPLIED_STEER_NOTICE, QUEUED_STEER_NOTICE, AbortSession, InjectText, OmpAbortMain, OmpPrompt, OmpSteer, OmpSubagentAbort, OmpSubagentSteer, ResolveApproval, STOP_CONFIRMED_NOTICE
 from observatory.gateway_transport import (
     ControlSocketGatewayTransport,
     GatewayTransportError,
@@ -3514,7 +3514,8 @@ class SidecarDaemon:
         is skipped and the agent's reply renders when the turn completes.
         In-flight (a gateway delivery task is running): the text steers into
         the running turn via the ``steer`` verb (soft, no cancel — CLI steer
-        parity). The queued-steer notice posts as the ack and no new delivery
+        parity). The applied notice posts as the ack (the deferred
+        queued-steer notice is dropped — nothing queued) and no new delivery
         task spawns; the running turn's reply carries the steered context.
         Steer miss (idle race, old gateway, transport error) falls back to
         interrupt-then-inject so the text never queues silently behind the
@@ -3534,19 +3535,20 @@ class SidecarDaemon:
                 kind = str(getattr(action, "kind", None) or "prompt")
                 quiet = bool(getattr(action, "quiet", False))
                 if kind == "steer" and not quiet and self._gateway_delivery_in_flight():
-                    if await self._steer_gateway_midturn(node_id, text):
-                        for notice in deferred:
-                            try:
-                                await self._post_notice(notice)
-                            except Exception:
-                                log.debug("gateway steer ack failed (node %s)", node_id, exc_info=True)
+                    if await self._steer_gateway_or_interrupt(node_id, text):
+                        # Landed mid-turn: ack applied. The deferred
+                        # "queued" notice is dropped — nothing queued.
                         deferred.clear()
+                        try:
+                            from observatory.control import ControlNotice
+                            await self._post_notice(ControlNotice(node_id, APPLIED_STEER_NOTICE))
+                        except Exception:
+                            log.debug("gateway steer ack failed (node %s)", node_id, exc_info=True)
                         try:
                             self.routing_log.append(f"gateway-steer:{node_id}")
                         except Exception:
                             pass
                         continue
-                    await self._interrupt_gateway_for_steer(node_id)
                     try:
                         self.routing_log.append(f"gateway-steer-fallback:{node_id}")
                     except Exception:
@@ -3581,6 +3583,21 @@ class SidecarDaemon:
             log.debug("gateway mid-turn steer failed (node %s)", node_id, exc_info=True)
             return False
         return bool(isinstance(out, dict) and out.get("steered") is True)
+
+    async def _steer_gateway_or_interrupt(self, node_id: str, text: str) -> bool:
+        """Mid-turn steer, else interrupt so the miss runs as next turn.
+
+        True when the steer verb landed (caller acks, no fresh turn).
+        False after running :meth:`_interrupt_gateway_for_steer` — the
+        caller must run the text as the next turn; the interrupt already
+        cancelled the stale delivery so it never queues silently. Shared
+        by the room-text path and the delegate-followup path (which calls
+        this one line instead of ``_steer_gateway_midturn``). Never raises.
+        """
+        if await self._steer_gateway_midturn(node_id, text):
+            return True
+        await self._interrupt_gateway_for_steer(node_id)
+        return False
 
     async def _interrupt_gateway_for_steer(self, node_id: str) -> None:
         """Cancel in-flight gateway deliveries and hard-interrupt the agent.
