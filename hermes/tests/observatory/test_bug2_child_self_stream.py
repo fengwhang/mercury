@@ -112,6 +112,55 @@ from tests.observatory.test_sidecar_live_ingest import (  # noqa: E402
 )
 
 
+@pytest.mark.asyncio
+async def test_child_self_tool_renders_into_child_room(daemon: sm.SidecarDaemon):
+    await daemon.boot()
+    try:
+        assert daemon.state is not None and daemon.client is not None
+        child = "deleg_bug2self/0"
+        await daemon._handle_gateway_live_datagram(json.dumps({
+            "kind": "child_lifecycle", "node_id": child, "lifecycle": "start",
+            "name": "self-kid",
+        }).encode())
+        child_room = daemon.state.get(child)["room_id"]
+        assert child_room, "child node must get a planned room"
+        before = len(_sends(daemon.client))
+        await daemon._handle_gateway_live_datagram(json.dumps({
+            "kind": "child_event", "node_id": child,
+            "feed": {"feed": "tool", "subagent_id": "",
+                     "tool": "bash", "args": "ls -la"},
+        }).encode())
+        new_sends = _sends(daemon.client)[before:]
+        assert new_sends, "self tool frame must render into the child room"
+        assert any("bash" in body for (_, _, body, *_) in new_sends)
+        assert any(room == child_room for (_, room, _, *_) in new_sends)
+    finally:
+        await daemon.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_child_self_thought_renders_into_child_room(daemon: sm.SidecarDaemon):
+    await daemon.boot()
+    try:
+        assert daemon.state is not None and daemon.client is not None
+        child = "deleg_bug2think/0"
+        await daemon._handle_gateway_live_datagram(json.dumps({
+            "kind": "child_lifecycle", "node_id": child, "lifecycle": "start",
+            "name": "think-kid",
+        }).encode())
+        # No explicit /cot: delegation children default ON (spec section 5).
+        before = len(_sends(daemon.client))
+        await daemon._handle_gateway_live_datagram(json.dumps({
+            "kind": "child_event", "node_id": child,
+            "feed": {"feed": "thought", "subagent_id": "",
+                     "text": "pondering the listing"},
+        }).encode())
+        bodies = [c[2] for c in _sends(daemon.client)][before:]
+        assert any("pondering the listing" in b for b in bodies), (
+            "self thought frame must render into the child room"
+        )
+    finally:
+        await daemon.shutdown()
 
 # --- single node identity: discovery room == feed room ------------------------
 #
