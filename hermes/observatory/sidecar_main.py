@@ -3441,12 +3441,24 @@ class SidecarDaemon:
             return
         await self._followup_to_orchestrator(node_id, target, text, quiet=not notify)
 
-    async def _followup_to_gateway(self, node_id: str, gw_id: str, text: str, *, quiet: bool = False) -> None:
+    async def _followup_to_gateway(self, node_id: str, gw_id: str, text: str, *, quiet: bool = False, busy_wait_s: float = 30.0) -> None:
         """Gateway half of the delegate followup (transport inject).
 
         A busy gateway still gets the child result: steer into the running
-        turn instead of dropping it (the reporter's item 2 — no report back
-        to gateway — was this early return)."""
+        turn when it lands; on a steer miss wait (bounded) for the in-flight
+        turn to finish and then inject as a normal followup turn. The child
+        result is never dropped on a busy gateway.
+
+        Wait-then-inject (not a queued retry) because the wait re-reads task
+        completion each poll, so a stale busy read self-heals, and the inject
+        serializes behind the finished turn — no queue to grow, no ledger to
+        dedupe. Exactly-once is structural: steer-hit returns before any
+        inject, otherwise exactly one inject spawns. ``quiet`` is passed
+        through untouched (the turn runs; only the room reply is skipped)."""
+        transport = self.gateway_transport
+        if transport is None:
+            log.info("delegate followup skipped: no gateway transport (child %s)", node_id)
+            return
         if self._gateway_delivery_in_flight():
             if await self._steer_gateway_midturn(gw_id, text):
                 try:
@@ -3454,12 +3466,26 @@ class SidecarDaemon:
                 except Exception:
                     pass
                 return
-            log.info("delegate followup skipped: gateway busy, steer missed (child %s)", node_id)
-            return
-        transport = self.gateway_transport
-        if transport is None:
-            log.info("delegate followup skipped: no gateway transport (child %s)", node_id)
-            return
+            try:
+                wait_s = float(busy_wait_s)
+            except (TypeError, ValueError):
+                wait_s = 30.0
+            if wait_s > 0:
+                try:
+                    loop = asyncio.get_running_loop()
+                    deadline = loop.time() + wait_s
+                    while self._gateway_delivery_in_flight():
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            break
+                        await asyncio.sleep(min(0.05, remaining))
+                except Exception:  # noqa: BLE001 — the wait never drops the followup
+                    pass
+            log.info("delegate followup queued after busy gateway (child %s)", node_id)
+            try:
+                self.routing_log.append(f"gateway-followup-wait:{node_id}")
+            except Exception:
+                pass
         try:
             task = asyncio.create_task(
                 self._deliver_gateway_prompt(gw_id, text, kind="prompt", internal=True, quiet=quiet),
