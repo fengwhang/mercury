@@ -144,6 +144,11 @@ class IRCAdapter(BasePlatformAdapter):
         )
         self.server_password = _get_scoped_secret("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
         self.nickserv_password = _get_scoped_secret("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
+        self.oper_password = _get_scoped_secret("IRC_OPER_PASSWORD") or extra.get("oper_password", "")
+        # Observability rooms: extra agent channels the bot joins dynamically
+        # (/spawn rooms, #parent-child subagent rooms). Managed channels
+        # never require nick-addressing: every message there is for the agent.
+        self.extra_channels: set[str] = set()
 
         # Auth
         self.allowed_users: list = extra.get("allowed_users", [])
@@ -236,8 +241,25 @@ class IRCAdapter(BasePlatformAdapter):
             await self._send_raw(f"PRIVMSG NickServ :IDENTIFY {self.nickserv_password}")
             await asyncio.sleep(2)  # Give NickServ time to process
 
-        # Join channel
+        # Join the gateway channel plus any managed agent rooms. IRC creates
+        # a channel on first JOIN; the observatory resync pass re-adds live
+        # rooms after a reconnect via join_channel().
         await self._send_raw(f"JOIN {self.channel}")
+        for extra in sorted(self.extra_channels):
+            await self._send_raw(f"JOIN {extra}")
+
+        # OPER for the observatory /exit room kill (no-op when unconfigured).
+        if self.oper_password:
+            try:
+                await self._send_raw(f"OPER {self.oper_password}")
+            except Exception:
+                logger.debug("IRC: OPER failed", exc_info=True)
+
+        try:
+            from observatory.rooms import set_bot_sink
+            set_bot_sink(self)
+        except Exception:
+            logger.debug("IRC: bot-sink register skipped", exc_info=True)
 
         self._mark_connected()
         logger.info("IRC: connected to %s:%s as %s, joined %s", self.server, self.port, self._current_nick, self.channel)
@@ -278,6 +300,12 @@ class IRCAdapter(BasePlatformAdapter):
         self._writer = None
         self._registered = False
         self._registration_event.clear()
+        try:
+            from observatory.rooms import get_bot_sink, set_bot_sink
+            if get_bot_sink() is self:
+                set_bot_sink(None)
+        except Exception:
+            pass
 
     # ── Sending ───────────────────────────────────────────────────────────
 
@@ -303,6 +331,54 @@ class IRCAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=str(e))
 
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))
+    # ── Observatory rooms (BotSink surface for observatory.rooms) ──────────
+
+    def managed_channels(self) -> set[str]:
+        """Channels that never require nick-addressing (gateway + agent rooms)."""
+        return {self.channel.lower(), *(c.lower() for c in self.extra_channels)}
+
+    def is_managed(self, target: str) -> bool:
+        return bool(target) and target.lower() in self.managed_channels()
+
+    async def join_channel(self, channel: str) -> bool:
+        """JOIN an agent room now (and on every reconnect). Never raises."""
+        if channel:
+            self.extra_channels.add(channel)
+        if not self._writer or self._writer.is_closing():
+            return channel in self.extra_channels
+        try:
+            await self._send_raw(f"JOIN {channel}")
+            return True
+        except Exception:
+            logger.debug("IRC: join %s failed", channel, exc_info=True)
+            return False
+
+    async def part_channel(self, channel: str) -> bool:
+        """PART an agent room. Never raises."""
+        self.extra_channels.discard(channel)
+        if not self._writer or self._writer.is_closing():
+            return True
+        try:
+            await self._send_raw(f"PART {channel} :room closed")
+            return True
+        except Exception:
+            logger.debug("IRC: part %s failed", channel, exc_info=True)
+            return False
+
+    async def say(self, channel: str, text: str) -> bool:
+        """PRIVMSG into a room (BotSink naming for observatory.rooms)."""
+        result = await self.send(channel, text)
+        return bool(getattr(result, "success", False))
+
+    async def destroy_channel(self, channel: str) -> bool:
+        """Server-side room kill for /exit (OPER DESTROY); PART fallback."""
+        if self._writer and not self._writer.is_closing():
+            try:
+                await self._send_raw(f"DESTROY {channel} :room closed (/exit)")
+                await asyncio.sleep(0.5)
+            except Exception:
+                logger.debug("IRC: destroy %s failed", channel, exc_info=True)
+        return await self.part_channel(channel)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """IRC has no typing indicator — no-op."""
@@ -475,8 +551,10 @@ class IRCAdapter(BasePlatformAdapter):
             chat_id = target if is_channel else sender_nick
             chat_type = "group" if is_channel else "dm"
 
-            # In channels, only respond if addressed (nick: or nick,)
-            if is_channel:
+            # In channels, only respond if addressed (nick: or nick,) —
+            # EXCEPT managed observatory rooms (gateway + agent rooms):
+            # every message there is for the agent, like CLI.
+            if is_channel and not self.is_managed(target):
                 addressed = False
                 for prefix in (f"{self._current_nick}:", f"{self._current_nick},",
                                f"{self._current_nick} "):

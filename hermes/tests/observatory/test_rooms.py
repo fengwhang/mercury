@@ -128,3 +128,79 @@ def test_global_sink() -> None:
         assert mgr.bot is bot
     finally:
         rooms.set_bot_sink(None)
+
+def _real_state(tmp_path):
+    from observatory.state import ObservatoryState
+    return ObservatoryState(tmp_path / "state.db")
+
+
+@pytest.mark.asyncio
+async def test_drain_queue_creates_child_room(tmp_path) -> None:
+    bot = FakeBot()
+    mgr = RoomManager(_real_state(tmp_path), bot)
+    rooms.submit_lifecycle("deleg-1", "start", name="cow",
+                           parent_name="gateway", engine="omp")
+    rooms.submit_feed("deleg-1", {"feed": "tool", "tool": "bash",
+                                  "args": "ls", "subagent_id": ""})
+    assert await mgr.drain_queue() == 2
+    assert bot.joined == ["#gateway-cow"]
+    texts = [t for _, t in bot.said]
+    assert any("started" in t for t in texts)
+    assert any("bash" in t for t in texts)
+    row = mgr.node_for_channel("#gateway-cow")
+    assert row is not None and row["node_id"] == "deleg-1"
+    assert mgr.inbound_route("#gateway-cow")[0] == "child"
+
+
+@pytest.mark.asyncio
+async def test_handle_child_message_steers(tmp_path) -> None:
+    bot = FakeBot()
+    mgr = RoomManager(_real_state(tmp_path), bot)
+    rooms.submit_lifecycle("deleg-9", "start", name="kid",
+                           parent_name="gateway", engine="hermes")
+    assert await mgr.drain_queue() == 1
+    assert "finished" in await mgr.handle_child_message("#gateway-kid", "op", "stop that")
+    seen: list[str] = []
+    rooms.register_child_steer("deleg-9", seen.append)
+    try:
+        assert await mgr.handle_child_message("#gateway-kid", "op", "stop that") == "steered (as op)."
+        assert seen == ["stop that"]
+    finally:
+        rooms.drop_child_steer("deleg-9")
+    rooms.submit_lifecycle("deleg-9", "stop", name="kid", summary="done")
+    assert await mgr.drain_queue() == 1
+    assert "finished" in (await mgr.handle_child_message("#gateway-kid", "op", "again")).lower() \
+        or "history" in await mgr.handle_child_message("#gateway-kid", "op", "again")
+
+
+@pytest.mark.asyncio
+async def test_handle_omp_message_task_then_steer(tmp_path) -> None:
+    class FakeRpc:
+        def __init__(self):
+            self.tasks: list[str] = []
+            self.steers: list[str] = []
+
+        def run_task(self, prompt: str) -> dict:
+            self.tasks.append(prompt)
+            return {"summary": "did it",
+                    "turn_frames": [{"feed": "tool", "tool": "read"}]}
+
+        def steer(self, text: str) -> None:
+            self.steers.append(text)
+
+    bot = FakeBot()
+    state = _real_state(tmp_path)
+    mgr = RoomManager(state, bot)
+    state.add_node("orch-2", engine="omp", name="king", slug="king",
+                   mxid="king", session_ref="s")
+    state.set_room_id("orch-2", "#king")
+    rpc = FakeRpc()
+    rooms.register_omp_room("orch-2", "#king", rpc)
+    try:
+        reply = await mgr.handle_omp_message("#king", "op", "build x")
+        assert reply == "did it"
+        assert rpc.tasks and "build x" in rpc.tasks[0]
+        assert any("read" in t for _, t in bot.said)
+    finally:
+        rooms.drop_omp_room("orch-2")
+    assert "gone" in await mgr.handle_omp_message("#king", "op", "again")
