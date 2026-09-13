@@ -1,22 +1,21 @@
-"""M5a (matrix observatory D9/D8/D18): spawned-orchestrator lifecycle.
-
+"""Spawned-orchestrator lifecycle: /spawn (hermes) /spawnomp (omp) /exit.
 ``/spawn <name>`` (hermes engine) and ``/spawnomp <name>`` (omp engine)
 create top-level 0-agents; ``/exit`` annihilates one. This module owns the
 ENGINE side of that lifecycle — the session/process handles and the
-state.db rows — and drives the renderer for the matrix side:
+state.db rows — and drives the IRC side (one channel per agent):
 
-- **spawn**: build the engine handle (fresh hermes session via the same
-  AIAgent/SessionDB machinery the delegate path and ``mercury -z`` use;
-  headless omp RPC child with its session JSONL pinned under the
-  observatory dir via ``--session-dir``), register the depth-0 node, then
-  converge the renderer plan so the agent's space+room exist (§3).
-- **exit**: D8 depth-0 cascade — the WHOLE subtree's rooms/spaces are
-  purged and every row deleted. Crash-atomicity (D18-critical): the
-  dead-marks and the write-ahead purge journal land in ONE sqlite
-  transaction (``begin_exit``); the purge intents are replayed from the
-  journal on startup (``replay_purge_journal``, called by the respawn
-  pass), so a crash mid-purge never resurrects a killed agent — a journaled
-  node is dead-or-deleted in every observable state, and a crashed purge
+- **spawn**: build the engine handle (hermes rooms are plain gateway
+  sessions keyed by channel, so no handle is built here — the first
+  message in the room starts the session; omp rooms get a headless RPC
+  child with its session JSONL pinned under the observatory dir via
+  ``--session-dir``), register the depth-0 node, and JOIN the channel.
+- **exit**: depth-0 cascade — the WHOLE subtree's channels are destroyed
+  server-side and every row deleted. Crash-atomicity: the dead-marks and
+  the write-ahead channel journal land in ONE sqlite transaction
+  (``begin_exit``); the journal replays on startup
+  (``replay_purge_journal``, called by the respawn pass), so a crash
+  mid-destroy never resurrects a killed agent — a journaled node is
+  dead-or-deleted in every observable state, and a crashed destroy
   completes on the next boot instead of being forgotten.
 
 Engine-ordering law for /exit: durable dead-mark FIRST, engine kill
@@ -24,11 +23,11 @@ second. A crash between them orphans a process (operator-visible) but can
 never leave a killed agent live in state.db for the respawn pass to
 restart — that would be resurrection.
 
-Subagent stop at parent death (D8 "children stopped first"): depth>=1
-children of a 0-agent are delegate_task children owned by the delegation
-machinery's live-child registries (``tools/omp_delegation`` /
-``delegate_tool``); their process stop rides that existing path. This
-module's cascade covers their matrix artifacts and state rows.
+Subagent stop at parent death: depth>=1 children of a 0-agent are
+delegate_task children owned by the delegation machinery's live-child
+registries (``tools/omp_delegation`` / ``delegate_tool``); their process
+stop rides that existing path. This module's cascade covers their IRC
+channels and state rows.
 """
 from __future__ import annotations
 
@@ -44,25 +43,21 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from observatory.config_gen import ObservatoryPaths
-from observatory.identity import assign_slug, virtual_mxid
-from observatory.renderer import (
-    DetachChild,
-    LeaveRoom,
-    PurgeRoom,
-    RenderIntent,
-    Renderer,
-    SendMessage,
+from observatory.rooms import (
+    agent_nick,
+    drop_omp_room,
+    get_bot_sink,
+    register_omp_room,
+    spawn_channel,
 )
 from observatory.state import ENGINES, ObservatoryState, StateError
 
 logger = logging.getLogger(__name__)
 
-#: ``extra.kind`` convention (tree.py / render_live.seed_nodes): spawned
-#: agents carry NO kind — plain agent nodes (kind "") plan as orchestrator
-#: subspaces; only the gateway agent ("gateway"), cron jobs ("cron-job")
-#: and manual runs ("manual-run") are kind-stamped. The respawn pass
-#: therefore resumes every depth-0 live node except those kinds (D18
-#: "every live 0-agent").
+#: ``extra.kind`` convention: spawned agents carry NO kind — plain agent
+#: nodes; only the gateway agent ("gateway") is kind-stamped. The respawn
+#: pass resumes every depth-0 live node except those kinds ("every live
+#: 0-agent").
 GATEWAY_KIND = "gateway"
 SKIP_RESPAWN_KINDS = ("gateway", "manual-run")
 
@@ -460,47 +455,30 @@ def validate_spawn_session_ref(
     raise ValueError(f"spawn: engine must be one of {ENGINES}, got {engine!r}")
 
 
-async def _register_spawn_ghost(renderer: Any, mxid: str) -> None:
-    """Register-then-converge (spawn-ghost fix, defect 1).
-    The minted ghost must exist as a real homeserver user BEFORE the
-    renderer converges: tuwunel auto-provisions enough for a masqueraded
-    createRoom, but the appservice login (E2EE per-ghost device) 400s
-    ``M_INVALID_PARAM`` for a non-existent user and every child-voice
-    send then crashes. Mirrors the gateway-datagram child paths
-    (best-effort: a blip logs and converge still tries auto-provision).
-    """
-    try:
-        localpart = str(mxid or "").lstrip("@").split(":", 1)[0]
-        if not localpart:
-            return
-        client = getattr(getattr(renderer, "executor", None), "client", None)
-        if client is None:
-            return
-        try:
-            await client.register_virtual_user(localpart)
-        except AttributeError:
-            logger.debug(
-                "spawn: ghost register unavailable for %s (no register surface)",
-                localpart,
-            )
-        except Exception as exc:  # noqa: BLE001 — ghost may auto-provision
-            logger.info("spawn: register %s: %s (continuing)", localpart, exc)
-    except Exception:  # noqa: BLE001 — pre-register never fails spawn
-        logger.debug("spawn: ghost pre-register skipped", exc_info=True)
+# ============================================================================
+# spawn_orchestrator
+# ============================================================================
 
-# ============================================================================
-# spawn_orchestrator (D9)
-# ============================================================================
+
+def _unique_slug(clean: str, state: ObservatoryState) -> str:
+    """Live-collision slug: base, base-2, base-3… (dead rows invisible)."""
+    import re as _re
+    base = _re.sub(r"[^a-z0-9]+", "-", clean.strip().lower()).strip("-")[:48] or "agent"
+    slug = base
+    n = 2
+    while state.find_live_by_slug(slug):
+        slug = f"{base}-{n}"
+        n += 1
+    return slug
 
 
 async def spawn_orchestrator(
     name: str,
     engine: str,
     *,
-    server_name: str,
     state: ObservatoryState,
     registry: OrchestratorRegistry,
-    renderer: Optional[Renderer] = None,
+    server_name: str = "",
     mercury_home: str | Path | None = None,
     model: Optional[str] = None,
     workdir: Optional[str] = None,
@@ -509,41 +487,38 @@ async def spawn_orchestrator(
     validate_session_ref: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Create one 0-agent orchestrator: engine handle + depth-0 state node
-    + space/room via renderer intents (§3 — the node appears in the
-    gateway space as a subspace with its chat room).
+    + IRC channel (the bot JOINs; the channel IS the room).
+
+    hermes rooms are plain gateway sessions keyed by channel — no engine
+    handle is built here (the first message in the room starts the
+    session through normal adapter dispatch, so slash commands,
+    approvals, and mid-turn steering work exactly like every other
+    gateway chat). omp rooms get a headless RPC child pumped by
+    ``rooms.handle_omp_message``.
 
     ``agent_factory`` / ``omp_child_factory`` replace the real engine
-    builders (tests inject doubles; they must return started objects with
-    ``session_id`` / ``rpc``-shaped handles respectively). No cap on live
-    orchestrators (D9).
-
-    ``server_name`` is REQUIRED (no default — fail loud, never fall back):
-    the spawned ghost is minted as ``virtual_mxid(slug,
-    server_name=server_name)`` and MUST live on the operator's live domain.
-    A silent ``mercury.local`` fallback mints an off-domain sender; tuwunel
-    answers every createRoom as that sender with HTTP 400 M_EXCLUSIVE
-    (namespace ``^@merc_.*$`` is localpart-only) so the node never gets
-    its space/room (IDs stay NULL, 257-error retry loop). The only
-    production caller (gateway ``_handle_observatory_spawn``) derives it
-    from the live boot (gateway ghost mxid domain, else renderer
-    ``server_name``); tests pass ``"mercury.local"`` explicitly.
+    builders (tests inject doubles). ``server_name`` is accepted for
+    caller compatibility and ignored (channels are server-relative).
+    No cap on live orchestrators.
     """
-    if not str(server_name or "").strip():
-        raise ValueError("spawn: server_name is required (live domain — never default)")
     clean = str(name or "").strip()
     if not clean:
-        raise ValueError("spawn: name is required (D6)")
+        raise ValueError("spawn: name is required")
     if engine not in ENGINES:
         raise ValueError(f"spawn: engine must be one of {ENGINES}, got {engine!r}")
 
     handle_agent = None
     handle_rpc = None
     if engine == "hermes":
-        handle_agent = (agent_factory or (lambda: build_hermes_agent(
-            mercury_home=mercury_home, model=model)))()
-        session_ref = str(getattr(handle_agent, "session_id", "") or "")
-        if not session_ref:
-            raise RuntimeError("spawn: hermes agent built without a session id")
+        if agent_factory is not None:
+            handle_agent = agent_factory()
+            session_ref = str(getattr(handle_agent, "session_id", "") or "")
+            if not session_ref:
+                raise RuntimeError("spawn: hermes agent built without a session id")
+        else:
+            # Gateway-session room: the ref is the channel; the session
+            # materializes in the gateway store on the first message.
+            session_ref = ""
     else:
         handle_rpc = (omp_child_factory or (lambda: build_omp_child(
             model=model,
@@ -551,17 +526,13 @@ async def spawn_orchestrator(
             workdir=workdir,
         )))()
         session_ref = omp_session_file(handle_rpc)
-    # Per-node model fallback: stamp the EFFECTIVE model (the live handle's
-    # resolved value — explicit arg → HERMES_INFERENCE_MODEL / OMP_MODEL →
-    # ambient config) into extra.model, so respawn/resume (
-    # respawn.resume_hermes_orchestrator, sidecar_main) never depends solely
-    # on ambient config. Doubles without a .model attr fall back to the arg.
     _handle = handle_agent if engine == "hermes" else handle_rpc
     stamped_model = (str(getattr(_handle, "model", "") or "").strip()
                      or (model or "").strip() or None)
     _auto_validate = validate_session_ref
     if _auto_validate is None:
-        _auto_validate = agent_factory is None and omp_child_factory is None
+        _auto_validate = (agent_factory is None and omp_child_factory is None
+                          and engine == "omp")
     if _auto_validate:
         try:
             validate_spawn_session_ref(engine, session_ref, mercury_home=mercury_home)
@@ -571,30 +542,30 @@ async def spawn_orchestrator(
                     handle_rpc.stop()
                 except Exception:  # noqa: BLE001 — teardown is best-effort
                     logger.debug("spawn: dangling omp child stop failed", exc_info=True)
-            if handle_agent is not None:
-                try:
-                    handle_agent.close()
-                except Exception:  # noqa: BLE001 — teardown is best-effort
-                    logger.debug("spawn: dangling hermes agent close failed", exc_info=True)
             raise
 
     node_id = orchestrator_node_id()
-    slug = assign_slug(clean, state)
+    slug = _unique_slug(clean, state)
+    channel = spawn_channel(clean)
+    if engine == "hermes" and not session_ref:
+        session_ref = channel
     row = state.add_node(
         node_id,
         engine=engine,
         name=clean,
         slug=slug,
-        mxid=virtual_mxid(slug, server_name=server_name),
+        mxid=agent_nick(clean),
         session_ref=session_ref,
         parent_node_id=None,  # depth 0 by next_depth()
         extra={
-            # NO "kind" — see the convention note above (tree.desired_plan
-            # includes only kind-"" agent roots as orchestrator subspaces).
             "model": stamped_model,
             SESSION_MATERIALIZED_KEY: False,
         },
     )
+    try:
+        state.set_room_id(node_id, channel)
+    except Exception:
+        logger.debug("spawn: set_room_id %s failed", node_id, exc_info=True)
     registry.register(OrchestratorHandle(
         node_id=node_id,
         engine=engine,
@@ -604,56 +575,33 @@ async def spawn_orchestrator(
         agent=handle_agent,
         rpc=handle_rpc,
     ))
-
-    if renderer is not None and renderer.executor is not None:
-        await _register_spawn_ghost(renderer, str(row.get("mxid") or ""))
-        # §3: converge the plan — creates the orchestrator subspace + room
-        # (idempotent: re-apply against the snapshot is a no-op).
-        await renderer.apply_plan(renderer.build_plan())
+    if engine == "omp" and handle_rpc is not None:
         try:
-            await renderer.render_lifecycle(node_id)  # 🚀 spawned message
+            register_omp_room(node_id, channel, handle_rpc)
+        except Exception:
+            logger.debug("spawn: omp room register failed", node_id, exc_info=True)
+
+    bot = get_bot_sink()
+    if bot is not None:
+        try:
+            await bot.join_channel(channel)
         except Exception:  # noqa: BLE001 — cosmetic; spawn already durable
-            logger.exception("spawn: lifecycle render failed for %s", node_id)
-    return row
+            logger.exception("spawn: channel join failed for %s", node_id)
+        else:
+            try:
+                await bot.say(channel, f"spawned {engine} agent '{clean}' — chat here, like CLI.")
+            except Exception:  # noqa: BLE001 — cosmetic
+                logger.debug("spawn: greet failed for %s", node_id, exc_info=True)
+    return state.get(node_id)
 
 
 # ============================================================================
-# Purge journal — write-ahead intent record (D18 crash atomicity)
+# Purge journal — write-ahead channel record (crash atomicity)
 # ============================================================================
 
-# RenderIntent union members the journal must round-trip. Serialized by
-# dataclass field; reconstructed as the real renderer dataclasses so the
-_INTENT_SPECS: tuple[tuple[type, str, tuple[str, ...]], ...] = (
-    (SendMessage, "send", ("room_key", "sender", "body", "formatted_body", "tag")),
-    (LeaveRoom, "leave", ("room_id", "sender")),
-    (DetachChild, "detach", ("space_id", "child_id", "sender")),
-    (PurgeRoom, "purge", ("room_id",)),
-)
-
-
-def serialize_intents(intents: Sequence[RenderIntent]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for intent in intents:
-        for cls, op, fields in _INTENT_SPECS:
-            if isinstance(intent, cls):
-                out.append({"op": op, **{f: getattr(intent, f) for f in fields}})
-                break
-        else:
-            raise TypeError(f"purge journal: unsupported intent {intent!r}")
-    return out
-
-
-def deserialize_intents(payload: Sequence[Mapping[str, Any]]) -> tuple[RenderIntent, ...]:
-    out: list[RenderIntent] = []
-    for raw in payload:
-        op = raw.get("op")
-        for cls, op_name, fields in _INTENT_SPECS:
-            if op == op_name:
-                out.append(cls(**{f: raw.get(f) for f in fields}))
-                break
-        else:
-            logger.warning("purge journal: unknown intent op %r skipped", op)
-    return tuple(out)
+# Journal entries carry channel lists (not render intents): replay
+# destroys channels server-side, then deletes rows. Idempotent —
+# destroying a gone channel is success.
 
 
 def read_purge_journal(state: ObservatoryState) -> list[dict[str, Any]]:
@@ -680,7 +628,7 @@ class ExitRecord:
     summary: Optional[str]
     created_epoch: float
     rows: list[dict[str, Any]] = field(default_factory=list)
-    intents: list[dict[str, Any]] = field(default_factory=list)
+    channels: list[str] = field(default_factory=list)
 
     def to_entry(self) -> dict[str, Any]:
         return {
@@ -690,7 +638,7 @@ class ExitRecord:
             "summary": self.summary,
             "created_epoch": self.created_epoch,
             "rows": self.rows,
-            "intents": self.intents,
+            "channels": self.channels,
         }
 
     @staticmethod
@@ -702,7 +650,7 @@ class ExitRecord:
             summary=entry.get("summary"),
             created_epoch=float(entry.get("created_epoch") or 0.0),
             rows=list(entry.get("rows") or []),
-            intents=list(entry.get("intents") or []),
+            channels=list(entry.get("channels") or entry.get("intents") or []),
         )
 
 
@@ -710,31 +658,30 @@ def begin_exit(
     state: ObservatoryState,
     node_id: str,
     *,
-    renderer: Renderer,
     status: str = "exit",
     summary: Optional[str] = None,
 ) -> ExitRecord:
-    """D18-CRITICAL durable step of ``/exit``: in ONE sqlite transaction,
-    append the write-ahead purge journal entry AND tombstone every subtree
-    node. Crash before commit → nothing happened (the agent stays live;
+    """Durable step of ``/exit``: in ONE sqlite transaction, append the
+    write-ahead channel journal entry AND tombstone every subtree node.
+    Crash before commit → nothing happened (the agent stays live;
     correct — /exit never reached durability). Crash after commit → the
-    journal replays on startup (``replay_purge_journal``) and the purge
+    journal replays on startup (``replay_purge_journal``) and the destroy
     completes; the respawn pass only resumes LIVE nodes, so a killed
     agent can never come back.
 
-    The intents are planned BEFORE the transaction (pure reads of the
-    still-live rows) and stored verbatim in the journal — replay must not
-    depend on state rows still existing.
+    The channel list is collected BEFORE the transaction (pure reads of
+    the still-live rows) and stored verbatim in the journal — replay must
+    not depend on state rows still existing.
     """
     row = state.get(node_id)  # StateError on unknown — fail hard
     if row["depth"] != 0:
         raise ValueError(
             f"exit: {node_id!r} is depth {row['depth']}, not a 0-agent "
-            "(D8: only /exit on spawned orchestrators)"
+            "(only /exit on spawned orchestrators)"
         )
-    # planning Renderer is enough (executor not touched here)
-    intents = renderer.plan_death(node_id, status=status, summary=summary)
     subtree = state.get_subtree(node_id)  # BFS top-down (parents first)
+    channels = [str(r.get("room_id") or "") for r in subtree]
+    channels = [c for c in channels if c]
     record = ExitRecord(
         journal_id=f"pj-{uuid.uuid4().hex[:8]}",
         node_id=node_id,
@@ -749,7 +696,7 @@ def begin_exit(
             }
             for r in subtree
         ],
-        intents=serialize_intents(intents),
+        channels=channels,
     )
     entries = read_purge_journal(state)
     entries.append(record.to_entry())
@@ -774,48 +721,30 @@ def begin_exit(
 
 @dataclass
 class PurgeOutcome:
-    """Result of one intent-batch execution.
+    """Result of one channel-destroy batch.
 
-    ``fatal`` — a PurgeRoom that did NOT verifiably die (any error other
-    than 404-already-gone): annihilation has not converged, the journal
-    entry must survive and retry.
-    ``soft`` — send/detach/leave failures (cosmetic once rooms are purged);
-    logged, never block row removal (D17: lingering tombstones are the
-    worse leak)."""
+    ``fatal`` — a channel that did NOT verifiably die: the journal entry
+    must survive and retry. Destroying a gone channel is success, never
+    fatal. ``soft`` is kept for shape compatibility (always empty)."""
 
     records: list[dict[str, Any]] = field(default_factory=list)
     fatal: list[str] = field(default_factory=list)
     soft: list[str] = field(default_factory=list)
 
 
-def _has_annihilation(intents: Sequence[RenderIntent]) -> bool:
-    """True when the batch contains destructive matrix work (purge /
-    detach) that an executor MUST run before rows may be deleted."""
-    return any(isinstance(i, (PurgeRoom, DetachChild)) for i in intents)
-
-
-async def _execute_purge_intents(
-    executor: Any, intents: Sequence[RenderIntent]
-) -> PurgeOutcome:
-    from observatory.matrix_client import MatrixError
-
+async def _execute_channel_destroy(bot: Any, channels: list[str]) -> PurgeOutcome:
+    """Destroy channels server-side via the bot sink (idempotent)."""
     out = PurgeOutcome()
-    for intent in intents:
+    for channel in channels:
         try:
-            out.records.extend(await executor.execute([intent]))
-        except MatrixError as exc:
-            if isinstance(intent, PurgeRoom) and exc.status == 404:
-                out.records.append(
-                    {"op": "purge", "room_id": intent.room_id, "gone": True}
-                )
+            if bot is None:
+                out.fatal.append(f"{channel}: no bot sink (daemon down?)")
                 continue
-            (out.fatal if isinstance(intent, PurgeRoom) else out.soft).append(
-                f"{type(intent).__name__}: {exc}"
-            )
+            ok = await bot.destroy_channel(str(channel))
+            out.records.append({"op": "destroy", "channel": str(channel),
+                                "gone": True, "ok": bool(ok)})
         except Exception as exc:  # noqa: BLE001 — classified, not swallowed
-            (out.fatal if isinstance(intent, PurgeRoom) else out.soft).append(
-                f"{type(intent).__name__}: {exc}"
-            )
+            out.fatal.append(f"{channel}: {exc}")
     return out
 
 
@@ -842,33 +771,25 @@ def finish_exit(state: ObservatoryState, record: ExitRecord) -> None:
 
 
 async def replay_purge_journal(
-    state: ObservatoryState, *, executor: Any = None
+    state: ObservatoryState, *, bot: Any = None
 ) -> list[dict[str, Any]]:
-    """D18 startup replay: every journal entry re-executes its purge
-    intents (idempotent — 404 purges are success) and, once annihilation
-    converged, finishes (rows deleted, entry dropped). Entries with a
-    still-failing purge stay journaled and are retried on the next boot;
-    their rows are already dead, so the respawn pass skips them either
-    way."""
+    """Startup replay: every journal entry re-destroys its channels
+    (idempotent — destroying a gone channel is success) and, once the
+    destroy converged, finishes (rows deleted, entry dropped). Entries
+    with a still-failing destroy stay journaled and are retried on the
+    next boot; their rows are already dead, so the respawn pass skips
+    them either way."""
     deferred: list[dict[str, Any]] = []
+    bot = bot if bot is not None else get_bot_sink()
     for entry in read_purge_journal(state):
         record = ExitRecord.from_entry(entry)
-        intents = deserialize_intents(record.intents)
+        channels = [str(c) for c in (record.channels or [])]
         fatal: list[str] = []
-        soft: list[str] = []
-        if executor is not None:
-            outcome = await _execute_purge_intents(executor, intents)
-            fatal, soft = outcome.fatal, outcome.soft
-        elif _has_annihilation(intents):
-            fatal = ["no executor available (state-only boot)"]
-        # executor-less entries with only cosmetic intents (summary sends)
-        # complete: the annihilation is vacuous and D17 forbids lingering
-        # tombstones.
-        for err in soft:
-            logger.warning(
-                "purge journal: entry %s soft failure (rows still removed): %s",
-                record.journal_id, err,
-            )
+        if bot is not None and channels:
+            outcome = await _execute_channel_destroy(bot, channels)
+            fatal = outcome.fatal
+        elif channels:
+            fatal = ["no bot sink available (IRC down?)"]
         if fatal:
             deferred.append({
                 "journal_id": record.journal_id,
@@ -882,8 +803,8 @@ async def replay_purge_journal(
             continue
         finish_exit(state, record)
         logger.info(
-            "purge journal: entry %s replayed (%d intents, %d rows deleted)",
-            record.journal_id, len(intents), len(record.rows),
+            "purge journal: entry %s replayed (%d channels, %d rows deleted)",
+            record.journal_id, len(channels), len(record.rows),
         )
     return deferred
 
@@ -898,44 +819,46 @@ async def exit_orchestrator(
     *,
     state: ObservatoryState,
     registry: OrchestratorRegistry,
-    renderer: Renderer,
+    bot: Any = None,
     status: str = "exit",
     summary: Optional[str] = None,
 ) -> dict[str, Any]:
     """``/exit`` on a spawned 0-agent.
 
     Sequence (each step crash-safe on its own):
-    1. ``begin_exit`` — atomic dead-mark + purge journal (D18).
+    1. ``begin_exit`` — atomic dead-mark + channel journal.
     2. stop the engine handle (kill AFTER the durable mark — see module
-       law) and drop it from the registry.
-    3. execute the purge intents against matrix (idempotent; a purge that
-       verifiably happened — success or 404 — is done, cosmetic
-       send/detach failures never block row removal).
+       law), drop it from the registry, and drop the omp room pump.
+    3. destroy the channels server-side (idempotent; a destroy that
+       verifiably happened is done).
     4. ``finish_exit`` — rows + journal entry deleted atomically.
 
-    Returns ``{"record": ExitRecord, "records": [executor log],
-    "deferred": [fatal errors]}`` — ``deferred`` non-empty means
-    annihilation did not converge and the journal entry was kept for
-    replay on the next boot.
+    Returns ``{"record": ExitRecord, "records": [destroy log],
+    "deferred": [fatal errors]}`` — ``deferred`` non-empty means the
+    destroy did not converge and the journal entry was kept for replay
+    on the next boot.
     """
-    record = begin_exit(state, node_id, renderer=renderer, status=status, summary=summary)
+    from observatory.rooms import drop_child_steer
+    record = begin_exit(state, node_id, status=status, summary=summary)
     handle = registry.unregister(node_id)
     if handle is not None:
         handle.stop()
-    intents = deserialize_intents(record.intents)
+    drop_omp_room(node_id)
+    try:
+        drop_child_steer(node_id)
+    except Exception:
+        pass
     records: list[dict[str, Any]] = []
     deferred: list[str] = []
-    executor = getattr(renderer, "executor", None)
-    if executor is not None:
-        outcome = await _execute_purge_intents(executor, intents)
+    bot = bot if bot is not None else get_bot_sink()
+    if bot is not None and record.channels:
+        outcome = await _execute_channel_destroy(bot, record.channels)
         records, deferred = outcome.records, outcome.fatal
-    elif _has_annihilation(intents):
-        deferred = ["no executor attached to renderer (state-only mode)"]
+    elif record.channels:
+        deferred = ["no bot sink attached (IRC down?)"]
     if not deferred:
         finish_exit(state, record)
     return {"record": record, "records": records, "deferred": deferred}
-
-
 
 
 def run_spawn(
@@ -947,8 +870,7 @@ def run_spawn(
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Sync ``/spawn`` entry for command handlers without a loop:
-    runs :func:`spawn_orchestrator` on a private event loop. ``kwargs``
-    MUST carry the live ``server_name`` (required — no default)."""
+    runs :func:`spawn_orchestrator` on a private event loop."""
     return asyncio.run(spawn_orchestrator(
         name, engine, state=state, registry=registry, **kwargs
     ))
@@ -958,10 +880,9 @@ def run_exit(
     *,
     state: ObservatoryState,
     registry: OrchestratorRegistry,
-    renderer: Renderer,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Sync ``/exit`` entry (same pattern as :func:`run_spawn`)."""
     return asyncio.run(exit_orchestrator(
-        node_id, state=state, registry=registry, renderer=renderer, **kwargs
+        node_id, state=state, registry=registry, **kwargs
     ))
