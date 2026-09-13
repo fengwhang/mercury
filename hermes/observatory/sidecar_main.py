@@ -413,6 +413,10 @@ class SidecarDaemon:
         #: notice per room per process — failures after the first only log).
         self._decrypt_notified: set[str] = set()
         self.omp_feeds: dict[str, Any] = {}  # node_id -> OmpFeed
+        #: Omp feeds held by a live turn: the turn is the feed's sole reader
+        #: for its duration (background consumer suspended), so frames cannot
+        #: split across two readers and drop.
+        self._omp_feed_held: set[str] = set()
         #: Spawned-child delivery (spawn-silent fix): in-flight child-turn
         #: tasks (drained/cancelled like ``_gateway_tasks``), per-node
         #: turn locks (one hermes turn at a time per child), and the
@@ -2224,42 +2228,67 @@ class SidecarDaemon:
         grandchild_nodes[subagent_id] = target
         return target
 
+    async def _render_omp_feed_event(
+        self, grandchild_nodes: dict[str, str], node_id: str, event: Any
+    ) -> None:
+        """Render one omp feed frame into its room (SELF → the child's own).
+
+        Shared by the background consumer and the turn-scoped consumer: every
+        queued frame renders exactly once no matter which reader dequeued it;
+        grandchild routing re-adopts via the deterministic id when the boxes
+        map missed the add (feed restart). Never raises."""
+        from observatory.omp_feed import MessageEvent, NodeEvent, ThoughtEvent, ToolEvent
+
+        try:
+            if isinstance(event, NodeEvent):
+                grandchild_nodes[event.subagent_id] = await self._render_grandchild(
+                    node_id, event
+                )
+            elif isinstance(event, ToolEvent):
+                if not event.tool:
+                    return
+                target = self._feed_target(grandchild_nodes, node_id, event.subagent_id)
+                if target:
+                    await self.renderer.render_tool_call(target, event.tool, event.args)
+            elif isinstance(event, ThoughtEvent):
+                target = self._feed_target(grandchild_nodes, node_id, event.subagent_id)
+                router = self.control_router
+                if target and (router is None or router.cot_enabled(target)):
+                    await self.renderer.render_thinking(target, event.text)
+            elif isinstance(event, MessageEvent):
+                if not event.text or not event.text.strip():
+                    return
+                target = self._feed_target(grandchild_nodes, node_id, event.subagent_id)
+                if target:
+                    await self.renderer.render_agent_message(target, event.text)
+        except Exception:  # noqa: BLE001 — one bad frame must not kill the feed
+            log.exception("omp feed event failed: %r", event)
+
     async def _run_omp_feed(self, node_id: str, feed: Any) -> None:
         """Consume one omp child's typed events: its OWN tool calls,
         thinking, messages (SELF stream, empty subagent id → own room) plus
         grandchildren lifecycle, tool calls, thinking, messages (§5)."""
-        from observatory.omp_feed import MessageEvent, NodeEvent, ThoughtEvent, ToolEvent
-
         await feed.start()
         grandchild_nodes: dict[str, str] = {}
         try:
             async for event in feed.events():
-                try:
-                    if isinstance(event, NodeEvent):
-                        grandchild_nodes[event.subagent_id] = await self._render_grandchild(
-                            node_id, event
-                        )
-                    elif isinstance(event, ToolEvent):
-                        if not event.tool:
-                            continue
-                        target = self._feed_target(grandchild_nodes, node_id, event.subagent_id)
-                        if target:
-                            await self.renderer.render_tool_call(target, event.tool, event.args)
-                    elif isinstance(event, ThoughtEvent):
-                        target = self._feed_target(grandchild_nodes, node_id, event.subagent_id)
-                        router = self.control_router
-                        if target and (router is None or router.cot_enabled(target)):
-                            await self.renderer.render_thinking(target, event.text)
-                    elif isinstance(event, MessageEvent):
-                        if not event.text or not event.text.strip():
-                            continue
-                        target = self._feed_target(grandchild_nodes, node_id, event.subagent_id)
-                        if target:
-                            await self.renderer.render_agent_message(target, event.text)
-                except Exception:  # noqa: BLE001 — one bad frame must not kill the feed
-                    log.exception("omp feed event failed: %r", event)
+                await self._render_omp_feed_event(grandchild_nodes, node_id, event)
         finally:
-            await feed.stop()
+            # A live turn holding the feed suspended this reader: the turn
+            # owns the subscription until release (no stop — the resumed
+            # background task continues on the same started feed).
+            if node_id not in getattr(self, "_omp_feed_held", set()):
+                await feed.stop()
+
+    async def _consume_omp_turn_feed(self, node_id: str, feed: Any) -> None:
+        """Turn-scoped sole reader: render frames while the turn runs.
+
+        The caller holds the feed (background suspended) and cancels this at
+        turn end — never stops the feed (release resumes the background on
+        the same subscription). Cancellation never raises out."""
+        grandchild_nodes: dict[str, str] = {}
+        async for event in feed.events():
+            await self._render_omp_feed_event(grandchild_nodes, node_id, event)
 
     async def _render_grandchild(self, parent_node_id: str, event: Any) -> str:
         """omp grandchild add/death → its own node under the child."""
@@ -2968,31 +2997,129 @@ class SidecarDaemon:
             self._ensure_omp_feed(node_id, handle)
         return handle
 
-    def _ensure_omp_feed(self, node_id: str, handle: Any) -> None:
+    def _spawn_omp_feed_task(self, node_id: str, feed: Any) -> Any | None:
+        """Queue one background _run_omp_feed consumer; None with no loop."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        task = loop.create_task(
+            self._run_omp_feed(node_id, feed),
+            name=f"observatory-omp-feed-{node_id}",
+        )
+        self._loops.append(task)
+        return task
+
+    def _ensure_omp_feed(self, node_id: str, handle: Any) -> Any | None:
         """Attach one OmpFeed for an omp handle missing it (spawn-time
-        handles postdate the boot attach pass). Never raises."""
+        handles postdate the boot attach pass). Returns the feed (None when
+        there is none) so the prompt path can subscribe BEFORE the turn.
+        Never raises."""
         try:
             if node_id in self.omp_feeds:
-                return
+                return self.omp_feeds[node_id]
             rpc = getattr(handle, "rpc", None)
             if rpc is None:
-                return
+                return None
             from observatory.omp_feed import OmpFeed
 
             feed = OmpFeed(rpc)
             self.omp_feeds[node_id] = feed
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                return
-            self._loops.append(
-                loop.create_task(
-                    self._run_omp_feed(node_id, feed),
-                    name=f"observatory-omp-feed-{node_id}",
-                )
-            )
+            self._spawn_omp_feed_task(node_id, feed)
+            return feed
         except Exception:
             log.exception("omp feed attach failed (node %s)", node_id)
+            return None
+
+    async def _takeover_omp_feed(self, node_id: str) -> None:
+        """Suspend the background feed consumer(s) for one turn.
+
+        The turn becomes the feed's sole reader (no split across two readers);
+        the feed stays subscribed (no stop — release resumes on it). The
+        cancelled reader's finally sees the hold and skips its stop. Never
+        raises."""
+        try:
+            self._omp_feed_held.add(node_id)
+        except Exception:
+            pass
+        name = f"observatory-omp-feed-{node_id}"
+        try:
+            tasks = [
+                t for t in list(self._loops)
+                if getattr(t, "get_name", lambda: "")() == name
+            ]
+        except Exception:
+            return
+        for task in tasks:
+            try:
+                task.cancel()
+            except Exception:
+                continue
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+            try:
+                self._loops.remove(task)
+            except ValueError:
+                pass
+
+    def _release_omp_feed(self, node_id: str, feed: Any | None) -> None:
+        """Hand the feed back to a background consumer after a turn."""
+        try:
+            self._omp_feed_held.discard(node_id)
+        except Exception:
+            pass
+        if feed is None:
+            return
+        try:
+            self._spawn_omp_feed_task(node_id, feed)
+        except Exception:
+            log.debug("omp feed resume failed (node %s)", node_id, exc_info=True)
+
+    async def _finish_omp_turn_feed(
+        self, node_id: str, feed: Any | None, consumer: Any | None
+    ) -> None:
+        """End turn-scoped reading: drain trailing queued frames, stop the
+        consumer, resume the background reader. Never raises."""
+        if feed is None:
+            return
+        if consumer is not None and not consumer.done():
+            # Trailing frames queued but not yet rendered: bounded window
+            # (breaks the moment the queue drains — zero cost normally).
+            try:
+                queue = getattr(feed, "_queue", None)
+                if queue is not None:
+                    for _ in range(50):
+                        try:
+                            drained = bool(queue.empty())
+                        except Exception:
+                            break
+                        if drained:
+                            break
+                        await asyncio.sleep(0.02)
+                    await asyncio.sleep(0)
+                else:
+                    # Queue-less doubles (tests): the consumer drains a finite
+                    # stream on loop ticks — wait for it, bounded.
+                    for _ in range(50):
+                        if consumer.done():
+                            break
+                        await asyncio.sleep(0.02)
+            except Exception:
+                pass
+            try:
+                consumer.cancel()
+            except Exception:
+                pass
+            try:
+                await consumer
+            except (asyncio.CancelledError, Exception):
+                pass
+        try:
+            self._release_omp_feed(node_id, feed)
+        except Exception:
+            pass
 
     def _child_task_done(self, task: asyncio.Task) -> None:
         """Drop a finished child-turn task; surface unhandled failures."""
@@ -3382,11 +3509,12 @@ class SidecarDaemon:
     async def _run_omp_child_prompt(self, node_id: str, text: str, quiet: bool = False) -> bool:
         """One omp turn (idle prompt): RPC task → summary renders in the
         child's room, in its own voice — unless ``quiet`` (a routine
-        parent-continuation: the turn still runs, the room stays silent).
-        The feed attaches BEFORE the first turn so the child's own tool
-        calls, thinking, and messages stream into its room live (SELF
-        stream) exactly like a gateway turn — never after, when the
-        frames that matter have already flown. False when no handle."""
+        parent-continuation: the turn still runs, the room stays silent —
+        the trace still streams, only the final reply is gated).
+        The feed subscribes BEFORE the turn and the turn is its sole reader
+        for its duration, so the child's own tool calls, thinking, and
+        messages (SELF stream) land in its room live, before the summary —
+        exactly like a gateway turn. False when no handle."""
         from observatory.control import ControlNotice
 
         try:
@@ -3403,15 +3531,43 @@ class SidecarDaemon:
                     ControlNotice(node_id, CHILD_UNAVAILABLE_NOTICE)
                 )
                 return False
-            self._ensure_omp_feed(node_id, handle)
+            feed = self._ensure_omp_feed(node_id, handle)
+            consumer = None
+            if feed is not None:
+                try:
+                    # Subscribe BEFORE the turn: the server starts emitting
+                    # the moment this lands, and the listener is already in
+                    # place (OmpFeed.start is listener-then-subscribe).
+                    # Idempotent — the background consumer's own start is a
+                    # safe no-op.
+                    await feed.start()
+                except Exception:
+                    log.debug("omp feed subscribe failed (node %s)", node_id, exc_info=True)
+                    feed = None
+            if feed is not None:
+                try:
+                    await self._takeover_omp_feed(node_id)
+                    consumer = asyncio.create_task(
+                        self._consume_omp_turn_feed(node_id, feed),
+                        name=f"observatory-omp-feed-turn-{node_id}",
+                    )
+                    # Pump once: a fast run_task can return without the loop
+                    # ever scheduling the consumer's first step (to_thread
+                    # does not yield to ready callbacks on its own).
+                    await asyncio.sleep(0)
+                except Exception:
+                    log.debug("omp feed takeover failed (node %s)", node_id, exc_info=True)
+                    consumer = None
             try:
                 result = await asyncio.to_thread(rpc.run_task, text)
             except Exception:
                 log.exception("omp child prompt failed (node %s)", node_id)
+                await self._finish_omp_turn_feed(node_id, feed, consumer)
                 await self._post_notice(
                     ControlNotice(node_id, CHILD_PROMPT_FAILED_NOTICE)
                 )
                 return True
+            await self._finish_omp_turn_feed(node_id, feed, consumer)
             try:
                 if self.state is not None:
                     from observatory.spawn import mark_session_materialized

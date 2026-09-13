@@ -557,10 +557,77 @@ def _child_transport_feedable(transport: Any) -> bool:
         return False
 
 
+#: Live-forward registries for the batched turn replay. The watcher records
+#: each child's forwarding OmpFeed (for a synchronous listener detach at
+#: replay time — no NEW frames queue after the turn) and a TurnFrameDedupe
+#: (live-vs-replay multiset: the replay pushes only the occurrences the
+#: live path missed). Guarded by ``_child_feed_lock`` (watcher loop vs
+#: delegation worker threads). Entries die with the forward task.
+_child_feed_lock = threading.Lock()
+_child_live_feeds: dict[str, Any] = {}
+_child_dedupe: dict[str, Any] = {}
+
+
+def replay_child_turn_frames(child_id: str, frames: Any) -> int:
+    """Push the batched turn's SELF frames the live path missed.
+
+    ``frames`` are the transport's JSON-safe ``turn_frames`` dicts. Only
+    tool/thought/message frames for the child itself replay (grandchildren
+    rely on the live path — server-gated from task start by the synchronous
+    subscribe in the child_started hook). The multiset skips occurrences the
+    live forwarder already pushed, in turn order; a frame live-forwarded
+    AFTER this runs is likewise skipped. Returns pushed count. Never raises.
+    """
+    try:
+        cid = str(child_id or "")
+        wanted = [
+            f for f in (frames or [])
+            if isinstance(f, dict) and f.get("feed") in ("tool", "thought", "message")
+            and not f.get("subagent_id")
+        ]
+        if not cid or not wanted:
+            return 0
+        from observatory.omp_feed import TurnFrameDedupe, child_frame_key
+
+        with _child_feed_lock:
+            dd = _child_dedupe.get(cid)
+            if dd is None:
+                dd = TurnFrameDedupe()
+                _child_dedupe[cid] = dd
+            feed = _child_live_feeds.get(cid)
+            if feed is not None:
+                for attr in ("_dispose_listener", "_dispose_agent_listener"):
+                    try:
+                        dispose = getattr(feed, attr, None)
+                        if callable(dispose):
+                            dispose()
+                    except Exception:
+                        pass
+                    try:
+                        setattr(feed, attr, None)
+                    except Exception:
+                        pass
+            keys = [child_frame_key(f) for f in wanted]
+            surplus = dd.replay_indexes(keys)
+            for i in surplus:
+                try:
+                    push_child_feed_event(cid, wanted[i])
+                except Exception:
+                    continue
+            return len(surplus)
+    except Exception:
+        logger.debug("child turn replay failed for %s", child_id, exc_info=True)
+        return 0
+
+
 async def _forward_child_feed(
     child_id: str, transport: Any, feeds: dict[str, Any]
 ) -> None:
-    """Subscribe one OmpFeed and push its frames as datagrams until cancelled."""
+    """Subscribe one OmpFeed and push its frames as datagrams until cancelled.
+
+    SELF tool/thought/message frames consult the turn multiset (a frame the
+    batched replay already covered is skipped); grandchildren and lifecycle
+    frames always push (the replay never covers them)."""
     try:
         from observatory.omp_feed import OmpFeed
     except Exception:
@@ -568,6 +635,20 @@ async def _forward_child_feed(
         return
     feed = OmpFeed(transport)
     feeds[child_id] = feed
+    try:
+        from observatory.omp_feed import TurnFrameDedupe
+    except Exception:
+        TurnFrameDedupe = None  # type: ignore[assignment]
+    try:
+        with _child_feed_lock:
+            dd = _child_dedupe.get(child_id)
+            if dd is None and TurnFrameDedupe is not None:
+                dd = TurnFrameDedupe()
+                _child_dedupe[child_id] = dd
+            _child_live_feeds[child_id] = feed
+    except Exception:
+        dd = None
+        logger.debug("child feed registry failed for %s", child_id, exc_info=True)
     try:
         try:
             await feed.start()
@@ -583,6 +664,21 @@ async def _forward_child_feed(
                 if payload is None:
                     continue
                 try:
+                    if (
+                        dd is not None
+                        and payload.get("feed") in ("tool", "thought", "message")
+                        and not payload.get("subagent_id")
+                    ):
+                        from observatory.omp_feed import child_frame_key
+
+                        skip = False
+                        try:
+                            with _child_feed_lock:
+                                skip = bool(dd.live_hit(child_frame_key(payload)))
+                        except Exception:
+                            skip = False
+                        if skip:
+                            continue
                     push_child_feed_event(child_id, payload)
                 except Exception:
                     continue
@@ -596,6 +692,13 @@ async def _forward_child_feed(
         except Exception:
             pass
         feeds.pop(child_id, None)
+        try:
+            with _child_feed_lock:
+                if _child_live_feeds.get(child_id) is feed:
+                    _child_live_feeds.pop(child_id, None)
+                _child_dedupe.pop(child_id, None)
+        except Exception:
+            pass
 
 
 async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None:

@@ -530,6 +530,54 @@ class TestControlPlaneMethods(unittest.TestCase):
         self.assertEqual([e[0] for e in events], ["started", "finished"])
         self.assertIs(events[0][1], events[1][1])  # same child both times
 
+class TestTurnFramesPreserved(unittest.TestCase):
+    """OmpRpcChild.run_task keeps the turn's own frames (observatory replay)."""
+
+    def _child(self, turn=None, error=None):
+        from types import SimpleNamespace
+
+        def _prompt(prompt, timeout=None):
+            if error is not None:
+                raise error
+            return turn
+
+        child = omp_rpc_transport.OmpRpcChild.__new__(omp_rpc_transport.OmpRpcChild)
+        child._client = SimpleNamespace(prompt_and_wait=_prompt)
+        child._model = "prov/m-1"
+        return child
+
+    def _turn(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            events=[
+                {"type": "tool_execution_start", "tool_name": "terminal",
+                 "args": {"command": "ls"}},
+                {"type": "message_update", "assistant_message_event": {
+                    "type": "thinking_end", "contentIndex": 0,
+                    "content": "checking"}},
+                {"type": "message_end", "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "all done"}]}},
+            ],
+            require_assistant_text=lambda: "all done",
+        )
+
+    def test_completed_entry_carries_json_safe_frames(self):
+        entry = self._child(turn=self._turn()).run_task("do it")
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(
+            [f["feed"] for f in entry["turn_frames"]],
+            ["tool", "thought", "message"],
+        )
+        self.assertEqual(entry["turn_frames"][0]["tool"], "terminal")
+        json.dumps(entry)  # delegation entries cross a json.dumps boundary
+
+    def test_failed_entry_carries_empty_frames(self):
+        entry = self._child(error=RuntimeError("boom")).run_task("do it")
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["turn_frames"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
