@@ -443,25 +443,32 @@ class OmpRpcChild:
         self._ui_thread.start()
 
     def run_task(self, prompt: str, timeout: Optional[float] = None) -> Dict[str, Any]:
-        """Run one task; return {status, summary|error, exit_reason}."""
+        """Run one task; return {status, summary|error, exit_reason, turn_frames}.
+
+        ``turn_frames`` preserves the turn's own tool/thinking/message frames
+        as JSON-safe dicts (matrix observatory: the gateway replays the live
+        race's misses into the child room). Additive — existing consumers
+        ignore it, and it survives the delegation ``json.dumps`` boundary."""
         if self._client is None:
             return {
                 "status": "failed", "summary": None,
                 "error": "omp RPC child not started",
                 "exit_reason": "error", "truncated": False,
-                "model": self._model, "duration_seconds": 0.0,
+                "model": self._model, "duration_seconds": 0.0, "turn_frames": [],
             }
         import time as _time
 
         started = _time.time()
         try:
             turn = self._client.prompt_and_wait(prompt, timeout=timeout)
+            frames = _turn_frames_of(turn)
             text = turn.require_assistant_text()
             return {
                 "status": "completed", "summary": text or "(omp returned no output)",
                 "exit_reason": "completed", "truncated": False,
                 "model": self._model,
                 "duration_seconds": round(_time.time() - started, 2),
+                "turn_frames": frames,
             }
         except Exception as exc:
             # Timeout parity with the -p one-shot entry contract: a task that
@@ -475,8 +482,7 @@ class OmpRpcChild:
                 "status": "failed", "summary": None,
                 "error": f"omp RPC child failed: {exc}",
                 "exit_reason": reason, "truncated": False,
-                "model": self._model,
-                "duration_seconds": round(_time.time() - started, 2),
+                "model": self._model, "duration_seconds": round(_time.time() - started, 2), "turn_frames": [],
             }
 
     # ------------------------------------------------------------------
@@ -592,6 +598,21 @@ class OmpRpcChild:
                 self._client.stop()
             except Exception:
                 logger.exception("C1: client stop raised (ignored)")
+
+
+def _turn_frames_of(turn: Any) -> list:
+    """PromptTurn.events → JSON-safe SELF frame dicts; [] when unavailable."""
+    try:
+        events = getattr(turn, "events", None)
+        if not events:
+            return []
+        from observatory.omp_feed import agent_turn_frames
+
+        frames = agent_turn_frames(events)
+        return [dict(f) for f in frames if isinstance(f, dict)]
+    except Exception:
+        logger.debug("C1: turn frame preservation failed (ignored)", exc_info=True)
+        return []
 
 
 class OmpRpcStartError(Exception):
