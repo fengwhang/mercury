@@ -3465,23 +3465,32 @@ def _probe_tcp(listener: str, timeout: float = 3.0) -> bool:
         return False
 
 
-def _verify_daemon_listening(status: dict) -> tuple[bool, str]:
+def _verify_daemon_listening(status: dict, *, retries: int = 3) -> tuple[bool, str]:
     """Probe the agent + bouncer listeners from the status summary.
 
     The wizard must never report success while the daemon is down — this
     is the check that was missing behind every "it said complete but
-    nothing listens" report. Returns (ok, detail); unknown addresses
-    (unprovisioned status) count as skipped-ok. Never raises.
+    nothing listens" report. Probes retry (a fresh restart needs a
+    moment: systemd RestartSec + interpreter boot + socket bind), so a
+    single sample during the restart window can't fail the run.
+    Returns (ok, detail); unknown addresses (unprovisioned status) count
+    as skipped-ok. Never raises.
     """
+    import time as _time
+
     try:
         agent = str((status or {}).get("agent") or "")
         bouncer = str((status or {}).get("bouncer") or "")
         if not agent and not bouncer:
             return True, "skipped (no listeners configured yet)"
-        down = [(label, addr) for label, addr in (("agent", agent), ("bouncer", bouncer))
-                if addr and not _probe_tcp(addr)]
-        if not down:
-            return True, "agent + bouncer answer"
+        down: list[tuple[str, str]] = []
+        attempts = max(1, int(retries))
+        for _ in range(attempts):
+            down = [(label, addr) for label, addr in (("agent", agent), ("bouncer", bouncer))
+                    if addr and not _probe_tcp(addr)]
+            if not down:
+                return True, "agent + bouncer answer"
+            _time.sleep(3)
         try:
             from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
         except Exception:  # noqa: BLE001

@@ -340,3 +340,31 @@ def test_firewall_bad_port():
     import mercury_cli.setup as setup_mod
 
     assert setup_mod._ensure_firewall_port("nope") == "unavailable"
+
+
+def test_verify_retries_restart_window(monkeypatch):
+    import mercury_cli.setup as setup_mod
+
+    calls = {"n": 0}
+
+    def _flaky(addr):
+        calls["n"] += 1
+        return calls["n"] >= 3  # down, down, then up
+
+    monkeypatch.setattr(setup_mod, "_probe_tcp", _flaky)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    ok, detail = setup_mod._verify_daemon_listening(
+        {"agent": "127.0.0.1:6669", "bouncer": "127.0.0.1:6670"})
+    assert ok is True
+    assert calls["n"] >= 3  # retried past the dead window
+
+
+def test_verify_gives_up_with_both_down(monkeypatch):
+    import mercury_cli.setup as setup_mod
+
+    monkeypatch.setattr(setup_mod, "_probe_tcp", lambda addr: False)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    ok, detail = setup_mod._verify_daemon_listening(
+        {"agent": "127.0.0.1:6669", "bouncer": "127.0.0.1:6670"}, retries=2)
+    assert ok is False
+    assert "systemctl --user restart" in detail
