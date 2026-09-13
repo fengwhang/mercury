@@ -3882,11 +3882,11 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
     normalized = " ".join(str(message).strip().split()).lower()
     return normalized in _CONTROL_INTERRUPT_MESSAGES
 
-def _matrix_steer_text_targets_live_turn(kind: object, internal: object) -> bool:
-    """True when Matrix room plain text may land in a live gateway turn.
+def _room_steer_text_targets_live_turn(kind: object, internal: object) -> bool:
+    """True when room plain text may land in a live gateway turn.
 
-    Only ``kind == "steer"`` (gateway-room SteerText from
-    ``observatory.control``) with ``internal == False`` qualifies: quiet
+    Only ``kind == "steer"`` (gateway-room steer text) with
+    ``internal == False`` qualifies: quiet
     parent-continuations (``internal=True``) and engine commands
     (``kind == "command"``) must keep their fresh-turn path, as must every
     other prompt kind. Content-agnostic: the text itself is never inspected
@@ -3898,7 +3898,7 @@ def _matrix_steer_text_targets_live_turn(kind: object, internal: object) -> bool
         return False
 
 
-def _attempt_matrix_live_steer(text: object, *, session_id: str = "gateway") -> dict:
+def _attempt_room_live_steer(text: object, *, session_id: str = "gateway") -> dict:
     """Try redirect-then-steer into the live gateway-session agent.
 
     Calls ``observatory.gateway_session.steer_gateway_agent`` (which tries
@@ -3964,7 +3964,7 @@ def _observatory_inject_dispatch(params: object, run_prompt_fn) -> dict:
     """Dispatch one Matrix ``inject`` with gateway-side live-steer first.
 
     Matrix room plain text (``kind == "steer"``, non-internal) tries
-    :func:`_attempt_matrix_live_steer` before anything else: when the
+    :func:`_attempt_room_live_steer` before anything else: when the
     gateway-session turn is live the SAME cached agent absorbs the text
     into its running turn and no fresh turn runs (no second turn, no
     second reply — the live turn's reply carries the reaction). Every miss
@@ -3977,8 +3977,8 @@ def _observatory_inject_dispatch(params: object, run_prompt_fn) -> dict:
     node_id = params.get("node_id", "gw") if isinstance(params, dict) else "gw"
     room_id = params.get("room_id") if isinstance(params, dict) else None
     internal = bool(params.get("internal", False)) if isinstance(params, dict) else False
-    if _matrix_steer_text_targets_live_turn(kind, internal):
-        live = _attempt_matrix_live_steer(text)
+    if _room_steer_text_targets_live_turn(kind, internal):
+        live = _attempt_room_live_steer(text)
         if isinstance(live, dict) and live.get("steered") is True:
             return {"reply": "", "events": [], "steered": True}
     _reply, _events = run_prompt_fn(
@@ -14406,8 +14406,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # confirmed-delivered has its answer in the ledger — redelivering it
         # is strictly cheaper and more correct than re-running the whole turn.
         self._schedule_resume_pending_sessions()
-        # M5a observatory seam (spec §2 component 3): fire-and-forget
-        # sidecar boot on a daemon thread; never raises, never blocks.
+        # IRC observatory seam: fire-and-forget observatory boot on a
+        # daemon thread; never raises, never blocks.
         try:
             from observatory.platform_hook import try_boot_sidecar
             try_boot_sidecar()

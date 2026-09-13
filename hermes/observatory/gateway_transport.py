@@ -1,7 +1,6 @@
-"""Sidecar side of gateway-room prompt delivery (M4a/M5c).
+"""Gateway-room prompt delivery over the control socket.
 
-The control router (``observatory.control``) decides WHAT a Matrix message
-means; this module delivers gateway-node prompts to the live gateway
+This module delivers gateway-node prompts to the live gateway
 session. Transport is the gateway control socket
 (``gateway.control_socket``) — the gateway-owned, already-live IPC surface —
 extended with the ``inject`` verb (params ``{text, kind, node_id}``), which
@@ -29,7 +28,7 @@ logger = logging.getLogger(__name__)
 GATEWAY_INJECT_VERB = "inject"
 
 #: Control-socket verb resolving a gateway-process approval queue entry
-#: from a Matrix room decision (registered by the gateway process at boot;
+#: from a room decision (registered by the gateway process at boot;
 #: see gateway/run.py seam). Params: ``{session_key, choice[, request_id,
 #: reason]}`` → ``{"resolved": int}``.
 GATEWAY_RESOLVE_APPROVAL_VERB = "resolve-approval"
@@ -112,7 +111,7 @@ class GatewayTransport:
             except TypeError:
                 return await self.prompt(text, kind=kind, node_id=node_id), []
 
-    async def interrupt(self, reason: str = "matrix /stop") -> dict[str, Any]:
+    async def interrupt(self, reason: str = "irc /stop") -> dict[str, Any]:
         """Interrupt the in-flight gateway turn (BUG3 /stop). Base: no-op."""
         return {"interrupted": False, "reason": "no interrupt transport"}
 
@@ -195,7 +194,7 @@ class ControlSocketGatewayTransport(GatewayTransport):
         events = raw_events if isinstance(raw_events, list) else []
         return reply, [e for e in events if isinstance(e, dict)]
 
-    async def interrupt(self, reason: str = "matrix /stop") -> dict[str, Any]:
+    async def interrupt(self, reason: str = "irc /stop") -> dict[str, Any]:
 
         """Send the ``interrupt`` verb (BUG3): hard-cancel the in-flight
         gateway turn. Never raises — failures report as not-interrupted."""

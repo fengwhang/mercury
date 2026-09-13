@@ -1,17 +1,16 @@
-"""Gateway-process side of Matrix observatory prompt delivery (M4a/M5c).
+"""Gateway-process side of IRC observatory prompt delivery.
 
-The observatory sidecar owns all Matrix I/O, but the gateway agent's hermes
-session lives in (and is resumed by) the gateway process itself — the D18
-respawn pass deliberately never builds a handle for it
-(``observatory.respawn`` SKIP_RESPAWN_KINDS). So a gateway-room prompt must
-cross into the gateway process: the sidecar sends the ``inject`` verb over
-the gateway control socket (``gateway.control_socket``) and the gateway
-answers it with :func:`run_gateway_prompt` here.
+The gateway agent's hermes session lives in (and is resumed by) the
+gateway process itself — boot resync deliberately never builds a
+handle for it (SKIP_RESPAWN_KINDS). A gateway-room prompt may also
+arrive over the gateway control socket (``gateway.control_socket``
+``inject`` verb); the gateway answers it with :func:`run_gateway_prompt`
+here.
 
 Execution is a headless AIAgent turn on a STABLE session id
 (``GATEWAY_SESSION_ID``) — the same machinery ``mercury -z`` uses
 (``mercury_cli.oneshot``: config-resolved runtime + ``run_conversation``),
-except the agent is cached per session so consecutive Matrix messages share
+except the agent is cached per session so consecutive IRC messages share
 one transcript. Turns are serialized per session: a headless session is
 always idle between turns, so steer-vs-prompt (a busy-session distinction)
 collapses — every injection starts a turn, and ``kind`` selects the entry
@@ -20,9 +19,8 @@ first tries the gateway slash dispatch (the same table
 ``GatewayRunner._handle_message`` uses) and falls back to a turn for
 unknown verbs.
 
-The gateway-session agent is built with ``platform="matrix"`` so the
-system prompt picks the Matrix formatting hint; spawned orchestrators
-(``observatory.spawn``) keep the ``cli`` default.
+The gateway-session agent is built with ``platform="irc"`` so the
+system prompt picks the plain-text hint.
 """
 
 from __future__ import annotations
@@ -31,7 +29,6 @@ import asyncio
 import json
 import logging
 import os
-import socket
 import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -46,20 +43,8 @@ GATEWAY_SESSION_ID = "gateway"
 #: ``command`` tries slash dispatch first. Anything else is a caller bug.
 INJECT_KINDS = frozenset({"prompt", "steer", "command"})
 
-#: Live-progress datagram socket name under ``$MERCURY_HOME/observatory``.
-#: The turn collector fire-and-forget sends one ``SOCK_DGRAM`` datagram per
-#: captured event; the sidecar ingests them for live room streaming (§5).
-#: Best-effort: no listener or send error = drop silently.
-GATEWAY_PROGRESS_SOCK_NAME = "gateway-progress.sock"
-
-#: Datagram ``kind`` values on the gateway-progress socket. The turn
-#: collector sends ``{node_id, seq, event}`` with NO kind (legacy shape —
-#: the sidecar defaults it to ``TURN_PROGRESS_KIND``); gateway-origin
-#: omp-child frames carry an explicit kind so the sidecar can create and
-#: render child nodes from wire bytes alone. The sidecar MUST NEVER
-#: import the gateway's in-process ``tools.omp_delegation._live_children``
-#: table (separate processes in production — that import always fails
-#: there); the gateway reads its OWN table same-process and pushes bytes.
+#: Queue ``kind`` values for gateway→rooms frames. The room pump reads
+#: its OWN process queue (same process — no socket hop).
 TURN_PROGRESS_KIND = "turn_progress"
 #: ``{"kind": "child_lifecycle", "node_id", "lifecycle": "start"|"stop",
 #: "name", "goal", "delegation_id", "task_index", "parent_session",
@@ -71,19 +56,13 @@ CHILD_LIFECYCLE_KIND = "child_lifecycle"
 CHILD_EVENT_KIND = "child_event"
 #: ``{"kind": "approval_prompt", "node_id", "request_id", "command",
 #: "description", "session_key"}`` — one guard approval raised by a gateway
-#: Matrix turn, forwarded so the sidecar mirrors it into the node's room.
+#: turn, forwarded so the pump mirrors it into the node's channel.
 #: The turn blocks in ``tools.approval``'s gateway queue under
-#: :data:`GATEWAY_APPROVAL_SESSION_KEY`; the room /approve resolves that
-#: same queue (via the sidecar bridge + ``resolve-approval`` control verb).
+#: :data:`GATEWAY_APPROVAL_SESSION_KEY`.
 APPROVAL_PROMPT_KIND = "approval_prompt"
 
-#: Canonical ``tools.approval`` session key for gateway Matrix turns
+#: Canonical ``tools.approval`` session key for gateway turns
 #: (``session:gateway`` — the gateway node's ``session_ref`` in state.db).
-#: BOTH processes use this one value: the gateway turn sets it as the
-#: ambient approval key and registers the datagram forwarder under it;
-#: the sidecar registers the bridge ingest (``gateway_notify``) under it.
-#: One shared constant — never recompute per side — so the key the turn
-#: blocks on is always the key the room resolves.
 GATEWAY_APPROVAL_SESSION_KEY = "session:gateway"
 
 #: Gateway-child feed watcher poll cadence (seconds).
@@ -107,19 +86,18 @@ def _session_lock(session_id: str) -> threading.Lock:
 def _default_agent(session_id: str) -> Any:
     """Fresh-or-resumed AIAgent on the session id.
 
-    Same builder the D18 respawn pass uses for spawned hermes
-    orchestrators (dedicated SessionDB handle on the home's hermes
-    state.db — never a borrowed live object). The turn prologue resolves
-    the compression-lineage tip and loads prior history, so a stored
+    Same builder boot resync uses for spawned hermes orchestrators
+    (dedicated SessionDB handle on the home's hermes state.db — never a
+    borrowed live object). The turn prologue resolves the
+    compression-lineage tip and loads prior history, so a stored
     session resumes and a missing one starts fresh.
 
-    The gateway session renders into a Matrix room, so it is built with
-    ``platform="matrix"`` (Matrix markdown hint). Spawned orchestrators
-    keep the ``cli`` default in ``build_hermes_agent``.
+    The gateway session renders into an IRC channel, so it is built with
+    ``platform="irc"`` (plain-text hint, no markdown).
     """
     from observatory.spawn import build_hermes_agent
 
-    return build_hermes_agent(session_id=session_id, platform="matrix")
+    return build_hermes_agent(session_id=session_id, platform="irc")
 
 
 def drop_cached_agent(session_id: str = GATEWAY_SESSION_ID) -> None:
@@ -252,7 +230,7 @@ def _dispatch_slash_command(
                 internal=True,
             )
         except Exception:
-            logger.debug("gateway_session: matrix event synth failed", exc_info=True)
+            logger.debug("gateway_session: event synth failed", exc_info=True)
             return None
         try:
             coro = runner._handle_message(event)
@@ -286,18 +264,6 @@ def _dispatch_slash_command(
     except Exception:
         logger.debug("gateway_session: slash dispatch failed", exc_info=True)
         return None
-
-
-def _progress_socket_path() -> Path:
-    """``$MERCURY_HOME/observatory/gateway-progress.sock`` (never raises)."""
-    try:
-        from observatory.provision import _mercury_home
-
-        return Path(_mercury_home()) / "observatory" / GATEWAY_PROGRESS_SOCK_NAME
-    except Exception:
-        env = os.environ.get("MERCURY_HOME", "").strip()
-        home = Path(env).expanduser() if env else Path.home() / ".mercury"
-        return home / "observatory" / GATEWAY_PROGRESS_SOCK_NAME
 
 
 def _normalize_text(text: Any) -> str:
@@ -344,10 +310,10 @@ def _push_progress(node_id: str, seq: int, event: dict[str, Any], *, internal: b
         pass
 
 def _send_child_datagram(payload: dict[str, Any]) -> None:
-    """Legacy datagram hop (sidecar is gone): route into the rooms queue.
+    """Queue hop: route the ``kind`` envelope into the rooms queue.
 
-    Keeps the ``kind`` envelope so existing producer call sites are
-    untouched; the RoomManager pump is the only consumer now.
+    Keeps the envelope so existing producer call sites are untouched;
+    the RoomManager pump is the only consumer now.
     """
     try:
         from observatory.rooms import submit_approval, submit_feed, submit_lifecycle
@@ -385,11 +351,10 @@ def push_approval_prompt(
     description: str = "",
     session_key: str = GATEWAY_APPROVAL_SESSION_KEY,
 ) -> None:
-    """Fire-and-forget one approval-prompt datagram; never raises.
+    """Fire-and-forget one approval-prompt frame; never raises.
 
-    Same best-effort law as the other gateway→sidecar datagrams: no
-    listener or send error = drop silently (the turn still blocks in the
-    gateway queue until timeout — fail-closed deny — it just never
+    Same best-effort law as the other queue hops (the turn still blocks
+    in the gateway queue until timeout — fail-closed deny — it just never
     surfaces in the room)."""
     _send_child_datagram({
         "kind": APPROVAL_PROMPT_KIND,
@@ -403,10 +368,9 @@ def push_approval_prompt(
 
 def gateway_approval_notify(node_id: str):
     """``tools.approval.register_gateway_notify`` callback for gateway
-    Matrix turns: mirrors the guard prompt to the sidecar over the
-    progress socket. Runs on the blocked agent thread; the send is
-    fire-and-forget datagram I/O (the socket pattern the
-    register_gateway_notify docstring prescribes — never block here)."""
+    turns: mirrors the guard prompt into the rooms queue. Runs on the
+    blocked agent thread; the send is fire-and-forget queue I/O (never
+    block here)."""
     def _notify(approval_data) -> None:
         try:
             data = dict(approval_data or {})
@@ -435,7 +399,7 @@ def push_child_lifecycle(
     summary: str | None = None,
     engine: str | None = None,
 ) -> None:
-    """Push one child-lifecycle datagram; never raises.
+    """Push one child-lifecycle frame; never raises.
 
     ``lifecycle`` is ``"start"`` (entry appeared in the gateway's own
     ``_live_children`` table) or ``"stop"`` (entry disappeared — the
@@ -1121,8 +1085,7 @@ def run_gateway_prompt_with_events(
     turn blocks in ``tools.approval`` under the canonical
     :data:`GATEWAY_APPROVAL_SESSION_KEY` with
     :func:`gateway_approval_notify` registered, so every guard prompt is
-    forwarded to the sidecar (which mirrors it into the node's room and
-    resolves this exact queue on /approve|/deny). Registration is undone
+    forwarded into the rooms queue (mirrored into the node's channel). Registration is undone
     when the turn ends (same register/unregister law as the gateway's own
     ``_run_agent_turn``). When ``tools.approval`` is unavailable the turn
     runs unwrapped (approvals take their existing default path)."""
@@ -1295,7 +1258,7 @@ def steer_gateway_agent(text: str, *, session_id: str = GATEWAY_SESSION_ID) -> d
     return {"steered": True, "reason": ""}
 
 
-def interrupt_gateway_agent(reason: str = "matrix /stop", *, session_id: str = GATEWAY_SESSION_ID) -> dict[str, Any]:
+def interrupt_gateway_agent(reason: str = "irc /stop", *, session_id: str = GATEWAY_SESSION_ID) -> dict[str, Any]:
     """Interrupt the cached gateway-session agent (BUG3 /stop wiring).
 
     Calls ``agent.interrupt(reason, hard_cancel=True)`` on the live cached

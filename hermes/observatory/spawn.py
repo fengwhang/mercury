@@ -13,14 +13,14 @@ state.db rows — and drives the IRC side (one channel per agent):
   server-side and every row deleted. Crash-atomicity: the dead-marks and
   the write-ahead channel journal land in ONE sqlite transaction
   (``begin_exit``); the journal replays on startup
-  (``replay_purge_journal``, called by the respawn pass), so a crash
+  (``replay_purge_journal``, called by boot resync), so a crash
   mid-destroy never resurrects a killed agent — a journaled node is
   dead-or-deleted in every observable state, and a crashed destroy
   completes on the next boot instead of being forgotten.
 
 Engine-ordering law for /exit: durable dead-mark FIRST, engine kill
 second. A crash between them orphans a process (operator-visible) but can
-never leave a killed agent live in state.db for the respawn pass to
+never leave a killed agent live in state.db for boot resync to
 restart — that would be resurrection.
 
 Subagent stop at parent death: depth>=1 children of a 0-agent are
@@ -55,17 +55,17 @@ from observatory.state import ENGINES, ObservatoryState, StateError
 logger = logging.getLogger(__name__)
 
 #: ``extra.kind`` convention: spawned agents carry NO kind — plain agent
-#: nodes; only the gateway agent ("gateway") is kind-stamped. The respawn
-#: pass resumes every depth-0 live node except those kinds ("every live
+#: nodes; only the gateway agent ("gateway") is kind-stamped. Boot resync
+#: resumes every depth-0 live node except those kinds ("every live
 #: 0-agent").
 GATEWAY_KIND = "gateway"
 SKIP_RESPAWN_KINDS = ("gateway", "manual-run")
 
-#: state.db meta key holding the write-ahead purge journal (D18).
+#: state.db meta key holding the write-ahead purge journal.
 PURGE_JOURNAL_KEY = "purge-journal"
 
 #: omp session JSONLs for spawned orchestrators live here (under the
-#: observatory root, D9: the session file is the respawn handle).
+#: observatory root: the session file is the resume handle).
 OMP_SESSIONS_DIRNAME = "omp-sessions"
 
 #: Default omp startup wait — mirrors tools/omp_delegation.RPC_STARTUP_TIMEOUT.
@@ -102,7 +102,7 @@ def mark_session_materialized(state: Any, node_id: str) -> None:
 
 
 def orchestrator_node_id() -> str:
-    """Fresh node id: ``orch-<hex8>`` (distinct keyspace from discovery's
+    """Fresh node id: ``orch-<hex8>`` (distinct keyspace from delegation
     ``sa-``/``deleg_`` ids and render_live's fixed literals)."""
     return f"orch-{uuid.uuid4().hex[:8]}"
 
@@ -117,7 +117,7 @@ def omp_sessions_dir(mercury_home: str | Path | None = None) -> Path:
 
 
 # ============================================================================
-# In-memory handle registry (rebuilt by the D18 respawn pass)
+# In-memory handle registry (rebuilt by boot resync)
 # ============================================================================
 
 
@@ -157,7 +157,7 @@ class OrchestratorRegistry:
     """Thread-safe ``node_id -> OrchestratorHandle`` map.
 
     The sidecar process owns one instance; a restart (gateway update,
-    crash) drops it and the D18 respawn pass (``observatory.respawn``)
+    crash) drops it and boot resync
     rebuilds it from state.db.
     """
 
@@ -420,7 +420,7 @@ def validate_spawn_session_ref(
       nothing) and its parent dir is writable.
 
     The FILE/ROW-exists check lives at RESUME time
-    (``respawn.restart_omp_orchestrator`` / ``resume_hermes_orchestrator``):
+    (boot resync resumes by session file / session id):
     a handle that never materializes fails stale there, never silent.
     Raise :class:`RuntimeError` (operator-visible via the gateway
     ``✗ /spawn failed`` reply) instead of persisting a row that can
@@ -666,7 +666,7 @@ def begin_exit(
     Crash before commit → nothing happened (the agent stays live;
     correct — /exit never reached durability). Crash after commit → the
     journal replays on startup (``replay_purge_journal``) and the destroy
-    completes; the respawn pass only resumes LIVE nodes, so a killed
+    completes; boot resync only resumes LIVE nodes, so a killed
     agent can never come back.
 
     The channel list is collected BEFORE the transaction (pure reads of
@@ -751,7 +751,7 @@ async def _execute_channel_destroy(bot: Any, channels: list[str]) -> PurgeOutcom
 def finish_exit(state: ObservatoryState, record: ExitRecord) -> None:
     """Complete one journal entry: delete its rows (deepest-first — FKs
     point child→parent and the journal's row list is BFS top-down) and
-    drop the entry, in ONE transaction. D17: no tombstone survives to
+    drop the entry, in ONE transaction: no tombstone survives to
     leak state into a same-named successor."""
     remaining = [
         e for e in read_purge_journal(state)
@@ -777,7 +777,7 @@ async def replay_purge_journal(
     (idempotent — destroying a gone channel is success) and, once the
     destroy converged, finishes (rows deleted, entry dropped). Entries
     with a still-failing destroy stay journaled and are retried on the
-    next boot; their rows are already dead, so the respawn pass skips
+    next boot; their rows are already dead, so boot resync skips
     them either way."""
     deferred: list[dict[str, Any]] = []
     bot = bot if bot is not None else get_bot_sink()
@@ -810,7 +810,7 @@ async def replay_purge_journal(
 
 
 # ============================================================================
-# exit_orchestrator (D9 /exit → D8 depth-0 cascade)
+# exit_orchestrator (/exit → depth-0 cascade)
 # ============================================================================
 
 
