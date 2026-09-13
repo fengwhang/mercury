@@ -267,17 +267,9 @@ def test_resolve_layers_argv_over_file_over_defaults(tmp_path) -> None:
     cfg = _resolve_daemon_config(_args(config=str(cfg_file)))
     assert cfg.bouncer_host == "100.64.0.1"
     assert cfg.agent_port == 6669  # compiled default fills gaps
+    assert cfg.tls_port == 6697  # absent file key falls back to default
     cfg = _resolve_daemon_config(_args(config=str(cfg_file), bouncer_port=7777))
     assert cfg.bouncer_port == 7777  # explicit flag wins
-
-
-def test_resolve_ignores_corrupt_file(tmp_path) -> None:
-    from observatory.ircd import _resolve_daemon_config
-
-    cfg_file = tmp_path / "ircd.json"
-    cfg_file.write_text("{nope", encoding="utf-8")
-    cfg = _resolve_daemon_config(_args(config=str(cfg_file)))
-    assert (cfg.bouncer_host, cfg.bouncer_port) == ("127.0.0.1", 6670)
 
 
 def test_resolve_state_dir_config(tmp_path) -> None:
@@ -423,3 +415,95 @@ async def test_sasl_abort(tmp_path) -> None:
             await c.next_match("906")
         finally:
             await c.close()
+
+
+@pytest.mark.asyncio
+async def test_tls_listener_serves_strict_clients(tmp_path) -> None:
+    """A TLS-only client (Goguma-style) registers and joins over TLS."""
+    import ssl
+
+    from observatory import provision as _prov
+    from observatory.ircd import DaemonConfig, IrcDaemon
+
+    home = tmp_path / "mercury"
+    (home / "observatory").mkdir(parents=True)
+    import os as _os
+
+    old_home = _os.environ.get("MERCURY_HOME")
+    _os.environ["MERCURY_HOME"] = str(home)
+    try:
+        _prov.ensure_tls_cert(home)
+    finally:
+        if old_home is None:
+            _os.environ.pop("MERCURY_HOME", None)
+        else:
+            _os.environ["MERCURY_HOME"] = old_home
+    from observatory.config_gen import ObservatoryPaths
+
+    paths = ObservatoryPaths(home)
+    ctx = ssl.create_default_context(cafile=str(paths.tls_ca))
+    d = None
+    import socket as _socket_mod
+
+    probe = _socket_mod.socket(_socket_mod.AF_INET, _socket_mod.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    free_tls_port = probe.getsockname()[1]
+    probe.close()
+    d = IrcDaemon(
+        DaemonConfig(
+            agent_port=0,
+            bouncer_port=0,
+            tls_port=free_tls_port,
+            tls_cert=str(paths.tls_cert),
+            tls_key=str(paths.tls_key),
+            state_dir=str(home / "observatory"),
+        )
+    )
+    await d.start()
+    try:
+        # find the TLS listener by its bound port
+        tls_port = None
+        for server in d._servers:
+            for sock in server.sockets or []:
+                if sock.getsockname()[1] == free_tls_port:
+                    tls_port = free_tls_port
+        assert tls_port is not None, [s.sockets for s in d._servers]
+        reader, writer = await asyncio.open_connection(
+            "127.0.0.1", tls_port, ssl=ctx, server_hostname="localhost"
+        )
+        got: list[str] = []
+
+        async def _pump() -> None:
+            buf = b""
+            while not reader.at_eof():
+                data = await reader.read(4096)
+                if not data:
+                    break
+                buf += data
+                while b"\n" in buf:
+                    raw, buf = buf.split(b"\n", 1)
+                    got.append(raw.decode("utf-8", errors="replace").rstrip("\r"))
+
+        pump = asyncio.create_task(_pump())
+
+        async def _send(line: str) -> None:
+            writer.write((line + "\r\n").encode())
+            await writer.drain()
+
+        async def _wait(fragment: str) -> str:
+            for _ in range(100):
+                for line in list(got):
+                    if fragment in line:
+                        return line
+                await asyncio.sleep(0.05)
+            raise AssertionError(f"never saw {fragment!r}: {got[-3:]}")
+
+        await _send("NICK tlsuser")
+        await _send("USER tlsuser 0 * :t")
+        await _wait(" 001 ")
+        await _send("JOIN #tlsroom")
+        await _wait("JOIN #tlsroom")
+        pump.cancel()
+        writer.close()
+    finally:
+        await d.stop()

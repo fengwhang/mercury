@@ -19,7 +19,7 @@ commands, same mid-turn steering.
 | # | Decision |
 |---|----------|
 | D1 | Bundled, default ON at install; `observatory.enabled: false` freezes (never deletes). |
-| D2 | Ships its own network: stdlib asyncio ircd, no downloads, no crypto. Agent listener (default `127.0.0.1:6669`) + bouncer listener (default `127.0.0.1:6670`) on the same channel state. Bouncer replays the last N messages per channel on JOIN (SQLite-persisted, survives restarts). No TLS in v1 — localhost or tailnet bind only. |
+| D2 | Ships its own network: stdlib asyncio ircd, no downloads, no message crypto. Agent listener (`127.0.0.1:6669`) + plaintext bouncer (`127.0.0.1:6670`) + TLS bouncer (`127.0.0.1:6697`) on the same channel state. Bouncer replays the last N messages per channel on JOIN (SQLite-persisted, survives restarts). TLS serves strict clients only (self-signed CA in `observatory/tls/`, trusted once per phone); the tailnet stays the perimeter. |
 | D3 | The gateway owns ALL IRC I/O in-process (rooms + spawn + feed producers). No sidecar, no cross-process handle handoff — the bug class that killed Matrix cannot recur. |
 | D4 | One channel per agent. Gateway → `#<server>_gateway`; `/spawn` + `/spawnomp <name>` → `#<name>`; delegate children → `#<parent>-<child>` (parent names the child). IRC channels are created on first JOIN and destroyed server-side (OPER `DESTROY`) on `/exit`. |
 | D5 | Full steering: chat with any delegate child AND any omp in-process subagent, all depths. Tool calls render as `🔧` lines, thinking as `💭` lines, grandchild frames tagged `[id]`. |
@@ -65,6 +65,6 @@ E2EE on a self-hosted single-user network bought nothing (the tailnet
 is the perimeter) and cost everything: per-device Olm machines,
 one-time-key pools, Megolm sessions, cross-signing trust, and a second
 daemon whose handle handoff never worked. IRC gives presence, history,
-and rooms with ~700 lines of stdlib. If a future threat model needs
-transport privacy beyond the tailnet, add TLS termination to the ircd
-— not message-layer crypto.
+and rooms with ~700 lines of stdlib. TLS termination exists on the ircd
+(a 6697 bouncer with a provisioned CA) for strict clients like Goguma —
+not message-layer crypto.

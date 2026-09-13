@@ -22,6 +22,8 @@ IRCD_ADDRESS = "127.0.0.1"
 #: the box is never collided with.
 IRCD_AGENT_PORT_DEFAULT = 6669
 IRCD_BOUNCER_PORT_DEFAULT = 6670
+#: TLS bouncer for strict clients (Goguma-style): same rooms, IRCv3 + TLS.
+IRCD_TLS_PORT_DEFAULT = 6697
 
 #: History replay depth for the bouncer listener.
 HISTORY_LIMIT_DEFAULT = 200
@@ -39,8 +41,12 @@ GATEWAY_NICK_SUFFIX = "_gateway"
 
 # Directory layout under $MERCURY_HOME/observatory
 DIR_LOGS = "logs"
+DIR_TLS = "tls"
 FILE_CONFIG = "ircd.json"
 FILE_HISTORY_DB = "irc-history.db"
+FILE_TLS_CA = "ca.crt"
+FILE_TLS_CERT = "server.crt"
+FILE_TLS_KEY = "server.key"
 
 
 def new_secret(nbytes: int = 32) -> str:
@@ -117,6 +123,10 @@ class ObservatoryPaths:
         self.logs_dir = self.root / DIR_LOGS
         self.config_file = self.root / FILE_CONFIG
         self.history_db = self.root / FILE_HISTORY_DB
+        self.tls_dir = self.root / DIR_TLS
+        self.tls_ca = self.tls_dir / FILE_TLS_CA
+        self.tls_cert = self.tls_dir / FILE_TLS_CERT
+        self.tls_key = self.tls_dir / FILE_TLS_KEY
 
     def bouncer_url(
         self, *, address: str = IRCD_ADDRESS, port: int = IRCD_BOUNCER_PORT_DEFAULT

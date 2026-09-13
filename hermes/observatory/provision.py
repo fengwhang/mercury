@@ -23,6 +23,7 @@ from observatory.config_gen import (
     IRCD_ADDRESS,
     IRCD_AGENT_PORT_DEFAULT,
     IRCD_BOUNCER_PORT_DEFAULT,
+    IRCD_TLS_PORT_DEFAULT,
     OBSERVATORY_UNIT_NAME,
     SERVER_NAME_DEFAULT,
     ObservatoryPaths,
@@ -186,6 +187,7 @@ def default_config(*, server_name: str = SERVER_NAME_DEFAULT) -> dict[str, Any]:
         "agent_port": IRCD_AGENT_PORT_DEFAULT,
         "bouncer_host": IRCD_ADDRESS,
         "bouncer_port": IRCD_BOUNCER_PORT_DEFAULT,
+        "tls_port": IRCD_TLS_PORT_DEFAULT,
         "history_limit": HISTORY_LIMIT_DEFAULT,
     }
 
@@ -208,6 +210,7 @@ def ensure_config(
     agent_port: int | None = None,
     bouncer_host: str | None = None,
     bouncer_port: int | None = None,
+    tls_port: int | None = None,
     history_limit: int | None = None,
 ) -> dict[str, Any]:
     """Idempotent ircd.json: stored values win unless explicitly passed
@@ -227,6 +230,7 @@ def ensure_config(
         "agent_port": agent_port,
         "bouncer_host": bouncer_host,
         "bouncer_port": bouncer_port,
+        "tls_port": tls_port,
         "history_limit": history_limit,
     }
     changed: list[str] = []
@@ -266,6 +270,117 @@ def ensure_passwords(mercury_home: str | Path | None = None) -> dict[str, Any]:
     if made:
         mirror_irc_env(mercury_home, have["bouncer"], have["agent"])
     return {"action": "generated" if made else "current", "made": made}
+
+# --- TLS certificate -----------------------------------------------------------
+
+
+def ensure_tls_cert(mercury_home: str | Path | None = None) -> dict[str, Any]:
+    """Idempotent self-signed CA + server cert for the TLS bouncer.
+
+    Strict clients (Goguma-style: TLS default, no plaintext toggle) need
+    TLS even on a tailnet. The CA is generated once and kept (clients
+    trust it once); the server cert covers the network label,
+    localhost, and the current tailnet hostnames/IPs. Regeneration only
+    happens on explicit reset (which deletes ``tls/``). Returns
+    ``{"action": "generated"|"current", "sans": [...]}``. Never raises
+    for a missing ``cryptography`` install — TLS just stays unavailable.
+    """
+    from observatory.config_gen import SERVER_NAME_DEFAULT as _default_name
+
+    home = _mercury_home(mercury_home)
+    paths = ObservatoryPaths(home)
+    if (paths.tls_ca.is_file() and paths.tls_cert.is_file()
+            and paths.tls_key.is_file()):
+        return {"action": "current", "sans": []}
+    try:
+        import datetime as _dt
+
+        from cryptography import x509 as _x509
+        from cryptography.hazmat.primitives import hashes as _hashes
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+        from cryptography.x509.oid import NameOID as _oid
+    except Exception as exc:
+        logger.debug("observatory: TLS unavailable (%s)", exc)
+        return {"action": "unavailable", "sans": []}
+    cfg = read_config(home) or {}
+    server_name = str(cfg.get("server_name") or _default_name)
+    sans: list[str] = [server_name, "localhost"]
+    try:
+        ts = detect_tailscale()
+        for cand in (ts.get("dns_name"), ts.get("ip")):
+            if isinstance(cand, str) and cand.strip() and cand.strip() not in sans:
+                sans.append(cand.strip())
+    except Exception:
+        pass
+    now = _dt.datetime.now(_dt.timezone.utc)
+    expiry = now + _dt.timedelta(days=825)
+    ca_key = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = _x509.Name([_x509.NameAttribute(_oid.COMMON_NAME, f"{server_name} observatory CA")])
+    ca_cert = (
+        _x509.CertificateBuilder()
+        .subject_name(ca_name).issuer_name(ca_name)
+        .public_key(ca_key.public_key()).serial_number(_x509.random_serial_number())
+        .not_valid_before(now).not_valid_after(expiry)
+        .add_extension(_x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(
+            _x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
+            critical=False)
+        .add_extension(
+            _x509.KeyUsage(digital_signature=False, content_commitment=False,
+                           key_encipherment=False, data_encipherment=False,
+                           key_agreement=False, key_cert_sign=True, crl_sign=True,
+                           encipher_only=False, decipher_only=False), critical=True)
+        .sign(ca_key, _hashes.SHA256())
+    )
+    srv_key = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    san_list: list = []
+    for name in sans:
+        try:
+            import ipaddress as _ip
+
+            san_list.append(_x509.IPAddress(_ip.ip_address(name)))
+        except ValueError:
+            san_list.append(_x509.DNSName(name))
+    srv_cert = (
+        _x509.CertificateBuilder()
+        .subject_name(_x509.Name([_x509.NameAttribute(_oid.COMMON_NAME, server_name)]))
+        .issuer_name(ca_name)
+        .public_key(srv_key.public_key()).serial_number(_x509.random_serial_number())
+        .not_valid_before(now).not_valid_after(expiry)
+        .add_extension(_x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(_x509.SubjectAlternativeName(san_list), critical=False)
+        .add_extension(
+            _x509.SubjectKeyIdentifier.from_public_key(srv_key.public_key()),
+            critical=False)
+        .add_extension(
+            _x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False)
+        .add_extension(
+            _x509.KeyUsage(digital_signature=True, content_commitment=False,
+                           key_encipherment=True, data_encipherment=False,
+                           key_agreement=False, key_cert_sign=False, crl_sign=False,
+                           encipher_only=False, decipher_only=False), critical=True)
+        .add_extension(
+            _x509.ExtendedKeyUsage([_x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False)
+        .sign(ca_key, _hashes.SHA256())
+    )
+    try:
+        paths.tls_dir.mkdir(parents=True, exist_ok=True)
+        paths.tls_ca.write_bytes(ca_cert.public_bytes(_ser.Encoding.PEM))
+        paths.tls_cert.write_bytes(srv_cert.public_bytes(_ser.Encoding.PEM))
+        paths.tls_key.write_bytes(srv_key.private_bytes(
+            _ser.Encoding.PEM, _ser.PrivateFormat.TraditionalOpenSSL,
+            _ser.NoEncryption()))
+        for p in (paths.tls_ca, paths.tls_cert, paths.tls_key):
+            try:
+                p.chmod(0o600)
+            except Exception:
+                pass
+    except Exception as exc:
+        raise ProvisionError(f"TLS cert write failed: {exc}") from exc
+    return {"action": "generated", "sans": sans}
 
 
 # --- gateway row ---------------------------------------------------------------
@@ -562,8 +677,9 @@ def provision(
     history_limit: int | None = None,
     systemd: bool = True,
 ) -> dict:
-    """Run every provisioning step (config → passwords → gateway row →
-    unit). Returns a summary dict; raises ProvisionError on failure."""
+    """Run every provisioning step (config → passwords → TLS cert →
+    gateway row → unit). Returns a summary dict; raises ProvisionError
+    on failure."""
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
     for d in (paths.root, paths.logs_dir):
@@ -579,6 +695,7 @@ def provision(
             history_limit=history_limit,
         ),
         "passwords": ensure_passwords(home),
+        "tls": ensure_tls_cert(home),
     }
     live = live_server_name(home)
     if not live:
@@ -626,6 +743,14 @@ def verify_and_converge_gateway(mercury_home: str | Path | None = None) -> str:
         return f"skipped-error ({exc})"
 
 
+def _safe_port(value: Any, default: int) -> int:
+    """int(value) or default — status surfaces never raise on bad config."""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        return default
+
+
 def status_summary(mercury_home: str | Path | None = None) -> dict:
     """Machine-readable observatory status for setup/status surfaces."""
     home = _mercury_home(mercury_home)
@@ -641,12 +766,12 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
     return {
         "enabled": enabled,
         "provisioned": isinstance(cfg, dict),
-        "server_name": str((cfg or {}).get("server_name") or SERVER_NAME_DEFAULT),
-        "agent": f"{(cfg or {}).get('agent_host', IRCD_ADDRESS)}:"
-        f"{(cfg or {}).get('agent_port', IRCD_AGENT_PORT_DEFAULT)}",
         "bouncer": f"{(cfg or {}).get('bouncer_host', IRCD_ADDRESS)}:"
         f"{(cfg or {}).get('bouncer_port', IRCD_BOUNCER_PORT_DEFAULT)}",
-        "unit": unit_status(),
+        "tls_port": _safe_port((cfg or {}).get("tls_port"), IRCD_TLS_PORT_DEFAULT),
+        "tls_ready": bool(
+            (ObservatoryPaths(home).tls_cert.is_file())
+            and (ObservatoryPaths(home).tls_key.is_file())),
         "bouncer_password_set": bool(passwords["bouncer"]),
         "agent_password_set": bool(passwords["agent"]),
         "config_path": str(ObservatoryPaths(home).config_file),
@@ -667,6 +792,7 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
         paths.root / "state.db-wal",
         paths.root / "state.db-shm",
         paths.root / "omp-sessions",
+        paths.tls_dir,
     ):
         try:
             if target.is_dir() and not target.is_symlink():

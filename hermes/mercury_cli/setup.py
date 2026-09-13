@@ -3249,7 +3249,8 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         f"bouncer address:      {bouncer}",
         f"bouncer host:         {bouncer_host}  (bare hostname — no irc://, no :port)",
         f"bouncer port:         {bouncer_port}  (own field in the client, TLS OFF)",
-        "on this machine:      point your client at the address above (plain IRC, no TLS)",
+        f"TLS port:             {status.get('tls_port', 6697)}  (same rooms, for TLS-only clients —",
+        "                      trust observatory/tls/ca.crt on the phone once)",
     ]
     if phone_line:
         lines.append(phone_line)
@@ -3838,6 +3839,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
             pass
         try:
             _ensure_firewall_port(_bouncer_port(status.get("bouncer") or ""))
+            _ensure_firewall_port(status.get("tls_port", 6697))
         except Exception:  # noqa: BLE001 — firewall never kills setup
             pass
         _print_observatory_setup_card(status, ts)

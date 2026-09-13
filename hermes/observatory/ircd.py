@@ -74,7 +74,10 @@ class DaemonConfig:
     agent_port: int = 6669
     bouncer_host: str = "127.0.0.1"
     bouncer_port: int = 6670
-    server_name: str = "mercury.local"
+    server_name: str = "mercury"
+    tls_port: int = 6697  # 0 disables the TLS listener entirely
+    tls_cert: str = ""
+    tls_key: str = ""
     password: str = ""  # required PASS on the bouncer listener when set
     agent_password: str = ""  # required PASS on the agent listener when set
     history_limit: int = 200
@@ -198,7 +201,8 @@ class IrcDaemon:
             "agent", cfg.host, cfg.agent_port, errors)
         bouncer = await self._listen(
             "bouncer", cfg.bouncer_host, cfg.bouncer_port, errors)
-        self._servers = [s for s in (agent, bouncer) if s is not None]
+        tls = await self._listen_tls(errors)
+        self._servers = [s for s in (agent, bouncer, tls) if s is not None]
         if not self._servers:
             raise OSError(
                 "ircd: no listener bound — "
@@ -229,6 +233,37 @@ class IrcDaemon:
                 f"{listener} {host}:{port} not bound ({exc}) — "
                 f"{'check Tailscale / the bind address' if listener == 'bouncer' else 'check for a stale daemon holding the port'}"
             )
+            return None
+
+    async def _listen_tls(self, errors: list[str]) -> asyncio.AbstractServer | None:
+        """TLS bouncer on the bouncer host (strict clients: TLS default,
+        no plaintext toggle). Same rooms, bouncer password. Missing cert,
+        zero port, or bind failure degrades to plaintext-only (loud)."""
+        import ssl as _ssl
+
+        cfg = self.config
+        if not int(cfg.tls_port or 0):
+            return None
+        if not (cfg.tls_cert and cfg.tls_key):
+            errors.append("tls listener skipped (no certificate provisioned)")
+            return None
+        try:
+            ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(str(cfg.tls_cert), str(cfg.tls_key))
+        except Exception as exc:
+            errors.append(f"tls context failed ({exc}) — plaintext only")
+            return None
+        try:
+            return await asyncio.start_server(
+                lambda r, w: self._handle(r, w, listener="bouncer-tls"),
+                cfg.bouncer_host,
+                int(cfg.tls_port),
+                ssl=ctx,
+            )
+        except Exception as exc:
+            errors.append(
+                f"tls {cfg.bouncer_host}:{cfg.tls_port} not bound ({exc})")
+            return None
             return None
 
     async def stop(self) -> None:
@@ -839,16 +874,30 @@ def _resolve_daemon_config(args: Any) -> DaemonConfig:
     agent_password = getattr(args, "agent_password", None)
     if agent_password is None:
         agent_password = _os.environ.get("IRC_AGENT_PASSWORD", "")
+    state_dir = str(getattr(args, "state_dir", "") or "")
+    tls_cert = getattr(args, "tls_cert", None) or ""
+    tls_key = getattr(args, "tls_key", None) or ""
+    if not tls_cert and state_dir:
+        cand = Path(state_dir).expanduser() / "tls" / "server.crt"
+        if cand.is_file():
+            tls_cert = str(cand)
+    if not tls_key and state_dir:
+        cand = Path(state_dir).expanduser() / "tls" / "server.key"
+        if cand.is_file():
+            tls_key = str(cand)
     return DaemonConfig(
         host=_pick("host", "127.0.0.1"),
         agent_port=_pick("agent_port", 6669),
         bouncer_host=_pick("bouncer_host", "127.0.0.1"),
         bouncer_port=_pick("bouncer_port", 6670),
+        tls_port=_pick("tls_port", 6697),
+        tls_cert=tls_cert,
+        tls_key=tls_key,
         server_name=_pick("server_name", "mercury"),
         password=password or "",
         agent_password=agent_password or "",
         history_limit=_pick("history_limit", 200),
-        state_dir=str(getattr(args, "state_dir", "") or ""),
+        state_dir=state_dir,
     )
 
 
@@ -869,6 +918,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--password", default=None)
     parser.add_argument("--agent-password", default=None)
     parser.add_argument("--history-limit", type=int, default=None)
+    parser.add_argument("--tls-port", type=int, default=None)
+    parser.add_argument("--tls-cert", default=None)
+    parser.add_argument("--tls-key", default=None)
     parser.add_argument("--state-dir", default="")
     parser.add_argument(
         "--config",

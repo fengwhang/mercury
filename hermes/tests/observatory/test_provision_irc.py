@@ -126,3 +126,32 @@ def test_reset_clears_data(tmp_path, monkeypatch) -> None:
     removed = provision.reset_observatory_data(home)
     assert removed
     assert provision.live_server_name(home) is None
+
+
+def test_ensure_tls_cert_generates_once(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    first = provision.ensure_tls_cert(home)
+    assert first["action"] == "generated"
+    assert "localhost" in first["sans"]
+    from observatory.config_gen import ObservatoryPaths
+
+    paths = ObservatoryPaths(home)
+    assert paths.tls_ca.is_file()
+    assert paths.tls_cert.is_file()
+    assert paths.tls_key.is_file()
+    # idempotent: second run keeps the same CA (clients stay trusting)
+    before = paths.tls_ca.read_bytes()
+    second = provision.ensure_tls_cert(home)
+    assert second["action"] == "current"
+    assert paths.tls_ca.read_bytes() == before
+
+
+def test_provision_flow_includes_tls(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.delenv("IRC_BOUNCER_PASSWORD", raising=False)
+    monkeypatch.delenv("IRC_AGENT_PASSWORD", raising=False)
+    summary = provision.provision(home, server_name="mercury", systemd=False)
+    assert summary["tls"]["action"] in ("generated", "current")
+    assert summary["config"]["config"]["tls_port"] == 6697
