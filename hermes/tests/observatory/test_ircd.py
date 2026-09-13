@@ -507,3 +507,43 @@ async def test_tls_listener_serves_strict_clients(tmp_path) -> None:
         writer.close()
     finally:
         await d.stop()
+
+
+@pytest.mark.asyncio
+async def test_pass_last_order_registers(tmp_path) -> None:
+    """NICK/USER before PASS (the Goguma order) must still register."""
+    async with running_daemon(tmp_path, password="s3cret") as (_, __, bouncer_port):
+        c = RawClient()
+        await c.connect(bouncer_port)
+        try:
+            await c.send("NICK late")
+            await c.send("USER late 0 * :test")
+            assert await c.next_match("464")  # early attempt, no password yet
+            await c.send("PASS s3cret")
+            assert await c.next_match(" 001 ", timeout=5.0)
+        finally:
+            await c.close()
+
+
+@pytest.mark.asyncio
+async def test_sasl_after_nick_user_registers(tmp_path) -> None:
+    """SASL PLAIN after NICK/USER must complete registration (903 → 001)."""
+    import base64
+
+    async with running_daemon(tmp_path, password="s3cret") as (_, __, bouncer_port):
+        c = RawClient()
+        await c.connect(bouncer_port)
+        try:
+            await c.send("NICK sasluser")
+            await c.send("USER sasluser 0 * :test")
+            assert await c.next_match("464")
+            await c.send("CAP REQ :sasl")
+            assert await c.next_match("ACK :sasl")
+            await c.send("AUTHENTICATE PLAIN")
+            assert await c.next_match("AUTHENTICATE +")
+            blob = base64.b64encode(b"sasluser\x00sasluser\x00s3cret").decode()
+            await c.send(f"AUTHENTICATE {blob}")
+            assert await c.next_match(" 903 ")
+            assert await c.next_match(" 001 ", timeout=5.0)
+        finally:
+            await c.close()

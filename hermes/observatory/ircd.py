@@ -374,6 +374,11 @@ class IrcDaemon:
             client.pass_ok = rest.strip().lstrip(":") == password
             if password and not client.pass_ok:
                 await self._numeric(client, 464, "*", "Password incorrect")
+            else:
+                # PASS-last clients (NICK/USER already in): a correct
+                # password must complete registration right here, or the
+                # client sits unregistered forever behind one early 464.
+                await self._maybe_register(client, listener, password)
             return
         if cmd == "NICK":
             await self._cmd_nick(client, rest.strip(), listener, password)
@@ -390,7 +395,7 @@ class IrcDaemon:
             await self._cmd_cap(client, rest.strip())
             return
         if cmd == "AUTHENTICATE":
-            await self._cmd_authenticate(client, rest.strip(), password)
+            await self._cmd_authenticate(client, rest.strip(), listener, password)
             return
         if not client.registered:
             return
@@ -453,7 +458,9 @@ class IrcDaemon:
             pass  # registration continues with NICK/USER as normal
         # anything else: ignored (no state change)
 
-    async def _cmd_authenticate(self, client: _Client, arg: str, password: str) -> None:
+    async def _cmd_authenticate(
+        self, client: _Client, arg: str, listener: str, password: str
+    ) -> None:
         """SASL PLAIN against the listener password (Goguma-style clients).
 
         Flow: ``AUTHENTICATE PLAIN`` → ``AUTHENTICATE +`` → client sends
@@ -481,6 +488,9 @@ class IrcDaemon:
             if not password or given == password:
                 client.pass_ok = True
                 await self._numeric(client, 903, who, "SASL authentication successful")
+                # SASL-after-NICK/USER (the Goguma order): complete
+                # registration now, same as the PASS-last path above.
+                await self._maybe_register(client, listener, password)
             else:
                 await self._numeric(client, 904, who, "SASL authentication failed")
             return
