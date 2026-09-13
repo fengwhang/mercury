@@ -6,7 +6,7 @@ Modular wizard with independently-runnable sections:
   2. Terminal Backend — where your agent runs commands
   3. Agent Settings — iterations, compression, session reset
   4. Messaging Platforms — connect Telegram, Discord, etc.
-  4b. Matrix Observatory — bundled homeserver: status, install, first login
+  4b. IRC Observatory — bundled network: status, install, bouncer login
   5. Tools — configure TTS, web search, image generation, etc.
 
 Config files are stored in ~/.mercury/ for easy access.
@@ -855,7 +855,7 @@ def _print_setup_summary(config: dict, mercury_home):
 
 
 def _reprint_observatory_login_card() -> None:
-    """Re-print the Matrix first-login card after the setup summary.
+    """Re-print the IRC bouncer card after the setup summary.
 
     The fullscreen pickers scroll the section card away; the homeserver URL
     and credential locations are needed after setup, so they are repeated
@@ -873,7 +873,7 @@ def _reprint_observatory_login_card() -> None:
         if not isinstance(status, dict) or not status.get("provisioned"):
             return
         print()
-        print_header("Save this — Matrix login")
+        print_header("Save this — IRC login")
         try:
             tailscale = _tailscale_status(obs)
         except Exception:  # noqa: BLE001 — display probe, never blocks reprint
@@ -2762,7 +2762,7 @@ def setup_gateway(config: dict):
     from mercury_cli.gateway import _all_platforms, _platform_status, _configure_platform
 
     print_header("Messaging Platforms")
-    print_info("The Matrix observatory is your primary chat. These secondary platforms are optional extras.")
+    print_info("The IRC observatory is your primary chat. These secondary platforms are optional extras.")
     print_info("Toggle with Space, confirm with Enter.")
     print()
 
@@ -2898,21 +2898,21 @@ def setup_gateway(config: dict):
     print_info("━" * 50)
 
 # =============================================================================
-# Section 4b: Matrix Observatory (bundled homeserver)
+# Section 4b: IRC Observatory (bundled network)
 # =============================================================================
 
 # The matrix-observatory docs page is not published on the docs site yet —
 # never print a URL that 404s. Point at the in-repo copies instead.
+# The IRC-observatory docs page ships with the repo.
 _OBSERVATORY_GUIDE_LINE = (
-    "Guide: docs/design/matrix-observatory.md + "
-    "website/docs/user-guide/messaging/matrix-observatory.md (ships with the repo)"
+    "Guide: docs/design/irc-observatory.md "
+    "(ships with the repo)"
 )
 
 
 def _load_observatory_provision():
     """Import ``observatory.provision`` lazily; None when the bundled
-    package is unavailable. A missing optional section must never kill the
-    wizard — callers degrade to a printed hint."""
+    package is absent from this install (never raises)."""
     try:
         from observatory import provision
 
@@ -2923,29 +2923,29 @@ def _load_observatory_provision():
 
 
 def _observatory_state_lines(status: dict) -> None:
-    """Render the current-state block (section + non-interactive path)."""
+    """One-line status summary for the wizard section."""
     yn = lambda flag: "yes" if flag else "no"  # noqa: E731
-    print_info(f"Provisioned:          {yn(status['provisioned'])}")
-    print_info(
-        f"Homeserver reachable: {yn(status['homeserver_reachable'])}"
-        f"  ({status['homeserver_url']})"
-    )
-    print_info(f"Unit active:          {yn(status['unit_active'])}  ({status['unit_name']})")
     print_info(f"observatory.enabled:  {yn(status['enabled'])}  (config.yaml)")
-    print_info(f"observatory.e2ee:     {yn(status.get('e2ee', True))}  (config.yaml)")
+    print_info(f"provisioned:          {yn(status.get('provisioned'))}  (ircd.json)")
+    if status.get("provisioned"):
+        print_info(f"network:              {status.get('server_name')}")
+        print_info(f"agent listener:       {status.get('agent')}")
+        print_info(f"bouncer listener:     {status.get('bouncer')}")
+        print_info(f"unit:                 {status.get('unit')}")
+        print_info(f"bouncer password:     {'set' if status.get('bouncer_password_set') else 'MISSING'}  (.env)")
 
 
 def _prompt_observatory_enabled_toggle(config: dict) -> None:
-    """Offer flipping ``observatory.enabled`` — the D1 kill switch.
+    """Offer flipping ``observatory.enabled`` — the kill switch.
 
-    Writes through the standard save_config helper into config.yaml (the
-    gate is config, never env). Unset means the default (on); answering the
-    default keeps the config file untouched.
+    Default-on: absent means enabled (provision keeps the file untouched
+    unless the user flips it). Never raises; config write failures
+    degrade to a hint.
     """
     current = bool(cfg_get(config, "observatory", "enabled", default=True))
     want = prompt_yes_no(
-        "Enable the Matrix observatory? (observatory.enabled — false freezes "
-        "it, nothing is deleted)",
+        "Enable the IRC observatory? (observatory.enabled — false freezes "
+        "the gateway rooms, never deletes anything)",
         default=current,
     )
     if want == current:
@@ -2959,88 +2959,6 @@ def _prompt_observatory_enabled_toggle(config: dict) -> None:
     save_config(config)
     print_success(
         f"observatory.enabled = {str(want).lower()} written to {get_config_path()}"
-    )
-
-
-_MIRROR_CLI_OPTIONS = (
-    "Off — CLI/TUI sessions never get rooms (default)",
-    "Observe — presence rooms only, no transcript content",
-    "Full — rooms + live transcript forwarding",
-)
-
-
-def _prompt_mirror_cli_mode(config: dict) -> None:
-    """Offer the CLI/TUI session mirror mode (observatory.mirror_cli).
-
-    The gate itself lives in provision.mirror_cli_mode (default off, bogus
-    values fail closed); setup previously only documented the ``mercury
-    config set`` command on the card line — users could never choose during
-    setup (VM defect: no prompt). Answers persist through save_config;
-    answering the default keeps the file untouched. Non-interactive callers
-    keep the current value (prompt_choice falls back to its default).
-    """
-    from observatory.provision import MIRROR_CLI_MODES
-
-    raw = cfg_get(config, "observatory", "mirror_cli", default="off")
-    current = str(raw or "off").strip().lower()
-    if current not in MIRROR_CLI_MODES:
-        current = "off"
-    idx = prompt_choice(
-        "Mirror CLI/TUI sessions into Matrix rooms? (observatory.mirror_cli)",
-        list(_MIRROR_CLI_OPTIONS),
-        MIRROR_CLI_MODES.index(current),
-    )
-    want = MIRROR_CLI_MODES[idx]
-    if want == current:
-        print_info(f"Keeping observatory.mirror_cli = {current}")
-        return
-    obs = config.get("observatory")
-    if not isinstance(obs, dict):
-        obs = {}
-        config["observatory"] = obs
-    obs["mirror_cli"] = want
-    save_config(config)
-    print_success(
-        f"observatory.mirror_cli = {want} written to {get_config_path()}"
-    )
-
-#: Plaintext opt-in warning (single source: the setup prompt and the
-#: --no-encrypt-rooms flag path print the same text).
-PLAINTEXT_WARNING = (
-    "PLAINTEXT OPT-IN: rooms will NOT be encrypted — every Matrix message, "
-    "including agent prompts and outputs mirrored to rooms, travels "
-    "UNENCRYPTED on your tailnet and sits in cleartext in the homeserver "
-    "database. Only use this if you cannot run the compiled Olm crypto stack."
-)
-
-
-def _prompt_observatory_encrypt_rooms(config: dict) -> None:
-    """Offer room encryption (observatory.e2ee, default ON).
-
-    Explicit plaintext opt-in: answering No shows the tailnet-plaintext
-    warning and persists ``observatory.e2ee: false`` through save_config;
-    answering the default keeps the file untouched (absent = on, per
-    ``e2ee.e2ee_enabled``). Non-interactive callers keep the current value
-    (prompt_yes_no falls back to its default).
-    """
-    current = bool(cfg_get(config, "observatory", "e2ee", default=True))
-    want = prompt_yes_no(
-        "Encrypt Matrix rooms with Megolm (observatory.e2ee — RECOMMENDED)?",
-        default=current,
-    )
-    if want == current:
-        print_info(f"Keeping observatory.e2ee = {str(current).lower()}")
-        return
-    if not want:
-        print_warning(PLAINTEXT_WARNING)
-    obs = config.get("observatory")
-    if not isinstance(obs, dict):
-        obs = {}
-        config["observatory"] = obs
-    obs["e2ee"] = want
-    save_config(config)
-    print_success(
-        f"observatory.e2ee = {str(want).lower()} written to {get_config_path()}"
     )
 
 
@@ -3077,64 +2995,46 @@ def _tailscale_status(obs=None) -> dict:
         return _tailscale_down()
 
 
-def _tailscale_phone_url(ts: dict | None, homeserver_url: str) -> str | None:
-    """Phone homeserver URL: MagicDNS preferred, tailnet IPv4 fallback.
-
-    Keeps the port from ``homeserver_url`` (default 18008). None unless
-    the tailnet is up with a host. Pure — never touches the network.
-    """
+def _tailscale_phone_host(ts: dict | None) -> str | None:
+    """Tailnet host for the bouncer: MagicDNS preferred, IPv4 fallback."""
     try:
         if not isinstance(ts, dict) or not ts.get("up"):
             return None
         host = ts.get("dns_name") or ts.get("ip")
         if not host or not str(host).strip():
             return None
-        host = str(host).strip()
-        try:
-            from observatory.config_gen import HOMESERVER_PORT_DEFAULT as _defport
-
-            port = int(_defport)
-        except Exception:  # noqa: BLE001
-            port = 18008
-        try:
-            tail = str(homeserver_url or "").rsplit(":", 1)[-1].rstrip("/")
-            port = int(tail)
-        except Exception:  # noqa: BLE001 — keep the default port
-            pass
-        return f"http://{host}:{port}"
+        return str(host).strip()
     except Exception:  # noqa: BLE001
         return None
 
 
-def _read_bind_list(obs) -> list[str] | None:
-    """Bound addresses preferring the list form (None when unreadable).
-
-    Old doubles expose only ``current_bind_address`` (single) — wrapped
-    into a one-entry list so the trap detector stays list-aware.
-    """
+def _bouncer_port(bouncer: str) -> str:
+    """Port tail of a ``host:port`` listener string (best-effort)."""
     try:
-        fn = getattr(obs, "current_bind_addresses", None)
-        if fn is not None:
-            items = fn()
-            return list(items) if isinstance(items, list) else None
-        single = getattr(obs, "current_bind_address", None)
-        if single is None:
-            from observatory.provision import current_bind_addresses as fn
-            return list(fn())
-        value = single()
-        return [value] if value else []
+        return str(bouncer or "").rsplit(":", 1)[-1].strip() or "6670"
+    except Exception:  # noqa: BLE001
+        return "6670"
+
+
+def _current_listen_addrs(obs) -> list[str] | None:
+    """Configured [agent_host, bouncer_host] (None when unreadable)."""
+    try:
+        fn = getattr(obs, "current_listen_addresses", None)
+        if fn is None:
+            return None
+        items = fn()
+        return list(items) if isinstance(items, list) else None
     except Exception:  # noqa: BLE001 — display probe, never kills the wizard
         return None
 
 
 def _offer_tailscale_bind(obs, ts: dict | None) -> None:
-    """Offer dual-binding the homeserver (tailnet IP + localhost).
+    """Offer pinning the bouncer listener to the tailnet IP.
 
-    Runs only when the tailnet is up with an IPv4. Delegates the toml
-    rewrite to ``provision.set_tuwunel_bind`` (never starts/stops the
-    server here); every failure degrades to a hand-edit hint. The new
-    bind needs a homeserver restart to take effect; after the bind the
-    phone URL is rechecked from the re-read bind + status.
+    The agent listener stays on localhost (gateway + agents are local);
+    only the bouncer moves. Delegates to ``provision.set_ircd_bind``
+    (never starts/stops the daemon here); every failure degrades to a
+    hand-edit hint. The new bind needs a unit restart to take effect.
     """
     try:
         if not isinstance(ts, dict) or not ts.get("up"):
@@ -3144,8 +3044,8 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
             return
         ip = str(ip).strip()
         want = prompt_yes_no(
-            "Bind the homeserver to Tailscale too?"
-            " (dual bind — keeps localhost, phones reach it over the tailnet)",
+            "Pin the bouncer to Tailscale too?"
+            " (phones reach it over the tailnet; localhost keeps working)",
             default=False,
         )
     except KeyboardInterrupt:
@@ -3153,40 +3053,40 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
     except Exception:  # noqa: BLE001 — a bind offer never kills the wizard
         return
     if not want:
-        print_info("Keeping the homeserver on its current address.")
+        print_info("Keeping the bouncer on its current address.")
         return
     try:
-        obs.set_tuwunel_bind(ip)
+        obs.set_ircd_bind(ip)
     except AttributeError:
         try:
-            from observatory.provision import set_tuwunel_bind as _bind
+            from observatory.provision import set_ircd_bind as _bind
 
             _bind(ip)
         except Exception as exc:  # noqa: BLE001
-            print_warning(f"Could not bind the homeserver to {ip}: {exc}")
-            print_info("Edit `address` in tuwunel.toml by hand instead.")
+            print_warning(f"Could not pin the bouncer to {ip}: {exc}")
+            print_info("Edit `bouncer_host` in observatory/ircd.json by hand instead.")
             return
     except Exception as exc:  # noqa: BLE001
-        print_warning(f"Could not bind the homeserver to {ip}: {exc}")
-        print_info("Edit `address` in tuwunel.toml by hand instead.")
+        print_warning(f"Could not pin the bouncer to {ip}: {exc}")
+        print_info("Edit `bouncer_host` in observatory/ircd.json by hand instead.")
         return
     try:
-        from observatory.config_gen import HOMESERVER_UNIT_NAME as _unit
+        from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
     except Exception:  # noqa: BLE001
-        _unit = "mercury-observatory-homeserver.service"
-    print_success(f"Homeserver will dual-bind to {ip} + localhost on next restart.")
+        _unit = "mercury-observatory.service"
+    print_success(f"Bouncer will listen on {ip} after a restart (localhost kept on the agent port).")
     try:
         restart_now = prompt_yes_no(
-            "Restart the homeserver now? (necessary to apply the new bind address)",
+            "Restart the observatory now? (necessary to apply the new bind)",
             default=True,
         )
     except KeyboardInterrupt:
         raise
     except Exception:  # noqa: BLE001 — a restart offer never kills the wizard
-        print_info(f"Restart the homeserver to apply: systemctl --user restart {_unit}")
+        print_info(f"Restart it to apply: systemctl --user restart {_unit}")
         return
     if not restart_now:
-        print_info(f"Restart the homeserver to apply: systemctl --user restart {_unit}")
+        print_info(f"Restart it to apply: systemctl --user restart {_unit}")
         return
     try:
         import subprocess
@@ -3202,69 +3102,31 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
         print_warning(f"Could not restart {_unit}: {exc}")
         print_info(f"Restart it manually: systemctl --user restart {_unit}")
         return
-    print_success(f"Homeserver restarted ({_unit}).")
-    _recheck_bind_url(obs, ts, ip)
-
-
-def _recheck_bind_url(obs, ts: dict | None, ip: str) -> None:
-    """URL recheck after the bind offer: re-read the toml bind + status and
-    confirm the tailnet IP is bound and which phone URL serves it.
-
-    Best-effort display confirmation — never raises, never prompts. A bind
-    whose toml read-back lacks the IP warns (restart or write pending);
-    otherwise the recomputed phone URL prints so the card's pre-bind URL
-    never stands stale.
-    """
-    try:
-        bound = _read_bind_list(obs) or []
-        if ip not in bound:
-            print_warning(
-                f"Bind recheck: {ip} not yet in tuwunel.toml "
-                f"(bound: {', '.join(bound) or 'unknown'}) — "
-                "restart the homeserver and re-run setup to confirm.")
-            return
-        url = ""
-        try:
-            status = obs.status_summary()
-            url = str((status or {}).get("homeserver_url") or "")
-        except Exception:  # noqa: BLE001 — status is best-effort here
-            pass
-        phone = _tailscale_phone_url(ts, url) if url else None
-        if phone:
-            print_success(f"Bind rechecked: {ip} bound (phones: {phone}).")
-        else:
-            print_success(f"Bind rechecked: {ip} bound ([{', '.join(bound)}]).")
-    except Exception:  # noqa: BLE001 — a recheck never kills the wizard
-        return
+    print_success(f"Observatory restarted ({_unit}).")
 
 
 _LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
 
 
 def _bind_mismatch_action_line(
-    address: str | list[str] | None, ts: dict | None) -> str | None:
-    """ACTION text when the tailnet is up but tuwunel binds localhost-only.
+    addresses: list[str] | None, ts: dict | None) -> str | None:
+    """ACTION text when the tailnet is up but the bouncer binds localhost-only.
 
-    Pure: returns the line, or None when there is nothing to act on
-    (tailnet down, bind unknown/empty, or any non-loopback entry bound —
-    a dual bind is already phone-reachable). Accepts the legacy single
-    address or the full bind list.
+    Pure: returns the line, or None when there is nothing to act on.
     """
     try:
         if not isinstance(ts, dict) or not ts.get("up"):
             return None
-        items = ([address] if isinstance(address, str) else
-                 list(address) if isinstance(address, list) else [])
-        items = [str(a).strip() for a in items if str(a).strip()]
+        items = [str(a).strip() for a in (addresses or []) if str(a).strip()]
         if not items or any(a not in _LOOPBACK_BINDS for a in items):
             return None
         try:
-            from observatory.config_gen import HOMESERVER_UNIT_NAME as _unit
+            from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
         except Exception:  # noqa: BLE001
-            _unit = "mercury-observatory-homeserver.service"
+            _unit = "mercury-observatory.service"
         return (
-            "ACTION: Your homeserver only listens on localhost"
-            " — phones cannot reach it. Bind it with: mercury setup"
+            "ACTION: Your bouncer only listens on localhost"
+            " — phones cannot reach it. Pin it with: mercury setup"
             " observatory (answer Yes at the bind prompt), then:"
             f" systemctl --user restart {_unit}"
         )
@@ -3273,158 +3135,76 @@ def _bind_mismatch_action_line(
 
 
 def _maybe_print_bind_mismatch_action(obs, ts: dict | None) -> None:
-    """Print the localhost-bind ACTION line when the trap is detected.
-
-    Degrades to silence when unprovisioned, unreadable, or already bound —
-    a display hint, never a wizard gate.
-    """
+    """Print the localhost-bind ACTION line when the trap is detected."""
     try:
-        line = _bind_mismatch_action_line(_read_bind_list(obs), ts)
+        line = _bind_mismatch_action_line(_current_listen_addrs(obs), ts)
     except Exception:  # noqa: BLE001 — display probe, never kills the wizard
         return
     if line:
         print_warning(line)
 
 
-def _mirror_cli_card_line() -> str:
-    """One-line mirror_cli status for the setup card (never raises)."""
-    try:
-        from observatory.provision import mirror_cli_mode
-        mode = mirror_cli_mode()
-    except Exception:  # noqa: BLE001 — display probe, never kills setup
-        mode = "off"
-    if mode == "full":
-        return "full (CLI/TUI sessions get rooms + transcripts)"
-    if mode == "observe":
-        return "observe (CLI/TUI sessions get presence rooms, no transcripts)"
-    return "off (CLI/TUI sessions never get rooms — opt in: mercury config set observatory.mirror_cli observe|full)"
-
-
-def _e2ee_card_line() -> str:
-    """One-line e2ee status for the setup card (never raises)."""
-    try:
-        from observatory.provision import observatory_e2ee_flag
-        on = bool(observatory_e2ee_flag())
-    except Exception:  # noqa: BLE001 — display probe, never kills setup
-        on = True
-    if on:
-        return "ON (Megolm — rooms are end-to-end encrypted)"
-    return "OFF (PLAINTEXT — messages travel unencrypted on the tailnet)"
-
-def _print_observatory_relogin_notice(owner_mxid: str) -> None:
-    """Post-wipe re-login notice — the old client session is dead by construction.
-
-    A wipe (archive/annihilate) issues new server keys and a new owner
-    password, so any Element / Element X / FluffyChat session minted against
-    the pre-wipe server can never reconnect: the client shows the dead
-    session as still-connected, then forces a fresh login + identity reset.
-    Loud red box (never a soft hint): log out / remove the old account,
-    log back in as the fresh MXID with the FRESH password. If the app
-    asks for a second identity reset, complete it in the app — never
-    answer it with another setup run (that just re-issues the identity
-    and you do the two resets again).
-    """
-    lines = [
-        "WIPED + RE-PROVISIONED — your OLD Element / FluffyChat session is DEAD BY CONSTRUCTION",
-        "",
-        f"log out / remove the old account, then log back in as {owner_mxid}",
-        "with the FRESH password (.env MATRIX_OBS_OWNER_PASSWORD, mode 0600 —",
-        "never the old one; the wipe issued new server keys and a new owner password).",
-        "If the app asks for a second identity reset, complete it in the app —",
-        "never answer it with another setup run.",
-    ]
-    width = max(len(ln.rstrip()) for ln in lines) + 2
-    print()
-    print(color("┌" + "─" * width + "┐", Colors.RED, Colors.BOLD))
-    for ln in lines:
-        padded = "│ " + ln.ljust(width - 2) + " │"
-        print(color(padded, Colors.RED, Colors.BOLD))
-    print(color("└" + "─" * width + "┘", Colors.RED, Colors.BOLD))
-    print()
-
-
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
-    """First-login card — ONLY what remains truly manual (FluffyChat / Element X login).
+    """Bouncer login card — the ONLY manual step (any IRC client).
 
-    Everything else (provision, crypto stack, sidecar unit, owner-URL heal,
-    gateway ghost + tree converge) already ran automatically by the time
-    this prints — so this card names just the homeserver URL, the owner
-    account, where the password lives (NEVER the password itself), and the
-    FluffyChat / Element X add-account steps. Detect-and-assist only for Tailscale.
+    Everything else (config, passwords, unit, gateway row) already ran
+    automatically by the time this prints — so this card names just the
+    bouncer address, where the password lives (NEVER the password
+    itself), the gateway channel, and the two spawn commands.
     """
-    creds_path = status["owner_credentials_path"]
     try:
-        from observatory.config_gen import OWNER_LOCALPART_DEFAULT, SERVER_NAME_DEFAULT
-
-        owner_mxid = f"@{OWNER_LOCALPART_DEFAULT}:{SERVER_NAME_DEFAULT}"
+        from observatory.config_gen import SERVER_NAME_DEFAULT
     except Exception:
-        owner_mxid = "@owner:mercury.local"
-    creds = None
-    try:
-        creds = json.loads(Path(creds_path).read_text(encoding="utf-8"))
-        owner_mxid = str(creds.get("user_id") or owner_mxid)
-    except Exception as exc:
-        logger.debug("could not read observatory owner credentials: %s", exc)
-
-    # Never printed: the owner password lives only in $MERCURY_HOME/.env
-    # (MATRIX_OBS_OWNER_PASSWORD, 0600 — paste it into FluffyChat / Element X) and
-    # owner-credentials.json.
-    password_lines = [
-        "owner password:      your .env file (MATRIX_OBS_OWNER_PASSWORD,",
-        "                     mode 0600 — paste it into FluffyChat / Element X) and",
-        f"                     {creds_path} — never printed here.",
-    ]
+        SERVER_NAME_DEFAULT = "mercury"
+    server = str(status.get("server_name") or SERVER_NAME_DEFAULT)
+    bouncer = str(status.get("bouncer") or "127.0.0.1:6670")
+    gateway_channel = f"#{server}_gateway"
 
     if tailscale is None:
         tailscale = _tailscale_status(_load_observatory_provision())
-    phone_url = _tailscale_phone_url(tailscale, str(status.get("homeserver_url", "")))
-    lines = [
-        "Matrix Observatory — first login (FluffyChat / Element X)",
-        "",
-        f"homeserver URL:      {status['homeserver_url']}",
-        "on this machine:     paste the URL above (desktop)",
-    ]
-    if phone_url:
-        lines.append(f"on your phone:       {phone_url}  (over Tailscale)")
+    phone_host = _tailscale_phone_host(tailscale)
+    phone_line = None
+    if phone_host:
+        phone_line = f"on your phone:       irc://{phone_host}:{_bouncer_port(bouncer)}  (over Tailscale)"
     elif bool((tailscale or {}).get("available")):
-        lines.append(
+        phone_line = (
             "on your phone:       Tailscale installed but not connected"
             " — run `tailscale up`, then re-run setup"
         )
+
+    lines = [
+        "IRC Observatory — connect any IRC client",
+        "",
+        f"bouncer address:      {bouncer}",
+        "on this machine:      point your client at the address above (plain IRC, no TLS)",
+    ]
+    if phone_line:
+        lines.append(phone_line)
     else:
         lines.append(
             "on your phone:       Tailscale not detected"
-            " — install from https://tailscale.com (or headscale)"
-        )
-        lines.append(
-            "                     for phone access without port forwarding"
+            " — install from https://tailscale.com for access without port forwarding"
         )
     lines.extend(
         [
-            f"owner account:       {owner_mxid}",
-            *password_lines,
-            f"CLI/TUI mirror:      {_mirror_cli_card_line()}",
-            f"room encryption:     {_e2ee_card_line()}",
-            "in FluffyChat / Element X: add account → enter the homeserver URL",
-            "                     manually → paste the URL above",
-            "                     (use your own server, not matrix.org)",
+            "nickname:             pick any nick (no accounts — the password is the auth)",
+            "bouncer password:     your .env file (IRC_BOUNCER_PASSWORD,",
+            "                      mode 0600 — paste it when the client asks)",
+            f"gateway channel:      {gateway_channel} (the gateway agent lives here)",
+            "spawn more agents:    /spawn <name> (hermes) or /spawnomp <name> (omp)",
+            "                      each gets its own channel; /exit in its room kills it",
+            "subagent rooms:       #parent-child channels stream live tool/thinking traces",
             "",
-            "after an identity reset in Element/Element X:",
-            "  run: mercury observatory trust-device",
+            "gateway wiring:       mercury setup gateway → enable IRC so the",
+            "                      gateway bot joins this network",
         ]
     )
     width = max(len(ln.rstrip()) for ln in lines) + 2
     print()
     print(color("┌" + "─" * width + "┐", Colors.CYAN))
-    trust_start = next(
-        (i for i, ln in enumerate(lines)
-         if ln.startswith("after an identity reset")), len(lines))
-    for i, ln in enumerate(lines):
+    for ln in lines:
         padded = "│ " + ln.ljust(width - 2) + " │"
-        if i >= trust_start:
-            print(color(padded, Colors.RED, Colors.BOLD))
-        else:
-            print(color(padded, Colors.CYAN))
+        print(color(padded, Colors.CYAN))
     print(color("└" + "─" * width + "┘", Colors.CYAN))
     print()
     print_info(_OBSERVATORY_GUIDE_LINE)
@@ -3514,111 +3294,63 @@ def _ensure_sqlite3_cli() -> str:
     return "missing"
 
 
-def _auto_ensure_crypto(obs) -> str:
-    """Auto crypto step: install the E2EE crypto stack from the vendored
-    wheels (hermes/observatory/wheels/) — no compiler, no container
-    runtime, offline-capable for the compiled piece. Best-effort — never
-    raises, never prompts. Missing helper (old install / minimal fake)
-    degrades to silence."""
-    fn = getattr(obs, "ensure_crypto_stack", None)
-    if fn is None:
-        return "skipped-unavailable"
-    try:
-        result = str(fn())
-    except KeyboardInterrupt:
-        raise
-    except Exception as exc:  # noqa: BLE001 — auto step never kills setup
-        print_warning(f"Crypto auto-setup skipped: {exc}")
-        return "skipped-error"
-    if result.startswith("failed:"):
-        # Fail CLOSED: E2EE stays on, config.yaml untouched — surface the
-        # provision-layer line as a wizard warning, never a silent status.
-        print_warning(f"Crypto stack not ready ({result}) — E2EE stays ON; "
-                      f"rooms will fail at sidecar boot until the stack imports.")
-    return result
-
-
-def _auto_ensure_sidecar_unit(obs, *, loud: bool = False) -> str:
-    """Auto sidecar step: install/enable/restart the sidecar unit (the old
+def _auto_ensure_unit(obs, *, loud: bool = False) -> str:
+    """Auto unit step: install/enable/restart the ircd unit (the old
     ``--install-sidecar`` flag path, now automatic). Never prompts, never
     raises — failures degrade to a manual hint.
 
-    ``loud=True`` is the post-wipe contract: the wipe just destroyed the
-    sidecar unit file, so the wizard must restore what it destroyed — a
-    failed reinstall is a print_error naming the exact retry command, not
-    a warning the user can miss. ``"skipped"`` (no systemd: containers/CI)
-    stays soft in both modes — there is no unit system to fail against.
+    ``loud=True`` is the post-reset contract: the reset just destroyed
+    the config, so the wizard must restore what it destroyed — a failed
+    unit install errors loudly (naming the retry command) instead of
+    warning. ``"skipped"`` (no systemd: containers/CI) stays soft.
     """
     try:
-        from observatory.config_gen import SIDECAR_UNIT_NAME as _sidecar_unit
+        from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
     except Exception:  # noqa: BLE001 — display fallback, never kills setup
-        _sidecar_unit = "mercury-observatory.service"
-    install = getattr(obs, "ensure_sidecar_unit", None)
+        _unit = "mercury-observatory.service"
+    install = getattr(obs, "ensure_observatory_unit", None)
     if install is None:
-        _sidecar_problem(
+        install = getattr(obs, "ensure_sidecar_unit", None)
+    if install is None:
+        _unit_problem(
             loud,
-            "Sidecar unit installer unavailable in this install.",
+            "Observatory unit installer unavailable in this install.",
             f"Fix with: mercury setup observatory --install-sidecar "
-            f"(or by hand: systemctl --user start {_sidecar_unit})",
+            f"(or by hand: systemctl --user start {_unit})",
         )
         return "skipped-unavailable"
     try:
         result = install()
     except KeyboardInterrupt:
         raise
-    except SystemExit as exc:
-        # Legacy path: sidecar_main's import used to raise SystemExit when
-        # aiohttp (matrix extra) was missing. The render now lives in
-        # config_gen (no aiohttp) with a lazy _require_aiohttp() at daemon
-        # boot, so unit installs no longer exit here — keep catching
-        # SystemExit for back-compat with older provision/sidecar code.
-        _sidecar_problem(
-            loud,
-            f"Sidecar unit install skipped: {exc}",
-            "The sidecar needs the matrix extra, then re-run setup "
-            "(or: mercury setup observatory --install-sidecar).",
-        )
-        return "skipped-error"
     except Exception as exc:  # noqa: BLE001 — auto step never kills setup
-        _sidecar_problem(
+        _unit_problem(
             loud,
-            f"Sidecar unit install skipped: {exc}",
+            f"Observatory unit install skipped: {exc}",
             f"Fix with: mercury setup observatory --install-sidecar "
-            f"(or by hand: systemctl --user start {_sidecar_unit})",
+            f"(or by hand: systemctl --user start {_unit})",
         )
         return "skipped-error"
     if result == "skipped":
-        print_info("Sidecar unit skipped (no systemd) — start the sidecar manually "
-                   "outside containers.")
+        print_info("Observatory unit skipped (no systemd) — start the daemon manually "
+                   "outside containers (`python -m observatory.ircd`).")
         return result
-    print_success(f"Sidecar unit {result} ({_sidecar_unit}) — enabled and started.")
+    print_success(f"Observatory unit {result} ({_unit}) — enabled and started.")
     return result
 
 
-def _sidecar_problem(loud: bool, warning: str, remedy: str) -> None:
-    """Emit a sidecar-step failure softly (warning) or loudly (error)."""
+def _unit_problem(loud: bool, warning: str, remedy: str) -> None:
+    """Emit a unit-step failure softly (warning) or loudly (error)."""
     if loud:
-        print_error(f"Sidecar unit install FAILED: {warning}")
+        print_error(f"Observatory unit install FAILED: {warning}")
         print_error(remedy)
     else:
         print_warning(warning)
         print_info(remedy)
 
 
-def _auto_heal_and_converge(obs) -> str:
-    """Auto heal+converge step: owner-URL heal, gateway ghost verify, tree
-    converge. Never prompts, never raises — a deferred tree converges on
-    the sidecar's next start with no further command."""
-    heal = getattr(obs, "heal_owner_url", None)
-    if heal is not None:
-        try:
-            healed = heal()
-        except KeyboardInterrupt:
-            raise
-        except Exception:  # noqa: BLE001 — heal is best-effort
-            healed = None
-        if healed:
-            print_success(f"Owner homeserver URL healed ({healed}).")
+def _auto_converge_gateway(obs) -> str:
+    """Auto converge step: gateway row + channel. Never prompts, never raises."""
     converge = getattr(obs, "verify_and_converge_gateway", None)
     if converge is None:
         return "skipped-unavailable"
@@ -3627,57 +3359,54 @@ def _auto_heal_and_converge(obs) -> str:
     except KeyboardInterrupt:
         raise
     except Exception as exc:  # noqa: BLE001 — auto step never kills setup
-        print_warning(f"Gateway tree converge skipped: {exc}")
+        print_warning(f"Gateway converge skipped: {exc}")
         return "skipped-error"
     if result.startswith("converged-"):
-        print_success(f"Gateway tree {result} — gateway room ready in FluffyChat.")
-    elif result == "verified-ghost-only":
-        print_success("Gateway ghost verified — tree converges on sidecar start.")
+        print_success(f"Gateway {result} — gateway channel ready in IRC.")
     else:
-        print_info(f"Gateway tree {result}; sidecar converges it on start — no action needed.")
+        print_info(f"Gateway {result}.")
     return result
 
 
-def _run_observatory_auto_steps(obs, *, sidecar_loud: bool = False) -> dict:
-    """Run every post-provision auto step in order: crypto → sidecar →
-    heal+converge. Idempotent; each step degrades independently so one
-    skip never blocks the next. Returns ``{"crypto", "sidecar", "tree"}``.
+def _run_observatory_auto_steps(obs, *, unit_loud: bool = False) -> dict:
+    """Run every post-provision auto step in order: unit → gateway row.
+    Idempotent; each step degrades independently. Returns
+    ``{"unit", "gateway"}``.
 
-    ``sidecar_loud=True`` is for paths that JUST wiped: the wipe destroyed
-    the sidecar unit, so a failed reinstall errors loudly (naming the retry
-    command) instead of warning. Callers must then NOT print a blanket
-    success — check ``steps["sidecar"]`` via :func:`_sidecar_failed`.
+    ``unit_loud=True`` is for paths that JUST reset: the reset destroyed
+    the config, so a failed unit install errors loudly. Callers must then
+    NOT print a blanket success — check ``steps["unit"]`` via
+    :func:`_unit_failed`.
     """
     try:
         _ensure_sqlite3_cli()
     except Exception:  # noqa: BLE001 — debugging aid never kills setup
         pass
-    crypto = _auto_ensure_crypto(obs)
-    sidecar = _auto_ensure_sidecar_unit(obs, loud=sidecar_loud)
-    tree = _auto_heal_and_converge(obs)
-    return {"crypto": crypto, "sidecar": sidecar, "tree": tree}
+    unit = _auto_ensure_unit(obs, loud=unit_loud)
+    gateway = _auto_converge_gateway(obs)
+    return {"unit": unit, "gateway": gateway}
 
 
-#: Sidecar-step results that mean "no sidecar after a wipe" — the broken
-#: state a wipe+reprovision must never report as success. ``"skipped"`` (no
-#: systemd) is deliberately absent: containers have no unit system, and the
-#: soft hint already covers them.
-_SIDECAR_FAILED_RESULTS = ("skipped-error", "skipped-unavailable")
+#: Unit-step results that mean "no daemon after a reset" — the broken
+#: state a reset+reprovision must never report as success. ``"skipped"``
+#: (no systemd) is deliberately absent: containers have no unit system,
+#: and the soft hint already covers them.
+_UNIT_FAILED_RESULTS = ("skipped-error", "skipped-unavailable")
 
 
-def _sidecar_failed(steps: dict) -> bool:
-    """True when post-wipe auto steps left no sidecar behind."""
-    return bool(steps) and steps.get("sidecar") in _SIDECAR_FAILED_RESULTS
+def _unit_failed(steps: dict) -> bool:
+    """True when post-reset auto steps left no daemon behind."""
+    return bool(steps) and steps.get("unit") in _UNIT_FAILED_RESULTS
 
 
 def _run_observatory_sidecar_repair() -> None:
-    """Non-interactive repair: provision + crypto + sidecar + heal/converge
-    (``mercury setup observatory --install-sidecar`` — kept as an alias for
-    the now-automatic path).
+    """Non-interactive repair: provision + unit + gateway row
+    (``mercury setup observatory --install-sidecar`` — kept as an alias
+    for the now-automatic path).
 
     Never prompts; every failure degrades to a printed hint and the
-    wizard returns. provision() itself never touches the sidecar unit
-    (the daemon boots provision(), so auto-installing there would
+    wizard returns. provision() itself never touches the unit file
+    (the gateway boots provision(), so auto-installing there would
     restart its own unit mid-boot) — this explicit path is the only
     installer."""
     obs = _load_observatory_provision()
@@ -3707,852 +3436,153 @@ def _prompt_validated(question: str, *, default: str | None, validate, password:
             print_error(str(exc))
 
 
-def _prompt_observatory_identity(obs) -> dict:
-    """Prompt the observatory identity triple for a FRESH install.
 
-    Server name and owner localpart default to the shipped constants;
-    the password defaults to generated (never displayed — it lands
-    straight in owner-credentials.json + the .env mirror). Every custom
-    value loops until the provision-layer validator accepts it. Returns
-    kwargs for ``obs.provision_in_wizard`` (password None = generate).
-    """
-    try:
-        from observatory.config_gen import OWNER_LOCALPART_DEFAULT as _def_local
-        from observatory.config_gen import SERVER_NAME_DEFAULT as _def_server
-    except Exception:  # noqa: BLE001 — display fallback, never kills setup
-        _def_local, _def_server = "merc-owner", "mercury.local"
-    server_name = _prompt_validated(
-        "Homeserver name (the part after @user: — immutable once provisioned)",
-        default=_def_server,
+def _prompt_server_label(obs) -> str:
+    """Fresh-install network label (safe default, validated in a loop)."""
+    from observatory.config_gen import SERVER_NAME_DEFAULT
+
+    return _prompt_validated(
+        "IRC network name (lowercase; becomes #<name>_gateway)",
+        default=SERVER_NAME_DEFAULT,
         validate=obs.validate_server_name,
     )
-    localpart = _prompt_validated(
-        "Owner username (the FluffyChat login)",
-        default=_def_local,
-        validate=obs.validate_owner_localpart,
-    )
-    if prompt_yes_no(
-        "Generate a random owner password? (recommended — never displayed)",
-        default=True,
-    ):
-        owner_password = None
-    else:
-        owner_password = _prompt_validated(
-            "Owner password (at least 12 characters, hidden)",
-            default=None,
-            password=True,
-            validate=lambda v: obs.validate_owner_password(v, localpart=localpart),
-        )
-    print_info(f"Owner account will be @{localpart}:{server_name}.")
-    return {
-        "server_name": server_name,
-        "owner_localpart": localpart,
-        "owner_password": owner_password,
-    }
 
 
-def _current_observatory_identity(obs) -> tuple[str, str]:
-    """Currently provisioned (server_name, localpart) with safe fallbacks.
-
-    Parsed from the stored owner user_id (``@local:server``); falls back to
-    the shipped defaults when unreadable. Never raises, never logs secrets.
-    """
-    try:
-        from observatory.config_gen import OWNER_LOCALPART_DEFAULT as _def_local
-        from observatory.config_gen import SERVER_NAME_DEFAULT as _def_server
-    except Exception:  # noqa: BLE001 — display fallback, never kills setup
-        _def_local, _def_server = "merc-owner", "mercury.local"
-    server, localpart = _def_server, _def_local
-    read = getattr(obs, "read_owner_credentials", None)
-    if read is None:
-        return server, localpart
-    try:
-        stored = read()
-    except Exception:  # noqa: BLE001 — fallback to defaults
-        return server, localpart
-    if not isinstance(stored, dict):
-        return server, localpart
-    user_id = str(stored.get("user_id") or "")
-    if not user_id.startswith("@") or ":" not in user_id:
-        return server, localpart
-    try:
-        localpart = user_id[1:].split(":", 1)[0] or localpart
-        server = user_id.split(":", 1)[1] or server
-    except Exception:  # noqa: BLE001 — keep fallbacks
-        pass
-    return server, localpart
-
-
-def _prompt_observatory_identity_rerun(obs) -> dict:
-    """Prompt the identity triple on a keep-data re-run (per-field keep).
-
-    Same validators as the fresh-install triple; every field defaults to
-    keep-current (empty = keep). The password is never displayed — empty
-    keeps the stored secret, a typed value is validated against the
-    just-entered username and MUST be rotated by the caller (never dropped).
-    Returns ``{"server_name", "owner_localpart", "owner_password" (None =
-    keep), "_current_server_name", "_current_localpart"}``.
-    """
-    cur_server, cur_localpart = _current_observatory_identity(obs)
-    print_info(
-        f"Provisioned identity: @{cur_localpart}:{cur_server} "
-        "— empty keeps current per field."
-    )
-    server_name = _prompt_validated(
-        "Homeserver name (empty = keep current — immutable once provisioned)",
-        default=cur_server,
-        validate=obs.validate_server_name,
-    )
-    localpart = _prompt_validated(
-        "Owner username (empty = keep current)",
-        default=cur_localpart,
-        validate=obs.validate_owner_localpart,
-    )
-    validate = getattr(obs, "validate_owner_password", None) or (lambda v, **k: v)
-    while True:
-        new = prompt(
-            "Owner password (empty = keep current, at least 12 characters, hidden)",
-            None,
-            password=True,
-        )
-        if not new:
-            owner_password = None
-            break
-        try:
-            try:
-                validate(new, localpart=localpart)
-            except TypeError:
-                # A third-party provision double without the localpart
-                # keyword: fall back to the bare call, as before.
-                validate(new)
-            owner_password = new
-            break
-        except ValueError as exc:
-            print_error(str(exc))
-    print_info(f"Owner account will be @{localpart}:{server_name}.")
-    return {
-        "server_name": server_name,
-        "owner_localpart": localpart,
-        "owner_password": owner_password,
-        "_current_server_name": cur_server,
-        "_current_localpart": cur_localpart,
-    }
-
-
-def _rotate_owner_localpart(obs) -> str | None:
-    """Stored owner localpart for rotation-time password validation.
-
-    The fresh-install prompt validates the password against the just-chosen
-    username (same-as-username ban); rotation must apply the same rule
-    against the STORED username. Without it the wizard loop accepts a
-    password the provision layer's rotate (which validates with localpart)
-    then refuses with a post-hoc failure instead of a reprompt.
-    Best-effort: None when the credentials can't be read (validation
-    degrades to the length floor, exactly as before).
-    """
-    read = getattr(obs, "read_owner_credentials", None)
-    if read is None:
-        return None
-    try:
-        stored = read()
-    except Exception:
-        return None
-    if not isinstance(stored, dict):
-        return None
-    user_id = str(stored.get("user_id") or "")
-    if not user_id.startswith("@") or ":" not in user_id:
-        return None
-    return user_id[1:].split(":", 1)[0] or None
-
-
-def _offer_owner_password_rotate(obs) -> None:
-    """Opt-in password rotation on already-provisioned homes (never default).
-
-    Idempotent re-runs keep existing credentials unless the user says yes
-    here. Failures degrade to a printed hint — the wizard continues.
-    """
-    rotate = getattr(obs, "rotate_owner_password", None)
-    if rotate is None:
-        return
+def _offer_bouncer_password_rotate(obs) -> None:
+    """Offer rotating the bouncer password (re-run path only)."""
     try:
         want = prompt_yes_no(
-            "Rotate the observatory owner password? (existing logins keep working)",
+            "Rotate the bouncer password? (new random password, mirrored to .env)",
             default=False,
         )
     except KeyboardInterrupt:
         raise
-    except Exception:  # noqa: BLE001 — a rotate offer never kills the wizard
+    except Exception:  # noqa: BLE001 — an offer never kills the wizard
         return
     if not want:
-        print_info("Keeping the existing owner credentials.")
         return
-    validate = getattr(obs, "validate_owner_password", None) or (lambda v, **k: v)
-    localpart = _rotate_owner_localpart(obs)
-    while True:
-        new = prompt("New owner password (at least 12 characters, hidden)", None, password=True)
-        try:
-            try:
-                validate(new, localpart=localpart)
-            except TypeError:
-                # A third-party provision double without the localpart
-                # keyword: fall back to the bare call, as before.
-                validate(new)
-            break
-        except ValueError as exc:
-            print_error(str(exc))
     try:
-        rotate(new)
+        from observatory.provision import (
+            _mercury_home,
+            generate_password,
+            mirror_irc_env,
+            read_irc_passwords,
+        )
+
+        home = _mercury_home(None)
+        have = read_irc_passwords(home)
+        agent = have.get("agent") or generate_password()
+        mirror_irc_env(home, generate_password(), agent)
+        print_success("Bouncer password rotated (mirrored to .env — update your IRC client).")
+        print_info("Restart the daemon to apply: systemctl --user restart mercury-observatory.service")
     except KeyboardInterrupt:
         raise
-    except Exception as exc:  # noqa: BLE001 — auto step never kills setup
+    except Exception as exc:
         print_error(f"Password rotation failed: {exc}")
         print_info("Retry any time with: mercury setup observatory")
         return
-    print_success("Owner password rotated (mirrored to .env — paste it into FluffyChat).")
 
 
-def _maybe_heal_owner_env_mirror(obs) -> None:
-    """Setup-time .env-vs-credentials consistency check (warn + heal).
+def _offer_observatory_reset(obs) -> bool:
+    """Offer wiping IRC observatory data (config + history + agent tree).
 
-    The credentials file is the source of truth; a stale
-    MATRIX_OBS_OWNER_PASSWORD in .env authenticates nowhere and leaves the
-    user unable to tell which credential works. On mismatch: warn naming
-    the keys, heal from the credentials file, confirm. Never prompts and
-    never kills the wizard — every failure degrades to a printed hint.
-    Doubles without the provision helpers (older fakes) skip silently.
-    """
-    describe = getattr(obs, "describe_owner_env_mismatch", None)
-    heal = getattr(obs, "heal_owner_env", None)
-    if describe is None or heal is None:
-        return
-    try:
-        mismatch = describe()
-    except Exception:
-        return
-    if not isinstance(mismatch, dict) or "error" in mismatch:
-        return
-    missing = list(mismatch.get("missing") or [])
-    drifted = missing + [
-        k for k in (mismatch.get("stale") or []) if k not in missing
-    ]
-    if not drifted:
-        return
-    print_warning(
-        "Observatory .env mirror disagrees with owner-credentials.json "
-        f"({', '.join(drifted)}) — healing from the credentials file."
-    )
-    try:
-        healed = heal()
-    except Exception as exc:  # noqa: BLE001 — hint, never kills setup
-        print_error(f"Could not heal the .env owner mirror: {exc}")
-        print_info("Fix it any time with: mercury setup observatory")
-        return
-    if healed:
-        print_success(f"Healed the .env owner mirror ({', '.join(healed)}).")
-
-def _ask_observatory_wipe_upfront(obs, *, reason: str) -> str | None:
-    """Ask wipe/archive/keep BEFORE any identity prompt; wipe applies now.
-
-    Ordering law (VM defect: the wizard asked identity first, so values
-    typed against the pre-wipe state were dropped or failed against it).
-    Returns ``"archive"``/``"annihilate"`` after performing the wipe, or
-    None for keep. The wipe itself raises on failure (loud — the caller
-    reports it); a half-wipe must never pass as clean.
-    """
-    wipe = getattr(obs, "wipe_observatory_data", None)
-    options = ["Keep existing data"]
-    if wipe is not None:
-        options += [
-            "Archive tuwunel data aside",
-            "Annihilate tuwunel data",
-        ]
-    choice = prompt_choice(
-        f"Existing tuwunel installation detected ({reason}) — "
-        "what should happen to it?",
-        options,
-        0,
-    )
-    if choice == 0 or wipe is None:
-        return None
-    mode = "archive" if choice == 1 else "annihilate"
-    summary = wipe(mode=mode)
-    moved = (summary.get("moved") if mode == "archive"
-             else summary.get("deleted")) or []
-    print_success(
-        f"Observatory data {mode}d "
-        f"({', '.join(moved) or 'nothing present'})."
-    )
-    return mode
-
-
-def _run_observatory_provisioned_rerun(obs, status: dict) -> dict:
-    """Keep-data re-run: wipe/archive/keep FIRST, then identity prompts.
-
-    Ordering law (VM defect: identity was asked before the wipe question,
-    so values typed against the pre-wipe state were dropped or failed
-    against it). A wipe choice wipes immediately then collects a FRESH
-    identity triple that applies to the post-wipe state by construction —
-    nothing collected pre-wipe can be silently dropped. Keep falls through
-    to the per-field keep-vs-change offer below.
-
-    Same validators as the fresh-install triple; empty keeps current per
-    field. Unchanged prints ``identity unchanged (kept existing data)`` and
-    runs the idempotent repair. A server-name / localpart change fails
-    loudly (immutable without a wipe — never a silent fork) and repairs
-    with the stored identity. A typed password is ALWAYS rotated
-    (admin PUT + login probe + atomic dual-write) or errors loudly —
-    never silently dropped. Returns the refreshed status (or the input
-    status when the repair failed). Only KeyboardInterrupt escapes.
+    Returns True when a reset happened (caller must re-provision loudly).
+    The unit file survives; agent disadvantages: spawned rooms die with
+    the tree (their engine handles are orphaned — visible, never resumed).
     """
     try:
-        wiped = _ask_observatory_wipe_upfront(
-            obs, reason="already provisioned")
+        want = prompt_yes_no(
+            "Reset observatory data? (deletes ircd.json, history, and the agent tree)",
+            default=False,
+        )
     except KeyboardInterrupt:
         raise
-    except Exception as exc:  # noqa: BLE001 — wipe failure is loud
-        print_error(f"Observatory wipe failed: {exc}")
-        print_info("Nothing else was changed — the wizard continues.")
-        print_info("Retry any time with: mercury setup observatory")
-        return status
-    if wiped:
-        # Post-wipe state: collect the identity AFTER the wipe so every
-        # value applies to what provision actually sees. The wipe destroyed
-        # the sidecar unit — the auto steps MUST reinstall+start it, and a
-        # failed reinstall downgrades the success (loud error above names
-        # the retry command; never report a detached stack as complete).
-        identity = _prompt_observatory_identity(obs)
-        try:
-            obs.provision_in_wizard(**identity)
-            steps = _run_observatory_auto_steps(obs, sidecar_loud=True)
-            refreshed = obs.status_summary()
-            if _sidecar_failed(steps):
-                print_info(
-                    "Homeserver re-provisioned, but the sidecar is NOT "
-                    "running (see error above) — Matrix mirroring is "
-                    "detached until it is reinstalled."
-                )
-            else:
-                print_success(
-                    f"Observatory re-provisioned as "
-                    f"@{identity['owner_localpart']}:{identity['server_name']}."
-                )
-            # New server identity: the pre-wipe client session is dead —
-            # say so loudly (clients show the dead session as still-connected).
-            _print_observatory_relogin_notice(
-                f"@{identity['owner_localpart']}:{identity['server_name']}"
-            )
-            return refreshed
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:  # noqa: BLE001 — reprovision failure is loud
-            print_error(f"Re-provisioning failed: {exc}")
-            print_info("Retry any time with: mercury setup observatory")
-            return status
-    rerun = _prompt_observatory_identity_rerun(obs)
-    cur_server = rerun.pop("_current_server_name")
-    cur_local = rerun.pop("_current_localpart")
-    new_server = rerun["server_name"]
-    new_local = rerun["owner_localpart"]
-    new_pw = rerun["owner_password"]
+    except Exception:  # noqa: BLE001 — an offer never kills the wizard
+        return False
+    if not want:
+        return False
     try:
-        norm_cur_server = obs.validate_server_name(cur_server)
-    except Exception:  # noqa: BLE001 — compare raw on validator failure
-        norm_cur_server = cur_server
-    try:
-        norm_cur_local = obs.validate_owner_localpart(cur_local)
-    except Exception:  # noqa: BLE001 — compare raw on validator failure
-        norm_cur_local = cur_local
-    server_changed = new_server != norm_cur_server
-    local_changed = new_local != norm_cur_local
-    if server_changed or local_changed:
-        print_error(
-            "Observatory identity is immutable once provisioned "
-            f"(stored @{cur_local}:{cur_server}) — refusing to rename/repoint "
-            "in place (delete owner-credentials.json and tuwunel-db to re-provision)."
-        )
-        if new_pw is not None:
-            print_error("Password change not applied — resolve the identity change first.")
-        wipe_choice = prompt_choice(
-            f"Wipe tuwunel data and re-provision as @{new_local}:{new_server} "
-            "(the ONLY way to change identity — residual installs break reinstalls)?",
-            [
-                "Keep existing identity",
-                "Archive tuwunel data aside + re-provision with the new identity",
-                "Annihilate tuwunel data + re-provision with the new identity",
-            ],
-            0,
-        )
-        if wipe_choice != 0:
-            mode = "archive" if wipe_choice == 1 else "annihilate"
-            wipe = getattr(obs, "wipe_observatory_data", None)
-            if wipe is None:
-                print_error(
-                    "Wipe is unavailable in this install — keeping existing credentials."
-                )
-            else:
-                try:
-                    summary = wipe(mode=mode)
-                    moved = (summary.get("moved") if mode == "archive"
-                             else summary.get("deleted")) or []
-                    print_success(
-                        f"Observatory data {mode}d "
-                        f"({', '.join(moved) or 'nothing present'})."
-                    )
-                    obs.provision_in_wizard(
-                        server_name=new_server,
-                        owner_localpart=new_local,
-                        owner_password=new_pw,
-                    )
-                    # Post-wipe: the sidecar unit was destroyed with the
-                    # rest — reinstall loudly, never report detached as done.
-                    steps = _run_observatory_auto_steps(obs, sidecar_loud=True)
-                    refreshed = obs.status_summary()
-                    if _sidecar_failed(steps):
-                        print_info(
-                            "Homeserver re-provisioned, but the sidecar is "
-                            "NOT running (see error above) — Matrix "
-                            "mirroring is detached until it is reinstalled."
-                        )
-                    else:
-                        print_success(
-                            f"Observatory re-provisioned as "
-                            f"@{new_local}:{new_server}."
-                        )
-                    # New server identity: the pre-wipe client session is dead —
-                    # say so loudly (clients show the dead session as still-connected).
-                    _print_observatory_relogin_notice(f"@{new_local}:{new_server}")
-                    return refreshed
-                except KeyboardInterrupt:
-                    raise
-                except Exception as exc:  # noqa: BLE001 — wipe failure is loud
-                    print_error(f"Re-provisioning failed: {exc}")
-                    print_info("Retry any time with: mercury setup observatory")
-                    return status
-        print_info("Keeping the existing owner credentials.")
-        try:
-            obs.provision_in_wizard()
-            _run_observatory_auto_steps(obs)
-            refreshed = obs.status_summary()
-            print_success("Observatory provisioning complete (identity unchanged).")
-            return refreshed
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:  # noqa: BLE001 — auto step never kills setup
-            print_error(f"Observatory provisioning failed: {exc}")
-            print_info("Nothing else was changed — the wizard continues.")
-            print_info("Retry any time with: mercury setup observatory")
-            return status
-    if new_pw is not None:
-        try:
-            obs.provision_in_wizard()
-            _run_observatory_auto_steps(obs)
-            refreshed = obs.status_summary()
-            print_success("Observatory provisioning complete.")
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:  # noqa: BLE001 — repair failure is loud
-            print_error(f"Observatory provisioning failed: {exc}")
-            print_info("Nothing else was changed — the wizard continues.")
-            print_info("Retry any time with: mercury setup observatory")
-            print_error("Password change not applied — provisioning failed first.")
-            return status
-        rotate = getattr(obs, "rotate_owner_password", None)
-        if rotate is None:
-            print_error(
-                "Password change requested but rotation is unavailable "
-                "in this install — keeping existing credentials."
-            )
-            return refreshed
-        try:
-            rotate(new_pw)
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:  # noqa: BLE001 — rotation failure is loud
-            print_error(f"Password rotation failed: {exc}")
-            print_info("Retry any time with: mercury setup observatory")
-            return refreshed
-        print_success("Owner password rotated (mirrored to .env — paste it into FluffyChat).")
-        return refreshed
-    print_info("identity unchanged (kept existing data)")
-    try:
-        obs.provision_in_wizard()
-        _run_observatory_auto_steps(obs)
-        refreshed = obs.status_summary()
-        print_success("Observatory provisioning complete.")
-        return refreshed
+        from observatory.provision import reset_observatory_data
+
+        removed = reset_observatory_data()
     except KeyboardInterrupt:
         raise
-    except Exception as exc:  # noqa: BLE001 — auto step never kills setup
-        print_error(f"Observatory provisioning failed: {exc}")
-        print_info("Nothing else was changed — the wizard continues.")
+    except Exception as exc:
+        print_error(f"Reset failed: {exc}")
         print_info("Retry any time with: mercury setup observatory")
-        return status
-
-
-def _self_test_model() -> tuple[str, str]:
-    """Setup self-test (defect i): resolve the effective model with the
-    exact precedence the observatory path uses (explicit env →
-    model.default/model → dict split) and prove it routes to a configured
-    provider. Returns ``(model, provider)``; raises with the
-    ``mercury model`` remedy when nothing resolves — the silent glm
-    fallback can never pass as configured."""
-    import os as _os
-
-    from mercury_cli.config import split_model_config_default
-    from mercury_cli.runtime_provider import resolve_runtime_provider
-
-    cfg = load_config() or {}
-    model_cfg = cfg.get("model") or {}
-    if isinstance(model_cfg, str):
-        cfg_model = model_cfg
+        return False
+    if removed:
+        print_success(f"Observatory data reset ({len(removed)} paths removed).")
     else:
-        _raw = model_cfg.get("default") or model_cfg.get("model") or ""
-        if isinstance(_raw, dict):
-            cfg_model, _ = split_model_config_default(_raw)
-        else:
-            cfg_model = str(_raw or "")
-    env_model = _os.environ.get("HERMES_INFERENCE_MODEL", "").strip()
-    effective = env_model or cfg_model.strip()
-    if not effective:
-        raise ValueError(
-            "no model configured (model.default empty and "
-            "HERMES_INFERENCE_MODEL unset) — run `mercury model` first")
-    runtime = resolve_runtime_provider(requested=None, target_model=effective)
-    provider = str(runtime.get("provider") or "").strip() or "unknown"
-    return effective, provider
+        print_info("Nothing to reset — observatory was already clean.")
+    return True
 
 
-def _inject_ping(timeout: float = 20.0) -> str:
-    """Headless inject ping (defect i): one ``ping`` turn through the live
-    gateway control socket. Returns ``"passed: <reply-head>"``,
-    ``"skipped: <reason>"`` (no gateway/socket — legitimate during setup),
-    or ``"failed: <reason>"``. Never raises, never prompts."""
+def _wire_gateway_irc_env(home_label: str) -> None:
+    """Offer pointing the gateway's IRC platform at this network.
+
+    Writes the IRC_* env keys (.env) so the gateway bot joins the local
+    ircd as ``<server>_gateway`` in ``#<server>_gateway``. The gateway
+    needs a restart to pick them up.
+    """
     try:
-        from observatory.gateway_transport import ControlSocketGatewayTransport
-        from observatory.provision import _mercury_home
-    except Exception as exc:  # noqa: BLE001 — transport unavailable
-        return f"skipped: gateway transport unavailable ({exc})"
+        want = prompt_yes_no(
+            "Wire the gateway to this network? (sets IRC_* in .env so the "
+            "gateway bot joins the gateway channel)",
+            default=True,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception:  # noqa: BLE001 — an offer never kills the wizard
+        return
+    if not want:
+        print_info("Skipped gateway wiring — do it later via: mercury setup gateway")
+        return
     try:
-        import asyncio as _asyncio
+        from observatory.provision import _mercury_home, read_config, read_irc_passwords
+        from observatory.config_gen import (
+            IRCD_ADDRESS,
+            IRCD_AGENT_PORT_DEFAULT,
+        )
 
         home = _mercury_home(None)
-        transport = ControlSocketGatewayTransport(home, timeout=timeout)
-
-        async def _ping() -> str:
-            return await transport.prompt("ping")
-
-        reply = _asyncio.run(_ping())
-        head = str(reply or "").strip().splitlines()[0][:80] if str(reply or "").strip() else ""
-        if not head:
-            return "failed: gateway answered inject without a reply"
-        return f"passed: {head}"
-    except Exception as exc:  # noqa: BLE001 — ping failure is a report line
-        text = str(exc)
-        if "timeout" in text.lower() or "no gateway" in text.lower() \
-                or "refused" in text.lower() or "no such file" in text.lower():
-            return f"skipped: {exc}"
-        return f"failed: {exc}"
-
-
-def _synthetic_transaction() -> str:
-    """Acceptance synthetic transaction (defect v): one synthetic txn
-    through a fresh intake — accepted with zero recorded appservice
-    errors. Returns ``"passed"`` / ``"failed: ..."`` / ``"skipped: ..."``.
-    Never raises."""
-    try:
-        import asyncio as _asyncio
-
-        from observatory.appservice import (
-            TransactionIntake,
-            as_token_from_registration,
-        )
-        from observatory.config_gen import ObservatoryPaths
-        from observatory.provision import _mercury_home
-    except Exception as exc:  # noqa: BLE001 — stack unavailable (no aiohttp?)
-        return f"skipped: appservice stack unavailable ({exc})"
-    try:
-        paths = ObservatoryPaths(_mercury_home(None))
-        intake = TransactionIntake(
-            as_token=as_token_from_registration(
-                paths.appservice_registration))
-
-        async def _push() -> None:
-            await intake.accept("setup-acceptance", [{
-                "type": "m.room.message", "sender": "@setup:acceptance",
-                "content": {"msgtype": "m.text", "body": "acceptance ping"},
-            }])
-
-        _asyncio.run(_push())
-        errors = intake.error_count()
-        if errors:
-            return f"failed: {errors} appservice errors recorded"
-        return "passed"
-    except Exception as exc:  # noqa: BLE001 — report, never raise
-        return f"failed: {exc}"
-
-
-_DEVICE_TRUST_STANDING_LINE = (
-    "To decrypt messages on Matrix after resetting identity in Element or "
-    "Element X, run: mercury observatory trust-device — the command lists "
-    "rotated devices and walks through fingerprint approval."
-)
-
-
-def _acceptance_device_trust_gate() -> str:
-    """Acceptance gate 8: pending device-rotation approvals + wizard.
-
-    Prints the standing trust-device remedy line on EVERY run, then lists
-    pending rotations (device ID, old/new fingerprints, first-seen time)
-    with the exact per-device approve command. Interactively prompts
-    approve/skip per device (default No — headless runs only print the
-    commands). Returns the gate outcome for the acceptance report."""
-    from observatory.e2ee import (
-        TRUST_DEVICE_CMD,
-        approve_pending_trust,
-        list_pending_trusts,
-        trust_device_command,
-    )
-
-    print_info(_DEVICE_TRUST_STANDING_LINE)
-    try:
-        from observatory.provision import _mercury_home
-        from observatory.state import ObservatoryState, default_state_db_path
-
-        db = default_state_db_path(_mercury_home(None))
-        if not db.exists():
-            return "passed: no pending device rotations"
-        state = ObservatoryState(db)
-    except Exception as exc:  # noqa: BLE001 — gate, never kills setup
-        return f"skipped: device-trust unreadable ({exc})"
-    try:
-        pendings = list_pending_trusts(state)
-        if not pendings:
-            return "passed: no pending device rotations"
-        unapproved: list[str] = []
-        for rec in pendings:
-            user = str(rec.get("user_id") or "")
-            device = str(rec.get("device_id") or "")
-            print_warning(
-                f"Pending device rotation: {user}/{device} "
-                f"(first seen {rec.get('first_seen')})")
-            print_info(f"  old identity: {rec.get('old_identity_key')}")
-            print_info(f"  old signing:  {rec.get('old_signing_key')}")
-            print_info(f"  new identity: {rec.get('new_identity_key')}")
-            print_info(f"  new signing:  {rec.get('new_signing_key')}")
-            print_info(f"  approve: {trust_device_command(device)}")
-            try:
-                approved = prompt_yes_no(
-                    f"Approve the new keys for {user}/{device}?", default=False)
-            except KeyboardInterrupt:
-                raise
-            except Exception:  # noqa: BLE001 — prompt failure reads as skip
-                approved = False
-            if not approved:
-                unapproved.append(device)
-                print_info(f"  skipped — approve later with: "
-                           f"{trust_device_command(device)}")
-                continue
-            try:
-                approve_pending_trust(state, user_id=user, device_id=device)
-            except Exception as exc:  # noqa: BLE001 — approval must not kill setup
-                unapproved.append(device)
-                print_error(f"  approval failed for {user}/{device}: {exc}")
-                continue
-            print_success(f"  approved {user}/{device} — the next share trusts "
-                          "the new keys and rotates the Megolm session.")
-        if unapproved:
-            return (f"failed: {len(unapproved)} pending device rotation(s) need "
-                    f"approval — run `{TRUST_DEVICE_CMD} --device <id>` per device")
-        return (f"passed: all {len(pendings)} pending device rotation(s) approved")
-    finally:
-        try:
-            state.close()
-        except Exception:  # noqa: BLE001 — teardown must not raise
-            pass
-
-def _run_observatory_acceptance(obs, status: dict, ts: dict | None) -> bool:
-    """Ordered setup acceptance (VM report): dual-bind assert, crypto
-    assert (+live-gate hint), model resolve + inject ping,
-    sidecar-encrypted room, admin ping, synthetic transaction, poisoned
-    rooms (+converge offer). The login card prints AFTER this (card
-    last). Every gate degrades to fail/skip — never raises. Returns
-    all-pass. When ``observatory.e2ee`` is false the crypto gates (crypto,
-    encrypted-room, poison-scan) skip: plaintext rooms assert nothing."""
-    print_header("Observatory acceptance")
-    results: list[tuple[str, str]] = []
-
-    # Plaintext mode: crypto gates assert nothing (rooms are unencrypted by
-    # operator choice) — they skip instead of failing. Reads the persisted
-    # flag; unreadable config means default-on (fail closed).
-    try:
-        from observatory.provision import observatory_e2ee_flag as _e2ee_flag
-        want_e2ee = bool(_e2ee_flag())
-    except Exception:  # noqa: BLE001 — probe, never kills setup
-        want_e2ee = True
-
-    def _report(name: str, outcome: str) -> None:
-        results.append((name, outcome))
-        if outcome.startswith("passed"):
-            print_success(f"[acceptance] {name}: {outcome}")
-        elif outcome.startswith("skipped"):
-            print_info(f"[acceptance] {name}: {outcome}")
-        else:
-            print_error(f"[acceptance] {name}: {outcome}")
-
-    # 1. dual-bind assert.
-    try:
-        bound = _read_bind_list(obs) or []
-        loops = {"127.0.0.1", "::1", "localhost"}
-        if isinstance(ts, dict) and ts.get("up") and ts.get("ip"):
-            ip = str(ts["ip"]).strip()
-            if ip in bound and any(b in loops for b in bound):
-                _report("dual-bind", f"passed: [{', '.join(bound)}]")
-            else:
-                _report("dual-bind",
-                        f"failed: tailnet up but bind is [{', '.join(bound) or 'unknown'}] "
-                        "— answer Yes at the bind prompt, then restart + re-run setup")
-        else:
-            _report("dual-bind",
-                    f"passed: tailnet down, localhost-only expected ([{', '.join(bound) or 'unknown'}])")
-    except Exception as exc:  # noqa: BLE001 — gate, never kills setup
-        _report("dual-bind", f"failed: {exc}")
-
-    # 2. crypto assert (+live-gate hint).
-    if not want_e2ee:
-        _report("crypto", "skipped: E2EE disabled (observatory.e2ee: false) "
-                "— plaintext rooms need no crypto stack")
-    else:
-        try:
-            crypto_fn = getattr(obs, "assert_crypto_stack", None)
-            if crypto_fn is None:
-                from observatory.provision import assert_crypto_stack as crypto_fn
-            ok, missing = crypto_fn()
-            if ok:
-                _report("crypto", "passed: olm+mautrix.crypto+aiosqlite+aiohttp import "
-                        "(live: python -m observatory.scripts.e2ee_live_gate --fresh)")
-            else:
-                _report("crypto", f"failed: missing {', '.join(missing)} "
-                        "— E2EE stays ON; retry: mercury setup observatory")
-        except Exception as exc:  # noqa: BLE001
-            _report("crypto", f"failed: {exc}")
-
-    # 3. model resolve + inject ping.
-    try:
-        model, provider = _self_test_model()
-        ping = _inject_ping()
-        _report("model", f"passed: {model} ({provider}); inject ping: {ping}"
-                if not ping.startswith("failed") else
-                f"failed: {model} ({provider}) resolves but inject ping: {ping}")
-    except Exception as exc:  # noqa: BLE001
-        _report("model", f"failed: {exc}")
-
-    # 4. sidecar-encrypted room.
-    if not want_e2ee:
-        _report("encrypted-room", "skipped: E2EE disabled (observatory.e2ee: false) "
-                "— rooms are plaintext by choice")
-    else:
-        try:
-            enc_fn = getattr(obs, "gateway_room_encrypted", None)
-            if enc_fn is None:
-                from observatory.provision import gateway_room_encrypted as enc_fn
-            verdict = enc_fn()
-            if verdict is True:
-                _report("encrypted-room", "passed: gateway room is sidecar-encrypted")
-            elif verdict is None:
-                _report("encrypted-room", "skipped: no gateway room yet (converges on sidecar start)")
-            else:
-                _report("encrypted-room", "failed: gateway room exists but is not sidecar-encrypted "
-                        "— purge + re-converge, or wipe + re-provision")
-        except Exception as exc:  # noqa: BLE001
-            _report("encrypted-room", f"failed: {exc}")
-
-    # 5. admin ping (validate + self-heal).
-    try:
-        if not status.get("homeserver_reachable"):
-            _report("admin", "skipped: homeserver unreachable")
-        else:
-            heal_fn = getattr(obs, "heal_owner_admin_token", None)
-            if heal_fn is None:
-                from observatory.provision import heal_owner_admin_token as heal_fn
-            _report("admin", f"passed: token {heal_fn()}")
-    except Exception as exc:  # noqa: BLE001
-        _report("admin", f"failed: {exc} — re-login: mercury setup observatory")
-
-    # 6. synthetic transaction.
-    _report("synthetic-txn", _synthetic_transaction())
-
-    # 7. poisoned rooms (+converge offer).
-    if not want_e2ee:
-        _report("poison-scan", "skipped: E2EE disabled (observatory.e2ee: false) "
-                "— plaintext history is expected, not poison")
-    else:
-        try:
-            scan_fn = getattr(obs, "scan_poisoned_rooms", None)
-            if scan_fn is None:
-                from observatory.provision import scan_poisoned_rooms as scan_fn
-            problems = scan_fn()
-            if problems is None:
-                _report("poison-scan", "skipped: unscannable (unreachable or unprovisioned)")
-            elif not problems:
-                _report("poison-scan", "passed: no plaintext-history rooms")
-            else:
-                names = ", ".join(f"{p['key']} ({p['status']})" for p in problems)
-                print_error(f"[acceptance] poison-scan: failed: {names}")
-                results.append(("poison-scan", f"failed: {names}"))
-                try:
-                    if prompt_yes_no(
-                        f"Purge {len(problems)} poisoned rooms and re-converge encrypted?",
-                        default=False,
-                    ):
-                        fix_fn = getattr(obs, "reconverge_poisoned_rooms", None)
-                        if fix_fn is None:
-                            from observatory.provision import (
-                                reconverge_poisoned_rooms as fix_fn,
-                            )
-                        summary = fix_fn()
-                        print_success(f"[acceptance] reconverge: {summary}")
-                except KeyboardInterrupt:
-                    raise
-                except Exception as exc:  # noqa: BLE001 — offer never kills setup
-                    print_error(f"[acceptance] reconverge failed: {exc}")
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:  # noqa: BLE001 — gate, never kills setup
-            _report("poison-scan", f"failed: {exc}")
-
-    # 8. device-trust rotations (standing remedy line + approve/skip wizard).
-    try:
-        _report("device-trust", _acceptance_device_trust_gate())
+        cfg = read_config(home) or {}
+        host = str(cfg.get("agent_host") or IRCD_ADDRESS)
+        port = int(cfg.get("agent_port") or IRCD_AGENT_PORT_DEFAULT)
+        server = str(cfg.get("server_name") or home_label)
+        passwords = read_irc_passwords(home)
+        save_env_value("IRC_SERVER", host)
+        save_env_value("IRC_PORT", str(port))
+        save_env_value("IRC_USE_TLS", "false")
+        save_env_value("IRC_NICKNAME", f"{server}_gateway")
+        save_env_value("IRC_CHANNEL", f"#{server}_gateway")
+        if passwords.get("agent"):
+            save_env_value("IRC_SERVER_PASSWORD", passwords["agent"])
+        print_success("Gateway IRC wiring saved to .env "
+                      f"(bot {server}_gateway → #{server}_gateway).")
+        print_info("Restart the gateway to apply: mercury gateway restart")
     except KeyboardInterrupt:
         raise
-    except Exception as exc:  # noqa: BLE001 — gate, never kills setup
-        _report("device-trust", f"skipped: device-trust gate failed ({exc})")
+    except Exception as exc:
+        print_error(f"Gateway wiring failed: {exc}")
+        print_info("Do it later via: mercury setup gateway")
+        return
 
-    all_pass = all(outcome.startswith(("passed", "skipped")) for _, outcome in results)
-    if all_pass:
-        print_success("[acceptance] all gates pass or skip — login card next.")
-    else:
-        print_error("[acceptance] failures above need action — login card still prints last.")
-    return all_pass
 
 def setup_observatory(config: dict, *, quick: bool = False):
-    """Wizard section: the bundled Matrix observatory (Tuwunel homeserver
-    + sidecar). Spec D1/D2 — default on, closed registration, localhost.
+    """Wizard section: the bundled IRC observatory (ircd daemon).
 
-    Shows current state, offers idempotent install/repair (provision +
-    crypto + sidecar + heal/converge, all automatic) or skip (the
-    --skip-observatory equivalent), offers the ``observatory.enabled``
-    toggle, the ``observatory.mirror_cli`` choice (off/observe/full,
-    default off), and the ``observatory.e2ee`` room-encryption choice
-    (default on, explicit plaintext opt-in), and prints the manual-only
-    first-login card when provisioned.
-    Never gates the rest of the wizard: every failure degrades to a
-    printed hint and the section returns.
+    Shows current state, offers idempotent install/repair (config +
+    passwords + unit + gateway row, all automatic) or skip, offers the
+    ``observatory.enabled`` toggle, the Tailscale bouncer pin, the
+    gateway IRC wiring, and prints the bouncer login card when
+    provisioned. Never gates the rest of the wizard: every failure
+    degrades to a printed hint and the section returns.
     """
-    print_header("Matrix Observatory (bundled)")
-    print_info("A private Matrix homeserver + sidecar that mirrors every live agent")
-    print_info("session as a tree of rooms you can watch, steer and approve from")
-    print_info("FluffyChat. Localhost-only, registration closed, federation off.")
+    print_header("IRC Observatory (bundled)")
+    print_info("A private IRC network for your agents: one channel per agent,")
+    print_info("with its own bouncer so any IRC client stays in sync.")
+    print_info("Localhost-only; phones reach the bouncer over Tailscale.")
 
     obs = _load_observatory_provision()
     if obs is None:
@@ -4569,7 +3599,6 @@ def setup_observatory(config: dict, *, quick: bool = False):
 
     _observatory_state_lines(status)
     print()
-    _maybe_heal_owner_env_mirror(obs)
 
     # Reconfigure gate: already provisioned → one-line summary + ask
     # (default NO keeps everything, fast re-run). Fresh installs fall
@@ -4578,16 +3607,15 @@ def setup_observatory(config: dict, *, quick: bool = False):
         yn = lambda flag: "yes" if flag else "no"  # noqa: E731
         if not _ask_reconfigure(
             "Observatory",
-            f"provisioned, reachable={yn(status.get('homeserver_reachable'))} "
-            f"({status.get('homeserver_url')}), "
+            f"provisioned, bouncer={status.get('bouncer')}, "
             f"enabled={yn(status.get('enabled'))}",
         ):
             return
 
     choice = prompt_choice(
-        "Set up the Matrix observatory now (RECOMMENDED)?",
+        "Set up the IRC observatory now (RECOMMENDED)?",
         [
-            "Install / repair now (idempotent; downloads the Tuwunel homeserver on first run)",
+            "Install / repair now (idempotent; stdlib only, no downloads)",
             "Skip — leave it as is",
         ],
         0 if not status["provisioned"] else 1,
@@ -4595,95 +3623,67 @@ def setup_observatory(config: dict, *, quick: bool = False):
 
     if choice == 0:
         was_provisioned = bool(status.get("provisioned"))
-        if not was_provisioned:
-            # Residual-data gate: an existing tuwunel installation (stale
-            # files from a previous install) gets its wipe/archive/keep
-            # question BEFORE the identity prompts, so the typed identity
-            # applies to the post-wipe state instead of failing against
-            # (or being dropped by) the pre-wipe one.
-            data_present = getattr(obs, "observatory_data_present", None)
-            try:
-                residual = bool(data_present and data_present())
-            except Exception:  # noqa: BLE001 — probe, never kills setup
-                residual = False
-            wipe_failed = False
-            wiped = False
-            if residual:
-                try:
-                    wiped = bool(_ask_observatory_wipe_upfront(
-                        obs, reason="stale files from a previous install"))
-                except KeyboardInterrupt:
-                    raise
-                except Exception as exc:  # noqa: BLE001 — wipe failure is loud
-                    print_error(f"Observatory wipe failed: {exc}")
-                    print_info("Nothing else was changed — the wizard continues.")
-                    print_info("Retry any time with: mercury setup observatory")
-                    wipe_failed = True
-            if not wipe_failed:
-                # Fresh install: the user chooses the identity (safe defaults,
-                # validated in a loop).
-                identity = _prompt_observatory_identity(obs)
-                try:
-                    obs.provision_in_wizard(**identity)
-                    # A wipe just destroyed the sidecar unit: reinstall
-                    # loudly, never report a detached stack as complete.
-                    steps = _run_observatory_auto_steps(
-                        obs, sidecar_loud=wiped)
+        try:
+            if not was_provisioned:
+                # Fresh install: the user chooses the network label, then
+                # everything else is automatic (passwords generated).
+                label = _prompt_server_label(obs)
+                obs.provision_in_wizard(server_name=label)
+                steps = _run_observatory_auto_steps(obs)
+                status = obs.status_summary()
+                if _unit_failed(steps):
+                    print_info(
+                        "Config provisioned, but the daemon is NOT "
+                        "running (see error above) — rooms stay dark "
+                        "until it is started."
+                    )
+                else:
+                    print_success("Observatory provisioning complete.")
+                _wire_gateway_irc_env(label)
+            else:
+                # Keep-data re-run: reset? (reset forces a loud
+                # re-provision), password rotate, repair.
+                wiped = _offer_observatory_reset(obs)
+                if wiped:
+                    label = _prompt_server_label(obs)
+                    obs.provision_in_wizard(server_name=label)
+                    steps = _run_observatory_auto_steps(obs, unit_loud=True)
                     status = obs.status_summary()
-                    if wiped and _sidecar_failed(steps):
-                        print_info(
-                            "Homeserver provisioned, but the sidecar is NOT "
-                            "running (see error above) — Matrix mirroring "
-                            "is detached until it is reinstalled."
+                    if _unit_failed(steps):
+                        print_error(
+                            "Reset complete but the daemon is NOT running "
+                            "(see error above) — retry with: "
+                            "mercury setup observatory --install-sidecar"
                         )
                     else:
-                        print_success("Observatory provisioning complete.")
-                    if wiped:
-                        # New server identity: the pre-wipe client session is
-                        # dead — say so loudly (clients show the dead session
-                        # as still-connected).
-                        _print_observatory_relogin_notice(
-                            f"@{identity['owner_localpart']}:{identity['server_name']}"
-                        )
-                except KeyboardInterrupt:
-                    raise
-                except Exception as exc:
-                    print_error(f"Observatory provisioning failed: {exc}")
-                    print_info("Nothing else was changed — the wizard continues.")
-                    print_info("Retry any time with: mercury setup observatory")
-        else:
-            # Keep-data re-run: wipe/archive/keep was already asked FIRST
-            # inside _run_observatory_provisioned_rerun; the per-field
-            # keep-vs-change offer below only runs on keep — a typed
-            # password always rotates (or errors), never silently drops.
-            # Only KeyboardInterrupt escapes.
-            try:
-                status = _run_observatory_provisioned_rerun(obs, status)
-            except KeyboardInterrupt:
-                raise
+                        print_success("Observatory reset + reprovisioned.")
+                    _wire_gateway_irc_env(label)
+                else:
+                    _offer_bouncer_password_rotate(obs)
+                    obs.provision_in_wizard()
+                    _run_observatory_auto_steps(obs)
+                    status = obs.status_summary()
+                    print_success("Observatory repair complete.")
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            print_error(f"Observatory provisioning failed: {exc}")
+            print_info("Nothing else was changed — the wizard continues.")
+            print_info("Retry any time with: mercury setup observatory")
     else:
-        print_info("Skipped — same as installing with --skip-observatory.")
-        print_info("Provision later with: mercury setup observatory")
+        print_info("Skipped — provision later with: mercury setup observatory")
     _prompt_observatory_enabled_toggle(config)
-    _prompt_mirror_cli_mode(config)
-    _prompt_observatory_encrypt_rooms(config)
 
     if status.get("provisioned"):
         ts = _tailscale_status(obs)
         _offer_tailscale_bind(obs, ts)
         # Post-bind refresh: the offer may have rewritten the bind, so the
-        # acceptance gates and the login card see the fresh URL.
+        # card sees the fresh address.
         try:
             status = obs.status_summary()
         except Exception:  # noqa: BLE001 — keep the pre-bind status
             pass
-        # Acceptance BEFORE the login card (card last): dual-bind, crypto,
-        # model+ping, encrypted room, admin, synthetic txn, poison scan.
-        _run_observatory_acceptance(obs, status, ts)
         _print_observatory_setup_card(status, ts)
-        # Post-acceptance re-check: a declined/failed bind (or a standalone
-        # `mercury setup observatory` re-run) still strands phones on a
-        # localhost-only tuwunel — say so explicitly.
         _maybe_print_bind_mismatch_action(obs, ts)
     else:
         print_info(_OBSERVATORY_GUIDE_LINE)
@@ -4692,105 +3692,37 @@ def setup_observatory(config: dict, *, quick: bool = False):
 def print_noninteractive_observatory_guidance() -> None:
     """Headless counterpart of the observatory section (no TTY).
 
-    Prints the state summary plus the exact provision command — there is
-    no ``mercury observatory`` CLI wrapper, so the ``python -m`` form
-    install.sh itself uses is the copy-pasteable truth. Conventions mirror
-    :func:`print_noninteractive_setup_guidance`.
+    Prints the state summary plus the exact provision command.
     """
     obs = _load_observatory_provision()
     if obs is None:
         return
     try:
         status = obs.status_summary()
-    except Exception as exc:
-        logger.debug("observatory status unavailable headlessly: %s", exc)
+    except Exception:
         return
     print()
-    print(color("🔭 Matrix Observatory (bundled)", Colors.CYAN, Colors.BOLD))
-    print()
-    yn = lambda flag: "yes" if flag else "no"  # noqa: E731
-    print_info(
-        f"Provisioned: {yn(status['provisioned'])} | "
-        f"homeserver reachable: {yn(status['homeserver_reachable'])} "
-        f"({status['homeserver_url']})"
-    )
-    print_info(
-        f"Unit active: {yn(status['unit_active'])} ({status['unit_name']}) | "
-        f"observatory.enabled: {yn(status['enabled'])} (config.yaml)"
-    )
-    ts = _tailscale_status(obs)
-    phone = _tailscale_phone_url(ts, str(status["homeserver_url"]))
-    if phone:
-        print_info(f"Tailscale: up — phone homeserver URL {phone}")
-        # Headless runs cannot take the bind offer: print the recovery line
-        # here so the localhost-only trap is actionable without a TTY.
-        _maybe_print_bind_mismatch_action(obs, ts)
-    elif bool(ts.get("available")):
-        print_info("Tailscale: installed but not connected — run `tailscale up`")
-    else:
-        print_info(
-            "Tailscale: not detected — install from https://tailscale.com"
-            " (or headscale) for phone access without port forwarding"
-        )
-    print_info("Provision / repair it headlessly (automatic, no prompts):")
-    print_info(
-        "  mercury setup observatory --non-interactive"
-    )
-    print_info("Disable instead (freezes, never deletes):")
-    print_info("  mercury config set observatory.enabled false")
-    print_info(_OBSERVATORY_GUIDE_LINE)
+    print("IRC observatory: provision with `mercury setup observatory`.")
+    try:
+        _observatory_state_lines(status)
+    except Exception:  # noqa: BLE001 — guidance never raises
+        pass
     print()
 
 
-def run_headless_observatory_setup(*, encrypt_rooms: bool = True) -> None:
-    """Headless `mercury setup observatory`: provision + crypto + sidecar +
-    heal/converge with zero prompts, then the manual-only login card.
-
-    Same auto steps as the wizard Install path, minus every prompt (enabled
-    toggle, Tailscale bind offer). ``encrypt_rooms=False`` (the
-    ``--no-encrypt-rooms`` flag) persists the explicit plaintext opt-in
-    before provisioning; the default keeps rooms encrypted. Failures
-    degrade to printed hints — never raises, never exits."""
+def run_headless_observatory_setup() -> None:
+    """Headless provision: config + passwords + unit + gateway row."""
     obs = _load_observatory_provision()
     if obs is None:
         print_warning("Bundled observatory package not found in this install.")
-        print_info(_OBSERVATORY_GUIDE_LINE)
         return
-    if not encrypt_rooms:
-        try:
-            from observatory.provision import set_observatory_e2ee
-            set_observatory_e2ee(False)
-            print_warning(PLAINTEXT_WARNING)
-            print_success("observatory.e2ee = false persisted (headless --no-encrypt-rooms).")
-        except Exception as exc:  # noqa: BLE001 — opt-in persists best-effort
-            print_warning(f"Could not persist observatory.e2ee = false: {exc}")
     try:
         obs.provision_in_wizard()
-        _run_observatory_auto_steps(obs)
         print_success("Observatory provisioning complete.")
-        _maybe_heal_owner_env_mirror(obs)
-    except KeyboardInterrupt:
-        raise
     except Exception as exc:
         print_error(f"Observatory provisioning failed: {exc}")
-        print_info("Retry any time with: mercury setup observatory --install-sidecar")
         return
-    try:
-        status = obs.status_summary()
-    except Exception as exc:
-        logger.debug("observatory status unavailable after headless setup: %s", exc)
-        return
-    if not status.get("provisioned"):
-        print_info(_OBSERVATORY_GUIDE_LINE)
-        return
-    ts = _tailscale_status(obs)
-    _print_observatory_setup_card(status, ts)
-    _maybe_print_bind_mismatch_action(obs, ts)
-
-
-# =============================================================================
-# Section 5: Tool Configuration (delegates to unified tools_config.py)
-# =============================================================================
+    _run_observatory_auto_steps(obs)
 
 
 def setup_tools(config: dict, first_install: bool = False):
@@ -5373,7 +4305,7 @@ SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
     ("tts", "Text-to-Speech", setup_tts),
     ("terminal", "Terminal Backend", setup_terminal_backend),
-    ("observatory", "Matrix Observatory (bundled)", setup_observatory),
+    ("observatory", "IRC Observatory (bundled)", setup_observatory),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("telemetry", "Shared Metrics", setup_telemetry),
@@ -5618,7 +4550,7 @@ def _run_setup_wizard_impl(args):
       mercury setup tts       — just text-to-speech
       mercury setup terminal  — just terminal backend
       mercury setup gateway   — just messaging platforms
-      mercury setup observatory — just the matrix observatory (bundled)
+      mercury setup observatory — just the IRC observatory (bundled)
       mercury setup tools     — just tool configuration
       mercury setup telemetry — just local shared metrics
       mercury setup agent     — just agent settings
@@ -5668,11 +4600,9 @@ def _run_setup_wizard_impl(args):
         _run_observatory_sidecar_repair()
         return
 
-    no_encrypt = bool(getattr(args, "no_encrypt_rooms", False))
-
     if non_interactive:
         if getattr(args, "section", None) == "observatory":
-            run_headless_observatory_setup(encrypt_rooms=not no_encrypt)
+            run_headless_observatory_setup()
             return
         print_noninteractive_setup_guidance(
             "Running in a non-interactive environment (no TTY detected)."
@@ -5684,19 +4614,6 @@ def _run_setup_wizard_impl(args):
     if bool(getattr(args, "portal", False)):
         _run_portal_one_shot(config)
         return
-
-    # --no-encrypt-rooms with an interactive section: seed the starting value
-    # so the encrypt prompt defaults to No (the operator can still flip it
-    # back to Yes — the flag never bypasses the explicit choice).
-    if no_encrypt and getattr(args, "section", None) == "observatory":
-        _obs_cfg = config.get("observatory")
-        if not isinstance(_obs_cfg, dict):
-            _obs_cfg = {}
-            config["observatory"] = _obs_cfg
-        if _obs_cfg.get("e2ee", True) is not False:
-            _obs_cfg["e2ee"] = False
-            save_config(config)
-            print_warning(PLAINTEXT_WARNING)
 
     # Check if a specific section was requested
     section = getattr(args, "section", None)
@@ -5972,7 +4889,7 @@ def _run_setup_wizard_impl(args):
             # observatory is the primary chat surface, and it must never
             # gate model setup (it runs after every model-config section and
             # degrades to a hint on any failure).
-            ("Matrix Observatory", lambda: setup_observatory(config)),
+            ("IRC Observatory", lambda: setup_observatory(config)),
             ("Messaging Platforms", _gateway_step),
             ("Tools", _tools_step),
         ]

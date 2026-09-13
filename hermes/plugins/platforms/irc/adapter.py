@@ -144,7 +144,7 @@ class IRCAdapter(BasePlatformAdapter):
         )
         self.server_password = _get_scoped_secret("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
         self.nickserv_password = _get_scoped_secret("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
-        self.oper_password = _get_scoped_secret("IRC_OPER_PASSWORD") or extra.get("oper_password", "")
+        self.oper_password = _get_scoped_secret("IRC_OPER_PASSWORD") or extra.get("oper_password", "") or self.server_password
         # Observability rooms: extra agent channels the bot joins dynamically
         # (/spawn rooms, #parent-child subagent rooms). Managed channels
         # never require nick-addressing: every message there is for the agent.
@@ -258,10 +258,16 @@ class IRCAdapter(BasePlatformAdapter):
         try:
             from observatory.rooms import set_bot_sink
             set_bot_sink(self)
+            # Post-connect resync: join live state channels, drain the
+            # frame queue, replay the exit journal, resume omp handles.
+            # Fire-and-forget (idempotent, never breaks connect).
+            try:
+                from observatory.platform_hook import boot_resync as _resync
+                asyncio.create_task(_resync())
+            except Exception:
+                logger.debug("IRC: resync schedule skipped", exc_info=True)
         except Exception:
             logger.debug("IRC: bot-sink register skipped", exc_info=True)
-
-        self._mark_connected()
         logger.info("IRC: connected to %s:%s as %s, joined %s", self.server, self.port, self._current_nick, self.channel)
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)

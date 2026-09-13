@@ -270,7 +270,13 @@ class RoomManager:
     # -- queue pump ----------------------------------------------------
 
     async def drain_queue(self) -> int:
-        """Publish every queued lifecycle/feed/approval frame. Returns count."""
+        """Publish every queued lifecycle/feed/approval frame. Returns count.
+
+        When the bot is down the queue is LEFT INTACT (returns 0) — frames
+        wait for the next pump after reconnect instead of being dropped.
+        """
+        if self.bot is None:
+            return 0
         count = 0
         while True:
             try:
