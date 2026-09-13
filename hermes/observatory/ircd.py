@@ -13,7 +13,8 @@ channel state:
   up, so nothing is ever lost server-side.
 
 Protocol: RFC 1459 subset (NICK/USER/PASS/JOIN/PART/PRIVMSG/NOTICE/
-TOPIC/NAMES/PING/PONG/QUIT/MODE-noop). No TLS in v1 — the server binds
+TOPIC/NAMES/WHO/PING/PONG/QUIT/MODE-noop, plus OPER/DESTROY for the
+gateway bot's /exit room kill). No TLS in v1 — the server binds
 localhost or a tailnet address (see ``provision``), never the open
 internet. No NickServ, no federation, single network.
 
@@ -82,7 +83,7 @@ class DaemonConfig:
 
 class _Client:
     __slots__ = ("reader", "writer", "nick", "user", "realname",
-                 "registered", "pass_ok", "addr", "channels", "send_lock")
+                 "registered", "pass_ok", "oper", "addr", "channels", "send_lock")
 
     def __init__(self, reader: asyncio.StreamReader,
                  writer: asyncio.StreamWriter, addr: str):
@@ -93,6 +94,7 @@ class _Client:
         self.realname = ""
         self.registered = False
         self.pass_ok = False
+        self.oper = False
         self.addr = addr
         self.channels: set[str] = set()  # folded channel keys
         self.send_lock = asyncio.Lock()
@@ -114,8 +116,6 @@ class IrcDaemon:
         self._db: sqlite3.Connection | None = None
         self._lock = asyncio.Lock()
 
-    # -- persistence ----------------------------------------------------
-
     def _db_path(self) -> Path | None:
         if not self.config.state_dir:
             return None
@@ -123,6 +123,8 @@ class IrcDaemon:
         root.mkdir(parents=True, exist_ok=True)
         return root / "irc-history.db"
 
+
+    # -- persistence ----------------------------------------------------
     def _open_db(self) -> None:
         path = self._db_path()
         if path is None:
@@ -322,6 +324,10 @@ class IrcDaemon:
             target = rest.split(" ", 1)[0] if rest else ""
             await self._numeric(client, 324, f"{client.nick} {target} +",
                                 "End of MODE")
+        elif cmd == "OPER":
+            await self._cmd_oper(client, rest.strip())
+        elif cmd == "DESTROY":
+            await self._cmd_destroy(client, rest.strip())
         elif cmd == "QUIT":
             await self._quit(client, rest.lstrip(":") or "quit")
         elif cmd == "USERHOST" or cmd == "ISON":
@@ -439,6 +445,36 @@ class IrcDaemon:
                                 f"0 {c.realname or c.nick}")
         await self._numeric(client, 315, f"{client.nick} {arg}",
                             "End of WHO list")
+
+    def _oper_password(self) -> str:
+        return self.config.agent_password or self.config.password
+
+    async def _cmd_oper(self, client: _Client, arg: str) -> None:
+        """OPER <password> — grant channel-destroy rights to the gateway bot."""
+        secret = arg.split(" ", 1)[0].lstrip(":")
+        want = self._oper_password()
+        if want and secret == want:
+            client.oper = True
+            await self._numeric(client, 381, client.nick,
+                                "You are now an IRC operator")
+        else:
+            await self._numeric(client, 464, client.nick,
+                                "Password incorrect")
+
+    async def _cmd_destroy(self, client: _Client, arg: str) -> None:
+        """DESTROY #channel :reason — oper-only room kill for /exit."""
+        if not client.oper:
+            await self._numeric(client, 481, client.nick,
+                                "Permission Denied - You're not an IRC operator")
+            return
+        channel = arg.split(" ", 1)[0].strip()
+        if not channel.startswith("#"):
+            await self._numeric(client, 403, channel or "*",
+                                "No such channel")
+            return
+        await self.destroy_channel(channel, reason="room closed (/exit)")
+        await self._numeric(client, 200, f"{client.nick} {channel}",
+                            "Channel destroyed")
 
     async def _cmd_part(self, client: _Client, arg: str) -> None:
         if not arg:
