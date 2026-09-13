@@ -81,7 +81,6 @@ class DaemonConfig:
     state_dir: Path | str = ""
     network_name: str = "mercury"
 
-
 class _Client:
     __slots__ = (
         "reader",
@@ -92,6 +91,7 @@ class _Client:
         "registered",
         "pass_ok",
         "oper",
+        "sasl",
         "addr",
         "channels",
         "send_lock",
@@ -108,6 +108,7 @@ class _Client:
         self.registered = False
         self.pass_ok = False
         self.oper = False
+        self.sasl = None
         self.addr = addr
         self.channels: set[str] = set()  # folded channel keys
         self.send_lock = asyncio.Lock()
@@ -350,6 +351,12 @@ class IrcDaemon:
                 client.realname = parts[3].lstrip(":")[:128]
             await self._maybe_register(client, listener, password)
             return
+        if cmd == "CAP":
+            await self._cmd_cap(client, rest.strip())
+            return
+        if cmd == "AUTHENTICATE":
+            await self._cmd_authenticate(client, rest.strip(), password)
+            return
         if not client.registered:
             return
         if cmd == "PING":
@@ -389,6 +396,64 @@ class IrcDaemon:
             await self._numeric(client, 421, cmd, "Unknown command")
 
     # -- commands --------------------------------------------------------
+
+    def _who(self, client: _Client) -> str:
+        return client.nick or "*"
+
+    async def _cmd_cap(self, client: _Client, arg: str) -> None:
+        """Minimal IRCv3 negotiation: we offer exactly ``sasl``."""
+        parts = arg.split(None, 2)
+        sub = (parts[0] if parts else "").upper()
+        rest = parts[1] if len(parts) > 1 else ""
+        if sub == "LS" or sub == "LIST":
+            await self._send(client, f":{self.config.server_name} CAP {self._who(client)} LS :sasl")
+        elif sub == "REQ":
+            wants = [w.strip().lower().lstrip(":") for w in rest.split()]
+            if wants == ["sasl"]:
+                client.sasl = "negotiated"
+                await self._send(client, f":{self.config.server_name} CAP {self._who(client)} ACK :sasl")
+            else:
+                await self._send(client, f":{self.config.server_name} CAP {self._who(client)} NAK :{rest}")
+        elif sub == "END":
+            pass  # registration continues with NICK/USER as normal
+        # anything else: ignored (no state change)
+
+    async def _cmd_authenticate(self, client: _Client, arg: str, password: str) -> None:
+        """SASL PLAIN against the listener password (Goguma-style clients).
+
+        Flow: ``AUTHENTICATE PLAIN`` → ``AUTHENTICATE +`` → client sends
+        base64(``authzid\\0authcid\\0passwd``) → 903 + pass (or 904).
+        ``AUTHENTICATE *`` aborts (906). Lenient: PLAIN is accepted even
+        without a prior CAP REQ (small private network, no downgrade risk
+        worth failing closed over).
+        """
+        import base64 as _b64
+
+        who = self._who(client)
+        token = arg.strip()
+        if token == "*":
+            client.sasl = None
+            await self._numeric(client, 906, who, "SASL authentication aborted")
+            return
+        if client.sasl == "plain-pending":
+            client.sasl = None
+            try:
+                decoded = _b64.b64decode(token, validate=True).decode("utf-8", "replace")
+            except Exception:
+                decoded = ""
+            parts = decoded.split("\x00")
+            given = parts[-1] if parts else ""
+            if not password or given == password:
+                client.pass_ok = True
+                await self._numeric(client, 903, who, "SASL authentication successful")
+            else:
+                await self._numeric(client, 904, who, "SASL authentication failed")
+            return
+        if token.upper() == "PLAIN":
+            client.sasl = "plain-pending"
+            await self._send(client, "AUTHENTICATE +")
+            return
+        await self._numeric(client, 904, who, "SASL authentication failed")
 
     async def _cmd_nick(
         self, client: _Client, nick: str, listener: str, password: str

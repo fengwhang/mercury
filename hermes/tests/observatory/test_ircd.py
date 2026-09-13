@@ -360,3 +360,66 @@ async def test_both_listeners_down_raises(tmp_path) -> None:
     finally:
         held.close()
         await d.stop()
+
+
+@pytest.mark.asyncio
+async def test_sasl_plain_login(tmp_path) -> None:
+    import base64
+
+    async with running_daemon(tmp_path, password="s3cret") as (_, __, bouncer_port):
+        c = RawClient()
+        await c.connect(bouncer_port)
+        try:
+            await c.send("CAP LS 302")
+            got = await c.next_match("CAP ")
+            assert "sasl" in got
+            await c.send("CAP REQ :sasl")
+            await c.next_match("ACK :sasl")
+            await c.send("AUTHENTICATE PLAIN")
+            await c.next_match("AUTHENTICATE +")
+            blob = base64.b64encode(b"user\x00user\x00s3cret").decode()
+            await c.send(f"AUTHENTICATE {blob}")
+            await c.next_match("903")
+            await c.send("NICK sasluser")
+            await c.send("USER sasluser 0 * :t")
+            await c.next_match(" 001 ")
+            await c.send("JOIN #saslroom")
+            await c.next_match("JOIN #saslroom")
+        finally:
+            await c.close()
+
+
+@pytest.mark.asyncio
+async def test_sasl_wrong_password_stays_out(tmp_path) -> None:
+    import base64
+
+    async with running_daemon(tmp_path, password="s3cret") as (d, _, bouncer_port):
+        c = RawClient()
+        await c.connect(bouncer_port)
+        try:
+            await c.send("AUTHENTICATE PLAIN")
+            await c.next_match("AUTHENTICATE +")
+            blob = base64.b64encode(b"user\x00user\x00wrong").decode()
+            await c.send(f"AUTHENTICATE {blob}")
+            await c.next_match("904")
+            await c.send("NICK nosuch")
+            await c.send("USER nosuch 0 * :t")
+            await asyncio.sleep(0.3)
+            assert "nosuch" in d._clients  # nick reserved…
+            assert d._clients["nosuch"].registered is False  # …but never registered
+        finally:
+            await c.close()
+
+
+@pytest.mark.asyncio
+async def test_sasl_abort(tmp_path) -> None:
+    async with running_daemon(tmp_path, password="s3cret") as (_, __, bouncer_port):
+        c = RawClient()
+        await c.connect(bouncer_port)
+        try:
+            await c.send("AUTHENTICATE PLAIN")
+            await c.next_match("AUTHENTICATE +")
+            await c.send("AUTHENTICATE *")
+            await c.next_match("906")
+        finally:
+            await c.close()
