@@ -546,7 +546,7 @@ async def spawn_orchestrator(
 
     node_id = orchestrator_node_id()
     slug = _unique_slug(clean, state)
-    channel = spawn_channel(clean)
+    channel = spawn_channel(slug)
     if engine == "hermes" and not session_ref:
         session_ref = channel
     row = state.add_node(

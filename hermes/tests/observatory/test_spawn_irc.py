@@ -208,3 +208,19 @@ def test_finish_exit_deletes_deepest_first(tmp_path) -> None:
         state.get("root")
     with pytest.raises(Exception):
         state.get("kid")
+
+
+@pytest.mark.asyncio
+async def test_spawn_same_name_gets_distinct_channels(tmp_path, monkeypatch) -> None:
+    bot = FakeBot()
+    monkeypatch.setattr(spawn, "get_bot_sink", lambda: bot)
+    state = _real_state(tmp_path)
+    registry = OrchestratorRegistry()
+    first = await spawn_orchestrator(
+        "Ace", "hermes", state=state, registry=registry,
+        agent_factory=lambda: FakeAgent(session_id="s1"))
+    second = await spawn_orchestrator(
+        "Ace", "hermes", state=state, registry=registry,
+        agent_factory=lambda: FakeAgent(session_id="s2"))
+    assert first["room_id"] == "#ace"
+    assert second["room_id"] == "#ace-2"
