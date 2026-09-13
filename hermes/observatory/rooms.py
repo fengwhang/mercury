@@ -309,6 +309,22 @@ class RoomManager:
                     f" — {item.get('description', '')} "
                     f"(reply /approve or /deny in the parent room)")
 
+    def _resolve_parent(self, parent: str) -> dict[str, Any] | None:
+        """Parent ref → live row: node id first, then session_ref scan."""
+        if not parent:
+            return None
+        try:
+            return self.state.get(parent)
+        except Exception:
+            pass
+        for row in self.live_rows():
+            try:
+                if str(row.get("session_ref") or "") == parent:
+                    return row
+            except Exception:
+                continue
+        return None
+
     async def _ensure_child_room_for(self, node_id: str, item: dict[str, Any]) -> str:
         """Channel for a delegate child: existing row, else create from the frame."""
         channel = self.channel_for_node(node_id)
@@ -316,11 +332,8 @@ class RoomManager:
             return channel
         name = str(item.get("name") or node_id)
         parent = str(item.get("parent_name") or "")
-        try:
-            parent_row = self.state.get(parent) if parent else None
-        except Exception:
-            parent_row = None
-        parent_name = str((parent_row or {}).get("name") or parent or "gateway")
+        parent_row = self._resolve_parent(parent)
+        parent_name = str((parent_row or {}).get("name") or "gateway")
         channel = child_channel(parent_name, name)
         try:
             depth = int((parent_row or {}).get("depth", 0)) + 1
@@ -332,7 +345,7 @@ class RoomManager:
                 node_id, engine=str(item.get("engine") or "hermes"),
                 name=name, slug=slug, mxid=agent_nick(name),
                 session_ref=str(item.get("session_ref") or node_id),
-                parent_node_id=parent if parent_row is not None else None,
+                parent_node_id=str(parent_row.get("node_id")) if parent_row is not None else None,
                 extra={"kind": "delegate"},
             )
             try:

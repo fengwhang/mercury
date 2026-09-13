@@ -322,49 +322,57 @@ def _strip_thinking_markup(text: Any) -> str:
 
 
 def _push_progress(node_id: str, seq: int, event: dict[str, Any], *, internal: bool = False) -> None:
-    """Fire-and-forget one live-progress datagram; never raises.
+    """Fire-and-forget one live-progress frame into the rooms queue.
 
-    Payload is ``{node_id, seq, event}`` where ``event`` is the existing
-    shape (no ``seq`` inside — it rides beside it). No listener, missing
-    socket dir, or any send error = drop silently. ``internal=True`` marks
-    follow-up turns (quiet gates only the final reply — the live stream
-    renders like a normal turn; seqs still feed the replay dedupe).
+    Maps collector shapes to feed frames (gateway_session is the gateway
+    room's trace source). Never raises; no listener = drop silently.
     """
     try:
-        payload_obj: dict[str, Any] = {"node_id": node_id, "seq": seq, "event": event}
-        if internal:
-            payload_obj["internal"] = True
-        payload = json.dumps(payload_obj).encode("utf-8")
-    except Exception:
-        return
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        try:
-            sock.sendto(payload, str(_progress_socket_path()))
-        finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
+        kind = str((event or {}).get("type") or "")
+        if kind == "thinking":
+            feed = {"feed": "thought", "subagent_id": "",
+                    "text": str(event.get("text") or "")}
+        elif kind == "tool_call":
+            feed = {"feed": "tool", "subagent_id": "",
+                    "tool": str(event.get("tool") or "tool"),
+                    "args": event.get("args") or {}}
+        else:
+            return
+        from observatory.rooms import submit_feed
+        submit_feed(node_id, feed)
     except Exception:
         pass
 
-
 def _send_child_datagram(payload: dict[str, Any]) -> None:
-    """Fire-and-forget one child-feed datagram; never raises."""
+    """Legacy datagram hop (sidecar is gone): route into the rooms queue.
+
+    Keeps the ``kind`` envelope so existing producer call sites are
+    untouched; the RoomManager pump is the only consumer now.
+    """
     try:
-        raw = json.dumps(payload).encode("utf-8")
-    except Exception:
-        return
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        try:
-            sock.sendto(raw, str(_progress_socket_path()))
-        finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
+        from observatory.rooms import submit_approval, submit_feed, submit_lifecycle
+        kind = str((payload or {}).get("kind") or "")
+        node_id = str((payload or {}).get("node_id") or "")
+        if kind == CHILD_LIFECYCLE_KIND:
+            submit_lifecycle(
+                node_id, str(payload.get("lifecycle") or ""),
+                name=payload.get("name"), goal=payload.get("goal"),
+                delegation_id=payload.get("delegation_id"),
+                task_index=payload.get("task_index"),
+                parent_name=payload.get("parent_session"),
+                status=payload.get("status"), summary=payload.get("summary"),
+                engine=payload.get("engine"),
+                session_ref=payload.get("session_ref"))
+        elif kind == CHILD_EVENT_KIND:
+            feed = payload.get("feed")
+            if isinstance(feed, dict):
+                submit_feed(node_id, feed)
+        elif kind == APPROVAL_PROMPT_KIND:
+            submit_approval(
+                node_id, request_id=str(payload.get("request_id") or ""),
+                command=str(payload.get("command") or ""),
+                description=str(payload.get("description") or ""),
+                session_key=str(payload.get("session_key") or ""))
     except Exception:
         pass
 

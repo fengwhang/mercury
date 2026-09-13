@@ -591,9 +591,29 @@ class IRCAdapter(BasePlatformAdapter):
         user_id: str,
         user_name: str,
     ) -> None:
-        """Build a MessageEvent and hand it to the base class handler."""
+        """Build a MessageEvent and hand it to the base class handler.
+
+        Delegate-child rooms (#parent-child) and spawned-omp rooms never
+        reach gateway dispatch: the RoomManager steers the live child /
+        pumps the omp task and the ack goes straight back to the room.
+        """
         if not self._message_handler:
             return
+        if chat_type == "group":
+            try:
+                from observatory.rooms import get_room_manager, route_channel
+                route, _row = route_channel(chat_id)
+                manager = get_room_manager()
+                if manager is not None and route in ("child", "spawn-omp"):
+                    if route == "child":
+                        reply = await manager.handle_child_message(chat_id, user_name, text)
+                    else:
+                        reply = await manager.handle_omp_message(chat_id, user_name, text)
+                    if reply:
+                        await self.send(chat_id, reply)
+                    return
+            except Exception:
+                logger.debug("IRC: room route failed, falling through", exc_info=True)
 
         source = self.build_source(
             chat_id=chat_id,
