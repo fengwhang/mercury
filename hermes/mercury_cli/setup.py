@@ -3833,10 +3833,12 @@ def setup_observatory(config: dict, *, quick: bool = False):
         try:
             if not was_provisioned:
                 # Fresh install: the user chooses the network label, then
-                # everything else is automatic (passwords generated).
+                # everything else is automatic (passwords generated) —
+                # with a chance to set the bouncer password right away.
                 label = _prompt_server_label(obs)
                 obs.provision_in_wizard(server_name=label)
                 steps = _run_observatory_auto_steps(obs)
+                _offer_bouncer_password_rotate(obs)
                 status = obs.status_summary()
                 if _unit_failed(steps):
                     print_info(
@@ -3852,13 +3854,12 @@ def setup_observatory(config: dict, *, quick: bool = False):
                         print_error(f"Provisioned but the daemon is NOT answering: {detail}")
                 _wire_gateway_irc_env(label)
             else:
-                # Keep-data re-run: reset? (reset forces a loud
-                # re-provision), password rotate, repair.
                 wiped = _offer_observatory_reset(obs)
                 if wiped:
                     label = _prompt_server_label(obs, current=status.get("server_name"))
                     obs.provision_in_wizard(server_name=label)
                     steps = _run_observatory_auto_steps(obs, unit_loud=True)
+                    _offer_bouncer_password_rotate(obs)
                     status = obs.status_summary()
                     if _unit_failed(steps):
                         print_error(

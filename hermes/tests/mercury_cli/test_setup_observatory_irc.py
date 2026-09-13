@@ -427,3 +427,33 @@ def test_rotate_offer_random_without_restart_prints_manual(monkeypatch, capsys):
 
     setup_mod._offer_bouncer_password_rotate(_Obs())
     assert "systemctl --user restart" in capsys.readouterr().out
+
+
+def test_password_offer_runs_on_fresh_install():
+    from contextlib import ExitStack
+
+    fake = _FakeObs(_base_status())
+    with ExitStack() as stack:
+        _patch_common(stack, fake, choice=0)
+        offer = stack.enter_context(
+            patch.object(setup_mod, "_offer_bouncer_password_rotate")
+        )
+        setup_mod.setup_observatory({})
+    assert fake.provision_calls == [{"server_name": "mercury"}]
+    assert offer.call_count == 1
+
+
+def test_password_offer_runs_on_reset_path():
+    from contextlib import ExitStack
+
+    fake = _FakeObs(_base_status(provisioned=True))
+    with ExitStack() as stack:
+        _patch_common(stack, fake, choice=0, yes_answers=[True])
+        stack.enter_context(
+            patch.object(setup_mod, "_offer_observatory_reset", return_value=True)
+        )
+        offer = stack.enter_context(
+            patch.object(setup_mod, "_offer_bouncer_password_rotate")
+        )
+        setup_mod.setup_observatory({})
+    assert offer.call_count == 1
