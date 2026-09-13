@@ -144,3 +144,69 @@ async def test_child_room_routes_to_steer_not_dispatch(tmp_path) -> None:
                 await adapter.disconnect()
     finally:
         rooms.set_room_manager(None)
+
+
+def test_derive_channel() -> None:
+    from plugins.platforms.irc.adapter import _derive_channel
+
+    assert _derive_channel("ace") == "#ace"
+    assert _derive_channel("#ace") == "#ace"
+    assert _derive_channel("  ") == ""
+
+
+def test_tls_defaults() -> None:
+    from plugins.platforms.irc.adapter import _tls_default_for_host
+
+    assert _tls_default_for_host("127.0.0.1") is False
+    assert _tls_default_for_host("localhost") is False
+    assert _tls_default_for_host("100.86.76.11") is False
+    assert _tls_default_for_host("192.168.1.5") is False
+    assert _tls_default_for_host("node.tail123.ts.net") is False
+    assert _tls_default_for_host("irc.libera.chat") is True
+
+
+def test_channel_derivation_order(monkeypatch) -> None:
+    import types
+
+    from plugins.platforms.irc.adapter import IRCAdapter
+
+    for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+        monkeypatch.delenv(key, raising=False)
+    # explicit channel wins over nick derivation
+    a = IRCAdapter(types.SimpleNamespace(extra={"server": "x", "nickname": "bot", "channel": "#kept"}))
+    assert a.channel == "#kept"
+    # nick derives the room
+    b = IRCAdapter(types.SimpleNamespace(extra={"server": "x", "nickname": "ace"}))
+    assert b.channel == "#ace"
+
+
+def test_interactive_setup_four_prompts(monkeypatch) -> None:
+    import mercury_cli.setup as setup_mod
+    from plugins.platforms.irc import adapter as adapter_mod
+
+    answers = iter(["127.0.0.1", "ace", "s3cret", "op"])
+    saved: dict[str, str] = {}
+    monkeypatch.setattr(setup_mod, "prompt",
+                        lambda *a, **k: next(answers))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: False)
+    monkeypatch.setattr(setup_mod, "save_env_value",
+                        lambda k, v: saved.__setitem__(k, v))
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda k, default="": "")
+    monkeypatch.setattr(setup_mod, "print_header", lambda *a: None)
+    monkeypatch.setattr(setup_mod, "print_info", lambda *a: None)
+    monkeypatch.setattr(setup_mod, "print_warning", lambda *a: None)
+    monkeypatch.setattr(setup_mod, "print_success", lambda *a: None)
+    for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
+                "IRC_USE_TLS", "IRC_SERVER_PASSWORD",
+                "IRC_ALLOWED_USERS", "IRC_ALLOW_ALL_USERS"):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter_mod.interactive_setup()
+    assert saved["IRC_SERVER"] == "127.0.0.1"
+    assert saved["IRC_NICKNAME"] == "ace"
+    assert saved["IRC_CHANNEL"] == "#ace"  # derived, never asked
+    assert saved["IRC_USE_TLS"] == "false"  # derived from localhost
+    assert saved["IRC_SERVER_PASSWORD"] == "s3cret"
+    assert saved["IRC_ALLOWED_USERS"] == "op"  # only owner + bots
+    assert saved["IRC_ALLOW_ALL_USERS"] == "false"
+    assert "IRC_PORT" not in saved  # never asked

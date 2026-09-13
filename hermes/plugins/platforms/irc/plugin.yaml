@@ -15,15 +15,15 @@ requires_env:
     description: "IRC server hostname (e.g. irc.libera.chat)"
     prompt: "IRC server"
     password: false
-  - name: IRC_CHANNEL
-    description: "Channel to join (e.g. #hermes — comma-separate for multiple)"
-    prompt: "IRC channel"
-    password: false
   - name: IRC_NICKNAME
-    description: "Bot nickname on IRC (default: hermes-bot)"
-    prompt: "Bot nickname"
+    description: "Bot name — used as the nickname AND the channel (#name)"
+    prompt: "Bot name"
     password: false
 optional_env:
+  - name: IRC_CHANNEL
+    description: "Override the channel (default: #<IRC_NICKNAME>)"
+    prompt: "IRC channel override (or empty)"
+    password: false
   - name: IRC_PORT
     description: "IRC server port (default: 6697 with TLS, 6667 without)"
     prompt: "IRC port"

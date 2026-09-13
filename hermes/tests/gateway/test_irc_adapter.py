@@ -125,27 +125,8 @@ class TestIRCAdapterMessageParsing:
 
 
     @pytest.mark.asyncio
-    async def test_handle_addressed_channel_message(self, adapter):
-        """Messages addressed to the bot (nick: msg) should be dispatched."""
-        handler = AsyncMock(return_value="response")
-        adapter._message_handler = handler
-
-        # Mock handle_message to capture the event
-        dispatched = []
-        original_dispatch = adapter._dispatch_message
-
-        async def capture_dispatch(**kwargs):
-            dispatched.append(kwargs)
-
-        adapter._dispatch_message = capture_dispatch
-
-        await adapter._handle_line(":user!u@host PRIVMSG #test :mercury: hello there")
-        assert len(dispatched) == 1
-        assert dispatched[0]["text"] == "hello there"
-        assert dispatched[0]["chat_id"] == "#test"
-
-    @pytest.mark.asyncio
-    async def test_ignores_unaddressed_channel_message(self, adapter):
+    async def test_managed_room_needs_no_addressing(self, adapter):
+        """The bot's own room: plain text dispatches; addressed text strips."""
         dispatched = []
 
         async def capture_dispatch(**kwargs):
@@ -155,7 +136,28 @@ class TestIRCAdapterMessageParsing:
         adapter._message_handler = AsyncMock()
 
         await adapter._handle_line(":user!u@host PRIVMSG #test :just talking")
+        await adapter._handle_line(":user!u@host PRIVMSG #test :mercury: hello there")
+        assert len(dispatched) == 2
+        assert dispatched[0]["text"] == "just talking"
+        assert dispatched[0]["chat_id"] == "#test"
+        assert dispatched[1]["text"] == "hello there"
+
+    @pytest.mark.asyncio
+    async def test_unmanaged_channel_still_requires_addressing(self, adapter):
+        """Channels outside the managed set keep the old addressed-only rule."""
+        dispatched = []
+
+        async def capture_dispatch(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture_dispatch
+        adapter._message_handler = AsyncMock()
+
+        await adapter._handle_line(":user!u@host PRIVMSG #other :just talking")
         assert len(dispatched) == 0
+        await adapter._handle_line(":user!u@host PRIVMSG #other :mercury: hello")
+        assert len(dispatched) == 1
+        assert dispatched[0]["text"] == "hello"
 
 
     @pytest.mark.asyncio

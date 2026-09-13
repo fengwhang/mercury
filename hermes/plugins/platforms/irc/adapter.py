@@ -131,16 +131,23 @@ class IRCAdapter(BasePlatformAdapter):
 
         # Connection settings (env vars override config.yaml)
         self.server = os.getenv("IRC_SERVER") or extra.get("server", "")
-        try:
-            self.port = int(os.getenv("IRC_PORT") or extra.get("port", 6697))
-        except (ValueError, TypeError):
-            self.port = 6697
-        self.nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "mercury-bot")
-        self.channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
+        env_port = os.getenv("IRC_PORT") or None
         self.use_tls = (
             os.getenv("IRC_USE_TLS", "").lower() in {"1", "true", "yes"}
             if os.getenv("IRC_USE_TLS")
             else extra.get("use_tls", True)
+        )
+        try:
+            self.port = int(env_port or extra.get("port") or (6697 if self.use_tls else 6667))
+        except (ValueError, TypeError):
+            self.port = 6697 if self.use_tls else 6667
+        self.nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "mercury-bot")
+        # One name for bot and room: an explicit channel wins (back-compat),
+        # otherwise `#nick`.
+        self.channel = (
+            os.getenv("IRC_CHANNEL")
+            or extra.get("channel", "")
+            or _derive_channel(self.nickname)
         )
         self.server_password = _get_scoped_secret("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
         self.nickserv_password = _get_scoped_secret("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
@@ -557,10 +564,10 @@ class IRCAdapter(BasePlatformAdapter):
             chat_id = target if is_channel else sender_nick
             chat_type = "group" if is_channel else "dm"
 
-            # In channels, only respond if addressed (nick: or nick,) —
-            # EXCEPT managed observatory rooms (gateway + agent rooms):
-            # every message there is for the agent, like CLI.
-            if is_channel and not self.is_managed(target):
+            # Addressing (nick: or nick,): stripped everywhere, but only
+            # REQUIRED outside managed rooms. In the bot's own rooms every
+            # message is for the agent, like CLI.
+            if is_channel:
                 addressed = False
                 for prefix in (f"{self._current_nick}:", f"{self._current_nick},",
                                f"{self._current_nick} "):
@@ -568,7 +575,7 @@ class IRCAdapter(BasePlatformAdapter):
                         text = text[len(prefix):].strip()
                         addressed = True
                         break
-                if not addressed:
+                if not addressed and not self.is_managed(target):
                     return  # Ignore unaddressed channel messages
 
             # Auth check (case-insensitive)
@@ -644,29 +651,68 @@ class IRCAdapter(BasePlatformAdapter):
 # Plugin registration
 # ---------------------------------------------------------------------------
 
+def _derive_channel(nickname: str) -> str:
+    """``#nick`` — one name for the bot and its room, period."""
+    nick = str(nickname or "").strip().lstrip("#")
+    return f"#{nick}" if nick else ""
+
+
+def _configured_channel(extra: dict | None = None) -> str:
+    """Effective channel: explicit env/config value, else ``#nick``."""
+    extra = extra or {}
+    return (
+        os.getenv("IRC_CHANNEL", "").strip()
+        or str(extra.get("channel", "") or "").strip()
+        or _derive_channel(os.getenv("IRC_NICKNAME", "") or extra.get("nickname", ""))
+    )
+
+
 def check_requirements() -> bool:
     """Check if IRC is configured.
 
-    Only requires the server and channel — no external pip packages needed.
+    Only requires the server and a bot name — no external pip packages needed.
     """
     server = os.getenv("IRC_SERVER", "")
-    channel = os.getenv("IRC_CHANNEL", "")
     # Also accept config.yaml-only configuration (no env vars).
     # The gateway passes PlatformConfig; we just check env for the
     # mercury setup / requirements check path.
-    return bool(server and channel)
+    return bool(server and _configured_channel())
 
 
 def validate_config(config) -> bool:
     """Validate that the platform config has enough info to connect."""
     extra = getattr(config, "extra", {}) or {}
     server = os.getenv("IRC_SERVER") or extra.get("server", "")
-    channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
-    return bool(server and channel)
+    return bool(server and _configured_channel(extra))
+
+
+def _tls_default_for_host(host: str) -> bool:
+    """TLS unless the host is loopback, private, or tailnet (our ircd is
+    plaintext-only; public networks assume TLS). Pure — never touches env."""
+    h = str(host or "").strip().lower().rstrip(".")
+    if h in ("localhost",) or h.startswith("localhost."):
+        return False
+    if h.endswith(".ts.net") or h.endswith(".ts.net."):
+        return False
+    try:
+        import ipaddress as _ip
+
+        addr = _ip.ip_address(h)
+        if addr.is_loopback or addr.is_private:
+            return False
+        # Tailscale CGNAT range (not covered by is_private everywhere).
+        return addr not in _ip.ip_network("100.64.0.0/10")
+    except ValueError:
+        return True
 
 
 def interactive_setup() -> None:
     """Interactive `mercury gateway setup` flow for the IRC platform.
+
+    Four prompts: server, bot name (= nick AND ``#channel``), server
+    password, owner nick. Everything else derives: TLS from the host,
+    the allowlist is exactly the owner (only owner + bots exist).
+    NickServ/ports/multiple channels stay env-only (see plugin.yaml).
 
     Lazy-imports ``mercury_cli.setup`` helpers so the plugin stays importable
     in non-CLI contexts (gateway runtime, tests).
@@ -685,87 +731,58 @@ def interactive_setup() -> None:
     print_header("IRC")
     existing_server = get_env_value("IRC_SERVER")
     if existing_server:
-        print_info(f"IRC: already configured (server: {existing_server})")
+        nick = get_env_value("IRC_NICKNAME") or ""
+        print_info(f"IRC: already configured (server: {existing_server}"
+                   f"{f', bot: {nick}' if nick else ''})")
         if not prompt_yes_no("Reconfigure IRC?", False):
             return
 
     print_info("Connect Mercury to an IRC network. Uses Python stdlib — no extra packages needed.")
-    print_info("   Works with Libera.Chat, OFTC, your own ZNC/InspIRCd, etc.")
+    print_info("   One name covers the bot and its channel: bot `ace` lives in `#ace`.")
     print()
 
-    server = prompt("IRC server hostname (e.g. irc.libera.chat)", default=existing_server or "")
+    server = prompt("IRC server hostname (e.g. 127.0.0.1, tailnet IP, irc.libera.chat)",
+                    default=existing_server or "")
     if not server:
         print_warning("Server is required — skipping IRC setup")
         return
-    save_env_value("IRC_SERVER", server.strip())
+    server = server.strip()
+    save_env_value("IRC_SERVER", server)
 
-    use_tls = prompt_yes_no("Use TLS (recommended)?", True)
+    use_tls = _tls_default_for_host(server)
     save_env_value("IRC_USE_TLS", "true" if use_tls else "false")
-
-    default_port = "6697" if use_tls else "6667"
-    port = prompt(f"Port (default {default_port})", default=get_env_value("IRC_PORT") or "")
-    if port:
-        try:
-            save_env_value("IRC_PORT", str(int(port)))
-        except ValueError:
-            print_warning(f"Invalid port — using default {default_port}")
-    elif get_env_value("IRC_PORT"):
-        # User cleared the prompt; drop the override so the default applies.
-        save_env_value("IRC_PORT", "")
+    print_info(f"TLS: {'on' if use_tls else 'off'} (override: IRC_USE_TLS)")
 
     nickname = prompt(
-        "Bot nickname (e.g. mercury-bot)",
+        "Bot name (nick AND channel: `ace` → `#ace`)",
         default=get_env_value("IRC_NICKNAME") or "",
     )
     if not nickname:
-        print_warning("Nickname is required — skipping IRC setup")
+        print_warning("Bot name is required — skipping IRC setup")
         return
-    save_env_value("IRC_NICKNAME", nickname.strip())
+    nickname = nickname.strip().lstrip("#")
+    save_env_value("IRC_NICKNAME", nickname)
+    save_env_value("IRC_CHANNEL", _derive_channel(nickname))
 
-    channel = prompt(
-        "Channel to join (e.g. #mercury — comma-separate for multiple)",
-        default=get_env_value("IRC_CHANNEL") or "",
+    print()
+    server_password = prompt("Server password (PASS — blank for none)",
+                             default="", password=True)
+    if server_password:
+        save_env_value("IRC_SERVER_PASSWORD", server_password)
+
+    print()
+    print_info("Only you and the bots exist here — nobody else may command the bot.")
+    owner = prompt(
+        "Your IRC nick (the only nick allowed to talk to the bot)",
+        default=get_env_value("IRC_ALLOWED_USERS") or "",
     )
-    if not channel:
-        print_warning("Channel is required — skipping IRC setup")
-        return
-    save_env_value("IRC_CHANNEL", channel.strip())
-
-    print()
-    print_info("🔑 Optional authentication")
-    print_info("   Leave blank to skip.")
-    if prompt_yes_no("Configure a server password (PASS command)?", False):
-        server_password = prompt("Server password", password=True)
-        if server_password:
-            save_env_value("IRC_SERVER_PASSWORD", server_password)
-
-    if prompt_yes_no("Identify with NickServ on connect?", False):
-        nickserv = prompt("NickServ password", password=True)
-        if nickserv:
-            save_env_value("IRC_NICKSERV_PASSWORD", nickserv)
-
-    print()
-    print_info("🔒 Access control: restrict who can message the bot")
-    print_info("   IRC nicks are not authenticated — anyone can claim any nick.")
-    print_info("   For public channels, pair with NickServ-only mode on your network")
-    print_info("   if you want stronger identity guarantees.")
-    allow_all = prompt_yes_no("Allow all users in the channel to talk to the bot?", False)
-    if allow_all:
-        save_env_value("IRC_ALLOW_ALL_USERS", "true")
-        save_env_value("IRC_ALLOWED_USERS", "")
-        print_warning("⚠️  Open access — any nick in the channel can command the bot.")
+    save_env_value("IRC_ALLOW_ALL_USERS", "false")
+    if owner and owner.strip():
+        save_env_value("IRC_ALLOWED_USERS", owner.strip().replace(" ", ""))
+        print_success(f"Only {owner.strip()} may talk to the bot")
     else:
-        save_env_value("IRC_ALLOW_ALL_USERS", "false")
-        allowed = prompt(
-            "Allowed nicks (comma-separated, leave empty to deny everyone)",
-            default=get_env_value("IRC_ALLOWED_USERS") or "",
-        )
-        if allowed:
-            save_env_value("IRC_ALLOWED_USERS", allowed.replace(" ", ""))
-            print_success("Allowlist configured")
-        else:
-            save_env_value("IRC_ALLOWED_USERS", "")
-            print_info("No nicks allowed — the bot will ignore all messages until you add nicks.")
+        save_env_value("IRC_ALLOWED_USERS", "")
+        print_warning("No owner nick — the bot will ignore everyone until you set one.")
 
     print()
     print_success("IRC configuration saved to ~/.mercury/.env")
@@ -776,8 +793,7 @@ def is_connected(config) -> bool:
     """Check whether IRC is configured (env or config.yaml)."""
     extra = getattr(config, "extra", {}) or {}
     server = os.getenv("IRC_SERVER") or extra.get("server", "")
-    channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
-    return bool(server and channel)
+    return bool(server and _configured_channel(extra))
 
 
 def _env_enablement() -> dict | None:
@@ -794,7 +810,7 @@ def _env_enablement() -> dict | None:
     ``PlatformConfig`` rather than being merged into ``extra``.
     """
     server = os.getenv("IRC_SERVER", "").strip()
-    channel = os.getenv("IRC_CHANNEL", "").strip()
+    channel = _configured_channel()
     if not (server and channel):
         return None
     seed: dict = {
@@ -875,10 +891,9 @@ async def _standalone_send(
     """
     extra = getattr(pconfig, "extra", {}) or {}
     server = os.getenv("IRC_SERVER") or extra.get("server", "")
-    channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
+    channel = _configured_channel(extra)
     if not server or not channel:
-        return {"error": "IRC standalone send: IRC_SERVER and IRC_CHANNEL must be configured"}
-
+        return {"error": "IRC standalone send: IRC_SERVER and a bot name (IRC_NICKNAME) must be configured"}
     port_value = os.getenv("IRC_PORT") or extra.get("port", 6697)
     try:
         port = int(port_value)
@@ -1065,7 +1080,7 @@ def register(ctx):
         check_fn=check_requirements,
         validate_config=validate_config,
         is_connected=is_connected,
-        required_env=["IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"],
+        required_env=["IRC_SERVER", "IRC_NICKNAME"],
         install_hint="No extra packages needed (stdlib only)",
         setup_fn=interactive_setup,
         # Env-driven auto-configuration: seeds PlatformConfig.extra with
