@@ -698,40 +698,103 @@ async def serve_forever(config: DaemonConfig) -> None:
         await daemon.stop()
 
 
-def main(argv: list[str] | None = None) -> int:
-    import argparse
+def _config_file_candidates(args: Any) -> list[Path]:
+    """ircd.json locations: explicit --config, then <state-dir>/ircd.json,
+    then $MERCURY_HOME/observatory/ircd.json. Existing files only."""
     import os as _os
 
+    cands: list[Path] = []
+    explicit = str(getattr(args, "config", "") or "").strip()
+    if explicit:
+        cands.append(Path(explicit).expanduser())
+    state_dir = str(getattr(args, "state_dir", "") or "").strip()
+    if state_dir:
+        cands.append(Path(state_dir).expanduser() / "ircd.json")
+    home = _os.environ.get("MERCURY_HOME", "").strip()
+    if home:
+        cands.append(Path(home).expanduser() / "observatory" / "ircd.json")
+    else:
+        cands.append(Path.home() / ".mercury" / "observatory" / "ircd.json")
+    return [p for p in cands if p.is_file()]
+
+
+def _resolve_daemon_config(args: Any) -> DaemonConfig:
+    """Layer explicit flags over ircd.json over compiled defaults.
+
+    The systemd unit passes only --state-dir, so a bind change in
+    ircd.json takes effect on plain restart — no unit re-render needed.
+    Passwords: explicit flags win, else env (never the config file).
+    Never raises for a missing/unreadable file (defaults apply).
+    """
+    import os as _os
+
+    file_cfg: dict = {}
+    for path in _config_file_candidates(args):
+        try:
+            import json as _json
+
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                file_cfg = data
+                break
+        except Exception:
+            continue
+
+    def _pick(name: str, default: Any) -> Any:
+        explicit = getattr(args, name, None)
+        if explicit is not None:
+            return explicit
+        value = file_cfg.get(name)
+        if isinstance(default, int) and isinstance(value, int):
+            return value
+        if isinstance(default, str) and isinstance(value, str):
+            return value
+        return default
+
+    password = getattr(args, "password", None)
+    if password is None:
+        password = _os.environ.get("IRC_BOUNCER_PASSWORD", "")
+    agent_password = getattr(args, "agent_password", None)
+    if agent_password is None:
+        agent_password = _os.environ.get("IRC_AGENT_PASSWORD", "")
+    return DaemonConfig(
+        host=_pick("host", "127.0.0.1"),
+        agent_port=_pick("agent_port", 6669),
+        bouncer_host=_pick("bouncer_host", "127.0.0.1"),
+        bouncer_port=_pick("bouncer_port", 6670),
+        server_name=_pick("server_name", "mercury"),
+        password=password or "",
+        agent_password=agent_password or "",
+        history_limit=_pick("history_limit", 200),
+        state_dir=str(getattr(args, "state_dir", "") or ""),
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
     parser = argparse.ArgumentParser(description="Mercury observatory IRC daemon")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--agent-port", type=int, default=6669)
-    parser.add_argument("--bouncer-host", default="127.0.0.1")
-    parser.add_argument("--bouncer-port", type=int, default=6670)
-    parser.add_argument("--server-name", default="mercury")
+    # Network flags default to None = "read ircd.json, else compiled
+    # default" (see _resolve_daemon_config). The unit passes only
+    # --state-dir so bind edits never go stale.
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--agent-port", type=int, default=None)
+    parser.add_argument("--bouncer-host", default=None)
+    parser.add_argument("--bouncer-port", type=int, default=None)
+    parser.add_argument("--server-name", default=None)
     # Passwords: explicit flags win; env fallback keeps secrets out of
     # ps output (the systemd unit passes none — EnvironmentFile only).
     parser.add_argument("--password", default=None)
     parser.add_argument("--agent-password", default=None)
-    parser.add_argument("--history-limit", type=int, default=200)
+    parser.add_argument("--history-limit", type=int, default=None)
     parser.add_argument("--state-dir", default="")
-    args = parser.parse_args(argv)
-    password = args.password
-    if password is None:
-        password = _os.environ.get("IRC_BOUNCER_PASSWORD", "")
-    agent_password = args.agent_password
-    if agent_password is None:
-        agent_password = _os.environ.get("IRC_AGENT_PASSWORD", "")
-    config = DaemonConfig(
-        host=args.host,
-        agent_port=args.agent_port,
-        bouncer_host=args.bouncer_host,
-        bouncer_port=args.bouncer_port,
-        server_name=args.server_name,
-        password=password or "",
-        agent_password=agent_password or "",
-        history_limit=args.history_limit,
-        state_dir=args.state_dir,
+    parser.add_argument(
+        "--config",
+        default="",
+        help="explicit ircd.json path (default: <state-dir>/ircd.json, then $MERCURY_HOME/observatory/ircd.json)",
     )
+    args = parser.parse_args(argv)
+    config = _resolve_daemon_config(args)
     logging.basicConfig(level=logging.INFO)
     try:
         asyncio.run(serve_forever(config))

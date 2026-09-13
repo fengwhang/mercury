@@ -233,3 +233,77 @@ async def test_oper_destroy_kills_room(tmp_path) -> None:
         finally:
             await bot.close()
             await mem.close()
+
+
+def _args(**kw):
+    import types
+
+    base = dict(
+        host=None,
+        agent_port=None,
+        bouncer_host=None,
+        bouncer_port=None,
+        server_name=None,
+        password=None,
+        agent_password=None,
+        history_limit=None,
+        state_dir="",
+        config="",
+    )
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+def test_resolve_layers_argv_over_file_over_defaults(tmp_path) -> None:
+    import json
+
+    from observatory.ircd import _resolve_daemon_config
+
+    cfg_file = tmp_path / "ircd.json"
+    cfg_file.write_text(
+        json.dumps({"bouncer_host": "100.64.0.1", "bouncer_port": 6670}),
+        encoding="utf-8",
+    )
+    cfg = _resolve_daemon_config(_args(config=str(cfg_file)))
+    assert cfg.bouncer_host == "100.64.0.1"
+    assert cfg.agent_port == 6669  # compiled default fills gaps
+    cfg = _resolve_daemon_config(_args(config=str(cfg_file), bouncer_port=7777))
+    assert cfg.bouncer_port == 7777  # explicit flag wins
+
+
+def test_resolve_ignores_corrupt_file(tmp_path) -> None:
+    from observatory.ircd import _resolve_daemon_config
+
+    cfg_file = tmp_path / "ircd.json"
+    cfg_file.write_text("{nope", encoding="utf-8")
+    cfg = _resolve_daemon_config(_args(config=str(cfg_file)))
+    assert (cfg.bouncer_host, cfg.bouncer_port) == ("127.0.0.1", 6670)
+
+
+def test_resolve_state_dir_config(tmp_path) -> None:
+    import json
+
+    from observatory.ircd import _resolve_daemon_config
+
+    state_dir = tmp_path / "observatory"
+    state_dir.mkdir()
+    (state_dir / "ircd.json").write_text(
+        json.dumps({"server_name": "vm"}), encoding="utf-8"
+    )
+    cfg = _resolve_daemon_config(_args(state_dir=str(state_dir)))
+    assert cfg.server_name == "vm"
+    assert cfg.state_dir == str(state_dir)
+
+
+def test_unit_passes_only_state_dir(tmp_path) -> None:
+    from observatory.config_gen import render_observatory_unit
+
+    unit = render_observatory_unit(
+        python_bin="/x/bin/python",
+        hermes_root="/x/hermes",
+        mercury_home="/h",
+        log_dir="/h/observatory/logs",
+    )
+    assert "--state-dir /h/observatory" in unit
+    assert "--bouncer-host" not in unit
+    assert "--agent-port" not in unit

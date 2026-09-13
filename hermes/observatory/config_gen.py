@@ -54,18 +54,16 @@ def render_observatory_unit(
     hermes_root: str,
     mercury_home: str,
     log_dir: str,
-    host: str = IRCD_ADDRESS,
-    agent_port: int = IRCD_AGENT_PORT_DEFAULT,
-    bouncer_host: str = IRCD_ADDRESS,
-    bouncer_port: int = IRCD_BOUNCER_PORT_DEFAULT,
-    server_name: str = SERVER_NAME_DEFAULT,
-    history_limit: int = HISTORY_LIMIT_DEFAULT,
     description: str = OBSERVATORY_UNIT_DESCRIPTION,
     mercury_config: str | None = None,
     venv_dir: str | None = None,
     sane_path: str | None = None,
 ) -> str:
     """Render the ircd systemd USER unit (pure string templating, no I/O).
+
+    The unit passes only ``--state-dir``: the daemon reads hosts, ports,
+    and limits live from ``ircd.json`` on every start, so bind edits
+    take effect on plain restart — the unit never goes stale.
 
     Env mirrors ``mercury-gateway.service``: the daemon MUST see the
     unified ``MERCURY_CONFIG`` so paths resolve identically inside and
@@ -98,12 +96,7 @@ Environment=MERCURY_CONFIG={mercury_config}
 Environment=PYTHONPATH={hermes_root}
 Environment=PATH={sane_path}
 EnvironmentFile=-{env_file}
-ExecStart={python_bin} -m observatory.ircd \\
-  --host {host} --agent-port {agent_port} \\
-  --bouncer-host {bouncer_host} --bouncer-port {bouncer_port} \\
-  --server-name {server_name} \\
-  --history-limit {history_limit} \\
-  --state-dir {state_dir}
+ExecStart={python_bin} -m observatory.ircd --state-dir {state_dir}
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM

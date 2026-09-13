@@ -388,7 +388,6 @@ def ensure_observatory_unit(
         return "skipped"
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
-    cfg = read_config(home) or default_config()
     if hermes_root is None:
         hermes_root = str(Path(__file__).resolve().parent.parent)
     unit_text = render_observatory_unit(
@@ -396,12 +395,6 @@ def ensure_observatory_unit(
         hermes_root=hermes_root,
         mercury_home=str(home),
         log_dir=str(paths.logs_dir),
-        host=str(cfg.get("agent_host") or IRCD_ADDRESS),
-        agent_port=int(cfg.get("agent_port") or IRCD_AGENT_PORT_DEFAULT),
-        bouncer_host=str(cfg.get("bouncer_host") or IRCD_ADDRESS),
-        bouncer_port=int(cfg.get("bouncer_port") or IRCD_BOUNCER_PORT_DEFAULT),
-        server_name=str(cfg.get("server_name") or SERVER_NAME_DEFAULT),
-        history_limit=int(cfg.get("history_limit") or HISTORY_LIMIT_DEFAULT),
     )
     unit_dir = Path.home() / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
