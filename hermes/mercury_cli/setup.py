@@ -3165,17 +3165,21 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     phone_host = _tailscale_phone_host(tailscale)
     phone_line = None
     if phone_host:
-        phone_line = f"on your phone:       irc://{phone_host}:{_bouncer_port(bouncer)}  (over Tailscale)"
+        phone_line = f"on your phone:       host {phone_host}, port {_bouncer_port(bouncer)}  (over Tailscale, TLS OFF)"
     elif bool((tailscale or {}).get("available")):
         phone_line = (
             "on your phone:       Tailscale installed but not connected"
             " — run `tailscale up`, then re-run setup"
         )
 
+    bouncer_host = str(bouncer or "").rsplit(":", 1)[0].strip() or "127.0.0.1"
+    bouncer_port = _bouncer_port(bouncer)
     lines = [
         "IRC Observatory — connect any IRC client",
         "",
         f"bouncer address:      {bouncer}",
+        f"bouncer host:         {bouncer_host}  (bare hostname — no irc://, no :port)",
+        f"bouncer port:         {bouncer_port}  (own field in the client, TLS OFF)",
         "on this machine:      point your client at the address above (plain IRC, no TLS)",
     ]
     if phone_line:

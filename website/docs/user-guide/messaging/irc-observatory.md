@@ -50,13 +50,14 @@ database, agent tree, logs) — nothing is written into the engine tree.
 ## First connect with any IRC client
 
 You connect **once**, to the bouncer, with any nick you like:
-
 1. Get the address and password: run `mercury setup observatory` and
-   read the login card (bouncer address; password lives in
-   `~/.mercury/.env`, never printed).
-2. In your IRC client, add a server: host/port from the card, plain
-   IRC (no TLS on localhost/tailnet), server password = the bouncer
-   password, any nickname.
+   read the login card (bouncer host and port are on separate lines
+   because most clients want them in separate fields — never type a
+   scheme like `irc://`, and never append `:port` to the hostname).
+2. In your IRC client, add a server with the host and port from the
+   card in their own fields, plain IRC with TLS **off**, any nickname
+   you like, and the server/bouncer password from `~/.mercury/.env`
+   (`IRC_BOUNCER_PASSWORD`, never printed).
 3. Join `#<server>_gateway` (default `#mercury_gateway`) — the gateway
    agent lives here and chats exactly like the CLI (slash commands and
    all).
