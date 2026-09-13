@@ -15,8 +15,9 @@ the actual turns run on existing machinery with CLI parity:
 - spawned hermes rooms are plain gateway sessions keyed by channel
   (adapter dispatch — slash commands, approvals, mid-turn queueing free);
 - spawned omp rooms pump ``OmpRpcChild.run_task`` / ``steer``;
-- delegate-child rooms steer via ``delegate_tool.steer_subagent`` (hermes)
-  or ``handle_omp_control_action`` (omp).
+- delegate-child rooms steer the live child transport registered by the
+  feed watcher (omp ``transport.steer``; one-shot children are
+  read-only traces).
 
 The IRC transport is a :class:`BotSink` — the gateway IRC adapter
 registers itself on connect (:func:`set_bot_sink`); tests inject fakes.
