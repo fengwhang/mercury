@@ -3437,13 +3437,14 @@ def _prompt_validated(question: str, *, default: str | None, validate, password:
 
 
 
-def _prompt_server_label(obs) -> str:
-    """Fresh-install network label (safe default, validated in a loop)."""
+def _prompt_server_label(obs, current: str | None = None) -> str:
+    """Network label (safe default, validated in a loop)."""
     from observatory.config_gen import SERVER_NAME_DEFAULT
 
+    default = (str(current or "").strip() or SERVER_NAME_DEFAULT)
     return _prompt_validated(
         "IRC network name (lowercase; becomes #<name>_gateway)",
-        default=SERVER_NAME_DEFAULT,
+        default=default,
         validate=obs.validate_server_name,
     )
 
@@ -3645,7 +3646,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
                 # re-provision), password rotate, repair.
                 wiped = _offer_observatory_reset(obs)
                 if wiped:
-                    label = _prompt_server_label(obs)
+                    label = _prompt_server_label(obs, current=status.get("server_name"))
                     obs.provision_in_wizard(server_name=label)
                     steps = _run_observatory_auto_steps(obs, unit_loud=True)
                     status = obs.status_summary()
