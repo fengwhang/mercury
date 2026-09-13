@@ -88,12 +88,11 @@ Legend: [ ] todo · [~] partial · [x] done
       NB-6d pyproject console-script NAME `hermes =` → decide alongside
       D3 install layout.
 
-## Track M — matrix observatory (SHIPPED: sidecar live since v0.0.16, main-line through v0.0.25)
+## Track M — matrix observatory (RETIRED 2026-09-13, replaced by Track R below)
 
-Truth doc: `docs/design/matrix-observatory.md` (§3 layout locked at
-`build_plan` gw-parity v0.0.25 + `render_live.py` gate asserts — no drift).
-Code: `hermes/observatory/`. Midflight-steering counterpart:
-`docs/design/midflight-steering.md`.
+The tuwunel/sidecar/E2EE stack never worked reliably and was removed
+entirely (branch `agent/irc-observatory`). Truth doc for the replacement:
+`docs/design/irc-observatory.md`. The build log below stays as history.
 - [~] **M0/M1** (22acd41f): hermes delegation control plane (name schema,
       steer/stop forwarding, RPC methods, names persistence). Code in tree;
       suite proof: test_omp_delegation + test_omp_rpc_transport fully green
@@ -220,3 +219,22 @@ docs LAST. Run tests:
 tests.tools.test_omp_delegation tests.tools.test_omp_rpc_transport
 tests.cron.test_omp_direct_rpc` (39) + `python3 bridge/test_bridge.py`
 (26).
+
+## Track R — IRC observatory (replaces Track M, 2026-09-13)
+
+Truth doc: `docs/design/irc-observatory.md`. User guide:
+`website/docs/user-guide/messaging/irc-observatory.md`.
+
+- [x] **R1** stdlib ircd (agent + bouncer listeners, history replay,
+      OPER/DESTROY) + tests.
+- [x] **R2** rooms manager (naming, frames, queue pump, child/omp steer)
+      + gateway IRC adapter multiplex + feed producers.
+- [x] **R3** spawn/exit over channels + watcher steer registration.
+- [x] **R4** provision rewrite (ircd.json, passwords, unit, tailscale)
+      + setup wizard rewrite + gateway wiring.
+- [x] **R5** matrix stack deletion (modules, binaries, wheels, tests)
+      + installer/packager/updater cutover + docs.
+- [ ] **R6** live verification on a real install (gateway bot joins,
+      /spawn + /spawnomp first turns, delegate child room streams +
+      steers, /exit destroys, bouncer replay from a phone client).
+
