@@ -104,7 +104,7 @@ class ObservatoryState:
     """SQLite-backed agent tree. One connection, sync I/O — thread-safe
     via an internal ``threading.RLock`` (``check_same_thread=False``).
 
-    The ``/spawn`` + ``/spawnomp`` Matrix pass-through runs INSIDE the
+    The ``/spawn`` + ``/spawnomp`` handlers run INSIDE the
     gateway event loop while ``try_boot_sidecar`` opens the same state on
     a daemon boot thread — sqlite objects are created on one thread and
     used on another, so every ``_db`` access takes the lock. Call sites
@@ -363,12 +363,12 @@ class ObservatoryState:
     def set_space_id(self, node_id: str, space_id: str) -> None:
         """Record the node's space id (unused for IRC; kept for schema
         stability)."""
-        self._set_matrix_id(node_id, "space_id", space_id)
+        self._set_channel_id(node_id, "space_id", space_id)
 
     def set_room_id(self, node_id: str, room_id: str) -> None:
-        self._set_matrix_id(node_id, "room_id", room_id)
+        self._set_channel_id(node_id, "room_id", room_id)
 
-    def _set_matrix_id(self, node_id: str, column: str, value: str) -> None:
+    def _set_channel_id(self, node_id: str, column: str, value: str) -> None:
         assert column in ("space_id", "room_id")
         with self._lock:
             self.get(node_id)  # fail hard on unknown node

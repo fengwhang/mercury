@@ -2901,7 +2901,7 @@ def setup_gateway(config: dict):
 # Section 4b: IRC Observatory (bundled network)
 # =============================================================================
 
-# The matrix-observatory docs page is not published on the docs site yet —
+# The irc-observatory docs page is not published on the docs site yet —
 # never print a URL that 404s. Point at the in-repo copies instead.
 # The IRC-observatory docs page ships with the repo.
 _OBSERVATORY_GUIDE_LINE = (

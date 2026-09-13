@@ -33237,10 +33237,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler}
         )
-        # observatory prompt delivery (matrix-observatory §5): the sidecar
-        # sends room text as `inject` with {text, kind, node_id, room_id};
-        # the handler runs one headless turn on the gateway session and
-        # answers with {reply}. Handlers run on the socket's executor
+        # observatory prompt delivery (irc-observatory): room text arrives
+        # as `inject` with {text, kind, node_id, room_id}; the handler runs
+        # one headless turn on the gateway session and answers with {reply}. Handlers run on the socket's executor
         # thread (never the gateway loop), so the blocking turn cannot
         # stall platform traffic; per-session locking serializes turns.
         try:
@@ -33296,9 +33295,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _control_server.register_handler(
                 "steer", _observatory_steer_handler, takes_params=True
             )
-            # M4b room-side approval resolution (matrix-observatory §5):
-            # the sidecar mirrors gateway-turn guard prompts into rooms
-            # (approval_prompt datagrams); /approve|/deny there resolves
+            # Room-side approval resolution: the rooms queue mirrors
+            # gateway-turn guard prompts into channels; /approve|/deny there resolves
             # THIS process's guard queue (the queue the blocked turn waits
             # on) via resolve_gateway_approval. Best-effort: unknown keys
             # resolve 0 (the room then hears "already resolved").
@@ -33331,11 +33329,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _control_server.register_handler(
                 "resolve-approval", _observatory_resolve_approval_handler, takes_params=True
             )
-            # Gateway-child feed (matrix-observatory cross-process feed):
-            # forward the gateway's OWN omp live-child table as datagrams
-            # on gateway-progress.sock (lifecycle + OmpFeed frames) so the
-            # sidecar renders gateway-origin children without ever
-            # importing this process's memory. Best-effort daemon thread.
+            # Gateway-child feed: forward the gateway's OWN omp live-child
+            # table into the rooms queue (lifecycle + OmpFeed frames) so
+            # child rooms stream without ever leaving this process.
+            # Best-effort daemon thread.
             try:
                 from observatory.gateway_session import (
                     ensure_child_feed_watcher as _ensure_child_feed,

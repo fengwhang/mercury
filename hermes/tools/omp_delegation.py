@@ -137,7 +137,7 @@ def _kill_procs(procs: List[Any]) -> None:
                 pass
 
 
-# HERMES-OMP PATCH (matrix observatory §8.1 item 2): live-child registry.
+# HERMES-OMP PATCH (observatory naming/steer contract item 2): live-child registry.
 # Maps a steer/stop address to the child's LIVE transport handle so
 # delegate_task(action='steer'/'stop') can be forwarded into the running
 # omp process instead of being rejected. Entries hold the OmpRpcChild
@@ -945,7 +945,7 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
     re-run on the other transport (double-execution hazard for
     side-effecting tasks).
 
-    M0A (matrix observatory §8.1): every live child registers in the
+    M0A (observatory naming/steer contract): every live child registers in the
     steer/stop registry under ``<delegation_id>/<task_index>`` while it
     runs, and its result entry carries the task ``name`` so delegation
     records/completions stay name-addressable.
@@ -1341,7 +1341,7 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     """B1 entry point — replaces Mercury-child spawn for delegate_task.
 
     Control actions (list/steer/stop) forward into the live-child registry
-    (M0A, matrix observatory §8.1): RPC children are steered over their
+    (M0A, observatory naming/steer contract): RPC children are steered over their
     connection and stopped via graceful abort + SIGKILL fallback; one-shot
     children are listed/stoppable but not steerable.
     """
