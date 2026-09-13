@@ -2833,6 +2833,39 @@ class SidecarDaemon:
             self._ensure_omp_feed(node_id, handle)
         return handle
 
+    def _live_handle_alive(self, handle: Any) -> bool:
+        """True when a LIVE-registry handle still owns a usable engine transport.
+
+        Never raises (doubt reads as dead → fall through to on-demand resume,
+        never resurrect an exited/dead node). Doubles without a proc surface
+        read as alive unless explicitly stopped/closed."""
+        try:
+            engine = str(getattr(handle, "engine", "") or "")
+            if engine == "hermes":
+                agent = getattr(handle, "agent", None)
+                if agent is None:
+                    return False
+                if bool(getattr(agent, "closed", False)):
+                    return False
+                return True
+            if engine == "omp":
+                rpc = getattr(handle, "rpc", None)
+                if rpc is None:
+                    return False
+                if bool(getattr(rpc, "stopped", False)):
+                    return False
+                proc = getattr(rpc, "proc", None)
+                if proc is not None:
+                    try:
+                        if callable(getattr(proc, "poll", None)) and proc.poll() is not None:
+                            return False
+                    except Exception:
+                        return False
+                return True
+        except Exception:
+            return False
+        return False
+
     def _adopt_live_spawn_handle(self, node_id: str) -> Any | None:
         """Adopt a post-boot spawn handle from the live boot registry.
 
@@ -2841,8 +2874,15 @@ class SidecarDaemon:
         object only once at boot, so a LATER boot (gateway update,
         re-provision) or a daemon started before the gateway boot leaves
         this daemon looking at a different registry object. Consult the
-        live one on every miss, verify it against state.db, and hand it
+        live one on EVERY miss, verify it against state.db, and hand it
         over. Never raises (None = fall through to on-demand resume).
+
+        D18: same session/same MXID-rooms, never a silent fork, never
+        resurrect an exited node. Session-ref mismatches on a
+        never-materialized row (allocated ref never hit disk — ace/king
+        shape) repoint state at the LIVE handle's ref when that handle is
+        alive and (omp) inside this home's session dir; materialized
+        mismatches stay stale-discards (history exists — never repoint).
         """
         try:
             from observatory import platform_hook
@@ -2866,14 +2906,49 @@ class SidecarDaemon:
             return None
         if row.get("status") != "live":
             return None
+        if str(getattr(handle, "engine", "") or "") != str(row.get("engine") or ""):
+            log.warning(
+                "live spawn handle engine mismatch (node %s) — "
+                "ignoring stale gateway entry, resuming on demand",
+                node_id,
+            )
+            return None
+        if not self._live_handle_alive(handle):
+            return None
         try:
-            if str(getattr(handle, "session_ref", "") or "") != str(row.get("session_ref") or ""):
-                log.warning(
-                    "live spawn handle session mismatch (node %s) — "
-                    "ignoring stale gateway entry, resuming on demand",
-                    node_id,
-                )
-                return None
+            live_ref = str(getattr(handle, "session_ref", "") or "")
+            row_ref = str(row.get("session_ref") or "")
+            if live_ref != row_ref:
+                if not self._is_never_materialized(row):
+                    log.warning(
+                        "live spawn handle session mismatch (node %s) — "
+                        "ignoring stale gateway entry, resuming on demand",
+                        node_id,
+                    )
+                    return None
+                if not live_ref:
+                    return None
+                if str(getattr(handle, "engine", "") or "") == "omp":
+                    try:
+                        from pathlib import Path as _Path
+
+                        from observatory.spawn import omp_sessions_dir
+
+                        want = _Path(live_ref).expanduser().resolve()
+                        want.relative_to(omp_sessions_dir(self.mercury_home).resolve())
+                    except Exception:
+                        log.warning(
+                            "live omp handle escapes session dir (node %s) — "
+                            "ignoring, resuming on demand",
+                            node_id,
+                        )
+                        return None
+                try:
+                    if self.state is not None:
+                        self.state.set_session_ref(node_id, live_ref)
+                except Exception:
+                    log.debug("live spawn handle repoint failed (node %s)", node_id, exc_info=True)
+                log.info("live spawn handle repointed state (node %s)", node_id)
         except Exception:
             return None
         try:
