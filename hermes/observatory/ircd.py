@@ -371,7 +371,15 @@ class IrcDaemon:
             cmd, rest = line, ""
         cmd = cmd.upper()
         if cmd == "PASS":
-            client.pass_ok = rest.strip().lstrip(":") == password
+            given = rest.strip().lstrip(":")
+            client.pass_ok = given == password
+            # Shape-only auth log (never the secret): attempt length vs
+            # outcome distinguishes truncation/padding from wrong values.
+            logger.info(
+                "ircd: %s PASS attempt len=%d expected=%d -> %s",
+                listener, len(given), len(password),
+                "ok" if client.pass_ok else "464",
+            )
             if password and not client.pass_ok:
                 await self._numeric(client, 464, "*", "Password incorrect")
             else:
@@ -485,6 +493,13 @@ class IrcDaemon:
                 decoded = ""
             parts = decoded.split("\x00")
             given = parts[-1] if parts else ""
+            # Shape-only: field count + attempt length, never content.
+            # (Trailing-NUL blobs have an empty last field → 904.)
+            logger.info(
+                "ircd: %s SASL blob fields=%d len=%d expected=%d -> %s",
+                listener, len(parts), len(given), len(password),
+                "903" if (not password or given == password) else "904",
+            )
             if not password or given == password:
                 client.pass_ok = True
                 await self._numeric(client, 903, who, "SASL authentication successful")
@@ -498,6 +513,17 @@ class IrcDaemon:
             client.sasl = "plain-pending"
             await self._send(client, "AUTHENTICATE +")
             return
+        # Shape-only: a stray blob here could carry secret material, so
+        # log the mechanism name only for known words, else just length.
+        _mech = token.upper()
+        _known = {
+            "LOGIN", "EXTERNAL", "SCRAM-SHA-1", "SCRAM-SHA-256",
+            "SCRAM-SHA-512", "OAUTHBEARER", "ECDSA-NIST256P-CHALLENGE",
+        }
+        logger.info(
+            "ircd: %s SASL mechanism=%s len=%d -> 904",
+            listener, _mech if _mech in _known else "blob-like", len(token),
+        )
         await self._numeric(client, 904, who, "SASL authentication failed")
 
     async def _cmd_nick(
@@ -537,6 +563,7 @@ class IrcDaemon:
             await self._numeric(client, 464, "*", "Password incorrect")
             return
         client.registered = True
+        logger.info("ircd: %s registered nick=%s", listener, client.nick)
         name = self.config.server_name
         nick = client.nick
         await self._send(client, f":{name} 001 {nick} :Welcome to {name}, {nick}")

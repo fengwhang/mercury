@@ -547,3 +547,24 @@ async def test_sasl_after_nick_user_registers(tmp_path) -> None:
             assert await c.next_match(" 001 ", timeout=5.0)
         finally:
             await c.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_pass_logs_shape_not_secret(tmp_path, caplog) -> None:
+    """A wrong PASS logs attempt shape (lengths) but never the secret."""
+    import logging
+
+    async with running_daemon(tmp_path, password="s3cret") as (_, __, bouncer_port):
+        c = RawClient()
+        await c.connect(bouncer_port)
+        try:
+            with caplog.at_level(logging.INFO, logger="observatory.ircd"):
+                await c.send("NICK nosy")
+                await c.send("USER nosy 0 * :test")
+                await c.send("PASS wrong")
+                assert await c.next_match("464")
+        finally:
+            await c.close()
+    assert "PASS attempt len=5 expected=6 -> 464" in caplog.text
+    assert "wrong" not in caplog.text
+    assert "s3cret" not in caplog.text
