@@ -32,7 +32,6 @@ def _isolate(monkeypatch, machine: str) -> list[list[str]]:
     """Pin arch + gates; record every _pip_install arg list. Returns calls."""
     monkeypatch.setattr(platform, "machine", lambda: machine)
     monkeypatch.setattr(prov, "observatory_enabled", lambda: True)
-    monkeypatch.setattr(prov, "_vendored_olm_wheel", lambda: None)
     calls: list[list[str]] = []
 
     def _fake_pip(venv: Path, args: list[str]) -> tuple[bool, str]:

@@ -1,13 +1,13 @@
-"""Matrix room text during a live gateway-session turn (zero new commands).
+"""Room text during a live gateway-session turn (zero new commands).
 
-Failing case (a): the gateway turn is LIVE (mid-tool-loop) when Matrix room
+Failing case (a): the gateway turn is LIVE (mid-tool-loop) when room
 plain text arrives. The text must reach the SAME cached agent object via the
 existing redirect-then-steer machinery with the text in its context — no
 second turn. Content-agnostic: `stop` and `apple` take the identical path.
 
 Gateway-side live-steer runs inside the `inject` dispatch
 (:func:`gateway.run._observatory_inject_dispatch`): ``kind == "steer"``
-non-internal text tries :func:`gateway.run._attempt_matrix_live_steer`
+non-internal text tries :func:`gateway.run._attempt_room_live_steer`
 first; every miss (idle, empty, no surface, prompt/command/internal)
 falls through to the normal fresh turn unchanged.
 """
@@ -18,8 +18,8 @@ import threading
 import pytest
 
 from gateway.run import (
-    _attempt_matrix_live_steer,
-    _matrix_steer_text_targets_live_turn,
+    _attempt_room_live_steer,
+    _room_steer_text_targets_live_turn,
     _observatory_inject_dispatch,
 )
 from observatory import gateway_session as gs
@@ -141,13 +141,13 @@ def _steer_params(text, *, kind="steer", internal=False):
 class TestGate:
     @pytest.mark.parametrize("kind", ["prompt", "command"])
     def test_non_steer_kinds_never_target_live_turn(self, kind):
-        assert _matrix_steer_text_targets_live_turn(kind, False) is False
+        assert _room_steer_text_targets_live_turn(kind, False) is False
 
     def test_internal_followup_never_targets_live_turn(self):
-        assert _matrix_steer_text_targets_live_turn("steer", True) is False
+        assert _room_steer_text_targets_live_turn("steer", True) is False
 
     def test_room_steer_targets_live_turn(self):
-        assert _matrix_steer_text_targets_live_turn("steer", False) is True
+        assert _room_steer_text_targets_live_turn("steer", False) is True
 
 
 class TestLiveModelRequest:
@@ -166,7 +166,7 @@ class TestLiveModelRequest:
     def test_attempt_reports_steered_with_text_in_context(
         self, live_model_agent, text
     ):
-        out = _attempt_matrix_live_steer(text)
+        out = _attempt_room_live_steer(text)
         assert out.get("steered") is True
         assert live_model_agent._pending_redirect == text
 
