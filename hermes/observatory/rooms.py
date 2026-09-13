@@ -497,3 +497,35 @@ def register_omp_room(node_id: str, channel: str, rpc: Any) -> None:
 def drop_omp_room(node_id: str) -> None:
     with _omp_lock:
         _omp_rooms.pop(node_id, None)
+
+_pump_task = None
+
+
+async def pump_forever(manager: "RoomManager", interval: float = 2.0) -> None:
+    """Drain the producer queue forever (cancellation stops it)."""
+    import asyncio as _asyncio
+    while True:
+        try:
+            await manager.drain_queue()
+        except Exception:
+            logger.debug("rooms: pump drain failed", exc_info=True)
+        try:
+            await _asyncio.sleep(max(0.5, float(interval)))
+        except _asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+
+
+async def start_pump(manager: "RoomManager", interval: float = 2.0) -> bool:
+    """Start the shared pump task once; True when (now) running."""
+    import asyncio as _asyncio
+    global _pump_task
+    try:
+        if _pump_task is not None and not _pump_task.done():
+            return True
+        _pump_task = _asyncio.get_running_loop().create_task(pump_forever(manager, interval))
+        return True
+    except Exception:
+        logger.debug("rooms: pump start failed", exc_info=True)
+        return False

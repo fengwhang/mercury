@@ -6406,151 +6406,80 @@ class GatewaySlashCommandsMixin:
 
         self._schedule_update_notification_watch()
         return t("gateway.update.starting")
-    # --- Matrix observatory spawned-orchestrator lifecycle (D9/D8/D13) ----
-    # /spawn + /spawnomp create 0-agents (gateway room only); /exit ends
-    # them from their own rooms. All three flow through the generic Matrix
-    # pass-through (gateway_session._dispatch_slash_command -> _handle_message
-    # -> plain table here) — no second Matrix-only dispatch path. Sidecar
-    # handles come from platform_hook.LAST_BOOT (never a second state).
+    # --- IRC observatory spawned-orchestrator lifecycle --------------------
+    # /spawn + /spawnomp create 0-agents (one IRC channel each, bot JOINs);
+    # /exit ends them from their own rooms (engine stop + server-side
+    # channel destroy). Handles come from platform_hook.LAST_BOOT — the
+    # gateway owns the whole feature in-process (no sidecar, no registry
+    # handoff).
     def _observatory_handles(self):
-        """Live sidecar state+registry(+renderer) or (None, reason).
-
-        Cross-process law: this runs in the GATEWAY process, while the
-        Matrix renderer lives in the sidecar daemon. LAST_BOOT here is the
-        gateway-thread boot (state-only: renderer None) — never mistake its
-        absence for "observatory missing". Resolve shared handles instead:
-        state via the shared state.db file when the boot object is absent
-        or stale, registry from the boot when live else a fresh handle
-        table (exit still journals via shared state), renderer when the
-        sidecar boot supplied one else None (callers build a planning-only
-        renderer or defer purges to sidecar replay — never assume
-        mercury.local, never send plaintext).
-
-        BUG1-SPAWN-SERVERNAME: home resolution is single-derived (boot home
-        else the shared ``_mercury_home`` chain — never a second derivation),
-        and a provisioned home with an empty/bare state gets the live toml
-        domain + gateway ghost projected before the gateway-node gate, so
-        /spawn can mint on the live domain before the sidecar ever boots.
-        No live gateway row after projection means this is not an
-        observatory home (wrong home / never provisioned) — the honest
-        setup message, never a downstream server_name error.
-        """
+        """Live (state, registry) or (None, reason). Never raises."""
         try:
             from observatory import platform_hook
         except Exception as exc:
-            return None, f"observatory sidecar unavailable ({exc}) — run `mercury setup observatory`"
+            return None, f"observatory unavailable ({exc}) — run `mercury setup observatory`"
+        try:
+            if not platform_hook.observatory_enabled():
+                return None, "observatory is disabled (observatory.enabled: false)"
+        except Exception:
+            pass
         boot = getattr(platform_hook, "LAST_BOOT", None)
         state = getattr(boot, "state", None) if boot is not None else None
         registry = getattr(boot, "registry", None) if boot is not None else None
-        renderer = getattr(boot, "renderer", None) if boot is not None else None
         if state is None:
-            # Shared-state fallback: open the canonical state.db file for
-            # this mercury home (same file the sidecar daemon reads).
             try:
                 home = self._observatory_mercury_home()
-                if home:
-                    state = platform_hook.open_state(home)
-                else:
-                    state = platform_hook.open_state(None)
+                state = platform_hook.open_state(home) if home else platform_hook.open_state(None)
             except Exception as exc:
-                state = None
-                return None, f"no observatory sidecar boot found and shared state unreadable ({exc}) — run `mercury setup observatory`"
+                return None, f"observatory state unreadable ({exc}) — run `mercury setup observatory`"
             if state is None:
-                return None, "no observatory sidecar boot found — run `mercury setup observatory`"
-        try:
-            home = self._observatory_mercury_home()
-            if home:
-                from observatory.provision import project_live_server_name
-
-                project_live_server_name(home, state)
-        except Exception:
-            pass
+                return None, "observatory state unavailable — run `mercury setup observatory`"
+        if registry is None:
+            try:
+                from observatory.spawn import OrchestratorRegistry
+                registry = OrchestratorRegistry()
+            except Exception as exc:
+                return None, f"observatory registry unavailable ({exc})"
         try:
             live = state.get_live()
         except Exception:
             live = []
         try:
             has_gw = any(str((r or {}).get("node_id") or "") == "gw" for r in (live or []))
-            if not has_gw:
-                has_gw = any(
-                    isinstance((r or {}).get("extra"), dict) and (r or {}).get("extra", {}).get("kind") == "gateway"
-                    for r in (live or [])
-                )
         except Exception:
             has_gw = False
         if not has_gw:
-            return None, "no observatory sidecar boot found — run `mercury setup observatory`"
-        if registry is None:
-            try:
-                from observatory.spawn import OrchestratorRegistry
-                registry = OrchestratorRegistry()
-            except Exception as exc:
-                return None, f"observatory sidecar has no live state ({exc}) — run `mercury setup observatory`"
-        return (state, registry, renderer), ""
+            return None, "observatory not provisioned — run `mercury setup observatory`"
+        return (state, registry), ""
 
-    def _observatory_gateway_ids(self, state, renderer=None):
-        """(gateway_node_id, gateway_room_id or ''). Never raises."""
-        gw_id = ""
+    def _observatory_gateway_channel(self, state):
+        """Gateway channel from the gw row ('' when unknown). Never raises."""
         try:
-            gw_id = str(getattr(renderer, "gateway_node_id", "") or "")
+            return str(state.get("gw").get("room_id") or "")
         except Exception:
-            gw_id = ""
-        if not gw_id:
-            try:
-                for row in state.get_live():
-                    extra = row.get("extra") or {}
-                    if isinstance(extra, dict) and extra.get("kind") == "gateway":
-                        gw_id = str(row.get("node_id") or "")
-                        break
-            except Exception:
-                pass
-        if not gw_id:
-            gw_id = "gw"
-        room = ""
-        try:
-            room = str(state.get(gw_id).get("room_id") or "")
-        except Exception:
-            room = ""
-        return gw_id, room
+            return ""
 
-    def _observatory_caller(self, event):
-        """(node_id, room_id) the Matrix pass-through carried, or ('','')."""
+    def _observatory_caller_channel(self, event):
+        """IRC channel the command came from ('' when unknown)."""
         try:
-            meta = getattr(event, "metadata", None) or {}
-            node = str(meta.get("observatory_node_id") or "")
-            room = str(meta.get("observatory_room_id") or "")
-            return node, room
+            source = getattr(event, "source", None)
+            return str(getattr(source, "chat_id", "") or "")
         except Exception:
-            return "", ""
+            return ""
 
-    def _observatory_find_by_room(self, state, room_id):
-        """room_id -> live node row (plus dead descendants), like the
-        sidecar control router. None when unknown/foreign."""
-        if not room_id:
+    def _observatory_find_by_channel(self, state, channel):
+        """channel -> live node row. None when unknown/foreign."""
+        if not channel:
             return None
         try:
-            live = state.get_live()
+            for row in state.get_live():
+                if str(row.get("room_id") or "").lower() == channel.lower():
+                    return row
         except Exception:
             return None
-        for row in live:
-            if row.get("room_id") == room_id:
-                return row
-        for row in live:
-            try:
-                for sub in state.get_subtree(row["node_id"]):
-                    if sub["node_id"] != row["node_id"] and sub.get("room_id") == room_id:
-                        return sub
-            except Exception:
-                continue
         return None
 
     def _observatory_mercury_home(self):
-        # Spawn-ghost fix (defect 2): the daemon resolves session handles
-        # (hermes SessionDB rows, omp JSONLs) under ITS mercury home. The
-        # gateway must build spawn children under that same home (from the
-        # live boot), or the state.db session_ref dangles cross-process and
-        # the room hears only CHILD_UNAVAILABLE. None when no boot is live
-        # (spawn_orchestrator then keeps its default resolution).
         try:
             from observatory import platform_hook
         except Exception:
@@ -6561,153 +6490,59 @@ class GatewaySlashCommandsMixin:
             return home or None
         except Exception:
             return None
-    def _observatory_server_name(self, state, renderer=None):
-        """Live Matrix domain for minting spawn ghosts (never a default).
-
-        Precedence (most authoritative first):
-        1. the gateway ghost mxid domain from the state row — the live
-           minted identity on this homeserver (written by the sidecar
-           from its toml-derived ``self.server_name``, so it is the
-           sidecar toml value projected through shared state.db);
-        2. the boot renderer's ``server_name``.
-        3. the ``server_name`` state meta (provision/boot projection of the
-           live toml value — covers bare-mxid rows predating the repair);
-        4. the live tuwunel.toml ``server_name`` for this mercury home
-           (explicit boot home only — never an ambient read, never a
-           ``mercury.local`` fallback: an off-domain ghost 400s every
-           createRoom with M_EXCLUSIVE).
-        ``""`` when none is available — the caller fails loud."""
-        try:
-            gw_id, _ = self._observatory_gateway_ids(state, renderer)
-            mxid = str((state.get(gw_id) or {}).get("mxid") or "")
-            if ":" in mxid:
-                domain = mxid.rsplit(":", 1)[1].strip()
-                if domain:
-                    return domain
-        except Exception:
-            pass
-        try:
-            domain = str(getattr(renderer, "server_name", "") or "").strip()
-            if domain:
-                return domain
-        except Exception:
-            pass
-        try:
-            meta = str((state.get_meta("server_name") if state is not None else "") or "").strip()
-            if meta:
-                return meta
-        except Exception:
-            pass
-        try:
-            home = self._observatory_mercury_home()
-            if home:
-                from observatory.provision import live_server_name
-
-                live = live_server_name(home)
-                if live:
-                    return live
-        except Exception:
-            pass
-        return ""
 
     async def _handle_observatory_spawn(self, event: MessageEvent, *, engine: str, verb: str) -> str:
         from observatory.spawn import spawn_orchestrator
         name = (event.get_command_args() or "").strip()
         if not name:
-            return f"usage: /{verb} <name> — name is required (D6; no goal — D9)"
+            return f"usage: /{verb} <name> — name is required (it becomes the agent's room)"
         handles, reason = self._observatory_handles()
         if handles is None:
             return f"✗ /{verb} failed: {reason}"
-        state, registry, renderer = handles
-        server_name = self._observatory_server_name(state, renderer)
-        if not server_name:
-            return f"✗ /{verb} failed: live server_name unavailable (no gateway ghost mxid domain, no renderer server_name — refusing to mint an off-domain ghost)"
-        gw_id, gw_room = self._observatory_gateway_ids(state, renderer)
-        caller_node, caller_room = self._observatory_caller(event)
-        scoped = False
-        if caller_room and gw_room:
-            scoped = (caller_room == gw_room)
-        elif caller_node and gw_id:
-            scoped = (caller_node == gw_id)
-        if not scoped:
-            where = f"gateway agent's room ({gw_room})" if gw_room else "the gateway agent's room"
-            return f"🚫 /{verb} is a gateway-room-only command — accepted only from {where} (D13)."
+        state, registry = handles
+        gw_channel = self._observatory_gateway_channel(state)
+        caller_channel = self._observatory_caller_channel(event)
+        if not caller_channel or caller_channel.lower() != gw_channel.lower():
+            where = f"the gateway room ({gw_channel})" if gw_channel else "the gateway room"
+            return f"🚫 /{verb} runs only in {where}."
         try:
-            row = await spawn_orchestrator(name, engine, server_name=server_name, state=state, registry=registry, renderer=renderer, mercury_home=self._observatory_mercury_home())
+            row = await spawn_orchestrator(name, engine, state=state, registry=registry, mercury_home=self._observatory_mercury_home())
         except Exception as exc:
             return f"✗ /{verb} failed: {exc}"
+        channel = str((row or {}).get("room_id") or "")
         node_id = str((row or {}).get("node_id") or "")
-        space_id = ""
-        room_id = ""
-        try:
-            if node_id:
-                fresh = state.get(node_id)
-                space_id = str(fresh.get("space_id") or "")
-                room_id = str(fresh.get("room_id") or "")
-        except Exception:
-            pass
-        bits = [f"🚀 spawned {engine} orchestrator '{name}' (node {node_id})"]
-        if space_id or room_id:
-            bits.append(f"space {space_id or 'pending'} room {room_id or 'pending'}")
-        return " — ".join(bits)
+        return f"🚀 spawned {engine} agent '{name}' (node {node_id}) — join {channel or 'its room'} to chat."
 
     async def _handle_spawn_command(self, event: MessageEvent) -> str:
-        """Handle /spawn <name> — hermes-side orchestrator (D9)."""
+        """Handle /spawn <name> — hermes-side agent (own room, CLI parity)."""
         return await self._handle_observatory_spawn(event, engine="hermes", verb="spawn")
 
     async def _handle_spawnomp_command(self, event: MessageEvent) -> str:
-        """Handle /spawnomp <name> — omp-side orchestrator (D9)."""
+        """Handle /spawnomp <name> — omp-side agent (own room)."""
         return await self._handle_observatory_spawn(event, engine="omp", verb="spawnomp")
 
     async def _handle_exit_command(self, event: MessageEvent) -> str:
-        """Handle /exit — end the caller's spawned 0-agent (D8 cascade)."""
+        """Handle /exit — end the caller's spawned 0-agent (kill + room destroy)."""
         from observatory.spawn import exit_orchestrator
         handles, reason = self._observatory_handles()
         if handles is None:
             return f"✗ /exit failed: {reason}"
-        state, registry, renderer = handles
-        gw_id, gw_room = self._observatory_gateway_ids(state, renderer)
-        caller_node, caller_room = self._observatory_caller(event)
-        target = self._observatory_find_by_room(state, caller_room) if caller_room else None
-        if target is None and caller_node:
-            try:
-                target = state.get(caller_node)
-            except Exception:
-                target = None
+        state, registry = handles
+        gw_channel = self._observatory_gateway_channel(state)
+        caller_channel = self._observatory_caller_channel(event)
+        target = self._observatory_find_by_channel(state, caller_channel)
         if target is None:
-            return "🚫 /exit refused: unknown or foreign room — /exit runs only in a spawned orchestrator's room."
+            return "🚫 /exit refused: unknown room — /exit runs only in a spawned agent's room."
         target_id = str(target.get("node_id") or "")
-        if target_id == gw_id or (gw_room and str(target.get("room_id") or "") == gw_room):
-            return "🚫 no /exit on the gateway agent — the gateway room has no /exit (it would break the observatory surface); use /restart."
-        if renderer is None:
-            # Gateway-process path: no live Matrix renderer here (it lives
-            # in the sidecar daemon). Build a planning-only renderer from
-            # shared state (live server_name from the gateway ghost mxid —
-            # never mercury.local) so begin_exit can journal + dead-mark
-            # atomically; the sidecar replays the purge journal (D18) to
-            # annihilate rooms with its encrypted executor. Fail-closed:
-            # unknown server_name refuses rather than minting off-domain.
-            server_name = self._observatory_server_name(state, None)
-            if not server_name:
-                return "✗ /exit failed: live server_name unavailable (no gateway ghost mxid domain — refusing to plan an exit against an off-domain default)"
-            try:
-                from observatory.renderer import Renderer
-                renderer = Renderer(state, gateway_node_id=gw_id or "gw", server_name=server_name, owner_mxid="", executor=None)
-            except Exception as exc:
-                return f"✗ /exit failed: {exc}"
-            try:
-                result = await exit_orchestrator(target_id, state=state, registry=registry, renderer=renderer)
-            except Exception as exc:
-                return f"✗ /exit failed: {exc}"
-            name = str(target.get("name") or target_id)
-            deferred = (result or {}).get("deferred") or []
-            if deferred:
-                detail = "; ".join(str(d) for d in deferred)
-                return f"👋 exited '{name}' (node {target_id}) — state marked dead via shared state, room purge deferred to the sidecar replay (D8/D18: {detail})."
-            return f"👋 exited '{name}' (node {target_id}) — space+room purged (D8)."
+        if target_id == "gw" or (gw_channel and str(target.get("room_id") or "").lower() == gw_channel.lower()):
+            return "🚫 no /exit on the gateway agent — use /restart."
         try:
-            await exit_orchestrator(target_id, state=state, registry=registry, renderer=renderer)
+            result = await exit_orchestrator(target_id, state=state, registry=registry)
         except Exception as exc:
             return f"✗ /exit failed: {exc}"
         name = str(target.get("name") or target_id)
-        return f"👋 exited '{name}' (node {target_id}) — space+room purged (D8)."
+        deferred = (result or {}).get("deferred") or []
+        if deferred:
+            detail = "; ".join(str(d) for d in deferred)
+            return f"👋 exited '{name}' (node {target_id}) — engine stopped, room destroy deferred to next boot ({detail})."
+        return f"👋 exited '{name}' (node {target_id}) — stopped, room destroyed."
