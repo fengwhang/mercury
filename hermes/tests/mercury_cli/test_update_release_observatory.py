@@ -1,20 +1,20 @@
 """update_from_release observatory tail — update-completeness contracts.
 
-Verified behaviors (existing-install upgrade path for the Matrix
+Verified behaviors (existing-install upgrade path for the IRC
 observatory), through the REAL update_from_release with network, download,
 subprocess, and observatory hooks mocked:
 
-1. Ordering: venv refresh -> bundled wheels -> [matrix] extra -> config
-   migration -> first-time provision -> tuwunel refresh. In particular
-   `provision_if_missing` runs BEFORE `refresh_for_update` (a binary swap
-   alone leaves a pre-observatory install without toml/appservice/owner/
-   unit), and wheels install only AFTER the venv refresh.
+1. Ordering: venv refresh -> bundled wheels -> config
+   migration -> first-time provision -> refresh. In particular
+   `provision_if_missing` runs BEFORE `refresh_for_update` (leaving a
+   pre-observatory install without config/passwords/unit), and wheels
+   install only AFTER the venv refresh.
 2. First-time success prints the login-card line.
 3. Already provisioned (provision_if_missing -> None): no first-time line,
    refresh still runs.
 4. Provision failure WARNS, never blocks (update returns 0).
 5. Bundled-wheels install failure warns only (update returns 0).
-6. Observatory disabled: no wheels/matrix-extra installs, no first-time
+6. Observatory disabled: no wheels installs, no first-time
    provision, silent.
 """
 
@@ -136,7 +136,7 @@ class _Harness:
 
 
 def _harness(tmp_path, monkeypatch, **kw):
-    defaults = dict(wheels=WHEELS, enabled=True, provision_result={"tuwunel": {}})
+    defaults = dict(wheels=WHEELS, enabled=True, provision_result={"ircd": {}})
     defaults.update(kw)
     return _Harness(tmp_path, monkeypatch, **defaults)
 

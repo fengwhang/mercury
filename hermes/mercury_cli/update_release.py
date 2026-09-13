@@ -609,16 +609,12 @@ def update_from_release(*, assume_yes: bool = False) -> int:
         except Exception as exc:
             print(f"  ⚠ config migration check failed ({exc}) — run: mercury config migrate")
 
-        # MERCURY-OMP PATCH (observatory D16 + update-completeness): the
-        # /update slash command refreshes the bundled Tuwunel homeserver
-        # via observatory.provision.refresh_for_update — this shell
-        # `mercury update` path never did, leaving the two update surfaces
-        # out of lockstep. BEFORE the refresh, first-time provision: an
-        # existing install that predates the observatory has no
-        # tuwunel.version file, and a binary swap alone would leave it with
-        # no toml/appservice/owner/unit. Same contract as the /update hook:
-        # silent no-op when the observatory is disabled (or offline) in
-        # config; a failure warns but never blocks the update. Runs at the
+        # Observability tail (update-completeness): BEFORE the refresh,
+        # first-time provision — an existing install that predates the
+        # observatory has no ircd.json, and would otherwise have no
+        # config/passwords/unit. Same contract as the /update hook:
+        # silent no-op when the observatory is disabled in config;
+        # a failure warns but never blocks the update. Runs at the
         # tail, after the tree swap, so the imports resolve against the
         # freshly-installed observatory package.
         try:

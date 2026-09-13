@@ -295,10 +295,10 @@ class ObservatoryState:
 
     def mark_deleted_and_purge(self, node_id: str) -> dict[str, Any]:
         """Remove a node's row after (or while) destroying its IRC channel.
-        Returns the pre-delete row so the caller can drive the Tuwunel
-        delete (needs space_id/room_id) and log the annihilation. The row is
-        deleted — per D17 a successor with the same name inherits the MXID
-        and NOTHING else, so no tombstone may survive to leak state."""
+        Returns the pre-delete row so the caller can log the annihilation
+        (needs room_id). The row is deleted — a successor with the same
+        name inherits the nick and NOTHING else, so no tombstone may
+        survive to leak state."""
         with self._lock:
             row = self.get(node_id)
             with self._db:

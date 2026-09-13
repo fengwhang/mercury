@@ -766,5 +766,111 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def observatory_data_present(mercury_home: str | Path | None = None) -> bool:
+    """True when any IRC observatory data exists under the home."""
+    home = _mercury_home(mercury_home)
+    paths = ObservatoryPaths(home)
+    candidates = (paths.config_file, paths.history_db,
+                  paths.root / "state.db", paths.root / "omp-sessions")
+    try:
+        return any(p.exists() for p in candidates)
+    except Exception:
+        return False
+
+
+def wipe_observatory_data(mercury_home: str | Path | None = None,
+                          *, mode: str = "annihilate") -> dict:
+    """Archive (timestamped move aside) or annihilate (delete) the
+    observatory data root. The unit file is handled separately
+    (:func:`_stop_and_remove_units`). Returns
+    ``{"moved"|"deleted": [...], "units_removed": []}``."""
+    import datetime as _dt
+    import shutil as _shutil
+
+    home = _mercury_home(mercury_home)
+    paths = ObservatoryPaths(home)
+    summary: dict = {"units_removed": []}
+    if mode == "archive":
+        moved: list[str] = []
+        if paths.root.exists():
+            dest = paths.root.parent / (
+                f"observatory.archive.{_dt.datetime.now().strftime('%Y%m%dT%H%M%S')}")
+            try:
+                _shutil.move(str(paths.root), str(dest))
+                moved.append(str(dest))
+            except Exception as exc:
+                raise ProvisionError(f"archive failed: {exc}") from exc
+        summary["moved"] = moved
+        return summary
+    if mode != "annihilate":
+        raise ProvisionError(f"unknown wipe mode {mode!r} (archive|annihilate)")
+    deleted: list[str] = []
+    for target in (paths.root,):
+        try:
+            if target.is_dir() and not target.is_symlink():
+                _shutil.rmtree(target)
+                deleted.append(str(target))
+            elif target.exists() or target.is_symlink():
+                target.unlink()
+                deleted.append(str(target))
+        except Exception as exc:
+            raise ProvisionError(f"annihilate failed: {exc}") from exc
+    summary["deleted"] = deleted
+    return summary
+
+
+def _stop_and_remove_units() -> list[str]:
+    """Stop + disable + delete the observatory unit file. Never raises."""
+    removed: list[str] = []
+    if not _systemctl_available():
+        return removed
+    try:
+        _run_systemctl(["stop", OBSERVATORY_UNIT_NAME], check=False)
+        _run_systemctl(["disable", OBSERVATORY_UNIT_NAME], check=False)
+    except Exception:
+        pass
+    try:
+        unit_file = Path.home() / ".config" / "systemd" / "user" / OBSERVATORY_UNIT_NAME
+        if unit_file.is_file():
+            unit_file.unlink()
+            removed.append(OBSERVATORY_UNIT_NAME)
+        _run_systemctl(["daemon-reload"], check=False)
+    except Exception:
+        pass
+    return removed
+
+
+def _kill_stray_ircd() -> list[int]:
+    """SIGTERM stray ircd processes (daemon started outside the unit).
+    Never raises; returns killed PIDs."""
+    killed: list[int] = []
+    try:
+        proc = subprocess.run(["pgrep", "-f", "observatory.ircd"],
+                              capture_output=True, text=True, timeout=10)
+    except Exception:
+        return killed
+    if proc.returncode != 0:
+        return killed
+    import os as _os
+    import signal as _signal
+    for line in (proc.stdout or "").splitlines():
+        try:
+            pid = int(line.strip())
+        except ValueError:
+            continue
+        if pid == _os.getpid():
+            continue
+        try:
+            _os.kill(pid, _signal.SIGTERM)
+            killed.append(pid)
+        except Exception:
+            pass
+    return killed
+
+
+#: Back-compat alias (uninstall paths importing the old tuwunel-era name).
+_kill_stray_tuwunel = _kill_stray_ircd
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
