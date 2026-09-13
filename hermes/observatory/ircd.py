@@ -430,8 +430,8 @@ class IrcDaemon:
             await self._cmd_topic(client, rest.strip())
         elif cmd == "NAMES":
             await self._cmd_names(client, rest.strip().lstrip(":"))
-        elif cmd == "WHO":
-            await self._cmd_who(client, rest.strip().lstrip(":"))
+        elif cmd == "LIST":
+            await self._cmd_list(client, rest.strip())
         elif cmd == "MODE":
             target = rest.split(" ", 1)[0] if rest else ""
             await self._numeric(client, 324, f"{client.nick} {target} +", "End of MODE")
@@ -659,6 +659,22 @@ class IrcDaemon:
                 f"0 {c.realname or c.nick}",
             )
         await self._numeric(client, 315, f"{client.nick} {arg}", "End of WHO list")
+
+    async def _cmd_list(self, client: _Client, arg: str) -> None:
+        """RPL_LIST so clients can discover rooms (empty server → headers only)."""
+        name = self.config.server_name
+        nick = client.nick or "*"
+        wanted = (arg.split(" ", 1)[0] if arg else "").strip().lower()
+        await self._send(client, f":{name} 321 {nick} Channel :Users Name")
+        for key in sorted(self._channels):
+            if wanted and key != wanted.lstrip("#"):
+                continue
+            display = self._display.get(key, key)
+            count = len(self._channels[key])
+            topic = self._topics.get(key)
+            text = topic[0] if topic else ""
+            await self._send(client, f":{name} 322 {nick} {display} {count} :{text}")
+        await self._send(client, f":{name} 323 {nick} :End of /LIST")
 
     def _oper_password(self) -> str:
         return self.config.agent_password or self.config.password

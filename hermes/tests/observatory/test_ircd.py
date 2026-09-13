@@ -577,3 +577,32 @@ async def test_failed_pass_logs_shape_not_secret(tmp_path, caplog) -> None:
     assert "PASS attempt len=5 expected=6 -> 464" in caplog.text
     assert "wrong" not in caplog.text
     assert "s3cret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_list_discovers_rooms(tmp_path) -> None:
+    """LIST returns 321/322/323 with member counts; empty server lists none."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        a = RawClient()
+        await a.connect(agent_port)
+        try:
+            await a.register("alice")
+            await a.send("LIST")
+            assert await a.next_match(" 321 ")
+            assert await a.next_match(" 323 ")
+            b = RawClient()
+            await b.connect(agent_port)
+            try:
+                await b.register("bob")
+                await b.send("JOIN #room")
+                assert await b.next_match("JOIN #room")
+                await asyncio.sleep(0.3)
+                await a.send("LIST")
+                assert await a.next_match(" 321 ")
+                listed = await a.next_match(" 322 ")
+                assert "#room" in listed and " 1 " in listed
+                assert await a.next_match(" 323 ")
+            finally:
+                await b.close()
+        finally:
+            await a.close()
