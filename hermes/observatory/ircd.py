@@ -23,6 +23,7 @@ first JOIN and destroyed explicitly via :meth:`IrcDaemon.destroy_channel`
 (``/exit``), which PARTs every member. History of a destroyed channel
 is dropped.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -82,11 +83,23 @@ class DaemonConfig:
 
 
 class _Client:
-    __slots__ = ("reader", "writer", "nick", "user", "realname",
-                 "registered", "pass_ok", "oper", "addr", "channels", "send_lock")
+    __slots__ = (
+        "reader",
+        "writer",
+        "nick",
+        "user",
+        "realname",
+        "registered",
+        "pass_ok",
+        "oper",
+        "addr",
+        "channels",
+        "send_lock",
+    )
 
-    def __init__(self, reader: asyncio.StreamReader,
-                 writer: asyncio.StreamWriter, addr: str):
+    def __init__(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, addr: str
+    ):
         self.reader = reader
         self.writer = writer
         self.nick = ""
@@ -103,8 +116,11 @@ class _Client:
 class IrcDaemon:
     """One IRC network: channel state + history + two listeners."""
 
-    def __init__(self, config: DaemonConfig | None = None,
-                 on_privmsg: Callable[[str, str, str], None] | None = None):
+    def __init__(
+        self,
+        config: DaemonConfig | None = None,
+        on_privmsg: Callable[[str, str, str], None] | None = None,
+    ):
         self.config = config or DaemonConfig()
         self.on_privmsg = on_privmsg  # (sender, target, text) hook, e.g. router
         self._clients: dict[str, _Client] = {}  # folded nick -> client
@@ -123,7 +139,6 @@ class IrcDaemon:
         root.mkdir(parents=True, exist_ok=True)
         return root / "irc-history.db"
 
-
     # -- persistence ----------------------------------------------------
     def _open_db(self) -> None:
         path = self._db_path()
@@ -139,7 +154,7 @@ class IrcDaemon:
         )
         self._db.commit()
         limit = int(self.config.history_limit)
-        for (chan, ts, sender, target, text, kind) in self._db.execute(
+        for chan, ts, sender, target, text, kind in self._db.execute(
             "SELECT channel, ts, sender, target, text, kind FROM history "
             "ORDER BY ts ASC"
         ):
@@ -179,26 +194,40 @@ class IrcDaemon:
         cfg = self.config
         agent = await asyncio.start_server(
             lambda r, w: self._handle(r, w, listener="agent"),
-            cfg.host, cfg.agent_port,
+            cfg.host,
+            cfg.agent_port,
         )
         bouncer = await asyncio.start_server(
             lambda r, w: self._handle(r, w, listener="bouncer"),
-            cfg.bouncer_host, cfg.bouncer_port,
+            cfg.bouncer_host,
+            cfg.bouncer_port,
         )
         self._servers = [agent, bouncer]
-        logger.info("ircd: agent %s:%d bouncer %s:%d (%s)",
-                    cfg.host, cfg.agent_port,
-                    cfg.bouncer_host, cfg.bouncer_port, cfg.network_name)
+        logger.info(
+            "ircd: agent %s:%d bouncer %s:%d (%s)",
+            cfg.host,
+            cfg.agent_port,
+            cfg.bouncer_host,
+            cfg.bouncer_port,
+            cfg.network_name,
+        )
         return self
 
     async def stop(self) -> None:
         for server in self._servers:
             server.close()
-            await server.wait_closed()
+            try:
+                await asyncio.wait_for(server.wait_closed(), timeout=5)
+            except Exception:
+                pass
         self._servers = []
         for client in list(self._clients.values()):
             try:
                 client.writer.close()
+                try:
+                    await asyncio.wait_for(client.writer.wait_closed(), timeout=5)
+                except Exception:
+                    pass
             except Exception:
                 pass
         self._clients.clear()
@@ -214,7 +243,7 @@ class IrcDaemon:
 
     def channel_history(self, channel: str, limit: int = 50) -> list[HistoryMessage]:
         hist = self._history.get(channel.lower(), ())
-        return list(hist)[-max(0, limit):]
+        return list(hist)[-max(0, limit) :]
 
     async def destroy_channel(self, channel: str, reason: str = "room closed") -> int:
         """PART every member and drop the channel + its history.
@@ -238,25 +267,29 @@ class IrcDaemon:
             if client is None:
                 continue
             client.channels.discard(key)
-            await self._send(client,
-                             f":{client.nick}!{client.user}@mercury PART {channel} :{reason}")
+            await self._send(
+                client, f":{client.nick}!{client.user}@mercury PART {channel} :{reason}"
+            )
         return len(members)
 
     async def server_notice(self, channel: str, text: str) -> None:
         """Post a server-originated notice into a channel (stored + fanned)."""
-        msg = HistoryMessage(time.time(), self.config.server_name,
-                             channel, text, kind="notice")
+        msg = HistoryMessage(
+            time.time(), self.config.server_name, channel, text, kind="notice"
+        )
         await self._fanout(msg)
 
     # -- connection handling --------------------------------------------
 
-    async def _handle(self, reader: asyncio.StreamReader,
-                      writer: asyncio.StreamWriter, listener: str) -> None:
+    async def _handle(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, listener: str
+    ) -> None:
         peer = writer.get_extra_info("peername")
         addr = str(peer[0]) if peer else "?"
         client = _Client(reader, writer, addr)
-        password = (self.config.agent_password if listener == "agent"
-                    else self.config.password)
+        password = (
+            self.config.agent_password if listener == "agent" else self.config.password
+        )
         buf = b""
         try:
             while not reader.at_eof():
@@ -276,15 +309,16 @@ class IrcDaemon:
         finally:
             await self._quit(client, "connection closed")
 
-    async def _line(self, client: _Client, line: str,
-                    listener: str, password: str) -> None:
+    async def _line(
+        self, client: _Client, line: str, listener: str, password: str
+    ) -> None:
         if " " in line:
             cmd, rest = line.split(" ", 1)
         else:
             cmd, rest = line, ""
         cmd = cmd.upper()
         if cmd == "PASS":
-            client.pass_ok = (rest.strip().lstrip(":") == password)
+            client.pass_ok = rest.strip().lstrip(":") == password
             if password and not client.pass_ok:
                 await self._numeric(client, 464, "*", "Password incorrect")
             return
@@ -302,8 +336,11 @@ class IrcDaemon:
         if not client.registered:
             return
         if cmd == "PING":
-            await self._send(client, f":{self.config.server_name} PONG "
-                                    f"{self.config.server_name} :{rest.lstrip(':')}")
+            await self._send(
+                client,
+                f":{self.config.server_name} PONG "
+                f"{self.config.server_name} :{rest.lstrip(':')}",
+            )
         elif cmd == "PONG":
             pass
         elif cmd == "JOIN":
@@ -322,8 +359,7 @@ class IrcDaemon:
             await self._cmd_who(client, rest.strip().lstrip(":"))
         elif cmd == "MODE":
             target = rest.split(" ", 1)[0] if rest else ""
-            await self._numeric(client, 324, f"{client.nick} {target} +",
-                                "End of MODE")
+            await self._numeric(client, 324, f"{client.nick} {target} +", "End of MODE")
         elif cmd == "OPER":
             await self._cmd_oper(client, rest.strip())
         elif cmd == "DESTROY":
@@ -337,12 +373,12 @@ class IrcDaemon:
 
     # -- commands --------------------------------------------------------
 
-    async def _cmd_nick(self, client: _Client, nick: str,
-                        listener: str, password: str) -> None:
+    async def _cmd_nick(
+        self, client: _Client, nick: str, listener: str, password: str
+    ) -> None:
         nick = nick.strip().lstrip(":")[:32]
         if not nick or not re.fullmatch(r"[A-Za-z0-9_\-\[\]\\`^{}|]+", nick):
-            await self._numeric(client, 432, nick or "*",
-                                "Erroneous nickname")
+            await self._numeric(client, 432, nick or "*", "Erroneous nickname")
             return
         key = nick.lower()
         if key in self._clients and self._clients[key] is not client:
@@ -365,8 +401,9 @@ class IrcDaemon:
         self._clients[key] = client
         await self._maybe_register(client, listener, password)
 
-    async def _maybe_register(self, client: _Client,
-                              listener: str, password: str) -> None:
+    async def _maybe_register(
+        self, client: _Client, listener: str, password: str
+    ) -> None:
         if client.registered or not client.nick or not client.user:
             return
         if password and not client.pass_ok:
@@ -377,10 +414,15 @@ class IrcDaemon:
         nick = client.nick
         await self._send(client, f":{name} 001 {nick} :Welcome to {name}, {nick}")
         await self._send(client, f":{name} 002 {nick} :Your host is {name}")
-        await self._send(client, f":{name} 003 {nick} :This server was created for Mercury")
+        await self._send(
+            client, f":{name} 003 {nick} :This server was created for Mercury"
+        )
         await self._send(client, f":{name} 004 {nick} {name} mercury-ircd o o")
-        await self._send(client, f":{name} 005 {nick} CHANTYPES=# NICKLEN=32 "
-                                 f"TOPICLEN=256 :are supported by this server")
+        await self._send(
+            client,
+            f":{name} 005 {nick} CHANTYPES=# NICKLEN=32 "
+            f"TOPICLEN=256 :are supported by this server",
+        )
 
     async def _cmd_join(self, client: _Client, arg: str) -> None:
         if not arg:
@@ -399,30 +441,35 @@ class IrcDaemon:
                 client.channels.add(key)
                 joined.append((key, self._display[key]))
         for key, display in joined:
-            await self._send(client, f":{client.nick}!{client.user}@mercury JOIN {display}")
+            await self._send(
+                client, f":{client.nick}!{client.user}@mercury JOIN {display}"
+            )
             topic = self._topics.get(key)
             if topic is not None:
                 text, setter, _ts = topic
                 await self._numeric(client, 332, f"{client.nick} {display} :{text}")
             else:
-                await self._numeric(client, 331, f"{client.nick} {display}",
-                                    "No topic is set")
+                await self._numeric(
+                    client, 331, f"{client.nick} {display}", "No topic is set"
+                )
             await self._send_names(client, key, display)
             # Bouncer replay: recent history on every JOIN.
-            for msg in self.channel_history(display,
-                                            limit=int(self.config.history_limit)):
+            for msg in self.channel_history(
+                display, limit=int(self.config.history_limit)
+            ):
                 await self._send(
                     client,
                     f":{msg.sender}!relay@mercury {msg.kind.upper()} "
-                    f"{display} :{msg.text}")
+                    f"{display} :{msg.text}",
+                )
 
     async def _send_names(self, client: _Client, key: str, display: str) -> None:
         members = sorted(self._channels.get(key, ()))
-        nicks = " ".join(self._clients[n].nick for n in members
-                         if n in self._clients)
+        nicks = " ".join(self._clients[n].nick for n in members if n in self._clients)
         await self._numeric(client, 353, f"{client.nick} = {display}", nicks)
-        await self._numeric(client, 366, f"{client.nick} {display}",
-                            "End of NAMES list")
+        await self._numeric(
+            client, 366, f"{client.nick} {display}", "End of NAMES list"
+        )
 
     async def _cmd_names(self, client: _Client, arg: str) -> None:
         if not arg:
@@ -430,8 +477,9 @@ class IrcDaemon:
         for chan in arg.split(","):
             key = chan.strip().lower()
             if key in self._channels:
-                await self._send_names(client, key,
-                                       self._display.get(key, chan.strip()))
+                await self._send_names(
+                    client, key, self._display.get(key, chan.strip())
+                )
 
     async def _cmd_who(self, client: _Client, arg: str) -> None:
         key = (arg.split(" ", 1)[0] if arg else "").lower()
@@ -440,11 +488,13 @@ class IrcDaemon:
             c = self._clients.get(nick)
             if c is None:
                 continue
-            await self._numeric(client, 352,
-                                f"{client.nick} {self._display.get(key, arg)} {c.user} mercury mercury {c.nick} H",
-                                f"0 {c.realname or c.nick}")
-        await self._numeric(client, 315, f"{client.nick} {arg}",
-                            "End of WHO list")
+            await self._numeric(
+                client,
+                352,
+                f"{client.nick} {self._display.get(key, arg)} {c.user} mercury mercury {c.nick} H",
+                f"0 {c.realname or c.nick}",
+            )
+        await self._numeric(client, 315, f"{client.nick} {arg}", "End of WHO list")
 
     def _oper_password(self) -> str:
         return self.config.agent_password or self.config.password
@@ -455,26 +505,28 @@ class IrcDaemon:
         want = self._oper_password()
         if want and secret == want:
             client.oper = True
-            await self._numeric(client, 381, client.nick,
-                                "You are now an IRC operator")
+            await self._numeric(client, 381, client.nick, "You are now an IRC operator")
         else:
-            await self._numeric(client, 464, client.nick,
-                                "Password incorrect")
+            await self._numeric(client, 464, client.nick, "Password incorrect")
 
     async def _cmd_destroy(self, client: _Client, arg: str) -> None:
         """DESTROY #channel :reason — oper-only room kill for /exit."""
         if not client.oper:
-            await self._numeric(client, 481, client.nick,
-                                "Permission Denied - You're not an IRC operator")
+            await self._numeric(
+                client,
+                481,
+                client.nick,
+                "Permission Denied - You're not an IRC operator",
+            )
             return
         channel = arg.split(" ", 1)[0].strip()
         if not channel.startswith("#"):
-            await self._numeric(client, 403, channel or "*",
-                                "No such channel")
+            await self._numeric(client, 403, channel or "*", "No such channel")
             return
         await self.destroy_channel(channel, reason="room closed (/exit)")
-        await self._numeric(client, 200, f"{client.nick} {channel}",
-                            "Channel destroyed")
+        await self._numeric(
+            client, 200, f"{client.nick} {channel}", "Channel destroyed"
+        )
 
     async def _cmd_part(self, client: _Client, arg: str) -> None:
         if not arg:
@@ -487,8 +539,9 @@ class IrcDaemon:
                 key = chan.strip().lower()
                 members = self._channels.get(key)
                 if members is None or client.nick.lower() not in members:
-                    await self._numeric(client, 442, chan.strip(),
-                                        "You're not on that channel")
+                    await self._numeric(
+                        client, 442, chan.strip(), "You're not on that channel"
+                    )
                     continue
                 members.discard(client.nick.lower())
                 client.channels.discard(key)
@@ -496,9 +549,11 @@ class IrcDaemon:
                     # Keep empty channels (and their history) — the bouncer
                     # replays them on rejoin; only destroy_channel deletes.
                     pass
-                await self._send(client,
-                                 f":{client.nick}!{client.user}@mercury PART "
-                                 f"{self._display.get(key, chan.strip())} :{reason}")
+                await self._send(
+                    client,
+                    f":{client.nick}!{client.user}@mercury PART "
+                    f"{self._display.get(key, chan.strip())} :{reason}",
+                )
 
     def _split_msg_rest(self, rest: str) -> tuple[str, str] | None:
         if " :" in rest:
@@ -513,8 +568,7 @@ class IrcDaemon:
     async def _cmd_msg(self, client: _Client, rest: str, kind: str) -> None:
         split = self._split_msg_rest(rest)
         if split is None:
-            await self._numeric(client, 411, "No recipient given",
-                                "No recipient")
+            await self._numeric(client, 411, "No recipient given", "No recipient")
             return
         target, text = split
         if not target or not text:
@@ -529,8 +583,7 @@ class IrcDaemon:
                     await self._numeric(client, 403, target, "No such channel")
                     return
                 if sender.lower() not in members:
-                    await self._numeric(client, 404, target,
-                                        "Cannot send to channel")
+                    await self._numeric(client, 404, target, "Cannot send to channel")
                     return
                 display = self._display.get(key, target)
             msg = HistoryMessage(time.time(), sender, display, text, kind=kind)
@@ -545,8 +598,10 @@ class IrcDaemon:
             if peer is None or not peer.registered:
                 await self._numeric(client, 401, target, "No such nick")
                 return
-            await self._send(peer, f":{sender}!{client.user}@mercury "
-                                   f"{kind.upper()} {peer.nick} :{text}")
+            await self._send(
+                peer,
+                f":{sender}!{client.user}@mercury {kind.upper()} {peer.nick} :{text}",
+            )
             if self.on_privmsg is not None and kind == "privmsg":
                 try:
                     self.on_privmsg(sender, peer.nick, text)
@@ -569,27 +624,29 @@ class IrcDaemon:
         if text is None:
             topic = self._topics.get(key)
             if topic is None:
-                await self._numeric(client, 331, f"{client.nick} {display}",
-                                    "No topic is set")
+                await self._numeric(
+                    client, 331, f"{client.nick} {display}", "No topic is set"
+                )
             else:
-                await self._numeric(client, 332,
-                                    f"{client.nick} {display} :{topic[0]}")
+                await self._numeric(client, 332, f"{client.nick} {display} :{topic[0]}")
             return
         if client.nick.lower() not in members:
-            await self._numeric(client, 442, display,
-                                "You're not on that channel")
+            await self._numeric(client, 442, display, "You're not on that channel")
             return
         self._topics[key] = (text[:256], client.nick, time.time())
-        notice = HistoryMessage(time.time(), client.nick, display,
-                                f"topic: {text[:256]}", kind="notice")
+        notice = HistoryMessage(
+            time.time(), client.nick, display, f"topic: {text[:256]}", kind="notice"
+        )
         await self._fanout(notice)
 
     async def _fanout(self, msg: HistoryMessage) -> None:
         key = msg.target.lower()
         self._store(msg)
         members = sorted(self._channels.get(key, ()))
-        line = (f":{msg.sender}!relay@mercury {msg.kind.upper()} "
-                f"{self._display.get(key, msg.target)} :{msg.text}")
+        line = (
+            f":{msg.sender}!relay@mercury {msg.kind.upper()} "
+            f"{self._display.get(key, msg.target)} :{msg.text}"
+        )
         for nick in members:
             if nick == msg.sender.lower():
                 continue
@@ -627,8 +684,9 @@ class IrcDaemon:
             pass
 
     async def _numeric(self, client: _Client, code: int, tail: str, text: str) -> None:
-        await self._send(client, f":{self.config.server_name} {code:03d} "
-                                 f"{tail} :{text}")
+        await self._send(
+            client, f":{self.config.server_name} {code:03d} {tail} :{text}"
+        )
 
 
 async def serve_forever(config: DaemonConfig) -> None:
@@ -664,11 +722,15 @@ def main(argv: list[str] | None = None) -> int:
     if agent_password is None:
         agent_password = _os.environ.get("IRC_AGENT_PASSWORD", "")
     config = DaemonConfig(
-        host=args.host, agent_port=args.agent_port,
-        bouncer_host=args.bouncer_host, bouncer_port=args.bouncer_port,
-        server_name=args.server_name, password=password or "",
+        host=args.host,
+        agent_port=args.agent_port,
+        bouncer_host=args.bouncer_host,
+        bouncer_port=args.bouncer_port,
+        server_name=args.server_name,
+        password=password or "",
         agent_password=agent_password or "",
-        history_limit=args.history_limit, state_dir=args.state_dir,
+        history_limit=args.history_limit,
+        state_dir=args.state_dir,
     )
     logging.basicConfig(level=logging.INFO)
     try:

@@ -1,4 +1,5 @@
 """Spawn/exit tests over IRC channels (no matrix)."""
+
 from __future__ import annotations
 
 import pytest
@@ -17,6 +18,7 @@ from observatory.spawn import (
 
 def _real_state(tmp_path):
     from observatory.state import ObservatoryState
+
     return ObservatoryState(tmp_path / "state.db")
 
 
@@ -88,8 +90,13 @@ async def test_spawn_omp_room_registers_pump(tmp_path, monkeypatch) -> None:
     rpc = FakeRpc(str(tmp_path / "s.jsonl"))
     monkeypatch.setattr(spawn, "omp_session_file", lambda child: child.session_file())
     row = await spawn_orchestrator(
-        "King", "omp", state=state, registry=registry,
-        omp_child_factory=lambda: rpc, validate_session_ref=False)
+        "King",
+        "omp",
+        state=state,
+        registry=registry,
+        omp_child_factory=lambda: rpc,
+        validate_session_ref=False,
+    )
     assert row["room_id"] == "#king"
     mgr = rooms.RoomManager(state, bot)
     assert mgr.inbound_route("#king")[0] == "spawn-omp"
@@ -112,13 +119,24 @@ async def test_exit_cascade_destroys_subtree_channels(tmp_path, monkeypatch) -> 
     state = _real_state(tmp_path)
     registry = OrchestratorRegistry()
     row = await spawn_orchestrator(
-        "Ace", "hermes", state=state, registry=registry,
-        agent_factory=lambda: FakeAgent())
+        "Ace",
+        "hermes",
+        state=state,
+        registry=registry,
+        agent_factory=lambda: FakeAgent(),
+    )
     node_id = row["node_id"]
     # delegate child room under it
-    state.add_node("deleg-1", engine="hermes", name="kid", slug="kid",
-                   mxid="kid", session_ref="s", parent_node_id=node_id,
-                   extra={"kind": "delegate"})
+    state.add_node(
+        "deleg-1",
+        engine="hermes",
+        name="kid",
+        slug="kid",
+        mxid="kid",
+        session_ref="s",
+        parent_node_id=node_id,
+        extra={"kind": "delegate"},
+    )
     state.set_room_id("deleg-1", "#ace-kid")
     result = await exit_orchestrator(node_id, state=state, registry=registry, bot=bot)
     assert result["deferred"] == []
@@ -134,8 +152,12 @@ async def test_exit_without_bot_defers_journal(tmp_path, monkeypatch) -> None:
     state = _real_state(tmp_path)
     registry = OrchestratorRegistry()
     row = await spawn_orchestrator(
-        "Solo", "hermes", state=state, registry=registry,
-        agent_factory=lambda: FakeAgent())
+        "Solo",
+        "hermes",
+        state=state,
+        registry=registry,
+        agent_factory=lambda: FakeAgent(),
+    )
     result = await exit_orchestrator(row["node_id"], state=state, registry=registry)
     assert result["deferred"] != []
     assert len(read_purge_journal(state)) == 1
@@ -149,20 +171,36 @@ async def test_exit_without_bot_defers_journal(tmp_path, monkeypatch) -> None:
 
 def test_begin_exit_rejects_nonzero_depth(tmp_path) -> None:
     state = _real_state(tmp_path)
-    state.add_node("root", engine="hermes", name="r", slug="r",
-                   mxid="r", session_ref="s")
-    state.add_node("kid", engine="hermes", name="k", slug="k",
-                   mxid="k", session_ref="s", parent_node_id="root")
+    state.add_node(
+        "root", engine="hermes", name="r", slug="r", mxid="r", session_ref="s"
+    )
+    state.add_node(
+        "kid",
+        engine="hermes",
+        name="k",
+        slug="k",
+        mxid="k",
+        session_ref="s",
+        parent_node_id="root",
+    )
     with pytest.raises(ValueError):
         begin_exit(state, "kid")
 
 
 def test_finish_exit_deletes_deepest_first(tmp_path) -> None:
     state = _real_state(tmp_path)
-    state.add_node("root", engine="hermes", name="r", slug="r",
-                   mxid="r", session_ref="s")
-    state.add_node("kid", engine="hermes", name="k", slug="k",
-                   mxid="k", session_ref="s", parent_node_id="root")
+    state.add_node(
+        "root", engine="hermes", name="r", slug="r", mxid="r", session_ref="s"
+    )
+    state.add_node(
+        "kid",
+        engine="hermes",
+        name="k",
+        slug="k",
+        mxid="k",
+        session_ref="s",
+        parent_node_id="root",
+    )
     record = begin_exit(state, "root")
     assert record.channels == []  # no rooms joined in this test
     finish_exit(state, record)

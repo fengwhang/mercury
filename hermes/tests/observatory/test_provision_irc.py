@@ -1,4 +1,5 @@
 """Provision tests: config idempotence, passwords, gateway row, bind, reset."""
+
 from __future__ import annotations
 
 import json
@@ -64,6 +65,7 @@ def test_provision_full_flow(tmp_path, monkeypatch) -> None:
     assert cfg["agent_port"] == 6669 and cfg["bouncer_port"] == 6670
     # gateway row carries the channel
     from observatory.state import ObservatoryState, default_state_db_path
+
     state = ObservatoryState(default_state_db_path(home))
     try:
         row = state.get("gw")

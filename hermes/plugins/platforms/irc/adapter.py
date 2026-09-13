@@ -603,8 +603,6 @@ class IRCAdapter(BasePlatformAdapter):
         reach gateway dispatch: the RoomManager steers the live child /
         pumps the omp task and the ack goes straight back to the room.
         """
-        if not self._message_handler:
-            return
         if chat_type == "group":
             try:
                 from observatory.rooms import get_room_manager, route_channel
@@ -620,6 +618,8 @@ class IRCAdapter(BasePlatformAdapter):
                     return
             except Exception:
                 logger.debug("IRC: room route failed, falling through", exc_info=True)
+        if not self._message_handler:
+            return
 
         source = self.build_source(
             chat_id=chat_id,

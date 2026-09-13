@@ -7,6 +7,7 @@ boot on a daemon thread; ``boot_resync`` runs after adapters connect
 (join live channels, drain the frame queue, replay the exit journal,
 resume omp handles, start the queue pump).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -33,6 +34,7 @@ def observatory_enabled(
             if isinstance(obs, dict) and "enabled" in obs:
                 return bool(obs.get("enabled"))
         from mercury_cli.config import cfg_get, load_config
+
         return bool(cfg_get(load_config(), "observatory", "enabled", default=True))
     except Exception:
         return True
@@ -41,6 +43,7 @@ def observatory_enabled(
 def _load_home_config(mercury_home: str | Path | None) -> Mapping[str, Any]:
     try:
         from mercury_cli.config import load_config
+
         return load_config() or {}
     except Exception:
         return {}
@@ -48,11 +51,13 @@ def _load_home_config(mercury_home: str | Path | None) -> Mapping[str, Any]:
 
 def mercury_home_path(mercury_home: str | Path | None = None) -> Path:
     from observatory.provision import _mercury_home
+
     return _mercury_home(mercury_home)
 
 
 def open_state(mercury_home: str | Path | None = None) -> Any:
     from observatory.state import ObservatoryState, default_state_db_path
+
     return ObservatoryState(default_state_db_path(mercury_home))
 
 
@@ -88,8 +93,9 @@ def boot_observatory(
 
     home = mercury_home_path(mercury_home)
     result = BootResult(mercury_home=str(home))
-    if not observatory_enabled(config if config is not None else _load_home_config(home),
-                               mercury_home=home):
+    if not observatory_enabled(
+        config if config is not None else _load_home_config(home), mercury_home=home
+    ):
         result.enabled = False
         logger.info("observatory: disabled — frozen, nothing booted")
         return result
@@ -102,15 +108,20 @@ def boot_observatory(
         live = live_server_name(home)
         if live:
             from observatory.provision import ensure_gateway_node_in_state
+
             ensure_gateway_node_in_state(result.state, server_name=live)
     except Exception as exc:  # noqa: BLE001
         result.errors.append(f"gateway row ensure failed: {exc}")
     try:
         prior = getattr(globals().get("LAST_BOOT"), "registry", None)
-        result.registry = registry if registry is not None else (
-            prior if prior is not None else OrchestratorRegistry())
+        result.registry = (
+            registry
+            if registry is not None
+            else (prior if prior is not None else OrchestratorRegistry())
+        )
     except Exception:
         from observatory.spawn import OrchestratorRegistry as _R
+
         result.registry = _R()
     try:
         result.manager = RoomManager(result.state)
@@ -139,7 +150,9 @@ def try_boot_sidecar(
         if mercury_home is not None:
             kwargs["mercury_home"] = mercury_home
         t = threading.Thread(
-            target=_boot_thread_body, args=(kwargs,), daemon=True,
+            target=_boot_thread_body,
+            args=(kwargs,),
+            daemon=True,
             name="mercury-observatory-boot",
         )
         t.start()
@@ -149,18 +162,28 @@ def try_boot_sidecar(
         return None
 
 
-async def boot_resync(manager: Any = None, state: Any = None,
-                      registry: Any = None) -> dict[str, Any]:
+async def boot_resync(
+    manager: Any = None, state: Any = None, registry: Any = None
+) -> dict[str, Any]:
     """Post-adapter resync: join every live channel, drain the frame
     queue, replay the exit journal, resume omp handles, start the pump.
 
     Called once after adapters connect (and safe to re-run). Never raises.
     """
     from observatory.rooms import get_bot_sink, get_room_manager, set_room_manager
-    from observatory.spawn import OrchestratorRegistry, build_omp_child, replay_purge_journal
+    from observatory.spawn import (
+        OrchestratorRegistry,
+        build_omp_child,
+        replay_purge_journal,
+    )
 
-    report: dict[str, Any] = {"joined": [], "resumed": [], "failed": [],
-                              "deferred_purges": [], "pumped": 0}
+    report: dict[str, Any] = {
+        "joined": [],
+        "resumed": [],
+        "failed": [],
+        "deferred_purges": [],
+        "pumped": 0,
+    }
     try:
         manager = manager or get_room_manager()
         boot = globals().get("LAST_BOOT")
@@ -170,6 +193,7 @@ async def boot_resync(manager: Any = None, state: Any = None,
             registry = getattr(boot, "registry", None)
         if manager is None and state is not None:
             from observatory.rooms import RoomManager
+
             manager = RoomManager(state)
             set_room_manager(manager)
         if manager is None or state is None:
@@ -194,19 +218,28 @@ async def boot_resync(manager: Any = None, state: Any = None,
                     except Exception:
                         pass
                 # Resume omp handles the registry lost (restart crash).
-                if (str((row or {}).get("engine") or "") == "omp"
-                        and str((row or {}).get("status") or "") == "live"):
+                if (
+                    str((row or {}).get("engine") or "") == "omp"
+                    and str((row or {}).get("status") or "") == "live"
+                ):
                     node_id = str((row or {}).get("node_id") or "")
                     try:
                         if registry.get(node_id) is None:
                             ref = str((row or {}).get("session_ref") or "")
                             child = build_omp_child(resume_session=ref or None)
                             from observatory.spawn import OrchestratorHandle
-                            registry.register(OrchestratorHandle(
-                                node_id=node_id, engine="omp",
-                                name=str((row or {}).get("name") or node_id),
-                                session_ref=ref, rpc=child))
+
+                            registry.register(
+                                OrchestratorHandle(
+                                    node_id=node_id,
+                                    engine="omp",
+                                    name=str((row or {}).get("name") or node_id),
+                                    session_ref=ref,
+                                    rpc=child,
+                                )
+                            )
                             from observatory.rooms import register_omp_room
+
                             register_omp_room(node_id, channel, child)
                             report["resumed"].append(node_id)
                     except Exception as exc:
@@ -224,6 +257,7 @@ async def boot_resync(manager: Any = None, state: Any = None,
             report["failed"].append(f"journal replay: {exc}")
         try:
             from observatory import rooms as _rooms
+
             await _rooms.start_pump(manager)
         except Exception:
             pass

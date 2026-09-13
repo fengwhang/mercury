@@ -5,6 +5,7 @@ Provisions, in order: ``ircd.json`` config → bouncer/agent passwords
 user unit. Fail-hard like every other provision step; never touches
 the network (no downloads — the daemon is stdlib-only).
 """
+
 from __future__ import annotations
 
 import json
@@ -79,6 +80,7 @@ def _mercury_home(mercury_home: str | Path | None = None) -> Path:
 
 # --- validation ------------------------------------------------------------
 
+
 def validate_server_name(value: str) -> str:
     """IRC network label: lowercase letters/digits/_/-, normalized."""
     clean = str(value or "").strip().lower()
@@ -106,6 +108,7 @@ def generate_password(nbytes: int = 24) -> str:
 
 # --- .env mirror -------------------------------------------------------------
 
+
 def _quote_env_value(value: str) -> str:
     if re.fullmatch(r"[A-Za-z0-9_./:@%+-]+", value or ""):
         return value
@@ -117,13 +120,17 @@ def _env_line_defines_key(line: str, key: str) -> bool:
     if not stripped or stripped.startswith("#"):
         return False
     if stripped.startswith("export "):
-        stripped = stripped[len("export "):].lstrip()
+        stripped = stripped[len("export ") :].lstrip()
     return stripped == key or stripped.startswith(key + "=")
 
 
 def _upsert_env_key(env_path: Path, key: str, value: str) -> None:
     try:
-        lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.is_file() else []
+        lines = (
+            env_path.read_text(encoding="utf-8").splitlines()
+            if env_path.is_file()
+            else []
+        )
     except Exception:
         lines = []
     entry = f"{key}={_quote_env_value(value)}"
@@ -146,8 +153,9 @@ def _upsert_env_key(env_path: Path, key: str, value: str) -> None:
         pass
 
 
-def mirror_irc_env(mercury_home: str | Path | None, bouncer_password: str,
-                   agent_password: str) -> Path:
+def mirror_irc_env(
+    mercury_home: str | Path | None, bouncer_password: str, agent_password: str
+) -> Path:
     """Mirror both listener passwords into $MERCURY_HOME/.env (0600)."""
     env_path = _mercury_home(mercury_home) / ".env"
     _upsert_env_key(env_path, ENV_BOUNCER_PASSWORD, bouncer_password)
@@ -159,6 +167,7 @@ def read_irc_passwords(mercury_home: str | Path | None = None) -> dict[str, str]
     """Passwords from env/.env (never generated here — provisioning owns that)."""
     try:
         from mercury_cli.config import get_env_value
+
         bouncer = str(get_env_value(ENV_BOUNCER_PASSWORD) or "")
         agent = str(get_env_value(ENV_AGENT_PASSWORD) or "")
     except Exception:
@@ -168,6 +177,7 @@ def read_irc_passwords(mercury_home: str | Path | None = None) -> dict[str, str]
 
 
 # --- config ------------------------------------------------------------------
+
 
 def default_config(*, server_name: str = SERVER_NAME_DEFAULT) -> dict[str, Any]:
     return {
@@ -190,22 +200,29 @@ def read_config(mercury_home: str | Path | None = None) -> dict[str, Any] | None
         return None
 
 
-def ensure_config(paths: ObservatoryPaths, *,
-                  server_name: str | None = None,
-                  agent_host: str | None = None,
-                  agent_port: int | None = None,
-                  bouncer_host: str | None = None,
-                  bouncer_port: int | None = None,
-                  history_limit: int | None = None) -> dict[str, Any]:
+def ensure_config(
+    paths: ObservatoryPaths,
+    *,
+    server_name: str | None = None,
+    agent_host: str | None = None,
+    agent_port: int | None = None,
+    bouncer_host: str | None = None,
+    bouncer_port: int | None = None,
+    history_limit: int | None = None,
+) -> dict[str, Any]:
     """Idempotent ircd.json: existing values win unless explicitly passed
     (explicit disagreement fails hard — never silently re-pins a live
     network under running agents)."""
     current = read_config(paths.root.parent)
     cfg = default_config() if not isinstance(current, dict) else dict(current)
     explicit = {
-        "server_name": (validate_server_name(server_name) if server_name is not None else None),
-        "agent_host": agent_host, "agent_port": agent_port,
-        "bouncer_host": bouncer_host, "bouncer_port": bouncer_port,
+        "server_name": (
+            validate_server_name(server_name) if server_name is not None else None
+        ),
+        "agent_host": agent_host,
+        "agent_port": agent_port,
+        "bouncer_host": bouncer_host,
+        "bouncer_port": bouncer_port,
         "history_limit": history_limit,
     }
     changed: list[str] = []
@@ -224,7 +241,11 @@ def ensure_config(paths: ObservatoryPaths, *,
         cfg[key] = value
     paths.root.mkdir(parents=True, exist_ok=True)
     paths.config_file.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    action = "wrote" if not isinstance(current, dict) else ("updated" if changed else "current")
+    action = (
+        "wrote"
+        if not isinstance(current, dict)
+        else ("updated" if changed else "current")
+    )
     return {"action": action, "path": str(paths.config_file), "config": cfg}
 
 
@@ -244,6 +265,7 @@ def ensure_passwords(mercury_home: str | Path | None = None) -> dict[str, Any]:
 
 
 # --- gateway row ---------------------------------------------------------------
+
 
 def ensure_gateway_node_in_state(state: Any, *, server_name: str) -> str:
     """Idempotent gateway row + server_name meta projection (shared-state
@@ -268,8 +290,10 @@ def ensure_gateway_node_in_state(state: Any, *, server_name: str) -> str:
                 with state.locked() as db:
                     with db:
                         for col, val in updates.items():
-                            db.execute(f"UPDATE nodes SET {col} = ? WHERE node_id = ?",
-                                       (val, GATEWAY_NODE_ID))
+                            db.execute(
+                                f"UPDATE nodes SET {col} = ? WHERE node_id = ?",
+                                (val, GATEWAY_NODE_ID),
+                            )
             except Exception:
                 pass
         try:
@@ -279,12 +303,18 @@ def ensure_gateway_node_in_state(state: Any, *, server_name: str) -> str:
         return nick
     except Exception as exc:
         from observatory.state import StateError
+
         if not isinstance(exc, StateError):
             raise
         state.add_node(
-            GATEWAY_NODE_ID, engine="hermes", name=GATEWAY_NODE_NAME,
-            slug="gateway", mxid=nick, session_ref="session:gateway",
-            parent_node_id=None, extra={"kind": "gateway"},
+            GATEWAY_NODE_ID,
+            engine="hermes",
+            name=GATEWAY_NODE_NAME,
+            slug="gateway",
+            mxid=nick,
+            session_ref="session:gateway",
+            parent_node_id=None,
+            extra={"kind": "gateway"},
         )
         try:
             state.set_room_id(GATEWAY_NODE_ID, channel)
@@ -308,6 +338,7 @@ def live_server_name(mercury_home: str | Path | None = None) -> str | None:
 
 # --- systemd -------------------------------------------------------------------
 
+
 def _systemctl_available() -> bool:
     try:
         return shutil.which("systemctl") is not None
@@ -315,9 +346,16 @@ def _systemctl_available() -> bool:
         return False
 
 
-def _run_systemctl(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(["systemctl", "--user", *args],
-                          capture_output=True, text=True, timeout=60, check=check)
+def _run_systemctl(
+    args: list[str], *, check: bool = True
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["systemctl", "--user", *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=check,
+    )
 
 
 def _unit_is_active(unit_name: str) -> bool:
@@ -330,12 +368,16 @@ def _unit_is_active(unit_name: str) -> bool:
 
 def _gateway_python_bin() -> str:
     import sys
+
     return sys.executable
 
 
-def ensure_observatory_unit(mercury_home: str | Path | None = None, *,
-                            python_bin: str | None = None,
-                            hermes_root: str | None = None) -> str:
+def ensure_observatory_unit(
+    mercury_home: str | Path | None = None,
+    *,
+    python_bin: str | None = None,
+    hermes_root: str | None = None,
+) -> str:
     """Install/enable/start the ircd unit. Never raises for missing
     systemd (containers/CI) — returns "skipped"."""
     if not _systemctl_available():
@@ -389,6 +431,7 @@ def unit_status() -> str:
 
 # --- tailscale -------------------------------------------------------------------
 
+
 def detect_tailscale() -> dict:
     """Best-effort Tailscale tailnet detection for the wizard.
 
@@ -430,7 +473,9 @@ def detect_tailscale() -> dict:
     try:
         js_proc = subprocess.run(
             ["tailscale", "status", "--json"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if js_proc.returncode == 0 and js_proc.stdout:
             data = json.loads(js_proc.stdout)
@@ -455,8 +500,10 @@ def detect_tailscale() -> dict:
 def current_listen_addresses(mercury_home: str | Path | None = None) -> list[str]:
     """Configured [agent_host, bouncer_host] (deduped, for the bind trap check)."""
     cfg = read_config(mercury_home) or {}
-    addrs = [str(cfg.get("agent_host") or IRCD_ADDRESS),
-             str(cfg.get("bouncer_host") or IRCD_ADDRESS)]
+    addrs = [
+        str(cfg.get("agent_host") or IRCD_ADDRESS),
+        str(cfg.get("bouncer_host") or IRCD_ADDRESS),
+    ]
     out: list[str] = []
     for addr in addrs:
         if addr not in out:
@@ -464,8 +511,9 @@ def current_listen_addresses(mercury_home: str | Path | None = None) -> list[str
     return out
 
 
-def set_ircd_bind(ip: str, mercury_home: str | Path | None = None,
-                  *, listener: str = "bouncer") -> str:
+def set_ircd_bind(
+    ip: str, mercury_home: str | Path | None = None, *, listener: str = "bouncer"
+) -> str:
     """Pin one listener to the tailnet IP (localhost retained on the
     other listener by default — pass listener="agent" to pin the agent
     side instead, or "both"). Never starts/stops the daemon: restart
@@ -478,10 +526,13 @@ def set_ircd_bind(ip: str, mercury_home: str | Path | None = None,
 
         _ipaddress.ip_address(target)
     except Exception as exc:
-        raise ProvisionError(f"refusing to bind to {target!r}: not an IP address ({exc})") from exc
+        raise ProvisionError(
+            f"refusing to bind to {target!r}: not an IP address ({exc})"
+        ) from exc
     if target in ("127.0.0.1", "::1", "localhost"):
         raise ProvisionError(
-            f"refusing to bind loopback {target!r} — localhost is already bound")
+            f"refusing to bind loopback {target!r} — localhost is already bound"
+        )
     if listener not in ("bouncer", "agent", "both"):
         raise ProvisionError(f"listener must be bouncer|agent|both, got {listener!r}")
     home = _mercury_home(mercury_home)
@@ -502,14 +553,18 @@ def set_ircd_bind(ip: str, mercury_home: str | Path | None = None,
 
 # --- top-level flows ---------------------------------------------------------------
 
-def provision(mercury_home: str | Path | None = None, *,
-              server_name: str | None = None,
-              agent_host: str | None = None,
-              agent_port: int | None = None,
-              bouncer_host: str | None = None,
-              bouncer_port: int | None = None,
-              history_limit: int | None = None,
-              systemd: bool = True) -> dict:
+
+def provision(
+    mercury_home: str | Path | None = None,
+    *,
+    server_name: str | None = None,
+    agent_host: str | None = None,
+    agent_port: int | None = None,
+    bouncer_host: str | None = None,
+    bouncer_port: int | None = None,
+    history_limit: int | None = None,
+    systemd: bool = True,
+) -> dict:
     """Run every provisioning step (config → passwords → gateway row →
     unit). Returns a summary dict; raises ProvisionError on failure."""
     home = _mercury_home(mercury_home)
@@ -518,9 +573,14 @@ def provision(mercury_home: str | Path | None = None, *,
         d.mkdir(parents=True, exist_ok=True)
     summary = {
         "config": ensure_config(
-            paths, server_name=server_name, agent_host=agent_host,
-            agent_port=agent_port, bouncer_host=bouncer_host,
-            bouncer_port=bouncer_port, history_limit=history_limit),
+            paths,
+            server_name=server_name,
+            agent_host=agent_host,
+            agent_port=agent_port,
+            bouncer_host=bouncer_host,
+            bouncer_port=bouncer_port,
+            history_limit=history_limit,
+        ),
         "passwords": ensure_passwords(home),
     }
     live = live_server_name(home)
@@ -536,7 +596,9 @@ def provision(mercury_home: str | Path | None = None, *,
             gw_state.close()
         except Exception:
             pass
-    summary["unit"] = ensure_observatory_unit(home) if systemd else "skipped (--no-systemd)"
+    summary["unit"] = (
+        ensure_observatory_unit(home) if systemd else "skipped (--no-systemd)"
+    )
     return summary
 
 
@@ -561,6 +623,7 @@ def verify_and_converge_gateway(mercury_home: str | Path | None = None) -> str:
             except Exception:
                 pass
         from observatory.rooms import gateway_channel
+
         return f"converged-gateway ({gateway_channel(live)})"
     except Exception as exc:
         return f"skipped-error ({exc})"
@@ -574,6 +637,7 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
     enabled = True
     try:
         from mercury_cli.config import cfg_get, load_config
+
         enabled = bool(cfg_get(load_config(), "observatory", "enabled", default=True))
     except Exception:
         pass
@@ -582,9 +646,9 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
         "provisioned": isinstance(cfg, dict),
         "server_name": str((cfg or {}).get("server_name") or SERVER_NAME_DEFAULT),
         "agent": f"{(cfg or {}).get('agent_host', IRCD_ADDRESS)}:"
-                 f"{(cfg or {}).get('agent_port', IRCD_AGENT_PORT_DEFAULT)}",
+        f"{(cfg or {}).get('agent_port', IRCD_AGENT_PORT_DEFAULT)}",
         "bouncer": f"{(cfg or {}).get('bouncer_host', IRCD_ADDRESS)}:"
-                   f"{(cfg or {}).get('bouncer_port', IRCD_BOUNCER_PORT_DEFAULT)}",
+        f"{(cfg or {}).get('bouncer_port', IRCD_BOUNCER_PORT_DEFAULT)}",
         "unit": unit_status(),
         "bouncer_password_set": bool(passwords["bouncer"]),
         "agent_password_set": bool(passwords["agent"]),
@@ -599,12 +663,18 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
     removed: list[str] = []
-    for target in (paths.config_file, paths.history_db,
-                   paths.root / "state.db", paths.root / "state.db-wal",
-                   paths.root / "state.db-shm", paths.root / "omp-sessions"):
+    for target in (
+        paths.config_file,
+        paths.history_db,
+        paths.root / "state.db",
+        paths.root / "state.db-wal",
+        paths.root / "state.db-shm",
+        paths.root / "omp-sessions",
+    ):
         try:
             if target.is_dir() and not target.is_symlink():
                 import shutil as _shutil
+
                 _shutil.rmtree(target)
                 removed.append(str(target))
             elif target.exists() or target.is_symlink():
@@ -614,6 +684,7 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
             pass
     return removed
 
+
 def observatory_enabled(config: Any = None) -> bool:
     """Default ON; ``observatory.enabled: false`` freezes the rooms."""
     try:
@@ -622,6 +693,7 @@ def observatory_enabled(config: Any = None) -> bool:
             if isinstance(obs, dict) and "enabled" in obs:
                 return bool(obs.get("enabled"))
         from mercury_cli.config import cfg_get, load_config
+
         return bool(cfg_get(load_config(), "observatory", "enabled", default=True))
     except Exception:
         return True

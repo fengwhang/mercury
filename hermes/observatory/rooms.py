@@ -22,6 +22,7 @@ The IRC transport is a :class:`BotSink` — the gateway IRC adapter
 registers itself on connect (:func:`set_bot_sink`); tests inject fakes.
 No gateway imports at module level so this stays light under pytest.
 """
+
 from __future__ import annotations
 
 import logging
@@ -47,17 +48,13 @@ FRAME_TEXT_LIMIT = 400
 class BotSink(Protocol):
     """What the room manager needs from the IRC transport."""
 
-    async def join_channel(self, channel: str) -> bool:
-        ...
+    async def join_channel(self, channel: str) -> bool: ...
 
-    async def part_channel(self, channel: str) -> bool:
-        ...
+    async def part_channel(self, channel: str) -> bool: ...
 
-    async def say(self, channel: str, text: str) -> bool:
-        ...
+    async def say(self, channel: str, text: str) -> bool: ...
 
-    async def destroy_channel(self, channel: str) -> bool:
-        ...
+    async def destroy_channel(self, channel: str) -> bool: ...
 
 
 _sink_lock = threading.Lock()
@@ -77,6 +74,7 @@ def get_bot_sink() -> BotSink | None:
 
 
 # --- channel naming --------------------------------------------------------
+
 
 def gateway_channel(server_name: str) -> str:
     """``#<server>_gateway`` — e.g. server ``mercury`` → ``#mercury_gateway``."""
@@ -99,6 +97,7 @@ def agent_nick(name: str) -> str:
 
 
 # --- frame formatting ------------------------------------------------------
+
 
 def _truncate(text: str, limit: int = FRAME_TEXT_LIMIT) -> str:
     text = " ".join(str(text or "").split())
@@ -139,17 +138,21 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
     return None
 
 
-def format_lifecycle(lifecycle: str, *, name: str = "",
-                     summary: str = "", status: str = "") -> str:
+def format_lifecycle(
+    lifecycle: str, *, name: str = "", summary: str = "", status: str = ""
+) -> str:
     if lifecycle == "start":
         return f"{LIFECYCLE_START} subagent '{name}' started — live trace streams here"
     if lifecycle == "stop":
-        tail = f": {_truncate(summary)}" if summary else (f" ({status})" if status else "")
+        tail = (
+            f": {_truncate(summary)}" if summary else (f" ({status})" if status else "")
+        )
         return f"{LIFECYCLE_STOP} subagent '{name}' finished{tail}"
     return f"{NOTICE_PREFIX} subagent '{name}': {lifecycle}"
 
 
 # --- room manager ----------------------------------------------------------
+
 
 def _channel_in_ref(channel: str, ref: str) -> bool:
     """True when gateway session key ``ref`` embeds ``#channel``.
@@ -160,8 +163,10 @@ def _channel_in_ref(channel: str, ref: str) -> bool:
     """
     try:
         import re as _re
-        return bool(_re.search(r"(?:^|:)" + _re.escape(channel) + r"(?:$|:)",
-                              str(ref or "")))
+
+        return bool(
+            _re.search(r"(?:^|:)" + _re.escape(channel) + r"(?:$|:)", str(ref or ""))
+        )
     except Exception:
         return False
 
@@ -233,8 +238,9 @@ class RoomManager:
 
     # -- ensure ------------------------------------------------------
 
-    async def ensure_room(self, channel: str, *, topic: str = "",
-                          greet: str = "") -> bool:
+    async def ensure_room(
+        self, channel: str, *, topic: str = "", greet: str = ""
+    ) -> bool:
         """Bot JOINs ``channel`` (IRC creates on first join); greeting optional."""
         bot = self.bot
         if bot is None:
@@ -269,7 +275,9 @@ class RoomManager:
             return False
         return await self.publish(channel, line)
 
-    async def publish_lifecycle(self, channel: str, lifecycle: str, **kwargs: Any) -> bool:
+    async def publish_lifecycle(
+        self, channel: str, lifecycle: str, **kwargs: Any
+    ) -> bool:
         return await self.publish(channel, format_lifecycle(lifecycle, **kwargs))
 
     async def destroy_room(self, channel: str) -> bool:
@@ -282,6 +290,7 @@ class RoomManager:
         except Exception:
             logger.debug("rooms: destroy %s failed", channel, exc_info=True)
             return False
+
     # -- queue pump ----------------------------------------------------
 
     async def drain_queue(self) -> int:
@@ -308,17 +317,21 @@ class RoomManager:
         op = str(item.get("op") or "")
         node_id = str(item.get("node_id") or "")
         if op == "feed":
-            channel = self.channel_for_node(node_id) or await self._ensure_child_room_for(node_id, item)
+            channel = self.channel_for_node(
+                node_id
+            ) or await self._ensure_child_room_for(node_id, item)
             if channel:
                 await self.publish_frame(channel, item.get("feed"))
         elif op == "lifecycle":
             channel = await self._ensure_child_room_for(node_id, item)
             if channel:
                 await self.publish_lifecycle(
-                    channel, str(item.get("lifecycle") or ""),
+                    channel,
+                    str(item.get("lifecycle") or ""),
                     name=str(item.get("name") or node_id),
                     summary=str(item.get("summary") or ""),
-                    status=str(item.get("status") or ""))
+                    status=str(item.get("status") or ""),
+                )
             if str(item.get("lifecycle") or "") == "stop":
                 drop_child_steer(node_id)
         elif op == "approval":
@@ -328,7 +341,9 @@ class RoomManager:
                     channel,
                     f"🔒 approval requested: `{item.get('command', '')}`"
                     f" — {item.get('description', '')} "
-                    f"(reply /approve or /deny in the parent room)")
+                    f"(reply /approve or /deny in the parent room)",
+                )
+
     def _resolve_parent(self, parent: str) -> dict[str, Any] | None:
         """Parent ref → live row: node id, session_ref, then gateway
         session-key channel scan (group keys embed ``#channel``)."""
@@ -370,10 +385,15 @@ class RoomManager:
         try:
             slug = f"{parent_name}-{name}".lower()[:64]
             self.state.add_node(
-                node_id, engine=str(item.get("engine") or "hermes"),
-                name=name, slug=slug, mxid=agent_nick(name),
+                node_id,
+                engine=str(item.get("engine") or "hermes"),
+                name=name,
+                slug=slug,
+                mxid=agent_nick(name),
                 session_ref=str(item.get("session_ref") or node_id),
-                parent_node_id=str(parent_row.get("node_id")) if parent_row is not None else None,
+                parent_node_id=str(parent_row.get("node_id"))
+                if parent_row is not None
+                else None,
                 extra={"kind": "delegate"},
             )
             try:
@@ -382,7 +402,9 @@ class RoomManager:
                 logger.debug("rooms: set_room_id %s failed", node_id, exc_info=True)
         except Exception:
             logger.debug("rooms: child row for %s exists", node_id, exc_info=True)
-        await self.ensure_room(channel, greet=f"live trace for subagent '{name}' streams here")
+        await self.ensure_room(
+            channel, greet=f"live trace for subagent '{name}' streams here"
+        )
         return channel
 
     async def handle_child_message(self, channel: str, sender: str, text: str) -> str:
@@ -395,6 +417,7 @@ class RoomManager:
             return "that subagent already finished — its room is history now."
         try:
             import asyncio as _asyncio
+
             if _asyncio.iscoroutinefunction(fn):
                 ok = await fn(text)
             else:
@@ -425,7 +448,10 @@ class RoomManager:
         entry["busy"] = True
         try:
             import asyncio as _asyncio
-            result = await _asyncio.to_thread(rpc.run_task, f"[{sender} over IRC] {text}")
+
+            result = await _asyncio.to_thread(
+                rpc.run_task, f"[{sender} over IRC] {text}"
+            )
         finally:
             entry["busy"] = False
         try:
@@ -437,6 +463,7 @@ class RoomManager:
         except Exception as exc:
             logger.debug("rooms: omp reply failed", exc_info=True)
             return f"(reply render failed: {exc})"
+
 
 _manager_lock = threading.Lock()
 _current_manager: "RoomManager | None" = None
@@ -472,8 +499,12 @@ _QUEUE: "queue.Queue[dict[str, Any]]" = __import__("queue").Queue()
 def submit_lifecycle(node_id: str, lifecycle: str, **fields: Any) -> None:
     """Sync, never raises: enqueue a child lifecycle frame for the pump."""
     try:
-        _QUEUE.put_nowait({"op": "lifecycle", "node_id": node_id,
-                           "lifecycle": lifecycle, **fields})
+        _QUEUE.put_nowait({
+            "op": "lifecycle",
+            "node_id": node_id,
+            "lifecycle": lifecycle,
+            **fields,
+        })
     except Exception:
         pass
 
@@ -481,8 +512,11 @@ def submit_lifecycle(node_id: str, lifecycle: str, **fields: Any) -> None:
 def submit_feed(node_id: str, feed: dict[str, Any] | Any) -> None:
     """Sync, never raises: enqueue one child feed frame for the pump."""
     try:
-        payload = dict(feed) if isinstance(feed, dict) else {"feed": "message",
-                                                             "text": str(feed)}
+        payload = (
+            dict(feed)
+            if isinstance(feed, dict)
+            else {"feed": "message", "text": str(feed)}
+        )
         _QUEUE.put_nowait({"op": "feed", "node_id": node_id, "feed": payload})
     except Exception:
         pass
@@ -526,12 +560,14 @@ def drop_omp_room(node_id: str) -> None:
     with _omp_lock:
         _omp_rooms.pop(node_id, None)
 
+
 _pump_task = None
 
 
 async def pump_forever(manager: "RoomManager", interval: float = 2.0) -> None:
     """Drain the producer queue forever (cancellation stops it)."""
     import asyncio as _asyncio
+
     while True:
         try:
             await manager.drain_queue()
@@ -548,11 +584,14 @@ async def pump_forever(manager: "RoomManager", interval: float = 2.0) -> None:
 async def start_pump(manager: "RoomManager", interval: float = 2.0) -> bool:
     """Start the shared pump task once; True when (now) running."""
     import asyncio as _asyncio
+
     global _pump_task
     try:
         if _pump_task is not None and not _pump_task.done():
             return True
-        _pump_task = _asyncio.get_running_loop().create_task(pump_forever(manager, interval))
+        _pump_task = _asyncio.get_running_loop().create_task(
+            pump_forever(manager, interval)
+        )
         return True
     except Exception:
         logger.debug("rooms: pump start failed", exc_info=True)

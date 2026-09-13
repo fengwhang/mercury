@@ -1,4 +1,5 @@
 """IRC daemon tests: join/msg fanout, bouncer replay, destroy, auth."""
+
 from __future__ import annotations
 
 import asyncio
@@ -41,7 +42,9 @@ class RawClient:
                 buf += data
                 while b"\n" in buf:
                     raw, buf = buf.split(b"\n", 1)
-                    await self.lines.put(raw.decode("utf-8", errors="replace").rstrip("\r"))
+                    await self.lines.put(
+                        raw.decode("utf-8", errors="replace").rstrip("\r")
+                    )
         except asyncio.CancelledError:
             pass
 
@@ -83,8 +86,9 @@ class RawClient:
 @asynccontextmanager
 async def running_daemon(tmp_path, **kwargs):
     """Start an IrcDaemon on ephemeral ports (fixtures stay sync per convention)."""
-    config = DaemonConfig(agent_port=0, bouncer_port=0,
-                          state_dir=str(tmp_path), **kwargs)
+    config = DaemonConfig(
+        agent_port=0, bouncer_port=0, state_dir=str(tmp_path), **kwargs
+    )
     d = IrcDaemon(config)
     await d.start()
     agent_port = d._servers[0].sockets[0].getsockname()[1]
@@ -195,3 +199,37 @@ async def test_history_survives_restart(tmp_path) -> None:
             await a.close()
     async with running_daemon(tmp_path) as (d2, _, __):
         assert [m.text for m in d2.channel_history("#persist")] == ["remember me"]
+
+
+@pytest.mark.asyncio
+async def test_oper_destroy_kills_room(tmp_path) -> None:
+    async with running_daemon(tmp_path, agent_password="op-secret") as (
+        d,
+        agent_port,
+        _,
+    ):
+        bot = RawClient()
+        await bot.connect(agent_port)
+        mem = RawClient()
+        await mem.connect(agent_port)
+        try:
+            await bot.register("bot", password="op-secret")
+            await mem.register("mem", password="op-secret")
+            await bot.send("JOIN #doomed")
+            await bot.next_match("JOIN #doomed")
+            await mem.send("JOIN #doomed")
+            await mem.next_match("JOIN #doomed")
+            # unprivileged destroy is refused
+            await mem.send("DESTROY #doomed")
+            await mem.next_match("481")
+            assert "#doomed" in d.channel_names()
+            # oper destroy PARTs members and drops history
+            await bot.send("OPER op-secret")
+            await bot.next_match("381")
+            await bot.send("DESTROY #doomed")
+            await mem.next_match("PART #doomed")
+            assert d.channel_names() == []
+            assert d.channel_history("#doomed") == []
+        finally:
+            await bot.close()
+            await mem.close()

@@ -5,6 +5,7 @@ agent listener for the gateway/agents, one bouncer listener for the
 user's IRC client, on the same channel state with SQLite-backed
 history replay. No homeserver, no crypto stack, no appservice.
 """
+
 from __future__ import annotations
 
 import secrets
@@ -124,6 +125,7 @@ class ObservatoryPaths:
         self.config_file = self.root / FILE_CONFIG
         self.history_db = self.root / FILE_HISTORY_DB
 
-    def bouncer_url(self, *, address: str = IRCD_ADDRESS,
-                    port: int = IRCD_BOUNCER_PORT_DEFAULT) -> str:
+    def bouncer_url(
+        self, *, address: str = IRCD_ADDRESS, port: int = IRCD_BOUNCER_PORT_DEFAULT
+    ) -> str:
         return f"irc://{address}:{port}"
