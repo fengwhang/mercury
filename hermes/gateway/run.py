@@ -33248,7 +33248,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
 
             def _observatory_inject_handler(params: dict) -> dict:
-                # Matrix room plain text (kind == "steer") tries the live
+                # Room plain text (kind == "steer") tries the live
                 # gateway-session turn first inside _observatory_inject_dispatch
                 # (same cached agent absorbs it mid-turn — no second turn);
                 # every miss runs the normal fresh turn unchanged.
@@ -33263,12 +33263,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 # gateway-session agent's in-flight turn. Runs on the
                 # socket executor thread; interrupt() is thread-safe
                 # (sets the flag the agent loop polls at the next boundary).
-                reason = params.get("reason", "matrix /stop") if isinstance(params, dict) else "matrix /stop"
+                reason = params.get("reason", "irc /stop") if isinstance(params, dict) else "irc /stop"
                 try:
                     from observatory.gateway_session import (
                         interrupt_gateway_agent as _interrupt_gateway_agent,
                     )
-                    return dict(_interrupt_gateway_agent(str(reason or "matrix /stop")))
+                    return dict(_interrupt_gateway_agent(str(reason or "irc /stop")))
                 except Exception as exc:
                     logger.debug("Observatory interrupt verb failed: %s", exc)
                     return {"interrupted": False, "reason": f"interrupt failed: {exc}"}
