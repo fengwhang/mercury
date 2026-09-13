@@ -245,3 +245,88 @@ async def test_ensure_omp_feed_returns_feed_and_attaches(
             await task
         except (asyncio.CancelledError, Exception):
             pass
+
+
+
+class SpawnFakeOmpRpc(FakeOmpRpc):
+    """Spawn double: FakeOmpRpc plus the started-client session surface."""
+
+    def __init__(self, feed, session_file="/tmp/spawn-sess.jsonl"):
+        super().__init__(feed)
+        self._client = SimpleNamespace(
+            get_state=lambda: SimpleNamespace(session_file=session_file),
+        )
+
+
+@pytest.mark.asyncio()
+async def test_spawnomp_first_turn_streams_self_trace(monkeypatch, tmp_path):
+    """A /spawnomp 0-agent's first OmpPrompt attaches the feed and streams
+    the SELF trace into its own room before the summary."""
+    import observatory.omp_feed as omp_feed_mod
+    from observatory.spawn import OrchestratorRegistry, spawn_orchestrator
+    from observatory.state import ObservatoryState
+
+    d = _omp_daemon(monkeypatch, tmp_path)
+    d.state = ObservatoryState(tmp_path / "state.db")
+    feed = FakeFeed()
+    rpc = SpawnFakeOmpRpc(feed)
+    monkeypatch.setattr(omp_feed_mod, "OmpFeed", lambda rpc: feed)
+    registry = OrchestratorRegistry()
+    row = await spawn_orchestrator(
+        "tracer", "omp", server_name="mercury.local",
+        state=d.state, registry=registry, renderer=None,
+        omp_child_factory=lambda: rpc,
+    )
+    node_id = row["node_id"]
+    handle = registry.get(node_id)
+    assert handle is not None and getattr(handle, "rpc") is rpc
+    monkeypatch.setattr(d, "_child_handle", lambda nid: registry.get(nid))
+
+    ok = await d._run_omp_child_prompt(node_id, "first decree")
+    assert ok is True
+    assert rpc.observed_started is True, "run_task ran with no feed subscription"
+    assert d.omp_feeds.get(node_id) is feed, "first turn must attach the feed"
+
+    renderer = d.renderer
+    assert renderer.tool_calls == [(node_id, "terminal", '{"command": "ls /tmp"}')]
+    assert renderer.thinkings == [(node_id, "checking the directory listing")]
+    assert [m[1] for m in renderer.messages] == [
+        "halfway there", "omp-reply:first decree",
+    ]
+    for task in list(d._loops):
+        task.cancel()
+    for task in list(d._loops):
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@pytest.mark.asyncio()
+async def test_spawn_hermes_first_turn_captures_trace(monkeypatch, tmp_path):
+    """A /spawn hermes 0-agent's first turn captures tool+thinking+reply
+    through the gateway collector into its own room."""
+    from observatory.spawn import OrchestratorRegistry, spawn_orchestrator
+    from observatory.state import ObservatoryState
+
+    d = _omp_daemon(monkeypatch, tmp_path)
+    d.state = ObservatoryState(tmp_path / "state.db")
+    agent = FakeAgent()
+    agent.session_id = "sess-spawn-1"
+    registry = OrchestratorRegistry()
+    row = await spawn_orchestrator(
+        "thinker", "hermes", server_name="mercury.local",
+        state=d.state, registry=registry, renderer=None,
+        agent_factory=lambda: agent,
+    )
+    node_id = row["node_id"]
+    monkeypatch.setattr(d, "_child_handle", lambda nid: registry.get(nid))
+
+    ok = await d._run_hermes_child_turn(node_id, "first thought")
+    assert ok is True
+
+    renderer = d.renderer
+    assert renderer.tool_calls == [(node_id, "terminal", '{"command": "ls /tmp"}')]
+    assert renderer.thinkings == [(node_id, "checking the directory listing")]
+    assert len(renderer.messages) == 1 and renderer.messages[0][0] == node_id
+    assert "reply:first thought" in renderer.messages[0][1]
