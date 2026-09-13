@@ -642,23 +642,32 @@ async def serve_forever(config: DaemonConfig) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
+    import os as _os
 
     parser = argparse.ArgumentParser(description="Mercury observatory IRC daemon")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--agent-port", type=int, default=6669)
     parser.add_argument("--bouncer-host", default="127.0.0.1")
     parser.add_argument("--bouncer-port", type=int, default=6670)
-    parser.add_argument("--server-name", default="mercury.local")
-    parser.add_argument("--password", default="")
-    parser.add_argument("--agent-password", default="")
+    parser.add_argument("--server-name", default="mercury")
+    # Passwords: explicit flags win; env fallback keeps secrets out of
+    # ps output (the systemd unit passes none — EnvironmentFile only).
+    parser.add_argument("--password", default=None)
+    parser.add_argument("--agent-password", default=None)
     parser.add_argument("--history-limit", type=int, default=200)
     parser.add_argument("--state-dir", default="")
     args = parser.parse_args(argv)
+    password = args.password
+    if password is None:
+        password = _os.environ.get("IRC_BOUNCER_PASSWORD", "")
+    agent_password = args.agent_password
+    if agent_password is None:
+        agent_password = _os.environ.get("IRC_AGENT_PASSWORD", "")
     config = DaemonConfig(
         host=args.host, agent_port=args.agent_port,
         bouncer_host=args.bouncer_host, bouncer_port=args.bouncer_port,
-        server_name=args.server_name, password=args.password,
-        agent_password=args.agent_password,
+        server_name=args.server_name, password=password or "",
+        agent_password=agent_password or "",
         history_limit=args.history_limit, state_dir=args.state_dir,
     )
     logging.basicConfig(level=logging.INFO)
