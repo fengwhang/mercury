@@ -1077,6 +1077,72 @@ class SQLiteCryptoStore(_MemoryCryptoStore):
              device.name or ""))
         await self._db.commit()
 
+    async def get_devices(self, user_id) -> dict | None:
+        """SQLite-backed read: the mirror is the restart source of truth,
+        so trust decisions survive memory/SQLite disagreement (the
+        put_devices race guarantees it happens). Falls back to memory
+        before open() or for never-tracked users (None, not {})."""
+        from mautrix.types import (
+            DeviceID,
+            DeviceIdentity,
+            IdentityKey,
+            SigningKey,
+            TrustState,
+            UserID,
+        )
+
+        if self._db is None:
+            return await super().get_devices(user_id)
+        rows = await self._fetchall(
+            "SELECT * FROM devices WHERE user_id=?", (str(user_id),))
+        if rows:
+            return {
+                DeviceID(row["device_id"]): DeviceIdentity(
+                    user_id=UserID(row["user_id"]),
+                    device_id=DeviceID(row["device_id"]),
+                    identity_key=IdentityKey(row["identity_key"]),
+                    signing_key=SigningKey(row["signing_key"]),
+                    trust=TrustState(row["trust"]),
+                    deleted=bool(row["deleted"]),
+                    name=row["name"],
+                )
+                for row in rows
+            }
+        tracked = await self._fetchall(
+            "SELECT user_id FROM tracked_users WHERE user_id=?", (str(user_id),))
+        if tracked:
+            return {}
+        return await super().get_devices(user_id)
+
+    async def get_device(self, user_id, device_id):
+        """Single-device SQLite-backed read (same durability law)."""
+        from mautrix.types import (
+            DeviceID,
+            DeviceIdentity,
+            IdentityKey,
+            SigningKey,
+            TrustState,
+            UserID,
+        )
+
+        if self._db is None:
+            return await super().get_device(user_id, device_id)
+        rows = await self._fetchall(
+            "SELECT * FROM devices WHERE user_id=? AND device_id=?",
+            (str(user_id), str(device_id)))
+        if rows:
+            row = rows[0]
+            return DeviceIdentity(
+                user_id=UserID(row["user_id"]),
+                device_id=DeviceID(row["device_id"]),
+                identity_key=IdentityKey(row["identity_key"]),
+                signing_key=SigningKey(row["signing_key"]),
+                trust=TrustState(row["trust"]),
+                deleted=bool(row["deleted"]),
+                name=row["name"],
+            )
+        return await super().get_device(user_id, device_id)
+
     # -- cross-signing (persisted for interface completeness; SSSS stays unwired) ---
 
     async def put_cross_signing_key(self, user_id, usage, key) -> None:
@@ -1536,9 +1602,10 @@ class E2EEManager:
         fetch just introduced looks "known". The caller passes
         ``first_sight=True`` only for device ids absent from its
         pre-fetch snapshot; same-keys-required, so a concurrent rotation
-        still refuses instead of trusting. Resighting a known UNVERIFIED
-        device WITHOUT the flag leaves it untouched (manual verify may
-        be pending) but still returns True.
+        still refuses instead of trusting. A known device resighted under
+        identical keys is (re-)verified and persisted — the last fetch
+        clobbered its VERIFIED trust back to UNVERIFIED in both memory
+        and SQLite, and only this write restores it.
 
         Returns True when the device is trusted (first sight, or already
         known under identical keys) and False when a key change was
@@ -1558,10 +1625,11 @@ class E2EEManager:
                     target_user, device.device_id,
                 )
                 return False
-            if not first_sight or existing.trust == TrustState.VERIFIED:
+            if existing.trust == TrustState.VERIFIED and not first_sight:
                 return True
             # else: first sight of a device the last fetch just stored as
-            # UNVERIFIED — fall through to VERIFY + persist below.
+            # UNVERIFIED, or a known device whose VERIFIED trust that same
+            # fetch clobbered — fall through to (re-)VERIFY + persist below.
         device.trust = TrustState.VERIFIED
         if hasattr(store, "put_device"):  # SQLiteCryptoStore — single upsert
             await store.put_device(target_user, device)
