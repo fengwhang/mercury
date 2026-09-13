@@ -368,3 +368,62 @@ def test_verify_gives_up_with_both_down(monkeypatch):
         {"agent": "127.0.0.1:6669", "bouncer": "127.0.0.1:6670"}, retries=2)
     assert ok is False
     assert "systemctl --user restart" in detail
+
+
+def test_rotate_offer_with_chosen_password_restarts(monkeypatch, tmp_path):
+    """Choosing your own password sets it and restarts the daemon."""
+    import observatory.provision as provision_mod
+
+    calls = {}
+    monkeypatch.setattr(
+        provision_mod, "set_bouncer_password",
+        lambda home, pw: calls.setdefault("set", (str(home), pw)),
+    )
+    monkeypatch.setattr(
+        provision_mod, "_mercury_home", lambda home: tmp_path / "mercury"
+    )
+    answers = iter([True, True, True])  # rotate, custom, restart now
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no", lambda *a, **k: next(answers)
+    )
+    monkeypatch.setattr(
+        setup_mod, "_prompt_validated", lambda *a, **k: "my-chosen-pw"
+    )
+    ran = []
+    monkeypatch.setattr(
+        "subprocess.run", lambda *a, **k: ran.append(a[0])
+    )
+
+    class _Obs:
+        def validate_bouncer_password(self, value):
+            return provision_mod.validate_bouncer_password(value)
+
+    setup_mod._offer_bouncer_password_rotate(_Obs())
+    assert calls["set"] == (str(tmp_path / "mercury"), "my-chosen-pw")
+    assert ran and ran[0][:3] == ["systemctl", "--user", "restart"]
+
+
+def test_rotate_offer_random_without_restart_prints_manual(monkeypatch, capsys):
+    """Random rotate without restart leaves a manual command (no crash)."""
+    import observatory.provision as provision_mod
+
+    monkeypatch.setattr(
+        provision_mod, "mirror_irc_env", lambda *a: None
+    )
+    monkeypatch.setattr(
+        provision_mod, "read_irc_passwords",
+        lambda home: {"bouncer": "old", "agent": "ag"},
+    )
+    monkeypatch.setattr(
+        provision_mod, "generate_password", lambda *a: "new-random-pw"
+    )
+    answers = iter([True, False, False])  # rotate, generated, no restart
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no", lambda *a, **k: next(answers)
+    )
+
+    class _Obs:
+        pass
+
+    setup_mod._offer_bouncer_password_rotate(_Obs())
+    assert "systemctl --user restart" in capsys.readouterr().out

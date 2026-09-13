@@ -268,6 +268,10 @@ _open_observatory_firewall() { # $1 = bouncer port (default 6670). Best-effort, 
     return 0
 }
 install_observatory() {
+    # Optional: export OBSERVATORY_BOUNCER_PASSWORD (min 8 chars) to pin
+    # the bouncer password instead of generating one. The environment
+    # passes through to provisioning below — never pass it as an
+    # argument (argv is ps-visible). The daemon restart applies it.
     if [ "$SKIP_OBSERVATORY" = true ]; then
         log_info "skipping observatory network (--skip-observatory)"
         return 0

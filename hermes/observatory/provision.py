@@ -271,6 +271,29 @@ def ensure_passwords(mercury_home: str | Path | None = None) -> dict[str, Any]:
         mirror_irc_env(mercury_home, have["bouncer"], have["agent"])
     return {"action": "generated" if made else "current", "made": made}
 
+
+#: Env var carrying a user-chosen bouncer password into provisioning
+#: (install.sh passes the environment through; never an argv flag —
+#: secrets stay out of ps output). Validated like a wizard-typed one.
+ENV_CHOSEN_BOUNCER_PASSWORD = "OBSERVATORY_BOUNCER_PASSWORD"
+
+
+def set_bouncer_password(
+    mercury_home: str | Path | None, password: str
+) -> dict[str, Any]:
+    """Set the bouncer password to a chosen value (min 8 chars).
+
+    The agent password is kept as-is (generated when missing); both are
+    mirrored to .env. The caller MUST restart the daemon afterwards — a
+    live daemon keeps the old password in memory until then, which is
+    exactly the ".env says X, daemon rejects X" desync.
+    """
+    clean = validate_bouncer_password(password)
+    have = read_irc_passwords(mercury_home)
+    agent = have.get("agent") or generate_password()
+    mirror_irc_env(mercury_home, clean, agent)
+    return {"action": "set", "agent": "kept" if have.get("agent") else "generated"}
+
 # --- TLS certificate -----------------------------------------------------------
 
 
@@ -697,6 +720,16 @@ def provision(
         "passwords": ensure_passwords(home),
         "tls": ensure_tls_cert(home),
     }
+    chosen = os.environ.get(ENV_CHOSEN_BOUNCER_PASSWORD)
+    if chosen:
+        # Explicit choice wins over generated/current (install.sh
+        # passes the env through; the wizard has its own prompt).
+        try:
+            summary["chosen_password"] = set_bouncer_password(home, chosen)
+        except ValueError as exc:
+            raise ProvisionError(
+                f"{ENV_CHOSEN_BOUNCER_PASSWORD} invalid: {exc}"
+            ) from exc
     live = live_server_name(home)
     if not live:
         raise ProvisionError("ircd.json pins no server_name (unprovisioned identity)")

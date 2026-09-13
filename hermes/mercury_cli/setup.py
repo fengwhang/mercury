@@ -3586,11 +3586,57 @@ def _prompt_server_label(obs, current: str | None = None) -> str:
     )
 
 
+def _restart_observatory_unit(reason: str) -> bool:
+    """Offer + perform a daemon restart so a new password/bind goes live.
+
+    A live daemon keeps the old password in memory until restart — that
+    desync (".env says X, daemon rejects X") is why callers come here.
+    Returns True when the daemon was restarted.
+    """
+    try:
+        from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
+    except Exception:  # noqa: BLE001
+        _unit = "mercury-observatory.service"
+    try:
+        restart_now = prompt_yes_no(
+            f"Restart the observatory now? ({reason})",
+            default=True,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception:  # noqa: BLE001 — a restart offer never kills the wizard
+        print_info(f"Restart it to apply: systemctl --user restart {_unit}")
+        return False
+    if not restart_now:
+        print_info(f"Restart it to apply: systemctl --user restart {_unit}")
+        return False
+    try:
+        import subprocess
+
+        subprocess.run(
+            ["systemctl", "--user", "restart", _unit],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort restart, never raises
+        print_warning(f"Could not restart {_unit}: {exc}")
+        print_info(f"Restart it manually: systemctl --user restart {_unit}")
+        return False
+    print_success(f"Observatory restarted ({_unit}).")
+    return True
+
+
 def _offer_bouncer_password_rotate(obs) -> None:
-    """Offer rotating the bouncer password (re-run path only)."""
+    """Offer rotating the bouncer password (re-run path only).
+
+    Random or user-chosen (min 8 chars); restarts the daemon so the new
+    password goes live immediately instead of desyncing from .env.
+    """
     try:
         want = prompt_yes_no(
-            "Rotate the bouncer password? (new random password, mirrored to .env)",
+            "Rotate the bouncer password? (mirrored to .env)",
             default=False,
         )
     except KeyboardInterrupt:
@@ -3600,19 +3646,38 @@ def _offer_bouncer_password_rotate(obs) -> None:
     if not want:
         return
     try:
+        custom = prompt_yes_no(
+            "Type your own password? (No = generate a random one)",
+            default=False,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception:  # noqa: BLE001 — an offer never kills the wizard
+        return
+    try:
         from observatory.provision import (
             _mercury_home,
             generate_password,
             mirror_irc_env,
             read_irc_passwords,
+            set_bouncer_password,
         )
 
         home = _mercury_home(None)
-        have = read_irc_passwords(home)
-        agent = have.get("agent") or generate_password()
-        mirror_irc_env(home, generate_password(), agent)
-        print_success("Bouncer password rotated (mirrored to .env — update your IRC client).")
-        print_info("Restart the daemon to apply: systemctl --user restart mercury-observatory.service")
+        if custom:
+            chosen = _prompt_validated(
+                "New bouncer password (min 8 characters)",
+                default=None,
+                validate=obs.validate_bouncer_password,
+                password=True,
+            )
+            set_bouncer_password(home, chosen)
+        else:
+            have = read_irc_passwords(home)
+            agent = have.get("agent") or generate_password()
+            mirror_irc_env(home, generate_password(), agent)
+        print_success("Bouncer password updated (mirrored to .env — update your IRC client).")
+        _restart_observatory_unit("necessary to apply the new password")
     except KeyboardInterrupt:
         raise
     except Exception as exc:

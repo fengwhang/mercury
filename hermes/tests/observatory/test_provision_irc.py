@@ -155,3 +155,43 @@ def test_provision_flow_includes_tls(tmp_path, monkeypatch) -> None:
     summary = provision.provision(home, server_name="mercury", systemd=False)
     assert summary["tls"]["action"] in ("generated", "current")
     assert summary["config"]["config"]["tls_port"] == 6697
+
+
+def test_set_bouncer_password_keeps_agent(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    first = provision.provision(home, server_name="mercury", systemd=False)
+    assert first["passwords"]["action"] == "generated"
+    out = provision.set_bouncer_password(home, "my-chosen-pw")
+    assert out == {"action": "set", "agent": "kept"}
+    have = provision.read_irc_passwords(home)
+    assert have["bouncer"] == "my-chosen-pw"
+    assert have["agent"]  # untouched
+
+
+def test_set_bouncer_password_rejects_short(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    import pytest
+
+    with pytest.raises(ValueError):
+        provision.set_bouncer_password(home, "short")
+
+
+def test_provision_honors_chosen_password_env(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.setenv(provision.ENV_CHOSEN_BOUNCER_PASSWORD, "env-chosen-pw")
+    summary = provision.provision(home, server_name="mercury", systemd=False)
+    assert summary["chosen_password"]["action"] == "set"
+    assert provision.read_irc_passwords(home)["bouncer"] == "env-chosen-pw"
+
+
+def test_provision_rejects_bad_chosen_password_env(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.setenv(provision.ENV_CHOSEN_BOUNCER_PASSWORD, "short")
+    import pytest
+
+    with pytest.raises(provision.ProvisionError):
+        provision.provision(home, server_name="mercury", systemd=False)
