@@ -173,6 +173,11 @@ async def test_bouncer_password_enforced(tmp_path) -> None:
         try:
             await u.send("NICK user")
             await u.send("USER user 0 * :test")
+            # No 464 before an auth attempt: clients latch an early 464
+            # as fatal (Goguma). Silence until PASS/SASL arrives.
+            with pytest.raises(TimeoutError):
+                await u.next_match("464", timeout=0.5)
+            await u.send("PASS wrong")
             assert await u.next_match("464")
         finally:
             await u.close()
@@ -518,7 +523,9 @@ async def test_pass_last_order_registers(tmp_path) -> None:
         try:
             await c.send("NICK late")
             await c.send("USER late 0 * :test")
-            assert await c.next_match("464")  # early attempt, no password yet
+            # Silence — no 464 before the password arrives.
+            with pytest.raises(TimeoutError):
+                await c.next_match("464", timeout=0.5)
             await c.send("PASS s3cret")
             assert await c.next_match(" 001 ", timeout=5.0)
         finally:
@@ -536,7 +543,9 @@ async def test_sasl_after_nick_user_registers(tmp_path) -> None:
         try:
             await c.send("NICK sasluser")
             await c.send("USER sasluser 0 * :test")
-            assert await c.next_match("464")
+            # Silence — no 464 before SASL completes.
+            with pytest.raises(TimeoutError):
+                await c.next_match("464", timeout=0.5)
             await c.send("CAP REQ :sasl")
             assert await c.next_match("ACK :sasl")
             await c.send("AUTHENTICATE PLAIN")

@@ -93,6 +93,7 @@ class _Client:
         "realname",
         "registered",
         "pass_ok",
+        "pass_attempted",
         "oper",
         "sasl",
         "addr",
@@ -110,6 +111,7 @@ class _Client:
         self.realname = ""
         self.registered = False
         self.pass_ok = False
+        self.pass_attempted = False
         self.oper = False
         self.sasl = None
         self.addr = addr
@@ -372,6 +374,7 @@ class IrcDaemon:
         cmd = cmd.upper()
         if cmd == "PASS":
             given = rest.strip().lstrip(":")
+            client.pass_attempted = True
             client.pass_ok = given == password
             # Shape-only auth log (never the secret): attempt length vs
             # outcome distinguishes truncation/padding from wrong values.
@@ -493,6 +496,7 @@ class IrcDaemon:
                 decoded = ""
             parts = decoded.split("\x00")
             given = parts[-1] if parts else ""
+            client.pass_attempted = True
             # Shape-only: field count + attempt length, never content.
             # (Trailing-NUL blobs have an empty last field → 904.)
             logger.info(
@@ -560,6 +564,12 @@ class IrcDaemon:
         if client.registered or not client.nick or not client.user:
             return
         if password and not client.pass_ok:
+            # No 464 before the client has attempted auth: clients latch
+            # the first 464 as fatal and ignore a later 903/001 (Goguma
+            # sends NICK/USER before its password). Wrong-password
+            # attempts still get their 464 from the PASS/SASL handler.
+            if not client.pass_attempted:
+                return
             await self._numeric(client, 464, "*", "Password incorrect")
             return
         client.registered = True
