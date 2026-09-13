@@ -240,6 +240,33 @@ install_computer_use_driver() {
 # and the systemd user unit mercury-observatory.service. Fail-hard,
 # idempotent. No binaries, no wheels, no crypto stack — the daemon is
 # pure stdlib asyncio.
+_open_observatory_firewall() { # $1 = bouncer port (default 6670). Best-effort, never fails.
+    # Phones reach the bouncer over the tailnet, but host firewalls
+    # (Fedora default) drop inbound TCP to unlisted ports — a silent
+    # timeout on every client. Open the port when firewalld is active.
+    local PORT="${1:-6670}"
+    command -v firewall-cmd >/dev/null 2>&1 || return 0
+    firewall-cmd --state >/dev/null 2>&1 || return 0
+    firewall-cmd --query-port="${PORT}/tcp" >/dev/null 2>&1 && return 0
+    local sudo_cmd=""
+    [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
+    if [ -n "$sudo_cmd" ] && ! $sudo_cmd -n true >/dev/null 2>&1; then
+        if [ -t 0 ]; then
+            log_info "opening bouncer port ${PORT}/tcp (sudo may ask for a password)"
+        else
+            log_info "bouncer port ${PORT}/tcp not open and sudo needs a password — open it by hand: sudo firewall-cmd --permanent --add-port=${PORT}/tcp && sudo firewall-cmd --reload"
+            return 0
+        fi
+    fi
+    # shellcheck disable=SC2086
+    if $sudo_cmd firewall-cmd --permanent --add-port="${PORT}/tcp" >/dev/null 2>&1 \
+        && $sudo_cmd firewall-cmd --reload >/dev/null 2>&1; then
+        log_success "bouncer port ${PORT}/tcp open in the host firewall"
+    else
+        log_info "could not open bouncer port ${PORT}/tcp — phones will time out until it is open (sudo firewall-cmd --permanent --add-port=${PORT}/tcp && sudo firewall-cmd --reload)"
+    fi
+    return 0
+}
 install_observatory() {
     if [ "$SKIP_OBSERVATORY" = true ]; then
         log_info "skipping observatory network (--skip-observatory)"
@@ -251,6 +278,9 @@ install_observatory() {
     MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
         "$VENV_PY" -m observatory.provision \
         || { log_error "observatory provisioning failed (see output above)"; exit 1; }
+    local _bouncer_port
+    _bouncer_port="$("$VENV_PY" -c "import json;print(json.load(open('$MERCURY_HOME/observatory/ircd.json'))['bouncer_port'])" 2>/dev/null)" || _bouncer_port=""
+    _open_observatory_firewall "${_bouncer_port:-6670}"
     log_success "observatory ready: $MERCURY_HOME/observatory/"
 }
 

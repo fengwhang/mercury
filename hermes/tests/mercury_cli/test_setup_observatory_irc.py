@@ -260,3 +260,83 @@ def test_auto_unit_partial_result_is_failure(capsys):
     assert setup_mod._auto_ensure_unit(_PartialObs(_base_status())) == "skipped-error"
     out = capsys.readouterr().out
     assert "NOT running" in out
+
+
+def _fake_firewall_bin(tmp_path, *, state="running", open_ports=(), add_rc=0, reload_rc=0):
+    """A fake firewall-cmd honoring --state/--query-port/--add-port/--reload."""
+    bindir = tmp_path / "fwbin"
+    bindir.mkdir(exist_ok=True)
+    script = bindir / "firewall-cmd"
+    script.write_text(
+        "#!/bin/sh\n"
+        f"STATE={state}\n"
+        f"OPEN='{ ' '.join(open_ports)}'\n"
+        f"ADD_RC={add_rc}\n"
+        f"RELOAD_RC={reload_rc}\n"
+        'case "$1" in\n'
+        '  --state) [ "$STATE" = running ] && exit 0 || exit 1;;\n'
+        '  --query-port=*) p="${1#--query-port=}"; case " $OPEN " in *" $p "*) exit 0;; *) exit 1;; esac;;\n'
+        '  --permanent) exit "$ADD_RC";;\n'
+        '  --reload) exit "$RELOAD_RC";;\n'
+        'esac\nexit 0\n',
+        encoding="utf-8",
+    )
+    import stat as _stat
+
+    script.chmod(script.stat().st_mode | _stat.S_IXUSR)
+    return bindir
+
+
+def _no_sudo(monkeypatch):
+    import shutil
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name: None if name in ("firewall-cmd", "sudo") else real_which(name),
+    )
+
+
+def test_firewall_unavailable_without_binary(monkeypatch, tmp_path):
+    import mercury_cli.setup as setup_mod
+
+    _no_sudo(monkeypatch)
+    assert setup_mod._ensure_firewall_port(6670) == "unavailable"
+
+
+def test_firewall_already_open(monkeypatch, tmp_path):
+    import os
+
+    import mercury_cli.setup as setup_mod
+
+    bindir = _fake_firewall_bin(tmp_path, open_ports=("6670/tcp",))
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    assert setup_mod._ensure_firewall_port(6670) == "already-open"
+
+
+def test_firewall_opens_closed_port_as_root(monkeypatch, tmp_path):
+    import os
+
+    import mercury_cli.setup as setup_mod
+
+    bindir = _fake_firewall_bin(tmp_path)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    assert setup_mod._ensure_firewall_port("6670") == "open"
+
+
+def test_firewall_failure_degrades(monkeypatch, tmp_path):
+    import os
+
+    import mercury_cli.setup as setup_mod
+
+    bindir = _fake_firewall_bin(tmp_path, add_rc=1)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    assert setup_mod._ensure_firewall_port(6670) == "failed"
+
+
+def test_firewall_bad_port():
+    import mercury_cli.setup as setup_mod
+
+    assert setup_mod._ensure_firewall_port("nope") == "unavailable"

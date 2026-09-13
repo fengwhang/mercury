@@ -3144,6 +3144,75 @@ def _maybe_print_bind_mismatch_action(obs, ts: dict | None) -> None:
         print_warning(line)
 
 
+def _ensure_firewall_port(port: int | str) -> str:
+    """Open the bouncer port in firewalld when it runs (phones time out
+    otherwise — a filtered port is silent, unlike a refused one).
+
+    Best-effort, never prompts-reads, never raises: no firewalld (or an
+    already-open port) is an instant no-op; sudo may prompt for a
+    password on a TTY, and headless runs without passwordless sudo get
+    the exact manual command instead of a hang. Returns
+    "open" | "already-open" | "unavailable" | "skipped-no-tty" | "failed".
+    """
+    import shutil as _shutil
+    import subprocess as _sp
+    import sys as _sys
+
+    try:
+        port = int(str(port or "").strip())
+    except (ValueError, TypeError):
+        return "unavailable"
+    try:
+        if _shutil.which("firewall-cmd") is None:
+            return "unavailable"
+        probe = _sp.run(["firewall-cmd", "--state"],
+                        capture_output=True, text=True, timeout=10)
+        if probe.returncode != 0:
+            return "unavailable"
+        if _sp.run(["firewall-cmd", f"--query-port={port}/tcp"],
+                   capture_output=True, text=True, timeout=10).returncode == 0:
+            return "already-open"
+    except Exception:  # noqa: BLE001 — probe failures read as absent
+        return "unavailable"
+    sudo = ["sudo"]
+    try:
+        import os as _os
+
+        if _os.geteuid() == 0:
+            sudo = []
+        elif _shutil.which("sudo") is None:
+            return "failed"
+        elif not _sys.stdin.isatty():
+            try:
+                nopass = _sp.run(["sudo", "-n", "true"],
+                                 capture_output=True, timeout=10)
+            except Exception:  # noqa: BLE001
+                nopass = None
+            if nopass is None or nopass.returncode != 0:
+                print_info(
+                    f"Bouncer port {port}/tcp is filtered — open it by hand: "
+                    f"sudo firewall-cmd --permanent --add-port={port}/tcp "
+                    f"&& sudo firewall-cmd --reload")
+                return "skipped-no-tty"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        ok = _sp.run([*sudo, "firewall-cmd", "--permanent", f"--add-port={port}/tcp"],
+                     capture_output=True, text=True, timeout=60)
+        reload = _sp.run([*sudo, "firewall-cmd", "--reload"],
+                         capture_output=True, text=True, timeout=60)
+        if ok.returncode == 0 and reload.returncode == 0:
+            print_success(f"Bouncer port {port}/tcp open in the host firewall.")
+            return "open"
+    except Exception:  # noqa: BLE001 — failure degrades below
+        pass
+    print_info(
+        f"Could not open bouncer port {port}/tcp — phones will time out "
+        f"until it is open (sudo firewall-cmd --permanent "
+        f"--add-port={port}/tcp && sudo firewall-cmd --reload)")
+    return "failed"
+
+
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
     """Bouncer login card — the ONLY manual step (any IRC client).
 
@@ -3757,6 +3826,10 @@ def setup_observatory(config: dict, *, quick: bool = False):
         try:
             status = obs.status_summary()
         except Exception:  # noqa: BLE001 — keep the pre-bind status
+            pass
+        try:
+            _ensure_firewall_port(_bouncer_port(status.get("bouncer") or ""))
+        except Exception:  # noqa: BLE001 — firewall never kills setup
             pass
         _print_observatory_setup_card(status, ts)
         ok, detail = _verify_daemon_listening(status)
