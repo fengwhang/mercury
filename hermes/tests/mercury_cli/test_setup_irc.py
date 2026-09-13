@@ -56,11 +56,13 @@ def _unregister_irc_platform():
 
 
 class TestIRCFreshInstallDiscovery:
-    """IRC appears in the setup menu on a brand-new Mercury install."""
+    """IRC stays out of the gateway setup menu (observatory-owned)."""
 
-    def test_irc_appears_in_all_platforms(self, monkeypatch):
-        """When the IRC plugin is registered, _all_platforms() surfaces it."""
+    def test_irc_hidden_from_all_platforms(self, monkeypatch):
+        """The registry still carries IRC (gateway runtime needs it),
+        but _all_platforms() never surfaces it for setup."""
         import mercury_cli.gateway as gateway_mod
+        from gateway.platform_registry import platform_registry
 
         _register_irc_platform()
         try:
@@ -68,13 +70,10 @@ class TestIRCFreshInstallDiscovery:
             for key in ("IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"):
                 monkeypatch.delenv(key, raising=False)
 
+            assert platform_registry.get("irc") is not None
             platforms = gateway_mod._all_platforms()
             keys = {p["key"] for p in platforms}
-            assert "irc" in keys
-
-            irc_plat = next(p for p in platforms if p["key"] == "irc")
-            assert irc_plat["label"] == "IRC"
-            assert irc_plat["emoji"] == "💬"
+            assert "irc" not in keys
         finally:
             _unregister_irc_platform()
 
@@ -143,8 +142,8 @@ class TestIRCInteractiveSetup:
 class TestIRCGatewaySetupFreshInstall:
     """Simulate the full `mercury setup gateway` experience with IRC present."""
 
-    def test_setup_gateway_shows_irc_in_platform_menu(self, monkeypatch, capsys, tmp_path):
-        """The gateway setup menu lists IRC among the available platforms."""
+    def test_setup_gateway_hides_irc_from_platform_menu(self, monkeypatch, capsys, tmp_path):
+        """The gateway setup menu never lists IRC (observatory-owned)."""
         import mercury_cli.gateway as gateway_mod
         from mercury_cli import setup as setup_mod
 
@@ -154,12 +153,6 @@ class TestIRCGatewaySetupFreshInstall:
             for key in ("IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"):
                 monkeypatch.delenv(key, raising=False)
 
-            # Sanity-check: IRC must be visible to _all_platforms()
-            platforms = gateway_mod._all_platforms()
-            assert any(p["key"] == "irc" for p in platforms), \
-                f"IRC not in platforms: {[p['key'] for p in platforms]}"
-
-            # Capture what prompt_checklist is asked to display
             checklist_calls = []
 
             def capture_prompt_checklist(question, choices, pre_selected=None):
@@ -183,14 +176,12 @@ class TestIRCGatewaySetupFreshInstall:
             assert platform_prompt is not None, \
                 f"No platform prompt found in {checklist_calls}"
             choices_text = "\n".join(platform_prompt["choices"])
-            assert "IRC" in choices_text
-            assert "💬" in choices_text
-            assert "not configured" in choices_text.lower()
+            assert "IRC" not in choices_text
         finally:
             _unregister_irc_platform()
 
-    def test_setup_gateway_irc_counts_as_messaging_platform(self, monkeypatch, capsys, tmp_path):
-        """When IRC is configured, setup_gateway counts it as a messaging platform."""
+    def test_setup_gateway_completes_without_irc_row(self, monkeypatch, capsys, tmp_path):
+        """Gateway setup completes cleanly with no IRC row to select."""
         import mercury_cli.gateway as gateway_mod
         from mercury_cli import setup as setup_mod
 
@@ -203,17 +194,10 @@ class TestIRCGatewaySetupFreshInstall:
 
             monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **kw: False)
             monkeypatch.setattr(setup_mod, "prompt_choice", lambda *a, **kw: 0)
-            # Select ONLY the IRC row. Without this, the non-TTY checklist
-            # falls back to its cancel value (the pre-selected "configured"
-            # platforms) — on a dev machine with real platforms configured
-            # that runs their interactive setup_fn, which calls input() and
-            # dies under captured stdin. IRC's setup_fn is a no-op lambda.
             monkeypatch.setattr(
                 setup_mod,
                 "prompt_checklist",
-                lambda title, items, pre=None: [
-                    i for i, item in enumerate(items) if "IRC" in item
-                ],
+                lambda title, items, pre=None: [],
             )
             monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
             monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -223,6 +207,6 @@ class TestIRCGatewaySetupFreshInstall:
             setup_mod.setup_gateway({})
 
             out = capsys.readouterr().out
-            assert "Messaging platforms configured!" in out
+            assert "Traceback" not in out
         finally:
             _unregister_irc_platform()

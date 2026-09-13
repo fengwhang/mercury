@@ -6993,6 +6993,12 @@ def _all_platforms() -> list[dict]:
         # a built-in or, post-#41112, a registry-discovered plugin.
         if sys.platform == "win32" and entry.name == "matrix":
             continue
+        # IRC is owned by the observatory (bot transport, wired by
+        # `mercury setup observatory`): offering it here lets users
+        # silently clobber the bot wiring with a "second" connection
+        # the single-identity adapter cannot serve. Not offered, ever.
+        if entry.name == "irc":
+            continue
         platforms.append(
             {
                 "key": entry.name,
