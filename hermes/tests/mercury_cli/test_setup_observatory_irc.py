@@ -92,9 +92,8 @@ def _patch_common(stack, fake, *, choice=1, yes_answers=None):
         patch.object(setup_mod, "_offer_observatory_reset", return_value=False)
     )
     stack.enter_context(patch.object(setup_mod, "_offer_bouncer_password_rotate"))
-    stack.enter_context(
-        patch.object(setup_mod, "_prompt_server_label", return_value="mercury")
-    )
+    stack.enter_context(patch.object(setup_mod, "_prompt_server_label", return_value="mercury"))
+    stack.enter_context(patch.object(setup_mod, "_wire_gateway_irc_env"))
     auto = stack.enter_context(
         patch.object(
             setup_mod,
