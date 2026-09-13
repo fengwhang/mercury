@@ -264,7 +264,19 @@ async def boot_sidecar(
     from observatory.respawn import respawn_pass
     from observatory.spawn import OrchestratorRegistry
 
-    result.registry = registry if registry is not None else OrchestratorRegistry()
+    if registry is not None:
+        result.registry = registry
+    else:
+        # Handoff durability: a gateway reboot must not drop post-boot spawn
+        # handles. Reuse the live LAST_BOOT registry when one exists so the
+        # same object (same handles) survives; only a first boot mints fresh.
+        # The respawn pass skips nodes already holding a live handle, so
+        # reuse never double-respawns. Never raises (fresh on any doubt).
+        try:
+            prior_registry = getattr(globals().get("LAST_BOOT"), "registry", None)
+        except Exception:
+            prior_registry = None
+        result.registry = prior_registry if prior_registry is not None else OrchestratorRegistry()
     try:
         result.report = await respawn_pass(
             state=result.state,

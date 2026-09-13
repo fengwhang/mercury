@@ -3882,6 +3882,114 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
     normalized = " ".join(str(message).strip().split()).lower()
     return normalized in _CONTROL_INTERRUPT_MESSAGES
 
+def _matrix_steer_text_targets_live_turn(kind: object, internal: object) -> bool:
+    """True when Matrix room plain text may land in a live gateway turn.
+
+    Only ``kind == "steer"`` (gateway-room SteerText from
+    ``observatory.control``) with ``internal == False`` qualifies: quiet
+    parent-continuations (``internal=True``) and engine commands
+    (``kind == "command"``) must keep their fresh-turn path, as must every
+    other prompt kind. Content-agnostic: the text itself is never inspected
+    here — ``stop``, ``apple``, anything takes the same path.
+    """
+    try:
+        return str(kind or "prompt") == "steer" and not bool(internal)
+    except Exception:
+        return False
+
+
+def _attempt_matrix_live_steer(text: object, *, session_id: str = "gateway") -> dict:
+    """Try redirect-then-steer into the live gateway-session agent.
+
+    Calls ``observatory.gateway_session.steer_gateway_agent`` (which tries
+    ``agent.redirect`` first so a mid-generation steer cuts the live model
+    request like the CLI interrupt path, degrading to the steer buffer
+    during tool execution) without taking the per-session turn lock. True
+    only when the SAME cached agent absorbed the text into its live turn —
+    the caller must then run no fresh turn. Never raises: every miss reports
+    ``steered=False`` so the caller falls back to the normal fresh turn.
+    Fast-idle: with no cached agent and the session lock free there is no
+    live turn, so report the miss without entering the steer entry point's
+    build-window wait; a held lock still goes through it so a steer landing
+    while the agent is being built waits for the cache instead of queueing
+    a second turn behind it.
+    """
+    try:
+        clean = text.strip() if isinstance(text, str) else str(text or "").strip()
+    except Exception:
+        return {"steered": False, "reason": "unreadable steer text"}
+    if not clean:
+        return {"steered": False, "reason": "empty steer text"}
+    try:
+        from observatory import gateway_session as _gs
+    except Exception as exc:
+        return {"steered": False, "reason": f"gateway session unavailable: {exc}"}
+    try:
+        sid = session_id or getattr(_gs, "GATEWAY_SESSION_ID", "gateway")
+        agent = None
+        locked = False
+        try:
+            with getattr(_gs, "_locks_guard"):
+                agent = getattr(_gs, "_session_agents", {}).get(sid)
+        except Exception:
+            try:
+                agent = getattr(_gs, "_session_agents", {}).get(sid)
+            except Exception:
+                agent = None
+        try:
+            locked = bool(getattr(_gs, "_session_lock")(sid).locked())
+        except Exception:
+            locked = False
+        if agent is None and not locked:
+            return {"steered": False, "reason": "idle — nothing to steer"}
+        steer_fn = getattr(_gs, "steer_gateway_agent", None)
+        if not callable(steer_fn):
+            return {"steered": False, "reason": "no steer surface"}
+        try:
+            out = steer_fn(clean, session_id=sid)
+        except TypeError:
+            out = steer_fn(clean)
+        if isinstance(out, dict):
+            return {
+                "steered": bool(out.get("steered") is True),
+                "reason": str(out.get("reason") or ""),
+            }
+        return {"steered": bool(out), "reason": ""}
+    except Exception as exc:
+        logger.debug("Matrix live-steer attempt failed: %s", exc)
+        return {"steered": False, "reason": f"steer failed: {exc}"}
+
+
+def _observatory_inject_dispatch(params: object, run_prompt_fn) -> dict:
+    """Dispatch one Matrix ``inject`` with gateway-side live-steer first.
+
+    Matrix room plain text (``kind == "steer"``, non-internal) tries
+    :func:`_attempt_matrix_live_steer` before anything else: when the
+    gateway-session turn is live the SAME cached agent absorbs the text
+    into its running turn and no fresh turn runs (no second turn, no
+    second reply — the live turn's reply carries the reaction). Every miss
+    — idle gateway, empty text, no steer surface — falls through to the
+    normal fresh turn with byte-identical params and event capping, so
+    idle behavior, followups, and commands are unchanged.
+    """
+    text = params.get("text", "") if isinstance(params, dict) else ""
+    kind = params.get("kind", "prompt") if isinstance(params, dict) else "prompt"
+    node_id = params.get("node_id", "gw") if isinstance(params, dict) else "gw"
+    room_id = params.get("room_id") if isinstance(params, dict) else None
+    internal = bool(params.get("internal", False)) if isinstance(params, dict) else False
+    if _matrix_steer_text_targets_live_turn(kind, internal):
+        live = _attempt_matrix_live_steer(text)
+        if isinstance(live, dict) and live.get("steered") is True:
+            return {"reply": "", "events": [], "steered": True}
+    _reply, _events = run_prompt_fn(
+        text, kind=kind, node_id=node_id or "gw", room_id=room_id, internal=internal
+    )
+    _out: dict = {"reply": _reply}
+    if _events:
+        # Cap events so the 512KB response guard cannot turn a good long
+        # turn into ok:false; reply text stays uncapped.
+        _out["events"] = _events[-200:] if len(_events) > 200 else _events
+    return _out
 
 def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     """Return the visible text portion of a response before direct send().
@@ -33141,18 +33249,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
 
             def _observatory_inject_handler(params: dict) -> dict:
-                text = params.get("text", "") if isinstance(params, dict) else ""
-                kind = params.get("kind", "prompt") if isinstance(params, dict) else "prompt"
-                node_id = params.get("node_id", "gw") if isinstance(params, dict) else "gw"
-                room_id = params.get("room_id") if isinstance(params, dict) else None
-                internal = bool(params.get("internal", False)) if isinstance(params, dict) else False
-                _reply, _events = _run_gateway_prompt_with_events(text, kind=kind, node_id=node_id or "gw", room_id=room_id, internal=internal)
-                _out: dict = {"reply": _reply}
-                if _events:
-                    # Cap events so the 512KB response guard cannot turn a
-                    # good long turn into ok:false; reply text stays uncapped.
-                    _out["events"] = _events[-200:] if len(_events) > 200 else _events
-                return _out
+                # Matrix room plain text (kind == "steer") tries the live
+                # gateway-session turn first inside _observatory_inject_dispatch
+                # (same cached agent absorbs it mid-turn — no second turn);
+                # every miss runs the normal fresh turn unchanged.
+                return _observatory_inject_dispatch(params, _run_gateway_prompt_with_events)
 
             _control_server.register_handler(
                 "inject", _observatory_inject_handler, takes_params=True
