@@ -63,6 +63,10 @@ SPACE_META_PREFIX = "space:"
 ROOT_SPACE_META_KEY = SPACE_META_PREFIX + tree.ROOT_SPACE_KEY
 #: Legacy gateway-subspace meta key (pre-unification shape — migrated once).
 LEGACY_GATEWAY_SPACE_META_KEY = SPACE_META_PREFIX + tree.GATEWAY_AGENT_SPACE_KEY
+#: Max delivery attempts for one queued live send (initial try + retries).
+#: Bounded so a permanently failing room (e.g. a wedged E2EE session) can
+#: never spin the retry queue forever — the send drops with a warning.
+SEND_RETRY_MAX = 5
 
 
 def migrate_legacy_gateway_space(state: ObservatoryState, gateway_node_id: str) -> bool:
@@ -447,6 +451,11 @@ class Renderer:
         self.server_name = server_name
         self.owner_mxid = owner_mxid
         self.executor = executor
+        # Live-send retry queue: (intents, attempts) pairs whose initial
+        # send failed (e.g. E2EE "No group session created"). Sends only —
+        # converge intents (create/attach) never queue, so a retry can
+        # never duplicate a room/space.
+        self._pending_sends: list[tuple[tuple[Any, ...], int]] = []
 
     # --- state reads ----------------------------------------------------------
 
@@ -737,6 +746,53 @@ class Renderer:
             raise RuntimeError("Renderer constructed without an IntentExecutor")
         return await self.executor.execute(intents)
 
+    def _queue_for_retry(self, intents: Sequence[RenderIntent]) -> None:
+        """Park a failed live send for a bounded retry (never raises)."""
+        self._pending_sends.append((tuple(intents), 0))
+
+    @property
+    def pending_retry_count(self) -> int:
+        """Queued live sends awaiting redelivery."""
+        return len(self._pending_sends)
+
+    async def retry_pending_sends(self) -> int:
+        """Redeliver queued live sends. Returns the delivered count.
+
+        Bounded (``SEND_RETRY_MAX`` attempts per send, then dropped with
+        a warning) and sends-only — converge intents never queue, so a
+        retry can never duplicate a room/space. Never raises: one
+        still-failing send re-queues without blocking its siblings.
+        """
+        if not self._pending_sends:
+            return 0
+        pending, self._pending_sends = self._pending_sends, []
+        delivered = 0
+        for intents, attempts in pending:
+            try:
+                await self._execute(intents)
+                delivered += 1
+            except Exception as exc:  # noqa: BLE001 — classified, not swallowed
+                if attempts + 1 < SEND_RETRY_MAX:
+                    self._pending_sends.append((intents, attempts + 1))
+                else:
+                    log.warning("dropping live send after %d attempts: %s",
+                                attempts + 1, exc)
+        return delivered
+
+    async def _execute_live(self, intents: Sequence[RenderIntent]) -> None:
+        """Best-effort live send: a delivery failure queues a bounded
+        retry instead of raising — the node/room setup around the send
+        must never abort on a wedged E2EE session. A missing executor
+        stays a hard error (planning-only misuse, not a send failure)."""
+        if self.executor is None:
+            await self._execute(intents)  # raises RuntimeError, never queued
+            return
+        try:
+            await self._execute(intents)
+        except Exception as exc:  # noqa: BLE001 — queued, never swallowed
+            log.warning("live send failed — queued for retry: %s", exc)
+            self._queue_for_retry(intents)
+
     async def snapshot(self, plan: tree.SpacePlan) -> dict[str, Any]:
         """Current matrix state from the root hierarchy, AUGMENTED with
         every plan id the state already knows (a created-but-unattached
@@ -807,24 +863,24 @@ class Renderer:
 
     async def render_lifecycle(self, node_id: str) -> list[RenderIntent]:
         intents = self.plan_lifecycle(node_id)
-        await self._execute(intents)
+        await self._execute_live(intents)
         return list(intents)
 
     async def render_tool_call(
         self, node_id: str, tool: str, args: str | None = None, *, error: str | None = None
     ) -> list[RenderIntent]:
         intents = self.plan_tool_call(node_id, tool, args, error=error)
-        await self._execute(intents)
+        await self._execute_live(intents)
         return list(intents)
 
     async def render_thinking(self, node_id: str, text: str) -> list[RenderIntent]:
         intents = self.plan_thinking(node_id, text)
-        await self._execute(intents)
+        await self._execute_live(intents)
         return list(intents)
 
     async def render_agent_message(self, node_id: str, text: str) -> list[RenderIntent]:
         intents = self.plan_agent_message(node_id, text)
-        await self._execute(intents)
+        await self._execute_live(intents)
         return list(intents)
 
     async def render_dashboard(

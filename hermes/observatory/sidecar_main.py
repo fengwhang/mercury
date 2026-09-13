@@ -111,7 +111,7 @@ from observatory.config_gen import (
     render_sidecar_unit,
 )
 from observatory.identity import assign_slug, virtual_mxid
-from observatory.control import QUEUED_STEER_NOTICE, AbortSession, InjectText, OmpAbortMain, OmpPrompt, OmpSteer, OmpSubagentAbort, OmpSubagentSteer, ResolveApproval, STOP_CONFIRMED_NOTICE
+from observatory.control import APPLIED_STEER_NOTICE, QUEUED_STEER_NOTICE, AbortSession, InjectText, OmpAbortMain, OmpPrompt, OmpSteer, OmpSubagentAbort, OmpSubagentSteer, ResolveApproval, STOP_CONFIRMED_NOTICE
 from observatory.gateway_transport import (
     ControlSocketGatewayTransport,
     GatewayTransportError,
@@ -182,6 +182,11 @@ CHILD_PROMPT_FAILED_NOTICE = (
 )
 CHILD_STEER_FAILED_NOTICE = (
     "⚠ steer failed — see the sidecar log"
+)
+CHILD_ORPHAN_NOTICE = (
+    "⚠ this agent never finished its first turn before the last restart, "
+    "so there is no saved session to resume — send a message to start it "
+    "fresh here, or /exit to remove it (nothing was lost: no turn had completed yet)."
 )
 #: BUG2 follow-up spam gate: injected delegate summaries are truncated to
 #: this many chars (the gateway turn sees the gist, the room stays quiet).
@@ -606,6 +611,14 @@ class SidecarDaemon:
         except Exception as exc:  # noqa: BLE001 — membership heal never fails boot
             log.warning("owner membership heal skipped: %s", exc)
             report["owner_joined"] = 0
+        # Spawn-durability O3: handle-less never-materialized 0-agents get
+        # an explicit room notice here — never a silent live-empty room
+        # after a restart. Best-effort; boot never fails on it.
+        try:
+            report["orphan_marked"] = await self._mark_never_materialized_orphans()
+        except Exception as exc:  # noqa: BLE001 — orphan marking never fails boot
+            log.warning("orphan marking skipped: %s", exc)
+            report["orphan_marked"] = []
 
         # VM round 3 — first-login cold start: the first E2EE share + power
         # snapshot above were built BEFORE the owner ever joined (this heal
@@ -768,6 +781,73 @@ class SidecarDaemon:
         except Exception as exc:  # noqa: BLE001 — respawn reports, never blocks boot
             log.exception("respawn pass failed (continuing — D18 best-effort)")
             return {"error": str(exc)}
+
+    async def _mark_never_materialized_orphans(self) -> list[str]:
+        """Boot orphan-marking (spawn-durability O3): never silent live-empty rooms.
+
+        A 0-agent whose first turn never completed holds its only handle in
+        the dead process's memory; the D18 respawn pass correctly refuses to
+        resume it (nothing durable exists). Without this pass its room would
+        sit live and empty until someone messages it. Mark each such node
+        with an explicit room notice (rebuild-or-exit affordance) plus a
+        ``child-orphan:<node_id>`` routing-log entry.
+
+        Scope: live depth-0 nodes only (subagents get NO respawn), skipping
+        ``SKIP_RESPAWN_KINDS`` and any node already holding a handle. One
+        notice per boot while the orphan persists (the next completed turn
+        flips ``session_materialized`` and silences it; /exit removes the
+        row). D18 intact: no session_ref/MXID change (never a fork), no
+        liveness change, exited nodes never touched. Never raises.
+        """
+        marked: list[str] = []
+        try:
+            state = self.state
+            registry = self.registry
+            if state is None or registry is None or self.renderer is None:
+                return marked
+            try:
+                from observatory.spawn import SKIP_RESPAWN_KINDS, is_session_materialized
+            except Exception:
+                return marked
+            try:
+                live = state.get_live()
+            except Exception:
+                log.exception("orphan marking: state read failed (continuing)")
+                return marked
+            from observatory.control import ControlNotice
+
+            for row in live:
+                try:
+                    node_id = str(row.get("node_id") or "")
+                    if not node_id or row.get("depth") != 0:
+                        continue
+                    if row.get("status") != "live":
+                        continue
+                    if (row.get("extra") or {}).get("kind", "") in SKIP_RESPAWN_KINDS:
+                        continue
+                    if is_session_materialized(row):
+                        continue
+                    try:
+                        if registry.get(node_id) is not None:
+                            continue
+                    except Exception:  # noqa: BLE001 — uncertain handle state: skip
+                        continue
+                    try:
+                        await self._post_notice(ControlNotice(node_id, CHILD_ORPHAN_NOTICE))
+                    except Exception:  # noqa: BLE001 — notice failure never fails boot
+                        log.exception("orphan notice failed (node %s)", node_id)
+                        continue
+                    try:
+                        self.routing_log.append(f"child-orphan:{node_id}")
+                    except Exception:  # noqa: BLE001 — observability never raises
+                        pass
+                    marked.append(node_id)
+                except Exception:  # noqa: BLE001 — per-node isolation
+                    log.exception("orphan marking failed for a node (continuing)")
+                    continue
+        except Exception:  # noqa: BLE001 — marking never fails boot
+            log.exception("orphan marking pass failed (continuing)")
+        return marked
 
     def _load_owner(self) -> tuple[str, str]:
         doc = json.loads(self.paths.owner_credentials.read_text(encoding="utf-8"))
@@ -1882,12 +1962,21 @@ class SidecarDaemon:
         orchestrator subspaces of the root space, gateway-origin
         delegation children as subspaces nested under the gateway agent's
         own subspace (gw-space parity) — so every add provisions a space
-        + room before its lifecycle message renders. The room-existence
+        + room before its lifecycle message renders. A failed lifecycle
+        send queues a bounded renderer retry (drained on the next event)
+        instead of aborting the add. The room-existence
         guard stays as defense (a plan that cannot place a node logs and
         skips the lifecycle render rather than crashing)."""
         from observatory.discovery import NodeEvent
 
         assert isinstance(event, NodeEvent) and self.state is not None and self.renderer is not None
+        # E2EE-tolerance: redeliver live sends queued by earlier events
+        # whose first send failed (wedged group session) — the next tick
+        # heals the room without any new event. Never fails this event.
+        try:
+            await self.renderer.retry_pending_sends()
+        except Exception:  # noqa: BLE001 — retry never fails the event
+            log.debug("discovery send retry skipped", exc_info=True)
         node_id = f"{event.delegation_id}/{event.task_index}"
         if event.kind == "add":
             try:
@@ -1919,7 +2008,11 @@ class SidecarDaemon:
             )
             row = self.state.get(node_id)
             if row.get("room_id"):
-                await self.renderer.render_lifecycle(node_id)
+                try:
+                    await self.renderer.render_lifecycle(node_id)
+                except Exception as exc:  # noqa: BLE001 — send failure never aborts the add
+                    log.warning("discovery lifecycle send failed for %s — retry queued: %s",
+                                node_id, exc)
             else:
                 log.info(
                     "delegation %s observed without a planned room — "
@@ -3441,12 +3534,24 @@ class SidecarDaemon:
             return
         await self._followup_to_orchestrator(node_id, target, text, quiet=not notify)
 
-    async def _followup_to_gateway(self, node_id: str, gw_id: str, text: str, *, quiet: bool = False) -> None:
+    async def _followup_to_gateway(self, node_id: str, gw_id: str, text: str, *, quiet: bool = False, busy_wait_s: float = 30.0) -> None:
         """Gateway half of the delegate followup (transport inject).
 
         A busy gateway still gets the child result: steer into the running
-        turn instead of dropping it (the reporter's item 2 — no report back
-        to gateway — was this early return)."""
+        turn when it lands; on a steer miss wait (bounded) for the in-flight
+        turn to finish and then inject as a normal followup turn. The child
+        result is never dropped on a busy gateway.
+
+        Wait-then-inject (not a queued retry) because the wait re-reads task
+        completion each poll, so a stale busy read self-heals, and the inject
+        serializes behind the finished turn — no queue to grow, no ledger to
+        dedupe. Exactly-once is structural: steer-hit returns before any
+        inject, otherwise exactly one inject spawns. ``quiet`` is passed
+        through untouched (the turn runs; only the room reply is skipped)."""
+        transport = self.gateway_transport
+        if transport is None:
+            log.info("delegate followup skipped: no gateway transport (child %s)", node_id)
+            return
         if self._gateway_delivery_in_flight():
             if await self._steer_gateway_midturn(gw_id, text):
                 try:
@@ -3454,12 +3559,26 @@ class SidecarDaemon:
                 except Exception:
                     pass
                 return
-            log.info("delegate followup skipped: gateway busy, steer missed (child %s)", node_id)
-            return
-        transport = self.gateway_transport
-        if transport is None:
-            log.info("delegate followup skipped: no gateway transport (child %s)", node_id)
-            return
+            try:
+                wait_s = float(busy_wait_s)
+            except (TypeError, ValueError):
+                wait_s = 30.0
+            if wait_s > 0:
+                try:
+                    loop = asyncio.get_running_loop()
+                    deadline = loop.time() + wait_s
+                    while self._gateway_delivery_in_flight():
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            break
+                        await asyncio.sleep(min(0.05, remaining))
+                except Exception:  # noqa: BLE001 — the wait never drops the followup
+                    pass
+            log.info("delegate followup queued after busy gateway (child %s)", node_id)
+            try:
+                self.routing_log.append(f"gateway-followup-wait:{node_id}")
+            except Exception:
+                pass
         try:
             task = asyncio.create_task(
                 self._deliver_gateway_prompt(gw_id, text, kind="prompt", internal=True, quiet=quiet),
@@ -3514,7 +3633,8 @@ class SidecarDaemon:
         is skipped and the agent's reply renders when the turn completes.
         In-flight (a gateway delivery task is running): the text steers into
         the running turn via the ``steer`` verb (soft, no cancel — CLI steer
-        parity). The queued-steer notice posts as the ack and no new delivery
+        parity). The applied notice posts as the ack (the deferred
+        queued-steer notice is dropped — nothing queued) and no new delivery
         task spawns; the running turn's reply carries the steered context.
         Steer miss (idle race, old gateway, transport error) falls back to
         interrupt-then-inject so the text never queues silently behind the
@@ -3534,19 +3654,20 @@ class SidecarDaemon:
                 kind = str(getattr(action, "kind", None) or "prompt")
                 quiet = bool(getattr(action, "quiet", False))
                 if kind == "steer" and not quiet and self._gateway_delivery_in_flight():
-                    if await self._steer_gateway_midturn(node_id, text):
-                        for notice in deferred:
-                            try:
-                                await self._post_notice(notice)
-                            except Exception:
-                                log.debug("gateway steer ack failed (node %s)", node_id, exc_info=True)
+                    if await self._steer_gateway_or_interrupt(node_id, text):
+                        # Landed mid-turn: ack applied. The deferred
+                        # "queued" notice is dropped — nothing queued.
                         deferred.clear()
+                        try:
+                            from observatory.control import ControlNotice
+                            await self._post_notice(ControlNotice(node_id, APPLIED_STEER_NOTICE))
+                        except Exception:
+                            log.debug("gateway steer ack failed (node %s)", node_id, exc_info=True)
                         try:
                             self.routing_log.append(f"gateway-steer:{node_id}")
                         except Exception:
                             pass
                         continue
-                    await self._interrupt_gateway_for_steer(node_id)
                     try:
                         self.routing_log.append(f"gateway-steer-fallback:{node_id}")
                     except Exception:
@@ -3581,6 +3702,21 @@ class SidecarDaemon:
             log.debug("gateway mid-turn steer failed (node %s)", node_id, exc_info=True)
             return False
         return bool(isinstance(out, dict) and out.get("steered") is True)
+
+    async def _steer_gateway_or_interrupt(self, node_id: str, text: str) -> bool:
+        """Mid-turn steer, else interrupt so the miss runs as next turn.
+
+        True when the steer verb landed (caller acks, no fresh turn).
+        False after running :meth:`_interrupt_gateway_for_steer` — the
+        caller must run the text as the next turn; the interrupt already
+        cancelled the stale delivery so it never queues silently. Shared
+        by the room-text path and the delegate-followup path (which calls
+        this one line instead of ``_steer_gateway_midturn``). Never raises.
+        """
+        if await self._steer_gateway_midturn(node_id, text):
+            return True
+        await self._interrupt_gateway_for_steer(node_id)
+        return False
 
     async def _interrupt_gateway_for_steer(self, node_id: str) -> None:
         """Cancel in-flight gateway deliveries and hard-interrupt the agent.

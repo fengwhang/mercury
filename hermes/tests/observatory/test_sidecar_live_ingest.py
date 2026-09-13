@@ -482,12 +482,14 @@ async def test_child_stop_renders_death_and_nudges_when_idle(
 
 
 @pytest.mark.asyncio
-async def test_child_stop_skips_nudge_when_delivery_busy(
+async def test_child_stop_delivers_nudge_after_short_busy(
     daemon: sm.SidecarDaemon,
 ):
     await daemon.boot()
     fake = FakeLiveTransport(reply="noted", events=[])
-    busy = asyncio.create_task(asyncio.sleep(5))
+    # Short busy so the followup's bounded wait sees the slot clear and
+    # delivers exactly once (never dropped on a busy gateway).
+    busy = asyncio.create_task(asyncio.sleep(0.05))
     daemon._gateway_tasks.add(busy)
     busy.add_done_callback(daemon._gateway_tasks.discard)
     try:
@@ -501,8 +503,11 @@ async def test_child_stop_skips_nudge_when_delivery_busy(
             "kind": "child_lifecycle", "node_id": child, "lifecycle": "stop",
             "status": "unknown",
         }).encode())
-        await asyncio.sleep(0.05)
-        assert fake.prompts == []
+        await _drain_gateway_tasks(daemon)
+        assert len(fake.prompts) == 1
+        text, kind, node = fake.prompts[0]
+        assert kind == "prompt" and node == sm.GATEWAY_NODE_ID
+        assert "[subagent c5-kid unknown]" in text
     finally:
         busy.cancel()
         try:
@@ -547,7 +552,7 @@ async def test_discovery_death_nudges_gateway_child(daemon: sm.SidecarDaemon):
 
 
 @pytest.mark.asyncio
-async def test_post_delegate_followup_sends_when_idle_and_skips_when_busy(
+async def test_post_delegate_followup_sends_when_idle_and_waits_when_busy(
     daemon: sm.SidecarDaemon,
 ):
     await daemon.boot()
@@ -564,16 +569,21 @@ async def test_post_delegate_followup_sends_when_idle_and_skips_when_busy(
         assert kind == "prompt" and node == gw
         assert "[subagent kid-a completed]" in text
         assert "did stuff" in text
-        # busy → skipped (summary arrives via delegate result)
+        # busy → waited: first the in-flight slot was busy, then the wait saw
+        # the slot clear and delivered exactly one followup (never dropped)
         fake.prompts.clear()
-        busy = asyncio.create_task(asyncio.sleep(5))
+        busy = asyncio.create_task(asyncio.sleep(0.05))
         daemon._gateway_tasks.add(busy)
         busy.add_done_callback(daemon._gateway_tasks.discard)
         try:
             await daemon._maybe_post_delegate_followup(
                 "deleg_y/0", gw, "kid-b", status="completed", summary="more")
-            await asyncio.sleep(0.05)
-            assert fake.prompts == []
+            await _drain_gateway_tasks(daemon)
+            assert len(fake.prompts) == 1
+            text, kind, node = fake.prompts[0]
+            assert kind == "prompt" and node == gw
+            assert "[subagent kid-b completed]" in text
+            assert "more" in text
         finally:
             busy.cancel()
             try:
@@ -581,6 +591,7 @@ async def test_post_delegate_followup_sends_when_idle_and_skips_when_busy(
             except (asyncio.CancelledError, Exception):
                 pass
         # non-gateway parent → never nudges
+        fake.prompts.clear()
         await daemon._maybe_post_delegate_followup(
             "orch-1/sa", "orch-1", "kid-c", status="completed", summary="x")
         await asyncio.sleep(0.05)
