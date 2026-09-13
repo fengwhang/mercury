@@ -433,6 +433,7 @@ def push_child_lifecycle(
     parent_session: str | None = None,
     status: str | None = None,
     summary: str | None = None,
+    engine: str | None = None,
 ) -> None:
     """Push one child-lifecycle datagram; never raises.
 
@@ -461,6 +462,8 @@ def push_child_lifecycle(
         payload["status"] = status
     if summary is not None:
         payload["summary"] = summary
+    if engine is not None:
+        payload["engine"] = engine
     _send_child_datagram(payload)
 
 
@@ -709,6 +712,35 @@ async def _forward_child_feed(
             pass
 
 
+def _register_watcher_steer(child_id: str, meta: dict[str, Any]) -> None:
+    """Register the room steerer for a live omp child (best-effort).
+
+    RPC transports steer mid-run; one-shot Popen transports (steerable
+    False, no ``steer`` method) get no room steering — their room stays
+    a read-only trace. Never raises.
+    """
+    try:
+        from observatory.rooms import drop_child_steer, register_child_steer
+        transport = (meta or {}).get("transport")
+        if not bool((meta or {}).get("steerable", False)):
+            drop_child_steer(child_id)
+            return
+        if transport is None or not callable(getattr(transport, "steer", None)):
+            drop_child_steer(child_id)
+            return
+
+        def _steer(text: str, _transport: Any = transport) -> bool:
+            try:
+                _transport.steer(text)
+                return True
+            except Exception:
+                return False
+
+        register_child_steer(child_id, _steer)
+    except Exception:
+        pass
+
+
 async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None:
     """Poll the OWN live-child table; push lifecycle + forward feed frames."""
     try:
@@ -747,7 +779,9 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
                         str(meta.get("owner_session_id"))
                         if meta.get("owner_session_id") else None
                     ),
+                    engine="omp",
                 )
+                _register_watcher_steer(child_id, meta)
             except Exception:
                 logger.debug("child start push failed for %s", child_id, exc_info=True)
             try:
@@ -766,6 +800,11 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
             if child_id in snapshot:
                 continue
             known.pop(child_id, None)
+            try:
+                from observatory.rooms import drop_child_steer
+                drop_child_steer(child_id)
+            except Exception:
+                pass
             task = tasks.pop(child_id, None)
             if task is not None:
                 try:

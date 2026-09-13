@@ -151,6 +151,21 @@ def format_lifecycle(lifecycle: str, *, name: str = "",
 
 # --- room manager ----------------------------------------------------------
 
+def _channel_in_ref(channel: str, ref: str) -> bool:
+    """True when gateway session key ``ref`` embeds ``#channel``.
+
+    Group session keys join parts with ``:`` (``ns:irc:group:#ace:…``),
+    so a boundary-aware substring match maps a delegating turn back to
+    the room (and node) that spawned it.
+    """
+    try:
+        import re as _re
+        return bool(_re.search(r"(?:^|:)" + _re.escape(channel) + r"(?:$|:)",
+                              str(ref or "")))
+    except Exception:
+        return False
+
+
 class RoomManager:
     """Channel lifecycle + publish fan-out over a state.db tree.
 
@@ -314,9 +329,9 @@ class RoomManager:
                     f"🔒 approval requested: `{item.get('command', '')}`"
                     f" — {item.get('description', '')} "
                     f"(reply /approve or /deny in the parent room)")
-
     def _resolve_parent(self, parent: str) -> dict[str, Any] | None:
-        """Parent ref → live row: node id first, then session_ref scan."""
+        """Parent ref → live row: node id, session_ref, then gateway
+        session-key channel scan (group keys embed ``#channel``)."""
         if not parent:
             return None
         try:
@@ -326,6 +341,13 @@ class RoomManager:
         for row in self.live_rows():
             try:
                 if str(row.get("session_ref") or "") == parent:
+                    return row
+            except Exception:
+                continue
+        for row in self.live_rows():
+            try:
+                channel = str(row.get("room_id") or "")
+                if channel and _channel_in_ref(channel, parent):
                     return row
             except Exception:
                 continue
