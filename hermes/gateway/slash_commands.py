@@ -1311,108 +1311,6 @@ class GatewaySlashCommandsMixin:
 
         return "\n".join(lines)
 
-    def _terminal_stop_batch_summary(
-        self, session_key: str, parent_session_id: str = ""
-    ) -> tuple[int, int, list[str]]:
-        """Kill session-owned background batches + session processes.
-
-        Terminal stop verb helper (idle + busy windows): interrupts live
-        async delegations owned by this session (hermes + omp background
-        batches share the async registry) and kills session-scoped terminal
-        background processes. Never raises. Returns
-        (deleg_count, proc_count, names).
-        """
-        names: list[str] = []
-        deleg_count = 0
-        try:
-            from tools.async_delegation import (
-                interrupt_for_session,
-                list_async_delegations,
-            )
-
-            try:
-                for r in list_async_delegations() or []:
-                    if not isinstance(r, dict):
-                        continue
-                    if r.get("status") not in ("running", "stalling", "finalizing"):
-                        continue
-                    if session_key and r.get("session_key") == session_key:
-                        pass
-                    elif parent_session_id and r.get("parent_session_id") == parent_session_id:
-                        pass
-                    else:
-                        continue
-                    goal = str(r.get("goal") or r.get("delegation_id") or "").strip()
-                    if goal and len(names) < 3:
-                        names.append(" ".join(goal.split())[:60])
-            except Exception:
-                pass
-            try:
-                deleg_count = int(
-                    interrupt_for_session(
-                        session_key=session_key or "",
-                        parent_session_id=parent_session_id or "",
-                        reason="stop_command",
-                    )
-                    or 0
-                )
-            except Exception:
-                deleg_count = 0
-        except Exception:
-            pass
-        proc_count = 0
-        try:
-            from tools.process_registry import process_registry
-
-            try:
-                entries = process_registry.list_sessions(session_key=session_key) or []
-            except Exception:
-                entries = []
-            for e in entries:
-                if not isinstance(e, dict):
-                    continue
-                if e.get("status") != "running":
-                    continue
-                sid = str(e.get("session_id") or e.get("id") or "")
-                if not sid:
-                    continue
-                try:
-                    res = process_registry.kill_process(
-                        sid, source="stop_command", consume_output=False
-                    )
-                    if isinstance(res, dict) and res.get("status") in (
-                        "killed",
-                        "already_exited",
-                    ):
-                        proc_count += 1
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        return deleg_count, proc_count, names
-
-    def _terminal_stop_ack(
-        self,
-        deleg_count: int,
-        proc_count: int,
-        names: list[str],
-        live_turn_stopped: bool,
-    ) -> str:
-        """Deterministic stop ack naming what died. Never a model narration."""
-        total = int(deleg_count or 0) + int(proc_count or 0)
-        if total == 0 and not live_turn_stopped:
-            return "💤 nothing running — no active task to stop."
-        parts: list[str] = []
-        if live_turn_stopped:
-            parts.append("live turn stopped")
-        if deleg_count:
-            parts.append(f"{deleg_count} background task(s)")
-        if proc_count:
-            parts.append(f"{proc_count} process(es)")
-        detail = ", ".join(parts) if parts else "nothing running"
-        named = f" ({'; '.join(names[:2])})" if names else ""
-        return f"🛑 Stopped — killed {detail}{named}."
-
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.
 
@@ -1429,7 +1327,6 @@ class GatewaySlashCommandsMixin:
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
 
-        parent_sid = str(getattr(session_entry, "session_id", "") or "")
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
             # Force-clean the sentinel so the session is unlocked.
@@ -1440,11 +1337,7 @@ class GatewaySlashCommandsMixin:
                 invalidation_reason="stop_command_pending",
             )
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
-            try:
-                _d, _pr, _n = self._terminal_stop_batch_summary(session_key, parent_sid)
-            except Exception:
-                _d, _pr, _n = 0, 0, []
-            return EphemeralReply(self._terminal_stop_ack(_d, _pr, _n, True))
+            return EphemeralReply(t("gateway.stop.stopped_pending"))
         if agent:
             # Force-clean the session lock so a truly hung agent doesn't
             # keep it locked forever.
@@ -1454,11 +1347,7 @@ class GatewaySlashCommandsMixin:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_handler",
             )
-            try:
-                _d, _pr, _n = self._terminal_stop_batch_summary(session_key, parent_sid)
-            except Exception:
-                _d, _pr, _n = 0, 0, []
-            return EphemeralReply(self._terminal_stop_ack(_d, _pr, _n, True))
+            return EphemeralReply(t("gateway.stop.stopped"))
 
         # No run under the caller's own session key.  In a per-user thread
         # (thread_sessions_per_user=True) each participant is isolated even
@@ -1481,19 +1370,7 @@ class GatewaySlashCommandsMixin:
                 len(sibling_keys),
                 ", ".join(sibling_keys),
             )
-            try:
-                _d, _pr, _n = self._terminal_stop_batch_summary(session_key, parent_sid)
-                for _sk in sibling_keys:
-                    try:
-                        _dd, _pp, _nn = self._terminal_stop_batch_summary(_sk, "")
-                    except Exception:
-                        continue
-                    _d += _dd
-                    _pr += _pp
-                    _n.extend(x for x in _nn if x not in _n)
-            except Exception:
-                _d, _pr, _n = 0, 0, []
-            return EphemeralReply(self._terminal_stop_ack(_d, _pr, _n, True))
+            return EphemeralReply(t("gateway.stop.stopped"))
 
         # No running agent anywhere for this scope. A platform status
         # indicator can still be stuck — e.g. Slack's persistent
@@ -1515,11 +1392,7 @@ class GatewaySlashCommandsMixin:
                     exc_info=True,
                 )
 
-        try:
-            _d, _pr, _n = self._terminal_stop_batch_summary(session_key, parent_sid)
-        except Exception:
-            _d, _pr, _n = 0, 0, []
-        return self._terminal_stop_ack(_d, _pr, _n, False)
+        return t("gateway.stop.no_active")
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — surface and

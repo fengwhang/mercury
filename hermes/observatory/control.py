@@ -595,18 +595,6 @@ class ControlRouter:
 
         intent = parse_intent(body)
         if isinstance(intent, SteerText):
-            # Terminal stop verb (bare `stop`, no slash): a gateway room
-            # with no live turn but a live background batch must abort —
-            # never start a model turn that narrates "Stopped". Exact-word
-            # only (case-insensitive); sentences stay steer text.
-            try:
-                _bare = (intent.text or "").strip().lower()
-            except Exception:
-                _bare = ""
-            if _bare == "stop":
-                return self._route_verb(
-                    node, SidecarVerb("stop", (), "", (body or "").strip()), reply_to
-                )
             return self._route_steer(node, intent.text)
         if isinstance(intent, SidecarVerb):
             return self._route_verb(node, intent, reply_to)

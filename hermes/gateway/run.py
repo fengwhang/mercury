@@ -11018,47 +11018,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 session_key, exc_info=True,
             )
 
-        # --- Terminal stop verb (bare `stop`/`kill`) ---
-        # Background batches die here, never as a model turn. Approvals and
-        # draining keep priority (handled above); this sits before steer /
-        # queue / interrupt so `stop` can never queue behind live work.
-        try:
-            _bare_busy = self._bare_terminal_stop_text(event)
-        except Exception:
-            _bare_busy = ""
-        if _bare_busy and not bool(getattr(event, "internal", False)):
-            try:
-                _b_entry = await self.async_session_store.get_or_create_session(event.source)
-                _b_parent = str(getattr(_b_entry, "session_id", "") or "")
-            except Exception:
-                _b_parent = ""
-            try:
-                _b_d, _b_pr, _b_n = self._terminal_stop_batch_summary(session_key, _b_parent)
-            except Exception:
-                _b_d, _b_pr, _b_n = 0, 0, []
-            try:
-                await self._interrupt_and_clear_session(
-                    session_key,
-                    event.source,
-                    interrupt_reason=_INTERRUPT_REASON_STOP,
-                    invalidation_reason="bare_stop_busy",
-                )
-            except Exception:
-                pass
-            _b_ack = self._terminal_stop_ack(_b_d, _b_pr, _b_n, True)
-            try:
-                _b_adapter = self._adapter_for_source(event.source)
-                if _b_adapter is not None:
-                    _b_anchor = self._reply_anchor_for_event(event)
-                    await _b_adapter._send_with_retry(
-                        chat_id=event.source.chat_id,
-                        content=_b_ack,
-                        reply_to=_b_anchor,
-                        metadata=self._thread_metadata_for_source(event.source, _b_anchor),
-                    )
-            except Exception:
-                pass
-            return True
         # Normal busy case (agent actively running a task)
         adapter = self._adapter_for_source(event.source)
         if not adapter:
@@ -17948,51 +17907,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         return format_status_text()
 
-    @staticmethod
-    def _bare_terminal_stop_text(event) -> str:
-        """Bare `stop`/`kill` text (no slash) acting as the terminal verb.
-
-        Exact-word only (case-insensitive, surrounding whitespace ignored):
-        sentences containing the word never match. Internal synthetic events
-        and media payloads never match — this is user-typed control text.
-        Returns the normalized verb or "".
-        """
-        try:
-            if bool(getattr(event, "internal", False)):
-                return ""
-            from gateway.platforms.base import MessageType as _MT
-
-            if getattr(event, "message_type", None) is not _MT.TEXT:
-                return ""
-            if getattr(event, "media_urls", None) or getattr(event, "media_types", None):
-                return ""
-            raw = (getattr(event, "text", "") or "").strip()
-            if not raw:
-                return ""
-            low = raw.lower()
-            if low in ("stop", "kill"):
-                return low
-            return ""
-        except Exception:
-            return ""
-
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
         # /stop must hard-kill the session when an agent is running.
         # A soft interrupt (agent.interrupt()) doesn't help when the agent
         # is truly hung — the executor thread is blocked and never checks
         # _interrupt_requested.  Force-clean _running_agents so the session
         # is unlocked and subsequent messages are processed normally.
-        # Terminal verb: background batches die with the turn (same helper
-        # as the idle /stop path) so `stop` never narrates.
-        try:
-            _entry = await self.async_session_store.get_or_create_session(source)
-            _parent = str(getattr(_entry, "session_id", "") or "")
-        except Exception:
-            _parent = ""
-        try:
-            _d, _pr, _n = self._terminal_stop_batch_summary(quick_key, _parent)
-        except Exception:
-            _d, _pr, _n = 0, 0, []
         await self._interrupt_and_clear_session(
             quick_key,
             source,
@@ -18000,7 +17920,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             invalidation_reason="stop_command",
         )
         logger.info("STOP for session %s — agent interrupted, session lock released", quick_key)
-        return EphemeralReply(self._terminal_stop_ack(_d, _pr, _n, True))
+        return EphemeralReply(t("gateway.stop.stopped"))
 
     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
         # /reset and /new must bypass the running-agent guard so they
@@ -18759,33 +18679,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 logger.debug("reaped-session staleness check failed", exc_info=True)
 
         if self._is_session_running(_quick_key):
-            # Terminal stop verb for the busy window (bare `stop`/`kill`):
-            # kills background batches + the live turn exactly once — never
-            # a queued/steered model turn. Internal synthetic events bypass.
-            try:
-                _bare_msg = self._bare_terminal_stop_text(event)
-            except Exception:
-                _bare_msg = ""
-            if _bare_msg and not bool(getattr(event, "internal", False)):
-                try:
-                    _m_entry = await self.async_session_store.get_or_create_session(source)
-                    _m_parent = str(getattr(_m_entry, "session_id", "") or "")
-                except Exception:
-                    _m_parent = ""
-                try:
-                    _m_d, _m_pr, _m_n = self._terminal_stop_batch_summary(_quick_key, _m_parent)
-                except Exception:
-                    _m_d, _m_pr, _m_n = 0, 0, []
-                try:
-                    await self._interrupt_and_clear_session(
-                        _quick_key,
-                        source,
-                        interrupt_reason=_INTERRUPT_REASON_STOP,
-                        invalidation_reason="bare_stop_busy_message",
-                    )
-                except Exception:
-                    pass
-                return self._terminal_stop_ack(_m_d, _m_pr, _m_n, True)
             # Resolve the command once; every command's mid-run behavior is
             # declared on its CommandDef (busy_policy / busy_handler in
             # mercury_cli/commands.py) and dispatched through the single
@@ -19724,28 +19617,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 "please resend shortly."
             )
 
-        # --- Terminal stop verb (idle window, bare `stop`/`kill`) ---
-        # With no live turn, `stop` must still kill background batches
-        # deterministically — never a model turn that narrates "Stopped".
-        # Earlier intercepts (update/clarify/confirm/approvals) keep priority;
-        # slash commands dispatch through their own handlers above.
-        try:
-            _bare_idle = self._bare_terminal_stop_text(event)
-        except Exception:
-            _bare_idle = ""
-        if _bare_idle and not is_internal and not command:
-            try:
-                _i_entry = await self.async_session_store.get_or_create_session(source)
-                _i_parent = str(getattr(_i_entry, "session_id", "") or "")
-                _i_key = _i_entry.session_key
-            except Exception:
-                _i_parent = ""
-                _i_key = _quick_key
-            try:
-                _i_d, _i_pr, _i_n = self._terminal_stop_batch_summary(_i_key, _i_parent)
-            except Exception:
-                _i_d, _i_pr, _i_n = 0, 0, []
-            return self._terminal_stop_ack(_i_d, _i_pr, _i_n, False)
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
