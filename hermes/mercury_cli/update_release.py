@@ -210,11 +210,9 @@ def _swap_tree(src: Path, dst: Path) -> None:
 def _find_uv(python_bin: str) -> str | None:
     """Locate a ``uv`` binary for ``python_bin``'s env (managed-first).
 
-    Mirrors ``observatory.provision._find_uv`` (kept duplicate: provision
-    stays importable without the CLI package). Order: canonical managed
-    uv (``managed_uv.resolve_uv`` → ``$HERMES_HOME/bin/uv``) when
-    importable, then ``$MERCURY_HOME/bin/uv`` / ``$HERMES_HOME/bin/uv`` /
-    ``~/.mercury/bin/uv``, then venv-adjacent ``<venv>/bin/uv``, then
+    Order: canonical managed uv (``managed_uv.resolve_uv`` →
+    ``$HERMES_HOME/bin/uv``) when importable, then ``$MERCURY_HOME/bin/uv``
+    / ``$HERMES_HOME/bin/uv`` / ``~/.mercury/bin/uv``, then venv-adjacent
     ``shutil.which`` (PATH). Never raises — None when nothing is found."""
     exe = "uv.exe" if sys.platform == "win32" else "uv"
     try:
@@ -325,10 +323,12 @@ def _split_bundled_wheels(whls: list[Path]) -> tuple[list[Path], list[Path]]:
     make-dist stages BOTH arch python-olm wheels; pip fails when handed two
     conflicting python-olm URLs, so only this host's arch wheel — plus every
     non-olm wheel — is installed. Unknown arch: every olm wheel is foreign.
-    Selection mirrors observatory.provision._vendored_olm_wheel."""
-    from observatory.provision import _host_olm_arch  # noqa: PLC0415 — update path only
+    (Legacy helper for pre-IRC tarballs that still carry wheels/.)"""
+    import platform as _platform
 
-    arch = _host_olm_arch()
+    machine = _platform.machine().lower()
+    arch = {"x86_64": "x86_64", "amd64": "x86_64",
+            "aarch64": "aarch64", "arm64": "aarch64"}.get(machine)
     keep: list[Path] = []
     skipped: list[Path] = []
     for p in whls:
@@ -343,11 +343,9 @@ def _split_bundled_wheels(whls: list[Path]) -> tuple[list[Path], list[Path]]:
 
 
 def _install_bundled_wheels(root: Path, venv: Path) -> None:
-    """(update-completeness) Install the tarball-bundled crypto-stack
-    wheels (``wheels/`` staged by make-dist: mautrix[encryption] pinned
-    set + the cp313 python-olm wheel that does not exist on PyPI) plus
-    the checked-in vendored wheel (hermes/observatory/wheels/).
-    Offline-friendly — no network. Best-effort: warns, never blocks.
+    """(update-completeness) Install tarball-bundled wheels (``wheels/``
+    staged by make-dist on legacy tarballs). Offline-friendly — no
+    network. Best-effort: warns, never blocks.
     Disabled observatory: no installs at all."""
     try:
         from observatory.provision import observatory_enabled
@@ -365,58 +363,10 @@ def _install_bundled_wheels(root: Path, venv: Path) -> None:
     if keep:
         ok, detail = _pip_install(venv, [str(p) for p in keep])
         if ok:
-            print(f"  🌡️ observatory crypto stack: installed {len(keep)} bundled wheel(s)")
+            print(f"  🌡️ installed {len(keep)} bundled wheel(s)")
         else:
-            print("  ⚠ bundled-wheels install failed — observatory E2EE may be broken")
+            print("  ⚠ bundled-wheels install failed (corrupt tarball?)")
             print(f"    output:\n{detail}")
-            print(f"    manual fix: uv pip install --python {venv}/bin/python "
-                  f"{wheels_dir}/*.whl")
-    # Vendored cp313 wheel (checked in under hermes/observatory/wheels):
-    # covers installs whose tarball shipped no wheels/ (dev checkouts,
-    # pre-vendoring tarballs). Hash-verified; skipped silently when this
-    # platform needs none. Best-effort: warns, never blocks.
-    try:
-        from observatory.provision import _vendored_olm_wheel, _verified_vendored_wheel
-        cand = _vendored_olm_wheel()
-        if cand is not None:
-            wheel = _verified_vendored_wheel(cand)
-            ok, detail = _pip_install(venv, [str(wheel)])
-            if ok:
-                print(f"  🌡️ observatory crypto stack: installed vendored {wheel.name}")
-            else:
-                print("  ⚠ vendored-wheel install failed — observatory E2EE may be broken")
-                print(f"    output:\n{detail}")
-    except Exception as exc:  # noqa: BLE001 — best-effort, never blocks
-        print(f"  ⚠ vendored-wheel step skipped ({exc})")
-
-
-def _ensure_matrix_extra(root: Path, venv: Path) -> None:
-    """(update-completeness) Ensure the [matrix] extra deps (the mautrix
-    crypto stack, deliberately NOT in [all] — pyproject [matrix]) on
-    installs where the observatory is enabled (config default governs).
-    After bundled wheels this is usually a satisfied-requirements no-op;
-    without wheels it pulls the set from the network. Best-effort: warns
-    (with the cp313 olm remediation), never blocks."""
-    try:
-        from observatory.provision import observatory_enabled
-
-        if not observatory_enabled():
-            return
-    except Exception as exc:
-        print(f"  ⚠ matrix-extra gate skipped ({exc})")
-        return
-    ok, detail = _pip_install(venv, ["-q", "-e", f"{root / 'hermes'}[matrix]"])
-    if ok:
-        print("  🌡️ observatory [matrix] extra ensured")
-    else:
-        print("  ⚠ [matrix] extra (mautrix crypto stack) not installed — "
-              "observatory E2EE will fail until it is")
-        print(f"    output:\n{detail}")
-        print(f"    manual fix: cd {root}/hermes && "
-              "uv pip install --python .venv/bin/python -e '.[matrix]'")
-        print("    (py3.13 gets python-olm from the vendored wheel under "
-              "hermes/observatory/wheels/; rebuild it manually with "
-              "hermes/observatory/scripts/build_python_olm_wheel.sh only if that wheel is missing)")
 
 
 def update_from_release(*, assume_yes: bool = False) -> int:
@@ -641,16 +591,11 @@ def update_from_release(*, assume_yes: bool = False) -> int:
                 print(f"    manual fix: cd {root}/hermes && "
                       f"uv pip install --python .venv/bin/python -e .")
 
-            # MERCURY-OMP PATCH (observatory update-completeness): the
-            # release tarball bundles the E2EE crypto stack as wheels/
-            # (python-olm has NO cp313 wheel on PyPI, so a plain network
-            # resolve would build the C extension and fail on most hosts),
-            # and the [matrix] extra (mautrix crypto stack, deliberately
-            # NOT in [all]) was never installed on pre-observatory
-            # installs. Both AFTER the venv refresh; both best-effort: a
-            # failure warns with the manual fix, never blocks the update.
+            # Tarball-bundled wheels (legacy pre-IRC tarballs) install
+            # AFTER the venv refresh; best-effort, never blocks the update.
+            # (The Matrix E2EE stack is retired — the IRC daemon is
+            # stdlib-only and installs nothing.)
             _install_bundled_wheels(root, venv)
-            _ensure_matrix_extra(root, venv)
 
         # MERCURY-OMP PATCH (massive-update readiness): the git update path
         # runs config migration on completion; the release path never did.

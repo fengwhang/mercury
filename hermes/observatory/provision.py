@@ -613,3 +613,51 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
         except Exception:
             pass
     return removed
+
+def observatory_enabled(config: Any = None) -> bool:
+    """Default ON; ``observatory.enabled: false`` freezes the rooms."""
+    try:
+        if isinstance(config, dict):
+            obs = config.get("observatory")
+            if isinstance(obs, dict) and "enabled" in obs:
+                return bool(obs.get("enabled"))
+        from mercury_cli.config import cfg_get, load_config
+        return bool(cfg_get(load_config(), "observatory", "enabled", default=True))
+    except Exception:
+        return True
+
+
+def provision_if_missing(mercury_home: str | Path | None = None) -> bool | None:
+    """First-time provision for installs predating the observatory.
+
+    Returns True when it provisioned now, None when already provisioned
+    or disabled. Raises ProvisionError on failure (callers warn, never
+    block the update).
+    """
+    try:
+        if not observatory_enabled():
+            return None
+    except Exception:
+        pass
+    home = _mercury_home(mercury_home)
+    if read_config(home) is not None:
+        return None
+    provision(home)
+    return True
+
+
+def refresh_for_update(mercury_home: str | Path | None = None) -> str:
+    """Update-tail refresh: keep config + unit current (stdlib daemon —
+    nothing to download). Returns the receipt line ("" when disabled)."""
+    try:
+        if not observatory_enabled():
+            return ""
+    except Exception:
+        pass
+    home = _mercury_home(mercury_home)
+    if read_config(home) is None:
+        return ""
+    paths = ObservatoryPaths(home)
+    ensure_config(paths)
+    unit = ensure_observatory_unit(home)
+    return f"observatory current (unit {unit})"
