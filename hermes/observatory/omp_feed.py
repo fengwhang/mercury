@@ -699,3 +699,138 @@ def _opt_int(value: Any) -> Optional[int]:
 
 def _opt_str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
+
+
+def agent_turn_frames(events: Any) -> list[dict[str, Any]]:
+    """PromptTurn.events → JSON-safe SELF frame dicts, in turn order.
+
+    The transport preserves these on its result entry — the batched backstop
+    for a lost live race (the gateway replays the surplus into the child
+    room). Shapes match ``gateway_session._feed_event_to_dict`` output, so
+    live and replayed frames share multiset identities. A transient feed
+    accumulates thinking deltas exactly like the live path; blank frames are
+    dropped (consumers filter them too). Pure; never raises."""
+    try:
+        items = list(events or [])
+    except TypeError:
+        return []
+    if not items:
+        return []
+    try:
+        feed = OmpFeed(None)
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for raw in items:
+        try:
+            typed = feed._translate_agent_event(raw)
+        except Exception:
+            continue
+        for event in typed or []:
+            try:
+                if isinstance(event, ToolEvent):
+                    if not event.tool:
+                        continue
+                    out.append({
+                        "feed": "tool", "subagent_id": "",
+                        "tool": event.tool, "args": event.args,
+                    })
+                elif isinstance(event, ThoughtEvent):
+                    if not (event.text or "").strip():
+                        continue
+                    out.append({
+                        "feed": "thought", "subagent_id": "",
+                        "text": event.text,
+                    })
+                elif isinstance(event, MessageEvent):
+                    if not (event.text or "").strip():
+                        continue
+                    out.append({
+                        "feed": "message", "subagent_id": "",
+                        "role": event.role, "text": event.text,
+                    })
+            except Exception:
+                continue
+    return out
+
+
+def child_frame_key(frame: Any) -> tuple | None:
+    """Identity for live-vs-replay multiset dedupe (None = not deduped).
+
+    Only tool/thought/message frames participate — node lifecycle frames are
+    unique by construction and grandchildren never replay."""
+    try:
+        if not isinstance(frame, Mapping):
+            return None
+        kind = frame.get("feed")
+        sid = frame.get("subagent_id") or ""
+        if kind == "tool":
+            tool = frame.get("tool")
+            if not tool:
+                return None
+            try:
+                args = json.dumps(frame.get("args"), sort_keys=True, default=str)
+            except Exception:
+                args = str(frame.get("args"))
+            return ("tool", str(sid), str(tool), args)
+        if kind == "thought":
+            text = frame.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return None
+            return ("thought", str(sid), text)
+        if kind == "message":
+            text = frame.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return None
+            return ("message", str(sid), text)
+    except Exception:
+        return None
+    return None
+
+
+class TurnFrameDedupe:
+    """Live-vs-replay multiset: the batched replay renders only the
+    occurrences the live path missed, in turn order.
+
+    The live forwarder records each pushed frame (``live_hit``); the replay
+    consumes one live occurrence per replayed occurrence and pushes the
+    surplus (``replay_indexes``). Genuine repeats survive (counts, not a
+    set); a frame live-forwarded AFTER the replay was computed is skipped
+    (the replay already covered that occurrence). One instance per child
+    turn; callers synchronize."""
+
+    def __init__(self) -> None:
+        self._live: Dict[tuple, int] = {}
+        self._replayed: Dict[tuple, int] = {}
+        self._done = False
+
+    def live_hit(self, key: Any) -> bool:
+        """Record one live-forwarded frame; True = skip (already replayed)."""
+        if key is None:
+            return False
+        try:
+            if self._done and self._live.get(key, 0) < self._replayed.get(key, 0):
+                return True
+            self._live[key] = self._live.get(key, 0) + 1
+            return False
+        except Exception:
+            return False
+
+    def replay_indexes(self, keys: list) -> list[int]:
+        """Surplus indexes to render, in order; marks the turn replayed."""
+        out: list[int] = []
+        try:
+            for i, key in enumerate(keys or ()):
+                if key is None:
+                    continue
+                if self._live.get(key, 0) > 0:
+                    self._live[key] -= 1
+                    continue
+                out.append(i)
+                self._replayed[key] = self._replayed.get(key, 0) + 1
+        finally:
+            try:
+                self._done = True
+            except Exception:
+                pass
+        return out

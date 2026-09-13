@@ -163,6 +163,47 @@ def _register_live_child(meta: Dict[str, Any], transport: Any) -> None:
         _live_procs.append(transport)
 
 
+def _subscribe_child_feed(transport: Any) -> None:
+    """Synchronously subscribe a live child to subagent frames at task start.
+
+    The gateway feed watcher attaches up to a poll interval later and only
+    hears frames emitted after it subscribes; this call (in the child_started
+    hook, before the prompt is written) gates server-side emission from task
+    start so grandchildren frames are never lost to the race. Best-effort:
+    kill-only transports have no subscription surface. Never raises."""
+    try:
+        subscribe = getattr(transport, "set_subagent_subscription", None)
+        if not callable(subscribe):
+            return
+        try:
+            from observatory.omp_feed import SUBSCRIPTION_LEVEL
+
+            level = SUBSCRIPTION_LEVEL
+        except Exception:
+            level = "events"
+        subscribe(level)
+    except Exception:
+        logger.debug("live-child subscribe failed (ignored)", exc_info=True)
+
+
+def _replay_child_turn(child_id: Any, turn_frames: Any) -> None:
+    """Push the turn's missed SELF frames into the child room (best-effort).
+
+    Gateway-side tail of ``OmpRpcChild.run_task``'s preserved ``turn_frames``:
+    forwards to the observatory session bridge (lazy import — the delegation
+    engine never depends on it at module load). No frames (one-shot
+    fallbacks, empty turns) or no bridge listener = silent no-op. Never
+    raises."""
+    try:
+        if not child_id or not turn_frames:
+            return
+        from observatory.gateway_session import replay_child_turn_frames
+
+        replay_child_turn_frames(str(child_id), turn_frames)
+    except Exception:
+        logger.debug("child turn replay failed (ignored)", exc_info=True)
+
+
 def _unregister_live_child(child_id: str, transport: Any) -> None:
     with _live_children_lock:
         _live_children.pop(child_id, None)
@@ -991,8 +1032,11 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
                     thinking_level=_delegate_thinking_level(),
                     isolate_worktree=isolate_worktree,
                     # M0A: live-child registry (steer/stop) for the run
-                    child_started=lambda c: _register_live_child(
-                        {**meta, "transport_kind": "rpc", "steerable": True}, c),
+                    child_started=lambda c: (
+                        _register_live_child(
+                            {**meta, "transport_kind": "rpc", "steerable": True}, c),
+                        _subscribe_child_feed(c),
+                    ),
                     child_finished=lambda c: _unregister_live_child(
                         meta["child_id"], c),
                 )
@@ -1041,6 +1085,11 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
             if isolate_worktree and entry.get("status") == "completed":
                 _slug = _isolate_slug(isolate_worktree)
                 entry["isolated_worktree"] = {"branch": f"omp-isolated/{_slug}", "label": isolate_worktree}
+            # Batched SELF replay into the child room: the watcher's live
+            # forward misses frames emitted before it attached (up to a poll
+            # interval); the preserved turn frames land the surplus only
+            # (multiset — already-forwarded occurrences are skipped).
+            _replay_child_turn(meta.get("child_id"), entry.get("turn_frames"))
             return entry
 
     entry = _run_omp_one_shot(
