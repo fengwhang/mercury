@@ -36,6 +36,30 @@ def test_ensure_config_idempotent(tmp_path, monkeypatch) -> None:
         provision.ensure_config(paths, server_name="other")
 
 
+def test_ensure_config_accepts_explicit_over_empty_file(tmp_path, monkeypatch) -> None:
+    """A present-but-empty config (crashed first install) must not fail
+    against the compiled-in defaults — there is nothing live to protect."""
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    paths = ObservatoryPaths(home)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.config_file.write_text("", encoding="utf-8")
+    result = provision.ensure_config(paths, server_name="vm")
+    assert result["action"] == "wrote"
+    assert result["config"]["server_name"] == "vm"
+
+
+def test_ensure_config_accepts_explicit_over_corrupt_file(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    paths = ObservatoryPaths(home)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.config_file.write_text("{not json", encoding="utf-8")
+    result = provision.ensure_config(paths, server_name="vm")
+    assert result["action"] == "wrote"
+    assert result["config"]["server_name"] == "vm"
+
+
 def test_ensure_passwords_generates_once(tmp_path, monkeypatch) -> None:
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))

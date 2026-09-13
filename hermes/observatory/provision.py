@@ -210,11 +210,15 @@ def ensure_config(
     bouncer_port: int | None = None,
     history_limit: int | None = None,
 ) -> dict[str, Any]:
-    """Idempotent ircd.json: existing values win unless explicitly passed
-    (explicit disagreement fails hard — never silently re-pins a live
-    network under running agents)."""
+    """Idempotent ircd.json: stored values win unless explicitly passed
+    (explicit disagreement with a STORED value fails hard — never
+    silently re-pin a live network under running agents). Fresh installs
+    (no readable config yet — missing, empty, or corrupt file) accept
+    explicit values outright: there is nothing live to protect, and the
+    defaults must never masquerade as stored values in the error."""
     current = read_config(paths.root.parent)
-    cfg = default_config() if not isinstance(current, dict) else dict(current)
+    had_config = isinstance(current, dict)
+    cfg = default_config() if not had_config else dict(current)
     explicit = {
         "server_name": (
             validate_server_name(server_name) if server_name is not None else None
@@ -230,7 +234,7 @@ def ensure_config(
         if value is None:
             cfg.setdefault(key, default_config()[key])
             continue
-        if key in cfg and cfg[key] != value:
+        if had_config and key in cfg and cfg[key] != value:
             raise ProvisionError(
                 f"observatory {key} is {cfg[key]!r} in {paths.config_file} "
                 f"but {value!r} was requested — hand-edit the file (and "
