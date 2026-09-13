@@ -1035,16 +1035,31 @@ class SQLiteCryptoStore(_MemoryCryptoStore):
     # -- devices ---------------------------------------------------------------------------------
 
     async def put_devices(self, user_id, devices) -> None:
+        # Atomic under concurrency: the old DELETE + multi-row INSERT
+        # interleaved across concurrent ensure_room_share calls (the
+        # inherited mautrix transaction() is a NO-OP), so the second
+        # writer's INSERT hit the (user_id, device_id) PRIMARY KEY and
+        # every Matrix send died UNIQUE-constraint. Single-statement
+        # upserts are idempotent — no interleave can conflict — so no
+        # lock/transaction is needed. Tradeoff vs the old full-replace:
+        # server-deleted devices linger in the mirror until the set goes
+        # empty (fetches only ever upsert live keys, so ghosts are never
+        # trusted for a send). Empty set still DELETEs (conflict-free) so
+        # tracked-empty stays exact across restarts.
         await super().put_devices(user_id, devices)
-        rows = [(str(user_id), str(did), str(dev.identity_key), str(dev.signing_key),
-                 int(dev.trust), int(dev.deleted), dev.name or "")
-                for did, dev in (devices or {}).items()]
+        seen: dict[tuple[str, str], tuple] = {}
+        for did, dev in (devices or {}).items():
+            seen[(str(user_id), str(did))] = (
+                str(user_id), str(did), str(dev.identity_key), str(dev.signing_key),
+                int(dev.trust), int(dev.deleted), dev.name or "")
         await self._db.execute("INSERT OR REPLACE INTO tracked_users VALUES (?)",
                                (str(user_id),))
-        await self._db.execute("DELETE FROM devices WHERE user_id=?", (str(user_id),))
-        if rows:
+        if seen:
             await self._db.executemany(
-                "INSERT INTO devices VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+                "INSERT OR REPLACE INTO devices VALUES (?, ?, ?, ?, ?, ?, ?)",
+                list(seen.values()))
+        else:
+            await self._db.execute("DELETE FROM devices WHERE user_id=?", (str(user_id),))
         await self._db.commit()
 
     async def put_device(self, user_id, device) -> None:
