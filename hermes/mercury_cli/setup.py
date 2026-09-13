@@ -3339,7 +3339,17 @@ def _auto_ensure_unit(obs, *, loud: bool = False) -> str:
         print_info("Observatory unit skipped (no systemd) — start the daemon manually "
                    "outside containers (`python -m observatory.ircd`).")
         return result
-    print_success(f"Observatory unit {result} ({_unit}) — enabled and started.")
+    if result != "installed":
+        # Partial states ("installed (start failed: …)") previously
+        # printed as success — the exact lie behind stale daemons.
+        _unit_problem(
+            loud,
+            f"Observatory unit NOT running: {result}",
+            f"Fix with: systemctl --user restart {_unit} "
+            f"(then: systemctl --user status {_unit})",
+        )
+        return "skipped-error"
+    print_success(f"Observatory unit installed ({_unit}) — enabled and started.")
     return result
 
 
@@ -3370,6 +3380,50 @@ def _auto_converge_gateway(obs) -> str:
     else:
         print_info(f"Gateway {result}.")
     return result
+
+
+def _probe_tcp(listener: str, timeout: float = 3.0) -> bool:
+    """True when something answers TCP at ``host:port``. Never raises."""
+    import socket as _socket
+
+    try:
+        host, _, port = str(listener or "").rpartition(":")
+        if not host.strip() or not port.strip():
+            return False
+        with _socket.create_connection((host.strip(), int(port.strip())), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _verify_daemon_listening(status: dict) -> tuple[bool, str]:
+    """Probe the agent + bouncer listeners from the status summary.
+
+    The wizard must never report success while the daemon is down — this
+    is the check that was missing behind every "it said complete but
+    nothing listens" report. Returns (ok, detail); unknown addresses
+    (unprovisioned status) count as skipped-ok. Never raises.
+    """
+    try:
+        agent = str((status or {}).get("agent") or "")
+        bouncer = str((status or {}).get("bouncer") or "")
+        if not agent and not bouncer:
+            return True, "skipped (no listeners configured yet)"
+        down = [(label, addr) for label, addr in (("agent", agent), ("bouncer", bouncer))
+                if addr and not _probe_tcp(addr)]
+        if not down:
+            return True, "agent + bouncer answer"
+        try:
+            from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
+        except Exception:  # noqa: BLE001
+            _unit = "mercury-observatory.service"
+        return False, (
+            f"no answer on {', '.join(f'{label} {addr}' for label, addr in down)} — "
+            f"restart the daemon: systemctl --user restart {_unit} "
+            f"(then: systemctl --user status {_unit})"
+        )
+    except Exception as exc:  # noqa: BLE001 — verification never kills setup
+        return False, f"verification error: {exc}"
 
 
 def _run_observatory_auto_steps(obs, *, unit_loud: bool = False) -> dict:
@@ -3532,8 +3586,11 @@ def _wire_gateway_irc_env(home_label: str) -> None:
     """
     try:
         want = prompt_yes_no(
-            "Wire the gateway to this network? (sets IRC_* in .env so the "
-            "gateway bot joins the gateway channel)",
+            "Wire the gateway bot to the LOCAL agent port (localhost)? "
+            "Sets IRC_* in .env so the gateway bot joins the gateway channel. "
+            "This is independent of the Tailscale bouncer pin — phones use "
+            "the bouncer, the gateway uses localhost; answering No here "
+            "changes nothing about Tailscale.",
             default=True,
         )
     except KeyboardInterrupt:
@@ -3643,7 +3700,11 @@ def setup_observatory(config: dict, *, quick: bool = False):
                         "until it is started."
                     )
                 else:
-                    print_success("Observatory provisioning complete.")
+                    ok, detail = _verify_daemon_listening(status)
+                    if ok:
+                        print_success(f"Observatory provisioning complete ({detail}).")
+                    else:
+                        print_error(f"Provisioned but the daemon is NOT answering: {detail}")
                 _wire_gateway_irc_env(label)
             else:
                 # Keep-data re-run: reset? (reset forces a loud
@@ -3661,14 +3722,22 @@ def setup_observatory(config: dict, *, quick: bool = False):
                             "mercury setup observatory --install-sidecar"
                         )
                     else:
-                        print_success("Observatory reset + reprovisioned.")
+                        ok, detail = _verify_daemon_listening(status)
+                        if ok:
+                            print_success(f"Observatory reset + reprovisioned ({detail}).")
+                        else:
+                            print_error(f"Reset done but the daemon is NOT answering: {detail}")
                     _wire_gateway_irc_env(label)
                 else:
                     _offer_bouncer_password_rotate(obs)
                     obs.provision_in_wizard()
                     _run_observatory_auto_steps(obs)
                     status = obs.status_summary()
-                    print_success("Observatory repair complete.")
+                    ok, detail = _verify_daemon_listening(status)
+                    if ok:
+                        print_success(f"Observatory repair complete ({detail}).")
+                    else:
+                        print_error(f"Repair done but the daemon is NOT answering: {detail}")
         except KeyboardInterrupt:
             raise
         except Exception as exc:
@@ -3689,6 +3758,11 @@ def setup_observatory(config: dict, *, quick: bool = False):
         except Exception:  # noqa: BLE001 — keep the pre-bind status
             pass
         _print_observatory_setup_card(status, ts)
+        ok, detail = _verify_daemon_listening(status)
+        if ok:
+            print_success(f"Observatory verified live ({detail}).")
+        else:
+            print_error(f"Setup finished but the daemon is NOT answering: {detail}")
         _maybe_print_bind_mismatch_action(obs, ts)
     else:
         print_info(_OBSERVATORY_GUIDE_LINE)

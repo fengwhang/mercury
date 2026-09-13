@@ -107,6 +107,11 @@ def _patch_common(stack, fake, *, choice=1, yes_answers=None):
         return answers.pop(0) if answers else default
 
     stack.enter_context(patch.object(setup_mod, "prompt_yes_no", _yes_no))
+    stack.enter_context(
+        patch.object(
+            setup_mod, "_verify_daemon_listening", return_value=(True, "mocked")
+        )
+    )
     return {"auto": auto}
 
 
@@ -212,3 +217,46 @@ def test_setup_card_mentions_bouncer_not_password(capsys):
     assert "127.0.0.1:6670" in out
     assert "#mercury_gateway" in out
     assert "IRC_BOUNCER_PASSWORD" in out
+
+
+def test_verify_daemon_listening_live_and_dead():
+    import socket
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    live_port = srv.getsockname()[1]
+    try:
+        ok, detail = setup_mod._verify_daemon_listening(
+            {"agent": f"127.0.0.1:{live_port}", "bouncer": "127.0.0.1:1"}
+        )
+        assert ok is False
+        assert f"127.0.0.1:{live_port}" not in detail
+        assert "127.0.0.1:1" in detail
+        ok, _ = setup_mod._verify_daemon_listening(
+            {"agent": f"127.0.0.1:{live_port}", "bouncer": f"127.0.0.1:{live_port}"}
+        )
+        assert ok is True
+    finally:
+        srv.close()
+
+
+def test_verify_daemon_skips_empty_status():
+    import mercury_cli.setup as setup_mod
+
+    ok, detail = setup_mod._verify_daemon_listening({})
+    assert ok is True
+    assert "skipped" in detail
+
+
+def test_auto_unit_partial_result_is_failure(capsys):
+    import mercury_cli.setup as setup_mod
+
+    class _PartialObs(_FakeObs):
+        def ensure_observatory_unit(self):
+            return "installed (start failed: boom)"
+
+    assert setup_mod._auto_ensure_unit(_PartialObs(_base_status())) == "skipped-error"
+    out = capsys.readouterr().out
+    assert "NOT running" in out
