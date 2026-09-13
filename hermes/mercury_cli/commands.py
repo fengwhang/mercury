@@ -187,7 +187,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("import", "Import a shared profile archive as a new profile", "Configuration",
                cli_only=True, args_hint="<archive.tar.gz> [--name <name>]"),
     CommandDef("stop", "Kill all running background processes", "Session",
-               busy_policy="interrupt_then_dispatch", busy_handler="stop"),
+               aliases=("kill",), busy_policy="interrupt_then_dispatch", busy_handler="stop"),
     CommandDef("pause", "Pause new work globally (emergency stop); '/pause off' resumes", "Session",
                gateway_only=True, args_hint="[reason | off]",
                busy_policy="dispatch"),
