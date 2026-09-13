@@ -3173,6 +3173,55 @@ class SidecarDaemon:
             return None
 
     @staticmethod
+    def _run_child_turn_with_collector(
+        agent: Any, node_id: str, text: str, kind: str
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Worker-thread body: the child's turn through the gateway collector.
+
+        Installs a ``_TurnEventCollector`` addressed to this child node on
+        the child's own agent, runs the turn (session-scoped slash
+        dispatch for ``kind == "command"``, else ``run_conversation``),
+        and returns (reply, events). Each captured event live-pushes as
+        a ``{node_id, seq, event}`` datagram under the CHILD node id, so
+        the sidecar's live socket renders tool calls and thinking into
+        the child room exactly like a gateway turn — and the batched
+        events replay on completion. Restores the agent's prior callbacks
+        before returning.
+        """
+        from observatory.gateway_session import (
+            _dispatch_slash_command,
+            _install_collector,
+            _TurnEventCollector,
+        )
+
+        clean = (text or "").strip()
+        reply = ""
+        if kind == "command":
+            try:
+                out = _dispatch_slash_command(clean, node_id=node_id)
+            except Exception:
+                out = None
+            if out is not None:
+                return str(out), []
+        collector = _TurnEventCollector(node_id=node_id)
+        restore = _install_collector(agent, collector)
+        try:
+            result = agent.run_conversation(clean)
+        finally:
+            try:
+                restore()
+            except Exception:
+                pass
+        if isinstance(result, dict):
+            reply = result.get("final_response", "")
+            if reply is None:
+                reply = ""
+            reply = reply if isinstance(reply, str) else str(reply)
+        elif result is not None:
+            reply = str(result)
+        return reply, collector.events()
+
+    @staticmethod
     def _run_hermes_child_turn_sync(
         agent: Any, node_id: str, room_id: str, text: str, kind: str
     ) -> str:
@@ -3244,7 +3293,12 @@ class SidecarDaemon:
         """One headless turn on a hermes child's own session; the reply
         renders in its room, in its own voice — unless ``quiet`` (a
         routine parent-continuation: the turn still runs, the room stays
-        silent). BUG3: the intake attempts the live redirect synchronously
+        silent). Runs through the SAME gateway turn machinery (collector
+        + live datagrams + batched replay) with the child's session id
+        and node id — a child turn IS a gateway turn with a different
+        address, so tool calls and thinking land in the child room live
+        and on replay, and room steers redirect into the live turn.
+        BUG3: the intake attempts the live redirect synchronously
         before queueing (_execute_child_action); the lock-gated attempt
         below remains for direct callers. A miss (turn ended in the race,
         no redirect surface) falls through to the queued fresh turn.
@@ -3285,11 +3339,10 @@ class SidecarDaemon:
                 return True
         async with lock:
             try:
-                reply = await asyncio.to_thread(
-                    self._run_hermes_child_turn_sync,
+                reply, events = await asyncio.to_thread(
+                    self._run_child_turn_with_collector,
                     agent,
                     node_id,
-                    room_id,
                     text,
                     kind,
                 )
@@ -3308,9 +3361,17 @@ class SidecarDaemon:
         except Exception:  # noqa: BLE001 — marking never fails a turn
             pass
         if not (reply or "").strip():
+            try:
+                await self._replay_gateway_events(node_id, events or [])
+            except Exception:
+                log.debug("child event replay failed (node %s)", node_id, exc_info=True)
             self._release_hermes_inflight(node_id)
             return True
         if not quiet:
+            try:
+                await self._replay_gateway_events(node_id, events or [])
+            except Exception:
+                log.debug("child event replay failed (node %s)", node_id, exc_info=True)
             try:
                 await self.renderer.render_agent_message(node_id, reply)
             except Exception:
@@ -3322,7 +3383,10 @@ class SidecarDaemon:
         """One omp turn (idle prompt): RPC task → summary renders in the
         child's room, in its own voice — unless ``quiet`` (a routine
         parent-continuation: the turn still runs, the room stays silent).
-        False when no handle."""
+        The feed attaches BEFORE the first turn so the child's own tool
+        calls, thinking, and messages stream into its room live (SELF
+        stream) exactly like a gateway turn — never after, when the
+        frames that matter have already flown. False when no handle."""
         from observatory.control import ControlNotice
 
         try:
