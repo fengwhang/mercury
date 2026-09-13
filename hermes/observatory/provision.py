@@ -661,3 +661,38 @@ def refresh_for_update(mercury_home: str | Path | None = None) -> str:
     ensure_config(paths)
     unit = ensure_observatory_unit(home)
     return f"observatory current (unit {unit})"
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m observatory.provision`` (install.sh entry point)."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Provision the IRC observatory")
+    parser.add_argument("--server-name", default=None)
+    parser.add_argument("--agent-host", default=None)
+    parser.add_argument("--agent-port", type=int, default=None)
+    parser.add_argument("--bouncer-host", default=None)
+    parser.add_argument("--bouncer-port", type=int, default=None)
+    parser.add_argument("--no-systemd", action="store_true")
+    parser.add_argument("--mercury-home", default=None)
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO)
+    try:
+        summary = provision(
+            args.mercury_home,
+            server_name=args.server_name,
+            agent_host=args.agent_host,
+            agent_port=args.agent_port,
+            bouncer_host=args.bouncer_host,
+            bouncer_port=args.bouncer_port,
+            systemd=not args.no_systemd,
+        )
+    except ProvisionError as exc:
+        print(f"observatory provisioning failed: {exc}")
+        return 1
+    print(f"observatory ready: {summary['config']['path']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
