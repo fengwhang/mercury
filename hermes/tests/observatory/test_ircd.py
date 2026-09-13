@@ -307,3 +307,56 @@ def test_unit_passes_only_state_dir(tmp_path) -> None:
     assert "--state-dir /h/observatory" in unit
     assert "--bouncer-host" not in unit
     assert "--agent-port" not in unit
+
+
+@pytest.mark.asyncio
+async def test_bouncer_bind_failure_degrades_not_dies(tmp_path) -> None:
+    """Unbindable bouncer (Tailscale down) must not take the agent down."""
+    from observatory.ircd import DaemonConfig, IrcDaemon
+
+    d = IrcDaemon(
+        DaemonConfig(
+            agent_port=0,
+            bouncer_host="203.0.113.1",
+            bouncer_port=0,
+            state_dir=str(tmp_path),
+        )
+    )
+    await d.start()
+    try:
+        assert len(d._servers) == 1
+        port = d._servers[0].sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"NICK a\r\nUSER a 0 * :t\r\n")
+        await writer.drain()
+        await asyncio.sleep(0.3)
+        assert d._clients["a"].registered
+        writer.close()
+    finally:
+        await d.stop()
+
+
+@pytest.mark.asyncio
+async def test_both_listeners_down_raises(tmp_path) -> None:
+    """Nothing bindable at all is still a hard error (no silent no-op)."""
+    import socket
+
+    from observatory.ircd import DaemonConfig, IrcDaemon
+
+    held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    held.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    held.bind(("127.0.0.1", 0))
+    held.listen(1)
+    port = held.getsockname()[1]
+    d = IrcDaemon(
+        DaemonConfig(
+            agent_port=port, bouncer_host="127.0.0.1", bouncer_port=port,
+            state_dir=str(tmp_path),
+        )
+    )
+    try:
+        with pytest.raises(OSError):
+            await d.start()
+    finally:
+        held.close()
+        await d.stop()

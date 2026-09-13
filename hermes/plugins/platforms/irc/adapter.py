@@ -732,10 +732,22 @@ def interactive_setup() -> None:
     existing_server = get_env_value("IRC_SERVER")
     if existing_server:
         nick = get_env_value("IRC_NICKNAME") or ""
-        print_info(f"IRC: already configured (server: {existing_server}"
-                   f"{f', bot: {nick}' if nick else ''})")
-        if not prompt_yes_no("Reconfigure IRC?", False):
-            return
+        if (get_env_value("IRC_MANAGED_BY") or "").strip().lower() == "observatory":
+            print_info(f"IRC is managed by the observatory (server: {existing_server}"
+                       f"{f', bot: {nick}' if nick else ''}) — the gateway bot lives here.")
+            print_info("   A second, personal IRC connection is not supported: there is")
+            print_info("   one bot identity per network. Taking over repoints the bot")
+            print_info("   and BREAKS the observatory rooms — manage the bot via")
+            print_info("   `mercury setup observatory` instead.")
+            if not prompt_yes_no("Take over manually anyway (breaks observatory)?", False):
+                return
+            save_env_value("IRC_MANAGED_BY", "")
+            print_warning("Observatory management released — the bot is now yours.")
+        else:
+            print_info(f"IRC: already configured (server: {existing_server}"
+                       f"{f', bot: {nick}' if nick else ''})")
+            if not prompt_yes_no("Reconfigure IRC?", False):
+                return
 
     print_info("Connect Mercury to an IRC network. Uses Python stdlib — no extra packages needed.")
     print_info("   One name covers the bot and its channel: bot `ace` lives in `#ace`.")

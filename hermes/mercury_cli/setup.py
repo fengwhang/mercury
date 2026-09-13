@@ -3618,6 +3618,7 @@ def _wire_gateway_irc_env(home_label: str) -> None:
         save_env_value("IRC_USE_TLS", "false")
         save_env_value("IRC_NICKNAME", f"{server}_gateway")
         save_env_value("IRC_CHANNEL", f"#{server}_gateway")
+        save_env_value("IRC_MANAGED_BY", "observatory")
         if passwords.get("agent"):
             save_env_value("IRC_SERVER_PASSWORD", passwords["agent"])
         print_success("Gateway IRC wiring saved to .env "

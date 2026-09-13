@@ -210,3 +210,55 @@ def test_interactive_setup_four_prompts(monkeypatch) -> None:
     assert saved["IRC_ALLOWED_USERS"] == "op"  # only owner + bots
     assert saved["IRC_ALLOW_ALL_USERS"] == "false"
     assert "IRC_PORT" not in saved  # never asked
+
+
+def test_managed_setup_keeps_hands_off(monkeypatch) -> None:
+    import mercury_cli.setup as setup_mod
+    from plugins.platforms.irc import adapter as adapter_mod
+
+    monkeypatch.setattr(setup_mod, "get_env_value",
+                        lambda k, default="": {
+                            "IRC_SERVER": "127.0.0.1",
+                            "IRC_NICKNAME": "mercury_gateway",
+                            "IRC_MANAGED_BY": "observatory",
+                        }.get(k, default))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: False)
+    monkeypatch.setattr(setup_mod, "prompt",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not prompt")))
+    monkeypatch.setattr(setup_mod, "save_env_value",
+                        lambda k, v: (_ for _ in ()).throw(AssertionError("must not save")))
+    for fn in ("print_header", "print_info", "print_warning", "print_success"):
+        monkeypatch.setattr(setup_mod, fn, lambda *a: None)
+
+    adapter_mod.interactive_setup()  # returns at the managed gate
+
+
+def test_managed_takeover_clears_marker(monkeypatch) -> None:
+    import mercury_cli.setup as setup_mod
+    from plugins.platforms.irc import adapter as adapter_mod
+
+    saved: dict[str, str] = {}
+    answers = iter(["irc.example.com", "mybot", "", "me"])
+    monkeypatch.setattr(setup_mod, "get_env_value",
+                        lambda k, default="": {
+                            "IRC_SERVER": "127.0.0.1",
+                            "IRC_MANAGED_BY": "observatory",
+                        }.get(k, default))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
+    monkeypatch.setattr(setup_mod, "prompt", lambda *a, **k: next(answers))
+    monkeypatch.setattr(setup_mod, "save_env_value",
+                        lambda k, v: saved.__setitem__(k, v))
+    for fn in ("print_header", "print_info", "print_warning", "print_success"):
+        monkeypatch.setattr(setup_mod, fn, lambda *a: None)
+    for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
+                "IRC_USE_TLS", "IRC_SERVER_PASSWORD",
+                "IRC_ALLOWED_USERS", "IRC_ALLOW_ALL_USERS"):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter_mod.interactive_setup()
+    assert saved["IRC_MANAGED_BY"] == ""
+    assert saved["IRC_SERVER"] == "irc.example.com"
+    assert saved["IRC_NICKNAME"] == "mybot"
+    assert saved["IRC_CHANNEL"] == "#mybot"
+    assert saved["IRC_USE_TLS"] == "true"  # public host derives TLS
+    assert saved["IRC_ALLOWED_USERS"] == "me"

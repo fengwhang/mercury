@@ -192,17 +192,18 @@ class IrcDaemon:
     async def start(self) -> "IrcDaemon":
         self._open_db()
         cfg = self.config
-        agent = await asyncio.start_server(
-            lambda r, w: self._handle(r, w, listener="agent"),
-            cfg.host,
-            cfg.agent_port,
-        )
-        bouncer = await asyncio.start_server(
-            lambda r, w: self._handle(r, w, listener="bouncer"),
-            cfg.bouncer_host,
-            cfg.bouncer_port,
-        )
-        self._servers = [agent, bouncer]
+        errors: list[str] = []
+        agent = await self._listen(
+            "agent", cfg.host, cfg.agent_port, errors)
+        bouncer = await self._listen(
+            "bouncer", cfg.bouncer_host, cfg.bouncer_port, errors)
+        self._servers = [s for s in (agent, bouncer) if s is not None]
+        if not self._servers:
+            raise OSError(
+                "ircd: no listener bound — "
+                + "; ".join(errors))
+        for err in errors:
+            logger.error("ircd: degraded listener: %s", err)
         logger.info(
             "ircd: agent %s:%d bouncer %s:%d (%s)",
             cfg.host,
@@ -212,6 +213,22 @@ class IrcDaemon:
             cfg.network_name,
         )
         return self
+
+    async def _listen(self, listener: str, host: str, port: int,
+                      errors: list[str]) -> asyncio.AbstractServer | None:
+        """Bind one listener; None (plus a loud error) instead of dying."""
+        try:
+            return await asyncio.start_server(
+                lambda r, w, _listener=listener: self._handle(r, w, listener=_listener),
+                host,
+                port,
+            )
+        except Exception as exc:
+            errors.append(
+                f"{listener} {host}:{port} not bound ({exc}) — "
+                f"{'check Tailscale / the bind address' if listener == 'bouncer' else 'check for a stale daemon holding the port'}"
+            )
+            return None
 
     async def stop(self) -> None:
         for server in self._servers:
