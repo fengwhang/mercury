@@ -3213,6 +3213,21 @@ def _ensure_firewall_port(port: int | str) -> str:
     return "failed"
 
 
+def _print_soju_status(summary: dict) -> None:
+    """One-line soju frontend status (bouncer Goguma actually talks to)."""
+    try:
+        if summary.get("configured") and summary.get("unit") == "active":
+            if summary.get("upstream_connected"):
+                print_success("soju bouncer live (upstream connected).")
+            else:
+                print_warning("soju bouncer up but upstream NOT connected.")
+        else:
+            print_warning(
+                f"soju bouncer not live (unit {summary.get('unit')}).")
+    except Exception:  # noqa: BLE001 — status never kills setup
+        pass
+
+
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
     """Bouncer login card — the ONLY manual step (any IRC client).
 
@@ -3950,6 +3965,18 @@ def setup_observatory(config: dict, *, quick: bool = False):
             _ensure_firewall_port(_bouncer_port(status.get("bouncer") or ""))
             _ensure_firewall_port(status.get("tls_port", 6697))
         except Exception:  # noqa: BLE001 — firewall never kills setup
+            pass
+        try:
+            from observatory.soju import provision_soju, status_soju
+
+            soju_summary = provision_soju()
+            _print_soju_status(status_soju())
+        except Exception as exc:  # noqa: BLE001 — direct bouncer still works
+            print_error(f"soju layer failed: {exc}")
+            print_info("Phones fall back to the direct bouncer (Goguma will warn).")
+        try:
+            status = obs.status_summary()
+        except Exception:  # noqa: BLE001 — keep the pre-soju status
             pass
         _print_observatory_setup_card(status, ts)
         ok, detail = _verify_daemon_listening(status)

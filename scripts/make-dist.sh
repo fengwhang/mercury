@@ -5,13 +5,12 @@
 #   dist/mercury-<version>-x64.tar.gz     (omp x86-64 prebuilt as dist/omp)
 #   dist/mercury-<version>-arm64.tar.gz   (omp aarch64 prebuilt as dist/omp)
 # Each contains the repo source (minus dev cruft) PLUS exactly ONE omp
-# binary + ui-tui bundle so a clean VM needs neither bun nor rust nor
-# esbuild. The release host cross-compiles the arm64 binary with
-# CROSS_TARGET=linux-arm64 (natives embedded from the upstream
-# @oh-my-pi/pi-natives-linux-arm64 version-matched prebuild).
-# No wheels/, no tuwunel-binaries/: the IRC observatory daemon is
-# stdlib-only, so virgin installs provision with zero network and zero
-# staged binaries.
+# binary + ui-tui bundle + ONE soju triple so a clean VM needs neither
+# bun nor rust nor esbuild nor Go. The release host cross-compiles the
+# arm64 binaries (omp via CROSS_TARGET, soju pure-Go) and stages both
+# prebuilt sets (gitignored) into each tarball.
+# No wheels: the IRC observatory daemon is stdlib-only, so virgin
+# installs provision with zero network.
 #
 # RELEASE ORDER (build-after-bump — v0.0.19 lesson): the omp binary bakes
 # MERCURY_VERSION at COMPILE time (compile-binary.ts resolveMercuryVersion
@@ -84,6 +83,15 @@ build_one() { # $1 = arch suffix (x64|arm64), $2 = source binary path, $3 = labe
     cp "$SRCBIN" "$S/mercury/omp/packages/coding-agent/dist/omp"
     mkdir -p "$S/mercury/hermes/ui-tui/dist"
     cp hermes/ui-tui/dist/entry.js "$S/mercury/hermes/ui-tui/dist/entry.js"
+    echo "== [$LABEL] injecting soju bouncer triple (gitignored, scripts/build-soju.sh)"
+    _sojuarch=amd64; [ "$ARCHSUF" = "arm64" ] && _sojuarch=arm64
+    for _bin in soju sojuctl sojudb; do
+        [ -x "build/soju/${_sojuarch}/${_bin}" ] \
+            || { echo "FATAL: soju binary missing: build/soju/${_sojuarch}/${_bin} (run scripts/build-soju.sh)" >&2; exit 1; }
+        mkdir -p "$S/mercury/hermes/observatory/soju-binaries"
+        cp "build/soju/${_sojuarch}/${_bin}" \
+            "$S/mercury/hermes/observatory/soju-binaries/${_bin}-${_sojuarch}"
+    done
     # natives if present (rust-built .so/.node; runtime fallback path — the
     # primary natives are EMBEDDED in the compiled binary)
     if compgen -G "omp/packages/natives/native/*" >/dev/null; then
@@ -100,7 +108,7 @@ built:      $(date -u +%Y-%m-%dT%H:%M:%SZ)
 built-on:   $(uname -srm)
 hermes pin: $(grep -m1 hermes PINS.txt || true)
 omp pin:    $(grep -m1 '^omp' PINS.txt || true)
-components: source (git archive $(git rev-parse --short HEAD)) + omp binary (${ARCHSUF}) + ui-tui bundle + natives (IRC observatory: stdlib, nothing staged)
+components: source (git archive $(git rev-parse --short HEAD)) + omp binary (${ARCHSUF}) + ui-tui bundle + natives + soju bouncer triple (${_sojuarch})
 EOF
 
     echo "== [$LABEL] tarball"

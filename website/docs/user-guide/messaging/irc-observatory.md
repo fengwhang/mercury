@@ -79,7 +79,10 @@ Never expose the bouncer beyond your tailnet.
 The daemon speaks modern IRCv3 (`sasl`, `message-tags`, `server-time`,
 `batch`, `echo-message`, `labeled-response`, `draft/chathistory`), so
 Goguma-style clients get background messaging and backlog catch-up —
-no soju needed.
+and since v0.0.63 a bundled soju bouncer fronts the network, which is
+Goguma's reference setup (`BOUNCER_NETID`, `soju.im/*`): same host,
+ports, and password from the card, no client-side change. The ircd
+stays the agent network behind it (rooms, gateway bot, trace feeds).
 
 ## The channels
 

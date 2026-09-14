@@ -488,3 +488,23 @@ def test_restart_gateway_decline_prints_manual(monkeypatch, capsys):
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: False)
     assert setup_mod._restart_gateway("test reason") is False
     assert "mercury gateway restart" in capsys.readouterr().out
+
+
+def test_tail_provisions_soju_layer(monkeypatch):
+    from contextlib import ExitStack
+
+    import observatory.soju as soju_mod
+
+    fake = _FakeObs(_base_status(provisioned=True))
+    calls = []
+    monkeypatch.setattr(
+        soju_mod, "provision_soju",
+        lambda *a, **k: calls.append(True) or {"unit": "installed"})
+    monkeypatch.setattr(
+        soju_mod, "status_soju",
+        lambda *a, **k: {"configured": True, "unit": "active",
+                         "upstream_connected": True})
+    with ExitStack() as stack:
+        _patch_common(stack, fake, choice=1, yes_answers=[True])
+        setup_mod.setup_observatory({})
+    assert calls == [True]

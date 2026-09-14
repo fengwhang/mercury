@@ -282,6 +282,9 @@ install_observatory() {
     MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
         "$VENV_PY" -m observatory.provision \
         || { log_error "observatory provisioning failed (see output above)"; exit 1; }
+    MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
+        "$VENV_PY" -m observatory.soju \
+        || { log_error "soju bouncer provisioning failed (see output above)"; exit 1; }
     local _bouncer_port _tls_port
     _bouncer_port="$("$VENV_PY" -c "import json;print(json.load(open('$MERCURY_HOME/observatory/ircd.json'))['bouncer_port'])" 2>/dev/null)" || _bouncer_port=""
     _tls_port="$("$VENV_PY" -c "import json;print(json.load(open('$MERCURY_HOME/observatory/ircd.json')).get('tls_port') or 6697)" 2>/dev/null)" || _tls_port=""
