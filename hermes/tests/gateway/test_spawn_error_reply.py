@@ -20,3 +20,29 @@ def test_generic_failure_first_line_capped() -> None:
     assert out == "✗ /spawn failed: short problem (full error in the gateway log)"
     assert reply("spawn", RuntimeError("x" * 500)).count("\n") == 0
     assert len(reply("spawn", RuntimeError("x" * 500))) < 400
+
+
+class _StubAdapter:
+    def __init__(self, channel="", extra=()):
+        self.channel = channel
+        self.extra_channels = set(extra)
+
+
+class _StubSelf:
+    def __init__(self, adapter=None):
+        from gateway.config import Platform
+        self.adapters = {Platform("irc"): adapter} if adapter is not None else {}
+
+
+def test_live_channels_reports_joined_rooms() -> None:
+    from gateway.slash_commands import GatewaySlashCommandsMixin as mixin
+
+    got = mixin._observatory_live_channels(
+        _StubSelf(_StubAdapter("#vm_gateway", ("#vm_ace",))))
+    assert got == {"#vm_gateway", "#vm_ace"}
+
+
+def test_live_channels_empty_without_adapter() -> None:
+    from gateway.slash_commands import GatewaySlashCommandsMixin as mixin
+
+    assert mixin._observatory_live_channels(_StubSelf()) == set()

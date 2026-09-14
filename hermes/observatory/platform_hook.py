@@ -274,6 +274,15 @@ async def boot_resync(
             lobby = gateway_channel(live_server_name(None) or "mercury")
             if subscribe_user_channel(lobby):
                 report["lobby"] = lobby
+                try:
+                    # Nudge already-connected phones: subscription alone
+                    # only surfaces on (re)connect, the INVITE taps now.
+                    from observatory.soju import SOJU_USER
+
+                    if bot is not None and await bot.invite_user(SOJU_USER, lobby):
+                        report["lobby_invited"] = True
+                except Exception:
+                    pass
         except Exception:
             pass
         try:

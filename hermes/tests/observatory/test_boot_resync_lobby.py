@@ -25,7 +25,14 @@ async def test_resync_subscribes_lobby(monkeypatch) -> None:
     import observatory.soju as soju_mod
     from observatory import provision as provision_mod
 
-    monkeypatch.setattr(rooms_mod, "get_bot_sink", lambda: None)
+    invited = []
+
+    class FakeBot:
+        async def invite_user(self, nick, channel):
+            invited.append((nick, channel))
+            return True
+
+    monkeypatch.setattr(rooms_mod, "get_bot_sink", lambda: FakeBot())
     monkeypatch.setattr(
         rooms_mod, "start_pump", lambda manager: __import__("asyncio").sleep(0))
     monkeypatch.setattr(
@@ -40,3 +47,5 @@ async def test_resync_subscribes_lobby(monkeypatch) -> None:
         manager=_FakeManager(), state=_FakeState())
     assert seen == ["#vm_gateway"]
     assert report.get("lobby") == "#vm_gateway"
+    assert invited == [("owner", "#vm_gateway")]
+    assert report.get("lobby_invited") is True

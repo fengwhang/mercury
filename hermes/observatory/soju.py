@@ -447,6 +447,13 @@ def provision_soju(
     from observatory.rooms import gateway_channel  # local import: no cycle
 
     summary["lobby"] = ensure_soju_channel(spaths, gateway_channel(server))
+    if summary["lobby"].get("action") == "subscribed" and soju_unit_active():
+        # A connected phone never learns a new subscription unasked —
+        # restart so the phone auto-reconnects INTO the lobby (0 taps).
+        restart_soju()
+        summary["lobby_restarted"] = True
+        if _systemctl_available():
+            _wait_admin_sock(str(spaths.admin_sock))
     return summary
 
 

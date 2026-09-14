@@ -493,6 +493,7 @@ class GatewaySlashCommandsMixin:
         from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
 
         source = event.source
+
         session_entry = await self.async_session_store.get_or_create_session(source)
 
         connected_platforms = [p.value for p in self.adapters.keys()]
@@ -6494,6 +6495,22 @@ class GatewaySlashCommandsMixin:
         except Exception:
             return ""
 
+    def _observatory_live_channels(self):
+        """Lowered channels the live IRC adapter has joined (never raises)."""
+        try:
+            from gateway.config import Platform
+
+            adapter = (getattr(self, "adapters", None) or {}).get(Platform("irc"))
+            chans = set()
+            for raw in [getattr(adapter, "channel", "")] + sorted(
+                getattr(adapter, "extra_channels", set()) or set()
+            ):
+                if raw:
+                    chans.add(str(raw).lower())
+            return chans
+        except Exception:
+            return set()
+
     def _observatory_find_by_channel(self, state, channel):
         """channel -> live node row. None when unknown/foreign."""
         if not channel:
@@ -6529,7 +6546,11 @@ class GatewaySlashCommandsMixin:
         state, registry = handles
         gw_channel = self._observatory_gateway_channel(state)
         caller_channel = self._observatory_caller_channel(event)
-        if not caller_channel or caller_channel.lower() != gw_channel.lower():
+        live = self._observatory_live_channels()
+        ok = bool(caller_channel) and (
+            caller_channel.lower() == gw_channel.lower() or caller_channel.lower() in live
+        )
+        if not ok:
             where = f"the gateway room ({gw_channel})" if gw_channel else "the gateway room"
             return f"🚫 /{verb} runs only in {where}."
         try:
