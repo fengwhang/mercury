@@ -411,6 +411,7 @@ def provision_soju(
         spaths,
         unit=render_soju_unit(
             soju_bin=bins["soju"], config_path=str(spaths.conf)))
+    changed = summary["config"]["action"] != "current"
     have = read_irc_passwords(home)
     downstream = bouncer_password or have.get("bouncer") or ""
     summary["user"] = ensure_soju_user(spaths, SOJU_USER, downstream or None)
@@ -421,7 +422,6 @@ def provision_soju(
         restart_soju()
         _wait_admin_sock(str(spaths.admin_sock))
         summary["user_restarted"] = True
-
     upstream_pass = have.get("bouncer") or ""
     if not upstream_pass:
         raise SojuError("no bouncer password in .env — run the ircd provisioning first")
@@ -429,7 +429,6 @@ def provision_soju(
         spaths, name=server, addr=f"irc+insecure://127.0.0.1:{bouncer_port}",
         nick=SOJU_USER, username=SOJU_USER, password=upstream_pass)
     changed = changed or summary["network"]["action"] != "current"
-
     if changed and soju_unit_active():
         restart_soju()
         summary["restarted"] = True

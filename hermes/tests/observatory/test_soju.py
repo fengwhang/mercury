@@ -146,3 +146,30 @@ def test_resolver_soju_front_binds_localhost(tmp_path) -> None:
     resolved = _resolve_daemon_config(args)
     assert resolved.bouncer_host == "127.0.0.1"
     assert resolved.bouncer_port == 6670  # ports unchanged
+
+
+def test_provision_soju_flow(tmp_path, monkeypatch) -> None:
+    """Full layer with mocked runners (catches wiring bugs like #63)."""
+    home = _home(tmp_path, monkeypatch)
+    obs = home / "observatory"
+    (obs / "tls").mkdir(parents=True)
+    (obs / "tls" / "server.crt").write_text("c")
+    (obs / "tls" / "server.key").write_text("k")
+    (obs / "ircd.json").write_text(json.dumps({
+        "server_name": "vm", "bouncer_host": "127.0.0.1",
+        "bouncer_port": 6670, "tls_port": 6697}))
+    (home / ".env").write_text(
+        "IRC_BOUNCER_PASSWORD=downstream-pw-123\nIRC_AGENT_PASSWORD=x\n")
+    monkeypatch.setattr(soju_mod, "soju_bin", lambda *a, **k: "/bin/soju")
+    monkeypatch.setattr(
+        soju_mod, "ensure_soju_config", lambda *a, **k: {"action": "wrote"})
+    monkeypatch.setattr(soju_mod, "ensure_soju_unit", lambda *a, **k: "installed")
+    monkeypatch.setattr(
+        soju_mod, "ensure_soju_user", lambda *a, **k: {"action": "created"})
+    monkeypatch.setattr(
+        soju_mod, "ensure_soju_network", lambda *a, **k: {"action": "created"})
+    monkeypatch.setattr(soju_mod, "_systemctl_available", lambda: False)
+    summary = soju_mod.provision_soju(str(home))
+    assert summary["user"] == {"action": "created"}
+    assert summary["network"] == {"action": "created"}
+    assert "soju_front" in json.loads((obs / "ircd.json").read_text())
