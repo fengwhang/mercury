@@ -555,7 +555,7 @@ def _live_network(paths: SojuPaths) -> str | None:
     try:
         from observatory.provision import live_server_name  # no cycle
 
-        return live_server_name(paths.root.parent)
+        return live_server_name(paths.root)
     except Exception:
         return None
 

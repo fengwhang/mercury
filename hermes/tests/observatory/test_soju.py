@@ -198,3 +198,15 @@ def test_ensure_soju_channel_subscribes_once(monkeypatch) -> None:
         "action": "current"}
     with pytest.raises(soju_mod.SojuError):
         soju_mod.ensure_soju_channel(paths, "not-a-channel")
+
+
+def test_live_network_reads_mercury_home(tmp_path, monkeypatch) -> None:
+    """_live_network resolves ircd.json under the mercury home itself."""
+    import json as _json
+
+    home = _home(tmp_path, monkeypatch)
+    obs = home / "observatory"
+    obs.mkdir(parents=True)
+    (obs / "ircd.json").write_text(_json.dumps({"server_name": "vm"}))
+    spaths = soju_mod.SojuPaths(home)
+    assert soju_mod._live_network(spaths) == "vm"
