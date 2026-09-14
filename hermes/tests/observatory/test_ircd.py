@@ -621,3 +621,98 @@ async def test_welcome_ends_with_no_motd(tmp_path) -> None:
             assert await c.next_match(" 422 ")
         finally:
             await c.close()
+
+
+@pytest.mark.asyncio
+async def test_cap_negotiates_subset(tmp_path) -> None:
+    """CAP LS advertises v3 caps; REQ acks the known, naks the rest."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        c = RawClient()
+        await c.connect(agent_port)
+        try:
+            await c.send("CAP LS 302")
+            ls = await c.next_match("CAP ")
+            for cap in ("sasl", "message-tags", "server-time", "batch",
+                        "echo-message", "labeled-response", "draft/chathistory"):
+                assert cap in ls
+            await c.send("CAP REQ :sasl draft/chathistory bogus-cap")
+            ack = await c.next_match("ACK ")
+            assert "sasl" in ack and "draft/chathistory" in ack
+            nak = await c.next_match("NAK ")
+            assert "bogus-cap" in nak
+            await c.send("CAP END")
+        finally:
+            await c.close()
+
+
+@pytest.mark.asyncio
+async def test_labeled_privmsg_routes_and_echoes(tmp_path) -> None:
+    """@label PRIVMSG still routes; echo-message returns it with the label."""
+    async with running_daemon(tmp_path) as (d, agent_port, __):
+        a = RawClient()
+        await a.connect(agent_port)
+        try:
+            await a.register("alice")
+            await a.send("CAP REQ :echo-message labeled-response message-tags")
+            assert await a.next_match("ACK ")
+            await a.send("JOIN #echo")
+            assert await a.next_match("JOIN #echo")
+            await a.send("@label=xyz PRIVMSG #echo :hello")
+            echo = await a.next_match("PRIVMSG #echo :hello")
+            assert "@label=xyz" in echo or "label=xyz" in echo
+            assert "alice" in d.channel_history("#echo")[-1].sender
+        finally:
+            await a.close()
+
+
+@pytest.mark.asyncio
+async def test_server_time_tagged_only_when_negotiated(tmp_path) -> None:
+    """Relayed lines carry @time only for server-time clients."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        a = RawClient()
+        await a.connect(agent_port)
+        try:
+            await a.register("anna")
+            await a.send("JOIN #t")
+            assert await a.next_match("JOIN #t")
+            b = RawClient()
+            await b.connect(agent_port)
+            try:
+                await b.register("bob")
+                await b.send("CAP REQ :server-time message-tags")
+                assert await b.next_match("ACK ")
+                await b.send("JOIN #t")
+                assert await b.next_match("JOIN #t")
+                await a.send("PRIVMSG #t :hi bob")
+                got = await b.next_match("PRIVMSG #t :hi bob")
+                assert "@time=" in got
+            finally:
+                await b.close()
+        finally:
+            await a.close()
+
+
+@pytest.mark.asyncio
+async def test_chathistory_latest_batch(tmp_path) -> None:
+    """CHATHISTORY LATEST returns a framed batch of backlog."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        a = RawClient()
+        await a.connect(agent_port)
+        try:
+            await a.register("hist")
+            await a.send("CAP REQ :batch message-tags server-time")
+            assert await a.next_match("ACK ")
+            await a.send("JOIN #h")
+            assert await a.next_match("JOIN #h")
+            await a.send("PRIVMSG #h :one")
+            await a.send("PRIVMSG #h :two")
+            await asyncio.sleep(0.3)
+            await a.send("CHATHISTORY LATEST #h * 10")
+            start = await a.next_match("BATCH +")
+            assert "draft/chathistory #h" in start
+            first = await a.next_match("PRIVMSG #h :one")
+            assert "msgid=" in first
+            assert await a.next_match("PRIVMSG #h :two")
+            assert await a.next_match("BATCH -")
+        finally:
+            await a.close()

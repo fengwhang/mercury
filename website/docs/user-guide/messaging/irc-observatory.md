@@ -76,6 +76,11 @@ On your phone, point the client at the tailnet address from the card
 (`mercury setup observatory` offers to pin the bouncer to Tailscale).
 Never expose the bouncer beyond your tailnet.
 
+The daemon speaks modern IRCv3 (`sasl`, `message-tags`, `server-time`,
+`batch`, `echo-message`, `labeled-response`, `draft/chathistory`), so
+Goguma-style clients get background messaging and backlog catch-up —
+no soju needed.
+
 ## The channels
 
 One channel per live agent:

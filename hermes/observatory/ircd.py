@@ -66,6 +66,7 @@ class HistoryMessage:
     target: str
     text: str
     kind: str = "privmsg"  # privmsg | notice | system
+    msgid: str = ""  # stable id for draft/chathistory anchors
 
 
 @dataclass
@@ -97,6 +98,8 @@ class _Client:
         "oper",
         "sasl",
         "addr",
+        "caps",
+        "pending_label",
         "channels",
         "send_lock",
     )
@@ -114,6 +117,8 @@ class _Client:
         self.pass_attempted = False
         self.oper = False
         self.sasl = None
+        self.caps: set[str] = set()
+        self.pending_label: str | None = None
         self.addr = addr
         self.channels: set[str] = set()  # folded channel keys
         self.send_lock = asyncio.Lock()
@@ -134,6 +139,8 @@ class IrcDaemon:
         self._display: dict[str, str] = {}  # folded channel -> display name
         self._topics: dict[str, tuple[str, str, float]] = {}
         self._history: dict[str, deque[HistoryMessage]] = defaultdict(deque)
+        self._msg_seq = 0  # fallback msgids when no SQLite (ephemeral tests)
+        self._batch_seq = 0  # draft/chathistory BATCH refs
         self._servers: list[asyncio.AbstractServer] = []
         self._db: sqlite3.Connection | None = None
         self._lock = asyncio.Lock()
@@ -160,12 +167,13 @@ class IrcDaemon:
         )
         self._db.commit()
         limit = int(self.config.history_limit)
-        for chan, ts, sender, target, text, kind in self._db.execute(
-            "SELECT channel, ts, sender, target, text, kind FROM history "
+        for rowid, chan, ts, sender, target, text, kind in self._db.execute(
+            "SELECT rowid, channel, ts, sender, target, text, kind FROM history "
             "ORDER BY ts ASC"
         ):
             hist = self._history[chan]
-            hist.append(HistoryMessage(ts, sender, target, text, kind or "privmsg"))
+            hist.append(HistoryMessage(
+                ts, sender, target, text, kind or "privmsg", msgid=f"h{rowid}"))
             while len(hist) > limit:
                 hist.popleft()
 
@@ -178,11 +186,12 @@ class IrcDaemon:
             hist.popleft()
         if self._db is not None:
             try:
-                self._db.execute(
+                cur = self._db.execute(
                     "INSERT INTO history(channel, ts, sender, target, text, kind)"
                     " VALUES (?,?,?,?,?,?)",
                     (chan, msg.ts, msg.sender, msg.target, msg.text, msg.kind),
                 )
+                msg.msgid = f"h{cur.lastrowid}"
                 self._db.execute(
                     "DELETE FROM history WHERE rowid NOT IN "
                     "(SELECT rowid FROM history WHERE channel=? "
@@ -192,7 +201,9 @@ class IrcDaemon:
                 self._db.commit()
             except Exception:
                 logger.debug("ircd: history persist failed", exc_info=True)
-
+        elif not msg.msgid:
+            self._msg_seq += 1
+            msg.msgid = f"m{self._msg_seq}"
     # -- lifecycle ------------------------------------------------------
 
     async def start(self) -> "IrcDaemon":
@@ -367,6 +378,16 @@ class IrcDaemon:
     async def _line(
         self, client: _Client, line: str, listener: str, password: str
     ) -> None:
+        # IRCv3 message-tags: strip the @tag block before dispatch so a
+        # labeled PRIVMSG still routes; stash +label for labeled-response.
+        if line.startswith("@"):
+            tagstr, _, line = line[1:].partition(" ")
+            for part in tagstr.split(";"):
+                k, _, v = part.partition("=")
+                if k == "label" and v:
+                    client.pending_label = v[:64]
+            if not line:
+                return
         if " " in line:
             cmd, rest = line.split(" ", 1)
         else:
@@ -426,12 +447,16 @@ class IrcDaemon:
             await self._cmd_msg(client, rest, kind="privmsg")
         elif cmd == "NOTICE":
             await self._cmd_msg(client, rest, kind="notice")
+        elif cmd == "LIST":
+            await self._cmd_list(client, rest.strip())
+        elif cmd == "CHATHISTORY":
+            await self._cmd_chathistory(client, rest.strip())
         elif cmd == "TOPIC":
             await self._cmd_topic(client, rest.strip())
         elif cmd == "NAMES":
             await self._cmd_names(client, rest.strip().lstrip(":"))
-        elif cmd == "LIST":
-            await self._cmd_list(client, rest.strip())
+        elif cmd == "WHO":
+            await self._cmd_who(client, rest.strip().lstrip(":"))
         elif cmd == "MODE":
             target = rest.split(" ", 1)[0] if rest else ""
             await self._numeric(client, 324, f"{client.nick} {target} +", "End of MODE")
@@ -451,20 +476,48 @@ class IrcDaemon:
     def _who(self, client: _Client) -> str:
         return client.nick or "*"
 
+    #: IRCv3 caps we actually honor (Goguma needs these for background
+    #: messaging; each is implemented below, not merely advertised).
+    _OFFERED_CAPS = (
+        "sasl",
+        "message-tags",
+        "server-time",
+        "batch",
+        "echo-message",
+        "labeled-response",
+        "draft/chathistory",
+    )
+
     async def _cmd_cap(self, client: _Client, arg: str) -> None:
-        """Minimal IRCv3 negotiation: we offer exactly ``sasl``."""
+        """IRCv3 negotiation: ACK the offered subset, NAK the rest."""
         parts = arg.split(None, 2)
         sub = (parts[0] if parts else "").upper()
-        rest = parts[1] if len(parts) > 1 else ""
+        rest = " ".join(parts[1:]) if len(parts) > 1 else ""
         if sub == "LS" or sub == "LIST":
-            await self._send(client, f":{self.config.server_name} CAP {self._who(client)} LS :sasl")
+            await self._send(
+                client,
+                f":{self.config.server_name} CAP {self._who(client)} "
+                f"LS :{' '.join(self._OFFERED_CAPS)}",
+            )
         elif sub == "REQ":
             wants = [w.strip().lower().lstrip(":") for w in rest.split()]
-            if wants == ["sasl"]:
+            ok = [w for w in wants if w in self._OFFERED_CAPS]
+            no = [w for w in wants if w not in self._OFFERED_CAPS]
+            client.caps.update(ok)
+            if "sasl" in ok:
                 client.sasl = "negotiated"
-                await self._send(client, f":{self.config.server_name} CAP {self._who(client)} ACK :sasl")
-            else:
-                await self._send(client, f":{self.config.server_name} CAP {self._who(client)} NAK :{rest}")
+            if ok:
+                await self._send(
+                    client,
+                    f":{self.config.server_name} CAP {self._who(client)} "
+                    f"ACK :{' '.join(ok)}",
+                )
+            if no:
+                await self._send(
+                    client,
+                    f":{self.config.server_name} CAP {self._who(client)} "
+                    f"NAK :{' '.join(no)}",
+                )
         elif sub == "END":
             pass  # registration continues with NICK/USER as normal
         # anything else: ignored (no state change)
@@ -490,6 +543,7 @@ class IrcDaemon:
             return
         if client.sasl == "plain-pending":
             client.sasl = None
+            label, client.pending_label = client.pending_label, None
             try:
                 decoded = _b64.b64decode(token, validate=True).decode("utf-8", "replace")
             except Exception:
@@ -504,14 +558,18 @@ class IrcDaemon:
                 listener, len(parts), len(given), len(password),
                 "903" if (not password or given == password) else "904",
             )
+            tag = self._tags(client, label=label)
+            name = self.config.server_name
             if not password or given == password:
                 client.pass_ok = True
-                await self._numeric(client, 903, who, "SASL authentication successful")
+                await self._send(
+                    client, tag + f":{name} 903 {who} :SASL authentication successful")
                 # SASL-after-NICK/USER (the Goguma order): complete
                 # registration now, same as the PASS-last path above.
                 await self._maybe_register(client, listener, password)
             else:
-                await self._numeric(client, 904, who, "SASL authentication failed")
+                await self._send(
+                    client, tag + f":{name} 904 {who} :SASL authentication failed")
             return
         if token.upper() == "PLAIN":
             client.sasl = "plain-pending"
@@ -626,7 +684,8 @@ class IrcDaemon:
             ):
                 await self._send(
                     client,
-                    f":{msg.sender}!relay@mercury {msg.kind.upper()} "
+                    self._tags(client, ts=msg.ts, msgid=msg.msgid)
+                    + f":{msg.sender}!relay@mercury {msg.kind.upper()} "
                     f"{display} :{msg.text}",
                 )
 
@@ -678,6 +737,57 @@ class IrcDaemon:
             text = topic[0] if topic else ""
             await self._send(client, f":{name} 322 {nick} {display} {count} :{text}")
         await self._send(client, f":{name} 323 {nick} :End of /LIST")
+
+    async def _cmd_chathistory(self, client: _Client, arg: str) -> None:
+        """draft/chathistory LATEST/AFTER/BEFORE against the local backlog."""
+        parts = arg.split()
+        sub = parts[0].upper() if parts else ""
+        if sub not in ("LATEST", "AFTER", "BEFORE"):
+            await self._numeric(client, 410, "CHATHISTORY", "Invalid subcommand")
+            return
+        if len(parts) < 4:
+            await self._numeric(client, 461, "CHATHISTORY", "Not enough parameters")
+            return
+        _, target, anchor, raw_limit = parts[:4]
+        try:
+            limit = max(1, min(int(raw_limit), 100))
+        except ValueError:
+            limit = 20
+        key = target.lower()
+        if key not in self._channels:
+            await self._numeric(client, 403, target, "No such channel")
+            return
+        hist = list(self._history.get(key, ()))
+        if sub == "LATEST":
+            if anchor == "*":
+                msgs = hist[-limit:]
+            else:
+                at = [i for i, m in enumerate(hist) if m.msgid == anchor]
+                msgs = hist[max(0, at[-1] - limit + 1):at[-1] + 1] if at else []
+        elif sub == "AFTER":
+            at = [i for i, m in enumerate(hist) if m.msgid == anchor]
+            msgs = hist[at[-1] + 1:at[-1] + 1 + limit] if at else []
+        else:  # BEFORE
+            at = [i for i, m in enumerate(hist) if m.msgid == anchor]
+            msgs = hist[max(0, at[-1] - limit):at[-1]] if at else []
+        name = self.config.server_name
+        display = self._display.get(key, target)
+        framed = "batch" in client.caps
+        ref = ""
+        if framed:
+            self._batch_seq += 1
+            ref = f"ch{self._batch_seq}"
+            await self._send(
+                client, f":{name} BATCH +{ref} draft/chathistory {display}")
+        for msg in msgs:
+            await self._send(
+                client,
+                self._tags(client, ts=msg.ts, msgid=msg.msgid)
+                + f":{msg.sender}!relay@mercury {msg.kind.upper()} "
+                f"{display} :{msg.text}",
+            )
+        if framed:
+            await self._send(client, f":{name} BATCH -{ref}")
 
     def _oper_password(self) -> str:
         return self.config.agent_password or self.config.password
@@ -758,6 +868,7 @@ class IrcDaemon:
             await self._numeric(client, 412, "No text to send", "No text")
             return
         sender = client.nick
+        label, client.pending_label = client.pending_label, None
         if target.startswith("#"):
             key = target.lower()
             async with self._lock:
@@ -771,20 +882,32 @@ class IrcDaemon:
                 display = self._display.get(key, target)
             msg = HistoryMessage(time.time(), sender, display, text, kind=kind)
             await self._fanout(msg)
-            if self.on_privmsg is not None and kind == "privmsg":
-                try:
-                    self.on_privmsg(sender, display, text)
-                except Exception:
-                    logger.debug("ircd: on_privmsg hook failed", exc_info=True)
+            if "echo-message" in client.caps:
+                await self._send(
+                    client,
+                    self._tags(client, ts=msg.ts, msgid=msg.msgid, label=label)
+                    + f":{sender}!{client.user}@mercury {kind.upper()} "
+                    f"{display} :{text}",
+                )
         else:
             peer = self._clients.get(target.lower())
             if peer is None or not peer.registered:
                 await self._numeric(client, 401, target, "No such nick")
                 return
+            now = time.time()
             await self._send(
                 peer,
-                f":{sender}!{client.user}@mercury {kind.upper()} {peer.nick} :{text}",
+                self._tags(peer, ts=now)
+                + f":{sender}!{client.user}@mercury {kind.upper()} "
+                f"{peer.nick} :{text}",
             )
+            if "echo-message" in client.caps:
+                await self._send(
+                    client,
+                    self._tags(client, ts=now, label=label)
+                    + f":{sender}!{client.user}@mercury {kind.upper()} "
+                    f"{peer.nick} :{text}",
+                )
             if self.on_privmsg is not None and kind == "privmsg":
                 try:
                     self.on_privmsg(sender, peer.nick, text)
@@ -826,16 +949,20 @@ class IrcDaemon:
         key = msg.target.lower()
         self._store(msg)
         members = sorted(self._channels.get(key, ()))
-        line = (
+        display = self._display.get(key, msg.target)
+        body = (
             f":{msg.sender}!relay@mercury {msg.kind.upper()} "
-            f"{self._display.get(key, msg.target)} :{msg.text}"
+            f"{display} :{msg.text}"
         )
         for nick in members:
             if nick == msg.sender.lower():
-                continue
+                continue  # echo-message path in _cmd_msg covers the sender
             peer = self._clients.get(nick)
             if peer is not None:
-                await self._send(peer, line)
+                await self._send(
+                    peer,
+                    self._tags(peer, ts=msg.ts, msgid=msg.msgid) + body,
+                )
 
     async def _quit(self, client: _Client, reason: str) -> None:
         key = client.nick.lower() if client.nick else ""
@@ -857,6 +984,32 @@ class IrcDaemon:
             pass
 
     # -- wire -----------------------------------------------------------
+
+    @staticmethod
+    def _iso_time(ts: float) -> str:
+        import datetime as _dt
+
+        return _dt.datetime.fromtimestamp(ts, _dt.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S."
+        ) + f"{int(ts * 1000) % 1000:03d}Z"
+
+    def _tags(
+        self,
+        client: _Client,
+        *,
+        ts: float | None = None,
+        msgid: str = "",
+        label: str | None = None,
+    ) -> str:
+        """IRCv3 tag prefix, gated on negotiated caps (never sent raw)."""
+        parts: list[str] = []
+        if ts is not None and "server-time" in client.caps:
+            parts.append(f"time={self._iso_time(ts)}")
+        if msgid and "message-tags" in client.caps:
+            parts.append(f"msgid={msgid}")
+        if label and "labeled-response" in client.caps:
+            parts.append(f"label={label}")
+        return ("@" + ";".join(parts) + " ") if parts else ""
 
     async def _send(self, client: _Client, line: str) -> None:
         try:
