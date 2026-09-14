@@ -737,3 +737,44 @@ async def test_away_set_unset_and_who_flag(tmp_path) -> None:
             assert await c.next_match(" 305 ")
         finally:
             await c.close()
+
+
+@pytest.mark.asyncio
+async def test_invite_relays_and_acks(tmp_path) -> None:
+    """INVITE delivers to a local nick with 341 to the sender."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        a = RawClient()
+        await a.connect(agent_port)
+        try:
+            await a.register("inviter")
+            await a.send("JOIN #inv")
+            assert await a.next_match("JOIN #inv")
+            b = RawClient()
+            await b.connect(agent_port)
+            try:
+                await b.register("invitee")
+                await a.send("INVITE invitee :#inv")
+                assert await a.next_match(" 341 ")
+                got = await b.next_match("INVITE")
+                assert "#inv" in got
+            finally:
+                await b.close()
+        finally:
+            await a.close()
+
+
+@pytest.mark.asyncio
+async def test_invite_rejects_unknown(tmp_path) -> None:
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        c = RawClient()
+        await c.connect(agent_port)
+        try:
+            await c.register("lonely")
+            await c.send("JOIN #inv")
+            assert await c.next_match("JOIN #inv")
+            await c.send("INVITE ghost :#inv")
+            assert await c.next_match(" 401 ")
+            await c.send("INVITE lonely :#nope")
+            assert await c.next_match(" 403 ")
+        finally:
+            await c.close()

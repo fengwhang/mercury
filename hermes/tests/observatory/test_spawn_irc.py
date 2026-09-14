@@ -27,6 +27,7 @@ class FakeBot:
         self.joined: list[str] = []
         self.said: list[tuple[str, str]] = []
         self.destroyed: list[str] = []
+        self.invited: list[tuple[str, str]] = []
 
     async def join_channel(self, channel: str) -> bool:
         self.joined.append(channel)
@@ -41,6 +42,10 @@ class FakeBot:
 
     async def destroy_channel(self, channel: str) -> bool:
         self.destroyed.append(channel)
+        return True
+
+    async def invite_user(self, nick: str, channel: str) -> bool:
+        self.invited.append((nick, channel))
         return True
 
 
@@ -224,3 +229,16 @@ async def test_spawn_same_name_gets_distinct_channels(tmp_path, monkeypatch) -> 
         agent_factory=lambda: FakeAgent(session_id="s2"))
     assert first["room_id"] == "#ace"
     assert second["room_id"] == "#ace-2"
+
+
+@pytest.mark.asyncio
+async def test_spawn_invites_phone_user(tmp_path, monkeypatch) -> None:
+    """Fresh spawns nudge the phone with an INVITE (tap, no typing)."""
+    from observatory import soju as soju_mod
+
+    bot = FakeBot()
+    monkeypatch.setattr(spawn, "get_bot_sink", lambda: bot)
+    state = _real_state(tmp_path)
+    registry = OrchestratorRegistry()
+    row = await spawn_orchestrator("Ace", "hermes", state=state, registry=registry)
+    assert (soju_mod.SOJU_USER, row["room_id"]) in bot.invited

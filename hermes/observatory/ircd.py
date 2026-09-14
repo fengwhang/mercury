@@ -470,11 +470,12 @@ class IrcDaemon:
             await self._cmd_destroy(client, rest.strip())
         elif cmd == "QUIT":
             await self._quit(client, rest.lstrip(":") or "quit")
+        elif cmd == "INVITE":
+            await self._cmd_invite(client, rest.strip())
         elif cmd == "USERHOST" or cmd == "ISON":
             pass  # accepted, ignored
         else:
             await self._numeric(client, 421, cmd, "Unknown command")
-
     # -- commands --------------------------------------------------------
 
     def _who(self, client: _Client) -> str:
@@ -803,6 +804,36 @@ class IrcDaemon:
             )
         if framed:
             await self._send(client, f":{name} BATCH -{ref}")
+
+    async def _cmd_invite(self, client: _Client, arg: str) -> None:
+        """INVITE <nick> <#channel> — 341 to the sender, relay to target.
+
+        The gateway bot invites the phone user on spawn so the room
+        surfaces as a tap instead of a typed join.
+        """
+        parts = arg.split()
+        if len(parts) < 2:
+            await self._numeric(client, 461, "INVITE", "Not enough parameters")
+            return
+        target_nick, chan = parts[0], parts[1].lstrip(":")
+        if not chan.startswith("#") or len(chan) < 2:
+            await self._numeric(client, 403, chan or "*", "No such channel")
+            return
+        key = chan.lower()
+        if key not in self._channels:
+            await self._numeric(client, 403, chan, "No such channel")
+            return
+        peer = self._clients.get(target_nick.lower())
+        if peer is None or not peer.registered:
+            await self._numeric(client, 401, target_nick, "No such nick")
+            return
+        display = self._display.get(key, chan)
+        await self._numeric(
+            client, 341, f"{client.nick} {peer.nick}", display)
+        await self._send(
+            peer,
+            f":{client.nick}!{client.user}@mercury INVITE {peer.nick} :{display}",
+        )
 
     def _oper_password(self) -> str:
         return self.config.agent_password or self.config.password

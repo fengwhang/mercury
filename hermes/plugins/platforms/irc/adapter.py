@@ -368,6 +368,17 @@ class IRCAdapter(BasePlatformAdapter):
             logger.debug("IRC: join %s failed", channel, exc_info=True)
             return False
 
+    async def invite_user(self, nick: str, channel: str) -> bool:
+        """INVITE a nick to a room (phone surfaces it as a tap). Never raises."""
+        if not self._writer or self._writer.is_closing():
+            return False
+        try:
+            await self._send_raw(f"INVITE {nick} :{channel}")
+            return True
+        except Exception:
+            logger.debug("IRC: invite %s to %s failed", nick, channel, exc_info=True)
+            return False
+
     async def part_channel(self, channel: str) -> bool:
         """PART an agent room. Never raises."""
         self.extra_channels.discard(channel)

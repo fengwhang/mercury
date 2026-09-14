@@ -57,6 +57,8 @@ class BotSink(Protocol):
 
     async def destroy_channel(self, channel: str) -> bool: ...
 
+    async def invite_user(self, nick: str, channel: str) -> bool: ...
+
 
 _sink_lock = threading.Lock()
 _current_sink: BotSink | None = None
