@@ -123,8 +123,25 @@ def _home_thread_from_source(source) -> Optional[str]:
     return str(thread_id)
 
 
+def _spawn_error_reply(verb: str, exc: BaseException) -> str:
+    """One-line chat reply for spawn failures (never a stack dump).
+
+    Known failure shapes get actionable remediation; everything else is
+    the first line capped. The full traceback goes to the gateway log
+    at the call site.
+    """
+    text = str(exc).strip()
+    if "natives" in text.lower():
+        return (
+            f"✗ /{verb} failed: omp native modules missing or corrupt. "
+            "On the VM run: rm -rf ~/.omp/natives/18.1.6 ; then retry. "
+            "(full error in the gateway log)")
+    lines = text.splitlines()
+    short = lines[0][:300] if lines else type(exc).__name__
+    return f"✗ /{verb} failed: {short} (full error in the gateway log)"
+
+
 class GatewaySlashCommandsMixin:
-    """In-session slash-command handlers for GatewayRunner."""
 
     async_session_store: AsyncSessionStore
 
@@ -6508,7 +6525,11 @@ class GatewaySlashCommandsMixin:
         try:
             row = await spawn_orchestrator(name, engine, state=state, registry=registry, mercury_home=self._observatory_mercury_home())
         except Exception as exc:
-            return f"✗ /{verb} failed: {exc}"
+            import logging as _logging
+
+            _logging.getLogger("gateway.slash").exception(
+                "observatory /%s failed", verb)
+            return _spawn_error_reply(verb, exc)
         channel = str((row or {}).get("room_id") or "")
         node_id = str((row or {}).get("node_id") or "")
         return f"🚀 spawned {engine} agent '{name}' (node {node_id}) — join {channel or 'its room'} to chat."
