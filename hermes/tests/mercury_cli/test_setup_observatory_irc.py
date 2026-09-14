@@ -508,3 +508,28 @@ def test_tail_provisions_soju_layer(monkeypatch):
         _patch_common(stack, fake, choice=1, yes_answers=[True])
         setup_mod.setup_observatory({})
     assert calls == [True]
+
+
+def test_wire_gateway_sets_allow_all(monkeypatch):
+    """Observatory wiring disables the per-nick gate (D7 perimeter)."""
+    import observatory.provision as provision_mod
+
+    saved = {}
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
+    monkeypatch.setattr(
+        setup_mod, "save_env_value", lambda k, v: saved.__setitem__(k, v))
+    monkeypatch.setattr(
+        setup_mod, "_restart_gateway", lambda *a, **k: True)
+    monkeypatch.setattr(
+        provision_mod, "_mercury_home", lambda home: "/h")
+    monkeypatch.setattr(
+        provision_mod, "read_config",
+        lambda home: {"server_name": "vm", "agent_host": "127.0.0.1",
+                      "agent_port": 6669})
+    monkeypatch.setattr(
+        provision_mod, "read_irc_passwords",
+        lambda home: {"bouncer": "b", "agent": "a"})
+    assert setup_mod._wire_gateway_irc_env("vm") is True
+    assert saved["IRC_ALLOW_ALL_USERS"] == "true"
+    assert saved["IRC_CHANNEL"] == "#vm_gateway"
+    assert saved["IRC_NICKNAME"] == "vm_gateway"

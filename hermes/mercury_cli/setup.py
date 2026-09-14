@@ -3821,6 +3821,10 @@ def _wire_gateway_irc_env(home_label: str) -> bool:
         save_env_value("IRC_NICKNAME", f"{server}_gateway")
         save_env_value("IRC_CHANNEL", f"#{server}_gateway")
         save_env_value("IRC_MANAGED_BY", "observatory")
+        # Single-owner tailnet perimeter (design D7): the bouncer password
+        # is the auth. A stale per-nick allowlist from a manual setup
+        # would silently drop the owner's messages — never gate here.
+        save_env_value("IRC_ALLOW_ALL_USERS", "true")
         if passwords.get("agent"):
             save_env_value("IRC_SERVER_PASSWORD", passwords["agent"])
         print_success("Gateway IRC wiring saved to .env "
@@ -3833,7 +3837,6 @@ def _wire_gateway_irc_env(home_label: str) -> bool:
         print_error(f"Gateway wiring failed: {exc}")
         print_info("Do it later via: mercury setup gateway")
         return False
-
 
 def setup_observatory(config: dict, *, quick: bool = False):
     """Wizard section: the bundled IRC observatory (ircd daemon).
