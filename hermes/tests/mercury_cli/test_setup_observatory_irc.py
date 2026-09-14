@@ -457,3 +457,34 @@ def test_password_offer_runs_on_reset_path():
         )
         setup_mod.setup_observatory({})
     assert offer.call_count == 1
+
+
+def test_repair_path_wires_gateway():
+    from contextlib import ExitStack
+
+    fake = _FakeObs(_base_status(provisioned=True))
+    with ExitStack() as stack:
+        _patch_common(stack, fake, choice=0, yes_answers=[True])
+        wire = stack.enter_context(
+            patch.object(setup_mod, "_wire_gateway_irc_env")
+        )
+        setup_mod.setup_observatory({})
+    assert wire.call_count == 1
+    assert wire.call_args[0][0] == "mercury"
+
+
+def test_restart_gateway_runs_mercury_restart(monkeypatch):
+    ran = []
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/mercury")
+    monkeypatch.setattr(
+        "subprocess.run", lambda *a, **k: ran.append(a[0])
+    )
+    assert setup_mod._restart_gateway("test reason") is True
+    assert ran == [["/bin/mercury", "gateway", "restart"]]
+
+
+def test_restart_gateway_decline_prints_manual(monkeypatch, capsys):
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: False)
+    assert setup_mod._restart_gateway("test reason") is False
+    assert "mercury gateway restart" in capsys.readouterr().out

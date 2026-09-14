@@ -3720,8 +3720,49 @@ def _offer_observatory_reset(obs) -> bool:
         print_info("Nothing to reset — observatory was already clean.")
     return True
 
+def _restart_gateway(reason: str) -> bool:
+    """Offer + perform a gateway restart (it reads .env only at boot).
 
-def _wire_gateway_irc_env(home_label: str) -> None:
+    A wired-but-unrestarted gateway never joins its IRC channel — the
+    "no gateway room" failure. Returns True when restarted.
+    """
+    try:
+        restart_now = prompt_yes_no(
+            f"Restart the gateway now? ({reason})",
+            default=True,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception:  # noqa: BLE001 — a restart offer never kills the wizard
+        print_info("Restart it to apply: mercury gateway restart")
+        return False
+    if not restart_now:
+        print_info("Restart it to apply: mercury gateway restart")
+        return False
+    try:
+        import shutil
+        import subprocess
+
+        mercury_bin = shutil.which("mercury")
+        if mercury_bin is None:
+            print_info("Restart it to apply: mercury gateway restart")
+            return False
+        subprocess.run(
+            [mercury_bin, "gateway", "restart"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort, never raises
+        print_warning(f"Could not restart the gateway: {exc}")
+        print_info("Restart it manually: mercury gateway restart")
+        return False
+    print_success("Gateway restarted.")
+    return True
+
+
+def _wire_gateway_irc_env(home_label: str) -> bool:
     """Offer pointing the gateway's IRC platform at this network.
 
     Writes the IRC_* env keys (.env) so the gateway bot joins the local
@@ -3740,10 +3781,10 @@ def _wire_gateway_irc_env(home_label: str) -> None:
     except KeyboardInterrupt:
         raise
     except Exception:  # noqa: BLE001 — an offer never kills the wizard
-        return
+        return False
     if not want:
         print_info("Skipped gateway wiring — do it later via: mercury setup gateway")
-        return
+        return False
     try:
         from observatory.provision import _mercury_home, read_config, read_irc_passwords
         from observatory.config_gen import (
@@ -3767,13 +3808,14 @@ def _wire_gateway_irc_env(home_label: str) -> None:
             save_env_value("IRC_SERVER_PASSWORD", passwords["agent"])
         print_success("Gateway IRC wiring saved to .env "
                       f"(bot {server}_gateway → #{server}_gateway).")
-        print_info("Restart the gateway to apply: mercury gateway restart")
+        _restart_gateway("necessary for the bot to join its channel")
+        return True
     except KeyboardInterrupt:
         raise
     except Exception as exc:
         print_error(f"Gateway wiring failed: {exc}")
         print_info("Do it later via: mercury setup gateway")
-        return
+        return False
 
 
 def setup_observatory(config: dict, *, quick: bool = False):
@@ -3884,6 +3926,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
                         print_success(f"Observatory repair complete ({detail}).")
                     else:
                         print_error(f"Repair done but the daemon is NOT answering: {detail}")
+                    _wire_gateway_irc_env(str(status.get("server_name") or "mercury"))
         except KeyboardInterrupt:
             raise
         except Exception as exc:
