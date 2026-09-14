@@ -215,6 +215,12 @@ async def boot_resync(
                     try:
                         if await bot.join_channel(channel):
                             report["joined"].append(channel)
+                            try:
+                                from observatory.soju import subscribe_user_channel
+
+                                subscribe_user_channel(channel)
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 # Resume omp handles the registry lost (restart crash).

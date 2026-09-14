@@ -589,6 +589,12 @@ async def spawn_orchestrator(
             logger.exception("spawn: channel join failed for %s", node_id)
         else:
             try:
+                from observatory.soju import subscribe_user_channel
+
+                subscribe_user_channel(channel)
+            except Exception:  # noqa: BLE001 — cosmetic; phone stays manual
+                logger.debug("spawn: phone subscribe failed for %s", node_id)
+            try:
                 await bot.say(channel, f"spawned {engine} agent '{clean}' — chat here, like CLI.")
             except Exception:  # noqa: BLE001 — cosmetic
                 logger.debug("spawn: greet failed for %s", node_id, exc_info=True)
@@ -741,6 +747,12 @@ async def _execute_channel_destroy(bot: Any, channels: list[str]) -> PurgeOutcom
                 out.fatal.append(f"{channel}: no bot sink (daemon down?)")
                 continue
             ok = await bot.destroy_channel(str(channel))
+            try:
+                from observatory.soju import unsubscribe_user_channel
+
+                unsubscribe_user_channel(str(channel))
+            except Exception:  # noqa: BLE001 — cosmetic; dead room lingers on phone
+                logger.debug("spawn: phone unsubscribe failed for %s", channel)
             out.records.append({"op": "destroy", "channel": str(channel),
                                 "gone": True, "ok": bool(ok)})
         except Exception as exc:  # noqa: BLE001 — classified, not swallowed

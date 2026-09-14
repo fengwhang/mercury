@@ -432,6 +432,9 @@ def provision_soju(
     if changed and soju_unit_active():
         restart_soju()
         summary["restarted"] = True
+    from observatory.rooms import gateway_channel  # local import: no cycle
+
+    summary["lobby"] = ensure_soju_channel(spaths, gateway_channel(server))
     return summary
 
 
@@ -481,3 +484,123 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def soju_channels(conf: str, username: str) -> list[str]:
+    """Saved downstream channels for a user (best-effort parse)."""
+    out = _sojuctl(conf, "user", "run", username, "channel", "status")
+    if out.returncode != 0:
+        raise SojuError(
+            f"sojuctl channel status failed: {(out.stderr or out.stdout).strip()}")
+    names: list[str] = []
+    for line in out.stdout.splitlines():
+        tok = line.strip().split(" ", 1)[0] if line.strip() else ""
+        if tok.startswith("#"):
+            names.append(tok)
+    return names
+
+
+def ensure_soju_channel(paths: SojuPaths, channel: str,
+                        username: str = SOJU_USER,
+                        network: str | None = None) -> dict:
+    """Subscribe the phone user to a room (join once, persists).
+
+    soju auto-(re)joins saved channels, so the room appears in Goguma
+    with no manual join. Without a bound network context the channel
+    needs its ``#room/network`` suffix — pass ``network`` (or it is
+    read from the live ircd.json). Returns {"action": subscribed|current}.
+    """
+    conf = str(paths.conf)
+    chan = channel.strip()
+    if not chan.startswith("#"):
+        raise SojuError(f"refusing to subscribe non-channel {channel!r}")
+    net = network or _live_network(paths)
+    qualified = chan if "/" in chan else (f"{chan}/{net}" if net else chan)
+    try:
+        saved = soju_channels(conf, username)
+    except SojuError:
+        saved = []
+    if any(s.lower() == chan.lower() for s in saved):
+        return {"action": "current"}
+    out = _sojuctl(conf, "user", "run", username, "channel", "create", qualified)
+    if out.returncode != 0:
+        text = (out.stderr or out.stdout).strip()
+        if "already exists" in text.lower():
+            return {"action": "current"}
+        raise SojuError(f"sojuctl channel create failed: {text}")
+    return {"action": "subscribed"}
+
+
+def _live_network(paths: SojuPaths) -> str | None:
+    """Current upstream network name from ircd.json (best-effort)."""
+    try:
+        from observatory.provision import live_server_name  # no cycle
+
+        return live_server_name(paths.root.parent)
+    except Exception:
+        return None
+
+
+def forget_soju_channel(paths: SojuPaths, channel: str,
+                        username: str = SOJU_USER,
+                        network: str | None = None) -> dict:
+    """Drop a dead room from the phone user's list (best-effort idempotent)."""
+    conf = str(paths.conf)
+    chan = channel.strip()
+    net = network or _live_network(paths)
+    qualified = chan if "/" in chan else (f"{chan}/{net}" if net else chan)
+    try:
+        saved = soju_channels(conf, username)
+    except SojuError:
+        saved = []
+    if not any(s.lower() == chan.lower() for s in saved):
+        return {"action": "current"}
+    out = _sojuctl(conf, "user", "run", username, "channel", "delete", qualified)
+    if out.returncode != 0:
+        raise SojuError(
+            f"sojuctl channel delete failed: "
+            f"{(out.stderr or out.stdout).strip() or out.returncode}")
+    return {"action": "forgotten"}
+
+
+def _auto_paths(mercury_home: str | Path | None = None) -> SojuPaths | None:
+    """SojuPaths when the layer is provisioned and binaries exist."""
+    from observatory.provision import _mercury_home  # local import: no cycle
+
+    try:
+        spaths = SojuPaths(_mercury_home(mercury_home))
+        if not spaths.conf.is_file():
+            return None
+        soju_bin("soju")
+        soju_bin("sojuctl")
+        return spaths
+    except Exception:
+        return None
+
+
+def subscribe_user_channel(channel: str,
+                           mercury_home: str | Path | None = None) -> bool:
+    """Best-effort phone subscribe (spawn/resync paths — never raises)."""
+    try:
+        spaths = _auto_paths(mercury_home)
+        if spaths is None:
+            return False
+        ensure_soju_channel(spaths, channel)
+        return True
+    except Exception:
+        logger.debug("soju auto-subscribe failed for %s", channel, exc_info=True)
+        return False
+
+
+def unsubscribe_user_channel(channel: str,
+                             mercury_home: str | Path | None = None) -> bool:
+    """Best-effort phone unsubscribe on room destroy (never raises)."""
+    try:
+        spaths = _auto_paths(mercury_home)
+        if spaths is None:
+            return False
+        forget_soju_channel(spaths, channel)
+        return True
+    except Exception:
+        logger.debug("soju auto-unsubscribe failed for %s", channel, exc_info=True)
+        return False

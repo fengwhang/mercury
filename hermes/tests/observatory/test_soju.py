@@ -162,6 +162,9 @@ def test_provision_soju_flow(tmp_path, monkeypatch) -> None:
         "IRC_BOUNCER_PASSWORD=downstream-pw-123\nIRC_AGENT_PASSWORD=x\n")
     monkeypatch.setattr(soju_mod, "soju_bin", lambda *a, **k: "/bin/soju")
     monkeypatch.setattr(
+        soju_mod, "_run",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(
         soju_mod, "ensure_soju_config", lambda *a, **k: {"action": "wrote"})
     monkeypatch.setattr(soju_mod, "ensure_soju_unit", lambda *a, **k: "installed")
     monkeypatch.setattr(
@@ -173,3 +176,25 @@ def test_provision_soju_flow(tmp_path, monkeypatch) -> None:
     assert summary["user"] == {"action": "created"}
     assert summary["network"] == {"action": "created"}
     assert "soju_front" in json.loads((obs / "ircd.json").read_text())
+
+
+def test_ensure_soju_channel_subscribes_once(monkeypatch) -> None:
+    import types
+
+    saved = {"out": ""}
+
+    def fake_run(args, *, input_text=None, timeout=60):
+        if "status" in args:
+            return subprocess.CompletedProcess([], 0, saved["out"], "")
+        saved["out"] = "#vm_gateway \n"
+        return subprocess.CompletedProcess([], 0, "created", "")
+
+    monkeypatch.setattr(soju_mod, "_run", fake_run)
+    monkeypatch.setattr(soju_mod, "soju_bin", lambda *a, **k: "/bin/soju")
+    paths = types.SimpleNamespace(conf="/c/soju.conf")
+    assert soju_mod.ensure_soju_channel(paths, "#vm_gateway") == {
+        "action": "subscribed"}
+    assert soju_mod.ensure_soju_channel(paths, "#vm_gateway") == {
+        "action": "current"}
+    with pytest.raises(soju_mod.SojuError):
+        soju_mod.ensure_soju_channel(paths, "not-a-channel")
