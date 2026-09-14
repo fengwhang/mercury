@@ -587,6 +587,9 @@ class IrcDaemon:
             f":{name} 005 {nick} CHANTYPES=# NICKLEN=32 "
             f"TOPICLEN=256 :are supported by this server",
         )
+        # Clients consider login complete at end-of-MOTD; without 376
+        # (or 422) Goguma waits forever and reconnects in a loop.
+        await self._numeric(client, 422, nick, "MOTD File is missing")
 
     async def _cmd_join(self, client: _Client, arg: str) -> None:
         if not arg:

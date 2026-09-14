@@ -606,3 +606,18 @@ async def test_list_discovers_rooms(tmp_path) -> None:
                 await b.close()
         finally:
             await a.close()
+
+
+@pytest.mark.asyncio
+async def test_welcome_ends_with_no_motd(tmp_path) -> None:
+    """Registration terminates with 422 so clients stop waiting for MOTD."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        c = RawClient()
+        await c.connect(agent_port)
+        try:
+            await c.send("NICK mott")
+            await c.send("USER mott 0 * :test")
+            assert await c.next_match(" 001 ")
+            assert await c.next_match(" 422 ")
+        finally:
+            await c.close()
