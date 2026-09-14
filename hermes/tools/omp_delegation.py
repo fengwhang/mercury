@@ -469,11 +469,15 @@ def _delegate_fallback_thinking_level() -> str:
 
 def ensure_omp_home_env(env: Dict[str, str],
                         mercury_home: Optional[str] = None) -> Dict[str, str]:
-    """Pin the omp agent home + worktrees under ``$MERCURY_HOME/omp``.
+    """Pin the omp agent home + worktrees + natives under ``$MERCURY_HOME``.
 
     The omp binary defaults to ``~/.omp`` — left open for classic stock
     installs. Every Mercury-spawned child sets these (setdefault: an
     explicit user export always wins). Mutates and returns ``env``.
+
+    Natives: the pi-natives loader extracts to ``$XDG_DATA_HOME/omp/natives``
+    but ONLY when ``$XDG_DATA_HOME/omp`` already exists, else ``~/.omp`` —
+    so the directory is created here (exist_ok, never raises).
     """
     home = (mercury_home or os.environ.get("MERCURY_HOME", "")).strip()
     if not home:
@@ -481,6 +485,11 @@ def ensure_omp_home_env(env: Dict[str, str],
     base = str(Path(home) / "omp")
     env.setdefault("PI_CODING_AGENT_DIR", base)
     env.setdefault("OMP_WORKTREE_DIR", base + "/wt")
+    env.setdefault("XDG_DATA_HOME", str(Path(home) / ".local" / "share"))
+    try:
+        Path(env["XDG_DATA_HOME"], "omp").mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
     return env
 
 

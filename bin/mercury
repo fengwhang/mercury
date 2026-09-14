@@ -74,6 +74,11 @@ fi
 _AMBIENT_HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 export HERMES_HOME="$MERCURY_HOME/hermes"
 export PI_CODING_AGENT_DIR="$MERCURY_HOME/omp"
+# Natives cache: the pi-natives loader uses $XDG_DATA_HOME/omp/natives
+# (only when the dir exists) instead of ~/.omp/natives — keep ALL omp
+# state inside the ONE tree so stock omp installs never collide.
+export XDG_DATA_HOME="${XDG_DATA_HOME:-$MERCURY_HOME/.local/share}"
+mkdir -p "$XDG_DATA_HOME/omp"
 
 # HERMES-OMP PATCH (drive fix 2026-09-05): FIRST-BOOT INHERITANCE. The forced
 # home starts empty — .env didn't exist in it, so the first drive prompted

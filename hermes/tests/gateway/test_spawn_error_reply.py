@@ -11,7 +11,8 @@ def test_natives_failure_gives_remediation() -> None:
         "Require stack:\n- /x\ncurl stuff\nmore lines")
     out = reply("spawnomp", err)
     assert out.count("\n") == 0
-    assert "rm -rf ~/.omp/natives" in out
+    assert "rm -rf $MERCURY_HOME/.local/share/omp/natives" in out
+    assert "~/.omp" not in out
 
 
 def test_generic_failure_first_line_capped() -> None:

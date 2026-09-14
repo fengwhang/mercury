@@ -7,16 +7,29 @@ import os
 from tools.omp_delegation import ensure_omp_home_env
 
 
-def test_helper_pins_both_dirs(monkeypatch) -> None:
+def test_helper_pins_all_dirs(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
     monkeypatch.delenv("OMP_WORKTREE_DIR", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    home = tmp_path / "mercury"
     env: dict = {}
-    out = ensure_omp_home_env(env, "/h/mercury")
+    out = ensure_omp_home_env(env, str(home))
     assert out == {
-        "PI_CODING_AGENT_DIR": "/h/mercury/omp",
-        "OMP_WORKTREE_DIR": "/h/mercury/omp/wt",
+        "PI_CODING_AGENT_DIR": str(home / "omp"),
+        "OMP_WORKTREE_DIR": str(home / "omp" / "wt"),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
     }
     assert env is out
+    # The natives loader only honors XDG when the omp dir already exists.
+    assert (home / ".local" / "share" / "omp").is_dir()
+
+
+def test_helper_never_overrides_explicit_xdg(monkeypatch, tmp_path) -> None:
+    custom = tmp_path / "custom-xdg"
+    env: dict = {"XDG_DATA_HOME": str(custom)}
+    out = ensure_omp_home_env(env, str(tmp_path / "mercury"))
+    assert out["XDG_DATA_HOME"] == str(custom)
+    assert (custom / "omp").is_dir()
 
 
 def test_helper_never_overrides_explicit() -> None:

@@ -1246,6 +1246,18 @@ class TestUnitPinsOmpAgentDir:
             tmp_path / ".mercury" / "omp"
         )
 
+    def test_user_unit_xdg_data_home_mirrors_mercury_home(
+        self, tmp_path, monkeypatch
+    ):
+        # Natives must extract under the ONE tree ($MERCURY_HOME/.local/share),
+        # never ~/.omp — the pi-natives loader honors XDG_DATA_HOME/omp.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "anywhere" / ".mercury"))
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        mercury_home = self._env_value(unit, "MERCURY_HOME")
+        assert (
+            self._env_value(unit, "XDG_DATA_HOME") == f"{mercury_home}/.local/share"
+        )
+
     def test_system_unit_agent_dir_targets_service_user(self, monkeypatch):
         # sudo --system install for alice: the whole launcher env quartet
         # must reference alice's tree, not the calling root's.

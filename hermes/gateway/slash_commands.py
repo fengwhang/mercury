@@ -144,7 +144,7 @@ def _spawn_error_reply(verb: str, exc: BaseException) -> str:
     if "natives" in text.lower():
         return (
             f"✗ /{verb} failed: omp native modules missing or corrupt. "
-            "On the VM run: rm -rf ~/.omp/natives/18.1.6 ; then retry. "
+            "On the VM run: rm -rf $MERCURY_HOME/.local/share/omp/natives ; then retry. "
             "(full error in the gateway log)")
     lines = text.splitlines()
     short = lines[0][:300] if lines else type(exc).__name__
