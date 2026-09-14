@@ -30,6 +30,8 @@ Or via environment variables (overrides config.yaml):
 import asyncio
 import logging
 import os
+
+from mercury_cli.config import get_env_value
 import re
 import ssl
 import time
@@ -130,22 +132,22 @@ class IRCAdapter(BasePlatformAdapter):
         extra = getattr(config, "extra", {}) or {}
 
         # Connection settings (env vars override config.yaml)
-        self.server = os.getenv("IRC_SERVER") or extra.get("server", "")
-        env_port = os.getenv("IRC_PORT") or None
+        self.server = get_env_value("IRC_SERVER") or extra.get("server", "")
+        env_port = get_env_value("IRC_PORT") or None
         self.use_tls = (
-            os.getenv("IRC_USE_TLS", "").lower() in {"1", "true", "yes"}
-            if os.getenv("IRC_USE_TLS")
+            (get_env_value("IRC_USE_TLS") or "").lower() in {"1", "true", "yes"}
+            if get_env_value("IRC_USE_TLS")
             else extra.get("use_tls", True)
         )
         try:
             self.port = int(env_port or extra.get("port") or (6697 if self.use_tls else 6667))
         except (ValueError, TypeError):
             self.port = 6697 if self.use_tls else 6667
-        self.nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "mercury-bot")
+        self.nickname = get_env_value("IRC_NICKNAME") or extra.get("nickname", "mercury-bot")
         # One name for bot and room: an explicit channel wins (back-compat),
         # otherwise `#nick`.
         self.channel = (
-            os.getenv("IRC_CHANNEL")
+            get_env_value("IRC_CHANNEL")
             or extra.get("channel", "")
             or _derive_channel(self.nickname)
         )
@@ -661,9 +663,9 @@ def _configured_channel(extra: dict | None = None) -> str:
     """Effective channel: explicit env/config value, else ``#nick``."""
     extra = extra or {}
     return (
-        os.getenv("IRC_CHANNEL", "").strip()
+        (get_env_value("IRC_CHANNEL") or "").strip()
         or str(extra.get("channel", "") or "").strip()
-        or _derive_channel(os.getenv("IRC_NICKNAME", "") or extra.get("nickname", ""))
+        or _derive_channel((get_env_value("IRC_NICKNAME") or "") or extra.get("nickname", ""))
     )
 
 
@@ -672,7 +674,7 @@ def check_requirements() -> bool:
 
     Only requires the server and a bot name — no external pip packages needed.
     """
-    server = os.getenv("IRC_SERVER", "")
+    server = (get_env_value("IRC_SERVER") or "")
     # Also accept config.yaml-only configuration (no env vars).
     # The gateway passes PlatformConfig; we just check env for the
     # mercury setup / requirements check path.
@@ -682,7 +684,7 @@ def check_requirements() -> bool:
 def validate_config(config) -> bool:
     """Validate that the platform config has enough info to connect."""
     extra = getattr(config, "extra", {}) or {}
-    server = os.getenv("IRC_SERVER") or extra.get("server", "")
+    server = get_env_value("IRC_SERVER") or extra.get("server", "")
     return bool(server and _configured_channel(extra))
 
 
@@ -804,7 +806,7 @@ def interactive_setup() -> None:
 def is_connected(config) -> bool:
     """Check whether IRC is configured (env or config.yaml)."""
     extra = getattr(config, "extra", {}) or {}
-    server = os.getenv("IRC_SERVER") or extra.get("server", "")
+    server = get_env_value("IRC_SERVER") or extra.get("server", "")
     return bool(server and _configured_channel(extra))
 
 
@@ -821,7 +823,7 @@ def _env_enablement() -> dict | None:
     the core hook — it becomes a proper ``HomeChannel`` dataclass on the
     ``PlatformConfig`` rather than being merged into ``extra``.
     """
-    server = os.getenv("IRC_SERVER", "").strip()
+    server = (get_env_value("IRC_SERVER") or "").strip()
     channel = _configured_channel()
     if not (server and channel):
         return None
@@ -829,16 +831,16 @@ def _env_enablement() -> dict | None:
         "server": server,
         "channel": channel,
     }
-    port = os.getenv("IRC_PORT", "").strip()
+    port = (get_env_value("IRC_PORT") or "").strip()
     if port:
         try:
             seed["port"] = int(port)
         except ValueError:
             pass
-    nickname = os.getenv("IRC_NICKNAME", "").strip()
+    nickname = (get_env_value("IRC_NICKNAME") or "").strip()
     if nickname:
         seed["nickname"] = nickname
-    use_tls = os.getenv("IRC_USE_TLS", "").strip().lower()
+    use_tls = (get_env_value("IRC_USE_TLS") or "").strip().lower()
     if use_tls:
         seed["use_tls"] = use_tls in {"1", "true", "yes"}
     # Passwords live in PlatformConfig.extra as well for back-compat with
@@ -850,11 +852,11 @@ def _env_enablement() -> dict | None:
     # Optional home-channel (usually the same as IRC_CHANNEL, but can be a
     # dedicated reports channel).  Defaults to IRC_CHANNEL so cron jobs
     # with ``deliver=irc`` have a sensible target without extra config.
-    home = os.getenv("IRC_HOME_CHANNEL") or channel
+    home = get_env_value("IRC_HOME_CHANNEL") or channel
     if home:
         seed["home_channel"] = {
             "chat_id": home,
-            "name": os.getenv("IRC_HOME_CHANNEL_NAME", home),
+            "name": (get_env_value("IRC_HOME_CHANNEL_NAME") or home),
         }
     return seed
 
@@ -902,18 +904,18 @@ async def _standalone_send(
     primitive.
     """
     extra = getattr(pconfig, "extra", {}) or {}
-    server = os.getenv("IRC_SERVER") or extra.get("server", "")
+    server = get_env_value("IRC_SERVER") or extra.get("server", "")
     channel = _configured_channel(extra)
     if not server or not channel:
         return {"error": "IRC standalone send: IRC_SERVER and a bot name (IRC_NICKNAME) must be configured"}
-    port_value = os.getenv("IRC_PORT") or extra.get("port", 6697)
+    port_value = get_env_value("IRC_PORT") or extra.get("port", 6697)
     try:
         port = int(port_value)
     except (TypeError, ValueError):
         return {"error": f"IRC standalone send: invalid port {port_value!r}"}
 
-    nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "mercury-bot")
-    use_tls_env = os.getenv("IRC_USE_TLS")
+    nickname = get_env_value("IRC_NICKNAME") or extra.get("nickname", "mercury-bot")
+    use_tls_env = get_env_value("IRC_USE_TLS")
     if use_tls_env is not None:
         use_tls = use_tls_env.lower() in {"1", "true", "yes"}
     else:
