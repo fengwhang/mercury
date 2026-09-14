@@ -98,6 +98,7 @@ class _Client:
         "oper",
         "sasl",
         "addr",
+        "away",
         "caps",
         "pending_label",
         "channels",
@@ -120,6 +121,7 @@ class _Client:
         self.caps: set[str] = set()
         self.pending_label: str | None = None
         self.addr = addr
+        self.away: str | None = None
         self.channels: set[str] = set()  # folded channel keys
         self.send_lock = asyncio.Lock()
 
@@ -457,6 +459,8 @@ class IrcDaemon:
             await self._cmd_names(client, rest.strip().lstrip(":"))
         elif cmd == "WHO":
             await self._cmd_who(client, rest.strip().lstrip(":"))
+        elif cmd == "AWAY":
+            await self._cmd_away(client, rest.strip())
         elif cmd == "MODE":
             target = rest.split(" ", 1)[0] if rest else ""
             await self._numeric(client, 324, f"{client.nick} {target} +", "End of MODE")
@@ -714,13 +718,24 @@ class IrcDaemon:
             c = self._clients.get(nick)
             if c is None:
                 continue
+            flag = "G" if c.away else "H"
             await self._numeric(
                 client,
                 352,
-                f"{client.nick} {self._display.get(key, arg)} {c.user} mercury mercury {c.nick} H",
+                f"{client.nick} {self._display.get(key, arg)} {c.user} mercury mercury {c.nick} {flag}",
                 f"0 {c.realname or c.nick}",
             )
         await self._numeric(client, 315, f"{client.nick} {arg}", "End of WHO list")
+
+    async def _cmd_away(self, client: _Client, arg: str) -> None:
+        """AWAY [:message] — soju sends this on upstream connect; without
+        it soju drops the link on our 421. 306/305 reply, state for WHO."""
+        msg = arg.lstrip(":").strip()[:160]
+        client.away = msg or None
+        if client.away:
+            await self._numeric(client, 306, client.nick, "You have been marked as being away")
+        else:
+            await self._numeric(client, 305, client.nick, "You are no longer marked as being away")
 
     async def _cmd_list(self, client: _Client, arg: str) -> None:
         """RPL_LIST so clients can discover rooms (empty server → headers only)."""

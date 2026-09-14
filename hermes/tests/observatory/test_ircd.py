@@ -716,3 +716,24 @@ async def test_chathistory_latest_batch(tmp_path) -> None:
             assert await a.next_match("BATCH -")
         finally:
             await a.close()
+
+
+@pytest.mark.asyncio
+async def test_away_set_unset_and_who_flag(tmp_path) -> None:
+    """AWAY toggles 306/305 (soju sends it on upstream connect)."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        c = RawClient()
+        await c.connect(agent_port)
+        try:
+            await c.register("awaynick")
+            await c.send("AWAY :gone fishing")
+            assert await c.next_match(" 306 ")
+            await c.send("JOIN #aw")
+            assert await c.next_match("JOIN #aw")
+            await c.send("WHO #aw")
+            who = await c.next_match(" 352 ")
+            assert " G" in who or " G " in who or who.rstrip().endswith(" G")
+            await c.send("AWAY")
+            assert await c.next_match(" 305 ")
+        finally:
+            await c.close()
