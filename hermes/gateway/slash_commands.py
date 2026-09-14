@@ -123,6 +123,16 @@ def _home_thread_from_source(source) -> Optional[str]:
     return str(thread_id)
 
 
+def _live_server_label(mercury_home=None) -> str:
+    """Live network label for prefixed room/nick names (best-effort)."""
+    try:
+        from observatory.provision import live_server_name
+
+        return str(live_server_name(mercury_home) or "")
+    except Exception:
+        return ""
+
+
 def _spawn_error_reply(verb: str, exc: BaseException) -> str:
     """One-line chat reply for spawn failures (never a stack dump).
 
@@ -6523,7 +6533,10 @@ class GatewaySlashCommandsMixin:
             where = f"the gateway room ({gw_channel})" if gw_channel else "the gateway room"
             return f"🚫 /{verb} runs only in {where}."
         try:
-            row = await spawn_orchestrator(name, engine, state=state, registry=registry, mercury_home=self._observatory_mercury_home())
+            row = await spawn_orchestrator(
+                name, engine, state=state, registry=registry,
+                mercury_home=self._observatory_mercury_home(),
+                server_name=_live_server_label(self._observatory_mercury_home()))
         except Exception as exc:
             import logging as _logging
 

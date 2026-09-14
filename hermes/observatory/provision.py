@@ -415,8 +415,7 @@ def ensure_gateway_node_in_state(state: Any, *, server_name: str) -> str:
     from observatory.rooms import agent_nick, gateway_channel
 
     clean = validate_server_name(server_name)
-    nick = agent_nick(f"{clean}_gateway")
-    channel = gateway_channel(clean)
+    nick = agent_nick(f"{clean}_gateway", server="")
     try:
         row = state.get(GATEWAY_NODE_ID)
         updates: dict[str, Any] = {}

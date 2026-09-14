@@ -408,3 +408,66 @@ class TestIRCStandaloneSend:
         assert "registration" in result["error"].lower() or "timeout" in result["error"].lower()
 
 
+
+
+class TestIRCAdapterIdentityRouting:
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from unittest.mock import MagicMock
+
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667,
+                   "nickname": "testbot", "channel": "#test",
+                   "use_tls": False},
+        )
+        from plugins.platforms.irc.adapter import IRCAdapter
+        adapter = IRCAdapter(cfg)
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = MagicMock()
+        from unittest.mock import AsyncMock
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_prefers_room_identity(self, adapter, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from observatory import identity as identity_mod
+
+        sent: list[str] = []
+
+        class FakePool:
+            def get(self, channel):
+                return object() if channel == "#test" else None
+
+        async def fake_send_as(channel, text):
+            assert channel == "#test"
+            sent.append(text)
+            return True
+
+        monkeypatch.setattr(identity_mod, "get_pool", lambda: FakePool())
+        monkeypatch.setattr(identity_mod, "send_as_identity", fake_send_as)
+        result = await adapter.send("#test", "hello identity")
+        assert result.success is True
+        assert sent == ["hello identity"]
+        adapter._writer.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_falls_back_without_identity(self, adapter, monkeypatch):
+        from observatory import identity as identity_mod
+
+        class FakePool:
+            def get(self, channel):
+                return None
+
+        monkeypatch.setattr(identity_mod, "get_pool", lambda: FakePool())
+        result = await adapter.send("#test", "hello main")
+        assert result.success is True
+        sent_data = adapter._writer.write.call_args[0][0]
+        assert b"PRIVMSG #test :hello main" in sent_data

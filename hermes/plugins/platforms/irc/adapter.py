@@ -335,6 +335,24 @@ class IRCAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         target = chat_id  # channel name or nick for DMs
+        # Per-agent identity first: rooms with a live identity speak as
+        # their own nick (vm_charlie, not vm_gateway). All-or-nothing
+        # per message (a split identity looks worse than a fallback).
+        try:
+            from observatory import identity as _identity
+
+            if _identity.get_pool().get(target) is not None:
+                lines = self._split_message(content, target)
+                ok = True
+                for line in lines:
+                    ok = await _identity.send_as_identity(target, line) and ok
+                    await asyncio.sleep(0.3)
+                if ok:
+                    return SendResult(
+                        success=True, message_id=str(int(time.time() * 1000)))
+        except Exception:
+            logger.debug("IRC: identity send failed, using main bot",
+                         exc_info=True)
         lines = self._split_message(content, target)
 
         for line in lines:

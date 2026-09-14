@@ -85,18 +85,43 @@ def gateway_channel(server_name: str) -> str:
     return f"#{base}_gateway"
 
 
-def spawn_channel(name: str) -> str:
-    """``/spawn`` / ``/spawnomp`` room for ``name``."""
-    return clean_channel(name)
+def _server_prefix(server: str | None = None) -> str:
+    """Live network label (best-effort, never raises).
+
+    ``None`` resolves from the live ircd.json; pass ``""`` for the bare
+    legacy form (already-qualified names like the gateway nick).
+    """
+    if server is not None:
+        return str(server).strip().lower()
+    try:
+        from observatory.provision import live_server_name  # no cycle
+
+        return str(live_server_name(None) or "").strip().lower()
+    except Exception:
+        return ""
 
 
-def child_channel(parent_name: str, child_name: str) -> str:
-    """Delegate-child room: parent + child names joined (req: parent-child)."""
-    return clean_channel(f"{parent_name}-{child_name}")
+def spawn_channel(name: str, server: str | None = None) -> str:
+    """``/spawn`` / ``/spawnomp`` room: ``#<server>_<name>``."""
+    prefix = _server_prefix(server)
+    base = f"{prefix}_{name}" if prefix else str(name)
+    return clean_channel(base)
 
 
-def agent_nick(name: str) -> str:
-    return clean_nick(name)
+def child_channel(parent_name: str, child_name: str,
+                  server: str | None = None) -> str:
+    """Delegate-child room: ``#<server>_<parent>-<child>``."""
+    prefix = _server_prefix(server)
+    base = (f"{prefix}_{parent_name}-{child_name}" if prefix
+            else f"{parent_name}-{child_name}")
+    return clean_channel(base)
+
+
+def agent_nick(name: str, server: str | None = None) -> str:
+    """Agent nick: ``<server>_<name>`` (gateway: ``<server>_gateway``)."""
+    prefix = _server_prefix(server)
+    base = f"{prefix}_{name}" if prefix else str(name)
+    return clean_nick(base).lower()
 
 
 # --- frame formatting ------------------------------------------------------

@@ -221,6 +221,14 @@ async def boot_resync(
                                 subscribe_user_channel(channel)
                             except Exception:
                                 pass
+                            try:
+                                from observatory.identity import ensure_identity
+
+                                nick = str((row or {}).get("mxid") or "")
+                                if nick:
+                                    await ensure_identity(nick, channel)
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 # Resume omp handles the registry lost (restart crash).

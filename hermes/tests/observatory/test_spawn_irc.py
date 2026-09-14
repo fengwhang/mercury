@@ -242,3 +242,24 @@ async def test_spawn_invites_phone_user(tmp_path, monkeypatch) -> None:
     registry = OrchestratorRegistry()
     row = await spawn_orchestrator("Ace", "hermes", state=state, registry=registry)
     assert (soju_mod.SOJU_USER, row["room_id"]) in bot.invited
+
+
+@pytest.mark.asyncio
+async def test_spawn_prefixed_room_and_nick(tmp_path, monkeypatch) -> None:
+    """server_name prefixes the room and the agent nick (vm_charlie)."""
+    from observatory.rooms import agent_nick, child_channel, spawn_channel
+
+    assert spawn_channel("charlie", server="vm") == "#vm_charlie"
+    assert agent_nick("charlie", server="vm") == "vm_charlie"
+    assert child_channel("ace", "cow", server="vm") == "#vm_ace-cow"
+    assert spawn_channel("charlie") == "#charlie"  # bare legacy
+
+    bot = FakeBot()
+    monkeypatch.setattr(spawn, "get_bot_sink", lambda: bot)
+    state = _real_state(tmp_path)
+    registry = OrchestratorRegistry()
+    row = await spawn_orchestrator(
+        "Charlie", "hermes", state=state, registry=registry, server_name="vm")
+    assert row["room_id"] == "#vm_charlie"
+    assert row["mxid"] == "vm_charlie"
+    assert bot.joined == ["#vm_charlie"]

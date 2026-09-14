@@ -546,7 +546,7 @@ async def spawn_orchestrator(
 
     node_id = orchestrator_node_id()
     slug = _unique_slug(clean, state)
-    channel = spawn_channel(slug)
+    channel = spawn_channel(slug, server_name)
     if engine == "hermes" and not session_ref:
         session_ref = channel
     row = state.add_node(
@@ -554,7 +554,7 @@ async def spawn_orchestrator(
         engine=engine,
         name=clean,
         slug=slug,
-        mxid=agent_nick(clean),
+        mxid=agent_nick(clean, server_name),
         session_ref=session_ref,
         parent_node_id=None,  # depth 0 by next_depth()
         extra={
@@ -600,6 +600,20 @@ async def spawn_orchestrator(
                 await bot.invite_user(SOJU_USER, channel)
             except Exception:  # noqa: BLE001 — cosmetic; invite is a nudge
                 logger.debug("spawn: phone invite failed for %s", node_id)
+            try:
+                from observatory.identity import ensure_identity
+                from observatory.rooms import agent_nick as _agent_nick
+
+                live = None
+                try:
+                    from observatory.provision import live_server_name
+
+                    live = live_server_name(None)
+                except Exception:
+                    live = None
+                await ensure_identity(_agent_nick(clean, live), channel)
+            except Exception:  # noqa: BLE001 — cosmetic; main bot covers
+                logger.debug("spawn: identity ensure failed for %s", node_id)
             try:
                 await bot.say(channel, f"spawned {engine} agent '{clean}' — chat here, like CLI.")
             except Exception:  # noqa: BLE001 — cosmetic
@@ -738,11 +752,9 @@ class PurgeOutcome:
     ``fatal`` — a channel that did NOT verifiably die: the journal entry
     must survive and retry. Destroying a gone channel is success, never
     fatal. ``soft`` is kept for shape compatibility (always empty)."""
-
     records: list[dict[str, Any]] = field(default_factory=list)
     fatal: list[str] = field(default_factory=list)
     soft: list[str] = field(default_factory=list)
-
 
 async def _execute_channel_destroy(bot: Any, channels: list[str]) -> PurgeOutcome:
     """Destroy channels server-side via the bot sink (idempotent)."""
@@ -759,6 +771,12 @@ async def _execute_channel_destroy(bot: Any, channels: list[str]) -> PurgeOutcom
                 unsubscribe_user_channel(str(channel))
             except Exception:  # noqa: BLE001 — cosmetic; dead room lingers on phone
                 logger.debug("spawn: phone unsubscribe failed for %s", channel)
+            try:
+                from observatory.identity import drop_identity
+
+                await drop_identity(str(channel))
+            except Exception:  # noqa: BLE001 — cosmetic
+                logger.debug("spawn: identity drop failed for %s", channel)
             out.records.append({"op": "destroy", "channel": str(channel),
                                 "gone": True, "ok": bool(ok)})
         except Exception as exc:  # noqa: BLE001 — classified, not swallowed
