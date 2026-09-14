@@ -265,6 +265,18 @@ async def boot_resync(
         except Exception:
             pass
         try:
+            # Lobby self-heal: restarts/upgrades must never leave the
+            # phone without its gateway room (no setup run required).
+            from observatory.provision import live_server_name
+            from observatory.rooms import gateway_channel
+            from observatory.soju import subscribe_user_channel
+
+            lobby = gateway_channel(live_server_name(None) or "mercury")
+            if subscribe_user_channel(lobby):
+                report["lobby"] = lobby
+        except Exception:
+            pass
+        try:
             deferred = await replay_purge_journal(state)
             report["deferred_purges"] = deferred
         except Exception as exc:
