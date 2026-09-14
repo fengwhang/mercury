@@ -18,8 +18,8 @@ Contract kept from the old path:
 
 No role routing, ever: model + fallback come from bridge.py --delegate
 (delegate_default/delegate_fallback slots), task text is passed VERBATIM as
-one argv element, and ~/.omp/agent/config.yml is rendered (star-pinned) once
-per process before the first spawn.
+one argv element, and the agent config.yml is rendered (star-pinned) once
+per process before the first spawn (under $MERCURY_HOME/omp, never ~/.omp).
 """
 from __future__ import annotations
 
@@ -467,6 +467,23 @@ def _delegate_fallback_thinking_level() -> str:
     return env.get("OMP_FALLBACK_THINKING_LEVEL") or _delegate_thinking_level()
 
 
+def ensure_omp_home_env(env: Dict[str, str],
+                        mercury_home: Optional[str] = None) -> Dict[str, str]:
+    """Pin the omp agent home + worktrees under ``$MERCURY_HOME/omp``.
+
+    The omp binary defaults to ``~/.omp`` — left open for classic stock
+    installs. Every Mercury-spawned child sets these (setdefault: an
+    explicit user export always wins). Mutates and returns ``env``.
+    """
+    home = (mercury_home or os.environ.get("MERCURY_HOME", "")).strip()
+    if not home:
+        home = str(Path.home() / ".mercury")
+    base = str(Path(home) / "omp")
+    env.setdefault("PI_CODING_AGENT_DIR", base)
+    env.setdefault("OMP_WORKTREE_DIR", base + "/wt")
+    return env
+
+
 def _shared_env_overrides() -> Dict[str, str]:
     """ONE-env safety net: keys from MERCURY_HOME/.env not already in env.
 
@@ -474,7 +491,6 @@ def _shared_env_overrides() -> Dict[str, str]:
     inherit everything. This net catches the cases where the parent's
     environment predates the .env (long-running gateway, cron, IDE
     subprocess) — reading the same single file both engines share.
-
     Pure function of the current process env (no caching here): the batch
     builder below calls it once per dispatch and shares the result, so an
     N-child fan-out performs exactly ONE .env read and ONE gateway
@@ -531,7 +547,7 @@ def _delegate_batch_base_env() -> Dict[str, str]:
     """
     base = os.environ.copy()
     base.update(_shared_env_overrides())
-    return base
+    return ensure_omp_home_env(base)
 
 
 
@@ -624,9 +640,8 @@ def _resolve_omp_binary() -> Optional[str]:
         return found
     return _vendored_omp_binary()
 
-
 def _render_omp_config_once() -> None:
-    """Render ~/.omp/agent/config.yml (star-pinned roles) once per process.
+    """Render the agent config.yml (star-pinned roles) once per process.
 
     Belt-and-suspenders on top of the compiled-in role-strip patch: the
     rendered config pins every role to the session model even if a future

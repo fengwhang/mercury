@@ -371,7 +371,14 @@ class OmpRpcChild:
         # --isolate-worktree label (oh-my-pi#452): None = flag omitted.
         self._isolate_worktree = isolate_worktree
         self._workdir = workdir
-        self._env = env or {}
+        # Every omp child runs with the agent home under $MERCURY_HOME/omp
+        # (never ~/.omp — left for classic installs). Copy: callers keep
+        # their dict; the spawned env is ours to pin.
+        from tools.omp_delegation import ensure_omp_home_env
+
+        child_env = dict(env or {})
+        ensure_omp_home_env(child_env, child_env.get("MERCURY_HOME"))
+        self._env = child_env
         self._approval_timeout = approval_timeout
         self._command_override = command_override
         self._approval_callback = approval_callback
