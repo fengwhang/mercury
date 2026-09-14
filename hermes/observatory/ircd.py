@@ -85,6 +85,9 @@ class DaemonConfig:
     state_dir: Path | str = ""
     network_name: str = "mercury"
 
+PING_INTERVAL = 60.0  # seconds between server PINGs to idle clients
+PING_TIMEOUT = 180.0  # drop a registered client silent this long
+
 class _Client:
     __slots__ = (
         "reader",
@@ -103,6 +106,8 @@ class _Client:
         "pending_label",
         "channels",
         "send_lock",
+        "last_in",
+        "ping_out",
     )
 
     def __init__(
@@ -124,6 +129,8 @@ class _Client:
         self.away: str | None = None
         self.channels: set[str] = set()  # folded channel keys
         self.send_lock = asyncio.Lock()
+        self.last_in = time.monotonic()
+        self.ping_out = False
 
 
 class IrcDaemon:
@@ -146,6 +153,7 @@ class IrcDaemon:
         self._servers: list[asyncio.AbstractServer] = []
         self._db: sqlite3.Connection | None = None
         self._lock = asyncio.Lock()
+        self._ping_task: asyncio.Task | None = None
 
     def _db_path(self) -> Path | None:
         if not self.config.state_dir:
@@ -232,6 +240,7 @@ class IrcDaemon:
             cfg.bouncer_port,
             cfg.network_name,
         )
+        self._ping_task = asyncio.create_task(self._ping_loop())
         return self
 
     async def _listen(self, listener: str, host: str, port: int,
@@ -279,9 +288,11 @@ class IrcDaemon:
             errors.append(
                 f"tls {cfg.bouncer_host}:{cfg.tls_port} not bound ({exc})")
             return None
-            return None
 
     async def stop(self) -> None:
+        if self._ping_task is not None:
+            self._ping_task.cancel()
+            self._ping_task = None
         for server in self._servers:
             server.close()
             try:
@@ -305,6 +316,33 @@ class IrcDaemon:
             except Exception:
                 pass
             self._db = None
+
+    async def _ping_loop(self) -> None:
+        """Liveness sweep: PING idle clients, drop the long-silent.
+
+        Without this, a daemon restart leaves every client believing it
+        is still connected (half-open): sends vanish, no error surfaces.
+        """
+        try:
+            while True:
+                await asyncio.sleep(PING_INTERVAL)
+                now = time.monotonic()
+                for client in list(self._clients.values()):
+                    try:
+                        idle = now - client.last_in
+                        if idle >= PING_TIMEOUT:
+                            client.writer.close()
+                        elif idle >= PING_INTERVAL and not client.ping_out:
+                            client.ping_out = True
+                            await self._send(
+                                client,
+                                f":{self.config.server_name} PING "
+                                f":{self.config.server_name}",
+                            )
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            pass
 
     def channel_names(self) -> list[str]:
         return sorted(self._display.get(k, k) for k in self._channels)
@@ -390,6 +428,7 @@ class IrcDaemon:
                     client.pending_label = v[:64]
             if not line:
                 return
+        client.last_in = time.monotonic()
         if " " in line:
             cmd, rest = line.split(" ", 1)
         else:
@@ -440,7 +479,7 @@ class IrcDaemon:
                 f"{self.config.server_name} :{rest.lstrip(':')}",
             )
         elif cmd == "PONG":
-            pass
+            client.ping_out = False
         elif cmd == "JOIN":
             await self._cmd_join(client, rest.strip())
         elif cmd == "PART":

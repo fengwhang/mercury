@@ -471,3 +471,93 @@ class TestIRCAdapterIdentityRouting:
         assert result.success is True
         sent_data = adapter._writer.write.call_args[0][0]
         assert b"PRIVMSG #test :hello main" in sent_data
+
+
+class TestIRCSilenceWatchdog:
+    def test_enable_keepalive_no_writer(self):
+        from plugins.platforms.irc.adapter import _enable_keepalive
+        _enable_keepalive(None)  # never raises
+
+    def test_enable_keepalive_sets_socket_opt(self):
+        import socket as _socket
+        from plugins.platforms.irc.adapter import _enable_keepalive
+
+        class FakeSock:
+            def __init__(self):
+                self.opts = []
+            def setsockopt(self, *args):
+                self.opts.append(args)
+
+        class FakeWriter:
+            def __init__(self, sock):
+                self._sock = sock
+            def get_extra_info(self, key):
+                return self._sock if key == "socket" else None
+
+        sock = FakeSock()
+        _enable_keepalive(FakeWriter(sock))
+        assert (_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1) in sock.opts
+
+    @pytest.mark.asyncio
+    async def test_watchdog_closes_silent_connection(self, monkeypatch):
+        import time as _time
+        from plugins.platforms.irc import adapter as adapter_mod
+        from gateway.config import PlatformConfig
+        from plugins.platforms.irc.adapter import IRCAdapter
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
+                   "channel": "#test", "use_tls": False},
+        )
+        adapter = IRCAdapter(cfg)
+        closed = []
+
+        class FakeWriter:
+            def is_closing(self):
+                return False
+            def close(self):
+                closed.append(True)
+
+        adapter._writer = FakeWriter()
+        adapter._last_inbound = _time.monotonic() - 1000.0
+        monkeypatch.setattr(adapter_mod, "WATCHDOG_POLL", 0.01)
+        monkeypatch.setattr(adapter_mod, "SILENCE_LIMIT", 0.05)
+        await adapter._silence_watchdog()
+        assert closed == [True]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_quiet_when_traffic_flows(self, monkeypatch):
+        import time as _time
+        from plugins.platforms.irc import adapter as adapter_mod
+        from gateway.config import PlatformConfig
+        from plugins.platforms.irc.adapter import IRCAdapter
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
+                   "channel": "#test", "use_tls": False},
+        )
+        adapter = IRCAdapter(cfg)
+        polls = []
+        closed = []
+
+        class FakeWriter:
+            def is_closing(self):
+                return False
+            def close(self):
+                closed.append(True)
+
+        async def stop_after_first_sleep(delay):
+            polls.append(delay)
+            raise RuntimeError("stop")
+
+        monkeypatch.setattr(adapter_mod.asyncio, "sleep", stop_after_first_sleep)
+        adapter._writer = FakeWriter()
+        adapter._last_inbound = _time.monotonic()
+        with pytest.raises(RuntimeError):
+            await adapter._silence_watchdog()
+        assert polls
+        assert closed == []

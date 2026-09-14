@@ -82,6 +82,31 @@ from gateway.config import Platform
 # IRC protocol helpers
 # ---------------------------------------------------------------------------
 
+SILENCE_LIMIT = 210.0  # reconnect when the server says nothing this long
+WATCHDOG_POLL = 60.0  # silence-check cadence (server PINGs every 60s)
+
+
+def _enable_keepalive(writer) -> None:
+    """TCP keepalive on an IRC connection (best-effort, never raises)."""
+    try:
+        sock = writer.get_extra_info("socket") if writer is not None else None
+        if sock is None:
+            return
+        import socket as _socket
+
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+        for opt, val in (
+            (_socket.TCP_KEEPIDLE, 60),
+            (_socket.TCP_KEEPINTVL, 30),
+            (_socket.TCP_KEEPCNT, 3),
+        ):
+            try:
+                sock.setsockopt(_socket.IPPROTO_TCP, opt, val)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 def _parse_irc_message(raw: str) -> dict:
     """Parse a raw IRC protocol line into components.
 
@@ -180,9 +205,11 @@ class IRCAdapter(BasePlatformAdapter):
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._recv_task: Optional[asyncio.Task] = None
-        self._current_nick = self.nickname
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._last_inbound = 0.0
         self._registered = False  # IRC registration complete
         self._registration_event = asyncio.Event()
+        self._current_nick = self.nickname
 
     @property
     def name(self) -> str:
@@ -280,6 +307,10 @@ class IRCAdapter(BasePlatformAdapter):
         logger.info("IRC: connected to %s:%s as %s, joined %s", self.server, self.port, self._current_nick, self.channel)
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
+        _enable_keepalive(self._writer)
+        self._last_inbound = time.monotonic()
+        if self._watchdog_task is None or self._watchdog_task.done():
+            self._watchdog_task = asyncio.create_task(self._silence_watchdog())
         return True
 
     async def disconnect(self) -> None:
@@ -310,6 +341,8 @@ class IRCAdapter(BasePlatformAdapter):
                 await self._recv_task
             except asyncio.CancelledError:
                 pass
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
 
         self._reader = None
         self._writer = None
@@ -536,8 +569,38 @@ class IRCAdapter(BasePlatformAdapter):
                 self._set_fatal_error("connection_lost", "IRC connection closed unexpectedly", retryable=True)
                 await self._notify_fatal_error()
 
+    async def _silence_watchdog(self) -> None:
+        """Reconnect when the server goes quiet past SILENCE_LIMIT.
+
+        A live server PINGs idle clients every minute, so sustained
+        silence means the connection is half-open (e.g. the daemon
+        restarted underneath us). Closing the writer drives the normal
+        connection_lost path, which the reconnect watcher rebuilds.
+        """
+        try:
+            while True:
+                await asyncio.sleep(WATCHDOG_POLL)
+                try:
+                    if self._writer is None or self._writer.is_closing():
+                        return
+                    if time.monotonic() - self._last_inbound > SILENCE_LIMIT:
+                        logger.warning(
+                            "IRC: server silent %.0fs — assuming half-open, reconnecting",
+                            time.monotonic() - self._last_inbound,
+                        )
+                        try:
+                            self._writer.close()
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass
+        except asyncio.CancelledError:
+            pass
+
     async def _handle_line(self, raw: str) -> None:
         """Dispatch a single IRC protocol line."""
+        self._last_inbound = time.monotonic()
         msg = _parse_irc_message(raw)
         command = msg["command"]
         params = msg["params"]

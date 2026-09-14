@@ -47,6 +47,14 @@ class IdentityConn:
             logger.debug("identity: connect failed for %s", self.nick)
             return False
         self._reader, self._writer = reader, writer
+        try:
+            import socket as _socket
+
+            sock = writer.get_extra_info("socket")
+            if sock is not None:
+                sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+        except Exception:
+            pass
 
         async def send_raw(line: str) -> None:
             assert self._writer is not None
