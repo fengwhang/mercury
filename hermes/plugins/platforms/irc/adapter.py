@@ -613,6 +613,19 @@ class IRCAdapter(BasePlatformAdapter):
         pumps the omp task and the ack goes straight back to the room.
         """
         text = bang_to_slash(text)
+        # TEMP-DIAG (v0.0.70): visible inbound milestone — lengths and
+        # routing only, never content. Proves whether room messages reach
+        # the engine when INFO is journal-hidden.
+        try:
+            from observatory.rooms import route_channel as _diag_route
+
+            _diag = _diag_route(chat_id)[0] if chat_type == "group" else "dm"
+        except Exception:
+            _diag = "route-error"
+        logger.warning(
+            "IRC: inbound chat=%s route=%s handler=%s",
+            chat_id, _diag, bool(self._message_handler),
+        )
         if chat_type == "group":
             try:
                 from observatory.rooms import get_room_manager, route_channel
@@ -625,7 +638,6 @@ class IRCAdapter(BasePlatformAdapter):
                         reply = await manager.handle_omp_message(chat_id, user_name, text)
                     if reply:
                         await self.send(chat_id, reply)
-                    return
             except Exception:
                 logger.debug("IRC: room route failed, falling through", exc_info=True)
         if not self._message_handler:
