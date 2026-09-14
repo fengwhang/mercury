@@ -3282,6 +3282,8 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
             f"gateway channel:      {gateway_channel} (the gateway agent lives here)",
             "spawn more agents:    /spawn <name> (hermes) or /spawnomp <name> (omp)",
             "                      each gets its own channel; /exit in its room kills it",
+            "                      (Goguma eats /commands: use !spawn, !spawnomp,",
+            "                      !exit, !stop, !approve, !deny instead)",
             "subagent rooms:       #parent-child channels stream live tool/thinking traces",
             "",
             "gateway wiring:       mercury setup gateway → enable IRC so the",

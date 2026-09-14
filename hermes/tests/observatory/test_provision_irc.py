@@ -195,3 +195,15 @@ def test_provision_rejects_bad_chosen_password_env(tmp_path, monkeypatch) -> Non
 
     with pytest.raises(provision.ProvisionError):
         provision.provision(home, server_name="mercury", systemd=False)
+
+
+def test_reset_clears_soju_backlog(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    obs = home / "observatory"
+    obs.mkdir(parents=True)
+    (obs / "soju.db").write_text("backlog")
+    (obs / "soju-admin").write_text("sock")
+    removed = provision.reset_observatory_data(home)
+    assert any("soju.db" in r for r in removed)
+    assert not (obs / "soju.db").exists()

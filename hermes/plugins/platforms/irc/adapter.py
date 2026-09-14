@@ -612,6 +612,7 @@ class IRCAdapter(BasePlatformAdapter):
         reach gateway dispatch: the RoomManager steers the live child /
         pumps the omp task and the ack goes straight back to the room.
         """
+        text = bang_to_slash(text)
         if chat_type == "group":
             try:
                 from observatory.rooms import get_room_manager, route_channel
@@ -629,7 +630,6 @@ class IRCAdapter(BasePlatformAdapter):
                 logger.debug("IRC: room route failed, falling through", exc_info=True)
         if not self._message_handler:
             return
-
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_id,
@@ -1128,3 +1128,18 @@ def register(ctx):
             "conversational."
         ),
     )
+
+
+#: Goguma intercepts /commands client-side (they never reach the bot),
+#: so !verb aliases /verb for the verbs that matter. Anything else
+#: starting with ! is plain chat (never rewritten).
+BANG_VERBS = frozenset({"spawn", "spawnomp", "exit", "stop", "approve", "deny"})
+
+
+def bang_to_slash(text: str) -> str:
+    """Rewrite a leading !verb to /verb for known verbs only."""
+    if text.startswith("!") and not text.startswith("!!"):
+        verb, _, rest = text[1:].partition(" ")
+        if verb.lower() in BANG_VERBS:
+            return "/" + verb.lower() + (" " + rest if rest.strip() else "")
+    return text

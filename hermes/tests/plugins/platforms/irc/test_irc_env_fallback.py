@@ -26,3 +26,20 @@ def test_is_connected_without_process_env(monkeypatch, tmp_path) -> None:
 
     assert irc_mod.is_connected(PlatformConfig(enabled=True)) is True
     assert irc_mod.check_requirements() is True
+
+
+def test_bang_to_slash_known_verbs_only() -> None:
+    from plugins.platforms.irc.adapter import bang_to_slash
+
+    assert bang_to_slash("!spawn agent") == "/spawn agent"
+    assert bang_to_slash("!SPAWNOMP x") == "/spawnomp x"
+    assert bang_to_slash("!exit") == "/exit"
+    assert bang_to_slash("!stop now") == "/stop now"
+    assert bang_to_slash("!approve") == "/approve"
+    assert bang_to_slash("!deny no") == "/deny no"
+    # Not verbs: untouched chat.
+    assert bang_to_slash("!wow amazing") == "!wow amazing"
+    assert bang_to_slash("hello!") == "hello!"
+    assert bang_to_slash("!!spawn x") == "!!spawn x"
+    assert bang_to_slash("/spawn x") == "/spawn x"
+    assert bang_to_slash("!") == "!"

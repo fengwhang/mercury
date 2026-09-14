@@ -812,12 +812,15 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
 
 
 def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
-    """Delete IRC observatory data (config + history + agent tree). The
-    unit file survives (re-provision rewrites config; restart picks it
-    up). Returns what was removed."""
+    """Delete IRC observatory data (config + history + agent tree + soju
+    backlog). The unit files survive (re-provision rewrites config;
+    callers must restart both daemons — live memory outlives the files).
+    Returns what was removed."""
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
     removed: list[str] = []
+    soju_db = paths.root / "soju.db"
+    soju_admin = paths.root / "soju-admin"
     for target in (
         paths.config_file,
         paths.history_db,
@@ -826,6 +829,8 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
         paths.root / "state.db-shm",
         paths.root / "omp-sessions",
         paths.tls_dir,
+        soju_db,
+        soju_admin,
     ):
         try:
             if target.is_dir() and not target.is_symlink():

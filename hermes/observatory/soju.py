@@ -411,6 +411,16 @@ def provision_soju(
         spaths,
         unit=render_soju_unit(
             soju_bin=bins["soju"], config_path=str(spaths.conf)))
+    if _systemctl_available():
+        # The unit may be dead/wedged while systemd still calls it
+        # active (or a fresh start may still be binding) — sojuctl
+        # below needs the socket, not the unit state. Fail loud here
+        # with the cause instead of cryptic dial errors later.
+        try:
+            _wait_admin_sock(str(spaths.admin_sock))
+        except SojuError:
+            restart_soju()
+            _wait_admin_sock(str(spaths.admin_sock))
     changed = summary["config"]["action"] != "current"
     have = read_irc_passwords(home)
     downstream = bouncer_password or have.get("bouncer") or ""
@@ -432,6 +442,8 @@ def provision_soju(
     if changed and soju_unit_active():
         restart_soju()
         summary["restarted"] = True
+        if _systemctl_available():
+            _wait_admin_sock(str(spaths.admin_sock))
     from observatory.rooms import gateway_channel  # local import: no cycle
 
     summary["lobby"] = ensure_soju_channel(spaths, gateway_channel(server))
