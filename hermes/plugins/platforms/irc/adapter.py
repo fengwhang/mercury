@@ -613,16 +613,15 @@ class IRCAdapter(BasePlatformAdapter):
         pumps the omp task and the ack goes straight back to the room.
         """
         text = bang_to_slash(text)
-        # TEMP-DIAG (v0.0.70): visible inbound milestone — lengths and
-        # routing only, never content. Proves whether room messages reach
-        # the engine when INFO is journal-hidden.
+        # Inbound milestone (routing only, never content): proves room
+        # messages reach the engine when lower levels are hidden.
         try:
             from observatory.rooms import route_channel as _diag_route
 
             _diag = _diag_route(chat_id)[0] if chat_type == "group" else "dm"
         except Exception:
             _diag = "route-error"
-        logger.warning(
+        logger.info(
             "IRC: inbound chat=%s route=%s handler=%s",
             chat_id, _diag, bool(self._message_handler),
         )
