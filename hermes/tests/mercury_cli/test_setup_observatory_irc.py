@@ -533,3 +533,19 @@ def test_wire_gateway_sets_allow_all(monkeypatch):
     assert saved["IRC_ALLOW_ALL_USERS"] == "true"
     assert saved["IRC_CHANNEL"] == "#vm_gateway"
     assert saved["IRC_NICKNAME"] == "vm_gateway"
+
+
+def test_provisioned_flow_ends_with_gateway_restart():
+    """The gateway restarts AFTER the soju/ircd converge (final step)."""
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    fake = _FakeObs(_base_status(provisioned=True))
+    with ExitStack() as stack:
+        _patch_common(stack, fake, choice=0, yes_answers=[True])
+        restart = stack.enter_context(
+            patch.object(setup_mod, "_restart_gateway")
+        )
+        setup_mod.setup_observatory({})
+    assert restart.call_count == 1
+    assert "final step" in restart.call_args[0][0]

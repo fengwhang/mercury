@@ -3990,6 +3990,11 @@ def setup_observatory(config: dict, *, quick: bool = False):
         else:
             print_error(f"Setup finished but the daemon is NOT answering: {detail}")
         _maybe_print_bind_mismatch_action(obs, ts)
+        # Final step: the soju/ircd converge above bounced daemons the
+        # gateway was already connected to, so a gateway restarted
+        # earlier is wedged until it restarts onto the final topology.
+        _restart_gateway(
+            "final step — later setup stages bounced daemons under it")
     else:
         print_info(_OBSERVATORY_GUIDE_LINE)
 
