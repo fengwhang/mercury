@@ -155,6 +155,11 @@ class IdentityPool:
         with self._lock:
             return self._conns.pop(channel.lower(), None)
 
+    def nicks(self) -> set[str]:
+        """Lowered nicks of every tracked identity (never raises)."""
+        with self._lock:
+            return {c.nick.lower() for c in self._conns.values() if c.nick}
+
 
 _pool_lock = threading.Lock()
 _pool: IdentityPool | None = None

@@ -153,3 +153,15 @@ async def test_ensure_identity_end_to_end(tmp_path, monkeypatch) -> None:
         assert await identity_mod.send_as_identity("#vm_e2e", "yo") is True
         assert await identity_mod.drop_identity("#vm_e2e") is True
         assert pool.get("#vm_e2e") is None
+
+
+def test_pool_nicks_lists_tracked_identities() -> None:
+    from types import SimpleNamespace
+
+    pool = identity_mod.IdentityPool()
+    assert pool.nicks() == set()
+    pool.track(SimpleNamespace(channel="#vm_alpha", nick="vm_alpha"))
+    pool.track(SimpleNamespace(channel="#vm_beta", nick="VM_Beta"))
+    assert pool.nicks() == {"vm_alpha", "vm_beta"}
+    pool.drop("#vm_alpha")
+    assert pool.nicks() == {"vm_beta"}

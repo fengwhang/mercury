@@ -561,3 +561,49 @@ class TestIRCSilenceWatchdog:
             await adapter._silence_watchdog()
         assert polls
         assert closed == []
+
+
+class TestIRCAgentEchoGuard:
+    def _adapter(self, monkeypatch):
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from gateway.config import PlatformConfig
+        from plugins.platforms.irc.adapter import IRCAdapter
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
+                   "channel": "#test", "use_tls": False},
+        )
+        adapter = IRCAdapter(cfg)
+        adapter.extra_channels = {"#vm_alpha"}
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_agent_nick_message_dropped(self, monkeypatch):
+        from types import SimpleNamespace
+        from observatory import identity as identity_mod
+
+        adapter = self._adapter(monkeypatch)
+        pool = identity_mod.IdentityPool()
+        pool.track(SimpleNamespace(channel="#vm_alpha", nick="vm_alpha"))
+        monkeypatch.setattr(identity_mod, "_pool", pool)
+        calls = []
+        async def fake_dispatch(**kwargs):
+            calls.append(kwargs)
+        monkeypatch.setattr(adapter, "_dispatch_message", fake_dispatch)
+        await adapter._handle_line(":vm_alpha!relay@mercury PRIVMSG #vm_alpha :my own output")
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_human_message_still_dispatched(self, monkeypatch):
+        from observatory import identity as identity_mod
+
+        adapter = self._adapter(monkeypatch)
+        monkeypatch.setattr(identity_mod, "_pool", identity_mod.IdentityPool())
+        calls = []
+        async def fake_dispatch(**kwargs):
+            calls.append(kwargs)
+        monkeypatch.setattr(adapter, "_dispatch_message", fake_dispatch)
+        await adapter._handle_line(":owner!u@mercury PRIVMSG #test :watchbot: hello")
+        assert len(calls) == 1
+        assert calls[0]["chat_id"] == "#test"

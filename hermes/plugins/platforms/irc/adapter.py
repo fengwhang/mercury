@@ -644,6 +644,16 @@ class IRCAdapter(BasePlatformAdapter):
             # Ignore our own messages
             if sender_nick.lower() == self._current_nick.lower():
                 return
+            try:
+                # Agent identities speaking in their rooms are never user
+                # turns — routing them back would make agents answer
+                # themselves in a loop.
+                from observatory.identity import get_pool
+
+                if sender_nick.lower() in get_pool().nicks():
+                    return
+            except Exception:
+                pass
 
             # CTCP ACTION (/me) — convert to text
             if text.startswith("\x01ACTION ") and text.endswith("\x01"):
