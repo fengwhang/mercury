@@ -4825,6 +4825,32 @@ class TurnRunner:
 
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
+        # Observatory mirror (IRC rooms show their agent's tool calls
+        # live, like CLI verbose): depth-0 rooms have no feed producer of
+        # their own, so tool/thinking frames are submitted here. Sync queue
+        # put only — never blocks the turn, never raises into the loop.
+        try:
+            _ctx0 = self._ctx
+            _src = getattr(_ctx0, "source", None)
+            if getattr(_src, "platform", None) == Platform("irc"):
+                _chat = str(getattr(_src, "chat_id", "") or "")
+                if _chat.startswith("#"):
+                    from observatory import rooms as _obs_rooms
+                    if (event_type == "tool.started" and tool_name
+                            and tool_name != "_thinking"):
+                        _obs_rooms.submit_channel_frame(_chat, {
+                            "feed": "tool", "tool": str(tool_name),
+                            "args": preview if preview else (args or {}),
+                        })
+                    elif ((event_type == "_thinking" or tool_name == "_thinking")
+                            and getattr(_ctx0, "_thinking_enabled", False)):
+                        _txt = preview if tool_name == "_thinking" else tool_name
+                        if _txt:
+                            _obs_rooms.submit_channel_frame(_chat, {
+                                "feed": "thought", "text": str(_txt),
+                            })
+        except Exception:
+            pass
         ctx = self._ctx
         # Failed subagent → one clean user-facing notice. Handled FIRST,
         # before every progress-queue gate: platforms that keep

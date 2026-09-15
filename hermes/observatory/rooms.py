@@ -351,6 +351,22 @@ class RoomManager:
             if channel:
                 await self.publish_frame(channel, item.get("feed"))
         elif op == "lifecycle":
+            if str(item.get("lifecycle") or "") == "stop":
+                drop_child_steer(node_id)
+                channel = self.channel_for_node(node_id)
+                if channel:
+                    await self.publish_lifecycle(
+                        channel,
+                        "stop",
+                        name=str(item.get("name") or node_id),
+                        summary=str(item.get("summary") or ""),
+                        status=str(item.get("status") or ""),
+                    )
+                    await self._retire_child_room(
+                        node_id,
+                        summary=str(item.get("summary") or ""),
+                    )
+                return
             channel = await self._ensure_child_room_for(node_id, item)
             if channel:
                 await self.publish_lifecycle(
@@ -360,8 +376,6 @@ class RoomManager:
                     summary=str(item.get("summary") or ""),
                     status=str(item.get("status") or ""),
                 )
-            if str(item.get("lifecycle") or "") == "stop":
-                drop_child_steer(node_id)
         elif op == "approval":
             channel = self.channel_for_node(node_id)
             if channel:
@@ -401,11 +415,17 @@ class RoomManager:
         channel = self.channel_for_node(node_id)
         if channel:
             return channel
+        try:
+            from observatory.provision import live_server_name
+
+            live = live_server_name(None) or ""
+        except Exception:
+            live = ""
         name = str(item.get("name") or node_id)
         parent = str(item.get("parent_name") or "")
         parent_row = self._resolve_parent(parent)
         parent_name = str((parent_row or {}).get("name") or "gateway")
-        channel = child_channel(parent_name, name)
+        channel = child_channel(parent_name, name, server=live or None)
         try:
             depth = int((parent_row or {}).get("depth", 0)) + 1
         except Exception:
@@ -417,7 +437,7 @@ class RoomManager:
                 engine=str(item.get("engine") or "hermes"),
                 name=name,
                 slug=slug,
-                mxid=agent_nick(name),
+                mxid=agent_nick(name, server=live or None),
                 session_ref=str(item.get("session_ref") or node_id),
                 parent_node_id=str(parent_row.get("node_id"))
                 if parent_row is not None
@@ -433,7 +453,106 @@ class RoomManager:
         await self.ensure_room(
             channel, greet=f"live trace for subagent '{name}' streams here"
         )
+        try:
+            from observatory.soju import subscribe_user_channel
+
+            subscribe_user_channel(channel)
+        except Exception:
+            logger.debug("rooms: phone subscribe failed for %s", channel)
+        try:
+            from observatory.soju import SOJU_USER
+
+            bot = self.bot
+            if bot is not None:
+                await bot.invite_user(SOJU_USER, channel)
+        except Exception:
+            logger.debug("rooms: phone invite failed for %s", channel)
         return channel
+
+    async def _retire_child_room(self, node_id: str, *, summary: str = "") -> None:
+        """Death/purge for a finished delegate child (D8 timing).
+
+        Every stop dead-marks the row. Depth 1 (child of a 0-agent) purges
+        immediately: summary to the parent room, channel destroyed,
+        row deleted, identity dropped — plus any delegate descendants
+        (their parent just died). Depth >= 2 keeps row + room as reading
+        grace until the parent dies. Never raises.
+        """
+        try:
+            row = self.state.get(node_id)
+        except Exception:
+            return
+        depth = row.get("depth", 1)
+        try:
+            depth = int(depth)
+        except Exception:
+            depth = 1
+        try:
+            self.state.mark_dead(node_id)
+        except Exception:
+            pass
+        try:
+            from observatory.state import purge_on_death
+
+            purge = purge_on_death(depth)
+        except Exception:
+            purge = depth == 1
+        if not purge:
+            return
+        parent_channel = ""
+        try:
+            parent_id = str(row.get("parent_node_id") or "")
+            if parent_id:
+                parent_channel = str(
+                    self.state.get(parent_id).get("room_id") or ""
+                )
+        except Exception:
+            parent_channel = ""
+        if summary and parent_channel:
+            try:
+                await self.publish(
+                    parent_channel,
+                    f"subagent '{row.get('name') or node_id}' finished: {summary}",
+                )
+            except Exception:
+                pass
+        await self._purge_child_subtree(node_id)
+
+    async def _purge_child_subtree(self, node_id: str) -> None:
+        """Destroy + delete a dead node and its delegate descendants."""
+        try:
+            row = self.state.get(node_id)
+        except Exception:
+            return
+        channel = str(row.get("room_id") or "")
+        children: list[str] = []
+        try:
+            for r in self.state.get_subtree(node_id):
+                cid = str(r.get("node_id") or "")
+                if cid and cid != node_id:
+                    children.append(cid)
+        except Exception:
+            pass
+        for cid in children:
+            try:
+                await self._purge_child_subtree(cid)
+            except Exception:
+                continue
+        if channel:
+            try:
+                await self.destroy_room(channel)
+            except Exception:
+                pass
+            try:
+                from observatory.identity import drop_identity
+
+                await drop_identity(channel)
+            except Exception:
+                pass
+        try:
+            self.state.mark_deleted_and_purge(node_id)
+        except Exception:
+            pass
 
     async def handle_child_message(self, channel: str, sender: str, text: str) -> str:
         """User message in a delegate-child room → steer the live child."""
@@ -474,23 +593,92 @@ class RoomManager:
             except Exception as exc:
                 return f"steer failed: {exc}"
         entry["busy"] = True
+        seen: set[str] = set()
+        feed: Any = None
+        pump_task: Any = None
         try:
             import asyncio as _asyncio
 
+            feed = await self._start_live_omp_feed(rpc, channel, seen)
+            if feed is not None:
+                pump_task = _asyncio.get_running_loop().create_task(
+                    self._pump_live_omp_feed(feed, channel, seen)
+                )
             result = await _asyncio.to_thread(
                 rpc.run_task, f"[{sender} over IRC] {text}"
             )
         finally:
             entry["busy"] = False
+            if feed is not None:
+                try:
+                    await feed.stop()
+                except Exception:
+                    pass
+            if pump_task is not None:
+                try:
+                    await pump_task
+                except Exception:
+                    pass
         try:
             summary = str((result or {}).get("summary") or "")
             frames = (result or {}).get("turn_frames") or []
             for frame in frames:
+                try:
+                    from observatory.omp_feed import child_frame_key
+
+                    if child_frame_key(frame) in seen:
+                        continue
+                except Exception:
+                    pass
                 await self.publish_frame(channel, frame)
             return summary or "(no output)"
         except Exception as exc:
             logger.debug("rooms: omp reply failed", exc_info=True)
             return f"(reply render failed: {exc})"
+
+    async def _start_live_omp_feed(
+        self, rpc: Any, channel: str, seen: set[str]
+    ) -> Any:
+        """Subscribe an OmpFeed for live thought/tool streaming. None on failure."""
+        try:
+            from observatory.omp_feed import OmpFeed
+
+            feed = OmpFeed(rpc)
+            await feed.start()
+            return feed
+        except Exception:
+            logger.debug("rooms: live omp feed unavailable", exc_info=True)
+            return None
+
+    async def _pump_live_omp_feed(
+        self, feed: Any, channel: str, seen: set[str]
+    ) -> None:
+        """Forward live feed frames into the room as they arrive."""
+        try:
+            from observatory.gateway_session import (
+                _feed_event_to_dict as _to_payload,
+            )
+            from observatory.omp_feed import child_frame_key
+        except Exception:
+            return
+        try:
+            async for typed in feed.events():
+                try:
+                    payload = _to_payload(typed)
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    seen.add(child_frame_key(payload))
+                except Exception:
+                    pass
+                try:
+                    await self.publish_frame(channel, payload)
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
 
 _manager_lock = threading.Lock()
@@ -546,6 +734,25 @@ def submit_feed(node_id: str, feed: dict[str, Any] | Any) -> None:
             else {"feed": "message", "text": str(feed)}
         )
         _QUEUE.put_nowait({"op": "feed", "node_id": node_id, "feed": payload})
+    except Exception:
+        pass
+
+
+def submit_channel_frame(channel: str, feed: dict[str, Any] | Any) -> None:
+    """Sync, never raises: frame into a room by channel (depth-0 mirror).
+
+    Resolves the node from the live tree; unknown channels are dropped
+    (never creates rows — creation belongs to lifecycle/ensure paths).
+    """
+    try:
+        manager = get_room_manager()
+        if manager is None:
+            return
+        row = manager.node_for_channel(channel)
+        node_id = str((row or {}).get("node_id") or "")
+        if not node_id:
+            return
+        submit_feed(node_id, feed)
     except Exception:
         pass
 
