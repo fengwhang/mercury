@@ -69,6 +69,35 @@ check_binary_version() { # $1 = binary path, $2 = label
     echo "    [$LABEL] omp binary version OK ($EXPECTED)"
 }
 
+# Fail-hard gate: the pi-natives .node files embedded by `bun run build`
+# must carry the version sentinel of packages/natives/package.json. A
+# `curl .../latest/download` remediation (or any ad-hoc fetch) drops NEWER
+# binaries into an older tree; the build then embeds them, the loader
+# rejects them at runtime (sentinel mismatch), and every omp child dies
+# (v0.0.80 shipped 18_1_16 binaries with an 18.1.6 loader this way).
+check_natives_sentinel() {
+    local PKGVER SENT EXPECTED f GOT
+    PKGVER="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\(.*\)".*/\1/p' omp/packages/natives/package.json | head -1)"
+    [ -n "$PKGVER" ] || { echo "FATAL: cannot read omp/packages/natives/package.json version" >&2; exit 1; }
+    EXPECTED="__piNativesV$(printf '%s' "$PKGVER" | tr -c 'A-Za-z0-9' '_')"
+    for f in omp/packages/natives/native/*.node; do
+        [ -e "$f" ] || continue
+        if command -v strings >/dev/null 2>&1; then
+            GOT="$(strings "$f" | grep -o -m1 '__piNativesV[A-Za-z0-9_]*' || true)"
+        else
+            GOT="$(grep -a -o -m1 '__piNativesV[A-Za-z0-9_]*' "$f" || true)"
+        fi
+        if [ "$GOT" != "$EXPECTED" ]; then
+            echo "FATAL: natives skew: $f carries sentinel '${GOT:-(none)}' but package.json is $PKGVER (want $EXPECTED)" >&2
+            echo "       Fetch the matching platform binaries (npm pack @oh-my-pi/pi-natives-<tag>@$PKGVER)" >&2
+            echo "       into omp/packages/natives/native/ and rebuild the omp binary." >&2
+            exit 1
+        fi
+    done
+    echo "    natives sentinel OK ($EXPECTED)"
+}
+check_natives_sentinel
+
 build_one() { # $1 = arch suffix (x64|arm64), $2 = source binary path, $3 = label
     local ARCHSUF="$1" SRCBIN="$2" LABEL="$3"
     check_binary_version "$SRCBIN" "$LABEL" # re-gate per arch: no stale binary ships
