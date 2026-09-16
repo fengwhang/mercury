@@ -181,16 +181,15 @@ def _real_state(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_drain_queue_creates_child_room(tmp_path) -> None:
+async def test_direct_ensure_creates_child_room(tmp_path) -> None:
     bot = FakeBot()
     mgr = RoomManager(_real_state(tmp_path), bot)
-    rooms.submit_lifecycle(
-        "deleg-1", "start", name="cow", parent_name="gateway", engine="omp"
-    )
-    rooms.submit_feed(
-        "deleg-1", {"feed": "tool", "tool": "bash", "args": "ls", "subagent_id": ""}
-    )
-    assert await mgr.drain_queue() == 2
+    channel = await mgr._ensure_child_room_for(
+        "deleg-1", {"name": "cow", "parent_name": "gateway", "engine": "omp"})
+    assert channel == "#gateway-cow"
+    await mgr.publish_lifecycle(channel, "start", name="cow")
+    await mgr.publish_frame(
+        channel, {"feed": "tool", "tool": "bash", "args": "ls", "subagent_id": ""})
     assert bot.joined == ["#gateway-cow"]
     texts = [t for _, t in bot.said]
     assert any("started" in t for t in texts)
@@ -204,10 +203,8 @@ async def test_drain_queue_creates_child_room(tmp_path) -> None:
 async def test_handle_child_message_steers(tmp_path) -> None:
     bot = FakeBot()
     mgr = RoomManager(_real_state(tmp_path), bot)
-    rooms.submit_lifecycle(
-        "deleg-9", "start", name="kid", parent_name="gateway", engine="hermes"
-    )
-    assert await mgr.drain_queue() == 1
+    await mgr._ensure_child_room_for(
+        "deleg-9", {"name": "kid", "parent_name": "gateway", "engine": "hermes"})
     assert "finished" in await mgr.handle_child_message(
         "#gateway-kid", "op", "stop that"
     )
@@ -221,8 +218,9 @@ async def test_handle_child_message_steers(tmp_path) -> None:
         assert seen == ["stop that"]
     finally:
         rooms.drop_child_steer("deleg-9")
-    rooms.submit_lifecycle("deleg-9", "stop", name="kid", summary="done")
-    assert await mgr.drain_queue() == 1
+    await mgr.publish_lifecycle("#gateway-kid", "stop", name="kid",
+                                  summary="done")
+    await mgr._retire_child_room("deleg-9", summary="done")
     assert "finished" in (
         await mgr.handle_child_message("#gateway-kid", "op", "again")
     ).lower() or "history" in await mgr.handle_child_message(

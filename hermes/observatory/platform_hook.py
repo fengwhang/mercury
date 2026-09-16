@@ -261,10 +261,6 @@ async def boot_resync(
             except Exception:
                 continue
         try:
-            report["pumped"] = await manager.drain_queue()
-        except Exception:
-            pass
-        try:
             # Lobby self-heal: restarts/upgrades must never leave the
             # phone without its gateway room (no setup run required).
             from observatory.provision import live_server_name
@@ -290,12 +286,6 @@ async def boot_resync(
             report["deferred_purges"] = deferred
         except Exception as exc:
             report["failed"].append(f"journal replay: {exc}")
-        try:
-            from observatory import rooms as _rooms
-
-            await _rooms.start_pump(manager)
-        except Exception:
-            pass
     except Exception as exc:  # noqa: BLE001 — resync never breaks the gateway
         report["failed"].append(str(exc))
     return report

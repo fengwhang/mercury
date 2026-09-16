@@ -894,6 +894,15 @@ async def exit_orchestrator(
         deferred = ["no bot sink attached (IRC down?)"]
     if not deferred:
         finish_exit(state, record)
+        # Phones never learn an unsubscribe live — restart the bouncer
+        # so they resync without the archived room. Best-effort.
+        try:
+            from observatory.soju import restart_soju, soju_unit_active
+
+            if record.channels and soju_unit_active():
+                restart_soju()
+        except Exception as exc:
+            logger.warning("exit: soju restart failed (%s)", exc)
     return {"record": record, "records": records, "deferred": deferred}
 
 

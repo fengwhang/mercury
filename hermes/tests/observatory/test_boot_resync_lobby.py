@@ -34,8 +34,6 @@ async def test_resync_subscribes_lobby(monkeypatch) -> None:
 
     monkeypatch.setattr(rooms_mod, "get_bot_sink", lambda: FakeBot())
     monkeypatch.setattr(
-        rooms_mod, "start_pump", lambda manager: __import__("asyncio").sleep(0))
-    monkeypatch.setattr(
         spawn_mod, "replay_purge_journal", lambda state: [])
     monkeypatch.setattr(
         provision_mod, "live_server_name", lambda home=None: "vm")

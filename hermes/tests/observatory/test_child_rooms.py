@@ -66,7 +66,7 @@ async def test_ensure_creates_prefixed_visible_room(tmp_path, monkeypatch) -> No
     assert channel == "#vm_alpha-bravo"
     row = state.get("d1")
     assert row["depth"] == 1
-    assert row["mxid"] == "vm_bravo"
+    assert row["mxid"] == "vm_alpha-bravo"
     assert "#vm_alpha-bravo" in bot.joined
     assert subscribed == ["#vm_alpha-bravo"]
     assert ("owner", "#vm_alpha-bravo") in bot.invited
@@ -78,8 +78,8 @@ async def test_stop_purges_depth1_room(tmp_path, monkeypatch) -> None:
     _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
     await mgr._ensure_child_room_for(
         "d1", {"name": "bravo", "parent_name": "alpha-node", "engine": "omp"})
-    await mgr._apply_queued(
-        {"op": "lifecycle", "node_id": "d1", "lifecycle": "stop", "name": "bravo"})
+    await mgr.publish_lifecycle("#vm_alpha-bravo", "stop", name="bravo")
+    await mgr._retire_child_room("d1")
     assert "#vm_alpha-bravo" in bot.destroyed
     with pytest.raises(Exception):
         state.get("d1")
@@ -96,45 +96,42 @@ async def test_stop_keeps_depth2_room_as_grace(tmp_path, monkeypatch) -> None:
     await mgr._ensure_child_room_for(
         "d2", {"name": "cee", "parent_name": "d1", "engine": "omp"})
     assert state.get("d2")["depth"] == 2
-    await mgr._apply_queued(
-        {"op": "lifecycle", "node_id": "d2", "lifecycle": "stop", "name": "cee"})
+    await mgr._retire_child_room("d2")
     assert state.get("d2")["status"] == "dead"
-    assert "#vm_bravo-cee" not in bot.destroyed
+    assert "#vm_alpha-bravo-cee" not in bot.destroyed
     # Parent purge cascades to the dead grandchild.
-    await mgr._apply_queued(
-        {"op": "lifecycle", "node_id": "d1", "lifecycle": "stop", "name": "bravo"})
+    await mgr._retire_child_room("d1")
     with pytest.raises(Exception):
         state.get("d2")
-    assert "#vm_bravo-cee" in bot.destroyed
+    assert "#vm_alpha-bravo-cee" in bot.destroyed
 
 
 @pytest.mark.asyncio
 async def test_stop_unknown_node_resurrects_nothing(tmp_path, monkeypatch) -> None:
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
-    await mgr._apply_queued(
-        {"op": "lifecycle", "node_id": "ghost",
-         "lifecycle": "stop", "name": "ghost"})
+    await mgr._retire_child_room("ghost")
     assert bot.joined == []
     assert bot.said == []
 
 
 @pytest.mark.asyncio
-async def test_submit_channel_payload_publishes_direct(
+@pytest.mark.asyncio
+async def test_say_nowait_sends_without_rows_or_manager(
     tmp_path, monkeypatch
 ) -> None:
-    """Live mirror needs no node row and no global manager."""
+    """Thread-safe direct send needs no node row and no manager."""
+    import asyncio as _asyncio
+
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
-    rooms_mod._QUEUE.queue.clear()
+    rooms_mod.set_bot_sink(bot)
+    rooms_mod.set_event_loop(_asyncio.get_running_loop())
     try:
-        rooms_mod.submit_channel_payload(
-            "#vm_gateway",
-            {"feed": "tool", "tool": "delegate_task", "args": "a"})
-        assert rooms_mod._QUEUE.qsize() == 1
-        assert await mgr.drain_queue() == 1
+        assert rooms_mod.say_nowait("#vm_gateway", "hello") is True
+        await _asyncio.sleep(0.2)
     finally:
-        rooms_mod._QUEUE.queue.clear()
-    tools = [text for ch, text in bot.said if ch == "#vm_gateway"]
-    assert any("delegate_task" in text for text in tools)
+        rooms_mod.set_bot_sink(None)
+        rooms_mod.set_event_loop(None)
+    assert ("#vm_gateway", "hello") in bot.said
 
 
 class _FakeRpc:
@@ -246,3 +243,74 @@ def test_omp_room_skip_predicate() -> None:
     assert skip({"feed": "thought", "text": "hmm"}) is False
     assert skip("nonsense") is False
     assert skip(None) is False
+
+
+@pytest.mark.asyncio
+async def test_routed_frame_creates_grandchild_room(tmp_path, monkeypatch) -> None:
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
+    await mgr._ensure_child_room_for(
+        "d1", {"name": "bravo", "parent_name": "alpha-node", "engine": "omp"})
+    grands: dict[str, str] = {}
+    await mgr._publish_routed_frame("d1", "#vm_alpha-bravo", {
+        "feed": "tool", "subagent_id": "s9", "tool": "bash", "args": "ls",
+    }, grands)
+    assert "#vm_alpha-bravo-sub-s9" in bot.joined
+    tools = [text for ch, text in bot.said if ch == "#vm_alpha-bravo-sub-s9"]
+    assert any("bash" in text for text in tools)
+    assert not any("[s9]" in text for text in tools)
+
+
+@pytest.mark.asyncio
+async def test_grandchild_add_death_lifecycle(tmp_path, monkeypatch) -> None:
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
+    await mgr._ensure_child_room_for(
+        "d1", {"name": "bravo", "parent_name": "alpha-node", "engine": "omp"})
+    grands: dict[str, str] = {}
+    await mgr._publish_routed_frame("d1", "#vm_alpha-bravo", {
+        "feed": "node", "kind": "add", "subagent_id": "c1",
+        "agent": "charlie", "status": "running",
+    }, grands)
+    assert "#vm_alpha-bravo-charlie" in bot.joined
+    assert state.get("d1/sub-c1")["depth"] == 2
+    await mgr._publish_routed_frame("d1", "#vm_alpha-bravo", {
+        "feed": "node", "kind": "death", "subagent_id": "c1",
+        "agent": "charlie", "status": "completed",
+    }, grands)
+    # Rule 4: a 2-agent's room survives its own completion...
+    assert "#vm_alpha-bravo-charlie" not in bot.destroyed
+    assert state.get("d1/sub-c1")["status"] == "dead"
+    # ...and dies with its parent.
+    await mgr._retire_child_room("d1")
+    assert "#vm_alpha-bravo-charlie" in bot.destroyed
+    with pytest.raises(Exception):
+        state.get("d1/sub-c1")
+
+
+@pytest.mark.asyncio
+async def test_omp_root_grandchild_purges_on_death(tmp_path, monkeypatch) -> None:
+    """Same rules under an omp-0 root: its child is depth 1."""
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    state.add_node(
+        "bravo-node", engine="omp", name="bravo", slug="bravo",
+        mxid="vm_bravo", session_ref="bravo-node",
+        parent_node_id=None, extra={"kind": "spawn"})
+    state.set_room_id("bravo-node", "#vm_bravo")
+    grands: dict[str, str] = {}
+    await mgr._publish_routed_frame("bravo-node", "#vm_bravo", {
+        "feed": "node", "kind": "add", "subagent_id": "c9",
+        "agent": "zed", "status": "running",
+    }, grands)
+    assert "#vm_bravo-zed" in bot.joined
+    await mgr._publish_routed_frame("bravo-node", "#vm_bravo", {
+        "feed": "tool", "subagent_id": "c9", "tool": "read", "args": "f",
+    }, grands)
+    assert any("read" in text for ch, text in bot.said if ch == "#vm_bravo-zed")
+    await mgr._publish_routed_frame("bravo-node", "#vm_bravo", {
+        "feed": "node", "kind": "death", "subagent_id": "c9",
+        "agent": "zed", "status": "completed",
+    }, grands)
+    assert "#vm_bravo-zed" in bot.destroyed
+    with pytest.raises(Exception):
+        state.get("bravo-node/sub-c9")

@@ -292,8 +292,14 @@ class IRCAdapter(BasePlatformAdapter):
                 logger.debug("IRC: OPER failed", exc_info=True)
 
         try:
-            from observatory.rooms import set_bot_sink
+            from observatory.rooms import set_bot_sink, set_event_loop
             set_bot_sink(self)
+            try:
+                import asyncio as _asyncio
+
+                set_event_loop(_asyncio.get_running_loop())
+            except Exception:
+                pass
             # Post-connect resync: join live state channels, drain the
             # frame queue, replay the exit journal, resume omp handles.
             # Fire-and-forget (idempotent, never breaks connect).

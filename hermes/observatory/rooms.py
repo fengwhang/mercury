@@ -63,6 +63,69 @@ class BotSink(Protocol):
 _sink_lock = threading.Lock()
 _current_sink: BotSink | None = None
 
+_loop_lock = threading.Lock()
+_gateway_loop = None
+
+
+def set_event_loop(loop) -> None:
+    """Stash the gateway event loop for thread-safe sends.
+
+    Called at adapter connect (the loop that owns the transport).
+    Worker threads (delegation engine, feed watcher) publish through
+    ``say_nowait``/``call_soon`` below, which hop onto this loop —
+    never touching asyncio objects cross-thread.
+    """
+    global _gateway_loop
+    with _loop_lock:
+        _gateway_loop = loop
+
+
+def _loop_now():
+    with _loop_lock:
+        return _gateway_loop
+
+
+def say_nowait(channel: str, text: str) -> bool:
+    """Fire-and-forget one line into a room from any thread.
+
+    True when handed to the gateway loop; False when no loop or sink
+    (caller keeps nothing — live trace only, never retried).
+    Never raises.
+    """
+    try:
+        text = str(text or "")
+        channel = str(channel or "")
+        if not text or not channel:
+            return False
+        bot = get_bot_sink()
+        loop = _loop_now()
+        if bot is None or loop is None:
+            return False
+        import asyncio as _asyncio
+
+        _asyncio.run_coroutine_threadsafe(bot.say(channel, text), loop)
+        return True
+    except Exception:
+        return False
+
+
+def call_soon(coro):
+    """Schedule a bot coroutine on the gateway loop from any thread.
+
+    Returns the concurrent Future, or None when unschedulable.
+    Never raises.
+    """
+    try:
+        bot = get_bot_sink()
+        loop = _loop_now()
+        if bot is None or loop is None or coro is None:
+            return None
+        import asyncio as _asyncio
+
+        return _asyncio.run_coroutine_threadsafe(coro, loop)
+    except Exception:
+        return None
+
 
 def set_bot_sink(sink: BotSink | None) -> None:
     """Register the live IRC transport (adapter on connect; None on drop)."""
@@ -319,77 +382,6 @@ class RoomManager:
             logger.debug("rooms: destroy %s failed", channel, exc_info=True)
             return False
 
-    # -- queue pump ----------------------------------------------------
-
-    async def drain_queue(self) -> int:
-        """Publish every queued lifecycle/feed/approval frame. Returns count.
-
-        When the bot is down the queue is LEFT INTACT (returns 0) — frames
-        wait for the next pump after reconnect instead of being dropped.
-        """
-        if self.bot is None:
-            return 0
-        count = 0
-        while True:
-            try:
-                item = _QUEUE.get_nowait()
-            except Exception:
-                return count
-            count += 1
-            try:
-                await self._apply_queued(item)
-            except Exception:
-                logger.debug("rooms: queued item failed", exc_info=True)
-
-    async def _apply_queued(self, item: dict[str, Any]) -> None:
-        op = str(item.get("op") or "")
-        node_id = str(item.get("node_id") or "")
-        if op == "feed":
-            channel = self.channel_for_node(
-                node_id
-            ) or await self._ensure_child_room_for(node_id, item)
-            if channel:
-                await self.publish_frame(channel, item.get("feed"))
-        elif op == "lifecycle":
-            if str(item.get("lifecycle") or "") == "stop":
-                drop_child_steer(node_id)
-                channel = self.channel_for_node(node_id)
-                if channel:
-                    await self.publish_lifecycle(
-                        channel,
-                        "stop",
-                        name=str(item.get("name") or node_id),
-                        summary=str(item.get("summary") or ""),
-                        status=str(item.get("status") or ""),
-                    )
-                    await self._retire_child_room(
-                        node_id,
-                        summary=str(item.get("summary") or ""),
-                    )
-                return
-            channel = await self._ensure_child_room_for(node_id, item)
-            if channel:
-                await self.publish_lifecycle(
-                    channel,
-                    str(item.get("lifecycle") or ""),
-                    name=str(item.get("name") or node_id),
-                    summary=str(item.get("summary") or ""),
-                    status=str(item.get("status") or ""),
-                )
-        elif op == "channelfeed":
-            channel = str(item.get("channel") or "")
-            if channel:
-                await self.publish_frame(channel, item.get("feed"))
-        elif op == "approval":
-            channel = self.channel_for_node(node_id)
-            if channel:
-                await self.publish(
-                    channel,
-                    f"🔒 approval requested: `{item.get('command', '')}`"
-                    f" — {item.get('description', '')} "
-                    f"(reply /approve or /deny in the parent room)",
-                )
-
     def _resolve_parent(self, parent: str) -> dict[str, Any] | None:
         """Parent ref → live row: node id, session_ref, then gateway
         session-key channel scan (group keys embed ``#channel``)."""
@@ -429,7 +421,11 @@ class RoomManager:
         parent = str(item.get("parent_name") or "")
         parent_row = self._resolve_parent(parent)
         parent_name = str((parent_row or {}).get("name") or "gateway")
-        channel = child_channel(parent_name, name, server=live or None)
+        parent_channel = str((parent_row or {}).get("room_id") or "").lstrip("#")
+        if parent_channel:
+            channel = clean_channel(f"{parent_channel}-{name}")
+        else:
+            channel = child_channel(parent_name, name, server=live or None)
         try:
             depth = int((parent_row or {}).get("depth", 0)) + 1
         except Exception:
@@ -441,12 +437,14 @@ class RoomManager:
                 engine=str(item.get("engine") or "hermes"),
                 name=name,
                 slug=slug,
-                mxid=agent_nick(name, server=live or None),
+                mxid=agent_nick(channel.lstrip("#"), server=""),
                 session_ref=str(item.get("session_ref") or node_id),
                 parent_node_id=str(parent_row.get("node_id"))
                 if parent_row is not None
                 else None,
-                extra={"kind": "delegate"},
+                extra={"kind": "delegate", **(
+                    {"subagent_id": str(item.get("subagent_id") or "")}
+                    if str(item.get("subagent_id") or "") else {})},
             )
             try:
                 self.state.set_room_id(node_id, channel)
@@ -548,6 +546,12 @@ class RoomManager:
             except Exception:
                 pass
             try:
+                from observatory.soju import unsubscribe_user_channel
+
+                unsubscribe_user_channel(channel)
+            except Exception:
+                pass
+            try:
                 from observatory.identity import drop_identity
 
                 await drop_identity(channel)
@@ -601,7 +605,7 @@ class RoomManager:
             import asyncio as _asyncio
 
             _asyncio.get_running_loop().create_task(
-                self._run_spawned_omp_task(channel, sender, text, rpc),
+                self._run_spawned_omp_task(channel, node_id, sender, text, rpc),
                 name=f"observatory-omp-room-{node_id}",
             )
         except Exception:
@@ -612,7 +616,7 @@ class RoomManager:
         return ""
 
     async def _run_spawned_omp_task(
-        self, channel: str, sender: str, text: str, rpc: Any
+        self, channel: str, node_id: str, sender: str, text: str, rpc: Any
     ) -> None:
         """Background body of one spawned-omp turn: live trace, then answer.
 
@@ -630,7 +634,7 @@ class RoomManager:
             feed = await self._start_live_omp_feed(rpc, channel, seen)
             if feed is not None:
                 pump_task = _asyncio.get_running_loop().create_task(
-                    self._pump_live_omp_feed(feed, channel, seen)
+                    self._pump_live_omp_feed(feed, node_id, channel, {}, seen)
                 )
             result = await _asyncio.to_thread(
                 rpc.run_task, f"[{sender} over IRC] {text}"
@@ -699,9 +703,10 @@ class RoomManager:
             return None
 
     async def _pump_live_omp_feed(
-        self, feed: Any, channel: str, seen: set[str]
+        self, feed: Any, node_id: str, channel: str,
+        grands: dict[str, str], seen: set[str],
     ) -> None:
-        """Forward live feed frames into the room as they arrive."""
+        """Forward live feed frames, routing N>1 into their own rooms."""
         try:
             from observatory.gateway_session import (
                 _feed_event_to_dict as _to_payload,
@@ -724,68 +729,106 @@ class RoomManager:
                 except Exception:
                     pass
                 try:
-                    await self.publish_frame(channel, payload)
+                    await self._publish_routed_frame(
+                        node_id, channel, payload, grands)
                 except Exception:
                     continue
+        except Exception:
+            pass
+
+    async def _publish_routed_frame(
+        self, owner_id: str, channel: str, feed: dict[str, Any],
+        grands: dict[str, str],
+    ) -> None:
+        """One feed frame into the owner's room or its own N>1 room."""
+        try:
+            sub = str(feed.get("subagent_id") or "")
+            kind = str(feed.get("kind") or "")
+            if str(feed.get("feed") or "") == "node":
+                await self._apply_grandchild_node(owner_id, feed, grands)
+                return
+            if not sub:
+                await self.publish_frame(channel, feed)
+                return
+            target = grands.get(sub)
+            if not target:
+                node_id = f"{owner_id}/sub-{sub}"
+                try:
+                    target = self.channel_for_node(node_id)
+                except Exception:
+                    target = ""
+            if not target:
+                node_id = f"{owner_id}/sub-{sub}"
+                name = (str(feed.get("agent") or "").strip()
+                        or str(feed.get("task") or "").strip()
+                        or f"sub-{sub[:8]}")
+                target = await self._ensure_child_room_for(node_id, {
+                    "name": name,
+                    "parent_name": owner_id,
+                    "engine": "omp",
+                    "subagent_id": sub,
+                    "session_ref": str(feed.get("session_file") or node_id),
+                })
+                if target:
+                    grands[sub] = target
+            if target:
+                flat = dict(feed)
+                flat["subagent_id"] = ""
+                await self.publish_frame(target, flat)
+        except Exception:
+            pass
+
+    async def _apply_grandchild_node(
+        self, owner_id: str, feed: dict[str, Any], grands: dict[str, str],
+    ) -> None:
+        """Node add/death frame → create or retire the grandchild room."""
+        try:
+            sid = str(feed.get("subagent_id") or "")
+            if not sid:
+                return
+            kind = str(feed.get("kind") or "")
+            flat = dict(feed)
+            flat["subagent_id"] = ""
+            if kind == "add":
+                target = grands.get(sid)
+                if not target:
+                    node_id = f"{owner_id}/sub-{sid}"
+                    name = (str(feed.get("agent") or "").strip()
+                            or str(feed.get("task") or "").strip()
+                            or f"sub-{sid[:8]}")
+                    target = await self._ensure_child_room_for(node_id, {
+                        "name": name,
+                        "parent_name": owner_id,
+                        "engine": "omp",
+                        "subagent_id": sid,
+                        "session_ref": str(
+                            feed.get("session_file") or node_id),
+                    })
+                    if target:
+                        grands[sid] = target
+                if target:
+                    line = format_frame(flat)
+                    if line:
+                        await self.publish(target, line)
+            elif kind == "death":
+                node_id = f"{owner_id}/sub-{sid}"
+                channel = ""
+                try:
+                    channel = self.channel_for_node(node_id)
+                except Exception:
+                    pass
+                if channel:
+                    line = format_frame(flat)
+                    if line:
+                        await self.publish(channel, line)
+                grands.pop(sid, None)
+                await self._retire_child_room(node_id)
         except Exception:
             pass
 
 
 _manager_lock = threading.Lock()
 _current_manager: "RoomManager | None" = None
-
-
-def set_room_manager(manager: "RoomManager | None") -> None:
-    """Register the gateway-process room manager (platform_hook boot)."""
-    global _current_manager
-    with _manager_lock:
-        _current_manager = manager
-
-
-def get_room_manager() -> "RoomManager | None":
-    with _manager_lock:
-        return _current_manager
-
-
-def route_channel(channel: str) -> tuple[str, dict[str, Any] | None]:
-    """Adapter inbound hook: classify without importing state here."""
-    manager = get_room_manager()
-    if manager is None:
-        return "passthrough", None
-    try:
-        return manager.inbound_route(channel)
-    except Exception:
-        return "passthrough", None
-
-
-# --- producer queue (sync fire-and-forget → async pump) --------------------
-_QUEUE: "queue.Queue[dict[str, Any]]" = __import__("queue").Queue()
-
-
-def submit_lifecycle(node_id: str, lifecycle: str, **fields: Any) -> None:
-    """Sync, never raises: enqueue a child lifecycle frame for the pump."""
-    try:
-        _QUEUE.put_nowait({
-            "op": "lifecycle",
-            "node_id": node_id,
-            "lifecycle": lifecycle,
-            **fields,
-        })
-    except Exception:
-        pass
-
-
-def submit_feed(node_id: str, feed: dict[str, Any] | Any) -> None:
-    """Sync, never raises: enqueue one child feed frame for the pump."""
-    try:
-        payload = (
-            dict(feed)
-            if isinstance(feed, dict)
-            else {"feed": "message", "text": str(feed)}
-        )
-        _QUEUE.put_nowait({"op": "feed", "node_id": node_id, "feed": payload})
-    except Exception:
-        pass
 
 
 def _omp_room_skips_frame(payload: Any) -> bool:
@@ -804,36 +847,6 @@ def _omp_room_skips_frame(payload: Any) -> bool:
         return str(payload.get("role") or "") in ("user", "assistant")
     except Exception:
         return False
-
-
-def submit_channel_payload(channel: str, feed: dict[str, Any] | Any) -> None:
-    """Sync, never raises: frame into a room by channel (live mirror).
-
-    Needs no node row and no global manager — the pump publishes to the
-    channel directly. Never creates rows; creation belongs to the
-    lifecycle/ensure paths.
-    """
-    try:
-        chan = str(channel or "")
-        if not chan:
-            return
-        payload = (
-            dict(feed)
-            if isinstance(feed, dict)
-            else {"feed": "message", "text": str(feed)}
-        )
-        _QUEUE.put_nowait({"op": "channelfeed", "channel": chan, "feed": payload})
-    except Exception:
-        pass
-
-
-def submit_approval(node_id: str, **fields: Any) -> None:
-    """Sync, never raises: enqueue an approval prompt for the pump."""
-    try:
-        _QUEUE.put_nowait({"op": "approval", "node_id": node_id, **fields})
-    except Exception:
-        pass
-
 
 # --- child steer registry --------------------------------------------------
 _steer_lock = threading.Lock()
@@ -866,38 +879,57 @@ def drop_omp_room(node_id: str) -> None:
         _omp_rooms.pop(node_id, None)
 
 
-_pump_task = None
+def channel_for_node_id(node_id: str) -> str:
+    """Best-effort channel for a node, callable from any thread.
 
-
-async def pump_forever(manager: "RoomManager", interval: float = 2.0) -> None:
-    """Drain the producer queue forever (cancellation stops it)."""
-    import asyncio as _asyncio
-
-    while True:
-        try:
-            await manager.drain_queue()
-        except Exception:
-            logger.debug("rooms: pump drain failed", exc_info=True)
-        try:
-            await _asyncio.sleep(max(0.5, float(interval)))
-        except _asyncio.CancelledError:
-            raise
-        except Exception:
-            return
-
-
-async def start_pump(manager: "RoomManager", interval: float = 2.0) -> bool:
-    """Start the shared pump task once; True when (now) running."""
-    import asyncio as _asyncio
-
-    global _pump_task
+    Prefers the live manager; else opens a throwaway state handle.
+    Never raises.
+    """
     try:
-        if _pump_task is not None and not _pump_task.done():
-            return True
-        _pump_task = _asyncio.get_running_loop().create_task(
-            pump_forever(manager, interval)
-        )
-        return True
+        manager = get_room_manager()
+        if manager is not None:
+            channel = manager.channel_for_node(node_id)
+            if channel:
+                return channel
     except Exception:
-        logger.debug("rooms: pump start failed", exc_info=True)
-        return False
+        pass
+    try:
+        from observatory.provision import _mercury_home
+        from observatory.state import ObservatoryState, default_state_db_path
+
+        state = ObservatoryState(default_state_db_path(_mercury_home(None)))
+        try:
+            return str(state.get(node_id).get("room_id") or "")
+        finally:
+            try:
+                state.close()
+            except Exception:
+                pass
+    except Exception:
+        return ""
+
+
+def set_room_manager(manager: "RoomManager | None") -> None:
+    """Register the gateway-process room manager (platform_hook boot)."""
+    global _current_manager
+    with _manager_lock:
+        _current_manager = manager
+
+
+def get_room_manager() -> "RoomManager | None":
+    with _manager_lock:
+        return _current_manager
+
+
+def route_channel(channel: str) -> tuple[str, dict[str, Any] | None]:
+    """Adapter inbound hook: classify without importing state here."""
+    manager = get_room_manager()
+    if manager is None:
+        return "passthrough", None
+    try:
+        return manager.inbound_route(channel)
+    except Exception:
+        return "passthrough", None
+
+
+# --- producer queue (sync fire-and-forget → async pump) --------------------
