@@ -376,6 +376,10 @@ class RoomManager:
                     summary=str(item.get("summary") or ""),
                     status=str(item.get("status") or ""),
                 )
+        elif op == "channelfeed":
+            channel = str(item.get("channel") or "")
+            if channel:
+                await self.publish_frame(channel, item.get("feed"))
         elif op == "approval":
             channel = self.channel_for_node(node_id)
             if channel:
@@ -760,21 +764,23 @@ def _omp_room_skips_frame(payload: Any) -> bool:
         return False
 
 
-def submit_channel_frame(channel: str, feed: dict[str, Any] | Any) -> None:
-    """Sync, never raises: frame into a room by channel (depth-0 mirror).
+def submit_channel_payload(channel: str, feed: dict[str, Any] | Any) -> None:
+    """Sync, never raises: frame into a room by channel (live mirror).
 
-    Resolves the node from the live tree; unknown channels are dropped
-    (never creates rows — creation belongs to lifecycle/ensure paths).
+    Needs no node row and no global manager — the pump publishes to the
+    channel directly. Never creates rows; creation belongs to the
+    lifecycle/ensure paths.
     """
     try:
-        manager = get_room_manager()
-        if manager is None:
+        chan = str(channel or "")
+        if not chan:
             return
-        row = manager.node_for_channel(channel)
-        node_id = str((row or {}).get("node_id") or "")
-        if not node_id:
-            return
-        submit_feed(node_id, feed)
+        payload = (
+            dict(feed)
+            if isinstance(feed, dict)
+            else {"feed": "message", "text": str(feed)}
+        )
+        _QUEUE.put_nowait({"op": "channelfeed", "channel": chan, "feed": payload})
     except Exception:
         pass
 

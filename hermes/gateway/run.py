@@ -4838,7 +4838,7 @@ class TurnRunner:
                     from observatory import rooms as _obs_rooms
                     if (event_type == "tool.started" and tool_name
                             and tool_name != "_thinking"):
-                        _obs_rooms.submit_channel_frame(_chat, {
+                        _obs_rooms.submit_channel_payload(_chat, {
                             "feed": "tool", "tool": str(tool_name),
                             "args": preview if preview else (args or {}),
                         })
@@ -4846,7 +4846,7 @@ class TurnRunner:
                             and getattr(_ctx0, "_thinking_enabled", False)):
                         _txt = preview if tool_name == "_thinking" else tool_name
                         if _txt:
-                            _obs_rooms.submit_channel_frame(_chat, {
+                            _obs_rooms.submit_channel_payload(_chat, {
                                 "feed": "thought", "text": str(_txt),
                             })
         except Exception:

@@ -118,20 +118,23 @@ async def test_stop_unknown_node_resurrects_nothing(tmp_path, monkeypatch) -> No
     assert bot.said == []
 
 
-def test_submit_channel_frame_needs_live_row(tmp_path, monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_submit_channel_payload_publishes_direct(
+    tmp_path, monkeypatch
+) -> None:
+    """Live mirror needs no node row and no global manager."""
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
-    rooms_mod.set_room_manager(mgr)
+    rooms_mod._QUEUE.queue.clear()
     try:
-        rooms_mod._QUEUE.queue.clear()
-        rooms_mod.submit_channel_frame("#vm_nowhere", {"feed": "tool", "tool": "x"})
-        assert rooms_mod._QUEUE.qsize() == 0
-        _spawn_row(state, "gw", "gateway", "#vm_gateway")
-        rooms_mod.submit_channel_frame(
-            "#vm_gateway", {"feed": "tool", "tool": "delegate_task", "args": "a"})
+        rooms_mod.submit_channel_payload(
+            "#vm_gateway",
+            {"feed": "tool", "tool": "delegate_task", "args": "a"})
         assert rooms_mod._QUEUE.qsize() == 1
+        assert await mgr.drain_queue() == 1
     finally:
         rooms_mod._QUEUE.queue.clear()
-        rooms_mod.set_room_manager(None)
+    tools = [text for ch, text in bot.said if ch == "#vm_gateway"]
+    assert any("delegate_task" in text for text in tools)
 
 
 class _FakeRpc:
