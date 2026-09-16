@@ -66,7 +66,7 @@ async def test_ensure_creates_prefixed_visible_room(tmp_path, monkeypatch) -> No
     assert channel == "#vm_alpha-bravo"
     row = state.get("d1")
     assert row["depth"] == 1
-    assert row["mxid"] == "vm_bravo"
+    assert row["mxid"] == "vm_alpha-bravo"
     assert "#vm_alpha-bravo" in bot.joined
     assert subscribed == ["#vm_alpha-bravo"]
     assert ("owner", "#vm_alpha-bravo") in bot.invited
@@ -99,13 +99,13 @@ async def test_stop_keeps_depth2_room_as_grace(tmp_path, monkeypatch) -> None:
     await mgr._apply_queued(
         {"op": "lifecycle", "node_id": "d2", "lifecycle": "stop", "name": "cee"})
     assert state.get("d2")["status"] == "dead"
-    assert "#vm_bravo-cee" not in bot.destroyed
+    assert "#vm_alpha-bravo-cee" not in bot.destroyed
     # Parent purge cascades to the dead grandchild.
     await mgr._apply_queued(
         {"op": "lifecycle", "node_id": "d1", "lifecycle": "stop", "name": "bravo"})
     with pytest.raises(Exception):
         state.get("d2")
-    assert "#vm_bravo-cee" in bot.destroyed
+    assert "#vm_alpha-bravo-cee" in bot.destroyed
 
 
 @pytest.mark.asyncio
@@ -194,6 +194,8 @@ async def test_omp_room_streams_live_then_replays_surplus(
         async with _asyncio.timeout(5):
             while rooms_mod._omp_rooms["bravo-node"]["busy"]:
                 await _asyncio.sleep(0.02)
+        # Live frames queue through the pump like watcher children.
+        assert await mgr.drain_queue() >= 1
     finally:
         rooms_mod._omp_rooms.pop("bravo-node", None)
         _FakeFeed.live_payloads = []
@@ -246,3 +248,99 @@ def test_omp_room_skip_predicate() -> None:
     assert skip({"feed": "thought", "text": "hmm"}) is False
     assert skip("nonsense") is False
     assert skip(None) is False
+
+
+@pytest.mark.asyncio
+async def test_grandchild_tool_frame_gets_own_room(tmp_path, monkeypatch) -> None:
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
+    await mgr._ensure_child_room_for(
+        "d1", {"name": "bravo", "parent_name": "alpha-node", "engine": "omp"})
+    await mgr._apply_queued({
+        "op": "feed", "node_id": "d1",
+        "feed": {"feed": "tool", "subagent_id": "s9",
+                 "tool": "bash", "args": "ls"}})
+    assert "#vm_alpha-bravo" in bot.joined
+    assert "#vm_alpha-bravo-charlie" not in bot.joined
+    # Name arrives with the add frame; tool-first falls back to sub-id.
+    assert "#vm_alpha-bravo-sub-s9" in bot.joined
+    tools = [text for ch, text in bot.said if ch == "#vm_alpha-bravo-sub-s9"]
+    assert any("bash" in text for text in tools)
+    assert not any("[s9]" in text for text in tools)
+
+
+@pytest.mark.asyncio
+async def test_grandchild_add_then_death(tmp_path, monkeypatch) -> None:
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
+    await mgr._ensure_child_room_for(
+        "d1", {"name": "bravo", "parent_name": "alpha-node", "engine": "omp"})
+    await mgr._apply_queued({
+        "op": "feed", "node_id": "d1",
+        "feed": {"feed": "node", "kind": "add", "subagent_id": "c1",
+                 "agent": "charlie", "status": "running"}})
+    assert "#vm_alpha-bravo-charlie" in bot.joined
+    await mgr._apply_queued({
+        "op": "feed", "node_id": "d1",
+        "feed": {"feed": "node", "kind": "death", "subagent_id": "c1",
+                 "agent": "charlie", "status": "completed"}})
+    # Rule 4: a 2-agent's room survives its own completion...
+    assert "#vm_alpha-bravo-charlie" not in bot.destroyed
+    assert state.get("d1/sub-c1")["status"] == "dead"
+    # ...and dies with its parent.
+    await mgr._apply_queued(
+        {"op": "lifecycle", "node_id": "d1", "lifecycle": "stop",
+         "name": "bravo"})
+    assert "#vm_alpha-bravo-charlie" in bot.destroyed
+    with pytest.raises(Exception):
+        state.get("d1/sub-c1")
+
+
+@pytest.mark.asyncio
+async def test_purge_unsubscribes_phone(tmp_path, monkeypatch) -> None:
+    import observatory.soju as soju_mod
+
+    forgotten: list[str] = []
+    monkeypatch.setattr(
+        soju_mod, "unsubscribe_user_channel",
+        lambda channel, home=None: forgotten.append(channel) or True)
+    import observatory.rooms as rooms_mod
+
+    monkeypatch.setattr(rooms_mod, "unsubscribe_user_channel",
+                        soju_mod.unsubscribe_user_channel, raising=False)
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
+    await mgr._ensure_child_room_for(
+        "d1", {"name": "bravo", "parent_name": "alpha-node", "engine": "omp"})
+    await mgr._apply_queued(
+        {"op": "lifecycle", "node_id": "d1", "lifecycle": "stop",
+         "name": "bravo"})
+    assert "#vm_alpha-bravo" in forgotten
+
+
+@pytest.mark.asyncio
+async def test_omp_root_grandchild_purges_on_death(tmp_path, monkeypatch) -> None:
+    """Same rules under an omp-0 root: its child is depth 1."""
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    state.add_node(
+        "bravo-node", engine="omp", name="bravo", slug="bravo",
+        mxid="vm_bravo", session_ref="bravo-node",
+        parent_node_id=None, extra={"kind": "spawn"})
+    state.set_room_id("bravo-node", "#vm_bravo")
+    await mgr._apply_queued({
+        "op": "feed", "node_id": "bravo-node",
+        "feed": {"feed": "node", "kind": "add", "subagent_id": "c9",
+                 "agent": "zed", "status": "running"}})
+    assert "#vm_bravo-zed" in bot.joined
+    await mgr._apply_queued({
+        "op": "feed", "node_id": "bravo-node",
+        "feed": {"feed": "tool", "subagent_id": "c9",
+                 "tool": "read", "args": "f"}})
+    assert any("read" in text for ch, text in bot.said if ch == "#vm_bravo-zed")
+    await mgr._apply_queued({
+        "op": "feed", "node_id": "bravo-node",
+        "feed": {"feed": "node", "kind": "death", "subagent_id": "c9",
+                 "agent": "zed", "status": "completed"}})
+    assert "#vm_bravo-zed" in bot.destroyed
+    with pytest.raises(Exception):
+        state.get("bravo-node/sub-c9")

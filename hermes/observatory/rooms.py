@@ -212,6 +212,7 @@ class RoomManager:
     def __init__(self, state: Any, bot: BotSink | None = None):
         self.state = state
         self._bot = bot
+        self._grand: dict[tuple[str, str], str] = {}
 
     @property
     def bot(self) -> BotSink | None:
@@ -345,11 +346,24 @@ class RoomManager:
         op = str(item.get("op") or "")
         node_id = str(item.get("node_id") or "")
         if op == "feed":
-            channel = self.channel_for_node(
-                node_id
-            ) or await self._ensure_child_room_for(node_id, item)
-            if channel:
-                await self.publish_frame(channel, item.get("feed"))
+            feed = item.get("feed")
+            kind = str((feed or {}).get("feed") or "") if isinstance(feed, dict) else ""
+            sub = str((feed or {}).get("subagent_id") or "") if isinstance(feed, dict) else ""
+            if kind == "node" and isinstance(feed, dict):
+                await self._apply_grandchild_node(node_id, feed)
+            elif sub:
+                target = await self._grandchild_room_for(
+                    node_id, sub, feed if isinstance(feed, dict) else {})
+                if target and isinstance(feed, dict):
+                    flat = dict(feed)
+                    flat["subagent_id"] = ""
+                    await self.publish_frame(target, flat)
+            else:
+                channel = self.channel_for_node(
+                    node_id
+                ) or await self._ensure_child_room_for(node_id, item)
+                if channel:
+                    await self.publish_frame(channel, item.get("feed"))
         elif op == "lifecycle":
             if str(item.get("lifecycle") or "") == "stop":
                 drop_child_steer(node_id)
@@ -429,7 +443,11 @@ class RoomManager:
         parent = str(item.get("parent_name") or "")
         parent_row = self._resolve_parent(parent)
         parent_name = str((parent_row or {}).get("name") or "gateway")
-        channel = child_channel(parent_name, name, server=live or None)
+        parent_channel = str((parent_row or {}).get("room_id") or "").lstrip("#")
+        if parent_channel:
+            channel = clean_channel(f"{parent_channel}-{name}")
+        else:
+            channel = child_channel(parent_name, name, server=live or None)
         try:
             depth = int((parent_row or {}).get("depth", 0)) + 1
         except Exception:
@@ -441,12 +459,14 @@ class RoomManager:
                 engine=str(item.get("engine") or "hermes"),
                 name=name,
                 slug=slug,
-                mxid=agent_nick(name, server=live or None),
+                mxid=agent_nick(channel.lstrip("#"), server=""),
                 session_ref=str(item.get("session_ref") or node_id),
                 parent_node_id=str(parent_row.get("node_id"))
                 if parent_row is not None
                 else None,
-                extra={"kind": "delegate"},
+                extra={"kind": "delegate", **(
+                    {"subagent_id": str(item.get("subagent_id") or "")}
+                    if str(item.get("subagent_id") or "") else {})},
             )
             try:
                 self.state.set_room_id(node_id, channel)
@@ -472,6 +492,87 @@ class RoomManager:
         except Exception:
             logger.debug("rooms: phone invite failed for %s", channel)
         return channel
+
+    def _grandchild_node_id(self, owner_id: str, sid: str) -> str:
+        return f"{owner_id}/sub-{sid}"
+
+    async def _grandchild_room_for(
+        self, owner_id: str, sid: str, feed: dict[str, Any]
+    ) -> str:
+        """Own room for an N>1 subagent frame (creates on first sight)."""
+        key = (owner_id, sid)
+        node_id = self._grand.get(key)
+        if node_id:
+            try:
+                row = self.state.get(node_id)
+                channel = str(row.get("room_id") or "")
+                if channel:
+                    return channel
+            except Exception:
+                pass
+            self._grand.pop(key, None)
+            return ""
+        try:
+            owner = self.state.get(owner_id)
+        except Exception:
+            return ""
+        if not owner:
+            return ""
+        name = (
+            str(feed.get("agent") or "").strip()
+            or str(feed.get("task") or "").strip()
+        )
+        if not name:
+            name = f"sub-{sid[:8]}"
+        node_id = self._grandchild_node_id(owner_id, sid)
+        try:
+            channel = await self._ensure_child_room_for(node_id, {
+                "name": name,
+                "parent_name": owner_id,
+                "engine": "omp",
+                "subagent_id": sid,
+                "session_ref": str(
+                    feed.get("session_file") or node_id),
+            })
+        except Exception:
+            return ""
+        if channel:
+            self._grand[key] = node_id
+        return channel
+
+    async def _apply_grandchild_node(
+        self, owner_id: str, feed: dict[str, Any]
+    ) -> None:
+        """Node add/death frame → create or retire the grandchild room."""
+        sid = str(feed.get("subagent_id") or "")
+        if not sid:
+            return
+        kind = str(feed.get("kind") or "")
+        flat = dict(feed)
+        flat["subagent_id"] = ""
+        if kind == "add":
+            target = await self._grandchild_room_for(owner_id, sid, feed)
+            if target:
+                await self.publish_frame(target, flat)
+        elif kind == "death":
+            node_id = self._grand.get((owner_id, sid))
+            if node_id is None:
+                try:
+                    for r in self.state.get_subtree(owner_id):
+                        extra = (r or {}).get("extra") or {}
+                        if (isinstance(extra, dict)
+                                and extra.get("subagent_id") == sid):
+                            node_id = str(r.get("node_id") or "")
+                            break
+                except Exception:
+                    node_id = None
+            if not node_id:
+                return
+            channel = self.channel_for_node(node_id)
+            if channel:
+                await self.publish_frame(channel, flat)
+            self._grand.pop((owner_id, sid), None)
+            await self._retire_child_room(node_id)
 
     async def _retire_child_room(self, node_id: str, *, summary: str = "") -> None:
         """Death/purge for a finished delegate child (D8 timing).
@@ -548,6 +649,12 @@ class RoomManager:
             except Exception:
                 pass
             try:
+                from observatory.soju import unsubscribe_user_channel
+
+                unsubscribe_user_channel(channel)
+            except Exception:
+                pass
+            try:
                 from observatory.identity import drop_identity
 
                 await drop_identity(channel)
@@ -601,7 +708,7 @@ class RoomManager:
             import asyncio as _asyncio
 
             _asyncio.get_running_loop().create_task(
-                self._run_spawned_omp_task(channel, sender, text, rpc),
+                self._run_spawned_omp_task(channel, node_id, sender, text, rpc),
                 name=f"observatory-omp-room-{node_id}",
             )
         except Exception:
@@ -612,7 +719,7 @@ class RoomManager:
         return ""
 
     async def _run_spawned_omp_task(
-        self, channel: str, sender: str, text: str, rpc: Any
+        self, channel: str, node_id: str, sender: str, text: str, rpc: Any
     ) -> None:
         """Background body of one spawned-omp turn: live trace, then answer.
 
@@ -630,7 +737,7 @@ class RoomManager:
             feed = await self._start_live_omp_feed(rpc, channel, seen)
             if feed is not None:
                 pump_task = _asyncio.get_running_loop().create_task(
-                    self._pump_live_omp_feed(feed, channel, seen)
+                    self._pump_live_omp_feed(feed, node_id, seen)
                 )
             result = await _asyncio.to_thread(
                 rpc.run_task, f"[{sender} over IRC] {text}"
@@ -699,9 +806,13 @@ class RoomManager:
             return None
 
     async def _pump_live_omp_feed(
-        self, feed: Any, channel: str, seen: set[str]
+        self, feed: Any, node_id: str, seen: set[str]
     ) -> None:
-        """Forward live feed frames into the room as they arrive."""
+        """Submit live feed frames to the queue as they arrive.
+
+        Routing (own room vs grandchild rooms) happens in the pump,
+        so N>1 subagents land in their own rooms like watcher children.
+        """
         try:
             from observatory.gateway_session import (
                 _feed_event_to_dict as _to_payload,
@@ -724,7 +835,7 @@ class RoomManager:
                 except Exception:
                     pass
                 try:
-                    await self.publish_frame(channel, payload)
+                    submit_feed(node_id, payload)
                 except Exception:
                     continue
         except Exception:
