@@ -180,18 +180,25 @@ async def boot_resync(
         "pumped": 0,
     }
     try:
-        manager = manager or get_room_manager()
-        boot = globals().get("LAST_BOOT")
-        if state is None and boot is not None:
-            state = getattr(boot, "state", None)
-        if registry is None and boot is not None:
-            registry = getattr(boot, "registry", None)
-        if manager is None and state is not None:
-            from observatory.rooms import RoomManager
+        import asyncio as _asyncio
 
-            manager = RoomManager(state)
-            set_room_manager(manager)
+        for _attempt in range(6):
+            manager = manager or get_room_manager()
+            boot = globals().get("LAST_BOOT")
+            if state is None and boot is not None:
+                state = getattr(boot, "state", None)
+            if registry is None and boot is not None:
+                registry = getattr(boot, "registry", None)
+            if manager is None and state is not None:
+                from observatory.rooms import RoomManager
+
+                manager = RoomManager(state)
+                set_room_manager(manager)
+            if manager is not None and state is not None:
+                break
+            await _asyncio.sleep(2.0)
         if manager is None or state is None:
+            logger.warning("observatory: resync gave up waiting for boot state")
             report["failed"].append("no state (unprovisioned?)")
             return report
         if registry is None:
