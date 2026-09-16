@@ -607,3 +607,77 @@ class TestIRCAgentEchoGuard:
         await adapter._handle_line(":owner!u@mercury PRIVMSG #test :watchbot: hello")
         assert len(calls) == 1
         assert calls[0]["chat_id"] == "#test"
+
+
+class _StubRoomManager:
+    def __init__(self, reply):
+        self._reply = reply
+
+    async def handle_omp_message(self, channel, sender, text):
+        return self._reply
+
+    async def handle_child_message(self, channel, sender, text):
+        return self._reply
+
+
+class TestIRCRoomOwnedDispatch:
+    def _adapter(self, monkeypatch):
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from gateway.config import PlatformConfig
+        from plugins.platforms.irc.adapter import IRCAdapter
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
+                   "channel": "#test", "use_tls": False},
+        )
+        adapter = IRCAdapter(cfg)
+        adapter.extra_channels = {"#vm_bravo"}
+        return adapter
+
+    def _room_route(self, monkeypatch, reply):
+        from observatory import rooms as rooms_mod
+        monkeypatch.setattr(
+            rooms_mod, "route_channel", lambda channel: ("spawn-omp", {}))
+        monkeypatch.setattr(
+            rooms_mod, "get_room_manager", lambda: _StubRoomManager(reply))
+        from observatory import identity as identity_mod
+        monkeypatch.setattr(identity_mod, "_pool", identity_mod.IdentityPool())
+
+    @pytest.mark.asyncio
+    async def test_plain_text_no_gateway_turn(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        self._room_route(monkeypatch, "bravo says hi")
+        sent = []
+        async def fake_send(chat_id, content, *a, **k):
+            sent.append((chat_id, content))
+            from plugins.platforms.irc.adapter import SendResult
+            return SendResult(success=True, message_id="1")
+        monkeypatch.setattr(adapter, "send", fake_send)
+        gateway_calls = []
+        async def fake_handle(event):
+            gateway_calls.append(event)
+        monkeypatch.setattr(adapter, "handle_message", fake_handle)
+        monkeypatch.setattr(adapter, "_message_handler", lambda event: None)
+        await adapter._handle_line(":owner!u@mercury PRIVMSG #vm_bravo :hello")
+        assert sent == [("#vm_bravo", "bravo says hi")]
+        assert gateway_calls == []
+
+    @pytest.mark.asyncio
+    async def test_slash_falls_through(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        self._room_route(monkeypatch, "room ack")
+        sent = []
+        async def fake_send(chat_id, content, *a, **k):
+            sent.append((chat_id, content))
+            from plugins.platforms.irc.adapter import SendResult
+            return SendResult(success=True, message_id="1")
+        monkeypatch.setattr(adapter, "send", fake_send)
+        gateway_calls = []
+        async def fake_handle(event):
+            gateway_calls.append(event)
+        monkeypatch.setattr(adapter, "handle_message", fake_handle)
+        monkeypatch.setattr(adapter, "_message_handler", lambda event: None)
+        await adapter._handle_line(":owner!u@mercury PRIVMSG #vm_bravo :/exit")
+        assert sent == [("#vm_bravo", "room ack")]
+        assert len(gateway_calls) == 1

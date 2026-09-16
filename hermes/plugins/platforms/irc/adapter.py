@@ -739,6 +739,11 @@ class IRCAdapter(BasePlatformAdapter):
                         reply = await manager.handle_omp_message(chat_id, user_name, text)
                     if reply:
                         await self.send(chat_id, reply)
+                    # The room owned this text: a gateway turn here would
+                    # answer a second time in someone else's room. Slash
+                    # commands still fall through (exit/status/...).
+                    if not text.lstrip().startswith("/"):
+                        return
             except Exception:
                 logger.debug("IRC: room route failed, falling through", exc_info=True)
         if not self._message_handler:

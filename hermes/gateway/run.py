@@ -4807,6 +4807,9 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
     return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
 
 
+_OBS_MIRROR_LOGGED: set[str] = set()
+
+
 class TurnRunner:
     """Per-turn collaborator carrying the tool-progress callbacks that used to
     be nested closures inside ``GatewayRunner._run_agent_inner``.
@@ -4827,8 +4830,10 @@ class TurnRunner:
         """Callback invoked by agent on tool lifecycle events."""
         # Observatory mirror (IRC rooms show their agent's tool calls
         # live, like CLI verbose): depth-0 rooms have no feed producer of
-        # their own, so tool/thinking frames are submitted here. Sync queue
-        # put only — never blocks the turn, never raises into the loop.
+        # their own, so tool/thinking lines are formatted here and handed
+        # to the gateway loop for a direct send — the pump queue is not
+        # used (it stalls when the boot thread never finishes the global
+        # manager). Never blocks the turn, never raises into the loop.
         try:
             _ctx0 = self._ctx
             _src = getattr(_ctx0, "source", None)
@@ -4836,9 +4841,10 @@ class TurnRunner:
                 _chat = str(getattr(_src, "chat_id", "") or "")
                 if _chat.startswith("#"):
                     from observatory import rooms as _obs_rooms
+                    _line = None
                     if (event_type == "tool.started" and tool_name
                             and tool_name != "_thinking"):
-                        _obs_rooms.submit_channel_payload(_chat, {
+                        _line = _obs_rooms.format_frame({
                             "feed": "tool", "tool": str(tool_name),
                             "args": preview if preview else (args or {}),
                         })
@@ -4846,9 +4852,23 @@ class TurnRunner:
                             and getattr(_ctx0, "_thinking_enabled", False)):
                         _txt = preview if tool_name == "_thinking" else tool_name
                         if _txt:
-                            _obs_rooms.submit_channel_payload(_chat, {
+                            _line = _obs_rooms.format_frame({
                                 "feed": "thought", "text": str(_txt),
                             })
+                    if _line:
+                        _bot = _obs_rooms.get_bot_sink()
+                        _loop = getattr(_ctx0, "_loop_for_step", None)
+                        if _bot is not None and _loop is not None:
+                            if _chat not in _OBS_MIRROR_LOGGED:
+                                _OBS_MIRROR_LOGGED.add(_chat)
+                                logger.info(
+                                    "observatory mirror live for %s", _chat)
+                            safe_schedule_threadsafe(
+                                _bot.say(_chat, _line),
+                                _loop,
+                                logger=logger,
+                                log_message="observatory mirror send failed",
+                            )
         except Exception:
             pass
         ctx = self._ctx
