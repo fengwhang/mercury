@@ -727,6 +727,7 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
                 continue
             known[child_id] = meta
             stops_pushed.discard(child_id)
+            logger.info("observatory: watcher child start %s", child_id)
             try:
                 task_index = meta.get("task_index")
                 push_child_lifecycle(
@@ -783,6 +784,7 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
                         pass
             if child_id not in stops_pushed:
                 stops_pushed.add(child_id)
+                logger.info("observatory: watcher child stop %s", child_id)
                 try:
                     push_child_lifecycle(child_id, "stop", status="unknown")
                 except Exception:
