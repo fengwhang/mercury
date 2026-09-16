@@ -861,6 +861,7 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
             known[child_id] = meta
             stops_pushed.discard(child_id)
             logger.info("observatory: watcher child start %s", child_id)
+            logger.info("observatory: watcher child start %s", child_id)
             try:
                 _ensure_watcher_room(child_id, meta)
                 _register_watcher_steer(child_id, meta)
@@ -904,6 +905,7 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
                         pass
             if child_id not in stops_pushed:
                 stops_pushed.add(child_id)
+                logger.info("observatory: watcher child stop %s", child_id)
                 logger.info("observatory: watcher child stop %s", child_id)
                 try:
                     _retire_watcher_room(

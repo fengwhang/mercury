@@ -466,6 +466,7 @@ class RoomManager:
         await self.ensure_room(
             channel, greet=f"live trace for subagent '{name}' streams here"
         )
+        logger.info("observatory: room ensured %s for %s", channel, node_id)
         try:
             from observatory.soju import subscribe_user_channel
 
@@ -570,6 +571,7 @@ class RoomManager:
                 pass
         try:
             self.state.mark_deleted_and_purge(node_id)
+            logger.info("observatory: room purged %s", channel)
         except Exception:
             pass
 

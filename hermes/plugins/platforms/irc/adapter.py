@@ -205,6 +205,8 @@ class IRCAdapter(BasePlatformAdapter):
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._recv_task: Optional[asyncio.Task] = None
+        self._handler_task: Optional[asyncio.Task] = None
+        self._line_queue: Optional[asyncio.Queue] = None
         self._watchdog_task: Optional[asyncio.Task] = None
         self._last_inbound = 0.0
         self._registered = False  # IRC registration complete
@@ -260,8 +262,10 @@ class IRCAdapter(BasePlatformAdapter):
         await self._send_raw(f"NICK {self.nickname}")
         await self._send_raw(f"USER {self.nickname} 0 * :Mercury")
 
-        # Start receive loop
+        # Start receive loop + ordered handler (PINGs bypass the queue)
         self._recv_task = asyncio.create_task(self._receive_loop())
+        self._line_queue = asyncio.Queue()
+        self._handler_task = asyncio.create_task(self._handle_task())
 
         # Wait for registration (001 RPL_WELCOME) with timeout
         try:
@@ -307,7 +311,7 @@ class IRCAdapter(BasePlatformAdapter):
                 from observatory.platform_hook import boot_resync as _resync
                 asyncio.create_task(_resync())
             except Exception:
-                logger.debug("IRC: resync schedule skipped", exc_info=True)
+                logger.warning("IRC: resync schedule skipped", exc_info=True)
         except Exception:
             logger.debug("IRC: bot-sink register skipped", exc_info=True)
         logger.info("IRC: connected to %s:%s as %s, joined %s", self.server, self.port, self._current_nick, self.channel)
@@ -345,6 +349,12 @@ class IRCAdapter(BasePlatformAdapter):
             self._recv_task.cancel()
             try:
                 await self._recv_task
+            except asyncio.CancelledError:
+                pass
+        if self._handler_task and not self._handler_task.done():
+            self._handler_task.cancel()
+            try:
+                await self._handler_task
             except asyncio.CancelledError:
                 pass
         if self._watchdog_task and not self._watchdog_task.done():
@@ -550,7 +560,12 @@ class IRCAdapter(BasePlatformAdapter):
         await self._writer.drain()
 
     async def _receive_loop(self) -> None:
-        """Main receive loop — reads lines and dispatches them."""
+        """Main receive loop — reads lines, PONGs fast, queues the rest.
+
+        PING answers and the watchdog arrival stamp happen HERE, never
+        behind a multi-minute turn: the handler task below owns all slow
+        work. Ordering is preserved (single consumer).
+        """
         buffer = b""
         try:
             while self._reader and not self._reader.at_eof():
@@ -562,7 +577,11 @@ class IRCAdapter(BasePlatformAdapter):
                     line, buffer = buffer.split(b"\r\n", 1)
                     try:
                         decoded = line.decode("utf-8", errors="replace")
-                        await self._handle_line(decoded)
+                        self._last_inbound = time.monotonic()
+                        if self._is_ping(decoded):
+                            await self._answer_ping(decoded)
+                        else:
+                            self._line_queue.put_nowait(decoded)
                     except Exception as e:
                         logger.warning("IRC: error handling line: %s", e)
         except asyncio.CancelledError:
@@ -570,10 +589,58 @@ class IRCAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("IRC: receive loop error: %s", e)
         finally:
+            try:
+                self._line_queue.put_nowait(None)
+            except Exception:
+                pass
             if self.is_connected:
                 logger.warning("IRC: connection lost, marking disconnected")
                 self._set_fatal_error("connection_lost", "IRC connection closed unexpectedly", retryable=True)
                 await self._notify_fatal_error()
+
+    @staticmethod
+    def _is_ping(raw: str) -> bool:
+        """True when a raw line is a server PING (answer inline)."""
+        try:
+            text = raw.strip()
+            if text.upper().startswith("PING"):
+                return True
+            parts = text.split(" ", 2)
+            return len(parts) > 1 and parts[1].upper() == "PING"
+        except Exception:
+            return False
+
+    async def _answer_ping(self, raw: str) -> None:
+        """Reply PONG without touching the handler queue."""
+        try:
+            msg = _parse_irc_message(raw)
+            params = msg.get("params") or []
+            payload = params[0] if params else ""
+            await self._send_raw(f"PONG :{payload}")
+        except Exception as e:
+            logger.warning("IRC: error answering ping: %s", e)
+
+    async def _handle_task(self) -> None:
+        """Consume queued lines in order (the slow path)."""
+        try:
+            while True:
+                try:
+                    line = await self._line_queue.get()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    return
+                if line is None:
+                    return
+                try:
+                    await self._handle_line(line)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning("IRC: error handling line: %s", e)
+        except asyncio.CancelledError:
+            raise
+
 
     async def _silence_watchdog(self) -> None:
         """Reconnect when the server goes quiet past SILENCE_LIMIT.
@@ -598,12 +665,28 @@ class IRCAdapter(BasePlatformAdapter):
                             self._writer.close()
                         except Exception:
                             pass
+                        try:
+                            if self._recv_task and not self._recv_task.done():
+                                self._recv_task.cancel()
+                        except Exception:
+                            pass
+                        # Drive the rebuild directly: a receive loop stuck
+                        # in read() may never notice the closed writer,
+                        # leaving the bot dead with no reconnect.
+                        try:
+                            if self.is_connected:
+                                self._set_fatal_error(
+                                    "connection_lost",
+                                    "IRC server went silent (watchdog)",
+                                    retryable=True)
+                                await self._notify_fatal_error()
+                        except Exception:
+                            pass
                         return
                 except Exception:
                     pass
         except asyncio.CancelledError:
             pass
-
     async def _handle_line(self, raw: str) -> None:
         """Dispatch a single IRC protocol line."""
         self._last_inbound = time.monotonic()

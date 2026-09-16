@@ -158,6 +158,8 @@ def _register_live_child(meta: Dict[str, Any], transport: Any) -> None:
             **meta, "transport": transport,
             "started_at": time.time(), "stop_requested": False,
         }
+    logger.info("observatory: live child registered %s (%s)",
+                meta.get("child_id"), meta.get("name"))
     # Keep the legacy process list in sync (counts + _kill_live_children).
     with _live_procs_lock:
         _live_procs.append(transport)
