@@ -173,10 +173,15 @@ async def test_omp_room_streams_live_then_replays_surplus(
     state.set_room_id("bravo-node", "#vm_bravo")
     live = {"feed": "thought", "text": "live hmm", "subagent_id": ""}
     late = {"feed": "tool", "tool": "bash", "args": "ls", "subagent_id": ""}
-    _FakeFeed.live_payloads = [live]
+    echo = {"feed": "message", "role": "user",
+            "text": "[owner over IRC] go", "subagent_id": ""}
+    dup = {"feed": "message", "role": "assistant",
+           "text": "done", "subagent_id": ""}
+    _FakeFeed.live_payloads = [live, echo, dup]
     monkeypatch.setattr(omp_feed_mod, "OmpFeed", _FakeFeed)
     rooms_mod._omp_rooms["bravo-node"] = {
-        "channel": "#vm_bravo", "rpc": _FakeRpc([live, late]), "busy": False}
+        "channel": "#vm_bravo",
+        "rpc": _FakeRpc([live, late, echo, dup]), "busy": False}
     try:
         reply = await mgr.handle_omp_message("#vm_bravo", "owner", "go")
     finally:
@@ -187,3 +192,18 @@ async def test_omp_room_streams_live_then_replays_surplus(
     assert any("live hmm" in s for s in said)
     assert any("bash" in s for s in said)
     assert sum("live hmm" in s for s in said) == 1
+    assert not any("[owner over IRC]" in s for s in said)
+    assert not any(s.strip() == "done" for s in said)
+
+
+def test_omp_room_skip_predicate() -> None:
+    from observatory.rooms import _omp_room_skips_frame as skip
+
+    assert skip({"feed": "message", "role": "user", "text": "hi"}) is True
+    assert skip({"feed": "message", "role": "assistant", "text": "hi"}) is True
+    assert skip({"feed": "message", "role": "system", "text": "hi"}) is False
+    assert skip({"feed": "message", "text": "no role"}) is False
+    assert skip({"feed": "tool", "tool": "bash"}) is False
+    assert skip({"feed": "thought", "text": "hmm"}) is False
+    assert skip("nonsense") is False
+    assert skip(None) is False

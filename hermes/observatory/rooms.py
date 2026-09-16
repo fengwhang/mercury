@@ -623,6 +623,8 @@ class RoomManager:
             summary = str((result or {}).get("summary") or "")
             frames = (result or {}).get("turn_frames") or []
             for frame in frames:
+                if _omp_room_skips_frame(frame):
+                    continue
                 try:
                     from observatory.omp_feed import child_frame_key
 
@@ -668,6 +670,8 @@ class RoomManager:
                 except Exception:
                     continue
                 if not isinstance(payload, dict):
+                    continue
+                if _omp_room_skips_frame(payload):
                     continue
                 try:
                     seen.add(child_frame_key(payload))
@@ -736,6 +740,24 @@ def submit_feed(node_id: str, feed: dict[str, Any] | Any) -> None:
         _QUEUE.put_nowait({"op": "feed", "node_id": node_id, "feed": payload})
     except Exception:
         pass
+
+
+def _omp_room_skips_frame(payload: Any) -> bool:
+    """Spawnomp rooms: drop user/assistant message frames.
+
+    The user's own text is already visible (they sent it); the
+    assistant's text ships as the reply summary. Publishing either
+    looks like an echo or a double response. Tool/thought frames
+    always stream. Never raises.
+    """
+    try:
+        if not isinstance(payload, dict):
+            return False
+        if str(payload.get("feed") or "") != "message":
+            return False
+        return str(payload.get("role") or "") in ("user", "assistant")
+    except Exception:
+        return False
 
 
 def submit_channel_frame(channel: str, feed: dict[str, Any] | Any) -> None:
