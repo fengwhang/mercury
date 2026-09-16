@@ -166,6 +166,7 @@ class _FakeFeed:
 async def test_omp_room_streams_live_then_replays_surplus(
     tmp_path, monkeypatch
 ) -> None:
+    import asyncio as _asyncio
     import observatory.omp_feed as omp_feed_mod
 
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
@@ -182,21 +183,56 @@ async def test_omp_room_streams_live_then_replays_surplus(
            "text": "done", "subagent_id": ""}
     _FakeFeed.live_payloads = [live, echo, dup]
     monkeypatch.setattr(omp_feed_mod, "OmpFeed", _FakeFeed)
+    rpc = _FakeRpc([live, late, echo, dup])
     rooms_mod._omp_rooms["bravo-node"] = {
-        "channel": "#vm_bravo",
-        "rpc": _FakeRpc([live, late, echo, dup]), "busy": False}
+        "channel": "#vm_bravo", "rpc": rpc, "busy": False}
     try:
         reply = await mgr.handle_omp_message("#vm_bravo", "owner", "go")
+        assert "on it" in reply
+        # Handler returns at once; the run continues in background.
+        assert rooms_mod._omp_rooms["bravo-node"]["busy"] is True
+        async with _asyncio.timeout(5):
+            while rooms_mod._omp_rooms["bravo-node"]["busy"]:
+                await _asyncio.sleep(0.02)
     finally:
         rooms_mod._omp_rooms.pop("bravo-node", None)
         _FakeFeed.live_payloads = []
-    assert reply == "done"
     said = [text for ch, text in bot.said if ch == "#vm_bravo"]
     assert any("live hmm" in s for s in said)
     assert any("bash" in s for s in said)
     assert sum("live hmm" in s for s in said) == 1
     assert not any("[owner over IRC]" in s for s in said)
-    assert not any(s.strip() == "done" for s in said)
+    # Assistant frame filtered: the summary below is the only "done".
+    assert sum(s.strip() == "done" for s in said) == 1
+
+
+@pytest.mark.asyncio
+async def test_omp_room_busy_steers_without_queueing(
+    tmp_path, monkeypatch
+) -> None:
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    state.add_node(
+        "bravo-node", engine="omp", name="bravo", slug="bravo",
+        mxid="vm_bravo", session_ref="bravo-node",
+        parent_node_id=None, extra={"kind": "spawn"})
+    state.set_room_id("bravo-node", "#vm_bravo")
+    steered: list[str] = []
+
+    class _SteerRpc:
+        def run_task(self, prompt):
+            raise AssertionError("must not run while busy")
+
+        def steer(self, text):
+            steered.append(text)
+
+    rooms_mod._omp_rooms["bravo-node"] = {
+        "channel": "#vm_bravo", "rpc": _SteerRpc(), "busy": True}
+    try:
+        reply = await mgr.handle_omp_message("#vm_bravo", "owner", "stop that")
+    finally:
+        rooms_mod._omp_rooms.pop("bravo-node", None)
+    assert reply == "steered mid-run."
+    assert steered == ["[owner over IRC] stop that"]
 
 
 def test_omp_room_skip_predicate() -> None:

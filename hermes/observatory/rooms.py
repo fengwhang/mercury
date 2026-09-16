@@ -597,6 +597,28 @@ class RoomManager:
             except Exception as exc:
                 return f"steer failed: {exc}"
         entry["busy"] = True
+        try:
+            import asyncio as _asyncio
+
+            _asyncio.get_running_loop().create_task(
+                self._run_spawned_omp_task(channel, sender, text, rpc),
+                name=f"observatory-omp-room-{node_id}",
+            )
+        except Exception:
+            entry["busy"] = False
+            return "couldn't start that task — try again."
+        return "on it — streaming the trace here."
+
+    async def _run_spawned_omp_task(
+        self, channel: str, sender: str, text: str, rpc: Any
+    ) -> None:
+        """Background body of one spawned-omp turn: live trace, then answer.
+
+        Runs off the adapter receive loop so the bot keeps reading (and
+        answering PINGs) mid-turn — follow-up text steers instead of
+        queueing. Never raises; the summary (or failure) is published
+        into the room, then the room is marked idle.
+        """
         seen: set[str] = set()
         feed: Any = None
         pump_task: Any = None
@@ -611,8 +633,18 @@ class RoomManager:
             result = await _asyncio.to_thread(
                 rpc.run_task, f"[{sender} over IRC] {text}"
             )
+        except Exception as exc:
+            logger.debug("rooms: background omp task failed", exc_info=True)
+            with _omp_lock:
+                for _entry in _omp_rooms.values():
+                    if _entry.get("rpc") is rpc:
+                        _entry["busy"] = False
+            try:
+                await self.publish(channel, f"(task failed: {exc})")
+            except Exception:
+                pass
+            return
         finally:
-            entry["busy"] = False
             if feed is not None:
                 try:
                     await feed.stop()
@@ -637,10 +669,18 @@ class RoomManager:
                 except Exception:
                     pass
                 await self.publish_frame(channel, frame)
-            return summary or "(no output)"
+            await self.publish(channel, summary or "(no output)")
         except Exception as exc:
             logger.debug("rooms: omp reply failed", exc_info=True)
-            return f"(reply render failed: {exc})"
+            try:
+                await self.publish(channel, "(reply render failed)")
+            except Exception:
+                pass
+        finally:
+            with _omp_lock:
+                for _entry in _omp_rooms.values():
+                    if _entry.get("rpc") is rpc:
+                        _entry["busy"] = False
 
     async def _start_live_omp_feed(
         self, rpc: Any, channel: str, seen: set[str]
