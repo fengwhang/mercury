@@ -331,6 +331,9 @@ class IrcDaemon:
                     try:
                         idle = now - client.last_in
                         if idle >= PING_TIMEOUT:
+                            logger.info(
+                                "ircd: reaping silent client %s (%.0fs)",
+                                client.nick or client.addr, idle)
                             client.writer.close()
                         elif idle >= PING_INTERVAL and not client.ping_out:
                             client.ping_out = True

@@ -649,6 +649,23 @@ class IRCAdapter(BasePlatformAdapter):
                             self._writer.close()
                         except Exception:
                             pass
+                        try:
+                            if self._recv_task and not self._recv_task.done():
+                                self._recv_task.cancel()
+                        except Exception:
+                            pass
+                        # Drive the rebuild directly: a receive loop stuck
+                        # in read() may never notice the closed writer,
+                        # leaving the bot dead with no reconnect.
+                        try:
+                            if self.is_connected:
+                                self._set_fatal_error(
+                                    "connection_lost",
+                                    "IRC server went silent (watchdog)",
+                                    retryable=True)
+                                await self._notify_fatal_error()
+                        except Exception:
+                            pass
                         return
                 except Exception:
                     pass
