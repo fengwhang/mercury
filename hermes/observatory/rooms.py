@@ -420,6 +420,17 @@ class RoomManager:
         name = str(item.get("name") or node_id)
         parent = str(item.get("parent_name") or "")
         parent_row = self._resolve_parent(parent)
+        if parent_row is None:
+            # Gateway sessions carry bare session UUIDs (no channel to
+            # match), so gateway-owned delegates resolve to nothing.
+            # A delegate by definition has a parent — fall back to the
+            # gateway row rather than stranding it at depth 0 (immortal).
+            try:
+                from observatory.provision import GATEWAY_NODE_ID
+
+                parent_row = self.state.get(GATEWAY_NODE_ID)
+            except Exception:
+                parent_row = None
         parent_name = str((parent_row or {}).get("name") or "gateway")
         parent_channel = str((parent_row or {}).get("room_id") or "").lstrip("#")
         if parent_channel:

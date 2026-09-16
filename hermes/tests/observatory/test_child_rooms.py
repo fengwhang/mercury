@@ -314,3 +314,21 @@ async def test_omp_root_grandchild_purges_on_death(tmp_path, monkeypatch) -> Non
     assert "#vm_bravo-zed" in bot.destroyed
     with pytest.raises(Exception):
         state.get("bravo-node/sub-c9")
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_parent_falls_back_to_gateway(tmp_path, monkeypatch) -> None:
+    """Gateway sessions carry bare UUIDs — delegates still land depth 1."""
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    state.add_node(
+        "gw", engine="hermes", name="gateway agent", slug="gateway",
+        mxid="vm_gateway", session_ref="session:gateway",
+        parent_node_id=None, extra={"kind": "gateway"})
+    state.set_room_id("gw", "#vm_gateway")
+    channel = await mgr._ensure_child_room_for(
+        "deleg_z/0", {"name": "zed", "parent_name": "20260913_234155_8fad8e3d",
+                      "engine": "omp"})
+    assert channel == "#vm_gateway-zed"
+    row = state.get("deleg_z/0")
+    assert row["depth"] == 1
+    assert row["parent_node_id"] == "gw"
