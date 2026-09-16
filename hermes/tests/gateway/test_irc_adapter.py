@@ -681,3 +681,63 @@ class TestIRCRoomOwnedDispatch:
         await adapter._handle_line(":owner!u@mercury PRIVMSG #vm_bravo :/exit")
         assert sent == [("#vm_bravo", "room ack")]
         assert len(gateway_calls) == 1
+
+
+class TestIRCPumpKeeper:
+    def _adapter(self, monkeypatch):
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from gateway.config import PlatformConfig
+        from plugins.platforms.irc.adapter import IRCAdapter
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667, "nickname": "keepbot",
+                   "channel": "#test", "use_tls": False},
+        )
+        return IRCAdapter(cfg)
+
+    @pytest.mark.asyncio
+    async def test_keeper_starts_pump(self, monkeypatch):
+        import asyncio as _asyncio
+        from observatory import rooms as rooms_mod
+
+        adapter = self._adapter(monkeypatch)
+
+        class FakeWriter:
+            def is_closing(self):
+                return False
+
+        adapter._writer = FakeWriter()
+        calls = []
+
+        async def fake_start_pump(manager):
+            calls.append(manager)
+            return True
+
+        monkeypatch.setattr(rooms_mod, "start_pump", fake_start_pump)
+        monkeypatch.setattr(rooms_mod, "get_room_manager", lambda: object())
+        task = _asyncio.get_running_loop().create_task(adapter._pump_keeper())
+        try:
+            async with _asyncio.timeout(5):
+                while not calls:
+                    await _asyncio.sleep(0.02)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except _asyncio.CancelledError:
+                pass
+        assert len(calls) >= 1
+
+    @pytest.mark.asyncio
+    async def test_keeper_quits_when_writer_closing(self, monkeypatch):
+        import asyncio as _asyncio
+
+        adapter = self._adapter(monkeypatch)
+
+        class FakeWriter:
+            def is_closing(self):
+                return True
+
+        adapter._writer = FakeWriter()
+        await adapter._pump_keeper()

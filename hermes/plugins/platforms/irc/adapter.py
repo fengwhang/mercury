@@ -206,6 +206,7 @@ class IRCAdapter(BasePlatformAdapter):
         self._writer: Optional[asyncio.StreamWriter] = None
         self._recv_task: Optional[asyncio.Task] = None
         self._watchdog_task: Optional[asyncio.Task] = None
+        self._pump_keeper_task: Optional[asyncio.Task] = None
         self._last_inbound = 0.0
         self._registered = False  # IRC registration complete
         self._registration_event = asyncio.Event()
@@ -311,6 +312,8 @@ class IRCAdapter(BasePlatformAdapter):
         self._last_inbound = time.monotonic()
         if self._watchdog_task is None or self._watchdog_task.done():
             self._watchdog_task = asyncio.create_task(self._silence_watchdog())
+        if self._pump_keeper_task is None or self._pump_keeper_task.done():
+            self._pump_keeper_task = asyncio.create_task(self._pump_keeper())
         return True
 
     async def disconnect(self) -> None:
@@ -343,6 +346,8 @@ class IRCAdapter(BasePlatformAdapter):
                 pass
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
+        if self._pump_keeper_task and not self._pump_keeper_task.done():
+            self._pump_keeper_task.cancel()
 
         self._reader = None
         self._writer = None
@@ -568,6 +573,58 @@ class IRCAdapter(BasePlatformAdapter):
                 logger.warning("IRC: connection lost, marking disconnected")
                 self._set_fatal_error("connection_lost", "IRC connection closed unexpectedly", retryable=True)
                 await self._notify_fatal_error()
+
+    async def _pump_keeper(self) -> None:
+        """Keep the rooms pump running (self-healing resync backstop).
+
+        ``boot_resync`` starts the pump once per connect, but a resync
+        that dies early (or fires before boot finishes) leaves queued
+        rooms stalled with no retry. This re-asserts every minute:
+        resolve or build the manager, ensure the pump task, log once.
+        Never raises out of the loop.
+        """
+        logged = False
+        try:
+            while True:
+                try:
+                    if self._writer is None or self._writer.is_closing():
+                        return
+                    from observatory import rooms as _rooms
+
+                    manager = _rooms.get_room_manager()
+                    if manager is None:
+                        try:
+                            from observatory.platform_hook import (
+                                open_state as _open_state,
+                            )
+
+                            state = _open_state(None)
+                        except Exception:
+                            state = None
+                        if state is not None:
+                            try:
+                                manager = _rooms.RoomManager(state)
+                                _rooms.set_room_manager(manager)
+                            except Exception:
+                                manager = None
+                    if manager is not None:
+                        try:
+                            ok = await _rooms.start_pump(manager)
+                        except Exception:
+                            ok = False
+                        if ok and not logged:
+                            logged = True
+                            logger.info("observatory: pump keeper running")
+                except Exception:
+                    pass
+                try:
+                    await asyncio.sleep(60.0)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    return
+        except asyncio.CancelledError:
+            pass
 
     async def _silence_watchdog(self) -> None:
         """Reconnect when the server goes quiet past SILENCE_LIMIT.
