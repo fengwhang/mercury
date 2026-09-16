@@ -210,3 +210,27 @@ def test_live_network_reads_mercury_home(tmp_path, monkeypatch) -> None:
     (obs / "ircd.json").write_text(_json.dumps({"server_name": "vm"}))
     spaths = soju_mod.SojuPaths(home)
     assert soju_mod._live_network(spaths) == "vm"
+
+
+def test_channel_guards_match_qualified_saved_names(monkeypatch) -> None:
+    """Live soju lists `#room/network [state]` — guards must still match."""
+    import subprocess as _subprocess
+    import types
+
+    calls: list = []
+
+    def fake_run(args, *, input_text=None, timeout=60):
+        calls.append(args)
+        if "status" in args:
+            return _subprocess.CompletedProcess(
+                [], 0, "#vm_gateway/vm [joined]\n", "")
+        return _subprocess.CompletedProcess([], 0, "deleted", "")
+
+    monkeypatch.setattr(soju_mod, "_run", fake_run)
+    monkeypatch.setattr(soju_mod, "soju_bin", lambda *a, **k: "/bin/soju")
+    paths = types.SimpleNamespace(conf="/c/soju.conf")
+    assert soju_mod.ensure_soju_channel(paths, "#vm_gateway") == {
+        "action": "current"}
+    assert soju_mod.forget_soju_channel(paths, "#vm_gateway") == {
+        "action": "forgotten"}
+    assert any("delete" in a for a in calls)

@@ -519,6 +519,18 @@ def soju_channels(conf: str, username: str) -> list[str]:
     return names
 
 
+def _matches_saved_channel(saved: str, channel: str) -> bool:
+    """True when a saved entry names this channel.
+
+    ``channel status`` lists qualified names (``#room/network``) while
+    callers pass bare rooms — compare the room part only.
+    """
+    try:
+        return str(saved or "").split("/")[0].lower() == str(channel or "").lower()
+    except Exception:
+        return False
+
+
 def ensure_soju_channel(paths: SojuPaths, channel: str,
                         username: str = SOJU_USER,
                         network: str | None = None) -> dict:
@@ -539,7 +551,7 @@ def ensure_soju_channel(paths: SojuPaths, channel: str,
         saved = soju_channels(conf, username)
     except SojuError:
         saved = []
-    if any(s.lower() == chan.lower() for s in saved):
+    if any(_matches_saved_channel(s, chan) for s in saved):
         return {"action": "current"}
     out = _sojuctl(conf, "user", "run", username, "channel", "create", qualified)
     if out.returncode != 0:
@@ -572,7 +584,7 @@ def forget_soju_channel(paths: SojuPaths, channel: str,
         saved = soju_channels(conf, username)
     except SojuError:
         saved = []
-    if not any(s.lower() == chan.lower() for s in saved):
+    if not any(_matches_saved_channel(s, chan) for s in saved):
         return {"action": "current"}
     out = _sojuctl(conf, "user", "run", username, "channel", "delete", qualified)
     if out.returncode != 0:

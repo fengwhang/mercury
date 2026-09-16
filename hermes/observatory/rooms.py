@@ -560,9 +560,14 @@ class RoomManager:
             try:
                 from observatory.soju import unsubscribe_user_channel
 
-                unsubscribe_user_channel(channel)
-            except Exception:
-                pass
+                if not unsubscribe_user_channel(channel):
+                    logger.warning(
+                        "observatory: phone unsubscribe failed for %s",
+                        channel)
+            except Exception as exc:
+                logger.warning(
+                    "observatory: phone unsubscribe failed for %s (%s)",
+                    channel, exc)
             try:
                 from observatory.identity import drop_identity
 
