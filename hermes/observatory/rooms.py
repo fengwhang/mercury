@@ -345,6 +345,9 @@ class RoomManager:
     async def _apply_queued(self, item: dict[str, Any]) -> None:
         op = str(item.get("op") or "")
         node_id = str(item.get("node_id") or "")
+        if op == "lifecycle":
+            logger.info("observatory: pump lifecycle %s for %s",
+                        item.get("lifecycle"), node_id)
         if op == "feed":
             feed = item.get("feed")
             kind = str((feed or {}).get("feed") or "") if isinstance(feed, dict) else ""
@@ -986,6 +989,7 @@ async def pump_forever(manager: "RoomManager", interval: float = 2.0) -> None:
     """Drain the producer queue forever (cancellation stops it)."""
     import asyncio as _asyncio
 
+    logger.info("observatory: pump started")
     while True:
         try:
             await manager.drain_queue()
