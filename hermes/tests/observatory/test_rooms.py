@@ -257,10 +257,16 @@ async def test_handle_omp_message_task_then_steer(tmp_path) -> None:
     rpc = FakeRpc()
     rooms.register_omp_room("orch-2", "#king", rpc)
     try:
+        import asyncio as _asyncio
+
         reply = await mgr.handle_omp_message("#king", "op", "build x")
-        assert reply == "did it"
+        assert reply == ""
+        async with _asyncio.timeout(5):
+            while rooms._omp_rooms["orch-2"]["busy"]:
+                await _asyncio.sleep(0.02)
         assert rpc.tasks and "build x" in rpc.tasks[0]
         assert any("read" in t for _, t in bot.said)
+        assert any("did it" in t for _, t in bot.said)
     finally:
         rooms.drop_omp_room("orch-2")
     assert "gone" in await mgr.handle_omp_message("#king", "op", "again")

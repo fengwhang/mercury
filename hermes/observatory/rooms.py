@@ -607,7 +607,9 @@ class RoomManager:
         except Exception:
             entry["busy"] = False
             return "couldn't start that task — try again."
-        return "on it — streaming the trace here."
+        # Silent start: the trace itself is the feedback. (The steer
+        # path below still answers "steered mid-run.")
+        return ""
 
     async def _run_spawned_omp_task(
         self, channel: str, sender: str, text: str, rpc: Any

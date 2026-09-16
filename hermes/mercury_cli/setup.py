@@ -3829,7 +3829,8 @@ def _wire_gateway_irc_env(home_label: str) -> bool:
             save_env_value("IRC_SERVER_PASSWORD", passwords["agent"])
         print_success("Gateway IRC wiring saved to .env "
                       f"(bot {server}_gateway → #{server}_gateway).")
-        _restart_gateway("necessary for the bot to join its channel")
+        print_info("The gateway restarts once at the end of setup "
+                   "to pick this up.")
         return True
     except KeyboardInterrupt:
         raise

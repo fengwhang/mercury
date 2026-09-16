@@ -188,7 +188,7 @@ async def test_omp_room_streams_live_then_replays_surplus(
         "channel": "#vm_bravo", "rpc": rpc, "busy": False}
     try:
         reply = await mgr.handle_omp_message("#vm_bravo", "owner", "go")
-        assert "on it" in reply
+        assert reply == ""
         # Handler returns at once; the run continues in background.
         assert rooms_mod._omp_rooms["bravo-node"]["busy"] is True
         async with _asyncio.timeout(5):

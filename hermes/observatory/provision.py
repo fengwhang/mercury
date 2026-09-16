@@ -416,6 +416,7 @@ def ensure_gateway_node_in_state(state: Any, *, server_name: str) -> str:
 
     clean = validate_server_name(server_name)
     nick = agent_nick(f"{clean}_gateway", server="")
+    channel = gateway_channel(clean)
     try:
         row = state.get(GATEWAY_NODE_ID)
         updates: dict[str, Any] = {}
