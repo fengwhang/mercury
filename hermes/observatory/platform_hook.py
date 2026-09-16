@@ -171,11 +171,6 @@ async def boot_resync(
     Called once after adapters connect (and safe to re-run). Never raises.
     """
     from observatory.rooms import get_bot_sink, get_room_manager, set_room_manager
-    from observatory.spawn import (
-        OrchestratorRegistry,
-        build_omp_child,
-        replay_purge_journal,
-    )
 
     report: dict[str, Any] = {
         "joined": [],
@@ -200,7 +195,20 @@ async def boot_resync(
             report["failed"].append("no state (unprovisioned?)")
             return report
         if registry is None:
-            registry = OrchestratorRegistry()
+            try:
+                from observatory.spawn import OrchestratorRegistry
+
+                registry = OrchestratorRegistry()
+            except Exception:
+                # Resume degrades to no-op below; nothing here may
+                # prevent the pump from starting.
+                registry = None
+        try:
+            from observatory import rooms as _rooms
+
+            await _rooms.start_pump(manager)
+        except Exception:
+            pass
         try:
             live = list(state.get_live())
         except Exception:

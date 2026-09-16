@@ -301,7 +301,7 @@ class IRCAdapter(BasePlatformAdapter):
                 from observatory.platform_hook import boot_resync as _resync
                 asyncio.create_task(_resync())
             except Exception:
-                logger.debug("IRC: resync schedule skipped", exc_info=True)
+                logger.warning("IRC: resync schedule skipped", exc_info=True)
         except Exception:
             logger.debug("IRC: bot-sink register skipped", exc_info=True)
         logger.info("IRC: connected to %s:%s as %s, joined %s", self.server, self.port, self._current_nick, self.channel)
