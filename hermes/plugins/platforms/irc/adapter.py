@@ -210,6 +210,7 @@ class IRCAdapter(BasePlatformAdapter):
         self._watchdog_task: Optional[asyncio.Task] = None
         self._last_inbound = 0.0
         self._registered = False  # IRC registration complete
+        self._oper = False  # set by 381, cleared by 464/481
         self._registration_event = asyncio.Event()
         self._current_nick = self.nickname
 
@@ -464,13 +465,25 @@ class IRCAdapter(BasePlatformAdapter):
         return bool(getattr(result, "success", False))
 
     async def destroy_channel(self, channel: str) -> bool:
-        """Server-side room kill for /exit (OPER DESTROY); PART fallback."""
+        """Server-side room kill: OPER refresh, DESTROY, PART, undirect.
+
+        Never raises. Returns part's outcome; a failed destroy is
+        WARNING-loud (a silent one strands visible rooms).
+        """
         if self._writer and not self._writer.is_closing():
             try:
-                await self._send_raw(f"DESTROY {channel} :room closed (/exit)")
+                if self.oper_password and not self._oper:
+                    await self._send_raw(f"OPER {self.oper_password}")
+                    await asyncio.sleep(1.0)
+                await self._send_raw(f"DESTROY {channel} :room closed")
                 await asyncio.sleep(0.5)
-            except Exception:
-                logger.debug("IRC: destroy %s failed", channel, exc_info=True)
+                if not self._oper:
+                    logger.warning(
+                        "IRC: destroy %s sent without oper — likely 481",
+                        channel)
+            except Exception as exc:
+                logger.warning("IRC: destroy %s failed: %s", channel, exc)
+        self.extra_channels.discard(channel)
         return await self.part_channel(channel)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -707,6 +720,16 @@ class IRCAdapter(BasePlatformAdapter):
             if params:
                 # Server may confirm our nick in the first param
                 self._current_nick = params[0]
+            return
+
+        # RPL_YOUREOPER (381) / ERR_PASSWDMISMATCH (464) — oper state.
+        if command == "381":
+            self._oper = True
+            return
+        if command in {"464", "481"}:
+            self._oper = False
+            logger.warning("IRC: oper/auth refused (%s) — room destroys will fail",
+                           command)
             return
 
         # ERR_NICKNAMEINUSE (433) — nick collision during registration
