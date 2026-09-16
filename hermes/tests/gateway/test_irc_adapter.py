@@ -741,3 +741,81 @@ class TestIRCPumpKeeper:
 
         adapter._writer = FakeWriter()
         await adapter._pump_keeper()
+
+
+class TestIRCReadHandleSplit:
+    def _adapter(self, monkeypatch):
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from gateway.config import PlatformConfig
+        from plugins.platforms.irc.adapter import IRCAdapter
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667, "nickname": "splitbot",
+                   "channel": "#test", "use_tls": False},
+        )
+        return IRCAdapter(cfg)
+
+    def test_is_ping_shapes(self):
+        from plugins.platforms.irc.adapter import IRCAdapter
+        assert IRCAdapter._is_ping("PING :abc") is True
+        assert IRCAdapter._is_ping(":srv PING :srv") is True
+        assert IRCAdapter._is_ping(":n!u@h PRIVMSG #t :hi") is False
+        assert IRCAdapter._is_ping("") is False
+
+    @pytest.mark.asyncio
+    async def test_ping_answered_without_handler(self, monkeypatch):
+        import asyncio as _asyncio
+        adapter = self._adapter(monkeypatch)
+        adapter._line_queue = _asyncio.Queue()
+        written = []
+
+        class FakeWriter:
+            def is_closing(self):
+                return False
+            def write(self, data):
+                written.append(data)
+            async def drain(self):
+                pass
+
+        adapter._writer = FakeWriter()
+
+        async def boom(line):
+            raise AssertionError("handler must not see PING")
+
+        monkeypatch.setattr(adapter, "_handle_line", boom)
+
+        class FakeReader:
+            def __init__(self):
+                self._calls = 0
+            def at_eof(self):
+                return False
+            async def read(self, n):
+                self._calls += 1
+                if self._calls == 1:
+                    return b"PING :srv\r\n"
+                return b""
+
+        adapter._reader = FakeReader()
+        await adapter._receive_loop()
+        assert any(b"PONG" in w for w in written)
+        # Only the EOF sentinel reached the queue, never the PING line.
+        assert adapter._line_queue.qsize() == 1
+        assert await adapter._line_queue.get() is None
+
+    @pytest.mark.asyncio
+    async def test_handler_task_consumes_in_order(self, monkeypatch):
+        import asyncio as _asyncio
+        adapter = self._adapter(monkeypatch)
+        adapter._line_queue = _asyncio.Queue()
+        seen = []
+
+        async def fake_handle(line):
+            seen.append(line)
+
+        monkeypatch.setattr(adapter, "_handle_line", fake_handle)
+        await adapter._line_queue.put(":a PRIVMSG #t :one")
+        await adapter._line_queue.put(":a PRIVMSG #t :two")
+        await adapter._line_queue.put(None)
+        await adapter._handle_task()
+        assert seen == [":a PRIVMSG #t :one", ":a PRIVMSG #t :two"]
