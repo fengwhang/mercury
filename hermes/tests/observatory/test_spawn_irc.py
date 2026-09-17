@@ -232,16 +232,17 @@ async def test_spawn_same_name_gets_distinct_channels(tmp_path, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_spawn_invites_phone_user(tmp_path, monkeypatch) -> None:
-    """Fresh spawns nudge the phone with an INVITE (tap, no typing)."""
-    from observatory import soju as soju_mod
+async def test_spawn_invites_lounge_user(tmp_path, monkeypatch) -> None:
+    """Fresh spawns nudge The Lounge with an INVITE (tap, no typing)."""
+    from observatory import provision as provision_mod
 
+    monkeypatch.setattr(provision_mod, "get_lounge_nick", lambda home=None: "lounge")
     bot = FakeBot()
     monkeypatch.setattr(spawn, "get_bot_sink", lambda: bot)
     state = _real_state(tmp_path)
     registry = OrchestratorRegistry()
     row = await spawn_orchestrator("Ace", "hermes", state=state, registry=registry)
-    assert (soju_mod.SOJU_USER, row["room_id"]) in bot.invited
+    assert ("lounge", row["room_id"]) in bot.invited
 
 
 @pytest.mark.asyncio

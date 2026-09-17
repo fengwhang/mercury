@@ -1,4 +1,4 @@
-"""boot_resync heals the lobby subscription without a setup run."""
+"""boot_resync invites the lounge client to the lobby without a setup run."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ async def test_resync_subscribes_lobby(monkeypatch) -> None:
     import observatory.platform_hook as hook
     import observatory.rooms as rooms_mod
     import observatory.spawn as spawn_mod
-    import observatory.soju as soju_mod
     from observatory import provision as provision_mod
 
     invited = []
@@ -37,13 +36,10 @@ async def test_resync_subscribes_lobby(monkeypatch) -> None:
         spawn_mod, "replay_purge_journal", lambda state: [])
     monkeypatch.setattr(
         provision_mod, "live_server_name", lambda home=None: "vm")
-    seen = []
     monkeypatch.setattr(
-        soju_mod, "subscribe_user_channel",
-        lambda channel, home=None: seen.append(channel) or True)
+        provision_mod, "get_lounge_nick", lambda home=None: "owner")
     report = await hook.boot_resync(
         manager=_FakeManager(), state=_FakeState())
-    assert seen == ["#vm_gateway"]
     assert report.get("lobby") == "#vm_gateway"
     assert invited == [("owner", "#vm_gateway")]
     assert report.get("lobby_invited") is True

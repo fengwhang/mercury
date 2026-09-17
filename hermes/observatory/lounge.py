@@ -1,0 +1,281 @@
+"""The Lounge frontend for the IRC observatory (replaces soju).
+
+One Lounge instance per human user (``only one required per user``):
+it stays connected to every mercury ircd on the tailnet as a regular
+IRC client (persistent, backlog included) and serves its web UI to the
+user's browser. Adding mercury networks happens in The Lounge UI —
+this module only installs it, binds it, and keeps its unit running.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+LOUNGE_PORT_DEFAULT = 9000
+LOUNGE_UNIT_NAME = "mercury-lounge.service"
+LOUNGE_UNIT_DESCRIPTION = "Mercury The Lounge frontend (observatory UI)"
+LOUNGE_DIRNAME = "lounge"
+FILE_LOUNGE_CONFIG = "config.js"
+
+
+class LoungeError(RuntimeError):
+    pass
+
+
+def _run(args: list[str], *, input_text: Optional[str] = None,
+         timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            args, input=input_text, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as exc:
+        raise LoungeError(f"lounge exec failed: {exc}") from exc
+
+
+def _systemctl_available() -> bool:
+    try:
+        return shutil.which("systemctl") is not None
+    except Exception:
+        return False
+
+
+class LoungePaths:
+    """Resolved lounge layout under ``$MERCURY_HOME/observatory``."""
+
+    def __init__(self, mercury_home: str | Path):
+        self.root = Path(mercury_home).expanduser()
+        self.dir = self.root / "observatory" / LOUNGE_DIRNAME
+        self.conf = self.dir / FILE_LOUNGE_CONFIG
+        self.home = self.dir / "home"
+
+
+def lounge_bin() -> Path:
+    """Path to the ``thelounge`` binary (npm global install)."""
+    found = shutil.which("thelounge")
+    if found:
+        return Path(found)
+    raise LoungeError(
+        "thelounge binary not found — install it with: "
+        "npm install -g thelounge (needs Node.js 18+) "
+        "https://thelounge.chat/docs/installation")
+
+
+def ensure_lounge_installed() -> str:
+    """Make sure ``thelounge`` exists, installing via npm if asked-for.
+
+    Never installs unprompted: raises with the exact command when the
+    binary is missing so the wizard can offer it.
+    """
+    try:
+        return str(lounge_bin())
+    except LoungeError:
+        pass
+    npm = shutil.which("npm")
+    if npm is None:
+        raise LoungeError(
+            "thelounge not installed and npm not found — install Node.js, "
+            "then run: npm install -g thelounge")
+    out = _run([npm, "install", "-g", "thelounge"], timeout=600)
+    if out.returncode != 0:
+        raise LoungeError(
+            "npm install -g thelounge failed "
+            f"(may need sudo): {(out.stderr or out.stdout).strip()}")
+    return str(lounge_bin())
+
+
+def render_lounge_config(*, host: str, port: int) -> str:
+    """Render config.js (pure string templating, no I/O)."""
+    return f"""// Managed by `mercury setup observatory` — hand edits are overwritten.
+module.exports = {{
+	host: "{host}",
+	port: {int(port)},
+	public: false,
+	theme: "default",
+}};
+"""
+
+
+def ensure_lounge_config(paths: LoungePaths, *, host: str, port: int) -> dict:
+    """Write config.js when it differs. Returns {"action": ...}."""
+    try:
+        paths.dir.mkdir(parents=True, exist_ok=True)
+        paths.home.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        raise LoungeError(f"lounge dir create failed: {exc}") from exc
+    rendered = render_lounge_config(host=host, port=port)
+    try:
+        current = paths.conf.read_text(encoding="utf-8") if paths.conf.is_file() else None
+    except Exception:
+        current = None
+    if current == rendered:
+        return {"action": "current", "path": str(paths.conf)}
+    try:
+        paths.conf.write_text(rendered, encoding="utf-8")
+    except Exception as exc:
+        raise LoungeError(f"lounge config write failed: {exc}") from exc
+    return {"action": "wrote" if current is None else "updated",
+            "path": str(paths.conf)}
+
+
+def lounge_users(paths: LoungePaths) -> list[str]:
+    """Usernames with a stored Lounge login."""
+    try:
+        users_dir = paths.home / "users"
+        if not users_dir.is_dir():
+            return []
+        return sorted(p.stem for p in users_dir.glob("*.json"))
+    except Exception:
+        return []
+
+
+def ensure_lounge_user(paths: LoungePaths, username: str,
+                       password: Optional[str]) -> dict:
+    """Create the Lounge login (password via stdin, never argv).
+
+    Returns {"action": created|current}. Raises LoungeError with manual
+    instructions when creation needs an interactive terminal.
+    """
+    if username in lounge_users(paths):
+        return {"action": "current"}
+    if not password:
+        raise LoungeError(
+            f"lounge user {username!r} missing and no password given — "
+            f"create it manually: thelounge --home {paths.home} add {username}")
+    import os as _os
+
+    full_env = dict(_os.environ)
+    full_env["THELOUNGE_HOME"] = str(paths.home)
+    try:
+        proc = subprocess.run(
+            [str(lounge_bin()), "add", username],
+            input=password + "\n" + password + "\n",
+            capture_output=True, text=True, timeout=120, env=full_env)
+    except FileNotFoundError as exc:
+        raise LoungeError(f"lounge add failed: {exc}") from exc
+    if username not in lounge_users(paths):
+        raise LoungeError(
+            f"thelounge add {username!r} did not stick "
+            f"({(proc.stderr or proc.stdout).strip() or proc.returncode}) — "
+            f"create it manually: THELOUNGE_HOME={paths.home} "
+            f"thelounge add {username}")
+    return {"action": "created"}
+
+
+def render_lounge_unit(*, lounge_bin: str, home: str) -> str:
+    """Render the lounge systemd USER unit (pure string templating)."""
+    return f"""\
+[Unit]
+Description={LOUNGE_UNIT_DESCRIPTION}
+After=network-online.target mercury-observatory.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=THELOUNGE_HOME={home}
+ExecStart={lounge_bin} start
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def ensure_lounge_unit(paths: LoungePaths, *, unit: str) -> str:
+    """Install/enable/start the lounge unit. Never raises for missing
+    systemd (containers/CI) — returns "skipped"."""
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    try:
+        unit_dir.mkdir(parents=True, exist_ok=True)
+        (unit_dir / LOUNGE_UNIT_NAME).write_text(unit, encoding="utf-8")
+    except Exception as exc:
+        raise LoungeError(f"lounge unit write failed: {exc}") from exc
+    if not _systemctl_available():
+        return "skipped"
+    for args in (
+        ["daemon-reload"],
+        ["enable", LOUNGE_UNIT_NAME],
+        ["start", LOUNGE_UNIT_NAME],
+    ):
+        out = _run(["systemctl", "--user", *args])
+        if out.returncode != 0:
+            raise LoungeError(
+                f"systemctl --user {' '.join(args)} failed: "
+                f"{(out.stderr or out.stdout).strip()}")
+    return "installed"
+
+
+def restart_lounge() -> None:
+    out = _run(["systemctl", "--user", "restart", LOUNGE_UNIT_NAME])
+    if out.returncode != 0:
+        raise LoungeError(
+            f"lounge restart failed: {(out.stderr or out.stdout).strip()}")
+
+
+def lounge_unit_active() -> bool:
+    try:
+        out = _run(["systemctl", "--user", "is-active", LOUNGE_UNIT_NAME])
+        return (out.stdout or "").strip() == "active"
+    except Exception:
+        return False
+
+
+def provision_lounge(
+    mercury_home: str | Path | None = None,
+    *,
+    host: str = "127.0.0.1",
+    port: int = LOUNGE_PORT_DEFAULT,
+    username: str = "owner",
+    password: Optional[str] = None,
+    hermes_root: str | Path | None = None,
+) -> dict:
+    """Full Lounge layer: binary → config → unit → user.
+
+    ``host`` is the WEB UI bind (127.0.0.1 or the tailnet IP).
+    Mercury networks themselves are added in The Lounge UI.
+    """
+    from observatory.provision import _mercury_home  # local import: no cycle
+
+    _ = hermes_root
+    home = _mercury_home(mercury_home)
+    summary: dict = {"bin": str(ensure_lounge_installed())}
+    spaths = LoungePaths(home)
+    summary["config"] = ensure_lounge_config(spaths, host=host, port=int(port))
+    summary["unit"] = ensure_lounge_unit(
+        spaths,
+        unit=render_lounge_unit(
+            lounge_bin=summary["bin"], home=str(spaths.home)))
+    summary["user"] = ensure_lounge_user(spaths, username, password)
+    return summary
+
+
+def status_lounge(mercury_home: str | Path | None = None) -> dict:
+    """Best-effort Lounge status for setup/status surfaces (never raises)."""
+    from observatory.provision import _mercury_home  # local import: no cycle
+
+    try:
+        home = _mercury_home(mercury_home)
+        spaths = LoungePaths(home)
+        conf = str(spaths.conf) if spaths.conf.is_file() else ""
+        try:
+            binary = str(lounge_bin())
+        except LoungeError:
+            binary = ""
+        return {
+            "configured": bool(conf),
+            "binary": binary,
+            "users": lounge_users(spaths),
+            "unit": "active" if lounge_unit_active() else "inactive",
+        }
+    except Exception:
+        return {"configured": False, "binary": "", "users": [],
+                "unit": "unknown"}

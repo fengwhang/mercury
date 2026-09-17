@@ -94,6 +94,8 @@ def _patch_common(stack, fake, *, choice=1, yes_answers=None):
     stack.enter_context(patch.object(setup_mod, "_offer_bouncer_password_rotate"))
     stack.enter_context(patch.object(setup_mod, "_prompt_server_label", return_value="mercury"))
     stack.enter_context(patch.object(setup_mod, "_wire_gateway_irc_env"))
+    stack.enter_context(patch.object(setup_mod, "_offer_agent_bind"))
+    stack.enter_context(patch.object(setup_mod, "_offer_lounge"))
     auto = stack.enter_context(
         patch.object(
             setup_mod,
@@ -459,18 +461,18 @@ def test_password_offer_runs_on_reset_path():
     assert offer.call_count == 1
 
 
-def test_repair_path_wires_gateway():
+def test_repair_path_offers_agent_bind():
     from contextlib import ExitStack
 
     fake = _FakeObs(_base_status(provisioned=True))
     with ExitStack() as stack:
         _patch_common(stack, fake, choice=0, yes_answers=[True])
-        wire = stack.enter_context(
-            patch.object(setup_mod, "_wire_gateway_irc_env")
+        offer = stack.enter_context(
+            patch.object(setup_mod, "_offer_agent_bind")
         )
         setup_mod.setup_observatory({})
-    assert wire.call_count == 1
-    assert wire.call_args[0][0] == "mercury"
+    assert offer.call_count == 1
+    assert offer.call_args[0][1] == "mercury"
 
 
 def test_restart_gateway_runs_mercury_restart(monkeypatch):
@@ -490,24 +492,17 @@ def test_restart_gateway_decline_prints_manual(monkeypatch, capsys):
     assert "mercury gateway restart" in capsys.readouterr().out
 
 
-def test_tail_provisions_soju_layer(monkeypatch):
+def test_tail_offers_lounge_layer(monkeypatch):
     from contextlib import ExitStack
-
-    import observatory.soju as soju_mod
+    from unittest.mock import patch
 
     fake = _FakeObs(_base_status(provisioned=True))
-    calls = []
-    monkeypatch.setattr(
-        soju_mod, "provision_soju",
-        lambda *a, **k: calls.append(True) or {"unit": "installed"})
-    monkeypatch.setattr(
-        soju_mod, "status_soju",
-        lambda *a, **k: {"configured": True, "unit": "active",
-                         "upstream_connected": True})
     with ExitStack() as stack:
         _patch_common(stack, fake, choice=1, yes_answers=[True])
+        offer = stack.enter_context(
+            patch.object(setup_mod, "_offer_lounge"))
         setup_mod.setup_observatory({})
-    assert calls == [True]
+    assert offer.call_count == 1
 
 
 def test_wire_gateway_sets_allow_all(monkeypatch):
@@ -549,3 +544,49 @@ def test_provisioned_flow_ends_with_gateway_restart():
         setup_mod.setup_observatory({})
     assert restart.call_count == 1
     assert "final step" in restart.call_args[0][0]
+
+
+def test_offer_agent_bind_localhost_wires_env(tmp_path, monkeypatch) -> None:
+    """Localhost choice pins 127.0.0.1 and wires the gateway env."""
+    import json as _json
+
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    obs = home / "observatory"
+    obs.mkdir(parents=True)
+    (obs / "ircd.json").write_text(_json.dumps({"server_name": "vm"}))
+    saved = {}
+    monkeypatch.setattr(setup_mod, "prompt_choice", lambda *a, **k: 0)
+    monkeypatch.setattr(setup_mod, "save_env_value",
+                        lambda k, v: saved.__setitem__(k, v))
+    import observatory.provision as provision_mod
+    monkeypatch.setattr(provision_mod, "read_irc_passwords",
+                        lambda home: {"bouncer": "b", "agent": "a"})
+    setup_mod._offer_agent_bind(None, "vm", {"up": False})
+    cfg = _json.loads((obs / "ircd.json").read_text())
+    assert cfg["agent_host"] == "127.0.0.1"
+    assert saved["IRC_SERVER"] == "127.0.0.1"
+    assert saved["IRC_NICKNAME"] == "vm_gateway"
+
+
+def test_offer_agent_bind_tailscale_pins_ip(tmp_path, monkeypatch) -> None:
+    """Tailscale choice pins the tailnet IP for the whole agent side."""
+    import json as _json
+
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    obs = home / "observatory"
+    obs.mkdir(parents=True)
+    (obs / "ircd.json").write_text(_json.dumps({"server_name": "vm"}))
+    saved = {}
+    monkeypatch.setattr(setup_mod, "prompt_choice", lambda *a, **k: 1)
+    monkeypatch.setattr(setup_mod, "save_env_value",
+                        lambda k, v: saved.__setitem__(k, v))
+    import observatory.provision as provision_mod
+    monkeypatch.setattr(provision_mod, "read_irc_passwords",
+                        lambda home: {"bouncer": "b", "agent": "a"})
+    setup_mod._offer_agent_bind(
+        None, "vm", {"up": True, "ip": "100.9.9.9", "dns_name": None})
+    cfg = _json.loads((obs / "ircd.json").read_text())
+    assert cfg["agent_host"] == "100.9.9.9"
+    assert saved["IRC_SERVER"] == "100.9.9.9"

@@ -469,6 +469,25 @@ def ensure_gateway_node_in_state(state: Any, *, server_name: str) -> str:
         return nick
 
 
+def get_lounge_nick(mercury_home: str | Path | None = None) -> str:
+    """Nick The Lounge uses on this network (invite target).
+
+    Explicit ``lounge_nick`` wins, else the Lounge username, else
+    ``"owner"``. Never raises.
+    """
+    try:
+        cfg = read_config(mercury_home) or {}
+        nick = str(cfg.get("lounge_nick") or "").strip()
+        if nick:
+            return nick
+        user = str(cfg.get("lounge_user") or "").strip()
+        if user:
+            return user
+    except Exception:
+        pass
+    return "owner"
+
+
 def live_server_name(mercury_home: str | Path | None = None) -> str | None:
     """Live network label from ircd.json, or None when unprovisioned."""
     cfg = read_config(mercury_home)
@@ -812,15 +831,15 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
 
 
 def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
-    """Delete IRC observatory data (config + history + agent tree + soju
-    backlog). The unit files survive (re-provision rewrites config;
-    callers must restart both daemons — live memory outlives the files).
-    Returns what was removed."""
+    """Delete IRC observatory data (config + history + agent tree).
+
+    The unit files survive (re-provision rewrites config; callers must
+    restart both daemons — live memory outlives the files). The Lounge
+    is NEVER touched: one instance serves the whole user, possibly
+    across mercury installs. Returns what was removed."""
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
     removed: list[str] = []
-    soju_db = paths.root / "soju.db"
-    soju_admin = paths.root / "soju-admin"
     for target in (
         paths.config_file,
         paths.history_db,
@@ -829,8 +848,6 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
         paths.root / "state.db-shm",
         paths.root / "omp-sessions",
         paths.tls_dir,
-        soju_db,
-        soju_admin,
     ):
         try:
             if target.is_dir() and not target.is_symlink():

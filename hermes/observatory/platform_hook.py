@@ -216,12 +216,6 @@ async def boot_resync(
                         if await bot.join_channel(channel):
                             report["joined"].append(channel)
                             try:
-                                from observatory.soju import subscribe_user_channel
-
-                                subscribe_user_channel(channel)
-                            except Exception:
-                                pass
-                            try:
                                 from observatory.identity import ensure_identity
 
                                 nick = str((row or {}).get("mxid") or "")
@@ -262,23 +256,19 @@ async def boot_resync(
                 continue
         try:
             # Lobby self-heal: restarts/upgrades must never leave the
-            # phone without its gateway room (no setup run required).
-            from observatory.provision import live_server_name
+            # user without its gateway room (no setup run required).
+            # The Lounge learns it via INVITE (no bouncer subscription).
+            from observatory.provision import get_lounge_nick, live_server_name
             from observatory.rooms import gateway_channel
-            from observatory.soju import subscribe_user_channel
 
             lobby = gateway_channel(live_server_name(None) or "mercury")
-            if subscribe_user_channel(lobby):
-                report["lobby"] = lobby
-                try:
-                    # Nudge already-connected phones: subscription alone
-                    # only surfaces on (re)connect, the INVITE taps now.
-                    from observatory.soju import SOJU_USER
-
-                    if bot is not None and await bot.invite_user(SOJU_USER, lobby):
-                        report["lobby_invited"] = True
-                except Exception:
-                    pass
+            try:
+                if bot is not None and await bot.invite_user(
+                        get_lounge_nick(None), lobby):
+                    report["lobby"] = lobby
+                    report["lobby_invited"] = True
+            except Exception:
+                pass
         except Exception:
             pass
         try:

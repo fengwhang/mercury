@@ -40,11 +40,6 @@ def _manager(tmp_path, monkeypatch):
     state = ObservatoryState(tmp_path / "state.db")
     bot = FakeBot()
     subscribed: list[str] = []
-    import observatory.soju as soju_mod
-
-    monkeypatch.setattr(
-        soju_mod, "subscribe_user_channel",
-        lambda channel, home=None: subscribed.append(channel) or True)
     mgr = RoomManager(state, bot)
     return mgr, state, bot, subscribed
 
@@ -68,7 +63,6 @@ async def test_ensure_creates_prefixed_visible_room(tmp_path, monkeypatch) -> No
     assert row["depth"] == 1
     assert row["mxid"] == "vm_alpha-bravo"
     assert "#vm_alpha-bravo" in bot.joined
-    assert subscribed == ["#vm_alpha-bravo"]
     assert ("owner", "#vm_alpha-bravo") in bot.invited
 
 

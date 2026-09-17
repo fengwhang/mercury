@@ -1189,12 +1189,9 @@ def _resolve_daemon_config(args: Any) -> DaemonConfig:
         cand = Path(state_dir).expanduser() / "tls" / "server.key"
         if cand.is_file():
             tls_key = str(cand)
-    # soju_front (set by the soju provision step): soju owns the public
-    # bouncer bind, so the ircd bouncer drops to localhost. The public
-    # address stays in ircd.json as the single source of truth for soju,
-    # the setup card, and firewall — only the daemon's bind changes.
-    front = bool(file_cfg.get("soju_front"))
-    bouncer_host = "127.0.0.1" if front else _pick("bouncer_host", "127.0.0.1")
+    # The client (bouncer) listener binds per ircd.json directly —
+    # direct IRC clients and The Lounge connect here.
+    bouncer_host = _pick("bouncer_host", "127.0.0.1")
     return DaemonConfig(
         host=_pick("host", "127.0.0.1"),
         agent_port=_pick("agent_port", 6669),

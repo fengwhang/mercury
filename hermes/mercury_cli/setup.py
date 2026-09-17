@@ -3213,21 +3213,6 @@ def _ensure_firewall_port(port: int | str) -> str:
     return "failed"
 
 
-def _print_soju_status(summary: dict) -> None:
-    """One-line soju frontend status (bouncer Goguma actually talks to)."""
-    try:
-        if summary.get("configured") and summary.get("unit") == "active":
-            if summary.get("upstream_connected"):
-                print_success("soju bouncer live (upstream connected).")
-            else:
-                print_warning("soju bouncer up but upstream NOT connected.")
-        else:
-            print_warning(
-                f"soju bouncer not live (unit {summary.get('unit')}).")
-    except Exception:  # noqa: BLE001 — status never kills setup
-        pass
-
-
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
     """Bouncer login card — the ONLY manual step (any IRC client).
 
@@ -3779,29 +3764,102 @@ def _restart_gateway(reason: str) -> bool:
     return True
 
 
-def _wire_gateway_irc_env(home_label: str) -> bool:
-    """Offer pointing the gateway's IRC platform at this network.
+def _print_lounge_card(host: str, port: int, username: str,
+                       password: str | None) -> None:
+    """One-time login card (password printed only when just created)."""
+    scheme = "http"
+    print_success(f"The Lounge is live at {scheme}://{host}:{port}")
+    print_info(f"Log in as {username!r} — then add each mercury IRC "
+               "server as a network (one bouncer login covers them all).")
+    if password:
+        print_warning(f"Fresh password (shown once): {password}")
 
-    Writes the IRC_* env keys (.env) so the gateway bot joins the local
-    ircd as ``<server>_gateway`` in ``#<server>_gateway``. The gateway
-    needs a restart to pick them up.
-    """
+
+def _offer_lounge(obs, ts: dict | None) -> None:
+    """Offer installing The Lounge (only one required per user)."""
     try:
         want = prompt_yes_no(
-            "Wire the gateway bot to the LOCAL agent port (localhost)? "
-            "Sets IRC_* in .env so the gateway bot joins the gateway channel. "
-            "This is independent of the Tailscale bouncer pin — phones use "
-            "the bouncer, the gateway uses localhost; answering No here "
-            "changes nothing about Tailscale.",
+            "Install The Lounge? (only one required per user)",
             default=True,
         )
     except KeyboardInterrupt:
         raise
     except Exception:  # noqa: BLE001 — an offer never kills the wizard
-        return False
+        return
     if not want:
-        print_info("Skipped gateway wiring — do it later via: mercury setup gateway")
-        return False
+        print_info("Skipped — point any IRC client at the bouncer instead.")
+        return
+    try:
+        from observatory import lounge as lounge_mod
+
+        ip = (ts or {}).get("ip") if isinstance(ts, dict) else None
+        tail_ok = bool(isinstance(ts, dict) and ts.get("up") and ip)
+        choices = ["Localhost only (this box's browser)"]
+        if tail_ok:
+            choices.append(f"Tailscale ({ip} — any tailnet browser)")
+        try:
+            which = prompt_choice(
+                "Pin The Lounge to Tailscale or localhost?", choices, 0)
+        except KeyboardInterrupt:
+            raise
+        except Exception:  # noqa: BLE001
+            which = 0
+        host = str(ip).strip() if (which == 1 and tail_ok) else "127.0.0.1"
+        try:
+            username = (prompt("Lounge username", default="owner") or "owner").strip() or "owner"
+        except KeyboardInterrupt:
+            raise
+        except Exception:  # noqa: BLE001
+            username = "owner"
+        import secrets as _secrets
+
+        password = _secrets.token_urlsafe(16)
+        try:
+            summary = lounge_mod.provision_lounge(
+                host=host, username=username, password=password)
+        except Exception as exc:
+            print_error(f"Lounge provisioning failed: {exc}")
+            print_info("Install it by hand: npm install -g thelounge")
+            return
+        created = (summary.get("user") or {}).get("action") == "created"
+        try:
+            from observatory.provision import _mercury_home, read_config
+            from observatory.config_gen import ObservatoryPaths
+            import json as _json
+
+            _home = _mercury_home(None)
+            _cfg = read_config(_home) or {}
+            _cfg["lounge_user"] = username
+            ObservatoryPaths(_home).config_file.write_text(
+                _json.dumps(_cfg, indent=2) + "\n", encoding="utf-8")
+        except Exception:  # noqa: BLE001 — invites fall back to "owner"
+            pass
+        try:
+            _ensure_firewall_port(lounge_mod.LOUNGE_PORT_DEFAULT)
+        except Exception:  # noqa: BLE001 — firewall never kills setup
+            pass
+        # Fresh passwords cannot be recovered — show once on creation
+        # (change it later in The Lounge settings UI).
+        _print_lounge_card(host, lounge_mod.LOUNGE_PORT_DEFAULT, username,
+                           password if created else None)
+        try:
+            status = obs.status_summary()
+        except Exception:  # noqa: BLE001
+            pass
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # noqa: BLE001 — an offer never kills the wizard
+        print_error(f"Lounge offer failed: {exc}")
+
+
+def _wire_gateway_irc_env(home_label: str) -> bool:
+    """Point the gateway's IRC platform at this network (no prompt).
+
+    Writes the IRC_* env keys (.env) so the gateway bot joins the local
+    ircd as ``<server>_gateway`` in ``#<server>_gateway``. Always runs —
+    the bot cannot join without it; the bind choice lives in
+    ``_offer_agent_bind``. The gateway restarts once at the end of setup.
+    """
     try:
         from observatory.provision import _mercury_home, read_config, read_irc_passwords
         from observatory.config_gen import (
@@ -3829,8 +3887,6 @@ def _wire_gateway_irc_env(home_label: str) -> bool:
             save_env_value("IRC_SERVER_PASSWORD", passwords["agent"])
         print_success("Gateway IRC wiring saved to .env "
                       f"(bot {server}_gateway → #{server}_gateway).")
-        print_info("The gateway restarts once at the end of setup "
-                   "to pick this up.")
         return True
     except KeyboardInterrupt:
         raise
@@ -3838,6 +3894,59 @@ def _wire_gateway_irc_env(home_label: str) -> bool:
         print_error(f"Gateway wiring failed: {exc}")
         print_info("Do it later via: mercury setup gateway")
         return False
+
+
+def _offer_agent_bind(obs, label: str, ts: dict | None) -> None:
+    """Pin the agent listener to localhost or Tailscale.
+
+    This is the whole IRC server's agent side — the gateway bot plus
+    every spawned agent and subagent room — not just one bot. Tailscale
+    exposes agent traffic (passwords still required) so a remote
+    frontend can reach every room. Localhost keeps bots on this box.
+    Never starts/stops the daemon here; the final restart applies it.
+    """
+    try:
+        ip = (ts or {}).get("ip") if isinstance(ts, dict) else None
+        tail_ok = bool(isinstance(ts, dict) and ts.get("up") and ip)
+        choices = ["Localhost only (bots stay on this box)"]
+        if tail_ok:
+            choices.append(f"Tailscale ({ip} — the whole fleet reachable)")
+        choice = prompt_choice(
+            "Pin the IRC server (agent listener) to localhost or Tailscale?",
+            choices,
+            0,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception:  # noqa: BLE001 — a bind offer never kills the wizard
+        return
+    try:
+        from observatory.provision import _mercury_home, read_config
+        from observatory.config_gen import ObservatoryPaths
+    except Exception:
+        return
+    try:
+        import json as _json
+
+        home = _mercury_home(None)
+        cfg = read_config(home) or {}
+        if choice == 1 and tail_ok:
+            cfg["agent_host"] = str(ip).strip()
+            print_success(
+                "Agent listener will bind the tailnet after a restart.")
+        else:
+            cfg["agent_host"] = "127.0.0.1"
+            print_info("Keeping the agent listener on localhost.")
+        paths = ObservatoryPaths(home)
+        paths.config_file.write_text(
+            _json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        print_warning(f"Could not write the agent bind: {exc}")
+        print_info("Edit `agent_host` in observatory/ircd.json by hand instead.")
+        return
+    _wire_gateway_irc_env(label)
+
+
 
 def setup_observatory(config: dict, *, quick: bool = False):
     """Wizard section: the bundled IRC observatory (ircd daemon).
@@ -3869,6 +3978,11 @@ def setup_observatory(config: dict, *, quick: bool = False):
 
     _observatory_state_lines(status)
     print()
+
+    _prompt_observatory_enabled_toggle(config)
+    if not bool(cfg_get(config, "observatory", "enabled", default=True)):
+        print_info("Observatory disabled — skipping the rest of this section.")
+        return
 
     # Reconfigure gate: already provisioned → one-line summary + ask
     # (default NO keeps everything, fast re-run). Fresh installs fall
@@ -3915,7 +4029,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
                         print_success(f"Observatory provisioning complete ({detail}).")
                     else:
                         print_error(f"Provisioned but the daemon is NOT answering: {detail}")
-                _wire_gateway_irc_env(label)
+                _offer_agent_bind(obs, label, _tailscale_status(obs))
             else:
                 wiped = _offer_observatory_reset(obs)
                 if wiped:
@@ -3936,7 +4050,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
                             print_success(f"Observatory reset + reprovisioned ({detail}).")
                         else:
                             print_error(f"Reset done but the daemon is NOT answering: {detail}")
-                    _wire_gateway_irc_env(label)
+                    _offer_agent_bind(obs, label, _tailscale_status(obs))
                 else:
                     _offer_bouncer_password_rotate(obs)
                     obs.provision_in_wizard()
@@ -3947,7 +4061,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
                         print_success(f"Observatory repair complete ({detail}).")
                     else:
                         print_error(f"Repair done but the daemon is NOT answering: {detail}")
-                    _wire_gateway_irc_env(str(status.get("server_name") or "mercury"))
+                    _offer_agent_bind(obs, str(status.get("server_name") or "mercury"), _tailscale_status(obs))
         except KeyboardInterrupt:
             raise
         except Exception as exc:
@@ -3956,7 +4070,6 @@ def setup_observatory(config: dict, *, quick: bool = False):
             print_info("Retry any time with: mercury setup observatory")
     else:
         print_info("Skipped — provision later with: mercury setup observatory")
-    _prompt_observatory_enabled_toggle(config)
 
     if status.get("provisioned"):
         ts = _tailscale_status(obs)
@@ -3973,16 +4086,15 @@ def setup_observatory(config: dict, *, quick: bool = False):
         except Exception:  # noqa: BLE001 — firewall never kills setup
             pass
         try:
-            from observatory.soju import provision_soju, status_soju
+            from observatory import lounge as lounge_mod
 
-            soju_summary = provision_soju()
-            _print_soju_status(status_soju())
-        except Exception as exc:  # noqa: BLE001 — direct bouncer still works
-            print_error(f"soju layer failed: {exc}")
-            print_info("Phones fall back to the direct bouncer (Goguma will warn).")
+            _offer_lounge(obs, ts)
+        except Exception as exc:  # noqa: BLE001 — direct IRC still works
+            print_error(f"Lounge layer failed: {exc}")
+            print_info("Connect any IRC client straight to the bouncer instead.")
         try:
             status = obs.status_summary()
-        except Exception:  # noqa: BLE001 — keep the pre-soju status
+        except Exception:  # noqa: BLE001 — keep the pre-frontend status
             pass
         _print_observatory_setup_card(status, ts)
         ok, detail = _verify_daemon_listening(status)
@@ -3991,7 +4103,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
         else:
             print_error(f"Setup finished but the daemon is NOT answering: {detail}")
         _maybe_print_bind_mismatch_action(obs, ts)
-        # Final step: the soju/ircd converge above bounced daemons the
+        # Final step: the converge above bounced daemons the
         # gateway was already connected to, so a gateway restarted
         # earlier is wedged until it restarts onto the final topology.
         _restart_gateway(

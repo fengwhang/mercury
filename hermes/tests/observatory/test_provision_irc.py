@@ -197,13 +197,16 @@ def test_provision_rejects_bad_chosen_password_env(tmp_path, monkeypatch) -> Non
         provision.provision(home, server_name="mercury", systemd=False)
 
 
-def test_reset_clears_soju_backlog(tmp_path, monkeypatch) -> None:
+def test_reset_leaves_lounge_alone(tmp_path, monkeypatch) -> None:
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
     obs = home / "observatory"
     obs.mkdir(parents=True)
-    (obs / "soju.db").write_text("backlog")
-    (obs / "soju-admin").write_text("sock")
+    lounge_home = obs / "lounge" / "home" / "users"
+    lounge_home.mkdir(parents=True)
+    (lounge_home / "owner.json").write_text("{}")
+    (obs / "state.db").write_text("tree")
     removed = provision.reset_observatory_data(home)
-    assert any("soju.db" in r for r in removed)
-    assert not (obs / "soju.db").exists()
+    assert not any("observatory/lounge" in r for r in removed)
+    assert (lounge_home / "owner.json").is_file()
+    assert not (obs / "state.db").exists()

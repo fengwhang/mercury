@@ -467,20 +467,16 @@ class RoomManager:
             channel, greet=f"live trace for subagent '{name}' streams here"
         )
         logger.info("observatory: room ensured %s for %s", channel, node_id)
+        # No bouncer subscription: The Lounge sees rooms via INVITE
+        # and prunes them itself on destroy.
         try:
-            from observatory.soju import subscribe_user_channel
-
-            subscribe_user_channel(channel)
-        except Exception:
-            logger.debug("rooms: phone subscribe failed for %s", channel)
-        try:
-            from observatory.soju import SOJU_USER
+            from observatory.provision import get_lounge_nick
 
             bot = self.bot
             if bot is not None:
-                await bot.invite_user(SOJU_USER, channel)
+                await bot.invite_user(get_lounge_nick(None), channel)
         except Exception:
-            logger.debug("rooms: phone invite failed for %s", channel)
+            logger.debug("rooms: lounge invite failed for %s", channel)
         return channel
 
     async def _retire_child_room(self, node_id: str, *, summary: str = "") -> None:
@@ -557,17 +553,9 @@ class RoomManager:
                 await self.destroy_room(channel)
             except Exception:
                 pass
-            try:
-                from observatory.soju import unsubscribe_user_channel
-
-                if not unsubscribe_user_channel(channel):
-                    logger.warning(
-                        "observatory: phone unsubscribe failed for %s",
-                        channel)
-            except Exception as exc:
-                logger.warning(
-                    "observatory: phone unsubscribe failed for %s (%s)",
-                    channel, exc)
+            # No unsubscribe step: without a bouncer there is no
+            # phone-side subscription — The Lounge prunes the destroyed
+            # room itself.
             try:
                 from observatory.identity import drop_identity
 

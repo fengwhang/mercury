@@ -589,17 +589,11 @@ async def spawn_orchestrator(
             logger.exception("spawn: channel join failed for %s", node_id)
         else:
             try:
-                from observatory.soju import subscribe_user_channel
+                from observatory.provision import get_lounge_nick
 
-                subscribe_user_channel(channel)
-            except Exception:  # noqa: BLE001 — cosmetic; phone stays manual
-                logger.debug("spawn: phone subscribe failed for %s", node_id)
-            try:
-                from observatory.soju import SOJU_USER
-
-                await bot.invite_user(SOJU_USER, channel)
+                await bot.invite_user(get_lounge_nick(None), channel)
             except Exception:  # noqa: BLE001 — cosmetic; invite is a nudge
-                logger.debug("spawn: phone invite failed for %s", node_id)
+                logger.debug("spawn: lounge invite failed for %s", node_id)
             try:
                 from observatory.identity import ensure_identity
                 from observatory.rooms import agent_nick as _agent_nick
@@ -766,12 +760,6 @@ async def _execute_channel_destroy(bot: Any, channels: list[str]) -> PurgeOutcom
                 continue
             ok = await bot.destroy_channel(str(channel))
             try:
-                from observatory.soju import unsubscribe_user_channel
-
-                unsubscribe_user_channel(str(channel))
-            except Exception:  # noqa: BLE001 — cosmetic; dead room lingers on phone
-                logger.debug("spawn: phone unsubscribe failed for %s", channel)
-            try:
                 from observatory.identity import drop_identity
 
                 await drop_identity(str(channel))
@@ -894,15 +882,6 @@ async def exit_orchestrator(
         deferred = ["no bot sink attached (IRC down?)"]
     if not deferred:
         finish_exit(state, record)
-        # Phones never learn an unsubscribe live — restart the bouncer
-        # so they resync without the archived room. Best-effort.
-        try:
-            from observatory.soju import restart_soju, soju_unit_active
-
-            if record.channels and soju_unit_active():
-                restart_soju()
-        except Exception as exc:
-            logger.warning("exit: soju restart failed (%s)", exc)
     return {"record": record, "records": records, "deferred": deferred}
 
 

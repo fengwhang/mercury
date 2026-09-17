@@ -41,14 +41,6 @@ def _manager(tmp_path, monkeypatch):
     monkeypatch.setattr(provision_mod, "live_server_name", lambda home=None: "vm")
     state = ObservatoryState(tmp_path / "state.db")
     bot = FakeBot()
-    import observatory.soju as soju_mod
-
-    monkeypatch.setattr(
-        soju_mod, "subscribe_user_channel",
-        lambda channel, home=None: True)
-    monkeypatch.setattr(
-        soju_mod, "unsubscribe_user_channel",
-        lambda channel, home=None: True)
     mgr = RoomManager(state, bot)
     rooms_mod.set_room_manager(mgr)
     rooms_mod.set_bot_sink(bot)
@@ -72,14 +64,10 @@ async def test_watcher_start_streams_stop_purges(tmp_path, monkeypatch) -> None:
         parent_node_id=None, extra={"kind": "spawn"})
     state.set_room_id("alpha-node", "#vm_alpha")
     bot = FakeBot()
-    import observatory.soju as soju_mod
     from observatory import provision as provision_mod
 
     monkeypatch.setattr(provision_mod, "live_server_name", lambda home=None: "vm")
-    monkeypatch.setattr(
-        soju_mod, "subscribe_user_channel", lambda channel, home=None: True)
-    monkeypatch.setattr(
-        soju_mod, "unsubscribe_user_channel", lambda channel, home=None: True)
+    monkeypatch.setattr(provision_mod, "get_lounge_nick", lambda home=None: "owner")
     mgr = RoomManager(state, bot)
     rooms_mod.set_room_manager(mgr)
     rooms_mod.set_bot_sink(bot)
