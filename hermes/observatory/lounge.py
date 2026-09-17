@@ -30,10 +30,18 @@ class LoungeError(RuntimeError):
 
 
 def _run(args: list[str], *, input_text: Optional[str] = None,
-         timeout: int = 120) -> subprocess.CompletedProcess[str]:
+         timeout: int = 120,
+         extra_env: Optional[dict] = None) -> subprocess.CompletedProcess[str]:
     try:
+        import os as _os
+
+        env = None
+        if extra_env:
+            env = dict(_os.environ)
+            env.update(extra_env)
         return subprocess.run(
-            args, input=input_text, capture_output=True, text=True, timeout=timeout)
+            args, input=input_text, capture_output=True, text=True,
+            timeout=timeout, env=env)
     except FileNotFoundError as exc:
         raise LoungeError(f"lounge exec failed: {exc}") from exc
 
@@ -325,6 +333,33 @@ def ensure_lounge_network(
     except Exception as exc:
         raise LoungeError(f"lounge network seed failed: {exc}") from exc
     return {"action": "seeded", "network": net_name, "channel": channel}
+
+
+def reset_lounge_password(paths: LoungePaths, username: str,
+                          password: str) -> dict:
+    """Reset a Lounge LOGIN password non-interactively.
+
+    ``thelounge reset --password`` with THELOUNGE_HOME pointed at our
+    home (verified against the real CLI). Raises LoungeError on
+    failure so the wizard surfaces it instead of silently stranding
+    the user at the login page.
+    """
+    if not password:
+        raise LoungeError("refusing to reset to an empty password")
+    users_file = paths.home / "users" / f"{username}.json"
+    if not users_file.is_file():
+        raise LoungeError(f"lounge user {username!r} does not exist")
+    out = _run(
+        [str(lounge_bin()), "reset", "--password", password, username],
+        extra_env={"THELOUNGE_HOME": str(paths.home)}, timeout=60)
+    if out.returncode != 0:
+        raise LoungeError(
+            "thelounge reset failed: "
+            f"{(out.stderr or out.stdout).strip()}")
+    if username not in lounge_users(paths):
+        raise LoungeError(
+            f"thelounge reset did not stick for {username!r}")
+    return {"action": "reset", "user": username}
 
 
 def provision_lounge(

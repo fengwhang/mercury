@@ -96,6 +96,7 @@ def _patch_common(stack, fake, *, choice=1, yes_answers=None):
     stack.enter_context(patch.object(setup_mod, "_wire_gateway_irc_env"))
     stack.enter_context(patch.object(setup_mod, "_offer_agent_bind"))
     stack.enter_context(patch.object(setup_mod, "_offer_lounge"))
+    stack.enter_context(patch.object(setup_mod, "_offer_lounge_password_reset"))
     auto = stack.enter_context(
         patch.object(
             setup_mod,

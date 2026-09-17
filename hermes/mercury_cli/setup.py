@@ -3830,6 +3830,61 @@ def _print_lounge_card(host: str, port: int, username: str,
         print_warning(f"Fresh password (shown once): {password}")
 
 
+def _offer_lounge_password_reset(obs) -> None:
+    """Offer resetting The Lounge LOGIN password (re-run path only).
+
+    This is the password typed into the :9000 web UI — NOT the server
+    password in .env (that one has its own rotate prompt). Shown once;
+    The Lounge hashes it, so a lost password can only be replaced.
+    """
+    try:
+        from observatory import lounge as lounge_mod
+        from observatory.provision import (
+            _mercury_home as _mh2, read_config as _read_cfg2,
+        )
+
+        home = _mh2(None)
+        lounge = lounge_mod.status_lounge(home)
+        if not lounge.get("configured"):
+            return
+        cfg = _read_cfg2(home) or {}
+        stored = str(cfg.get("lounge_user") or "").strip()
+        users = lounge.get("users") or []
+        username = stored if stored in users else (users[0] if users else "")
+        if not username:
+            return
+        want = prompt_yes_no(
+            f"Reset The Lounge login password for {username!r}?",
+            default=False,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception:  # noqa: BLE001 — an offer never kills the wizard
+        return
+    if not want:
+        return
+    try:
+        import secrets as _secrets
+
+        from observatory.lounge import LoungePaths
+
+        password = _secrets.token_urlsafe(16)
+        lounge_mod.reset_lounge_password(
+            LoungePaths(home), username, password)
+        try:
+            lounge_mod.restart_lounge()
+        except Exception:  # noqa: BLE001 — file is already reset
+            pass
+        _print_lounge_card(
+            str(lounge.get("host") or "127.0.0.1"),
+            int(lounge.get("port") or lounge_mod.LOUNGE_PORT_DEFAULT),
+            username, password)
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:  # noqa: BLE001 — an offer never kills
+        print_error(f"Lounge password reset failed: {exc}")
+
+
 def _offer_lounge(obs, ts: dict | None) -> None:
     """Offer installing The Lounge (only one required per user)."""
     try:
@@ -4167,6 +4222,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
             from observatory import lounge as lounge_mod
 
             _offer_lounge(obs, ts)
+            _offer_lounge_password_reset(obs)
         except Exception as exc:  # noqa: BLE001 — direct IRC still works
             print_error(f"Lounge layer failed: {exc}")
             print_info("Connect any IRC client straight to this server instead.")

@@ -166,3 +166,37 @@ def test_provision_lounge_seeds_network_and_restarts(
     assert restarted == [True]
     data = _json.loads((users / "owner.json").read_text())
     assert data["networks"][0]["name"] == "vm"
+
+
+def test_reset_lounge_password_missing_user(tmp_path) -> None:
+    import pytest
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    with pytest.raises(lounge_mod.LoungeError):
+        lounge_mod.reset_lounge_password(paths, "ghost", "pw")
+
+
+def test_reset_lounge_password_runs_cli(tmp_path, monkeypatch) -> None:
+    import json as _json
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    users = paths.home / "users"
+    users.mkdir(parents=True)
+    (users / "owner.json").write_text(_json.dumps({"networks": []}))
+    seen = {}
+
+    import types as _types
+    def _fake_run(args, **kwargs):
+        seen["args"] = list(args)
+        seen["env"] = (kwargs.get("extra_env") or {}).get("THELOUNGE_HOME")
+        return _types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(lounge_mod, "lounge_bin", lambda: "/bin/thelounge")
+    monkeypatch.setattr(lounge_mod, "_run", _fake_run)
+    out = lounge_mod.reset_lounge_password(paths, "owner", "newpw")
+    assert out == {"action": "reset", "user": "owner"}
+    assert seen["args"][:3] == ["/bin/thelounge", "reset", "--password"]
+    assert seen["args"][3:] == ["newpw", "owner"]
+    assert seen["env"] == str(paths.home)
