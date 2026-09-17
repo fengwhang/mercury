@@ -216,10 +216,15 @@ def lounge_users(paths: LoungePaths) -> list[str]:
 
 def ensure_lounge_user(paths: LoungePaths, username: str,
                        password: Optional[str]) -> dict:
-    """Create the Lounge login (password via stdin, never argv).
+    """Create the Lounge login via ``add --password`` (non-interactive).
 
+    Piping answers to the interactive prompts does NOT work (the
+    prompt sequence eats them and the user silently never sticks —
+    verified live). ``--password`` is the supported path; the momentary
+    argv exposure is confined to the single-user box. The unit's PATH
+    carries node for the thelounge shebang; same here via full_env.
     Returns {"action": created|current}. Raises LoungeError with manual
-    instructions when creation needs an interactive terminal.
+    instructions on failure.
     """
     if username in lounge_users(paths):
         return {"action": "current"}
@@ -235,10 +240,14 @@ def ensure_lounge_user(paths: LoungePaths, username: str,
 
     full_env = dict(_os.environ)
     full_env["THELOUNGE_HOME"] = str(paths.home)
+    node = shutil.which("node") or ""
+    if node:
+        full_env["PATH"] = _os.pathsep.join(
+            [str(Path(node).parent), full_env.get("PATH", "")])
     try:
         proc = subprocess.run(
-            [str(lounge_bin()), "add", username],
-            input=password + "\n" + password + "\n",
+            [str(lounge_bin()), "add", "--password", password,
+             "--save-logs", username],
             capture_output=True, text=True, timeout=120, env=full_env)
     except FileNotFoundError as exc:
         raise LoungeError(f"lounge add failed: {exc}") from exc
@@ -251,8 +260,12 @@ def ensure_lounge_user(paths: LoungePaths, username: str,
     return {"action": "created"}
 
 
-def render_lounge_unit(*, lounge_bin: str, home: str) -> str:
+def render_lounge_unit(*, lounge_bin: str, home: str, path_extra: str = "") -> str:
     """Render the lounge systemd USER unit (pure string templating)."""
+    import os as _os
+
+    _path = _os.pathsep.join(
+        [p for p in (path_extra, "/usr/local/bin:/usr/bin:/bin") if p])
     return f"""\
 [Unit]
 Description={LOUNGE_UNIT_DESCRIPTION}
@@ -263,6 +276,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 Environment=THELOUNGE_HOME={home}
+Environment=PATH={_path}
 ExecStart={lounge_bin} start
 Restart=on-failure
 RestartSec=5
@@ -441,10 +455,17 @@ def provision_lounge(
     summary["bin"] = str(ensure_lounge_installed())
     spaths = LoungePaths(home)
     summary["config"] = ensure_lounge_config(spaths, host=host, port=int(port))
+    import os as _os2
+
+    _node = shutil.which("node") or ""
     summary["unit"] = ensure_lounge_unit(
         spaths,
         unit=render_lounge_unit(
-            lounge_bin=summary["bin"], home=str(spaths.home)))
+            lounge_bin=summary["bin"], home=str(spaths.home),
+            path_extra=_os2.pathsep.join(
+                [str(lounge_prefix(home) / "bin"),
+                 str(Path(_node).parent)] if _node else
+                [str(lounge_prefix(home) / "bin")])))
     summary["user"] = ensure_lounge_user(spaths, username, password)
     if uplink_name and uplink_channel:
         summary["network"] = ensure_lounge_network(

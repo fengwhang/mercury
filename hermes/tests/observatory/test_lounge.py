@@ -241,3 +241,35 @@ def test_ensure_lounge_user_creates_users_dir(tmp_path) -> None:
     except lounge_mod.LoungeError:
         pass
     assert (paths.home / "users").is_dir()
+
+
+def test_render_lounge_unit_carries_path() -> None:
+    from observatory import lounge as lounge_mod
+
+    unit = lounge_mod.render_lounge_unit(
+        lounge_bin="/b/thelounge", home="/h", path_extra="/p/bin")
+    assert "Environment=PATH=/p/bin:" in unit
+    assert "ExecStart=/b/thelounge start" in unit
+    assert "THELOUNGE_HOME=/h" in unit
+
+
+def test_ensure_lounge_user_uses_password_flag(tmp_path, monkeypatch) -> None:
+    import json as _json
+    import subprocess as _subprocess
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    seen = {}
+
+    def _fake_run(args, **kwargs):
+        seen["args"] = list(args)
+        (paths.home / "users" / "owner.json").write_text(_json.dumps({}))
+        import types as _types
+        return _types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_subprocess, "run", _fake_run)
+    monkeypatch.setattr(lounge_mod, "lounge_bin", lambda: "/bin/thelounge")
+    out = lounge_mod.ensure_lounge_user(paths, "owner", "pw123456")
+    assert out == {"action": "created"}
+    assert "--password" in seen["args"]
+    assert "pw123456" in seen["args"]

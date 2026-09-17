@@ -3934,7 +3934,28 @@ def _offer_lounge(obs, ts: dict | None) -> None:
             username = "owner"
         import secrets as _secrets
 
-        password = _secrets.token_urlsafe(16)
+        try:
+            _custom = prompt_yes_no(
+                "Type your own Lounge login password? (No = generate one)",
+                default=False,
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception:  # noqa: BLE001 — fall back to generated
+            _custom = False
+        if _custom:
+            try:
+                password = prompt(
+                    "Lounge login password (min 8 chars)", password=True) or ""
+            except KeyboardInterrupt:
+                raise
+            except Exception:  # noqa: BLE001
+                password = ""
+            if len(password) < 8:
+                print_error("Password too short — generating one instead.")
+                password = _secrets.token_urlsafe(16)
+        else:
+            password = _secrets.token_urlsafe(16)
         try:
             from observatory.provision import (
                 _mercury_home as _mh, read_config as _read_cfg,
