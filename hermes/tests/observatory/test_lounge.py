@@ -81,3 +81,88 @@ def test_local_port_answers_loopback() -> None:
         assert lounge_mod._local_port_answers(port) is False
 
     _asyncio.run(_probe())
+
+
+def test_ensure_lounge_network_seeds_and_replaces(tmp_path) -> None:
+    import json as _json
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    users = paths.home / "users"
+    users.mkdir(parents=True)
+    (users / "owner.json").write_text(_json.dumps(
+        {"networks": [{"name": "vm", "host": "old"}]}))
+    out = lounge_mod.ensure_lounge_network(
+        paths, "owner", net_name="vm", host="127.0.0.1", port=6670,
+        server_password="pw", nick="owner", channel="#vm_gateway")
+    assert out["action"] == "seeded"
+    data = _json.loads((users / "owner.json").read_text())
+    assert len(data["networks"]) == 1
+    net = data["networks"][0]
+    assert net["host"] == "127.0.0.1"
+    assert net["port"] == 6670
+    assert net["password"] == "pw"
+    assert net["channels"] == [{"name": "#vm_gateway", "muted": False,
+                                "key": ""}]
+    assert net["tls"] is False
+    assert net["uuid"]
+
+
+def test_ensure_lounge_network_skipped_without_password(tmp_path) -> None:
+    import json as _json
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    users = paths.home / "users"
+    users.mkdir(parents=True)
+    (users / "owner.json").write_text(_json.dumps({"networks": []}))
+    out = lounge_mod.ensure_lounge_network(
+        paths, "owner", net_name="vm", host="127.0.0.1", port=6670,
+        server_password="", nick="owner", channel="#vm_gateway")
+    assert out["action"] == "skipped"
+
+
+def test_ensure_node_fails_loudly(monkeypatch) -> None:
+    import shutil as _shutil
+    from observatory import lounge as lounge_mod
+
+    monkeypatch.setattr(_shutil, "which", lambda *a, **k: None)
+    import types as _types
+    monkeypatch.setattr(
+        lounge_mod, "_run",
+        lambda *a, **k: _types.SimpleNamespace(returncode=1, stdout="",
+                                               stderr="no"))
+    import pytest
+
+    with pytest.raises(lounge_mod.LoungeError):
+        lounge_mod.ensure_node()
+
+
+def test_provision_lounge_seeds_network_and_restarts(
+        tmp_path, monkeypatch) -> None:
+    import json as _json
+    from observatory import lounge as lounge_mod
+
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path / "mercury"))
+    monkeypatch.setattr(lounge_mod, "ensure_node", lambda: "/bin/node")
+    monkeypatch.setattr(lounge_mod, "ensure_lounge_installed",
+                        lambda: "/bin/thelounge")
+    monkeypatch.setattr(lounge_mod, "ensure_lounge_unit",
+                        lambda *a, **k: "installed")
+    users = lounge_mod.LoungePaths(
+        tmp_path / "mercury").home / "users"
+    users.mkdir(parents=True)
+    (users / "owner.json").write_text(_json.dumps({"networks": []}))
+    monkeypatch.setattr(lounge_mod, "ensure_lounge_user",
+                        lambda *a, **k: {"action": "current"})
+    monkeypatch.setattr(lounge_mod, "lounge_unit_active", lambda: True)
+    restarted = []
+    monkeypatch.setattr(lounge_mod, "restart_lounge",
+                        lambda: restarted.append(True))
+    out = lounge_mod.provision_lounge(
+        username="owner", uplink_name="vm", uplink_channel="#vm_gateway",
+        uplink_password="pw", uplink_port=6670)
+    assert out["network"]["action"] == "seeded"
+    assert restarted == [True]
+    data = _json.loads((users / "owner.json").read_text())
+    assert data["networks"][0]["name"] == "vm"

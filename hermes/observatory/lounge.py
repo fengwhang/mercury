@@ -66,6 +66,34 @@ def lounge_bin() -> Path:
         "https://thelounge.chat/docs/installation")
 
 
+def ensure_node() -> str:
+    """Make sure Node.js + npm exist, installing via the system package
+    manager when missing (needs sudo — the wizard offers first).
+
+    Fresh computers have no Node: without this the Lounge layer can
+    never provision itself. Raises LoungeError with the manual command
+    when every install path fails.
+    """
+    node = shutil.which("node")
+    npm = shutil.which("npm")
+    if node and npm:
+        return str(node)
+    for args in (
+        ["sudo", "dnf", "install", "-y", "nodejs", "npm"],
+        ["sudo", "apt-get", "install", "-y", "nodejs", "npm"],
+    ):
+        try:
+            out = _run(args, timeout=600)
+        except Exception:
+            continue
+        if (out is not None and getattr(out, "returncode", 1) == 0
+                and shutil.which("node") and shutil.which("npm")):
+            return str(shutil.which("node"))
+    raise LoungeError(
+        "Node.js not found and automatic install failed — install it "
+        "by hand (Fedora: sudo dnf install -y nodejs npm), then re-run setup")
+
+
 def ensure_lounge_installed() -> str:
     """Make sure ``thelounge`` exists, installing via npm if asked-for.
 
@@ -229,6 +257,76 @@ def lounge_unit_active() -> bool:
         return False
 
 
+def ensure_lounge_network(
+    paths: LoungePaths,
+    username: str,
+    *,
+    net_name: str,
+    host: str,
+    port: int,
+    server_password: str,
+    nick: str,
+    channel: str,
+) -> dict:
+    """Pre-seed this mercury server as a Lounge network for ``username``.
+
+    Single-install story: after setup the user opens :9000, logs in,
+    and the gateway channel is already there — no manual "add network"
+    step. Edits ``users/<username>.json`` (written by ``thelounge add``)
+    in place, replacing any same-named network. The caller restarts the
+    unit afterwards so a running Lounge picks it up. Without a server
+    password the entry could never log in — skipped, never half-written.
+    """
+    import uuid as _uuid
+
+    if not server_password:
+        return {"action": "skipped", "reason": "no server password"}
+    users_file = paths.home / "users" / f"{username}.json"
+    try:
+        data = json.loads(users_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise LoungeError(f"lounge user file unreadable: {exc}") from exc
+    networks = data.get("networks")
+    if not isinstance(networks, list):
+        networks = []
+    entry = {
+        "name": net_name,
+        "host": host,
+        "port": int(port),
+        "tls": False,
+        "rejectUnauthorized": False,
+        "nick": nick,
+        "username": nick,
+        "realname": nick,
+        "password": server_password,
+        "sasl": "",
+        "saslAccount": "",
+        "saslPassword": "",
+        "leaveMessage": "",
+        "awayMessage": "",
+        "userDisconnected": False,
+        "commands": [],
+        "ignoreList": [],
+        "proxyEnabled": False,
+        "proxyHost": "",
+        "proxyPort": 1080,
+        "proxyUsername": "",
+        "proxyPassword": "",
+        "channels": [{"name": channel, "muted": False, "key": ""}],
+        "uuid": _uuid.uuid4().hex,
+    }
+    kept = [n for n in networks
+            if not (isinstance(n, dict) and n.get("name") == net_name)]
+    kept.append(entry)
+    data["networks"] = kept
+    try:
+        users_file.write_text(json.dumps(data, indent=2) + "\n",
+                              encoding="utf-8")
+    except Exception as exc:
+        raise LoungeError(f"lounge network seed failed: {exc}") from exc
+    return {"action": "seeded", "network": net_name, "channel": channel}
+
+
 def provision_lounge(
     mercury_home: str | Path | None = None,
     *,
@@ -237,17 +335,27 @@ def provision_lounge(
     username: str = "owner",
     password: Optional[str] = None,
     hermes_root: str | Path | None = None,
+    uplink_host: str = "127.0.0.1",
+    uplink_port: int = 6670,
+    uplink_password: str = "",
+    uplink_name: str = "",
+    uplink_nick: str = "",
+    uplink_channel: str = "",
 ) -> dict:
-    """Full Lounge layer: binary → config → unit → user.
+    """Full Lounge layer: node → binary → config → unit → user → network.
 
-    ``host`` is the WEB UI bind (127.0.0.1 or the tailnet IP).
-    Mercury networks themselves are added in The Lounge UI.
+    ``host`` is the WEB UI bind (127.0.0.1 or the tailnet IP). The
+    ``uplink_*`` fields pre-seed this mercury server as a Lounge
+    network (same-box localhost uplink): after one setup the gateway
+    channel is already in the browser, no manual add-network step.
+    The unit restarts last so a running Lounge picks up the seed.
     """
     from observatory.provision import _mercury_home  # local import: no cycle
 
     _ = hermes_root
     home = _mercury_home(mercury_home)
-    summary: dict = {"bin": str(ensure_lounge_installed())}
+    summary: dict = {"node": str(ensure_node())}
+    summary["bin"] = str(ensure_lounge_installed())
     spaths = LoungePaths(home)
     summary["config"] = ensure_lounge_config(spaths, host=host, port=int(port))
     summary["unit"] = ensure_lounge_unit(
@@ -255,6 +363,14 @@ def provision_lounge(
         unit=render_lounge_unit(
             lounge_bin=summary["bin"], home=str(spaths.home)))
     summary["user"] = ensure_lounge_user(spaths, username, password)
+    if uplink_name and uplink_channel:
+        summary["network"] = ensure_lounge_network(
+            spaths, username,
+            net_name=uplink_name, host=uplink_host, port=int(uplink_port),
+            server_password=uplink_password,
+            nick=uplink_nick or username, channel=uplink_channel)
+        if lounge_unit_active():
+            restart_lounge()
     return summary
 
 

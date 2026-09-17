@@ -681,7 +681,7 @@ class IrcDaemon:
                     await self._send(
                         client,
                         f":{self.config.server_name} NOTICE * :This server needs PASS "
-                        "(the client password from setup) before login "
+                        "(the server password from setup) before login "
                         "completes — set it as the server password and "
                         "reconnect")
                 return

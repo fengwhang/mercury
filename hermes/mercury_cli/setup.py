@@ -6,7 +6,7 @@ Modular wizard with independently-runnable sections:
   2. Terminal Backend — where your agent runs commands
   3. Agent Settings — iterations, compression, session reset
   4. Messaging Platforms — connect Telegram, Discord, etc.
-  4b. IRC Observatory — bundled network: status, install, client login
+  4b. IRC Observatory — bundled network: status, install, server login
   5. Tools — configure TTS, web search, image generation, etc.
 
 Config files are stored in ~/.mercury/ for easy access.
@@ -2930,9 +2930,9 @@ def _observatory_state_lines(status: dict) -> None:
     if status.get("provisioned"):
         print_info(f"network:              {status.get('server_name')}")
         print_info(f"agent listener:       {status.get('agent')}")
-        print_info(f"client listener:      {status.get('bouncer')}")
+        print_info(f"server address:       {status.get('bouncer')}")
         print_info(f"unit:                 {status.get('unit')}")
-        print_info(f"client password:      {'set' if status.get('bouncer_password_set') else 'MISSING'}  (.env)")
+        print_info(f"server password:      {'set' if status.get('bouncer_password_set') else 'MISSING'}  (.env)")
 
 
 def _prompt_observatory_enabled_toggle(config: dict) -> None:
@@ -3029,10 +3029,10 @@ def _current_listen_addrs(obs) -> list[str] | None:
 
 
 def _offer_tailscale_bind(obs, ts: dict | None) -> None:
-    """Offer pinning the client listener to the tailnet IP.
+    """Offer exposing the IRC server on the tailnet IP.
 
     The agent listener stays on localhost (gateway + agents are local);
-    only the client listener moves. Delegates to ``provision.set_ircd_bind``
+    only the IRC server port moves. Delegates to ``provision.set_ircd_bind``
     (never starts/stops the daemon here); every failure degrades to a
     hand-edit hint. The new bind needs a unit restart to take effect.
     """
@@ -3044,7 +3044,7 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
             return
         ip = str(ip).strip()
         want = prompt_yes_no(
-            "Pin the client listener to Tailscale too? (direct IRC apps — The Lounge has its own pin)"
+            "Expose the IRC server on Tailscale too? (direct IRC apps — The Lounge has its own pin)"
             " (phones reach it over the tailnet; localhost keeps working)",
             default=False,
         )
@@ -3053,7 +3053,7 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
     except Exception:  # noqa: BLE001 — a bind offer never kills the wizard
         return
     if not want:
-        print_info("Keeping the client listener on its current address.")
+        print_info("Keeping the IRC server on its current address.")
         return
     try:
         obs.set_ircd_bind(ip)
@@ -3063,18 +3063,18 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
 
             _bind(ip)
         except Exception as exc:  # noqa: BLE001
-            print_warning(f"Could not pin the client listener to {ip}: {exc}")
+            print_warning(f"Could not expose the IRC server on {ip}: {exc}")
             print_info("Edit `bouncer_host` in observatory/ircd.json by hand instead.")
             return
     except Exception as exc:  # noqa: BLE001
-        print_warning(f"Could not pin the client listener to {ip}: {exc}")
+        print_warning(f"Could not expose the IRC server on {ip}: {exc}")
         print_info("Edit `bouncer_host` in observatory/ircd.json by hand instead.")
         return
     try:
         from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
     except Exception:  # noqa: BLE001
         _unit = "mercury-observatory.service"
-    print_success(f"Client listener will listen on {ip} after a restart (localhost kept on the agent port).")
+    print_success(f"IRC server will listen on {ip} after a restart (localhost kept on the agent port).")
     try:
         restart_now = prompt_yes_no(
             "Restart the observatory now? (necessary to apply the new bind)",
@@ -3110,7 +3110,7 @@ _LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
 
 def _bind_mismatch_action_line(
     addresses: list[str] | None, ts: dict | None) -> str | None:
-    """ACTION text when the tailnet is up but the client listener binds localhost-only.
+    """ACTION text when the tailnet is up but the IRC server binds localhost-only.
 
     Pure: returns the line, or None when there is nothing to act on.
     """
@@ -3125,7 +3125,7 @@ def _bind_mismatch_action_line(
         except Exception:  # noqa: BLE001
             _unit = "mercury-observatory.service"
         return (
-            "ACTION: Your client listener only listens on localhost"
+            "ACTION: Your IRC server only listens on localhost"
             " — phones cannot reach it. Pin it with: mercury setup"
             " observatory (answer Yes at the bind prompt), then:"
             f" systemctl --user restart {_unit}"
@@ -3202,12 +3202,12 @@ def _ensure_firewall_port(port: int | str) -> str:
         reload = _sp.run([*sudo, "firewall-cmd", "--reload"],
                          capture_output=True, text=True, timeout=60)
         if ok.returncode == 0 and reload.returncode == 0:
-            print_success(f"Client listener port {port}/tcp open in the host firewall.")
+            print_success(f"IRC server port {port}/tcp open in the host firewall.")
             return "open"
     except Exception:  # noqa: BLE001 — failure degrades below
         pass
     print_info(
-        f"Could not open client listener port {port}/tcp — phones will time out "
+        f"Could not open IRC server port {port}/tcp — phones will time out "
         f"until it is open (sudo firewall-cmd --permanent "
         f"--add-port={port}/tcp && sudo firewall-cmd --reload)")
     return "failed"
@@ -3234,7 +3234,9 @@ def _lounge_card_lines(status: dict, tailscale: dict | None = None) -> list:
         port = lounge.get("port") or lounge_mod.LOUNGE_PORT_DEFAULT
         return [
             f"The Lounge web UI:    http://{url_host}:{port} (runs outside",
-            "                      setup — log in with your existing account)",
+            "                      setup — log in with your existing account,",
+            "                      then add this box with the other-Lounge",
+            "                      settings below)",
         ]
     if not lounge.get("configured"):
         return ["The Lounge:           not installed — re-run setup to add the web UI"]
@@ -3242,21 +3244,19 @@ def _lounge_card_lines(status: dict, tailscale: dict | None = None) -> list:
     port = lounge.get("port") or lounge_mod.LOUNGE_PORT_DEFAULT
     users = lounge.get("users") or []
     user = str(users[0]) if users else "owner"
-    agent = str(status.get("agent") or "127.0.0.1:6669")
-    upstream, _, upstream_port = agent.rpartition(":")
+    server = str(status.get("server_name") or "mercury")
     return [
         f"The Lounge web UI:    http://{host}:{port} (open in a browser)",
         f"Lounge login:         user {user!r} (password shown once at install;",
         "                      change it any time in The Lounge settings)",
-        "add this server:      in The Lounge, add a network with host",
-        f"                      {upstream or '127.0.0.1'} port {upstream_port or '6669'}",
-        "                      and the client password above — every channel",
-        "                      then appears in the browser, no IRC client needed",
+        "this server:          pre-added as a network — just open",
+        f"                      #{server}_gateway and talk to the gateway",
+        "                      (no IRC client needed for anything below)",
     ]
 
 
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
-    """Client login card — the ONLY manual step (any IRC client).
+    """Setup card — The Lounge first, direct IRC as fallback.
 
     Everything else (config, passwords, unit, gateway row) already ran
     automatically by the time this prints — so this card names just the
@@ -3286,15 +3286,23 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     bouncer_host = str(bouncer or "").rsplit(":", 1)[0].strip() or "127.0.0.1"
     bouncer_port = _bouncer_port(bouncer)
     lines = [
-        "IRC Observatory — connect any IRC client",
+        "Mercury chat — open The Lounge in a browser",
         "",
-        f"client address:       {bouncer}",
-        f"client host:          {bouncer_host}  (bare hostname — no irc://, no :port)",
-        f"client port:          {bouncer_port}  (own field in the client, TLS OFF)",
+        *_lounge_card_lines(status, tailscale),
+        f"gateway channel:      {gateway_channel} (the gateway agent lives here)",
+        "spawn more agents:    /spawn <name> (hermes) or /spawnomp <name> (omp)",
+        "                      each gets its own channel; /exit in its room kills it",
+        "                      (Goguma eats /commands: use !spawn, !spawnomp,",
+        "                      !exit, !stop, !approve, !deny instead)",
+        "subagent rooms:       #parent-child channels stream live tool/thinking traces",
+        "",
+        "or connect any IRC client directly to this server:",
+        f"server address:       {bouncer}",
+        f"server host:          {bouncer_host}  (bare hostname — no irc://, no :port)",
+        f"server port:          {bouncer_port}  (own field in the client, TLS OFF)",
         f"TLS port:             {status.get('tls_port', 6697)}  (same rooms, for TLS-only clients —",
         "                      trust observatory/tls/ca.crt on the phone once)",
-        "                      (IRC ports — IRC apps only. browsers go to",
-        "                      The Lounge address below, never here)",
+        "                      (IRC ports — IRC apps only, never a browser)",
     ]
     if phone_line:
         lines.append(phone_line)
@@ -3306,23 +3314,17 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     lines.extend(
         [
             "nickname:             pick any nick (no accounts — the password is the auth)",
-            "client password:      your .env file (IRC_BOUNCER_PASSWORD,",
+            "server password:      your .env file (IRC_BOUNCER_PASSWORD,",
             "                      mode 0600 — paste it when the client asks)",
-            *_lounge_card_lines(status, tailscale),
+            "",
             "this box from another Lounge:",
             "                      add a network with host",
             f"                      {bouncer_host} port {bouncer_port} (TLS OFF)",
             f"                      or port {status.get('tls_port', 6697)} (TLS on —",
             "                      trust observatory/tls/ca.crt once there),",
-            "                      server password = the client password above,",
+            "                      server password = the password above,",
             "                      nick anything — then join",
             f"                      {gateway_channel} (one network per mercury box)",
-            f"gateway channel:      {gateway_channel} (the gateway agent lives here)",
-            "spawn more agents:    /spawn <name> (hermes) or /spawnomp <name> (omp)",
-            "                      each gets its own channel; /exit in its room kills it",
-            "                      (Goguma eats /commands: use !spawn, !spawnomp,",
-            "                      !exit, !stop, !approve, !deny instead)",
-            "subagent rooms:       #parent-child channels stream live tool/thinking traces",
             "",
             "gateway wiring:       mercury setup gateway → enable IRC so the",
             "                      gateway bot joins this network",
@@ -3731,7 +3733,7 @@ def _offer_bouncer_password_rotate(obs) -> None:
             have = read_irc_passwords(home)
             agent = have.get("agent") or generate_password()
             mirror_irc_env(home, generate_password(), agent)
-        print_success("Client password updated (mirrored to .env — update your IRC client).")
+        print_success("Server password updated (mirrored to .env — update your IRC client).")
         _restart_observatory_unit("necessary to apply the new password")
     except KeyboardInterrupt:
         raise
@@ -3823,7 +3825,7 @@ def _print_lounge_card(host: str, port: int, username: str,
     scheme = "http"
     print_success(f"The Lounge is live at {scheme}://{host}:{port}")
     print_info(f"Log in as {username!r} — then add each mercury IRC "
-               "server as a network (one client login covers them all).")
+               "server as a network (one server login covers them all).")
     if password:
         print_warning(f"Fresh password (shown once): {password}")
 
@@ -3842,7 +3844,8 @@ def _offer_lounge(obs, ts: dict | None) -> None:
         pass
     try:
         want = prompt_yes_no(
-            "Install The Lounge? (only one required per user)",
+            "Install The Lounge? (adds Node.js + thelounge if missing;"
+            " only one required per user)",
             default=True,
         )
     except KeyboardInterrupt:
@@ -3850,7 +3853,7 @@ def _offer_lounge(obs, ts: dict | None) -> None:
     except Exception:  # noqa: BLE001 — an offer never kills the wizard
         return
     if not want:
-        print_info("Skipped — point any IRC client at the client listener instead.")
+        print_info("Skipped — point any IRC client at this server instead.")
         return
     try:
         from observatory import lounge as lounge_mod
@@ -3878,8 +3881,20 @@ def _offer_lounge(obs, ts: dict | None) -> None:
 
         password = _secrets.token_urlsafe(16)
         try:
+            from observatory.provision import (
+                _mercury_home as _mh, read_config as _read_cfg,
+                read_irc_passwords as _read_pw,
+            )
+            _cfg = _read_cfg(_mh(None)) or {}
+            _server = str(_cfg.get("server_name") or "mercury")
+            _pw = _read_pw(_mh(None))
             summary = lounge_mod.provision_lounge(
-                host=host, username=username, password=password)
+                host=host, username=username, password=password,
+                uplink_host="127.0.0.1",
+                uplink_port=int(_cfg.get("bouncer_port") or 6670),
+                uplink_password=str((_pw or {}).get("bouncer") or ""),
+                uplink_name=_server, uplink_nick=username,
+                uplink_channel=f"#{_server}_gateway")
         except Exception as exc:
             print_error(f"Lounge provisioning failed: {exc}")
             print_info("Install it by hand: npm install -g thelounge")
@@ -4023,8 +4038,8 @@ def setup_observatory(config: dict, *, quick: bool = False):
     """
     print_header("IRC Observatory (bundled)")
     print_info("A private IRC network for your agents: one channel per agent,")
-    print_info("with its own client listener so any IRC client stays in sync.")
-    print_info("Localhost-only; phones reach the client listener over Tailscale.")
+    print_info("with its own server port so any IRC client stays in sync.")
+    print_info("Localhost-only; phones reach this server over Tailscale.")
 
     obs = _load_observatory_provision()
     if obs is None:
@@ -4154,7 +4169,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
             _offer_lounge(obs, ts)
         except Exception as exc:  # noqa: BLE001 — direct IRC still works
             print_error(f"Lounge layer failed: {exc}")
-            print_info("Connect any IRC client straight to the client listener instead.")
+            print_info("Connect any IRC client straight to this server instead.")
         try:
             status = obs.status_summary()
         except Exception:  # noqa: BLE001 — keep the pre-frontend status

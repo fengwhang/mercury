@@ -220,7 +220,8 @@ def test_setup_card_mentions_bouncer_not_password(capsys):
     assert "#mercury_gateway" in out
     assert "IRC_BOUNCER_PASSWORD" in out
     assert "bouncer address" not in out
-    assert "client address" in out
+    assert "server address" in out
+    assert "client address" not in out
     assert "The Lounge" in out
 
 
@@ -234,6 +235,7 @@ def test_setup_card_lounge_login(monkeypatch, capsys):
                          "unit": "active", "binary": "/b"})
     status = _base_status(provisioned=True)
     status["agent"] = "127.0.0.1:6669"
+    status["server_name"] = "vm"
     setup_mod._print_observatory_setup_card(
         status, dict(available=True, up=True, ip="100.9.9.9",
                      dns_name=None)
@@ -241,7 +243,8 @@ def test_setup_card_lounge_login(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "http://100.9.9.9:9000" in out
     assert "user 'owner'" in out
-    assert "127.0.0.1 port 6669" in out
+    assert "pre-added" in out
+    assert "#vm_gateway" in out
 
 
 def test_setup_card_lounge_missing(monkeypatch, capsys):
@@ -667,6 +670,24 @@ def test_lounge_offer_skipped_when_answering(monkeypatch, capsys) -> None:
                         lambda *a, **k: True)
     setup_mod._offer_lounge(None, None)
     assert "already answers" in capsys.readouterr().out
+
+
+def test_setup_card_lounge_first(monkeypatch, capsys):
+    import observatory.lounge as lounge_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "status_lounge",
+        lambda *a, **k: {"configured": True, "users": ["owner"],
+                         "host": "127.0.0.1", "port": 9000,
+                         "unit": "active", "binary": "/b"})
+    status = _base_status(provisioned=True)
+    status["server_name"] = "ace"
+    setup_mod._print_observatory_setup_card(
+        status, dict(available=False, up=False, ip=None, dns_name=None)
+    )
+    out = capsys.readouterr().out
+    assert out.index("http://127.0.0.1:9000") < out.index("server address")
+    assert "pre-added" in out
 
 
 def test_setup_card_live_server_name(monkeypatch, capsys):
