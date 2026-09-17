@@ -200,3 +200,44 @@ def test_reset_lounge_password_runs_cli(tmp_path, monkeypatch) -> None:
     assert seen["args"][:3] == ["/bin/thelounge", "reset", "--password"]
     assert seen["args"][3:] == ["newpw", "owner"]
     assert seen["env"] == str(paths.home)
+
+
+def test_ensure_lounge_installed_uses_prefix_and_ignore_scripts(
+        tmp_path, monkeypatch) -> None:
+    import types as _types
+    from observatory import lounge as lounge_mod
+
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    seen = {}
+
+    def _fake_run(args, **kwargs):
+        seen["args"] = list(args)
+        (home / "observatory" / "lounge" / "npm" / "bin").mkdir(
+            parents=True)
+        (home / "observatory" / "lounge" / "npm" / "bin"
+         / "thelounge").write_text("#!/bin/sh\n")
+        return _types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(lounge_mod, "_run", _fake_run)
+    out = lounge_mod.ensure_lounge_installed()
+    assert "--ignore-scripts" in seen["args"]
+    assert "--prefix" in seen["args"]
+    assert out.endswith("npm/bin/thelounge")
+    # prefix-first resolution on the next call (no install attempted)
+    monkeypatch.setattr(
+        lounge_mod, "_run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not reinstall")))
+    assert lounge_mod.ensure_lounge_installed() == out
+
+
+def test_ensure_lounge_user_creates_users_dir(tmp_path) -> None:
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    try:
+        lounge_mod.ensure_lounge_user(paths, "owner", "pw")
+    except lounge_mod.LoungeError:
+        pass
+    assert (paths.home / "users").is_dir()

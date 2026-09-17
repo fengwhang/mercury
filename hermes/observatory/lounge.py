@@ -23,6 +23,7 @@ LOUNGE_UNIT_NAME = "mercury-lounge.service"
 LOUNGE_UNIT_DESCRIPTION = "Mercury The Lounge frontend (observatory UI)"
 LOUNGE_DIRNAME = "lounge"
 FILE_LOUNGE_CONFIG = "config.js"
+NPM_PREFIX_DIRNAME = "npm"
 
 
 class LoungeError(RuntimeError):
@@ -63,8 +64,21 @@ class LoungePaths:
         self.home = self.dir / "home"
 
 
-def lounge_bin() -> Path:
-    """Path to the ``thelounge`` binary (npm global install)."""
+def lounge_prefix(mercury_home: str | Path | None = None) -> Path:
+    """Our isolated npm prefix (never the system global dirs)."""
+    from observatory.provision import _mercury_home  # local import: no cycle
+
+    return Path(_mercury_home(mercury_home)) / "observatory" / LOUNGE_DIRNAME / NPM_PREFIX_DIRNAME
+
+
+def lounge_bin(mercury_home: str | Path | None = None) -> Path:
+    """Path to the ``thelounge`` binary (our npm prefix first)."""
+    try:
+        ours = lounge_prefix(mercury_home) / "bin" / "thelounge"
+        if ours.is_file():
+            return ours
+    except Exception:
+        pass
     found = shutil.which("thelounge")
     if found:
         return Path(found)
@@ -102,14 +116,23 @@ def ensure_node() -> str:
         "by hand (Fedora: sudo dnf install -y nodejs npm), then re-run setup")
 
 
-def ensure_lounge_installed() -> str:
+def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
     """Make sure ``thelounge`` exists, installing via npm if asked-for.
 
+    Installs into our own prefix (never system globals — no sudo, no
+    PATH dependence). Uses ``--ignore-scripts``: thelounge's git-pinned
+    irc-framework builds BROWSER bundles in its prepare step
+    (``babel: command not found`` — npm never links git-dep devDeps for
+    preparation), but the server runs from ``src/`` directly
+    (``main: src/``), so the skipped build is browser-only and the
+    installed server is complete (verified live: HTTP 200).
+    Lifecycle scripts still inherit a PATH containing node+npm, which
+    bare ``npm install -g`` lacks when node lives outside PATH.
     Never installs unprompted: raises with the exact command when the
     binary is missing so the wizard can offer it.
     """
     try:
-        return str(lounge_bin())
+        return str(lounge_bin(mercury_home))
     except LoungeError:
         pass
     npm = shutil.which("npm")
@@ -117,12 +140,33 @@ def ensure_lounge_installed() -> str:
         raise LoungeError(
             "thelounge not installed and npm not found — install Node.js, "
             "then run: npm install -g thelounge")
-    out = _run([npm, "install", "-g", "thelounge"], timeout=600)
+    import os as _os
+
+    prefix = lounge_prefix(mercury_home)
+    node = shutil.which("node") or ""
+    # The prefix bin comes FIRST (and need not exist yet): thelounge's
+    # git-pinned irc-framework builds itself via `npm-run-all` in a
+    # nested prepare script that inherits this PATH. Without a
+    # pre-seeded npm-run-all on it, the whole install dies with 127.
+    path = _os.pathsep.join(
+        [str(prefix / "bin"),
+         str(Path(npm).parent), str(Path(node).parent)]
+        + [_os.environ.get("PATH", "")])
+    env = {"PATH": path}
+    out = _run(
+        [npm, "install", "-g", "--prefix", str(prefix),
+         "--ignore-scripts", "thelounge"],
+        extra_env=env, timeout=900)
     if out.returncode != 0:
         raise LoungeError(
-            "npm install -g thelounge failed "
-            f"(may need sudo): {(out.stderr or out.stdout).strip()}")
-    return str(lounge_bin())
+            "npm install -g thelounge failed: "
+            f"{(out.stderr or out.stdout).strip()[-3000:]}")
+    try:
+        return str(lounge_bin(mercury_home))
+    except LoungeError:
+        raise LoungeError(
+            "npm install reported success but the thelounge binary "
+            f"is missing under {prefix}") from None
 
 
 def render_lounge_config(*, host: str, port: int) -> str:
@@ -179,6 +223,10 @@ def ensure_lounge_user(paths: LoungePaths, username: str,
     """
     if username in lounge_users(paths):
         return {"action": "current"}
+    try:
+        (paths.home / "users").mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        raise LoungeError(f"lounge users dir create failed: {exc}") from exc
     if not password:
         raise LoungeError(
             f"lounge user {username!r} missing and no password given — "
