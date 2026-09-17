@@ -889,6 +889,10 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
     return {
         "enabled": enabled,
         "provisioned": isinstance(cfg, dict),
+        # The card's gateway channel must use the live name — never the
+        # "mercury" default (status used to omit this and every card
+        # printed #mercury_gateway regardless of the chosen name).
+        "server_name": live_server_name(home),
         "bouncer": f"{(cfg or {}).get('bouncer_host', IRCD_ADDRESS)}:"
         f"{(cfg or {}).get('bouncer_port', IRCD_BOUNCER_PORT_DEFAULT)}",
         "tls_port": _safe_port((cfg or {}).get("tls_port"), IRCD_TLS_PORT_DEFAULT),

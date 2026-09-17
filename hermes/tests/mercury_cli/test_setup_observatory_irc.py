@@ -667,3 +667,21 @@ def test_lounge_offer_skipped_when_answering(monkeypatch, capsys) -> None:
                         lambda *a, **k: True)
     setup_mod._offer_lounge(None, None)
     assert "already answers" in capsys.readouterr().out
+
+
+def test_setup_card_live_server_name(monkeypatch, capsys):
+    import observatory.lounge as lounge_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "status_lounge",
+        lambda *a, **k: {"configured": False, "users": [],
+                         "host": "", "port": 0, "external": False,
+                         "unit": "inactive", "binary": ""})
+    status = _base_status(provisioned=True)
+    status["server_name"] = "ace"
+    setup_mod._print_observatory_setup_card(
+        status, dict(available=False, up=False, ip=None, dns_name=None)
+    )
+    out = capsys.readouterr().out
+    assert "#ace_gateway" in out
+    assert "#mercury_gateway" not in out

@@ -3293,6 +3293,8 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         f"client port:          {bouncer_port}  (own field in the client, TLS OFF)",
         f"TLS port:             {status.get('tls_port', 6697)}  (same rooms, for TLS-only clients —",
         "                      trust observatory/tls/ca.crt on the phone once)",
+        "                      (IRC ports — IRC apps only. browsers go to",
+        "                      The Lounge address below, never here)",
     ]
     if phone_line:
         lines.append(phone_line)
@@ -3832,8 +3834,8 @@ def _offer_lounge(obs, ts: dict | None) -> None:
         from observatory import lounge as _lounge_mod
 
         if _lounge_mod.status_lounge().get("configured") or (
-                _lounge_mod.lounge_port_open(
-                    "127.0.0.1", _lounge_mod.LOUNGE_PORT_DEFAULT)):
+                _lounge_mod._local_port_answers(
+                    _lounge_mod.LOUNGE_PORT_DEFAULT)):
             print_info("The Lounge already answers on :9000 — keeping it, no install offered.")
             return
     except Exception:  # noqa: BLE001 — fall through to the offer

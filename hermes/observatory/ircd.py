@@ -98,6 +98,7 @@ class _Client:
         "registered",
         "pass_ok",
         "pass_attempted",
+        "pass_noticed",
         "oper",
         "sasl",
         "addr",
@@ -121,6 +122,7 @@ class _Client:
         self.registered = False
         self.pass_ok = False
         self.pass_attempted = False
+        self.pass_noticed = False
         self.oper = False
         self.sasl = None
         self.caps: set[str] = set()
@@ -671,6 +673,17 @@ class IrcDaemon:
             # sends NICK/USER before its password). Wrong-password
             # attempts still get their 464 from the PASS/SASL handler.
             if not client.pass_attempted:
+                # ...but pure silence freezes clients (and browsers
+                # pointed at the IRC port) with zero feedback. A NOTICE
+                # is automaton-safe: it trips no fatal latch.
+                if not client.pass_noticed:
+                    client.pass_noticed = True
+                    await self._send(
+                        client,
+                        f":{self.config.server_name} NOTICE * :This server needs PASS "
+                        "(the client password from setup) before login "
+                        "completes — set it as the server password and "
+                        "reconnect")
                 return
             await self._numeric(client, 464, "*", "Password incorrect")
             return

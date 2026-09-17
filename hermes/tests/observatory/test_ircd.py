@@ -174,7 +174,8 @@ async def test_bouncer_password_enforced(tmp_path) -> None:
             await u.send("NICK user")
             await u.send("USER user 0 * :test")
             # No 464 before an auth attempt: clients latch an early 464
-            # as fatal (Goguma). Silence until PASS/SASL arrives.
+            # as fatal (Goguma). A NOTICE (automaton-safe) instead.
+            assert "needs PASS" in await u.next_match("NOTICE", timeout=2.0)
             with pytest.raises(TimeoutError):
                 await u.next_match("464", timeout=0.5)
             await u.send("PASS wrong")

@@ -235,3 +235,14 @@ def test_remove_legacy_soju(tmp_path, monkeypatch) -> None:
     assert not (obs / "soju.conf").exists()
     assert not (obs / "soju.db").exists()
     assert any("mercury-soju.service" in r for r in removed)
+
+
+def test_status_summary_live_server_name(tmp_path, monkeypatch) -> None:
+    import json as _json
+
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    obs = home / "observatory"
+    obs.mkdir(parents=True)
+    (obs / "ircd.json").write_text(_json.dumps({"server_name": "ace"}))
+    assert provision.status_summary(home)["server_name"] == "ace"

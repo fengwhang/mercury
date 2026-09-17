@@ -64,3 +64,20 @@ def test_lounge_port_open_closed() -> None:
     from observatory import lounge as lounge_mod
 
     assert lounge_mod.lounge_port_open("127.0.0.1", 1) is False
+
+
+def test_local_port_answers_loopback() -> None:
+    import asyncio as _asyncio
+    from observatory import lounge as lounge_mod
+
+    async def _probe() -> None:
+        srv = await _asyncio.start_server(
+            lambda r, w: None, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        try:
+            assert lounge_mod._local_port_answers(port) is True
+        finally:
+            srv.close()
+        assert lounge_mod._local_port_answers(port) is False
+
+    _asyncio.run(_probe())

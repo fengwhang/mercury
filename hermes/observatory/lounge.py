@@ -270,6 +270,28 @@ def lounge_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
         return False
 
 
+def _local_port_answers(port: int, timeout: float = 0.5) -> bool:
+    """True when our own box answers on ``port`` (any local address).
+
+    Localhost alone misses tailnet-bound services (a Lounge listening
+    only on the tailnet IP). Probing every local address covers both
+    without importing provisioning state. Never raises."""
+    import socket as _socket
+
+    candidates: set[str] = {"127.0.0.1"}
+    try:
+        for _fam, _typ, _proto, _canon, sockaddr in _socket.getaddrinfo(
+                _socket.gethostname(), int(port),
+                type=_socket.SOCK_STREAM):
+            host = sockaddr[0] if isinstance(sockaddr, tuple) else ""
+            if host and not str(host).startswith("127."):
+                candidates.add(str(host))
+    except Exception:
+        pass
+    return any(lounge_port_open(host, port, timeout=timeout)
+               for host in candidates)
+
+
 def status_lounge(mercury_home: str | Path | None = None) -> dict:
     """Best-effort Lounge status for setup/status surfaces (never raises)."""
     from observatory.provision import _mercury_home  # local import: no cycle
@@ -292,9 +314,10 @@ def status_lounge(mercury_home: str | Path | None = None) -> dict:
             "host": host,
             "port": port,
             # A Lounge the user runs themselves (container, another
-            # box's install): our config is absent but the port answers.
-            "external": (not configured) and lounge_port_open(
-                "127.0.0.1", LOUNGE_PORT_DEFAULT),
+            # box's install): our config is absent but the port answers
+            # on some local address (localhost OR tailnet-bound).
+            "external": (not configured) and _local_port_answers(
+                LOUNGE_PORT_DEFAULT),
         }
     except Exception:
         return {"configured": False, "binary": "", "users": [],
