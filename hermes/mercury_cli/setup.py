@@ -3213,7 +3213,7 @@ def _ensure_firewall_port(port: int | str) -> str:
     return "failed"
 
 
-def _lounge_card_lines(status: dict) -> list:
+def _lounge_card_lines(status: dict, tailscale: dict | None = None) -> list:
     """The Lounge login block for the final setup card (never raises)."""
     try:
         from observatory import lounge as lounge_mod
@@ -3221,6 +3221,21 @@ def _lounge_card_lines(status: dict) -> list:
         lounge = lounge_mod.status_lounge()
     except Exception:  # noqa: BLE001 — card prints without Lounge info
         return ["The Lounge:           status unknown"]
+    if lounge.get("external"):
+        url_host = "127.0.0.1"
+        try:
+            ts = tailscale or {}
+            tip = str(ts.get("ip") or "").strip()
+            if (ts.get("up") and tip and lounge_mod.lounge_port_open(
+                    tip, lounge_mod.LOUNGE_PORT_DEFAULT)):
+                url_host = tip
+        except Exception:  # noqa: BLE001 — localhost URL is fine
+            pass
+        port = lounge.get("port") or lounge_mod.LOUNGE_PORT_DEFAULT
+        return [
+            f"The Lounge web UI:    http://{url_host}:{port} (runs outside",
+            "                      setup — log in with your existing account)",
+        ]
     if not lounge.get("configured"):
         return ["The Lounge:           not installed — re-run setup to add the web UI"]
     host = str(lounge.get("host") or "127.0.0.1")
@@ -3291,7 +3306,15 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
             "nickname:             pick any nick (no accounts — the password is the auth)",
             "client password:      your .env file (IRC_BOUNCER_PASSWORD,",
             "                      mode 0600 — paste it when the client asks)",
-            *_lounge_card_lines(status),
+            *_lounge_card_lines(status, tailscale),
+            "this box from another Lounge:",
+            "                      add a network with host",
+            f"                      {bouncer_host} port {bouncer_port} (TLS OFF)",
+            f"                      or port {status.get('tls_port', 6697)} (TLS on —",
+            "                      trust observatory/tls/ca.crt once there),",
+            "                      server password = the client password above,",
+            "                      nick anything — then join",
+            f"                      {gateway_channel} (one network per mercury box)",
             f"gateway channel:      {gateway_channel} (the gateway agent lives here)",
             "spawn more agents:    /spawn <name> (hermes) or /spawnomp <name> (omp)",
             "                      each gets its own channel; /exit in its room kills it",
@@ -3805,6 +3828,16 @@ def _print_lounge_card(host: str, port: int, username: str,
 
 def _offer_lounge(obs, ts: dict | None) -> None:
     """Offer installing The Lounge (only one required per user)."""
+    try:
+        from observatory import lounge as _lounge_mod
+
+        if _lounge_mod.status_lounge().get("configured") or (
+                _lounge_mod.lounge_port_open(
+                    "127.0.0.1", _lounge_mod.LOUNGE_PORT_DEFAULT)):
+            print_info("The Lounge already answers on :9000 — keeping it, no install offered.")
+            return
+    except Exception:  # noqa: BLE001 — fall through to the offer
+        pass
     try:
         want = prompt_yes_no(
             "Install The Lounge? (only one required per user)",

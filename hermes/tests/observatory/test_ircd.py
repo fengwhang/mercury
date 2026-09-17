@@ -277,6 +277,26 @@ def test_resolve_layers_argv_over_file_over_defaults(tmp_path) -> None:
     assert cfg.bouncer_port == 7777  # explicit flag wins
 
 
+def test_resolve_agent_host_pin(tmp_path) -> None:
+    """set_ircd_bind's `agent_host` moves the agent listener (#1)."""
+    import json
+
+    from observatory.ircd import _resolve_daemon_config
+
+    cfg_file = tmp_path / "ircd.json"
+    cfg_file.write_text(
+        json.dumps({"agent_host": "100.64.0.1", "server_name": "vm"}),
+        encoding="utf-8",
+    )
+    cfg = _resolve_daemon_config(_args(config=str(cfg_file)))
+    assert cfg.host == "100.64.0.1"
+    # explicit --host still wins; legacy `host` key still works
+    cfg = _resolve_daemon_config(_args(config=str(cfg_file), host="10.0.0.9"))
+    assert cfg.host == "10.0.0.9"
+    cfg_file.write_text(json.dumps({"host": "10.0.0.8"}), encoding="utf-8")
+    assert _resolve_daemon_config(_args(config=str(cfg_file))).host == "10.0.0.8"
+
+
 def test_resolve_state_dir_config(tmp_path) -> None:
     import json
 

@@ -197,16 +197,41 @@ def test_provision_rejects_bad_chosen_password_env(tmp_path, monkeypatch) -> Non
         provision.provision(home, server_name="mercury", systemd=False)
 
 
-def test_reset_leaves_lounge_alone(tmp_path, monkeypatch) -> None:
+def test_reset_wipes_lounge_history_keeps_account(tmp_path, monkeypatch) -> None:
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
     obs = home / "observatory"
     obs.mkdir(parents=True)
-    lounge_home = obs / "lounge" / "home" / "users"
-    lounge_home.mkdir(parents=True)
-    (lounge_home / "owner.json").write_text("{}")
+    lounge_home = obs / "lounge" / "home"
+    (lounge_home / "users").mkdir(parents=True)
+    (lounge_home / "users" / "owner.json").write_text("{}")
+    (lounge_home / "config.js").write_text("module.exports = {};")
+    storage = lounge_home / "storage"
+    storage.mkdir()
+    (storage / "owner.sqlite3").write_text("history")
     (obs / "state.db").write_text("tree")
     removed = provision.reset_observatory_data(home)
-    assert not any("observatory/lounge" in r for r in removed)
-    assert (lounge_home / "owner.json").is_file()
+    assert any(str(storage) in r for r in removed)
+    assert not storage.exists()
+    assert (lounge_home / "users" / "owner.json").is_file()
+    assert (lounge_home / "config.js").is_file()
     assert not (obs / "state.db").exists()
+
+
+def test_remove_legacy_soju(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    fake_home = tmp_path / "userhome"
+    (fake_home / ".config" / "systemd" / "user").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    unit = fake_home / ".config" / "systemd" / "user" / "mercury-soju.service"
+    unit.write_text("[Unit]")
+    obs = home / "observatory"
+    obs.mkdir(parents=True)
+    (obs / "soju.conf").write_text("listen")
+    (obs / "soju.db").write_text("backlog")
+    removed = provision.remove_legacy_soju(home)
+    assert not unit.exists()
+    assert not (obs / "soju.conf").exists()
+    assert not (obs / "soju.db").exists()
+    assert any("mercury-soju.service" in r for r in removed)

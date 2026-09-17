@@ -762,10 +762,81 @@ def provision(
             gw_state.close()
         except Exception:
             pass
+    summary["legacy_soju"] = remove_legacy_soju(home)
     summary["unit"] = (
         ensure_observatory_unit(home) if systemd else "skipped (--no-systemd)"
     )
     return summary
+
+
+SOJU_UNIT_NAME = "mercury-soju.service"
+
+LEGACY_SOJU_FILES = (
+    "soju.conf",
+    "soju-admin",
+    "soju.db",
+    "soju.db-shm",
+    "soju.db-wal",
+    "soju-binaries",
+)
+
+
+def remove_legacy_soju(mercury_home: str | Path | None = None) -> list[str]:
+    """Stop/disable/remove the pre-Lounge soju bouncer (never raises).
+
+    Pre-pivot installs left ``mercury-soju.service`` active+enabled with
+    an upstream-less config: it squats 6670/6697 and relays nothing,
+    which degrades our ircd's client listeners to EADDRINUSE. Every
+    provision converges it away: unit stopped+disabled, unit file
+    removed, stray binaries killed, data files deleted. Returns what
+    was removed."""
+    removed: list[str] = []
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "disable", "--now", SOJU_UNIT_NAME],
+            capture_output=True, timeout=30)
+    except Exception:
+        pass
+    try:
+        unit = Path.home() / ".config" / "systemd" / "user" / SOJU_UNIT_NAME
+        if unit.exists() or unit.is_symlink():
+            unit.unlink()
+            removed.append(str(unit))
+        subprocess.run(
+            ["systemctl", "--user", "daemon-reload"],
+            capture_output=True, timeout=30)
+    except Exception:
+        pass
+    try:
+        subprocess.run(
+            ["pkill", "-f", "observatory/soju-binaries/"],
+            capture_output=True, timeout=15)
+    except Exception:
+        pass
+    try:
+        root = ObservatoryPaths(_mercury_home(mercury_home)).root
+        for name in LEGACY_SOJU_FILES:
+            target = root / name
+            try:
+                if target.is_dir() and not target.is_symlink():
+                    shutil.rmtree(target)
+                    removed.append(str(target))
+                elif target.exists() or target.is_symlink():
+                    target.unlink()
+                    removed.append(str(target))
+            except Exception:
+                pass
+        for extra in root.glob("soju.db*"):
+            try:
+                if str(extra) not in removed and (
+                        extra.exists() or extra.is_symlink()):
+                    extra.unlink()
+                    removed.append(str(extra))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return removed
 
 
 def provision_in_wizard(mercury_home: str | Path | None = None, **kwargs: Any) -> dict:
@@ -834,12 +905,22 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
     """Delete IRC observatory data (config + history + agent tree).
 
     The unit files survive (re-provision rewrites config; callers must
-    restart both daemons — live memory outlives the files). The Lounge
-    is NEVER touched: one instance serves the whole user, possibly
-    across mercury installs. Returns what was removed."""
+    restart both daemons — live memory outlives the files). Our Lounge
+    keeps its account, config, and unit — only its message history
+    (``storage/``) is wiped so a reset really clears the backlog.
+    Externally-run Lounges (containers, other boxes) are never touched.
+    Returns what was removed."""
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
     removed: list[str] = []
+    try:
+        from observatory.lounge import LoungePaths
+        storage = LoungePaths(home).home / "storage"
+        if storage.is_dir() and not storage.is_symlink():
+            shutil.rmtree(storage)
+            removed.append(str(storage))
+    except Exception:
+        pass
     for target in (
         paths.config_file,
         paths.history_db,

@@ -48,3 +48,19 @@ def test_status_reports_bind(tmp_path) -> None:
     assert st["configured"] is True
     assert st["host"] == "100.9.9.9"
     assert st["port"] == 9000
+
+
+def test_status_external_when_port_answers(tmp_path, monkeypatch) -> None:
+    from observatory import lounge as lounge_mod
+
+    monkeypatch.setattr(lounge_mod, "lounge_port_open",
+                        lambda *a, **k: True)
+    st = lounge_mod.status_lounge(tmp_path / "mercury")
+    assert st["configured"] is False
+    assert st["external"] is True
+
+
+def test_lounge_port_open_closed() -> None:
+    from observatory import lounge as lounge_mod
+
+    assert lounge_mod.lounge_port_open("127.0.0.1", 1) is False

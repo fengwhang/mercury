@@ -258,6 +258,18 @@ def provision_lounge(
     return summary
 
 
+def lounge_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
+    """True when something answers on the Lounge web-UI port (never raises)."""
+    import socket as _socket
+
+    try:
+        with _socket.create_connection((str(host), int(port)),
+                                       timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
 def status_lounge(mercury_home: str | Path | None = None) -> dict:
     """Best-effort Lounge status for setup/status surfaces (never raises)."""
     from observatory.provision import _mercury_home  # local import: no cycle
@@ -271,17 +283,23 @@ def status_lounge(mercury_home: str | Path | None = None) -> dict:
         except LoungeError:
             binary = ""
         host, port = _read_lounge_bind(spaths)
+        configured = bool(conf)
         return {
-            "configured": bool(conf),
+            "configured": configured,
             "binary": binary,
             "users": lounge_users(spaths),
             "unit": "active" if lounge_unit_active() else "inactive",
             "host": host,
             "port": port,
+            # A Lounge the user runs themselves (container, another
+            # box's install): our config is absent but the port answers.
+            "external": (not configured) and lounge_port_open(
+                "127.0.0.1", LOUNGE_PORT_DEFAULT),
         }
     except Exception:
         return {"configured": False, "binary": "", "users": [],
-                "unit": "unknown", "host": "", "port": 0}
+                "unit": "unknown", "host": "", "port": 0,
+                "external": False}
 
 
 def _read_lounge_bind(spaths: "LoungePaths") -> tuple:

@@ -1189,6 +1189,14 @@ def _resolve_daemon_config(args: Any) -> DaemonConfig:
         cand = Path(state_dir).expanduser() / "tls" / "server.key"
         if cand.is_file():
             tls_key = str(cand)
+    # set_ircd_bind writes `agent_host` (provision/config_gen vocabulary);
+    # the daemon historically read `host`. Prefer agent_host so the
+    # tailnet pin actually moves the agent listener — the gateway
+    # connects here, and a silent localhost fallback breaks it with
+    # ECONNREFUSED while the config claims the tailnet IP.
+    _agent_host = file_cfg.get("agent_host")
+    if isinstance(_agent_host, str) and _agent_host.strip():
+        file_cfg = dict(file_cfg, host=_agent_host.strip())
     # The client (bouncer) listener binds per ircd.json directly —
     # direct IRC clients and The Lounge connect here.
     bouncer_host = _pick("bouncer_host", "127.0.0.1")

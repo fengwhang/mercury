@@ -244,12 +244,47 @@ def test_setup_card_lounge_login(monkeypatch, capsys):
     assert "127.0.0.1 port 6669" in out
 
 
-def test_setup_card_lounge_missing(capsys):
+def test_setup_card_lounge_missing(monkeypatch, capsys):
+    import observatory.lounge as lounge_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "status_lounge",
+        lambda *a, **k: {"configured": False, "users": [],
+                         "host": "", "port": 0, "external": False,
+                         "unit": "inactive", "binary": ""})
     status = _base_status(provisioned=True)
     setup_mod._print_observatory_setup_card(
         status, dict(available=False, up=False, ip=None, dns_name=None)
     )
     assert "not installed" in capsys.readouterr().out
+
+
+def test_setup_card_lounge_external(monkeypatch, capsys):
+    import observatory.lounge as lounge_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "status_lounge",
+        lambda *a, **k: {"configured": False, "users": [],
+                         "host": "127.0.0.1", "port": 9000,
+                         "external": True, "unit": "unknown",
+                         "binary": ""})
+    status = _base_status(provisioned=True)
+    setup_mod._print_observatory_setup_card(
+        status, dict(available=False, up=False, ip=None, dns_name=None)
+    )
+    out = capsys.readouterr().out
+    assert "runs outside" in out
+    assert "http://127.0.0.1:9000" in out
+
+
+def test_setup_card_existing_lounge_block(capsys):
+    status = _base_status(provisioned=True)
+    setup_mod._print_observatory_setup_card(
+        status, dict(available=False, up=False, ip=None, dns_name=None)
+    )
+    out = capsys.readouterr().out
+    assert "another Lounge" in out
+    assert "#mercury_gateway" in out
 
 
 def test_verify_daemon_listening_live_and_dead():
@@ -621,3 +656,14 @@ def test_offer_agent_bind_tailscale_pins_ip(tmp_path, monkeypatch) -> None:
     cfg = _json.loads((obs / "ircd.json").read_text())
     assert cfg["agent_host"] == "100.9.9.9"
     assert saved["IRC_SERVER"] == "100.9.9.9"
+
+
+def test_lounge_offer_skipped_when_answering(monkeypatch, capsys) -> None:
+    import observatory.lounge as lounge_mod
+
+    monkeypatch.setattr(lounge_mod, "status_lounge",
+                        lambda *a, **k: {"configured": False})
+    monkeypatch.setattr(lounge_mod, "lounge_port_open",
+                        lambda *a, **k: True)
+    setup_mod._offer_lounge(None, None)
+    assert "already answers" in capsys.readouterr().out
