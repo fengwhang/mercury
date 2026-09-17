@@ -855,7 +855,7 @@ def _print_setup_summary(config: dict, mercury_home):
 
 
 def _reprint_observatory_login_card() -> None:
-    """Re-print the IRC bouncer card after the setup summary.
+    """Re-print the IRC server card after the setup summary.
 
     The fullscreen pickers scroll the section card away; the homeserver URL
     and credential locations are needed after setup, so they are repeated
@@ -3145,7 +3145,7 @@ def _maybe_print_bind_mismatch_action(obs, ts: dict | None) -> None:
 
 
 def _ensure_firewall_port(port: int | str) -> str:
-    """Open the bouncer port in firewalld when it runs (phones time out
+    """Open the IRC server port in firewalld when it runs (phones time out
     otherwise — a filtered port is silent, unlike a refused one).
 
     Best-effort, never prompts-reads, never raises: no firewalld (or an
@@ -3190,7 +3190,7 @@ def _ensure_firewall_port(port: int | str) -> str:
                 nopass = None
             if nopass is None or nopass.returncode != 0:
                 print_info(
-                    f"Bouncer port {port}/tcp is filtered — open it by hand: "
+                    f"Server port {port}/tcp is filtered — open it by hand: "
                     f"sudo firewall-cmd --permanent --add-port={port}/tcp "
                     f"&& sudo firewall-cmd --reload")
                 return "skipped-no-tty"
@@ -3260,7 +3260,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
 
     Everything else (config, passwords, unit, gateway row) already ran
     automatically by the time this prints — so this card names just the
-    bouncer address, where the password lives (NEVER the password
+    server address, where the password lives (NEVER the password
     itself), the gateway channel, and the two spawn commands.
     """
     try:
@@ -3686,14 +3686,14 @@ def _restart_observatory_unit(reason: str) -> bool:
 
 
 def _offer_bouncer_password_rotate(obs) -> None:
-    """Offer rotating the bouncer password (re-run path only).
+    """Offer rotating the server password (re-run path only).
 
     Random or user-chosen (min 8 chars); restarts the daemon so the new
     password goes live immediately instead of desyncing from .env.
     """
     try:
         want = prompt_yes_no(
-            "Rotate the bouncer password? (mirrored to .env)",
+            "Rotate the server password? (mirrored to .env)",
             default=False,
         )
     except KeyboardInterrupt:
