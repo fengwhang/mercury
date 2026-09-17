@@ -270,12 +270,29 @@ def status_lounge(mercury_home: str | Path | None = None) -> dict:
             binary = str(lounge_bin())
         except LoungeError:
             binary = ""
+        host, port = _read_lounge_bind(spaths)
         return {
             "configured": bool(conf),
             "binary": binary,
             "users": lounge_users(spaths),
             "unit": "active" if lounge_unit_active() else "inactive",
+            "host": host,
+            "port": port,
         }
     except Exception:
         return {"configured": False, "binary": "", "users": [],
-                "unit": "unknown"}
+                "unit": "unknown", "host": "", "port": 0}
+
+
+def _read_lounge_bind(spaths: "LoungePaths") -> tuple:
+    """Bound web-UI host/port parsed from config.js (best effort)."""
+    import re as _re
+
+    try:
+        conf = spaths.conf.read_text(encoding="utf-8", errors="replace")
+        host = _re.search(r'host:\s*"([^"]+)"', conf)
+        port = _re.search(r"port:\s*(\d+)", conf)
+        return (host.group(1) if host else "127.0.0.1",
+                int(port.group(1)) if port else LOUNGE_PORT_DEFAULT)
+    except Exception:
+        return "127.0.0.1", LOUNGE_PORT_DEFAULT

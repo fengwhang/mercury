@@ -37,3 +37,14 @@ def test_ensure_lounge_user_needs_password(tmp_path) -> None:
     paths = lounge_mod.LoungePaths(tmp_path / "mercury")
     with pytest.raises(lounge_mod.LoungeError):
         lounge_mod.ensure_lounge_user(paths, "owner", None)
+
+
+def test_status_reports_bind(tmp_path) -> None:
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    lounge_mod.ensure_lounge_config(paths, host="100.9.9.9", port=9000)
+    st = lounge_mod.status_lounge(tmp_path / "mercury")
+    assert st["configured"] is True
+    assert st["host"] == "100.9.9.9"
+    assert st["port"] == 9000

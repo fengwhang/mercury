@@ -219,6 +219,37 @@ def test_setup_card_mentions_bouncer_not_password(capsys):
     assert "127.0.0.1:6670" in out
     assert "#mercury_gateway" in out
     assert "IRC_BOUNCER_PASSWORD" in out
+    assert "bouncer address" not in out
+    assert "client address" in out
+    assert "The Lounge" in out
+
+
+def test_setup_card_lounge_login(monkeypatch, capsys):
+    import observatory.lounge as lounge_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "status_lounge",
+        lambda *a, **k: {"configured": True, "users": ["owner"],
+                         "host": "100.9.9.9", "port": 9000,
+                         "unit": "active", "binary": "/b"})
+    status = _base_status(provisioned=True)
+    status["agent"] = "127.0.0.1:6669"
+    setup_mod._print_observatory_setup_card(
+        status, dict(available=True, up=True, ip="100.9.9.9",
+                     dns_name=None)
+    )
+    out = capsys.readouterr().out
+    assert "http://100.9.9.9:9000" in out
+    assert "user 'owner'" in out
+    assert "127.0.0.1 port 6669" in out
+
+
+def test_setup_card_lounge_missing(capsys):
+    status = _base_status(provisioned=True)
+    setup_mod._print_observatory_setup_card(
+        status, dict(available=False, up=False, ip=None, dns_name=None)
+    )
+    assert "not installed" in capsys.readouterr().out
 
 
 def test_verify_daemon_listening_live_and_dead():
