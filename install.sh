@@ -240,8 +240,8 @@ install_computer_use_driver() {
 # and the systemd user unit mercury-observatory.service. Fail-hard,
 # idempotent. No binaries, no wheels, no crypto stack — the daemon is
 # pure stdlib asyncio.
-_open_observatory_firewall() { # $1 = bouncer port (default 6670). Best-effort, never fails.
-    # Phones reach the bouncer over the tailnet, but host firewalls
+_open_observatory_firewall() { # $1 = server chat port (default 6670). Best-effort, never fails.
+    # Phones reach the server over the tailnet, but host firewalls
     # (Fedora default) drop inbound TCP to unlisted ports — a silent
     # timeout on every client. Open the port when firewalld is active.
     local PORT="${1:-6670}"
@@ -252,24 +252,24 @@ _open_observatory_firewall() { # $1 = bouncer port (default 6670). Best-effort, 
     [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
     if [ -n "$sudo_cmd" ] && ! $sudo_cmd -n true >/dev/null 2>&1; then
         if [ -t 0 ]; then
-            log_info "opening bouncer port ${PORT}/tcp (sudo may ask for a password)"
+            log_info "opening server port ${PORT}/tcp (sudo may ask for a password)"
         else
-            log_info "bouncer port ${PORT}/tcp not open and sudo needs a password — open it by hand: sudo firewall-cmd --permanent --add-port=${PORT}/tcp && sudo firewall-cmd --reload"
+            log_info "server port ${PORT}/tcp not open and sudo needs a password — open it by hand: sudo firewall-cmd --permanent --add-port=${PORT}/tcp && sudo firewall-cmd --reload"
             return 0
         fi
     fi
     # shellcheck disable=SC2086
     if $sudo_cmd firewall-cmd --permanent --add-port="${PORT}/tcp" >/dev/null 2>&1 \
         && $sudo_cmd firewall-cmd --reload >/dev/null 2>&1; then
-        log_success "bouncer port ${PORT}/tcp open in the host firewall"
+        log_success "server port ${PORT}/tcp open in the host firewall"
     else
-        log_info "could not open bouncer port ${PORT}/tcp — phones will time out until it is open (sudo firewall-cmd --permanent --add-port=${PORT}/tcp && sudo firewall-cmd --reload)"
+        log_info "could not open server port ${PORT}/tcp — phones will time out until it is open (sudo firewall-cmd --permanent --add-port=${PORT}/tcp && sudo firewall-cmd --reload)"
     fi
     return 0
 }
 install_observatory() {
     # Optional: export OBSERVATORY_BOUNCER_PASSWORD (min 8 chars) to pin
-    # the bouncer password instead of generating one. The environment
+    # the server password instead of generating one. The environment
     # passes through to provisioning below — never pass it as an
     # argument (argv is ps-visible). The daemon restart applies it.
     if [ "$SKIP_OBSERVATORY" = true ]; then
@@ -282,9 +282,8 @@ install_observatory() {
     MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
         "$VENV_PY" -m observatory.provision \
         || { log_error "observatory provisioning failed (see output above)"; exit 1; }
-    MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
-        "$VENV_PY" -m observatory.soju \
-        || { log_error "soju bouncer provisioning failed (see output above)"; exit 1; }
+    # No bouncer layer: the stdlib ircd owns the client ports directly
+    # (6670/6697) — the old soju step is retired, not replaced.
     local _bouncer_port _tls_port
     _bouncer_port="$("$VENV_PY" -c "import json;print(json.load(open('$MERCURY_HOME/observatory/ircd.json'))['bouncer_port'])" 2>/dev/null)" || _bouncer_port=""
     _tls_port="$("$VENV_PY" -c "import json;print(json.load(open('$MERCURY_HOME/observatory/ircd.json')).get('tls_port') or 6697)" 2>/dev/null)" || _tls_port=""
