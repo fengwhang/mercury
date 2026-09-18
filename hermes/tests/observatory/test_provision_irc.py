@@ -265,3 +265,23 @@ def test_status_summary_live_server_name(tmp_path, monkeypatch) -> None:
     obs.mkdir(parents=True)
     (obs / "ircd.json").write_text(_json.dumps({"server_name": "ace"}))
     assert provision.status_summary(home)["server_name"] == "ace"
+
+
+def test_reset_stops_both_daemons(tmp_path, monkeypatch) -> None:
+    import subprocess as _subprocess
+    import types as _types
+
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    (home / "observatory").mkdir(parents=True)
+    stopped = []
+
+    def _fake_run(args, **kwargs):
+        stopped.append(list(args)[-1])
+        return _types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_subprocess, "run", _fake_run)
+    removed = provision.reset_observatory_data(home)
+    assert "mercury-observatory.service" in stopped
+    assert "mercury-lounge.service" in stopped
+    assert "stopped mercury-lounge.service" in removed

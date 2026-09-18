@@ -934,6 +934,10 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
     secrets — no resume, no fallback to wiped data. Surviving: unit
     files, the npm prefix (a reinstallable binary, not data), and
     externally-run Lounges (containers, other boxes — never touched).
+    Both daemons are STOPPED afterwards: a wiped config with a live
+    daemon is an orphan that answers ports from memory and fools the
+    next setup into skipping the install (the ":9000 answers but no
+    user exists" trap). Provision restarts them fresh.
     Returns what was removed."""
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
@@ -958,6 +962,15 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
         try:
             if _remove_env_key(home / ".env", key):
                 removed.append(f".env:{key}")
+        except Exception:
+            pass
+    for unit in ("mercury-observatory.service", "mercury-lounge.service"):
+        try:
+            out = subprocess.run(
+                ["systemctl", "--user", "stop", unit],
+                capture_output=True, timeout=30)
+            if out.returncode == 0:
+                removed.append(f"stopped {unit}")
         except Exception:
             pass
     for target in (

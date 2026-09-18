@@ -3044,7 +3044,7 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
             return
         ip = str(ip).strip()
         want = prompt_yes_no(
-            "Expose the IRC server on Tailscale too? (direct IRC apps — The Lounge has its own pin)"
+            "Expose the CHAT port on Tailscale too? (where IRC apps connect — The Lounge has its own pin)"
             " (phones reach it over the tailnet; localhost keeps working)",
             default=False,
         )
@@ -3053,7 +3053,7 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
     except Exception:  # noqa: BLE001 — a bind offer never kills the wizard
         return
     if not want:
-        print_info("Keeping the IRC server on its current address.")
+        print_info("Keeping the chat port on its current address.")
         return
     try:
         obs.set_ircd_bind(ip)
@@ -3074,7 +3074,7 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
         from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
     except Exception:  # noqa: BLE001
         _unit = "mercury-observatory.service"
-    print_success(f"IRC server will listen on {ip} after a restart (localhost kept on the agent port).")
+    print_success(f"Chat port will listen on {ip} after a restart (localhost kept on the agent port).")
     try:
         restart_now = prompt_yes_no(
             "Restart the observatory now? (necessary to apply the new bind)",
@@ -3772,7 +3772,7 @@ def _offer_observatory_reset(obs) -> bool:
         print_info("Retry any time with: mercury setup observatory")
         return False
     if removed:
-        print_success(f"Observatory data reset ({len(removed)} paths removed).")
+        print_success(f"Observatory data reset ({len(removed)} items cleared).")
     else:
         print_info("Nothing to reset — observatory was already clean.")
     return True
@@ -4075,7 +4075,7 @@ def _offer_agent_bind(obs, label: str, ts: dict | None) -> None:
         if tail_ok:
             choices.append(f"Tailscale ({ip} — the whole fleet reachable)")
         choice = prompt_choice(
-            "Pin the IRC server (agent listener) to localhost or Tailscale?",
+            "Pin the AGENT port (gateway bot + spawned agents) to localhost or Tailscale?",
             choices,
             0,
         )
