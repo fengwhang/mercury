@@ -3890,11 +3890,20 @@ def _offer_lounge(obs, ts: dict | None) -> None:
     try:
         from observatory import lounge as _lounge_mod
 
-        if _lounge_mod.status_lounge().get("configured") or (
+        _st = _lounge_mod.status_lounge()
+        if (_st.get("users")):
+            print_info("The Lounge already answers on :9000 — keeping it, no install offered.")
+            return
+        if not _st.get("configured") and (
                 _lounge_mod._local_port_answers(
                     _lounge_mod.LOUNGE_PORT_DEFAULT)):
             print_info("The Lounge already answers on :9000 — keeping it, no install offered.")
             return
+        if _st.get("configured"):
+            # Partial install (config written, user creation never
+            # stuck): fall through and RESUME — provision is idempotent
+            # and the username/password prompts run again below.
+            print_info("Resuming the partial Lounge install (no login user yet).")
     except Exception:  # noqa: BLE001 — fall through to the offer
         pass
     try:

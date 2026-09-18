@@ -707,3 +707,35 @@ def test_setup_card_live_server_name(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "#ace_gateway" in out
     assert "#mercury_gateway" not in out
+
+
+def test_lounge_offer_resumes_partial_install(monkeypatch, capsys) -> None:
+    import observatory.lounge as lounge_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "status_lounge",
+        lambda *a, **k: {"configured": True, "users": []})
+    monkeypatch.setattr(lounge_mod, "_local_port_answers",
+                        lambda *a, **k: False)
+    asked = []
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no",
+        lambda q, default=True: asked.append(q) or False)
+    setup_mod._offer_lounge(None, None)
+    assert asked, "partial install must re-offer (username/password below)"
+    assert "Skipped" in capsys.readouterr().out
+
+
+def test_lounge_offer_skipped_when_users_exist(monkeypatch, capsys) -> None:
+    import observatory.lounge as lounge_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "status_lounge",
+        lambda *a, **k: {"configured": True, "users": ["owner"]})
+    asked = []
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no",
+        lambda q, default=True: asked.append(q) or False)
+    setup_mod._offer_lounge(None, None)
+    assert not asked
+    assert "keeping it" in capsys.readouterr().out
