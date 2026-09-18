@@ -282,9 +282,17 @@ install_observatory() {
     MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
         "$VENV_PY" -m observatory.provision \
         || { log_error "observatory provisioning failed (see output above)"; exit 1; }
-    MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
-        "$VENV_PY" -m observatory.soju \
-        || { log_error "soju bouncer provisioning failed (see output above)"; exit 1; }
+    # Soju is retired in newer trees (the stdlib ircd owns the client
+    # ports directly): provision it when the tree still ships it,
+    # otherwise warn and continue — never fail a fresh install.
+    if MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
+        "$VENV_PY" -c "import observatory.soju" 2>/dev/null; then
+        MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
+            "$VENV_PY" -m observatory.soju \
+            || { log_error "soju bouncer provisioning failed (see output above)"; exit 1; }
+    else
+        log_info "no soju layer in this tree — skipping (ircd owns the client ports)"
+    fi
     local _bouncer_port _tls_port
     _bouncer_port="$("$VENV_PY" -c "import json;print(json.load(open('$MERCURY_HOME/observatory/ircd.json'))['bouncer_port'])" 2>/dev/null)" || _bouncer_port=""
     _tls_port="$("$VENV_PY" -c "import json;print(json.load(open('$MERCURY_HOME/observatory/ircd.json')).get('tls_port') or 6697)" 2>/dev/null)" || _tls_port=""
