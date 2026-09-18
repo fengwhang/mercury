@@ -454,10 +454,26 @@ def provision_lounge(
     summary: dict = {"node": str(ensure_node())}
     summary["bin"] = str(ensure_lounge_installed())
     spaths = LoungePaths(home)
+    # Was the unit already answering? A running server only picks up
+    # user/network changes on restart (a fresh start loads them).
+    was_active = lounge_unit_active()
     summary["config"] = ensure_lounge_config(spaths, host=host, port=int(port))
     import os as _os2
 
     _node = shutil.which("node") or ""
+    # `add` only CREATES: an existing login silently keeps its old
+    # password, so a freshly-typed password would never take effect
+    # (the "correct password rejected" trap). A given password ALWAYS
+    # wins — reset onto the existing account.
+    summary["user"] = ensure_lounge_user(spaths, username, password)
+    if summary["user"].get("action") == "current" and password:
+        summary["user"] = reset_lounge_password(spaths, username, password)
+    if uplink_name and uplink_channel:
+        summary["network"] = ensure_lounge_network(
+            spaths, username,
+            net_name=uplink_name, host=uplink_host, port=int(uplink_port),
+            server_password=uplink_password,
+            nick=uplink_nick or username, channel=uplink_channel)
     summary["unit"] = ensure_lounge_unit(
         spaths,
         unit=render_lounge_unit(
@@ -466,15 +482,8 @@ def provision_lounge(
                 [str(lounge_prefix(home) / "bin"),
                  str(Path(_node).parent)] if _node else
                 [str(lounge_prefix(home) / "bin")])))
-    summary["user"] = ensure_lounge_user(spaths, username, password)
-    if uplink_name and uplink_channel:
-        summary["network"] = ensure_lounge_network(
-            spaths, username,
-            net_name=uplink_name, host=uplink_host, port=int(uplink_port),
-            server_password=uplink_password,
-            nick=uplink_nick or username, channel=uplink_channel)
-        if lounge_unit_active():
-            restart_lounge()
+    if was_active:
+        restart_lounge()
     return summary
 
 

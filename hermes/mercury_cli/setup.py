@@ -3991,7 +3991,8 @@ def _offer_lounge(obs, ts: dict | None) -> None:
             print_error(f"Lounge provisioning failed: {exc}")
             print_info("Install it by hand: npm install -g thelounge")
             return
-        created = (summary.get("user") or {}).get("action") == "created"
+        created = (summary.get("user") or {}).get("action") in (
+            "created", "reset")
         if created:
             global _JUST_CREATED_LOUNGE_USER
             _JUST_CREATED_LOUNGE_USER = username

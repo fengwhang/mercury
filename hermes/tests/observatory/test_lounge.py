@@ -273,3 +273,37 @@ def test_ensure_lounge_user_uses_password_flag(tmp_path, monkeypatch) -> None:
     assert out == {"action": "created"}
     assert "--password" in seen["args"]
     assert "pw123456" in seen["args"]
+
+
+def test_provision_applies_password_to_existing_user(
+        tmp_path, monkeypatch) -> None:
+    import json as _json
+    from observatory import lounge as lounge_mod
+
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path / "mercury"))
+    for name in ("ensure_node", "ensure_lounge_installed"):
+        monkeypatch.setattr(lounge_mod, name, lambda: "/bin/x")
+    monkeypatch.setattr(lounge_mod, "ensure_lounge_config",
+                        lambda *a, **k: {"action": "current"})
+    users = lounge_mod.LoungePaths(
+        tmp_path / "mercury").home / "users"
+    users.mkdir(parents=True)
+    (users / "owner.json").write_text(_json.dumps({"networks": []}))
+    monkeypatch.setattr(lounge_mod, "ensure_lounge_user",
+                        lambda *a, **k: {"action": "current"})
+    reset_to = []
+    monkeypatch.setattr(
+        lounge_mod, "reset_lounge_password",
+        lambda paths, user, pw: reset_to.append((user, pw)) or {
+            "action": "reset", "user": user})
+    monkeypatch.setattr(lounge_mod, "ensure_lounge_unit",
+                        lambda *a, **k: "installed")
+    monkeypatch.setattr(lounge_mod, "lounge_unit_active", lambda: False)
+    out = lounge_mod.provision_lounge(username="owner", password="newpw")
+    assert reset_to == [("owner", "newpw")]
+    assert out["user"]["action"] == "reset"
+    # no password given: existing login untouched
+    reset_to.clear()
+    out = lounge_mod.provision_lounge(username="owner", password=None)
+    assert reset_to == []
+    assert out["user"]["action"] == "current"
