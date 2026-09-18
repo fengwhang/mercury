@@ -739,3 +739,17 @@ def test_lounge_offer_skipped_when_users_exist(monkeypatch, capsys) -> None:
     setup_mod._offer_lounge(None, None)
     assert not asked
     assert "keeping it" in capsys.readouterr().out
+
+
+def test_password_reset_skipped_after_fresh_creation(monkeypatch) -> None:
+    setup_mod._JUST_CREATED_LOUNGE_USER = "owner"
+    asked = []
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no",
+        lambda q, default=True: asked.append(q) or False)
+    try:
+        setup_mod._offer_lounge_password_reset(None)
+    finally:
+        setup_mod._JUST_CREATED_LOUNGE_USER = None
+    assert not asked
+    assert setup_mod._JUST_CREATED_LOUNGE_USER is None

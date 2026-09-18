@@ -3077,7 +3077,7 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
     print_success(f"Chat port will listen on {ip} after a restart (localhost kept on the agent port).")
     try:
         restart_now = prompt_yes_no(
-            "Restart the observatory now? (necessary to apply the new bind)",
+            "Restart the IRC server now? (necessary to apply the new bind)",
             default=True,
         )
     except KeyboardInterrupt:
@@ -3102,7 +3102,7 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
         print_warning(f"Could not restart {_unit}: {exc}")
         print_info(f"Restart it manually: systemctl --user restart {_unit}")
         return
-    print_success(f"Observatory restarted ({_unit}).")
+    print_success(f"IRC server restarted ({_unit}).")
 
 
 _LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
@@ -3555,7 +3555,7 @@ def _verify_daemon_listening(status: dict, *, retries: int = 3) -> tuple[bool, s
             _unit = "mercury-observatory.service"
         return False, (
             f"no answer on {', '.join(f'{label} {addr}' for label, addr in down)} — "
-            f"restart the daemon: systemctl --user restart {_unit} "
+            f"restart the IRC server: systemctl --user restart {_unit} "
             f"(then: systemctl --user status {_unit})"
         )
     except Exception as exc:  # noqa: BLE001 — verification never kills setup
@@ -3656,7 +3656,7 @@ def _restart_observatory_unit(reason: str) -> bool:
         _unit = "mercury-observatory.service"
     try:
         restart_now = prompt_yes_no(
-            f"Restart the observatory now? ({reason})",
+            f"Restart the IRC server now? ({reason})",
             default=True,
         )
     except KeyboardInterrupt:
@@ -3681,7 +3681,7 @@ def _restart_observatory_unit(reason: str) -> bool:
         print_warning(f"Could not restart {_unit}: {exc}")
         print_info(f"Restart it manually: systemctl --user restart {_unit}")
         return False
-    print_success(f"Observatory restarted ({_unit}).")
+    print_success(f"IRC server restarted ({_unit}).")
     return True
 
 
@@ -3830,6 +3830,9 @@ def _print_lounge_card(host: str, port: int, username: str,
         print_warning(f"Fresh password (shown once): {password}")
 
 
+_JUST_CREATED_LOUNGE_USER: str | None = None
+
+
 def _offer_lounge_password_reset(obs) -> None:
     """Offer resetting The Lounge LOGIN password (re-run path only).
 
@@ -3843,6 +3846,10 @@ def _offer_lounge_password_reset(obs) -> None:
             _mercury_home as _mh2, read_config as _read_cfg2,
         )
 
+        global _JUST_CREATED_LOUNGE_USER
+        if _JUST_CREATED_LOUNGE_USER:
+            _JUST_CREATED_LOUNGE_USER = None
+            return
         home = _mh2(None)
         lounge = lounge_mod.status_lounge(home)
         if not lounge.get("configured"):
@@ -3985,6 +3992,9 @@ def _offer_lounge(obs, ts: dict | None) -> None:
             print_info("Install it by hand: npm install -g thelounge")
             return
         created = (summary.get("user") or {}).get("action") == "created"
+        if created:
+            global _JUST_CREATED_LOUNGE_USER
+            _JUST_CREATED_LOUNGE_USER = username
         try:
             from observatory.provision import _mercury_home, read_config
             from observatory.config_gen import ObservatoryPaths
@@ -4251,6 +4261,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
         try:
             from observatory import lounge as lounge_mod
 
+            _JUST_CREATED_LOUNGE_USER = None
             _offer_lounge(obs, ts)
             _offer_lounge_password_reset(obs)
         except Exception as exc:  # noqa: BLE001 — direct IRC still works
