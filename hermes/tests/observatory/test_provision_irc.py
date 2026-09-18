@@ -197,25 +197,44 @@ def test_provision_rejects_bad_chosen_password_env(tmp_path, monkeypatch) -> Non
         provision.provision(home, server_name="mercury", systemd=False)
 
 
-def test_reset_wipes_lounge_history_keeps_account(tmp_path, monkeypatch) -> None:
+def test_reset_wipes_lounge_fully_keeps_binary(tmp_path, monkeypatch) -> None:
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
     obs = home / "observatory"
     obs.mkdir(parents=True)
-    lounge_home = obs / "lounge" / "home"
+    lounge = obs / "lounge"
+    lounge_home = lounge / "home"
     (lounge_home / "users").mkdir(parents=True)
     (lounge_home / "users" / "owner.json").write_text("{}")
-    (lounge_home / "config.js").write_text("module.exports = {};")
-    storage = lounge_home / "storage"
-    storage.mkdir()
-    (storage / "owner.sqlite3").write_text("history")
+    (lounge / "config.js").write_text("module.exports = {};")
+    npm_bin = lounge / "npm" / "bin"
+    npm_bin.mkdir(parents=True)
+    (npm_bin / "thelounge").write_text("#!/bin/sh\n")
     (obs / "state.db").write_text("tree")
     removed = provision.reset_observatory_data(home)
-    assert any(str(storage) in r for r in removed)
-    assert not storage.exists()
-    assert (lounge_home / "users" / "owner.json").is_file()
-    assert (lounge_home / "config.js").is_file()
+    assert not lounge_home.exists()
+    assert not (lounge / "config.js").exists()
+    assert (npm_bin / "thelounge").is_file()
     assert not (obs / "state.db").exists()
+    assert any("lounge" in r for r in removed)
+
+
+def test_reset_blanks_listener_passwords(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    home.mkdir(parents=True)
+    (home / ".env").write_text(
+        "OTHER=keep\nIRC_BOUNCER_PASSWORD=old1\nIRC_AGENT_PASSWORD=old2\n")
+    removed = provision.reset_observatory_data(home)
+    rest = (home / ".env").read_text()
+    assert "IRC_BOUNCER_PASSWORD" not in rest
+    assert "IRC_AGENT_PASSWORD" not in rest
+    assert "OTHER=keep" in rest
+    assert ".env:IRC_BOUNCER_PASSWORD" in removed
+    # next provision generates fresh secrets
+    made = provision.ensure_passwords(home)
+    assert made["action"] == "generated"
+    assert provision.read_irc_passwords(home)["bouncer"]
 
 
 def test_remove_legacy_soju(tmp_path, monkeypatch) -> None:

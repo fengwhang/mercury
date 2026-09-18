@@ -3744,7 +3744,7 @@ def _offer_bouncer_password_rotate(obs) -> None:
 
 
 def _offer_observatory_reset(obs) -> bool:
-    """Offer wiping IRC observatory data (config + history + agent tree).
+    """Offer wiping ALL observatory data (full slate, nothing kept).
 
     Returns True when a reset happened (caller must re-provision loudly).
     The unit file survives; agent disadvantages: spawned rooms die with
@@ -3752,7 +3752,7 @@ def _offer_observatory_reset(obs) -> bool:
     """
     try:
         want = prompt_yes_no(
-            "Reset observatory data? (deletes ircd.json, history, and the agent tree)",
+            "Reset observatory data? (full slate: config, history, agent tree, Lounge login, passwords)",
             default=False,
         )
     except KeyboardInterrupt:

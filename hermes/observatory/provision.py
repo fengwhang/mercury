@@ -905,26 +905,61 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
     }
 
 
-def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
-    """Delete IRC observatory data (config + history + agent tree).
+def _remove_env_key(env_path: Path, key: str) -> bool:
+    """Delete every line defining ``key`` from a .env file."""
+    try:
+        if not env_path.is_file():
+            return False
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return False
+    kept = [ln for ln in lines if not _env_line_defines_key(ln, key)]
+    if len(kept) == len(lines):
+        return False
+    try:
+        env_path.write_text("\n".join(kept) + ("\n" if kept else ""),
+                            encoding="utf-8")
+    except Exception:
+        return False
+    return True
 
-    The unit files survive (re-provision rewrites config; callers must
-    restart both daemons — live memory outlives the files). Our Lounge
-    keeps its account, config, and unit — only its message history
-    (``storage/``) is wiped so a reset really clears the backlog.
-    Externally-run Lounges (containers, other boxes) are never touched.
+
+def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
+    """Delete IRC observatory data — the full slate, nothing kept.
+
+    Reset means reset: ircd config, history, agent tree, TLS, the whole
+    Lounge home (config + accounts + message history), and BOTH
+    listener passwords. The next setup re-asks everything (server
+    name, binds, Lounge username + password) and generates fresh
+    secrets — no resume, no fallback to wiped data. Surviving: unit
+    files, the npm prefix (a reinstallable binary, not data), and
+    externally-run Lounges (containers, other boxes — never touched).
     Returns what was removed."""
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
     removed: list[str] = []
     try:
+        # npm/ is a sibling of home/ (binary, not data) — untouched.
         from observatory.lounge import LoungePaths
-        storage = LoungePaths(home).home / "storage"
-        if storage.is_dir() and not storage.is_symlink():
-            shutil.rmtree(storage)
-            removed.append(str(storage))
+        lpaths = LoungePaths(home)
+        for target in (lpaths.conf, lpaths.home):
+            try:
+                if target.is_dir() and not target.is_symlink():
+                    shutil.rmtree(target)
+                    removed.append(str(target))
+                elif target.exists() or target.is_symlink():
+                    target.unlink()
+                    removed.append(str(target))
+            except Exception:
+                pass
     except Exception:
         pass
+    for key in (ENV_BOUNCER_PASSWORD, ENV_AGENT_PASSWORD):
+        try:
+            if _remove_env_key(home / ".env", key):
+                removed.append(f".env:{key}")
+        except Exception:
+            pass
     for target in (
         paths.config_file,
         paths.history_db,
