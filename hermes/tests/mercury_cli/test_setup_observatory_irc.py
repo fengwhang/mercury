@@ -753,3 +753,35 @@ def test_password_reset_skipped_after_fresh_creation(monkeypatch) -> None:
         setup_mod._JUST_CREATED_LOUNGE_USER = None
     assert not asked
     assert setup_mod._JUST_CREATED_LOUNGE_USER is None
+
+
+def test_lounge_offer_seeds_live_bouncer_bind(monkeypatch) -> None:
+    """Pre-seeded uplink uses the live bouncer_host, never localhost."""
+    import observatory.lounge as lounge_mod
+    from observatory import provision as provision_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "status_lounge",
+        lambda *a, **k: {"configured": False, "users": []})
+    monkeypatch.setattr(lounge_mod, "_local_port_answers",
+                        lambda *a, **k: False)
+    monkeypatch.setattr(provision_mod, "_mercury_home", lambda home: "/h")
+    monkeypatch.setattr(
+        provision_mod, "read_config",
+        lambda home: {"server_name": "vm", "bouncer_host": "100.9.9.9",
+                      "bouncer_port": 6670})
+    monkeypatch.setattr(
+        provision_mod, "read_irc_passwords",
+        lambda home: {"bouncer": "pw", "agent": "pw2"})
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
+    monkeypatch.setattr(setup_mod, "prompt_choice", lambda *a, **k: 0)
+    monkeypatch.setattr(setup_mod, "prompt", lambda *a, **k: "owner")
+    monkeypatch.setattr(setup_mod, "_ensure_firewall_port", lambda *a: None)
+    seen = {}
+    monkeypatch.setattr(
+        lounge_mod, "provision_lounge",
+        lambda **kw: seen.update(kw) or {"user": {"action": "created"}})
+    setup_mod._offer_lounge(None, {"up": False, "ip": None})
+    assert seen["uplink_host"] == "100.9.9.9"
+    assert seen["uplink_port"] == 6670
+    assert seen["uplink_channel"] == "#vm_gateway"

@@ -3980,9 +3980,13 @@ def _offer_lounge(obs, ts: dict | None) -> None:
             _cfg = _read_cfg(_mh(None)) or {}
             _server = str(_cfg.get("server_name") or "mercury")
             _pw = _read_pw(_mh(None))
+            # Uplink MUST use the live bouncer bind, not localhost:
+            # a tailnet-pinned chat port refuses 127.0.0.1 and the
+            # pre-seeded network dies with ECONNREFUSED (verified live).
+            _uplink_host = str(_cfg.get("bouncer_host") or "127.0.0.1")
             summary = lounge_mod.provision_lounge(
                 host=host, username=username, password=password,
-                uplink_host="127.0.0.1",
+                uplink_host=_uplink_host,
                 uplink_port=int(_cfg.get("bouncer_port") or 6670),
                 uplink_password=str((_pw or {}).get("bouncer") or ""),
                 uplink_name=_server, uplink_nick=username,
