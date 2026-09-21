@@ -785,3 +785,34 @@ def test_lounge_offer_seeds_live_bouncer_bind(monkeypatch) -> None:
     assert seen["uplink_host"] == "100.9.9.9"
     assert seen["uplink_port"] == 6670
     assert seen["uplink_channel"] == "#vm_gateway"
+
+
+def test_converge_repoints_drifted_uplink(tmp_path, monkeypatch) -> None:
+    import json as _json
+    import observatory.lounge as lounge_mod
+    from observatory import provision as provision_mod
+
+    home = tmp_path / "mercury"
+    monkeypatch.setattr(provision_mod, "_mercury_home", lambda h: home)
+    monkeypatch.setattr(
+        provision_mod, "read_config",
+        lambda h: {"server_name": "vm", "bouncer_host": "100.9.9.9",
+                   "bouncer_port": 6670})
+    monkeypatch.setattr(
+        provision_mod, "read_irc_passwords",
+        lambda h: {"bouncer": "pw", "agent": "pw2"})
+    users = lounge_mod.LoungePaths(home).home / "users"
+    users.mkdir(parents=True)
+    (users / "owner.json").write_text(_json.dumps({"networks": [{
+        "name": "vm", "host": "127.0.0.1", "port": 6670,
+        "password": "pw", "nick": "owner", "username": "owner",
+        "channels": [{"name": "#vm_gateway", "muted": False,
+                      "key": ""}]}]}))
+    monkeypatch.setattr(lounge_mod, "lounge_unit_active", lambda: True)
+    restarted = []
+    monkeypatch.setattr(lounge_mod, "restart_lounge",
+                        lambda: restarted.append(True))
+    setup_mod._converge_lounge_uplink()
+    data = _json.loads((users / "owner.json").read_text())
+    assert data["networks"][0]["host"] == "100.9.9.9"
+    assert restarted == [True]

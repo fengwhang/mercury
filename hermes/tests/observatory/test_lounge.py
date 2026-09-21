@@ -351,3 +351,21 @@ def test_ensure_slow_path_links_patched_tree(tmp_path, monkeypatch) -> None:
     import os as _os
 
     assert _os.path.realpath(out).endswith("lounge/pkg/index.js")
+
+
+def test_ensure_lounge_network_current_when_identical(tmp_path) -> None:
+    import json as _json
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    users = paths.home / "users"
+    users.mkdir(parents=True)
+    (users / "owner.json").write_text(_json.dumps({"networks": [{
+        "name": "vm", "host": "100.9.9.9", "port": 6670,
+        "password": "pw", "nick": "owner", "username": "owner",
+        "channels": [{"name": "#vm_gateway", "muted": False,
+                      "key": ""}]}]}))
+    out = lounge_mod.ensure_lounge_network(
+        paths, "owner", net_name="vm", host="100.9.9.9", port=6670,
+        server_password="pw", nick="owner", channel="#vm_gateway")
+    assert out["action"] == "current"

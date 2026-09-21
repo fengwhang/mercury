@@ -3892,6 +3892,42 @@ def _offer_lounge_password_reset(obs) -> None:
         print_error(f"Lounge password reset failed: {exc}")
 
 
+def _converge_lounge_uplink() -> None:
+    """Re-seed the pre-seeded network when the live bind drifted.
+
+    Binds change after provisioning (localhost → tailnet pin); the
+    stored uplink keeps pointing at the old address and dies with
+    ECONNREFUSED. Runs on every setup (best-effort, never raises);
+    restarts the Lounge only when the seed actually changed.
+    """
+    try:
+        from observatory import lounge as lounge_mod
+        from observatory.provision import (
+            _mercury_home as _mh, read_config as _read_cfg,
+            read_irc_passwords as _read_pw,
+        )
+
+        home = _mh(None)
+        cfg = _read_cfg(home) or {}
+        server = str(cfg.get("server_name") or "mercury")
+        pw = _read_pw(home)
+        users = lounge_mod.lounge_users(lounge_mod.LoungePaths(home))
+        if not users:
+            return
+        out = lounge_mod.ensure_lounge_network(
+            lounge_mod.LoungePaths(home), users[0],
+            net_name=server,
+            host=str(cfg.get("bouncer_host") or "127.0.0.1"),
+            port=int(cfg.get("bouncer_port") or 6670),
+            server_password=str((pw or {}).get("bouncer") or ""),
+            nick=users[0], channel=f"#{server}_gateway")
+        if out.get("action") == "seeded" and lounge_mod.lounge_unit_active():
+            lounge_mod.restart_lounge()
+            print_info("Lounge uplink re-pointed at the live chat port.")
+    except Exception:  # noqa: BLE001 — converge never kills the wizard
+        pass
+
+
 def _offer_lounge(obs, ts: dict | None) -> None:
     """Offer installing The Lounge (only one required per user)."""
     try:
@@ -3900,6 +3936,7 @@ def _offer_lounge(obs, ts: dict | None) -> None:
         _st = _lounge_mod.status_lounge()
         if (_st.get("users")):
             print_info("The Lounge already answers on :9000 — keeping it, no install offered.")
+            _converge_lounge_uplink()
             return
         if not _st.get("configured") and (
                 _lounge_mod._local_port_answers(

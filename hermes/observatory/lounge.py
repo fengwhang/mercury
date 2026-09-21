@@ -483,6 +483,13 @@ def ensure_lounge_network(
         "channels": [{"name": channel, "muted": False, "key": ""}],
         "uuid": _uuid.uuid4().hex,
     }
+    for n in networks:
+        if isinstance(n, dict) and n.get("name") == net_name:
+            if all(n.get(k) == entry[k] for k in (
+                    "host", "port", "password", "nick", "username")) and [
+                    c.get("name") for c in (n.get("channels") or [])
+                    if isinstance(c, dict)] == [channel]:
+                return {"action": "current", "network": net_name}
     kept = [n for n in networks
             if not (isinstance(n, dict) and n.get("name") == net_name)]
     kept.append(entry)
