@@ -13,7 +13,7 @@
 #   - `delegate_fallback` is REQUIRED whenever delegation is used. If
 #     unset, delegation fails hard rather than degrading to default's
 #     fallback.
-#   - All slots are explicit. Nothing is inferred from ~/.omp or elsewhere.
+#   - All slots are explicit. Nothing is inferred from ~/.mercury/omp or elsewhere.
 #
 # The unified file also carries per-engine subtrees:
 #   hermes: {}   hermes-private settings (explicit keys WIN over slots)

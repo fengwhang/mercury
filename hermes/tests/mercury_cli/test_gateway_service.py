@@ -1196,7 +1196,7 @@ class TestUnitPinsOmpAgentDir:
     The launcher exports ``PI_CODING_AGENT_DIR=$MERCURY_HOME/omp`` so omp
     children (delegation, cron omp_direct) keep sessions/agent.db inside
     the ONE mercury tree. Without the unit-side pin, gateway-spawned omp
-    children resolve the platform default ``~/.omp/agent`` instead — a
+    children resolve the platform default ``~/.mercury/omp/agent`` instead — a
     second, divergent state root (spec §7 / §8.1 item 4). Contract test on
     the bin/mercury↔unit relationship, not a snapshot: the agent-dir line
     must equal the unit's own MERCURY_HOME value + "/omp", however that

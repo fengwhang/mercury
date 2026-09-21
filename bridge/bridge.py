@@ -6,7 +6,7 @@ delegate_fallback (fallbacks optional; chains validated). Default config path:
 ~/.mercury/config.yaml (MERCURY_CONFIG env or HERMES_OMP_CONFIG override).
 
 --render-omp now writes INTO the unified file's omp: subtree (preserving
-models:/hermes:), instead of a separate ~/.omp/agent/config.yml.
+models:/hermes:), instead of a separate ~/.mercury/omp/agent/config.yml.
 """
 import json
 import os

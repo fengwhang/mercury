@@ -13,7 +13,7 @@ def run(args, cfg, home=None):
     # MERCURY-OMP PATCH (skills bridge union): --render-omp also refreshes
     # omp's engine-root symlink view of the shared library. Point the
     # skills-bridge env at throwaway dirs so tests never touch the real
-    # ~/.mercury or ~/.omp trees.
+    # ~/.mercury trees (the omp side now lives at ~/.mercury/omp, never ~/.omp).
     env = {**os.environ, "HERMES_OMP_CONFIG": cfg}
     scratch = home or tempfile.mkdtemp(prefix="bridge-skills-")
     env["MERCURY_HOME"] = scratch
