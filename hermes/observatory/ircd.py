@@ -723,28 +723,32 @@ class IrcDaemon:
                 client.channels.add(key)
                 joined.append((key, self._display[key]))
         for key, display in joined:
-            await self._send(
-                client, f":{client.nick}!{client.user}@mercury JOIN {display}"
+            await self._emit_join(client, key, display)
+
+    async def _emit_join(self, peer: _Client, key: str, display: str) -> None:
+        """JOIN + topic + names + history replay for a new member."""
+        await self._send(
+            peer, f":{peer.nick}!{peer.user}@mercury JOIN {display}"
+        )
+        topic = self._topics.get(key)
+        if topic is not None:
+            text, setter, _ts = topic
+            await self._numeric(peer, 332, f"{peer.nick} {display} :{text}")
+        else:
+            await self._numeric(
+                peer, 331, f"{peer.nick} {display}", "No topic is set"
             )
-            topic = self._topics.get(key)
-            if topic is not None:
-                text, setter, _ts = topic
-                await self._numeric(client, 332, f"{client.nick} {display} :{text}")
-            else:
-                await self._numeric(
-                    client, 331, f"{client.nick} {display}", "No topic is set"
-                )
-            await self._send_names(client, key, display)
-            # Bouncer replay: recent history on every JOIN.
-            for msg in self.channel_history(
-                display, limit=int(self.config.history_limit)
-            ):
-                await self._send(
-                    client,
-                    self._tags(client, ts=msg.ts, msgid=msg.msgid)
-                    + f":{msg.sender}!relay@mercury {msg.kind.upper()} "
-                    f"{display} :{msg.text}",
-                )
+        await self._send_names(peer, key, display)
+        # Bouncer replay: recent history on every JOIN.
+        for msg in self.channel_history(
+            display, limit=int(self.config.history_limit)
+        ):
+            await self._send(
+                peer,
+                self._tags(peer, ts=msg.ts, msgid=msg.msgid)
+                + f":{msg.sender}!relay@mercury {msg.kind.upper()} "
+                f"{display} :{msg.text}",
+            )
 
     async def _send_names(self, client: _Client, key: str, display: str) -> None:
         members = sorted(self._channels.get(key, ()))
@@ -858,10 +862,11 @@ class IrcDaemon:
             await self._send(client, f":{name} BATCH -{ref}")
 
     async def _cmd_invite(self, client: _Client, arg: str) -> None:
-        """INVITE <nick> <#channel> — 341 to the sender, relay to target.
+        """INVITE <nick> <#channel> — 341 to the sender, relay + join.
 
-        The gateway bot invites the phone user on spawn so the room
-        surfaces as a tap instead of a typed join.
+        The gateway bot invites the lounge nick on spawn; the target is
+        server-joined at the same time (auto-join), since The Lounge
+        never joins on INVITE by itself.
         """
         parts = arg.split()
         if len(parts) < 2:
@@ -886,15 +891,40 @@ class IrcDaemon:
             peer,
             f":{client.nick}!{client.user}@mercury INVITE {peer.nick} :{display}",
         )
-
-    def _oper_password(self) -> str:
-        return self.config.agent_password or self.config.password
+        # Auto-join: on this network an invite IS the join. The Lounge
+        # surfaces INVITEs as messages and never joins, so the invited
+        # nick is server-added and the JOIN is broadcast (death later
+        # PARTs them via destroy_channel, clearing the sidebar).
+        async with self._lock:
+            members = self._channels.get(key)
+            if members is not None and peer.nick.lower() not in members:
+                members.add(peer.nick.lower())
+                peer.channels.add(key)
+            else:
+                members = None
+        if members is not None:
+            for nick in sorted(members):
+                other = self._clients.get(nick)
+                if other is not None and other is not peer:
+                    await self._send(
+                        other,
+                        f":{peer.nick}!{peer.user}@mercury JOIN {display}",
+                    )
+            await self._emit_join(peer, key, display)
 
     async def _cmd_oper(self, client: _Client, arg: str) -> None:
-        """OPER <password> — grant channel-destroy rights to the gateway bot."""
+        """OPER <password> — grant channel-destroy rights to the gateway bot.
+
+        Either listener secret works. The old single-secret check
+        compared only the agent password, so the bot (which authenticates
+        with the server password) got 464 forever and every DESTROY died
+        with 481 — rooms lingered after agent death.
+        """
         secret = arg.split(" ", 1)[0].lstrip(":")
-        want = self._oper_password()
-        if want and secret == want:
+        secrets = {
+            s for s in (self.config.agent_password, self.config.password) if s
+        }
+        if secret and secret in secrets:
             client.oper = True
             await self._numeric(client, 381, client.nick, "You are now an IRC operator")
         else:
