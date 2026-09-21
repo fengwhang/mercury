@@ -766,7 +766,64 @@ def provision(
     summary["unit"] = (
         ensure_observatory_unit(home) if systemd else "skipped (--no-systemd)"
     )
+    summary["daemon"] = _restart_ircd_if_changed(
+        config_action=str(summary.get("config", {}).get("action") or ""),
+        passwords_made=list(summary.get("passwords", {}).get("made") or []),
+        tls_action=str(summary.get("tls", {}).get("action") or ""),
+    )
     return summary
+
+
+def _ircd_unit_active() -> bool:
+    """True when the ircd unit is running (never raises)."""
+    try:
+        from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "is-active", _unit],
+            capture_output=True, timeout=15)
+        return (out.stdout or b"").decode(
+            "utf-8", errors="replace").strip() == "active"
+    except Exception:
+        return False
+
+
+def _restart_ircd_if_changed(*, config_action: str, passwords_made: list,
+                             tls_action: str) -> dict[str, Any]:
+    """Restart a live ircd whose files just changed (never raises).
+
+    Provision rewrites ircd.json, .env secrets, and TLS certs, but a
+    running daemon keeps the OLD ones in memory — the file-says-X /
+    daemon-rejects-X desync (including silently passwordless operation
+    after a secret regen). Fresh units were just started by the ensure
+    step and need nothing; only an already-active daemon restarts.
+    """
+    changed = (
+        config_action in ("wrote", "updated")
+        or bool(passwords_made)
+        or tls_action == "generated"
+    )
+    if not changed:
+        return {"action": "current"}
+    if not _ircd_unit_active():
+        return {"action": "started-fresh"}
+    try:
+        from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
+    except Exception:  # noqa: BLE001
+        return {"action": "skipped"}
+    try:
+        subprocess.run(["systemctl", "--user", "daemon-reload"],
+                       capture_output=True, timeout=30)
+        out = subprocess.run(
+            ["systemctl", "--user", "restart", _unit],
+            capture_output=True, timeout=60)
+    except Exception:
+        return {"action": "restart-failed"}
+    if out.returncode != 0:
+        return {"action": "restart-failed"}
+    return {"action": "restarted"}
 
 
 SOJU_UNIT_NAME = "mercury-soju.service"

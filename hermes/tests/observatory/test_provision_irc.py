@@ -285,3 +285,43 @@ def test_reset_stops_both_daemons(tmp_path, monkeypatch) -> None:
     assert "mercury-observatory.service" in stopped
     assert "mercury-lounge.service" in stopped
     assert "stopped mercury-lounge.service" in removed
+
+
+def test_restart_unchanged_is_current(monkeypatch) -> None:
+    assert provision._restart_ircd_if_changed(
+        config_action="current", passwords_made=[],
+        tls_action="current") == {"action": "current"}
+
+
+def test_restart_skipped_when_unit_down(monkeypatch) -> None:
+    monkeypatch.setattr(provision, "_ircd_unit_active", lambda: False)
+    assert provision._restart_ircd_if_changed(
+        config_action="updated", passwords_made=[],
+        tls_action="current") == {"action": "started-fresh"}
+
+
+def test_restart_fires_on_password_regen(monkeypatch) -> None:
+    import subprocess as _subprocess
+    import types as _types
+
+    monkeypatch.setattr(provision, "_ircd_unit_active", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        _subprocess, "run",
+        lambda args, **kw: calls.append(list(args)) or _types.SimpleNamespace(
+            returncode=0, stdout=b"", stderr=b""))
+    out = provision._restart_ircd_if_changed(
+        config_action="current", passwords_made=["bouncer"],
+        tls_action="current")
+    assert out == {"action": "restarted"}
+    assert any(a[-1] == "daemon-reload" for a in calls)
+    assert any("mercury-observatory.service" in a for a in calls)
+
+
+def test_provision_reports_daemon_key(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    out = provision.provision(home, systemd=False)
+    assert out["daemon"]["action"] in (
+        "current", "started-fresh", "restarted", "skipped")
+    assert out["passwords"]["action"] == "generated"
