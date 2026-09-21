@@ -3735,6 +3735,14 @@ def _offer_bouncer_password_rotate(obs) -> None:
             mirror_irc_env(home, generate_password(), agent)
         print_success("Server password updated (mirrored to .env — update your IRC client).")
         _restart_observatory_unit("necessary to apply the new password")
+        # The Lounge uplink holds the OLD secret: reseed + restart it
+        # now, or every send dies with 464 ("Password mismatch" in the
+        # lobby) until some later setup happens to converge.
+        try:
+            _converge_lounge_uplink()
+        except Exception as exc:  # noqa: BLE001 — loud, never fatal
+            print_warning(f"Lounge uplink not re-pointed: {exc} — "
+                          "re-run setup to heal it.")
     except KeyboardInterrupt:
         raise
     except Exception as exc:
@@ -3924,8 +3932,11 @@ def _converge_lounge_uplink() -> None:
         if out.get("action") == "seeded" and lounge_mod.lounge_unit_active():
             lounge_mod.restart_lounge()
             print_info("Lounge uplink re-pointed at the live chat port.")
-    except Exception:  # noqa: BLE001 — converge never kills the wizard
-        pass
+    except Exception as exc:  # noqa: BLE001 — converge never kills
+        try:
+            print_warning(f"Lounge uplink converge failed: {exc}")
+        except Exception:
+            pass
 
 
 def _offer_lounge(obs, ts: dict | None) -> None:

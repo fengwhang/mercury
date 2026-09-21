@@ -816,3 +816,37 @@ def test_converge_repoints_drifted_uplink(tmp_path, monkeypatch) -> None:
     data = _json.loads((users / "owner.json").read_text())
     assert data["networks"][0]["host"] == "100.9.9.9"
     assert restarted == [True]
+
+
+def test_rotate_reseeds_lounge_uplink(tmp_path, monkeypatch) -> None:
+    from observatory import provision as provision_mod
+
+    home = tmp_path / "mercury"
+    (home / "observatory").mkdir(parents=True)
+    monkeypatch.setattr(provision_mod, "_mercury_home", lambda h: home)
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
+    monkeypatch.setattr(
+        setup_mod, "_prompt_validated", lambda *a, **k: "custom-password-123")
+    monkeypatch.setattr(
+        setup_mod, "_restart_observatory_unit", lambda *a, **k: True)
+    converged = []
+    monkeypatch.setattr(
+        setup_mod, "_converge_lounge_uplink",
+        lambda: converged.append(True))
+    import types as _types
+    setup_mod._offer_bouncer_password_rotate(
+        _types.SimpleNamespace(
+            validate_bouncer_password=lambda p: p))
+    assert converged == [True]
+    assert "custom-password-123" in (home / ".env").read_text()
+
+
+def test_converge_failure_is_loud(monkeypatch, capsys) -> None:
+    from observatory import provision as provision_mod
+
+    def _boom(home=None):
+        raise RuntimeError("no home")
+
+    monkeypatch.setattr(provision_mod, "_mercury_home", _boom)
+    setup_mod._converge_lounge_uplink()
+    assert "converge failed" in capsys.readouterr().out
