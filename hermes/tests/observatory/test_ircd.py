@@ -799,3 +799,51 @@ async def test_invite_rejects_unknown(tmp_path) -> None:
             assert await c.next_match(" 403 ")
         finally:
             await c.close()
+
+
+@pytest.mark.asyncio
+async def test_invite_auto_joins_target(tmp_path) -> None:
+    """INVITE server-joins the target: self-JOIN + broadcast + names."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        a = RawClient()
+        await a.connect(agent_port)
+        try:
+            await a.register("inviter")
+            await a.send("JOIN #auto")
+            assert await a.next_match("JOIN #auto")
+            b = RawClient()
+            await b.connect(agent_port)
+            try:
+                await b.register("invitee")
+                await a.send("INVITE invitee :#auto")
+                assert await a.next_match(" 341 ")
+                assert "#auto" in await b.next_match("INVITE")
+                # target sees its own JOIN + names ...
+                joined = await b.next_match("JOIN #auto")
+                assert "invitee!" in joined
+                assert await b.next_match(" 353 ")
+                # ... and the existing member sees the broadcast
+                seen = await a.next_match("JOIN #auto")
+                assert "invitee!" in seen
+            finally:
+                await b.close()
+        finally:
+            await a.close()
+
+
+@pytest.mark.asyncio
+async def test_oper_accepts_either_listener_secret(tmp_path) -> None:
+    """OPER with the server (bouncer) password works when both set."""
+    async with running_daemon(
+        tmp_path, password="s3cret", agent_password="op-secret"
+    ) as (_, agent_port, __):
+        bot = RawClient()
+        await bot.connect(agent_port)
+        try:
+            await bot.register("bot", password="op-secret")
+            await bot.send("OPER s3cret")
+            assert await bot.next_match("381")
+            await bot.send("OPER wrong")
+            assert await bot.next_match("464")
+        finally:
+            await bot.close()
