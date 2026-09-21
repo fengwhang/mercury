@@ -1,20 +1,20 @@
 """update_from_release observatory tail — update-completeness contracts.
 
-Verified behaviors (existing-install upgrade path for the Matrix
+Verified behaviors (existing-install upgrade path for the IRC
 observatory), through the REAL update_from_release with network, download,
 subprocess, and observatory hooks mocked:
 
-1. Ordering: venv refresh -> bundled wheels -> [matrix] extra -> config
-   migration -> first-time provision -> tuwunel refresh. In particular
-   `provision_if_missing` runs BEFORE `refresh_for_update` (a binary swap
-   alone leaves a pre-observatory install without toml/appservice/owner/
-   unit), and wheels install only AFTER the venv refresh.
+1. Ordering: venv refresh -> bundled wheels -> config
+   migration -> first-time provision -> refresh. In particular
+   `provision_if_missing` runs BEFORE `refresh_for_update` (leaving a
+   pre-observatory install without config/passwords/unit), and wheels
+   install only AFTER the venv refresh.
 2. First-time success prints the login-card line.
 3. Already provisioned (provision_if_missing -> None): no first-time line,
    refresh still runs.
 4. Provision failure WARNS, never blocks (update returns 0).
 5. Bundled-wheels install failure warns only (update returns 0).
-6. Observatory disabled: no wheels/matrix-extra installs, no first-time
+6. Observatory disabled: no wheels installs, no first-time
    provision, silent.
 """
 
@@ -118,11 +118,6 @@ class _Harness:
             self.events.append("config-migration")
         monkeypatch.setattr(update_cmd, "_check_and_apply_config_migration", _migrate)
 
-        monkeypatch.setattr(prov, "observatory_enabled", lambda: enabled)
-        # Hermetic baseline: these tail tests cover the tarball path; the
-        # vendored wheel (resolved from the live checkout on cp313 linux)
-        # is pinned off here and covered by test_vendored_olm_wheels.py.
-        monkeypatch.setattr(prov, "_vendored_olm_wheel", lambda: None)
 
         def _provision_if_missing(*a, **k):
             self.events.append("provision-if-missing")
@@ -141,7 +136,7 @@ class _Harness:
 
 
 def _harness(tmp_path, monkeypatch, **kw):
-    defaults = dict(wheels=WHEELS, enabled=True, provision_result={"tuwunel": {}})
+    defaults = dict(wheels=WHEELS, enabled=True, provision_result={"ircd": {}})
     defaults.update(kw)
     return _Harness(tmp_path, monkeypatch, **defaults)
 
@@ -153,8 +148,7 @@ def test_tail_order_and_first_time_line(tmp_path, monkeypatch, capsys):
     assert "observatory provisioned for the first time — run mercury setup for the login card" in out
     ev = h.events
     assert ev.index("venv-refresh") < ev.index("wheels-install"), "wheels must install after venv refresh"
-    assert ev.index("wheels-install") < ev.index("matrix-extra")
-    assert ev.index("matrix-extra") < ev.index("provision-if-missing"), "deps before the observatory tail"
+    assert ev.index("wheels-install") < ev.index("provision-if-missing"), "deps before the observatory tail"
     assert ev.index("provision-if-missing") < ev.index("refresh-for-update"), "provision BEFORE refresh"
     assert "refresh-for-update" in ev
 
@@ -185,7 +179,7 @@ def test_wheels_failure_warns_only(tmp_path, monkeypatch, capsys):
     assert h.run() == 0
     out = capsys.readouterr().out
     assert "bundled-wheels install failed" in out
-    assert "manual fix" in out
+    assert "corrupt tarball" in out
     # uv attempt fails -> the pip fallback also lands as a wheels install
     assert h.events.count("wheels-install") == 2
 
@@ -195,7 +189,6 @@ def test_disabled_install_skips_deps_and_provision(tmp_path, monkeypatch, capsys
     assert h.run() == 0
     out = capsys.readouterr().out
     assert "wheels-install" not in h.events
-    assert "matrix-extra" not in h.events
     assert "provisioned for the first time" not in out
     # the tail hooks still ran (their own disabled-gates returned None)
     assert "provision-if-missing" in h.events
@@ -206,5 +199,4 @@ def test_no_wheels_dir_skips_wheel_install_silently(tmp_path, monkeypatch, capsy
     h = _harness(tmp_path, monkeypatch, wheels=None)
     assert h.run() == 0
     assert "wheels-install" not in h.events
-    assert "matrix-extra" in h.events  # enabled install still gets the extra
     assert "bundled" not in capsys.readouterr().out

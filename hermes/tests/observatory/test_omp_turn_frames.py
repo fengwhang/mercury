@@ -126,24 +126,28 @@ def _clean_registries():
 
 def test_replay_pushes_full_turn_when_live_missed_all(monkeypatch, _clean_registries):
     pushed = []
-    monkeypatch.setattr(gs, "push_child_feed_event",
-                        lambda node_id, feed: pushed.append((node_id, feed)))
+    from observatory import rooms as _rooms
+    monkeypatch.setattr(_rooms, "channel_for_node_id", lambda nid: "#t")
+    monkeypatch.setattr(_rooms, "say_nowait",
+                        lambda channel, text: pushed.append((channel, text)) or True)
     frames = agent_turn_frames(_turn_events())
     assert gs.replay_child_turn_frames("deleg_r/0", frames) == 3
-    assert [n for n, _ in pushed] == ["deleg_r/0"] * 3
-    assert pushed[0][1]["feed"] == "tool"
+    assert [n for n, _ in pushed] == ["#t"] * 3
+    assert "terminal" in pushed[0][1]
 
 
 def test_replay_skips_live_covered_occurrences(monkeypatch, _clean_registries):
     pushed = []
-    monkeypatch.setattr(gs, "push_child_feed_event",
-                        lambda node_id, feed: pushed.append((node_id, feed)))
+    from observatory import rooms as _rooms
+    monkeypatch.setattr(_rooms, "channel_for_node_id", lambda nid: "#t")
+    monkeypatch.setattr(_rooms, "say_nowait",
+                        lambda channel, text: pushed.append((channel, text)) or True)
     frames = agent_turn_frames(_turn_events())
     tool_key = child_frame_key(frames[0])
     gs._child_dedupe["deleg_s/0"] = dd = TurnFrameDedupe()
     assert dd.live_hit(tool_key) is False  # live forwarded the tool call
     assert gs.replay_child_turn_frames("deleg_s/0", frames) == 2
-    assert [f["feed"] for _, f in pushed] == ["thought", "message"]
+    assert len(pushed) == 2
     # A second identical replay is a new turn's worth of occurrences: with no
     # live coverage recorded for it, the full turn pushes again.
     assert gs.replay_child_turn_frames("deleg_s/0", frames) == 3
@@ -151,8 +155,10 @@ def test_replay_skips_live_covered_occurrences(monkeypatch, _clean_registries):
 
 def test_replay_detaches_live_listeners_first(monkeypatch, _clean_registries):
     pushed = []
-    monkeypatch.setattr(gs, "push_child_feed_event",
-                        lambda node_id, feed: pushed.append((node_id, feed)))
+    from observatory import rooms as _rooms
+    monkeypatch.setattr(_rooms, "channel_for_node_id", lambda nid: "#t")
+    monkeypatch.setattr(_rooms, "say_nowait",
+                        lambda channel, text: pushed.append((channel, text)) or True)
     detached = []
     feed = SimpleNamespace(
         _dispose_listener=lambda: detached.append("subagent"),
@@ -167,8 +173,10 @@ def test_replay_detaches_live_listeners_first(monkeypatch, _clean_registries):
 
 def test_replay_ignores_non_self_and_empty(monkeypatch, _clean_registries):
     pushed = []
-    monkeypatch.setattr(gs, "push_child_feed_event",
-                        lambda node_id, feed: pushed.append((node_id, feed)))
+    from observatory import rooms as _rooms
+    monkeypatch.setattr(_rooms, "channel_for_node_id", lambda nid: "#t")
+    monkeypatch.setattr(_rooms, "say_nowait",
+                        lambda channel, text: pushed.append((channel, text)) or True)
     assert gs.replay_child_turn_frames("deleg_e/0", []) == 0
     assert gs.replay_child_turn_frames("", agent_turn_frames(_turn_events())) == 0
     assert gs.replay_child_turn_frames("deleg_e/0", [

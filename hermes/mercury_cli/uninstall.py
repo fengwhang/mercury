@@ -671,7 +671,7 @@ def run_gui_uninstall(args):
 
 
 def _observatory_data_present(mercury_home) -> bool:
-    """True when tuwunel data exists under the Mercury home. Lazy import —
+    """True when IRC observatory data exists under the Mercury home. Lazy import —
     this module must stay importable under a bare system Python."""
     try:
         from observatory.provision import observatory_data_present
@@ -681,7 +681,7 @@ def _observatory_data_present(mercury_home) -> bool:
 
 
 def _wipe_observatory(mercury_home, mode: str) -> None:
-    """Archive/annihilate tuwunel data (DB, WALs, credentials, units)."""
+    """Archive/annihilate IRC observatory data (config, history, tree, units)."""
     from observatory.provision import wipe_observatory_data
     summary = wipe_observatory_data(mercury_home, mode=mode)
     moved = summary.get("moved" if mode == "archive" else "deleted") or []
@@ -695,10 +695,10 @@ def _wipe_observatory(mercury_home, mode: str) -> None:
 
 def _remove_observatory_units_only() -> None:
     """Full uninstall: the home rmtree covers data, but the user units live
-    outside it — stop + remove them so no zombie homeserver survives.
-    Also kills stray tuwunel pids (a server started outside the unit, or
+    outside it — stop + remove them so no zombie daemon survives.
+    Also kills stray ircd pids (a daemon started outside the unit, or
     one that survived the unit stop, would otherwise keep running with
-    its DB deleted from under it — or recreate the DB mid-wipe)."""
+    its history deleted from under it)."""
     try:
         from observatory.provision import _stop_and_remove_units
         removed = _stop_and_remove_units()
@@ -710,22 +710,22 @@ def _remove_observatory_units_only() -> None:
         from observatory.provision import _kill_stray_tuwunel
         killed = _kill_stray_tuwunel()
         if killed:
-            log_success(f"Stopped stray tuwunel server(s): {', '.join(map(str, killed))}")
+            log_success(f"Stopped stray ircd server(s): {', '.join(map(str, killed))}")
     except Exception as e:  # noqa: BLE001 — best-effort, never kills uninstall
-        log_warn(f"Could not stop stray tuwunel servers: {e}")
+        log_warn(f"Could not stop stray ircd servers: {e}")
 
 
 def _ask_observatory_wipe(mercury_home) -> str | None:
-    """Keep-data uninstall: explicit archive/annihilate/keep for tuwunel
+    """Keep-data uninstall: explicit archive/annihilate/keep for observatory
     data — residual installs break clean reinstalls, so keeping is a
     conscious choice, never the silent default. Returns the mode or None."""
     if not _observatory_data_present(mercury_home):
         return None
     print()
-    print(color("Observatory data found (tuwunel DB, credentials, units).", Colors.YELLOW, Colors.BOLD))
+    print(color("Observatory data found (config, history, agent tree, units).", Colors.YELLOW, Colors.BOLD))
     print("Residual installs break clean reinstalls — choose explicitly:")
     print()
-    print("  1) " + color("Keep", Colors.GREEN) + " - Leave tuwunel data as-is")
+    print("  1) " + color("Keep", Colors.GREEN) + " - Leave observatory data as-is")
     print("  2) " + color("Archive", Colors.CYAN) + " - Move it aside (timestamped, restorable by hand)")
     print("  3) " + color("Annihilate", Colors.RED) + " - Delete it permanently")
     print()
@@ -860,7 +860,7 @@ def run_uninstall(args):
             return
         remove_profiles = resp in {"y", "yes"}
 
-    # Keep-data uninstall with tuwunel data present: explicit archive /
+    # Keep-data uninstall with observatory data present: explicit archive /
     # annihilate / keep — residual installs break clean reinstalls.
     observatory_wipe = None
     if not full_uninstall:
@@ -880,8 +880,8 @@ def run_uninstall(args):
     else:
         print("This will remove the Mercury code but keep your configuration and data.")
         if observatory_wipe:
-            print(color(f"   Observatory data: {observatory_wipe} tuwunel data "
-                        "(DB, credentials, units).", Colors.YELLOW))
+            print(color(f"   Observatory data: {observatory_wipe} IRC data "
+                        "(config, history, tree, units).", Colors.YELLOW))
     
     print()
     try:
@@ -912,7 +912,7 @@ def _print_uninstall_dry_run(*, project_root: Path, mercury_home: Path, full_uni
     print(color("Dry run: no files, services, or environment entries will be changed.", Colors.CYAN, Colors.BOLD))
     print()
     print(color("Would inspect/remove:", Colors.YELLOW, Colors.BOLD))
-    print("  • Observatory user units (tuwunel homeserver + sidecar)")
+    print("  • Observatory user unit (mercury-observatory.service)")
     print("  • Mercury PATH entries from shell configs / Windows User PATH")
     print("  • Mercury wrapper scripts and Mercury-managed node/npm/npx symlinks")
     print("  • Desktop Chat GUI artifacts")
@@ -928,7 +928,7 @@ def _print_uninstall_dry_run(*, project_root: Path, mercury_home: Path, full_uni
     else:
         print(f"  • Keep Mercury config/data: {mercury_home}")
         if _observatory_data_present(mercury_home):
-            print("  • Observatory tuwunel data: interactive uninstall asks (keep/archive/annihilate)")
+            print("  • Observatory IRC data: interactive uninstall asks (keep/archive/annihilate)")
 
 
 def _perform_uninstall(

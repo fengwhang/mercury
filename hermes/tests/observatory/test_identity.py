@@ -1,206 +1,167 @@
-"""Contract tests for Observatory identity policy (spec §4, D6/D17).
+"""Per-agent identity connections (vm_charlie speaks as vm_charlie)."""
 
-Unicode names: display PRESERVED, slugs on the strict Tuwunel grammar,
-``merc_`` prefix derived from the appservice namespace regex, collision
-suffixes counted among LIVE agents only.
-"""
 from __future__ import annotations
 
-import re
-from pathlib import Path
+import asyncio
+from contextlib import asynccontextmanager
 
 import pytest
 
-from observatory import identity
-from observatory.config_gen import APPSERVICE_NAMESPACE_REGEX
-from observatory.identity import (
-    DISPLAY_NAME_MAX_LEN,
-    SLUG_GRAMMAR,
-    assign_slug,
-    qualified_display_name,
-    sanitize_display_name,
-    slugify,
-    tree_position,
-    virtual_mxid,
-)
-from observatory.state import ObservatoryState
+from observatory import identity as identity_mod
+from observatory.ircd import DaemonConfig, IrcDaemon
 
 
-@pytest.fixture()
-def store(tmp_path: Path) -> ObservatoryState:
-    with ObservatoryState(tmp_path / "state.db") as s:
-        yield s
+@asynccontextmanager
+async def running_daemon(tmp_path, **kwargs):
+    config = DaemonConfig(
+        agent_port=0, bouncer_port=0, state_dir=str(tmp_path), **kwargs)
+    d = IrcDaemon(config)
+    await d.start()
+    try:
+        yield d, d._servers[0].sockets[0].getsockname()[1]
+    finally:
+        await d.stop()
 
 
-def _live(store: ObservatoryState, slug: str, name: str | None = None) -> None:
-    store.add_node(
-        f"n-{slug}",
-        engine="hermes",
-        name=name or slug,
-        slug=slug,
-        mxid=virtual_mxid(slug),
-        session_ref="s",
-    )
+class RawClient:
+    def __init__(self) -> None:
+        self.lines: asyncio.Queue[str] = asyncio.Queue()
+        self.reader = None
+        self.writer = None
+        self._task = None
+
+    async def connect(self, port: int) -> None:
+        self.reader, self.writer = await asyncio.open_connection("127.0.0.1", port)
+        self._task = asyncio.create_task(self._pump())
+
+    async def _pump(self) -> None:
+        buf = b""
+        try:
+            while not self.reader.at_eof():
+                data = await self.reader.read(4096)
+                if not data:
+                    break
+                buf += data
+                while b"\n" in buf:
+                    raw, buf = buf.split(b"\n", 1)
+                    await self.lines.put(raw.decode("utf-8", errors="replace").rstrip("\r"))
+        except asyncio.CancelledError:
+            pass
+
+    async def send(self, line: str) -> None:
+        self.writer.write((line + "\r\n").encode())
+        await self.writer.drain()
+
+    async def next_match(self, fragment: str, timeout: float = 5.0) -> str:
+        end = asyncio.get_running_loop().time() + timeout
+        while True:
+            remaining = end - asyncio.get_running_loop().time()
+            assert remaining > 0, f"timed out waiting for {fragment!r}"
+            line = await asyncio.wait_for(self.lines.get(), timeout=remaining)
+            if fragment in line:
+                return line
+
+    async def close(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+        if self.writer is not None:
+            try:
+                self.writer.close()
+            except Exception:
+                pass
 
 
-# --- slugify (MXID localpart) ------------------------------------------------------
+@pytest.mark.asyncio
+async def test_identity_speaks_as_own_nick(tmp_path) -> None:
+    """Messages via the identity arrive stamped with the agent nick."""
+    async with running_daemon(tmp_path, password="s3cret") as (d, port):
+        conn = identity_mod.IdentityConn(
+            host="127.0.0.1", port=port, password="s3cret",
+            nick="vm_charlie", channel="#vm_charlie")
+        assert await conn.send("hello room") is True
+        # A second client in the room sees vm_charlie, not the gateway nick.
+        c = RawClient()
+        await c.connect(port)
+        try:
+            await c.send("PASS s3cret")
+            await c.send("NICK watcher")
+            await c.send("USER watcher 0 * :t")
+            await c.next_match(" 001 ")
+            await c.send("JOIN #vm_charlie")
+            assert await c.next_match("JOIN #vm_charlie")
+            await conn.send("second line")
+            got = await c.next_match("second line")
+            assert got.startswith(":vm_charlie!")
+        finally:
+            await c.close()
+            await conn.close()
 
 
-class TestSlugify:
-    @pytest.mark.parametrize(
-        "name,expected",
-        [
-            ("auth-refactor", "auth-refactor"),          # already a slug
-            ("Auth Refactor", "auth-refactor"),          # space + case fold
-            ("Café Résumé", "cafe-resume"),              # NFKD mark strip
-            ("naïve café", "naive-cafe"),
-            ("docs_sweep two", "docs-sweep-two"),        # _ behaves as separator
-            ("  padded  ", "padded"),
-            ("-leading-dash-", "leading-dash"),          # must start alnum
-            ("=q+u/i.c=k", "q+u/i.c=k"),                 # grammar chars kept
-            ("🧹 Cleanup", "cleanup"),                    # emoji folds away
-            ("mixed 篇 name", "mixed-name"),
-            ("!!!???", "agent-6f5d923b"),                # untransliteratable
-            ("", "agent-e3b0c442"),                      # empty → sha256("")
-            ("   ", "agent-0aad7da7"),                   # whitespace-only
-            ("Борис", "agent-4155c6be"),                 # Cyrillic: no NFKD path
-            ("資料整理", "agent-0b359690"),               # CJK
-        ],
-    )
-    def test_slug(self, name: str, expected: str):
-        assert slugify(name) == expected
-
-    @pytest.mark.parametrize(
-        "name",
-        [
-            "Auth Refactor",
-            "Café Résumé",
-            "Борис",
-            "資料整理",
-            "🧹 Cleanup ✨",
-            "!!!???",
-            "",
-            "a" * 500,
-            "9lives",
-            "x=y/z+w-q.v",
-        ],
-    )
-    def test_output_always_on_grammar(self, name: str):
-        slug = slugify(name)
-        assert SLUG_GRAMMAR.fullmatch(slug), slug
-        assert re.match(APPSERVICE_NAMESPACE_REGEX, virtual_mxid(slug))
-
-    def test_fallback_deterministic_and_name_sensitive(self):
-        assert slugify("Борис") == slugify("Борис")
-        assert slugify("Борис") != slugify("борис") or True  # case → same/other, both valid
-        assert slugify("Борис") != slugify("田中")
-
-    def test_slug_length_capped(self):
-        slug = slugify("x" * 500)
-        assert len(slug) <= identity.SLUG_MAX_LEN
-
-    def test_oversize_keeps_grammar_after_truncation(self):
-        slug = slugify("q" * 500)
-        assert SLUG_GRAMMAR.fullmatch(slug) and len(slug) == identity.SLUG_MAX_LEN
-
-    def test_non_string_rejected(self):
-        with pytest.raises(TypeError):
-            slugify(b"bytes")  # type: ignore[arg-type]
+@pytest.mark.asyncio
+async def test_identity_reconnects_after_drop(tmp_path) -> None:
+    """A dead socket heals on the next send (lazy reconnect)."""
+    async with running_daemon(tmp_path, password="s3cret") as (d, port):
+        conn = identity_mod.IdentityConn(
+            host="127.0.0.1", port=port, password="s3cret",
+            nick="vm_re", channel="#vm_re")
+        assert await conn.send("one") is True
+        assert conn._writer is not None
+        conn._writer.close()
+        conn._reader, conn._writer = None, None
+        assert await conn.send("two") is True
+        await conn.close()
 
 
-# --- prefix / MXID -------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_pool_send_prefers_identity(monkeypatch) -> None:
+    """send_as_identity hits the pool; missing rooms report False."""
+    pool = identity_mod.IdentityPool()
+    monkeypatch.setattr(identity_mod, "_pool", pool)
+
+    class FakeConn:
+        def __init__(self):
+            self.sent: list[str] = []
+
+        async def send(self, text: str) -> bool:
+            self.sent.append(text)
+            return True
+
+    fake = FakeConn()
+    conn = identity_mod.IdentityConn(
+        host="x", port=1, password="p", nick="n", channel="#vm_x")
+    pool.track(conn)
+    async def _fake_send(text: str) -> bool:
+        fake.sent.append(text)
+        return True
+    conn.send = _fake_send  # type: ignore[method-assign]
+    assert await identity_mod.send_as_identity("#vm_x", "hi") is True
+    assert fake.sent == ["hi"]
+    assert await identity_mod.send_as_identity("#vm_missing", "hi") is False
 
 
-class TestVirtualMxid:
-    def test_prefix_derived_from_namespace_regex(self):
-        # The prefix is never a second literal: config_gen owns it.
-        assert identity.VIRTUAL_USER_PREFIX == "merc_"
-        assert APPSERVICE_NAMESPACE_REGEX == "^@merc_.*$"
-
-    def test_mxid_shape_and_namespace(self):
-        mxid = virtual_mxid("cleanup")
-        assert mxid == "@merc_cleanup:mercury.local"
-        assert re.match(APPSERVICE_NAMESPACE_REGEX, mxid)
-
-    def test_mxid_server_overridable(self):
-        assert virtual_mxid("x", server_name="other") == "@merc_x:other"
-
-
-# --- display names --------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_ensure_identity_end_to_end(tmp_path, monkeypatch) -> None:
+    """ensure_identity resolves env, connects, and tracks the pool."""
+    async with running_daemon(tmp_path, password="s3cret") as (d, port):
+        monkeypatch.setenv("IRC_SERVER", "127.0.0.1")
+        monkeypatch.setenv("IRC_PORT", str(port))
+        monkeypatch.setenv("IRC_SERVER_PASSWORD", "s3cret")
+        pool = identity_mod.IdentityPool()
+        monkeypatch.setattr(identity_mod, "_pool", pool)
+        assert await identity_mod.ensure_identity("vm_e2e", "#vm_e2e") is True
+        assert pool.get("#vm_e2e") is not None
+        assert await identity_mod.send_as_identity("#vm_e2e", "yo") is True
+        assert await identity_mod.drop_identity("#vm_e2e") is True
+        assert pool.get("#vm_e2e") is None
 
 
-class TestDisplayName:
-    @pytest.mark.parametrize(
-        "name",
-        [
-            "Борис",                      # Cyrillic verbatim
-            "資料整理",                    # CJK verbatim
-            "café résumé",
-            "👨‍👩‍👧 family",               # ZWJ emoji sequence must survive
-        ],
-    )
-    def test_unicode_preserved(self, name: str):
-        assert sanitize_display_name(name) == name
+def test_pool_nicks_lists_tracked_identities() -> None:
+    from types import SimpleNamespace
 
-    def test_control_and_bidi_override_chars_stripped(self):
-        dirty = "ev\u202eil\u0000\x07name\u200e\u2066x\u2069"
-        clean = sanitize_display_name(dirty)
-        assert clean == "evilnamex"
-        for c in ("\u202e", "\u0000", "\u200e", "\u2066"):
-            assert c not in clean
-
-    def test_length_cap(self):
-        assert len(sanitize_display_name("あ" * 500)) == DISPLAY_NAME_MAX_LEN
-
-    def test_qualified_display_prefixes_position(self):
-        assert qualified_display_name("auth-refactor", "2.1") == "2.1 auth-refactor"
-        assert qualified_display_name("solo", None) == "solo"
-
-    def test_tree_position(self):
-        assert tree_position((2, 1)) == "2.1"
-        assert tree_position(()) == ""
-
-    def test_non_string_rejected(self):
-        with pytest.raises(TypeError):
-            sanitize_display_name(42)  # type: ignore[arg-type]
-
-
-# --- collision suffixing (D17: LIVE only) ---------------------------------------------
-
-
-class TestAssignSlug:
-    def test_first_agent_gets_base_slug(self, store: ObservatoryState):
-        assert assign_slug("Cleanup", store) == "cleanup"
-
-    def test_second_live_same_slug_gets_minus_two(self, store: ObservatoryState):
-        _live(store, "cleanup")
-        assert assign_slug("Cleanup", store) == "cleanup-2"
-
-    def test_third_walks_to_minus_three(self, store: ObservatoryState):
-        _live(store, "cleanup")
-        _live(store, "cleanup-2")
-        assert assign_slug("cleanup", store) == "cleanup-3"
-
-    def test_dead_predecessor_frees_base_slug(self, store: ObservatoryState):
-        # D17: inert predecessors are invisible — MXID inherited, nothing else.
-        _live(store, "cleanup")
-        store.mark_dead("n-cleanup")
-        assert assign_slug("Cleanup", store) == "cleanup"
-
-    def test_purged_predecessor_frees_base_slug(self, store: ObservatoryState):
-        _live(store, "cleanup")
-        store.mark_deleted_and_purge("n-cleanup")
-        assert assign_slug("Cleanup", store) == "cleanup"
-
-    def test_fallback_slugs_also_suffix(self, store: ObservatoryState):
-        first = assign_slug("Борис", store)
-        assert first.startswith("agent-")
-        _live(store, first)
-        assert assign_slug("Борис", store) == f"{first}-2"
-
-    def test_display_and_slug_split_on_unicode_name(self, store: ObservatoryState):
-        # The identity contract in one shot: cyrillic display kept, ASCII
-        # slug falls back, MXID stays in the reserved namespace.
-        slug = assign_slug("Борис", store)
-        assert sanitize_display_name("Борис") == "Борис"
-        assert virtual_mxid(slug).startswith("@merc_agent-")
+    pool = identity_mod.IdentityPool()
+    assert pool.nicks() == set()
+    pool.track(SimpleNamespace(channel="#vm_alpha", nick="vm_alpha"))
+    pool.track(SimpleNamespace(channel="#vm_beta", nick="VM_Beta"))
+    assert pool.nicks() == {"vm_alpha", "vm_beta"}
+    pool.drop("#vm_alpha")
+    assert pool.nicks() == {"vm_beta"}

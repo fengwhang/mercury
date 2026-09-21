@@ -5,17 +5,12 @@
 #   dist/mercury-<version>-x64.tar.gz     (omp x86-64 prebuilt as dist/omp)
 #   dist/mercury-<version>-arm64.tar.gz   (omp aarch64 prebuilt as dist/omp)
 # Each contains the repo source (minus dev cruft) PLUS exactly ONE omp
-# binary + ui-tui bundle so a clean VM needs neither bun nor rust nor
-# esbuild. The release host cross-compiles the arm64 binary with
-# CROSS_TARGET=linux-arm64 (natives embedded from the upstream
-# @oh-my-pi/pi-natives-linux-arm64 version-matched prebuild).
-# Each tarball ALSO carries wheels/ — the observatory crypto stack
-# (mautrix[encryption] pinned set + cp313 python-olm wheel; see the gate
-# in build_one) — and tuwunel-binaries/ — the matching-arch Tuwunel
-# homeserver binary (raw ELF + VERSION + SHA256SUMS; decompressed at pack
-# time from the VERSION-pinned .zst in hermes/observatory/tuwunel-binaries/,
-# see _stage_tuwunel_binary) so virgin installs provision --offline with
-# zero network.
+# binary + ui-tui bundle so a clean VM needs neither bun nor rust
+# nor esbuild. The release host cross-compiles the arm64 omp binary via
+# CROSS_TARGET and stages both prebuilt sets (gitignored) into each
+# tarball. No soju: the stdlib ircd owns the client ports.
+# No wheels: the IRC observatory daemon is stdlib-only, so virgin
+# installs provision with zero network.
 #
 # RELEASE ORDER (build-after-bump — v0.0.19 lesson): the omp binary bakes
 # MERCURY_VERSION at COMPILE time (compile-binary.ts resolveMercuryVersion
@@ -74,59 +69,34 @@ check_binary_version() { # $1 = binary path, $2 = label
     echo "    [$LABEL] omp binary version OK ($EXPECTED)"
 }
 
-# Per-arch vendored Tuwunel binary (virgin-install trust anchor, zero
-# network): the repo vendors the upstream .zst assets under
-# hermes/observatory/tuwunel-binaries/ (VERSION + SHA256SUMS-pinned); the
-# release host hash-verifies the matching-arch asset and decompresses it
-# into the tarball as tuwunel-binaries/tuwunel-<archsuf> (raw ELF,
-# executable, + VERSION + SHA256SUMS of the raw bytes). Raw — not .zst —
-# so virgin hosts never need the zstd CLI (install.sh installs no system
-# packages beyond rg/ffmpeg). One arch per tarball (no dead weight).
-_stage_tuwunel_binary() { # $1 = arch suffix (x64|arm64), $2 = dest dir, $3 = repo root (default $REPO)
-    local ARCHSUF="$1" DEST="$2" R="${3:-$REPO}"
-    local SRC_DIR="$R/hermes/observatory/tuwunel-binaries"
-    local ASSET_ARCH=""
-    case "$ARCHSUF" in
-        x64)   ASSET_ARCH="x86_64-v1" ;;
-        arm64) ASSET_ARCH="aarch64-v8" ;;
-        *) echo "FATAL: unknown arch suffix for tuwunel staging: $ARCHSUF" >&2; return 1 ;;
-    esac
-    local ZST=""
-    local _cand
-    for _cand in "$SRC_DIR"/*-"$ASSET_ARCH"-linux-gnu-tuwunel.zst; do
-        [ -f "$_cand" ] && { ZST="$_cand"; break; }
-    done
-    if [ -z "$ZST" ]; then
-        if [ -n "${MERCURY_SKIP_OBS_TUWUNEL:-}" ]; then
-            echo "WARNING: no vendored tuwunel asset for $ASSET_ARCH (MERCURY_SKIP_OBS_TUWUNEL set) — virgin installs will fail offline provision" >&2
-            return 0
+# Fail-hard gate: the pi-natives .node files embedded by `bun run build`
+# must carry the version sentinel of packages/natives/package.json. A
+# `curl .../latest/download` remediation (or any ad-hoc fetch) drops NEWER
+# binaries into an older tree; the build then embeds them, the loader
+# rejects them at runtime (sentinel mismatch), and every omp child dies
+# (v0.0.80 shipped 18_1_16 binaries with an 18.1.6 loader this way).
+check_natives_sentinel() {
+    local PKGVER SENT EXPECTED f GOT
+    PKGVER="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\(.*\)".*/\1/p' omp/packages/natives/package.json | head -1)"
+    [ -n "$PKGVER" ] || { echo "FATAL: cannot read omp/packages/natives/package.json version" >&2; exit 1; }
+    EXPECTED="__piNativesV$(printf '%s' "$PKGVER" | tr -c 'A-Za-z0-9' '_')"
+    for f in omp/packages/natives/native/*.node; do
+        [ -e "$f" ] || continue
+        if command -v strings >/dev/null 2>&1; then
+            GOT="$(strings "$f" | grep -o -m1 '__piNativesV[A-Za-z0-9_]*' || true)"
+        else
+            GOT="$(grep -a -o -m1 '__piNativesV[A-Za-z0-9_]*' "$f" || true)"
         fi
-        echo "FATAL: no vendored tuwunel asset for $ASSET_ARCH in $SRC_DIR" >&2
-        echo "       (fetch the pinned release asset; to skip DELIBERATELY: MERCURY_SKIP_OBS_TUWUNEL=1)" >&2
-        return 1
-    fi
-    # Supply-chain pin: the .zst bytes must match the checked-in SHA256SUMS.
-    local WANT=""
-    WANT="$(awk -v n="$(basename "$ZST")" '$2 == n {print $1}' "$SRC_DIR/SHA256SUMS" | head -1)"
-    if [ -z "$WANT" ]; then
-        echo "FATAL: $(basename "$ZST") has no SHA256SUMS pin — refusing to stage" >&2
-        return 1
-    fi
-    local HAVE=""
-    HAVE="$(sha256sum "$ZST" | awk '{print $1}')"
-    if [ "$HAVE" != "$WANT" ]; then
-        echo "FATAL: tuwunel asset hash mismatch ($(basename "$ZST"): file ${HAVE:0:16}… != pin ${WANT:0:16}…)" >&2
-        return 1
-    fi
-    command -v zstd >/dev/null 2>&1 || { echo "FATAL: 'zstd' missing on the release host — cannot stage the tuwunel binary" >&2; return 1; }
-    mkdir -p "$DEST/tuwunel-binaries"
-    zstd -d -c "$ZST" > "$DEST/tuwunel-binaries/tuwunel-$ARCHSUF" \
-        || { echo "FATAL: zstd decompress failed for $(basename "$ZST")" >&2; return 1; }
-    chmod +x "$DEST/tuwunel-binaries/tuwunel-$ARCHSUF"
-    cp "$SRC_DIR/VERSION" "$DEST/tuwunel-binaries/VERSION"
-    ( cd "$DEST/tuwunel-binaries" && sha256sum "tuwunel-$ARCHSUF" > SHA256SUMS )
-    echo "    staged tuwunel $(cat "$DEST/tuwunel-binaries/VERSION") for $ARCHSUF ($(du -h "$DEST/tuwunel-binaries/tuwunel-$ARCHSUF" | cut -f1))"
+        if [ "$GOT" != "$EXPECTED" ]; then
+            echo "FATAL: natives skew: $f carries sentinel '${GOT:-(none)}' but package.json is $PKGVER (want $EXPECTED)" >&2
+            echo "       Fetch the matching platform binaries (npm pack @oh-my-pi/pi-natives-<tag>@$PKGVER)" >&2
+            echo "       into omp/packages/natives/native/ and rebuild the omp binary." >&2
+            exit 1
+        fi
+    done
+    echo "    natives sentinel OK ($EXPECTED)"
 }
+check_natives_sentinel
 
 build_one() { # $1 = arch suffix (x64|arm64), $2 = source binary path, $3 = label
     local ARCHSUF="$1" SRCBIN="$2" LABEL="$3"
@@ -142,6 +112,7 @@ build_one() { # $1 = arch suffix (x64|arm64), $2 = source binary path, $3 = labe
     cp "$SRCBIN" "$S/mercury/omp/packages/coding-agent/dist/omp"
     mkdir -p "$S/mercury/hermes/ui-tui/dist"
     cp hermes/ui-tui/dist/entry.js "$S/mercury/hermes/ui-tui/dist/entry.js"
+    # No soju triple: the stdlib ircd owns the client ports — nothing to inject.
     # natives if present (rust-built .so/.node; runtime fallback path — the
     # primary natives are EMBEDDED in the compiled binary)
     if compgen -G "omp/packages/natives/native/*" >/dev/null; then
@@ -149,62 +120,6 @@ build_one() { # $1 = arch suffix (x64|arm64), $2 = source binary path, $3 = labe
         cp -r omp/packages/natives/native/. "$S/mercury/omp/packages/natives/native/"
     fi
 
-    echo "== [$LABEL] observatory crypto-stack wheels (E2EE)"
-    # python-olm has NO cp313 wheel on PyPI; mautrix [encryption] pins it.
-    # Sources, in ascending precedence (later wins on a name clash):
-    #   1. hermes/observatory/wheels/ — the CHECKED-IN per-arch wheels
-    #      (always present; rebuilt manually with
-    #      hermes/observatory/scripts/build_python_olm_wheel.sh);
-    #   2. hermes/observatory/scripts/dist/ — wheels freshly built by the
-    #      e2ee script on the release host;
-    #   3. $MERCURY_WHEELS_DIR (default dist/wheels) — the FULL pinned set
-    #      (mautrix[encryption]==0.21.1 deps + per-arch python-olm wheel)
-    #      explicitly staged by the release host.
-    # Shipping them lets `mercury update` and install.sh deliver E2EE
-    # offline — a release WITHOUT them bricks e2ee on existing installs,
-    # hence the gate below.
-    mkdir -p "$S/mercury/wheels"
-    local WHEELS_STAGED=0 WHL
-    for WHL in "$REPO"/hermes/observatory/wheels/*.whl; do
-        [ -f "$WHL" ] || continue
-        cp "$WHL" "$S/mercury/wheels/"
-        WHEELS_STAGED=1
-    done
-    for WHL in "$REPO"/hermes/observatory/scripts/dist/*.whl; do
-        [ -f "$WHL" ] || continue
-        cp "$WHL" "$S/mercury/wheels/"
-        WHEELS_STAGED=1
-    done
-    for WHL in "$REPO/${MERCURY_WHEELS_DIR:-dist/wheels}"/*.whl; do
-        [ -f "$WHL" ] || continue
-        cp "$WHL" "$S/mercury/wheels/"   # explicitly staged set wins
-        WHEELS_STAGED=1
-    done
-    if [ ! -d "$S/mercury/hermes/observatory" ]; then
-        : # no observatory code in this archive — wheels not required
-    elif [ "$WHEELS_STAGED" = 1 ]; then
-        echo "    staged $(ls "$S/mercury/wheels" | wc -l) wheel(s) into wheels/"
-    elif [ -n "${MERCURY_SKIP_OBS_WHEELS:-}" ]; then
-        echo "WARNING: observatory code shipped WITHOUT crypto-stack wheels" >&2
-        echo "         (MERCURY_SKIP_OBS_WHEELS set) — e2ee on py3.13 installs" >&2
-        echo "         will hard-fail until the wheel is built on the host." >&2
-    else
-        echo "FATAL: observatory code is in the archive but no crypto-stack wheels" >&2
-        echo "       were found — this release would ship broken E2EE (python-olm" >&2
-        echo "       has no cp313 wheel on PyPI; uv would try to build it from the" >&2
-        echo "       sdist and fail on most hosts)." >&2
-        echo "       Stage the wheel set into ${MERCURY_WHEELS_DIR:-dist/wheels}/" >&2
-        echo "       (and/or build with hermes/observatory/scripts/build_python_olm_wheel.sh)," >&2
-        echo "       then re-run. To skip DELIBERATELY: MERCURY_SKIP_OBS_WHEELS=1." >&2
-        exit 1
-    fi
-
-    echo "== [$LABEL] observatory tuwunel binary (virgin-install trust anchor)"
-    if [ ! -d "$S/mercury/hermes/observatory" ]; then
-        : # no observatory code in this archive — tuwunel binary not required
-    else
-        _stage_tuwunel_binary "$ARCHSUF" "$S/mercury" "$REPO" # fail-hard (set -e): no silent binary-less tarball
-    fi
 
     cat > "$S/mercury/DIST_INFO.txt" <<EOF
 Mercury distribution
@@ -214,7 +129,7 @@ built:      $(date -u +%Y-%m-%dT%H:%M:%SZ)
 built-on:   $(uname -srm)
 hermes pin: $(grep -m1 hermes PINS.txt || true)
 omp pin:    $(grep -m1 '^omp' PINS.txt || true)
-components: source (git archive $(git rev-parse --short HEAD)) + omp binary (${ARCHSUF}) + ui-tui bundle + natives + observatory wheels + tuwunel binary (${ARCHSUF})
+components: source (git archive $(git rev-parse --short HEAD)) + omp binary (${ARCHSUF}) + ui-tui bundle + natives
 EOF
 
     echo "== [$LABEL] tarball"

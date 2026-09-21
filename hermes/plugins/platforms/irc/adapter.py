@@ -30,6 +30,8 @@ Or via environment variables (overrides config.yaml):
 import asyncio
 import logging
 import os
+
+from mercury_cli.config import get_env_value
 import re
 import ssl
 import time
@@ -79,6 +81,31 @@ from gateway.config import Platform
 # ---------------------------------------------------------------------------
 # IRC protocol helpers
 # ---------------------------------------------------------------------------
+
+SILENCE_LIMIT = 210.0  # reconnect when the server says nothing this long
+WATCHDOG_POLL = 60.0  # silence-check cadence (server PINGs every 60s)
+
+
+def _enable_keepalive(writer) -> None:
+    """TCP keepalive on an IRC connection (best-effort, never raises)."""
+    try:
+        sock = writer.get_extra_info("socket") if writer is not None else None
+        if sock is None:
+            return
+        import socket as _socket
+
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+        for opt, val in (
+            (_socket.TCP_KEEPIDLE, 60),
+            (_socket.TCP_KEEPINTVL, 30),
+            (_socket.TCP_KEEPCNT, 3),
+        ):
+            try:
+                sock.setsockopt(_socket.IPPROTO_TCP, opt, val)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 def _parse_irc_message(raw: str) -> dict:
     """Parse a raw IRC protocol line into components.
@@ -130,20 +157,32 @@ class IRCAdapter(BasePlatformAdapter):
         extra = getattr(config, "extra", {}) or {}
 
         # Connection settings (env vars override config.yaml)
-        self.server = os.getenv("IRC_SERVER") or extra.get("server", "")
-        try:
-            self.port = int(os.getenv("IRC_PORT") or extra.get("port", 6697))
-        except (ValueError, TypeError):
-            self.port = 6697
-        self.nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "mercury-bot")
-        self.channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
+        self.server = get_env_value("IRC_SERVER") or extra.get("server", "")
+        env_port = get_env_value("IRC_PORT") or None
         self.use_tls = (
-            os.getenv("IRC_USE_TLS", "").lower() in {"1", "true", "yes"}
-            if os.getenv("IRC_USE_TLS")
+            (get_env_value("IRC_USE_TLS") or "").lower() in {"1", "true", "yes"}
+            if get_env_value("IRC_USE_TLS")
             else extra.get("use_tls", True)
+        )
+        try:
+            self.port = int(env_port or extra.get("port") or (6697 if self.use_tls else 6667))
+        except (ValueError, TypeError):
+            self.port = 6697 if self.use_tls else 6667
+        self.nickname = get_env_value("IRC_NICKNAME") or extra.get("nickname", "mercury-bot")
+        # One name for bot and room: an explicit channel wins (back-compat),
+        # otherwise `#nick`.
+        self.channel = (
+            get_env_value("IRC_CHANNEL")
+            or extra.get("channel", "")
+            or _derive_channel(self.nickname)
         )
         self.server_password = _get_scoped_secret("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
         self.nickserv_password = _get_scoped_secret("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
+        self.oper_password = _get_scoped_secret("IRC_OPER_PASSWORD") or extra.get("oper_password", "") or self.server_password
+        # Observability rooms: extra agent channels the bot joins dynamically
+        # (/spawn rooms, #parent-child subagent rooms). Managed channels
+        # never require nick-addressing: every message there is for the agent.
+        self.extra_channels: set[str] = set()
 
         # Auth
         self.allowed_users: list = extra.get("allowed_users", [])
@@ -166,9 +205,14 @@ class IRCAdapter(BasePlatformAdapter):
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._recv_task: Optional[asyncio.Task] = None
-        self._current_nick = self.nickname
+        self._handler_task: Optional[asyncio.Task] = None
+        self._line_queue: Optional[asyncio.Queue] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._last_inbound = 0.0
         self._registered = False  # IRC registration complete
+        self._oper = False  # set by 381, cleared by 464/481
         self._registration_event = asyncio.Event()
+        self._current_nick = self.nickname
 
     @property
     def name(self) -> str:
@@ -219,8 +263,10 @@ class IRCAdapter(BasePlatformAdapter):
         await self._send_raw(f"NICK {self.nickname}")
         await self._send_raw(f"USER {self.nickname} 0 * :Mercury")
 
-        # Start receive loop
+        # Start receive loop + ordered handler (PINGs bypass the queue)
         self._recv_task = asyncio.create_task(self._receive_loop())
+        self._line_queue = asyncio.Queue()
+        self._handler_task = asyncio.create_task(self._handle_task())
 
         # Wait for registration (001 RPL_WELCOME) with timeout
         try:
@@ -236,13 +282,46 @@ class IRCAdapter(BasePlatformAdapter):
             await self._send_raw(f"PRIVMSG NickServ :IDENTIFY {self.nickserv_password}")
             await asyncio.sleep(2)  # Give NickServ time to process
 
-        # Join channel
+        # Join the gateway channel plus any managed agent rooms. IRC creates
+        # a channel on first JOIN; the observatory resync pass re-adds live
+        # rooms after a reconnect via join_channel().
         await self._send_raw(f"JOIN {self.channel}")
+        for extra in sorted(self.extra_channels):
+            await self._send_raw(f"JOIN {extra}")
 
-        self._mark_connected()
+        # OPER for the observatory /exit room kill (no-op when unconfigured).
+        if self.oper_password:
+            try:
+                await self._send_raw(f"OPER {self.oper_password}")
+            except Exception:
+                logger.debug("IRC: OPER failed", exc_info=True)
+
+        try:
+            from observatory.rooms import set_bot_sink, set_event_loop
+            set_bot_sink(self)
+            try:
+                import asyncio as _asyncio
+
+                set_event_loop(_asyncio.get_running_loop())
+            except Exception:
+                pass
+            # Post-connect resync: join live state channels, drain the
+            # frame queue, replay the exit journal, resume omp handles.
+            # Fire-and-forget (idempotent, never breaks connect).
+            try:
+                from observatory.platform_hook import boot_resync as _resync
+                asyncio.create_task(_resync())
+            except Exception:
+                logger.warning("IRC: resync schedule skipped", exc_info=True)
+        except Exception:
+            logger.debug("IRC: bot-sink register skipped", exc_info=True)
         logger.info("IRC: connected to %s:%s as %s, joined %s", self.server, self.port, self._current_nick, self.channel)
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
+        _enable_keepalive(self._writer)
+        self._last_inbound = time.monotonic()
+        if self._watchdog_task is None or self._watchdog_task.done():
+            self._watchdog_task = asyncio.create_task(self._silence_watchdog())
         return True
 
     async def disconnect(self) -> None:
@@ -273,11 +352,25 @@ class IRCAdapter(BasePlatformAdapter):
                 await self._recv_task
             except asyncio.CancelledError:
                 pass
+        if self._handler_task and not self._handler_task.done():
+            self._handler_task.cancel()
+            try:
+                await self._handler_task
+            except asyncio.CancelledError:
+                pass
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
 
         self._reader = None
         self._writer = None
         self._registered = False
         self._registration_event.clear()
+        try:
+            from observatory.rooms import get_bot_sink, set_bot_sink
+            if get_bot_sink() is self:
+                set_bot_sink(None)
+        except Exception:
+            pass
 
     # ── Sending ───────────────────────────────────────────────────────────
 
@@ -292,6 +385,24 @@ class IRCAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         target = chat_id  # channel name or nick for DMs
+        # Per-agent identity first: rooms with a live identity speak as
+        # their own nick (vm_charlie, not vm_gateway). All-or-nothing
+        # per message (a split identity looks worse than a fallback).
+        try:
+            from observatory import identity as _identity
+
+            if _identity.get_pool().get(target) is not None:
+                lines = self._split_message(content, target)
+                ok = True
+                for line in lines:
+                    ok = await _identity.send_as_identity(target, line) and ok
+                    await asyncio.sleep(0.3)
+                if ok:
+                    return SendResult(
+                        success=True, message_id=str(int(time.time() * 1000)))
+        except Exception:
+            logger.debug("IRC: identity send failed, using main bot",
+                         exc_info=True)
         lines = self._split_message(content, target)
 
         for line in lines:
@@ -303,6 +414,77 @@ class IRCAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=str(e))
 
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))
+    # ── Observatory rooms (BotSink surface for observatory.rooms) ──────────
+
+    def managed_channels(self) -> set[str]:
+        """Channels that never require nick-addressing (gateway + agent rooms)."""
+        return {self.channel.lower(), *(c.lower() for c in self.extra_channels)}
+
+    def is_managed(self, target: str) -> bool:
+        return bool(target) and target.lower() in self.managed_channels()
+
+    async def join_channel(self, channel: str) -> bool:
+        """JOIN an agent room now (and on every reconnect). Never raises."""
+        if channel:
+            self.extra_channels.add(channel)
+        if not self._writer or self._writer.is_closing():
+            return channel in self.extra_channels
+        try:
+            await self._send_raw(f"JOIN {channel}")
+            return True
+        except Exception:
+            logger.debug("IRC: join %s failed", channel, exc_info=True)
+            return False
+
+    async def invite_user(self, nick: str, channel: str) -> bool:
+        """INVITE a nick to a room (phone surfaces it as a tap). Never raises."""
+        if not self._writer or self._writer.is_closing():
+            return False
+        try:
+            await self._send_raw(f"INVITE {nick} :{channel}")
+            return True
+        except Exception:
+            logger.debug("IRC: invite %s to %s failed", nick, channel, exc_info=True)
+            return False
+
+    async def part_channel(self, channel: str) -> bool:
+        """PART an agent room. Never raises."""
+        self.extra_channels.discard(channel)
+        if not self._writer or self._writer.is_closing():
+            return True
+        try:
+            await self._send_raw(f"PART {channel} :room closed")
+            return True
+        except Exception:
+            logger.debug("IRC: part %s failed", channel, exc_info=True)
+            return False
+
+    async def say(self, channel: str, text: str) -> bool:
+        """PRIVMSG into a room (BotSink naming for observatory.rooms)."""
+        result = await self.send(channel, text)
+        return bool(getattr(result, "success", False))
+
+    async def destroy_channel(self, channel: str) -> bool:
+        """Server-side room kill: OPER refresh, DESTROY, PART, undirect.
+
+        Never raises. Returns part's outcome; a failed destroy is
+        WARNING-loud (a silent one strands visible rooms).
+        """
+        if self._writer and not self._writer.is_closing():
+            try:
+                if self.oper_password and not self._oper:
+                    await self._send_raw(f"OPER {self.oper_password}")
+                    await asyncio.sleep(1.0)
+                await self._send_raw(f"DESTROY {channel} :room closed")
+                await asyncio.sleep(0.5)
+                if not self._oper:
+                    logger.warning(
+                        "IRC: destroy %s sent without oper — likely 481",
+                        channel)
+            except Exception as exc:
+                logger.warning("IRC: destroy %s failed: %s", channel, exc)
+        self.extra_channels.discard(channel)
+        return await self.part_channel(channel)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """IRC has no typing indicator — no-op."""
@@ -391,7 +573,12 @@ class IRCAdapter(BasePlatformAdapter):
         await self._writer.drain()
 
     async def _receive_loop(self) -> None:
-        """Main receive loop — reads lines and dispatches them."""
+        """Main receive loop — reads lines, PONGs fast, queues the rest.
+
+        PING answers and the watchdog arrival stamp happen HERE, never
+        behind a multi-minute turn: the handler task below owns all slow
+        work. Ordering is preserved (single consumer).
+        """
         buffer = b""
         try:
             while self._reader and not self._reader.at_eof():
@@ -403,7 +590,11 @@ class IRCAdapter(BasePlatformAdapter):
                     line, buffer = buffer.split(b"\r\n", 1)
                     try:
                         decoded = line.decode("utf-8", errors="replace")
-                        await self._handle_line(decoded)
+                        self._last_inbound = time.monotonic()
+                        if self._is_ping(decoded):
+                            await self._answer_ping(decoded)
+                        else:
+                            self._line_queue.put_nowait(decoded)
                     except Exception as e:
                         logger.warning("IRC: error handling line: %s", e)
         except asyncio.CancelledError:
@@ -411,13 +602,107 @@ class IRCAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("IRC: receive loop error: %s", e)
         finally:
+            try:
+                self._line_queue.put_nowait(None)
+            except Exception:
+                pass
             if self.is_connected:
                 logger.warning("IRC: connection lost, marking disconnected")
                 self._set_fatal_error("connection_lost", "IRC connection closed unexpectedly", retryable=True)
                 await self._notify_fatal_error()
 
+    @staticmethod
+    def _is_ping(raw: str) -> bool:
+        """True when a raw line is a server PING (answer inline)."""
+        try:
+            text = raw.strip()
+            if text.upper().startswith("PING"):
+                return True
+            parts = text.split(" ", 2)
+            return len(parts) > 1 and parts[1].upper() == "PING"
+        except Exception:
+            return False
+
+    async def _answer_ping(self, raw: str) -> None:
+        """Reply PONG without touching the handler queue."""
+        try:
+            msg = _parse_irc_message(raw)
+            params = msg.get("params") or []
+            payload = params[0] if params else ""
+            await self._send_raw(f"PONG :{payload}")
+        except Exception as e:
+            logger.warning("IRC: error answering ping: %s", e)
+
+    async def _handle_task(self) -> None:
+        """Consume queued lines in order (the slow path)."""
+        try:
+            while True:
+                try:
+                    line = await self._line_queue.get()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    return
+                if line is None:
+                    return
+                try:
+                    await self._handle_line(line)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning("IRC: error handling line: %s", e)
+        except asyncio.CancelledError:
+            raise
+
+
+    async def _silence_watchdog(self) -> None:
+        """Reconnect when the server goes quiet past SILENCE_LIMIT.
+
+        A live server PINGs idle clients every minute, so sustained
+        silence means the connection is half-open (e.g. the daemon
+        restarted underneath us). Closing the writer drives the normal
+        connection_lost path, which the reconnect watcher rebuilds.
+        """
+        try:
+            while True:
+                await asyncio.sleep(WATCHDOG_POLL)
+                try:
+                    if self._writer is None or self._writer.is_closing():
+                        return
+                    if time.monotonic() - self._last_inbound > SILENCE_LIMIT:
+                        logger.warning(
+                            "IRC: server silent %.0fs — assuming half-open, reconnecting",
+                            time.monotonic() - self._last_inbound,
+                        )
+                        try:
+                            self._writer.close()
+                        except Exception:
+                            pass
+                        try:
+                            if self._recv_task and not self._recv_task.done():
+                                self._recv_task.cancel()
+                        except Exception:
+                            pass
+                        # Drive the rebuild directly: a receive loop stuck
+                        # in read() may never notice the closed writer,
+                        # leaving the bot dead with no reconnect.
+                        try:
+                            if self.is_connected:
+                                self._set_fatal_error(
+                                    "connection_lost",
+                                    "IRC server went silent (watchdog)",
+                                    retryable=True)
+                                await self._notify_fatal_error()
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass
+        except asyncio.CancelledError:
+            pass
     async def _handle_line(self, raw: str) -> None:
         """Dispatch a single IRC protocol line."""
+        self._last_inbound = time.monotonic()
         msg = _parse_irc_message(raw)
         command = msg["command"]
         params = msg["params"]
@@ -435,6 +720,16 @@ class IRCAdapter(BasePlatformAdapter):
             if params:
                 # Server may confirm our nick in the first param
                 self._current_nick = params[0]
+            return
+
+        # RPL_YOUREOPER (381) / ERR_PASSWDMISMATCH (464) — oper state.
+        if command == "381":
+            self._oper = True
+            return
+        if command in {"464", "481"}:
+            self._oper = False
+            logger.warning("IRC: oper/auth refused (%s) — room destroys will fail",
+                           command)
             return
 
         # ERR_NICKNAMEINUSE (433) — nick collision during registration
@@ -461,6 +756,16 @@ class IRCAdapter(BasePlatformAdapter):
             # Ignore our own messages
             if sender_nick.lower() == self._current_nick.lower():
                 return
+            try:
+                # Agent identities speaking in their rooms are never user
+                # turns — routing them back would make agents answer
+                # themselves in a loop.
+                from observatory.identity import get_pool
+
+                if sender_nick.lower() in get_pool().nicks():
+                    return
+            except Exception:
+                pass
 
             # CTCP ACTION (/me) — convert to text
             if text.startswith("\x01ACTION ") and text.endswith("\x01"):
@@ -475,7 +780,9 @@ class IRCAdapter(BasePlatformAdapter):
             chat_id = target if is_channel else sender_nick
             chat_type = "group" if is_channel else "dm"
 
-            # In channels, only respond if addressed (nick: or nick,)
+            # Addressing (nick: or nick,): stripped everywhere, but only
+            # REQUIRED outside managed rooms. In the bot's own rooms every
+            # message is for the agent, like CLI.
             if is_channel:
                 addressed = False
                 for prefix in (f"{self._current_nick}:", f"{self._current_nick},",
@@ -484,7 +791,7 @@ class IRCAdapter(BasePlatformAdapter):
                         text = text[len(prefix):].strip()
                         addressed = True
                         break
-                if not addressed:
+                if not addressed and not self.is_managed(target):
                     return  # Ignore unaddressed channel messages
 
             # Auth check (case-insensitive)
@@ -513,10 +820,46 @@ class IRCAdapter(BasePlatformAdapter):
         user_id: str,
         user_name: str,
     ) -> None:
-        """Build a MessageEvent and hand it to the base class handler."""
+        """Build a MessageEvent and hand it to the base class handler.
+
+        Delegate-child rooms (#parent-child) and spawned-omp rooms never
+        reach gateway dispatch: the RoomManager steers the live child /
+        pumps the omp task and the ack goes straight back to the room.
+        """
+        text = bang_to_slash(text)
+        # Inbound milestone (routing only, never content): proves room
+        # messages reach the engine when lower levels are hidden.
+        try:
+            from observatory.rooms import route_channel as _diag_route
+
+            _diag = _diag_route(chat_id)[0] if chat_type == "group" else "dm"
+        except Exception:
+            _diag = "route-error"
+        logger.info(
+            "IRC: inbound chat=%s route=%s handler=%s",
+            chat_id, _diag, bool(self._message_handler),
+        )
+        if chat_type == "group":
+            try:
+                from observatory.rooms import get_room_manager, route_channel
+                route, _row = route_channel(chat_id)
+                manager = get_room_manager()
+                if manager is not None and route in ("child", "spawn-omp"):
+                    if route == "child":
+                        reply = await manager.handle_child_message(chat_id, user_name, text)
+                    else:
+                        reply = await manager.handle_omp_message(chat_id, user_name, text)
+                    if reply:
+                        await self.send(chat_id, reply)
+                    # The room owned this text: a gateway turn here would
+                    # answer a second time in someone else's room. Slash
+                    # commands still fall through (exit/status/...).
+                    if not text.lstrip().startswith("/"):
+                        return
+            except Exception:
+                logger.debug("IRC: room route failed, falling through", exc_info=True)
         if not self._message_handler:
             return
-
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_id,
@@ -540,29 +883,68 @@ class IRCAdapter(BasePlatformAdapter):
 # Plugin registration
 # ---------------------------------------------------------------------------
 
+def _derive_channel(nickname: str) -> str:
+    """``#nick`` — one name for the bot and its room, period."""
+    nick = str(nickname or "").strip().lstrip("#")
+    return f"#{nick}" if nick else ""
+
+
+def _configured_channel(extra: dict | None = None) -> str:
+    """Effective channel: explicit env/config value, else ``#nick``."""
+    extra = extra or {}
+    return (
+        (get_env_value("IRC_CHANNEL") or "").strip()
+        or str(extra.get("channel", "") or "").strip()
+        or _derive_channel((get_env_value("IRC_NICKNAME") or "") or extra.get("nickname", ""))
+    )
+
+
 def check_requirements() -> bool:
     """Check if IRC is configured.
 
-    Only requires the server and channel — no external pip packages needed.
+    Only requires the server and a bot name — no external pip packages needed.
     """
-    server = os.getenv("IRC_SERVER", "")
-    channel = os.getenv("IRC_CHANNEL", "")
+    server = (get_env_value("IRC_SERVER") or "")
     # Also accept config.yaml-only configuration (no env vars).
     # The gateway passes PlatformConfig; we just check env for the
     # mercury setup / requirements check path.
-    return bool(server and channel)
+    return bool(server and _configured_channel())
 
 
 def validate_config(config) -> bool:
     """Validate that the platform config has enough info to connect."""
     extra = getattr(config, "extra", {}) or {}
-    server = os.getenv("IRC_SERVER") or extra.get("server", "")
-    channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
-    return bool(server and channel)
+    server = get_env_value("IRC_SERVER") or extra.get("server", "")
+    return bool(server and _configured_channel(extra))
+
+
+def _tls_default_for_host(host: str) -> bool:
+    """TLS unless the host is loopback, private, or tailnet (our ircd is
+    plaintext-only; public networks assume TLS). Pure — never touches env."""
+    h = str(host or "").strip().lower().rstrip(".")
+    if h in ("localhost",) or h.startswith("localhost."):
+        return False
+    if h.endswith(".ts.net") or h.endswith(".ts.net."):
+        return False
+    try:
+        import ipaddress as _ip
+
+        addr = _ip.ip_address(h)
+        if addr.is_loopback or addr.is_private:
+            return False
+        # Tailscale CGNAT range (not covered by is_private everywhere).
+        return addr not in _ip.ip_network("100.64.0.0/10")
+    except ValueError:
+        return True
 
 
 def interactive_setup() -> None:
     """Interactive `mercury gateway setup` flow for the IRC platform.
+
+    Four prompts: server, bot name (= nick AND ``#channel``), server
+    password, owner nick. Everything else derives: TLS from the host,
+    the allowlist is exactly the owner (only owner + bots exist).
+    NickServ/ports/multiple channels stay env-only (see plugin.yaml).
 
     Lazy-imports ``mercury_cli.setup`` helpers so the plugin stays importable
     in non-CLI contexts (gateway runtime, tests).
@@ -581,87 +963,70 @@ def interactive_setup() -> None:
     print_header("IRC")
     existing_server = get_env_value("IRC_SERVER")
     if existing_server:
-        print_info(f"IRC: already configured (server: {existing_server})")
-        if not prompt_yes_no("Reconfigure IRC?", False):
-            return
+        nick = get_env_value("IRC_NICKNAME") or ""
+        if (get_env_value("IRC_MANAGED_BY") or "").strip().lower() == "observatory":
+            print_info(f"IRC is managed by the observatory (server: {existing_server}"
+                       f"{f', bot: {nick}' if nick else ''}) — the gateway bot lives here.")
+            print_info("   A second, personal IRC connection is not supported: there is")
+            print_info("   one bot identity per network. Taking over repoints the bot")
+            print_info("   and BREAKS the observatory rooms — manage the bot via")
+            print_info("   `mercury setup observatory` instead.")
+            if not prompt_yes_no("Take over manually anyway (breaks observatory)?", False):
+                return
+            save_env_value("IRC_MANAGED_BY", "")
+            print_warning("Observatory management released — the bot is now yours.")
+        else:
+            print_info(f"IRC: already configured (server: {existing_server}"
+                       f"{f', bot: {nick}' if nick else ''})")
+            if not prompt_yes_no("Reconfigure IRC?", False):
+                return
 
     print_info("Connect Mercury to an IRC network. Uses Python stdlib — no extra packages needed.")
-    print_info("   Works with Libera.Chat, OFTC, your own ZNC/InspIRCd, etc.")
+    print_info("   One name covers the bot and its channel: bot `ace` lives in `#ace`.")
     print()
 
-    server = prompt("IRC server hostname (e.g. irc.libera.chat)", default=existing_server or "")
+    server = prompt("IRC server hostname (e.g. 127.0.0.1, tailnet IP, irc.libera.chat)",
+                    default=existing_server or "")
     if not server:
         print_warning("Server is required — skipping IRC setup")
         return
-    save_env_value("IRC_SERVER", server.strip())
+    server = server.strip()
+    save_env_value("IRC_SERVER", server)
 
-    use_tls = prompt_yes_no("Use TLS (recommended)?", True)
+    use_tls = _tls_default_for_host(server)
     save_env_value("IRC_USE_TLS", "true" if use_tls else "false")
-
-    default_port = "6697" if use_tls else "6667"
-    port = prompt(f"Port (default {default_port})", default=get_env_value("IRC_PORT") or "")
-    if port:
-        try:
-            save_env_value("IRC_PORT", str(int(port)))
-        except ValueError:
-            print_warning(f"Invalid port — using default {default_port}")
-    elif get_env_value("IRC_PORT"):
-        # User cleared the prompt; drop the override so the default applies.
-        save_env_value("IRC_PORT", "")
+    print_info(f"TLS: {'on' if use_tls else 'off'} (override: IRC_USE_TLS)")
 
     nickname = prompt(
-        "Bot nickname (e.g. mercury-bot)",
+        "Bot name (nick AND channel: `ace` → `#ace`)",
         default=get_env_value("IRC_NICKNAME") or "",
     )
     if not nickname:
-        print_warning("Nickname is required — skipping IRC setup")
+        print_warning("Bot name is required — skipping IRC setup")
         return
-    save_env_value("IRC_NICKNAME", nickname.strip())
+    nickname = nickname.strip().lstrip("#")
+    save_env_value("IRC_NICKNAME", nickname)
+    save_env_value("IRC_CHANNEL", _derive_channel(nickname))
 
-    channel = prompt(
-        "Channel to join (e.g. #mercury — comma-separate for multiple)",
-        default=get_env_value("IRC_CHANNEL") or "",
+    print()
+    server_password = prompt("Server password (PASS — blank for none)",
+                             default="", password=True)
+    if server_password:
+        save_env_value("IRC_SERVER_PASSWORD", server_password)
+
+    print()
+    print_info("Only you and the bots exist here — nobody else may command the bot.")
+    owner = prompt(
+        "Your IRC nick (the only nick allowed to talk to the bot)",
+        default=get_env_value("IRC_ALLOWED_USERS") or "",
     )
-    if not channel:
-        print_warning("Channel is required — skipping IRC setup")
-        return
-    save_env_value("IRC_CHANNEL", channel.strip())
-
-    print()
-    print_info("🔑 Optional authentication")
-    print_info("   Leave blank to skip.")
-    if prompt_yes_no("Configure a server password (PASS command)?", False):
-        server_password = prompt("Server password", password=True)
-        if server_password:
-            save_env_value("IRC_SERVER_PASSWORD", server_password)
-
-    if prompt_yes_no("Identify with NickServ on connect?", False):
-        nickserv = prompt("NickServ password", password=True)
-        if nickserv:
-            save_env_value("IRC_NICKSERV_PASSWORD", nickserv)
-
-    print()
-    print_info("🔒 Access control: restrict who can message the bot")
-    print_info("   IRC nicks are not authenticated — anyone can claim any nick.")
-    print_info("   For public channels, pair with NickServ-only mode on your network")
-    print_info("   if you want stronger identity guarantees.")
-    allow_all = prompt_yes_no("Allow all users in the channel to talk to the bot?", False)
-    if allow_all:
-        save_env_value("IRC_ALLOW_ALL_USERS", "true")
-        save_env_value("IRC_ALLOWED_USERS", "")
-        print_warning("⚠️  Open access — any nick in the channel can command the bot.")
+    save_env_value("IRC_ALLOW_ALL_USERS", "false")
+    if owner and owner.strip():
+        save_env_value("IRC_ALLOWED_USERS", owner.strip().replace(" ", ""))
+        print_success(f"Only {owner.strip()} may talk to the bot")
     else:
-        save_env_value("IRC_ALLOW_ALL_USERS", "false")
-        allowed = prompt(
-            "Allowed nicks (comma-separated, leave empty to deny everyone)",
-            default=get_env_value("IRC_ALLOWED_USERS") or "",
-        )
-        if allowed:
-            save_env_value("IRC_ALLOWED_USERS", allowed.replace(" ", ""))
-            print_success("Allowlist configured")
-        else:
-            save_env_value("IRC_ALLOWED_USERS", "")
-            print_info("No nicks allowed — the bot will ignore all messages until you add nicks.")
+        save_env_value("IRC_ALLOWED_USERS", "")
+        print_warning("No owner nick — the bot will ignore everyone until you set one.")
 
     print()
     print_success("IRC configuration saved to ~/.mercury/.env")
@@ -671,9 +1036,8 @@ def interactive_setup() -> None:
 def is_connected(config) -> bool:
     """Check whether IRC is configured (env or config.yaml)."""
     extra = getattr(config, "extra", {}) or {}
-    server = os.getenv("IRC_SERVER") or extra.get("server", "")
-    channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
-    return bool(server and channel)
+    server = get_env_value("IRC_SERVER") or extra.get("server", "")
+    return bool(server and _configured_channel(extra))
 
 
 def _env_enablement() -> dict | None:
@@ -689,24 +1053,24 @@ def _env_enablement() -> dict | None:
     the core hook — it becomes a proper ``HomeChannel`` dataclass on the
     ``PlatformConfig`` rather than being merged into ``extra``.
     """
-    server = os.getenv("IRC_SERVER", "").strip()
-    channel = os.getenv("IRC_CHANNEL", "").strip()
+    server = (get_env_value("IRC_SERVER") or "").strip()
+    channel = _configured_channel()
     if not (server and channel):
         return None
     seed: dict = {
         "server": server,
         "channel": channel,
     }
-    port = os.getenv("IRC_PORT", "").strip()
+    port = (get_env_value("IRC_PORT") or "").strip()
     if port:
         try:
             seed["port"] = int(port)
         except ValueError:
             pass
-    nickname = os.getenv("IRC_NICKNAME", "").strip()
+    nickname = (get_env_value("IRC_NICKNAME") or "").strip()
     if nickname:
         seed["nickname"] = nickname
-    use_tls = os.getenv("IRC_USE_TLS", "").strip().lower()
+    use_tls = (get_env_value("IRC_USE_TLS") or "").strip().lower()
     if use_tls:
         seed["use_tls"] = use_tls in {"1", "true", "yes"}
     # Passwords live in PlatformConfig.extra as well for back-compat with
@@ -718,11 +1082,11 @@ def _env_enablement() -> dict | None:
     # Optional home-channel (usually the same as IRC_CHANNEL, but can be a
     # dedicated reports channel).  Defaults to IRC_CHANNEL so cron jobs
     # with ``deliver=irc`` have a sensible target without extra config.
-    home = os.getenv("IRC_HOME_CHANNEL") or channel
+    home = get_env_value("IRC_HOME_CHANNEL") or channel
     if home:
         seed["home_channel"] = {
             "chat_id": home,
-            "name": os.getenv("IRC_HOME_CHANNEL_NAME", home),
+            "name": (get_env_value("IRC_HOME_CHANNEL_NAME") or home),
         }
     return seed
 
@@ -770,19 +1134,18 @@ async def _standalone_send(
     primitive.
     """
     extra = getattr(pconfig, "extra", {}) or {}
-    server = os.getenv("IRC_SERVER") or extra.get("server", "")
-    channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
+    server = get_env_value("IRC_SERVER") or extra.get("server", "")
+    channel = _configured_channel(extra)
     if not server or not channel:
-        return {"error": "IRC standalone send: IRC_SERVER and IRC_CHANNEL must be configured"}
-
-    port_value = os.getenv("IRC_PORT") or extra.get("port", 6697)
+        return {"error": "IRC standalone send: IRC_SERVER and a bot name (IRC_NICKNAME) must be configured"}
+    port_value = get_env_value("IRC_PORT") or extra.get("port", 6697)
     try:
         port = int(port_value)
     except (TypeError, ValueError):
         return {"error": f"IRC standalone send: invalid port {port_value!r}"}
 
-    nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "mercury-bot")
-    use_tls_env = os.getenv("IRC_USE_TLS")
+    nickname = get_env_value("IRC_NICKNAME") or extra.get("nickname", "mercury-bot")
+    use_tls_env = get_env_value("IRC_USE_TLS")
     if use_tls_env is not None:
         use_tls = use_tls_env.lower() in {"1", "true", "yes"}
     else:
@@ -961,7 +1324,7 @@ def register(ctx):
         check_fn=check_requirements,
         validate_config=validate_config,
         is_connected=is_connected,
-        required_env=["IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"],
+        required_env=["IRC_SERVER", "IRC_NICKNAME"],
         install_hint="No extra packages needed (stdlib only)",
         setup_fn=interactive_setup,
         # Env-driven auto-configuration: seeds PlatformConfig.extra with
@@ -995,3 +1358,18 @@ def register(ctx):
             "conversational."
         ),
     )
+
+
+#: Goguma intercepts /commands client-side (they never reach the bot),
+#: so !verb aliases /verb for the verbs that matter. Anything else
+#: starting with ! is plain chat (never rewritten).
+BANG_VERBS = frozenset({"spawn", "spawnomp", "exit", "stop", "approve", "deny"})
+
+
+def bang_to_slash(text: str) -> str:
+    """Rewrite a leading !verb to /verb for known verbs only."""
+    if text.startswith("!") and not text.startswith("!!"):
+        verb, _, rest = text[1:].partition(" ")
+        if verb.lower() in BANG_VERBS:
+            return "/" + verb.lower() + (" " + rest if rest.strip() else "")
+    return text

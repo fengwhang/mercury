@@ -1014,16 +1014,26 @@ def curses_radiolist(
 
     def _draw_header(stdscr, max_y, max_x, search=None, back_enabled=False):
         import curses
+        import textwrap as _textwrap
+
+        width = max(20, max_x - 1)
+        wrapped_title = _textwrap.wrap(title, width) or [""]
+        wrapped_desc: list[str] = []
+        for dline in desc_lines:
+            wrapped_desc.extend(_textwrap.wrap(dline, width) or [""])
         row = 0
         try:
             hattr = curses.A_BOLD
             if curses.has_colors():
                 hattr |= curses.color_pair(2)
-            stdscr.addnstr(row, 0, title, max_x - 1, hattr)
-            row += 1
+            for tline in wrapped_title:
+                if row >= max_y - 1:
+                    break
+                stdscr.addnstr(row, 0, tline, max_x - 1, hattr)
+                row += 1
 
             # Description lines — paint ★ yellow so the sale legend matches rows.
-            for dline in desc_lines:
+            for dline in wrapped_desc:
                 if row >= max_y - 1:
                     break
                 _draw_description_line(stdscr, row, dline, max_x)

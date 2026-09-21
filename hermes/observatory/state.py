@@ -1,8 +1,10 @@
-"""Agent-tree SQLite store for the Matrix Observatory sidecar (spec §2
-component 2, "Discovery"; D8/D17/D18 semantics).
+"""Agent-tree SQLite store for the IRC observatory.
 
-One row per observed agent session (any depth, any engine). The sidecar is
-the ONLY writer; readers are the renderer and the respawn pass (D18).
+One row per live agent session (any depth, any engine). The gateway is
+the ONLY writer; readers are the room manager and boot resync.
+
+``room_id`` is the IRC channel, ``mxid`` the agent nick, ``space_id``
+unused (kept for schema stability).
 
 Design laws tested here:
 - **Depth is stored at insert** and never recomputed (D8: the depth class
@@ -11,9 +13,9 @@ Design laws tested here:
 - **0-agents are never auto-deleted** (D8: their history survives until
   /exit or session reset; restart is not death — D18). ``mark_dead`` only
   tombstones; deletion is always an explicit ``mark_deleted_and_purge``.
-- **Slug collisions count LIVE agents only** (D17): dead/purged rows are
+- **Slug collisions count LIVE agents only**: dead/purged rows are
   invisible to ``find_live_by_slug``, so a new agent reuses an inert
-  predecessor's MXID-and-nothing-else.
+  predecessor's nick-and-nothing-else.
 
 Schema is WAL-mode SQLite with a ``meta`` KV table carrying
 ``schema_version`` for forward migrations.
@@ -102,7 +104,7 @@ class ObservatoryState:
     """SQLite-backed agent tree. One connection, sync I/O — thread-safe
     via an internal ``threading.RLock`` (``check_same_thread=False``).
 
-    The ``/spawn`` + ``/spawnomp`` Matrix pass-through runs INSIDE the
+    The ``/spawn`` + ``/spawnomp`` handlers run INSIDE the
     gateway event loop while ``try_boot_sidecar`` opens the same state on
     a daemon boot thread — sqlite objects are created on one thread and
     used on another, so every ``_db`` access takes the lock. Call sites
@@ -116,8 +118,8 @@ class ObservatoryState:
         self._lock = threading.RLock()
         self._db = sqlite3.connect(self.db_path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
-        # WAL: the renderer/respawn pass reads while discovery writes, and a
-        # crashed sidecar must never leave a torn journal (D18 restart story).
+        # WAL: rooms/boot reads while the gateway loop writes, and a crashed
+        # gateway must never leave a torn journal (restart story).
         with self._lock:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA foreign_keys=ON")
@@ -131,7 +133,7 @@ class ObservatoryState:
     def locked(self) -> Iterator[sqlite3.Connection]:
         """Hold the state lock and yield the raw connection.
 
-        Same-package direct ``state._db`` users (spawn/e2ee/cron_rooms)
+        Same-package direct ``state._db`` users (spawn/rooms)
         MUST wrap their transaction blocks in this — the connection is
         shared across the boot thread and the gateway event loop."""
         with self._lock:
@@ -278,7 +280,7 @@ class ObservatoryState:
     def mark_dead(self, node_id: str, *, died_epoch: float | None = None) -> dict[str, Any]:
         """Tombstone a settled agent. NEVER deletes anything — 0-agents keep
         their history (D8) and >=2-agents keep their reading grace until the
-        parent dies; matrix purge + row removal are always the caller's
+        parent dies; channel destroy + row removal are always the caller's
         explicit ``mark_deleted_and_purge``."""
         with self._lock:
             row = self.get(node_id)
@@ -292,11 +294,11 @@ class ObservatoryState:
         return self.get(node_id)
 
     def mark_deleted_and_purge(self, node_id: str) -> dict[str, Any]:
-        """Remove a node's row after (or while) purging its matrix artifacts.
-        Returns the pre-delete row so the caller can drive the Tuwunel
-        delete (needs space_id/room_id) and log the annihilation. The row is
-        deleted — per D17 a successor with the same name inherits the MXID
-        and NOTHING else, so no tombstone may survive to leak state."""
+        """Remove a node's row after (or while) destroying its IRC channel.
+        Returns the pre-delete row so the caller can log the annihilation
+        (needs room_id). The row is deleted — a successor with the same
+        name inherits the nick and NOTHING else, so no tombstone may
+        survive to leak state."""
         with self._lock:
             row = self.get(node_id)
             with self._db:
@@ -356,17 +358,17 @@ class ObservatoryState:
                 out.extend(self._row_to_dict(r) for r in rows)
             return out
 
-    # --- matrix id upsert -----------------------------------------------------
+    # --- channel id upsert -----------------------------------------------------
 
     def set_space_id(self, node_id: str, space_id: str) -> None:
-        """Record the node's (sub)space id once the renderer has created it;
-        idempotent overwrite for re-ensure passes (D18 respawn)."""
-        self._set_matrix_id(node_id, "space_id", space_id)
+        """Record the node's space id (unused for IRC; kept for schema
+        stability)."""
+        self._set_channel_id(node_id, "space_id", space_id)
 
     def set_room_id(self, node_id: str, room_id: str) -> None:
-        self._set_matrix_id(node_id, "room_id", room_id)
+        self._set_channel_id(node_id, "room_id", room_id)
 
-    def _set_matrix_id(self, node_id: str, column: str, value: str) -> None:
+    def _set_channel_id(self, node_id: str, column: str, value: str) -> None:
         assert column in ("space_id", "room_id")
         with self._lock:
             self.get(node_id)  # fail hard on unknown node

@@ -125,27 +125,8 @@ class TestIRCAdapterMessageParsing:
 
 
     @pytest.mark.asyncio
-    async def test_handle_addressed_channel_message(self, adapter):
-        """Messages addressed to the bot (nick: msg) should be dispatched."""
-        handler = AsyncMock(return_value="response")
-        adapter._message_handler = handler
-
-        # Mock handle_message to capture the event
-        dispatched = []
-        original_dispatch = adapter._dispatch_message
-
-        async def capture_dispatch(**kwargs):
-            dispatched.append(kwargs)
-
-        adapter._dispatch_message = capture_dispatch
-
-        await adapter._handle_line(":user!u@host PRIVMSG #test :mercury: hello there")
-        assert len(dispatched) == 1
-        assert dispatched[0]["text"] == "hello there"
-        assert dispatched[0]["chat_id"] == "#test"
-
-    @pytest.mark.asyncio
-    async def test_ignores_unaddressed_channel_message(self, adapter):
+    async def test_managed_room_needs_no_addressing(self, adapter):
+        """The bot's own room: plain text dispatches; addressed text strips."""
         dispatched = []
 
         async def capture_dispatch(**kwargs):
@@ -155,7 +136,28 @@ class TestIRCAdapterMessageParsing:
         adapter._message_handler = AsyncMock()
 
         await adapter._handle_line(":user!u@host PRIVMSG #test :just talking")
+        await adapter._handle_line(":user!u@host PRIVMSG #test :mercury: hello there")
+        assert len(dispatched) == 2
+        assert dispatched[0]["text"] == "just talking"
+        assert dispatched[0]["chat_id"] == "#test"
+        assert dispatched[1]["text"] == "hello there"
+
+    @pytest.mark.asyncio
+    async def test_unmanaged_channel_still_requires_addressing(self, adapter):
+        """Channels outside the managed set keep the old addressed-only rule."""
+        dispatched = []
+
+        async def capture_dispatch(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture_dispatch
+        adapter._message_handler = AsyncMock()
+
+        await adapter._handle_line(":user!u@host PRIVMSG #other :just talking")
         assert len(dispatched) == 0
+        await adapter._handle_line(":user!u@host PRIVMSG #other :mercury: hello")
+        assert len(dispatched) == 1
+        assert dispatched[0]["text"] == "hello"
 
 
     @pytest.mark.asyncio
@@ -406,3 +408,354 @@ class TestIRCStandaloneSend:
         assert "registration" in result["error"].lower() or "timeout" in result["error"].lower()
 
 
+
+
+class TestIRCAdapterIdentityRouting:
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from unittest.mock import MagicMock
+
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667,
+                   "nickname": "testbot", "channel": "#test",
+                   "use_tls": False},
+        )
+        from plugins.platforms.irc.adapter import IRCAdapter
+        adapter = IRCAdapter(cfg)
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = MagicMock()
+        from unittest.mock import AsyncMock
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_prefers_room_identity(self, adapter, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from observatory import identity as identity_mod
+
+        sent: list[str] = []
+
+        class FakePool:
+            def get(self, channel):
+                return object() if channel == "#test" else None
+
+        async def fake_send_as(channel, text):
+            assert channel == "#test"
+            sent.append(text)
+            return True
+
+        monkeypatch.setattr(identity_mod, "get_pool", lambda: FakePool())
+        monkeypatch.setattr(identity_mod, "send_as_identity", fake_send_as)
+        result = await adapter.send("#test", "hello identity")
+        assert result.success is True
+        assert sent == ["hello identity"]
+        adapter._writer.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_falls_back_without_identity(self, adapter, monkeypatch):
+        from observatory import identity as identity_mod
+
+        class FakePool:
+            def get(self, channel):
+                return None
+
+        monkeypatch.setattr(identity_mod, "get_pool", lambda: FakePool())
+        result = await adapter.send("#test", "hello main")
+        assert result.success is True
+        sent_data = adapter._writer.write.call_args[0][0]
+        assert b"PRIVMSG #test :hello main" in sent_data
+
+
+class TestIRCSilenceWatchdog:
+    def test_enable_keepalive_no_writer(self):
+        from plugins.platforms.irc.adapter import _enable_keepalive
+        _enable_keepalive(None)  # never raises
+
+    def test_enable_keepalive_sets_socket_opt(self):
+        import socket as _socket
+        from plugins.platforms.irc.adapter import _enable_keepalive
+
+        class FakeSock:
+            def __init__(self):
+                self.opts = []
+            def setsockopt(self, *args):
+                self.opts.append(args)
+
+        class FakeWriter:
+            def __init__(self, sock):
+                self._sock = sock
+            def get_extra_info(self, key):
+                return self._sock if key == "socket" else None
+
+        sock = FakeSock()
+        _enable_keepalive(FakeWriter(sock))
+        assert (_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1) in sock.opts
+
+    @pytest.mark.asyncio
+    async def test_watchdog_closes_silent_connection(self, monkeypatch):
+        import time as _time
+        from plugins.platforms.irc import adapter as adapter_mod
+        from gateway.config import PlatformConfig
+        from plugins.platforms.irc.adapter import IRCAdapter
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
+                   "channel": "#test", "use_tls": False},
+        )
+        adapter = IRCAdapter(cfg)
+        closed = []
+
+        class FakeWriter:
+            def is_closing(self):
+                return False
+            def close(self):
+                closed.append(True)
+
+        adapter._writer = FakeWriter()
+        adapter._last_inbound = _time.monotonic() - 1000.0
+        monkeypatch.setattr(adapter_mod, "WATCHDOG_POLL", 0.01)
+        monkeypatch.setattr(adapter_mod, "SILENCE_LIMIT", 0.05)
+        await adapter._silence_watchdog()
+        assert closed == [True]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_quiet_when_traffic_flows(self, monkeypatch):
+        import time as _time
+        from plugins.platforms.irc import adapter as adapter_mod
+        from gateway.config import PlatformConfig
+        from plugins.platforms.irc.adapter import IRCAdapter
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
+                   "channel": "#test", "use_tls": False},
+        )
+        adapter = IRCAdapter(cfg)
+        polls = []
+        closed = []
+
+        class FakeWriter:
+            def is_closing(self):
+                return False
+            def close(self):
+                closed.append(True)
+
+        async def stop_after_first_sleep(delay):
+            polls.append(delay)
+            raise RuntimeError("stop")
+
+        monkeypatch.setattr(adapter_mod.asyncio, "sleep", stop_after_first_sleep)
+        adapter._writer = FakeWriter()
+        adapter._last_inbound = _time.monotonic()
+        with pytest.raises(RuntimeError):
+            await adapter._silence_watchdog()
+        assert polls
+        assert closed == []
+
+
+class TestIRCAgentEchoGuard:
+    def _adapter(self, monkeypatch):
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from gateway.config import PlatformConfig
+        from plugins.platforms.irc.adapter import IRCAdapter
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
+                   "channel": "#test", "use_tls": False},
+        )
+        adapter = IRCAdapter(cfg)
+        adapter.extra_channels = {"#vm_alpha"}
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_agent_nick_message_dropped(self, monkeypatch):
+        from types import SimpleNamespace
+        from observatory import identity as identity_mod
+
+        adapter = self._adapter(monkeypatch)
+        pool = identity_mod.IdentityPool()
+        pool.track(SimpleNamespace(channel="#vm_alpha", nick="vm_alpha"))
+        monkeypatch.setattr(identity_mod, "_pool", pool)
+        calls = []
+        async def fake_dispatch(**kwargs):
+            calls.append(kwargs)
+        monkeypatch.setattr(adapter, "_dispatch_message", fake_dispatch)
+        await adapter._handle_line(":vm_alpha!relay@mercury PRIVMSG #vm_alpha :my own output")
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_human_message_still_dispatched(self, monkeypatch):
+        from observatory import identity as identity_mod
+
+        adapter = self._adapter(monkeypatch)
+        monkeypatch.setattr(identity_mod, "_pool", identity_mod.IdentityPool())
+        calls = []
+        async def fake_dispatch(**kwargs):
+            calls.append(kwargs)
+        monkeypatch.setattr(adapter, "_dispatch_message", fake_dispatch)
+        await adapter._handle_line(":owner!u@mercury PRIVMSG #test :watchbot: hello")
+        assert len(calls) == 1
+        assert calls[0]["chat_id"] == "#test"
+
+
+class _StubRoomManager:
+    def __init__(self, reply):
+        self._reply = reply
+
+    async def handle_omp_message(self, channel, sender, text):
+        return self._reply
+
+    async def handle_child_message(self, channel, sender, text):
+        return self._reply
+
+
+class TestIRCRoomOwnedDispatch:
+    def _adapter(self, monkeypatch):
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from gateway.config import PlatformConfig
+        from plugins.platforms.irc.adapter import IRCAdapter
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
+                   "channel": "#test", "use_tls": False},
+        )
+        adapter = IRCAdapter(cfg)
+        adapter.extra_channels = {"#vm_bravo"}
+        return adapter
+
+    def _room_route(self, monkeypatch, reply):
+        from observatory import rooms as rooms_mod
+        monkeypatch.setattr(
+            rooms_mod, "route_channel", lambda channel: ("spawn-omp", {}))
+        monkeypatch.setattr(
+            rooms_mod, "get_room_manager", lambda: _StubRoomManager(reply))
+        from observatory import identity as identity_mod
+        monkeypatch.setattr(identity_mod, "_pool", identity_mod.IdentityPool())
+
+    @pytest.mark.asyncio
+    async def test_plain_text_no_gateway_turn(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        self._room_route(monkeypatch, "bravo says hi")
+        sent = []
+        async def fake_send(chat_id, content, *a, **k):
+            sent.append((chat_id, content))
+            from plugins.platforms.irc.adapter import SendResult
+            return SendResult(success=True, message_id="1")
+        monkeypatch.setattr(adapter, "send", fake_send)
+        gateway_calls = []
+        async def fake_handle(event):
+            gateway_calls.append(event)
+        monkeypatch.setattr(adapter, "handle_message", fake_handle)
+        monkeypatch.setattr(adapter, "_message_handler", lambda event: None)
+        await adapter._handle_line(":owner!u@mercury PRIVMSG #vm_bravo :hello")
+        assert sent == [("#vm_bravo", "bravo says hi")]
+        assert gateway_calls == []
+
+    @pytest.mark.asyncio
+    async def test_slash_falls_through(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        self._room_route(monkeypatch, "room ack")
+        sent = []
+        async def fake_send(chat_id, content, *a, **k):
+            sent.append((chat_id, content))
+            from plugins.platforms.irc.adapter import SendResult
+            return SendResult(success=True, message_id="1")
+        monkeypatch.setattr(adapter, "send", fake_send)
+        gateway_calls = []
+        async def fake_handle(event):
+            gateway_calls.append(event)
+        monkeypatch.setattr(adapter, "handle_message", fake_handle)
+        monkeypatch.setattr(adapter, "_message_handler", lambda event: None)
+        await adapter._handle_line(":owner!u@mercury PRIVMSG #vm_bravo :/exit")
+        assert sent == [("#vm_bravo", "room ack")]
+        assert len(gateway_calls) == 1
+
+
+class TestIRCReadHandleSplit:
+    def _adapter(self, monkeypatch):
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from gateway.config import PlatformConfig
+        from plugins.platforms.irc.adapter import IRCAdapter
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667, "nickname": "splitbot",
+                   "channel": "#test", "use_tls": False},
+        )
+        return IRCAdapter(cfg)
+
+    def test_is_ping_shapes(self):
+        from plugins.platforms.irc.adapter import IRCAdapter
+        assert IRCAdapter._is_ping("PING :abc") is True
+        assert IRCAdapter._is_ping(":srv PING :srv") is True
+        assert IRCAdapter._is_ping(":n!u@h PRIVMSG #t :hi") is False
+        assert IRCAdapter._is_ping("") is False
+
+    @pytest.mark.asyncio
+    async def test_ping_answered_without_handler(self, monkeypatch):
+        import asyncio as _asyncio
+        adapter = self._adapter(monkeypatch)
+        adapter._line_queue = _asyncio.Queue()
+        written = []
+
+        class FakeWriter:
+            def is_closing(self):
+                return False
+            def write(self, data):
+                written.append(data)
+            async def drain(self):
+                pass
+
+        adapter._writer = FakeWriter()
+
+        async def boom(line):
+            raise AssertionError("handler must not see PING")
+
+        monkeypatch.setattr(adapter, "_handle_line", boom)
+
+        class FakeReader:
+            def __init__(self):
+                self._calls = 0
+            def at_eof(self):
+                return False
+            async def read(self, n):
+                self._calls += 1
+                if self._calls == 1:
+                    return b"PING :srv\r\n"
+                return b""
+
+        adapter._reader = FakeReader()
+        await adapter._receive_loop()
+        assert any(b"PONG" in w for w in written)
+        # Only the EOF sentinel reached the queue, never the PING line.
+        assert adapter._line_queue.qsize() == 1
+        assert await adapter._line_queue.get() is None
+
+    @pytest.mark.asyncio
+    async def test_handler_task_consumes_in_order(self, monkeypatch):
+        import asyncio as _asyncio
+        adapter = self._adapter(monkeypatch)
+        adapter._line_queue = _asyncio.Queue()
+        seen = []
+
+        async def fake_handle(line):
+            seen.append(line)
+
+        monkeypatch.setattr(adapter, "_handle_line", fake_handle)
+        await adapter._line_queue.put(":a PRIVMSG #t :one")
+        await adapter._line_queue.put(":a PRIVMSG #t :two")
+        await adapter._line_queue.put(None)
+        await adapter._handle_task()
+        assert seen == [":a PRIVMSG #t :one", ":a PRIVMSG #t :two"]

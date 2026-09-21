@@ -218,36 +218,49 @@ class TestExcludesConfig:
 
 
 class TestOmpAgentDirResolution:
-    """Mirrors omp/packages/utils/src/dirs.ts precedence."""
+    """Mercury ONE-home form: $MERCURY_HOME/omp, never the stock ~/.omp tree."""
 
     @pytest.fixture(autouse=True)
     def _clean_env(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         for var in ("OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR", "PI_CODING_AGENT_DIR"):
             monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv("MERCURY_HOME", raising=False)
         yield
 
-    def test_default_is_dot_omp_agent(self, tmp_path, monkeypatch):
+    def test_default_is_mercury_omp(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
-        assert bridge.resolve_omp_agent_dir() == tmp_path / ".omp/agent"
+        assert bridge.resolve_omp_agent_dir() == tmp_path / ".mercury/omp"
 
-    def test_pi_config_dir_names_the_root(self, tmp_path, monkeypatch):
+    def test_mercury_home_selects_its_omp(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("PI_CONFIG_DIR", ".custom")
-        assert bridge.resolve_omp_agent_dir() == tmp_path / ".custom/agent"
+        monkeypatch.setenv("MERCURY_HOME", str(tmp_path / "m"))
+        assert bridge.resolve_omp_agent_dir() == tmp_path / "m/omp"
+
+    def test_explicit_home_selects_its_mercury_omp(self, tmp_path, monkeypatch):
+        assert bridge.resolve_omp_agent_dir(home=tmp_path) == tmp_path / ".mercury/omp"
 
     def test_pi_coding_agent_dir_overrides(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "mercury/omp"))
         assert bridge.resolve_omp_agent_dir() == tmp_path / "mercury/omp"
 
-    def test_profile_wins_over_agent_dir_override(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "mercury/omp"))
+    def test_profile_without_override_nests_under_mercury_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MERCURY_HOME", str(tmp_path / "m"))
         monkeypatch.setenv("OMP_PROFILE", "Work")
-        assert bridge.resolve_omp_agent_dir() == tmp_path / ".omp/profiles/work/agent"
+        assert bridge.resolve_omp_agent_dir() == tmp_path / "m/profiles/work/omp"
+
+    def test_profile_with_override_trusts_launcher(self, tmp_path, monkeypatch):
+        # Production: the launcher already pointed PI_CODING_AGENT_DIR at
+        # the profile dir — the bridge must not append another profiles/ layer.
+        monkeypatch.setenv("MERCURY_HOME", str(tmp_path / "m"))
+        monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "m/profiles/work/omp"))
+        monkeypatch.setenv("OMP_PROFILE", "Work")
+        assert bridge.resolve_omp_agent_dir() == tmp_path / "m/profiles/work/omp"
 
     def test_pi_profile_legacy_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MERCURY_HOME", str(tmp_path / "m"))
         monkeypatch.setenv("PI_PROFILE", "work")
-        assert bridge.resolve_omp_agent_dir() == tmp_path / ".omp/profiles/work/agent"
+        assert bridge.resolve_omp_agent_dir() == tmp_path / "m/profiles/work/omp"
 
     def test_empty_omp_profile_selects_default_not_pi_profile(self, tmp_path, monkeypatch):
         monkeypatch.setenv("OMP_PROFILE", "")
@@ -257,7 +270,7 @@ class TestOmpAgentDirResolution:
 
     def test_invalid_profile_falls_back_to_default(self, tmp_path, monkeypatch):
         monkeypatch.setenv("OMP_PROFILE", "NOT VALID!!")
-        assert bridge.resolve_omp_agent_dir() == tmp_path / ".omp/agent"
+        assert bridge.resolve_omp_agent_dir() == tmp_path / ".mercury/omp"
 
     def test_relative_agent_dir_resolved_against_cwd(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

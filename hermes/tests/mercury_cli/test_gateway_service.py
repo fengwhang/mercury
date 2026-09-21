@@ -1196,7 +1196,7 @@ class TestUnitPinsOmpAgentDir:
     The launcher exports ``PI_CODING_AGENT_DIR=$MERCURY_HOME/omp`` so omp
     children (delegation, cron omp_direct) keep sessions/agent.db inside
     the ONE mercury tree. Without the unit-side pin, gateway-spawned omp
-    children resolve the platform default ``~/.omp/agent`` instead — a
+    children resolve the platform default ``~/.mercury/omp/agent`` instead — a
     second, divergent state root (spec §7 / §8.1 item 4). Contract test on
     the bin/mercury↔unit relationship, not a snapshot: the agent-dir line
     must equal the unit's own MERCURY_HOME value + "/omp", however that
@@ -1244,6 +1244,18 @@ class TestUnitPinsOmpAgentDir:
         unit = gateway_cli.generate_systemd_unit(system=False)
         assert self._env_value(unit, "PI_CODING_AGENT_DIR") == str(
             tmp_path / ".mercury" / "omp"
+        )
+
+    def test_user_unit_xdg_data_home_mirrors_mercury_home(
+        self, tmp_path, monkeypatch
+    ):
+        # Natives must extract under the ONE tree ($MERCURY_HOME/.local/share),
+        # never ~/.omp — the pi-natives loader honors XDG_DATA_HOME/omp.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "anywhere" / ".mercury"))
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        mercury_home = self._env_value(unit, "MERCURY_HOME")
+        assert (
+            self._env_value(unit, "XDG_DATA_HOME") == f"{mercury_home}/.local/share"
         )
 
     def test_system_unit_agent_dir_targets_service_user(self, monkeypatch):

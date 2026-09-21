@@ -13,4 +13,7 @@ scripts/tmp-*
 
 # release artifacts (GitHub release assets, never git objects)
 dist/
-.omp/worktrees/
+build/soju/
+build/soju-src/
+# agent worktrees (sibling checkouts of this repo, never git objects)
+../mercury-worktrees/

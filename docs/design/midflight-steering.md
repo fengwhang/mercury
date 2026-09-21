@@ -1,6 +1,6 @@
 # Mid-flight steering of omp delegation batches — design investigation
 
-Status: PARTIALLY SHIPPED (2026-09-09). The Matrix-surface half of this doc's problem SHIPPED via the observatory (v0.0.23 gateway control-socket `inject`); the gateway-native verbs (B1/B2/A) were NOT built — no `/dsteer`/`/dstop`/`/dlist`/`stop_batch` exists in the tree. This doc stays the truth source for the unbuilt half; shipped deltas marked with versions.
+Status: PARTIALLY SHIPPED (2026-09-09), SURFACE SUPERSEDED (2026-09-13). The Matrix-surface half below SHIPPED via the observatory (v0.0.23 gateway control-socket `inject`) and was then RETIRED with the whole Matrix stack — child-room steering now works directly over IRC rooms (`docs/design/irc-observatory.md` D5/D10, no control router, no sidecar). The gateway-native verbs (B1/B2/A) were NOT built — no `/dsteer`/`/dstop`/`/dlist`/`stop_batch` exists in the tree. This doc stays the truth source for the unbuilt gateway-verbs half only; Matrix-surface sections (§5 design C, sidecar/control.py references) are history.
 
 Scope: the ORCHESTRATOR'S ORCHESTRATOR — the human user chatting with the
 hermes gateway/CLI session that dispatched a `delegate_task` fan-out — gaining

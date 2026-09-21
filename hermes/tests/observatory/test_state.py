@@ -160,7 +160,7 @@ class TestDeathSemantics:
         store.set_space_id("k", "!space-k")
         store.set_room_id("k", "!room-k")
         row = store.mark_deleted_and_purge("k")
-        # caller gets everything needed to purge Tuwunel artifacts:
+        # caller gets everything needed to destroy the channel:
         assert row["space_id"] == "!space-k"
         assert row["room_id"] == "!room-k"
         assert row["mxid"] == "@merc_k:mercury.local"

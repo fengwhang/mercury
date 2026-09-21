@@ -4,7 +4,7 @@
 
 On 2026-09-08 a subagent's git cleanup wiped hours of uncommitted sibling
 work from the shared checkout (tracked mods reverted, untracked tests
-deleted — see docs/design/matrix-observatory.md recovery notes). Root
+deleted — see the worktree discipline this section defines). Root
 cause: ten concurrent writers sharing one working tree with nothing
 committed. This rule prevents that class of loss.
 
@@ -26,7 +26,7 @@ OWN branch — never in the shared checkout's working tree.**
      keeps the ability to reject A's branch independently.
    - **Never branch from stale `main` when an integration branch is
      active**: if the wave's integration branch is
-     `recovery/matrix-observatory` (or any `agent/`-integration branch),
+     `agent/irc-observatory` (or any other `agent/`-integration branch),
      worktrees branch from THAT branch's head, not from `main`. Check
      `git branch --show-current` in the shared checkout if unsure.
 2. **Commit early, commit often** in your own branch — after every

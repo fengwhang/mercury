@@ -20,7 +20,7 @@
 #   --non-interactive|--yes   Non-interactive: no wizard, no questions
 #   --skip-browser       Skip Browser Use CLI + Chromium (browser tools off)
 #   --skip-computer-use  Skip the cua-driver (desktop control off)
-#   --skip-observatory   Skip the Matrix Observatory homeserver (Tuwunel)
+#   --skip-observatory   Skip the IRC Observatory network (ircd)
 #   --no-skills          Blank slate — seed no bundled skills
 #   --skip-gateway       Skip the gateway install question
 #   --ensure DEPS        Install only these deps: browser,computer-use,ripgrep,ffmpeg
@@ -233,273 +233,62 @@ install_computer_use_driver() {
     rm -f "$cua_log"
 }
 
-# Matrix Observatory homeserver — Tuwunel (vendored binary + offline
-# provision; docs/design/matrix-observatory.md §2/D16). The shared python
-# module does the provisioning work so install.sh, the setup wizard and
-# `mercury update` all run the SAME code: installed binary trusted behind
-# a hard >=1.8.1 gate, static binary at
-# $MERCURY_HOME/observatory/bin/tuwunel + version file, closed tuwunel.toml
-# (localhost, no federation, no registration, registration_token), sidecar
-# appservice registration YAML, owner bootstrap, systemd user unit
-# mercury-observatory-homeserver.service. Fail-hard, idempotent.
-# Virgin-install trust anchor: the tarball stages the matching-arch raw
-# binary under tuwunel-binaries/ (decompressed at pack time from the
-# VERSION+SHA256SUMS-pinned .zst in hermes/observatory/tuwunel-binaries/;
-# see _stage_tuwunel_binary in scripts/make-dist.sh). install_observatory
-# hash-verifies and installs it (uname -m selection, same pattern as the
-# olm arch fix; never downgrades a newer installed binary) BEFORE running
-# provision --offline, so virgin installs trust a known-tested binary with
-# zero network.
-# ============================================================================
-# Verify wheels/SHA256SUMS with the venv python (sha256sum is absent on
-# macOS without coreutils; python is always present at this point).
-_verify_vendored_wheels() { # $1 = venv python, $2 = wheels dir
-    "$1" - "$2" <<'EOF' >/dev/null 2>&1
-import hashlib, sys
-from pathlib import Path
-wheels = Path(sys.argv[1])
-pins = {}
-for line in (wheels / "SHA256SUMS").read_text().splitlines():
-    parts = line.split()
-    if len(parts) == 2:
-        pins[parts[1]] = parts[0]
-if not pins:
-    sys.exit("empty pin set")
-for name, pin in pins.items():
-    if hashlib.sha256((wheels / name).read_bytes()).hexdigest() != pin.lower():
-        sys.exit(f"mismatch: {name}")
-EOF
-}
-
-# Arch-selected vendored python-olm wheel (mirrors
-# hermes/observatory/provision.py _vendored_olm_wheel: uname -m maps
-# x86_64/amd64 -> x86_64, aarch64/arm64 -> aarch64). Echoes the single
-# this-arch wheel path, or nothing when the arch is unknown or no wheel
-# matches — callers skip silently then (a glob would hand pip BOTH arch
-# wheels as conflicting python-olm URLs).
-_select_vendored_olm_wheel() { # $1 = wheels dir; echoes path or nothing
-    local _arch=""
-    case "$(uname -m)" in
-        x86_64|amd64)  _arch="x86_64" ;;
-        aarch64|arm64) _arch="aarch64" ;;
-        *) return 1 ;;
-    esac
-    local _cand
-    for _cand in "$1"/python_olm-*-linux_"${_arch}".whl; do
-        [ -f "$_cand" ] && { printf '%s\n' "$_cand"; return 0; }
-    done
-    return 1
-}
-# Arch-selected vendored Tuwunel binary (mirrors
-# _select_vendored_olm_wheel above: uname -m maps x86_64/amd64 -> x64,
-# aarch64/arm64 -> arm64). Echoes the single this-arch staged binary path,
-# or nothing when the arch is unknown or no binary matches — callers fall
-# back to the checkout-vendored asset, then continue without (provision
-# --offline fails hard with its actionable message, same as before).
-_select_vendored_tuwunel() { # $1 = tuwunel-binaries dir; echoes path or nothing
-    local _arch=""
-    case "$(uname -m)" in
-        x86_64|amd64)  _arch="x64" ;;
-        aarch64|arm64) _arch="arm64" ;;
-        *) return 1 ;;
-    esac
-    [ -f "$1/tuwunel-$_arch" ] && { printf '%s\n' "$1/tuwunel-$_arch"; return 0; }
-    return 1
-}
-
-# Hash-verify ONE vendored tuwunel file against the dir's SHA256SUMS with
-# the venv python (same law as _verify_vendored_wheels: sha256sum is absent
-# on macOS without coreutils; python is always present at this point).
-_verify_vendored_tuwunel() { # $1 = venv python, $2 = tuwunel-binaries dir, $3 = file name
-    "$1" - "$2" "$3" <<'EOF' >/dev/null 2>&1
-import hashlib, sys
-from pathlib import Path
-bindir = Path(sys.argv[1])
-pins = {}
-for line in (bindir / "SHA256SUMS").read_text().splitlines():
-    parts = line.split()
-    if len(parts) == 2:
-        pins[parts[1]] = parts[0]
-pin = pins.get(sys.argv[2])
-if not pin:
-    sys.exit("no pin")
-if hashlib.sha256((bindir / sys.argv[2]).read_bytes()).hexdigest() != pin.lower():
-    sys.exit("mismatch")
-EOF
-}
-
-# Install the vendored Tuwunel binary into the observatory bin dir BEFORE
-# provision --offline. Sources, in precedence order:
-#   1. the tarball-staged raw binary ($1/tuwunel-<arch>) — no zstd needed;
-#   2. the checkout-vendored .zst asset ($2/*-<asset-arch>-linux-gnu-tuwunel.zst,
-#      decompressed with zstd — covers in-place reinstalls from a checkout).
-# Both hash-verified against their dir's SHA256SUMS. Never downgrades: an
-# installed binary >= the vendored VERSION is kept. Warn-not-die throughout:
-# with nothing usable staged, provision --offline still fails hard with its
-# actionable message (run `mercury update` with network, or install manually).
-_install_vendored_tuwunel() { # $1 = staged dir, $2 = checkout-vendored dir, $3 = venv python
-    local STAGED="$1" FALLBACK="$2" VENV_PY_TUW="$3"
-    local SRC="" VER="" FROM_ZST=""
-    local SEL=""
-    SEL="$(_select_vendored_tuwunel "$STAGED" || true)"
-    if [ -n "$SEL" ] && [ -f "$STAGED/VERSION" ]; then
-        if _verify_vendored_tuwunel "$VENV_PY_TUW" "$STAGED" "$(basename "$SEL")"; then
-            SRC="$SEL"; VER="$(tr -d '[:space:]' < "$STAGED/VERSION")"
+# IRC Observatory network — stdlib ircd (offline provision, no downloads).
+# The shared python module does the provisioning work so install.sh, the
+# setup wizard and `mercury update` all run the SAME code: ircd.json config,
+# listener passwords (mirrored in $MERCURY_HOME/.env), gateway state row,
+# and the systemd user unit mercury-observatory.service. Fail-hard,
+# idempotent. No binaries, no wheels, no crypto stack — the daemon is
+# pure stdlib asyncio.
+_open_observatory_firewall() { # $1 = server chat port (default 6670). Best-effort, never fails.
+    # Phones reach the server over the tailnet, but host firewalls
+    # (Fedora default) drop inbound TCP to unlisted ports — a silent
+    # timeout on every client. Open the port when firewalld is active.
+    local PORT="${1:-6670}"
+    command -v firewall-cmd >/dev/null 2>&1 || return 0
+    firewall-cmd --state >/dev/null 2>&1 || return 0
+    firewall-cmd --query-port="${PORT}/tcp" >/dev/null 2>&1 && return 0
+    local sudo_cmd=""
+    [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
+    if [ -n "$sudo_cmd" ] && ! $sudo_cmd -n true >/dev/null 2>&1; then
+        if [ -t 0 ]; then
+            log_info "opening server port ${PORT}/tcp (sudo may ask for a password)"
         else
-            log_warn "staged tuwunel binary failed hash check — trying the checkout-vendored asset"
+            log_info "server port ${PORT}/tcp not open and sudo needs a password — open it by hand: sudo firewall-cmd --permanent --add-port=${PORT}/tcp && sudo firewall-cmd --reload"
+            return 0
         fi
     fi
-    if [ -z "$SRC" ]; then
-        local _aarch=""
-        case "$(uname -m)" in
-            x86_64|amd64)  _aarch="x86_64-v1" ;;
-            aarch64|arm64) _aarch="aarch64-v8" ;;
-            *) _aarch="" ;;
-        esac
-        if [ -n "$_aarch" ] && [ -f "$FALLBACK/VERSION" ]; then
-            local _zst="" _cand
-            for _cand in "$FALLBACK"/*-"$_aarch"-linux-gnu-tuwunel.zst; do
-                [ -f "$_cand" ] && { _zst="$_cand"; break; }
-            done
-            if [ -n "$_zst" ]; then
-                if ! command -v zstd >/dev/null 2>&1; then
-                    log_warn "zstd not found — cannot decompress the checkout-vendored tuwunel asset"
-                elif _verify_vendored_tuwunel "$VENV_PY_TUW" "$FALLBACK" "$(basename "$_zst")"; then
-                    SRC="$_zst"; VER="$(tr -d '[:space:]' < "$FALLBACK/VERSION")"; FROM_ZST=1
-                else
-                    log_warn "checkout-vendored tuwunel asset failed hash check"
-                fi
-            fi
-        fi
-    fi
-    if [ -z "$SRC" ] || [ -z "$VER" ]; then
-        log_warn "no verified vendored tuwunel binary for this host — provision needs one installed"
-        return 0
-    fi
-    local DEST_DIR="$MERCURY_HOME/observatory/bin"
-    local INST_VER=""
-    [ -f "$DEST_DIR/tuwunel.version" ] && INST_VER="$(tr -d '[:space:]' < "$DEST_DIR/tuwunel.version")"
-    if [ -n "$INST_VER" ] && [ -f "$DEST_DIR/tuwunel" ] \
-        && [ "$(printf '%s\n%s\n' "$INST_VER" "$VER" | sort -V | tail -1)" = "$INST_VER" ]; then
-        log_info "tuwunel v$INST_VER already installed (>= vendored v$VER) — keeping it"
-        return 0
-    fi
-    mkdir -p "$DEST_DIR"
-    if [ -n "$FROM_ZST" ]; then
-        zstd -d -c "$SRC" > "$DEST_DIR/.tuwunel.staged" \
-            || { log_warn "zstd decompress of the vendored tuwunel asset failed"; return 0; }
-        mv "$DEST_DIR/.tuwunel.staged" "$DEST_DIR/tuwunel"
+    # shellcheck disable=SC2086
+    if $sudo_cmd firewall-cmd --permanent --add-port="${PORT}/tcp" >/dev/null 2>&1 \
+        && $sudo_cmd firewall-cmd --reload >/dev/null 2>&1; then
+        log_success "server port ${PORT}/tcp open in the host firewall"
     else
-        cp "$SRC" "$DEST_DIR/tuwunel"
+        log_info "could not open server port ${PORT}/tcp — phones will time out until it is open (sudo firewall-cmd --permanent --add-port=${PORT}/tcp && sudo firewall-cmd --reload)"
     fi
-    chmod 755 "$DEST_DIR/tuwunel"
-    printf '%s\n' "$VER" > "$DEST_DIR/tuwunel.version"
-    log_success "vendored tuwunel v$VER installed (hash-verified, offline)"
+    return 0
 }
-
 install_observatory() {
+    # Optional: export OBSERVATORY_BOUNCER_PASSWORD (min 8 chars) to pin
+    # the server password instead of generating one. The environment
+    # passes through to provisioning below — never pass it as an
+    # argument (argv is ps-visible). The daemon restart applies it.
     if [ "$SKIP_OBSERVATORY" = true ]; then
-        log_info "skipping observatory homeserver (--skip-observatory)"
+        log_info "skipping observatory network (--skip-observatory)"
         return 0
     fi
-    log_info "Matrix Observatory homeserver (Tuwunel — offline provision, no upstream query)"
+    log_info "IRC Observatory network (ircd — offline provision, no downloads)"
     local VENV_PY="$INSTALL_ROOT/hermes/.venv/bin/python"
     [ -x "$VENV_PY" ] || { log_error "venv python missing — cannot provision the observatory"; exit 1; }
-    # registration_token entropy per spec: openssl rand when present; the
-    # provisioner's stdlib secrets (same CSPRNG class) when a minimal host
-    # ships without the openssl binary. The generated tuwunel.toml keeps
-    # the token forever and is never overwritten.
-    local _obs_token="" _obs_args=()
-    if command -v openssl >/dev/null 2>&1; then
-        _obs_token="$(openssl rand -hex 32)" \
-            || { log_error "openssl rand failed — cannot generate the registration_token"; exit 1; }
-        _obs_args=(--registration-token "$_obs_token")
-    else
-        log_info "openssl not found — provisioner draws the registration_token itself"
-    fi
-    # Install law: provision offline — trust the installed tuwunel binary
-    # behind the provisioner's >= MIN_VERSION gate, zero GitHub requests,
-    # so a rate-limit can never fail an install. The latest-stable check
-    # lives ONLY behind explicit `mercury update` (refresh_for_update).
-    _obs_args+=(--offline)
-    # E2EE crypto stack (mautrix[encryption] + python-olm). python-olm has
-    # NO cp313 wheel on PyPI — the repo vendors per-arch wheels checked in
-    # under hermes/observatory/wheels/ (SHA256SUMS-pinned). Install order:
-    # vendored wheel first (hash-verified, offline-capable), then the
-    # tarball wheels/ set when present (make-dist full pinned set), then
-    # the network [matrix] extra for the pure-python remainder. Parity
-    # with the `mercury update` tail (update_release). The network path is
-    # warn-not-die: the homeserver itself still provisions; only E2EE is
-    # degraded until the stack lands.
-    local VENDORED_WHEELS="$INSTALL_ROOT/hermes/observatory/wheels"
-    local VENDORED_WHEEL=""
-    VENDORED_WHEEL="$(_select_vendored_olm_wheel "$VENDORED_WHEELS" || true)"
-    if [ -n "$VENDORED_WHEEL" ]; then
-        if _verify_vendored_wheels "$VENV_PY" "$VENDORED_WHEELS"; then
-            log_info "observatory crypto stack: vendored wheel (hash-verified)"
-            if "$UV_CMD" pip install --python "$VENV_PY" -q "$VENDORED_WHEEL"; then
-                log_success "vendored python-olm installed"
-            else
-                log_warn "vendored python-olm did not install (platform mismatch?) — continuing"
-            fi
-        else
-            log_warn "vendored wheels failed hash check — continuing without them"
-        fi
-    fi
-    local WHEELS_DIR="$INSTALL_ROOT/wheels"
-    if compgen -G "$WHEELS_DIR"/*.whl >/dev/null; then
-        log_info "observatory crypto stack: bundled wheels (no network needed)"
-        # make-dist stages BOTH arch python-olm wheels; pip fails when handed
-        # two conflicting python-olm URLs, so install this-arch olm + every
-        # non-olm wheel and skip the foreign-arch olm with a notice (never
-        # passed to pip). Unknown arch: every olm wheel is foreign.
-        local _olm_arch=""
-        case "$(uname -m)" in
-            x86_64|amd64)  _olm_arch="x86_64" ;;
-            aarch64|arm64) _olm_arch="aarch64" ;;
-        esac
-        local _bundled_args=() _whl _base
-        for _whl in "$WHEELS_DIR"/*.whl; do
-            [ -f "$_whl" ] || continue
-            _base="$(basename "$_whl")"
-            case "$_base" in
-                python_olm-*.whl)
-                    if [ -n "$_olm_arch" ] && [[ "$_base" == *"$_olm_arch"* ]]; then
-                        _bundled_args+=("$_whl")
-                    else
-                        log_info "skipping foreign-arch bundled wheel: $_base"
-                    fi
-                    ;;
-                *) _bundled_args+=("$_whl") ;;
-            esac
-        done
-        if [ "${#_bundled_args[@]}" -gt 0 ]; then
-            "$UV_CMD" pip install --python "$VENV_PY" -q "${_bundled_args[@]}" \
-                || { log_error "bundled-wheels install failed (corrupt tarball?)"; exit 1; }
-            log_success "observatory crypto stack installed from bundled wheels"
-        else
-            log_warn "bundled wheels hold no wheel for this host — continuing without them"
-        fi
-    else
-        log_info "observatory crypto stack ([matrix] extra, from network)"
-        if ( cd hermes && "$UV_CMD" pip install --python "$VENV_PY" -q -e ".[matrix]" ); then
-            log_success "observatory crypto stack installed"
-        else
-            log_warn "matrix extra install failed — the observatory homeserver still works,"
-            log_warn "E2EE needs it: cd $INSTALL_ROOT/hermes && $UV_CMD pip install --python .venv/bin/python -e '.[matrix]'"
-            log_warn "(py3.13: python-olm comes from hermes/observatory/wheels/ — rebuilt manually with hermes/observatory/scripts/build_python_olm_wheel.sh only if that wheel is missing)"
-        fi
-    fi
-    # Virgin-install trust anchor: stage the tarball's hash-verified tuwunel
-    # binary into the observatory bin dir BEFORE provision --offline, so the
-    # offline gate finds binary + version file with zero network. Never
-    # downgrades a newer installed binary; warn-not-die when nothing usable
-    # is staged (provision then fails hard with its actionable message).
-    _install_vendored_tuwunel "$INSTALL_ROOT/tuwunel-binaries" \
-        "$INSTALL_ROOT/hermes/observatory/tuwunel-binaries" "$VENV_PY"
     MERCURY_HOME="$MERCURY_HOME" PYTHONPATH="$INSTALL_ROOT/hermes" \
-        "$VENV_PY" -m observatory.provision "${_obs_args[@]}" \
+        "$VENV_PY" -m observatory.provision \
         || { log_error "observatory provisioning failed (see output above)"; exit 1; }
+    # No bouncer layer: the stdlib ircd owns the client ports directly
+    # (6670/6697) — the old soju step is retired, not replaced.
+    local _bouncer_port _tls_port
+    _bouncer_port="$("$VENV_PY" -c "import json;print(json.load(open('$MERCURY_HOME/observatory/ircd.json'))['bouncer_port'])" 2>/dev/null)" || _bouncer_port=""
+    _tls_port="$("$VENV_PY" -c "import json;print(json.load(open('$MERCURY_HOME/observatory/ircd.json')).get('tls_port') or 6697)" 2>/dev/null)" || _tls_port=""
+    _open_observatory_firewall "${_bouncer_port:-6670}"
+    _open_observatory_firewall "${_tls_port:-6697}"
     log_success "observatory ready: $MERCURY_HOME/observatory/"
 }
 

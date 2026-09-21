@@ -1,170 +1,235 @@
-"""Identity policy for Observatory virtual users (spec §4, D6/D17).
+"""Per-agent IRC identities: ``vm_charlie`` speaks as ``vm_charlie``.
 
-Split every agent name into its two halves:
+The gateway bot connection (``<server>_gateway``) cannot speak as
+another nick, so every message in an agent room arrives stamped with
+the wrong identity. Each spawned agent gets a lightweight SEND-ONLY
+connection under its own nick on the agent listener.
 
-- **Display name** — the user-chosen unicode name, preserved as-is except
-  for a render-safety pass (control/bidi-override chars stripped, length
-  capped). Cyrillic, CJK, emoji ZWJ sequences all survive verbatim.
-- **MXID localpart** — a strict lowercase-ASCII slug on the Tuwunel
-  grammar ``^[a-z0-9][a-z0-9._=/+-]*$``: NFKD-decompose, drop combining
-  marks, ASCII-fold; anything that folds to nothing (CJK, Cyrillic, bare
-  emoji) falls back to ``agent-<hash8>`` of the original name. Every slug
-  is prefixed ``merc_`` (namespace resolution in §4) so the appservice's
-  exclusive ``^@merc_.*$`` namespace covers all virtual users; the prefix
-  is DERIVED from config_gen's regex constant, never re-typed here.
+Lazy + self-healing: connect on first send, reconnect once per send
+on failure, drop on ``/exit``, rebuild on gateway resync. Incoming
+traffic is ignored (the main bot owns room dispatch for every room);
+an opportunistic drain keeps kernel buffers from filling.
 
-Collision suffixes ``-2``, ``-3``, … count LIVE same-slug agents only
-(D17): inert predecessors are invisible, and a successor inherits the
-base MXID with zero state inheritance.
+Never raises out of the public functions (best-effort by design —
+the main bot always remains the fallback sender).
 """
+
 from __future__ import annotations
 
-import hashlib
-import re
-import unicodedata
-from typing import TYPE_CHECKING
+import asyncio
+import logging
+import threading
+import time
 
-from observatory.config_gen import (
-    APPSERVICE_NAMESPACE_REGEX,
-    SERVER_NAME_DEFAULT,
-)
-
-if TYPE_CHECKING:
-    from observatory.state import ObservatoryState
+logger = logging.getLogger(__name__)
 
 
-def _prefix_from_namespace_regex(regex: str) -> str:
-    """Derive the reserved localpart prefix from the appservice namespace
-    regex (``"^@merc_.*$"`` → ``"merc_"``) so prefix and namespace can
-    never drift apart — no second copy of the literal exists here."""
-    m = re.fullmatch(r"\^@([A-Za-z0-9._=/+-]+?)(?:\.\*)?\$", regex)
-    if not m:
-        raise ValueError(
-            f"cannot derive virtual-user prefix from namespace regex {regex!r}"
-        )
-    return m.group(1)
+class IdentityConn:
+    """One send-only agent connection (owns its reader/writer/lock)."""
+
+    def __init__(self, *, host: str, port: int, password: str,
+                 nick: str, channel: str) -> None:
+        self.host = host
+        self.port = port
+        self.password = password
+        self.nick = nick
+        self.channel = channel
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._lock = asyncio.Lock()
+        self.last_ok = 0.0
+
+    async def _connect(self) -> bool:
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port), timeout=15.0)
+        except Exception:
+            logger.debug("identity: connect failed for %s", self.nick)
+            return False
+        self._reader, self._writer = reader, writer
+        try:
+            import socket as _socket
+
+            sock = writer.get_extra_info("socket")
+            if sock is not None:
+                sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+        except Exception:
+            pass
+
+        async def send_raw(line: str) -> None:
+            assert self._writer is not None
+            self._writer.write((line + "\r\n").encode("utf-8", "replace"))
+            await self._writer.drain()
+
+        try:
+            if self.password:
+                await send_raw(f"PASS {self.password}")
+            await send_raw(f"NICK {self.nick}")
+            await send_raw(f"USER {self.nick} 0 * :Mercury")
+            async with asyncio.timeout(15):
+                while True:
+                    raw = await reader.readline()
+                    if not raw:
+                        raise ConnectionError("eof before welcome")
+                    if b" 001 " in raw:
+                        break
+            await send_raw(f"JOIN {self.channel}")
+        except Exception:
+            logger.debug("identity: register failed for %s", self.nick,
+                         exc_info=True)
+            try:
+                writer.close()
+            except Exception:
+                pass
+            self._reader, self._writer = None, None
+            return False
+        return True
+
+    async def _drain(self) -> None:
+        for _ in range(5):
+            try:
+                assert self._reader is not None
+                data = await asyncio.wait_for(self._reader.read(4096), 0.01)
+                if not data:
+                    break
+            except (asyncio.TimeoutError, AssertionError):
+                break
+            except Exception:
+                break
+
+    async def send(self, text: str) -> bool:
+        """Send one message, connecting (or reconnecting) as needed."""
+        async with self._lock:
+            for attempt in (0, 1):
+                if self._writer is None or self._writer.is_closing():
+                    if not await self._connect():
+                        return False
+                try:
+                    await self._drain()
+                    assert self._writer is not None
+                    self._writer.write(
+                        f"PRIVMSG {self.channel} :{text}\r\n"
+                        .encode("utf-8", "replace"))
+                    await self._writer.drain()
+                    self.last_ok = time.time()
+                    return True
+                except Exception:
+                    logger.debug("identity: send failed for %s (try %d)",
+                                 self.nick, attempt)
+                    try:
+                        if self._writer is not None:
+                            self._writer.close()
+                    except Exception:
+                        pass
+                    self._reader, self._writer = None, None
+            return False
+
+    async def close(self) -> None:
+        async with self._lock:
+            try:
+                if self._writer is not None:
+                    self._writer.write(b"QUIT :identity drop\r\n")
+                    await self._writer.drain()
+                    self._writer.close()
+            except Exception:
+                pass
+            self._reader, self._writer = None, None
 
 
-#: Reserved localpart prefix for every observatory virtual user (derived,
-#: not duplicated — see :func:`_prefix_from_namespace_regex`).
-VIRTUAL_USER_PREFIX = _prefix_from_namespace_regex(APPSERVICE_NAMESPACE_REGEX)
+class IdentityPool:
+    """Live identity connections keyed by folded channel."""
+
+    def __init__(self) -> None:
+        self._conns: dict[str, IdentityConn] = {}
+        self._lock = threading.Lock()
+
+    def get(self, channel: str) -> IdentityConn | None:
+        with self._lock:
+            return self._conns.get(channel.lower())
+
+    def track(self, conn: IdentityConn) -> None:
+        with self._lock:
+            self._conns[conn.channel.lower()] = conn
+
+    def drop(self, channel: str) -> IdentityConn | None:
+        with self._lock:
+            return self._conns.pop(channel.lower(), None)
+
+    def nicks(self) -> set[str]:
+        """Lowered nicks of every tracked identity (never raises)."""
+        with self._lock:
+            return {c.nick.lower() for c in self._conns.values() if c.nick}
 
 
-def virtual_mxid(slug: str, *, server_name: str = SERVER_NAME_DEFAULT) -> str:
-    """``@merc_<slug>:<server>`` — always inside the appservice's exclusive
-    user namespace (the contract test asserts this against the regex).
-
-    The ``SERVER_NAME_DEFAULT`` (``mercury.local``) fallback exists ONLY so
-    unit tests can mint names cheaply. Every production path MUST pass the
-    live ``server_name`` explicitly (sidecar toml-derived
-    ``self.server_name`` / ``renderer.server_name`` / the gateway ghost
-    mxid domain) — minting a ghost off-domain makes tuwunel answer every
-    createRoom as that sender with HTTP 400 M_EXCLUSIVE and the node never
-    gets its space/room."""
-    return f"@{VIRTUAL_USER_PREFIX}{slug}:{server_name}"
+_pool_lock = threading.Lock()
+_pool: IdentityPool | None = None
 
 
-# --- slug (MXID localpart) ------------------------------------------------------
-
-#: Tuwunel localpart grammar (spec §4 / D6).
-SLUG_GRAMMAR = re.compile(r"^[a-z0-9][a-z0-9._=/+-]*$")
-
-#: Headroom under the 255-byte localpart ceiling after the ``merc_`` prefix
-#: and a possible ``-NN`` collision suffix.
-SLUG_MAX_LEN = 64
-
-_SEPARATORS = re.compile(r"[\s_]+")
+def get_pool() -> IdentityPool:
+    """Process-wide pool (created on demand)."""
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = IdentityPool()
+        return _pool
 
 
-def _fallback_slug(name: str) -> str:
-    """Deterministic identity for untransliteratable names: sha256 of the
-    ORIGINAL (pre-fold) name — distinct source names never collide."""
-    return f"agent-{hashlib.sha256(name.encode('utf-8')).hexdigest()[:8]}"
+def _endpoint() -> tuple[str, int, str] | None:
+    """Agent-listener (host, port, password) from file-backed config."""
+    try:
+        from mercury_cli.config import get_env_value
+    except Exception:
+        return None
+    host = (get_env_value("IRC_SERVER") or "").strip() or "127.0.0.1"
+    try:
+        port = int((get_env_value("IRC_PORT") or "").strip() or 6669)
+    except ValueError:
+        port = 6669
+    password = (get_env_value("IRC_SERVER_PASSWORD") or "").strip()
+    if not password:
+        return None
+    return host, port, password
 
 
-def slugify(name: str) -> str:
-    """Unicode name → strict lowercase-ASCII slug.
-
-    NFKD → strip combining marks → ASCII-fold → lowercase. Runs of
-    whitespace/underscore become single ``-``; characters outside the
-    grammar are dropped; the result must START alphanumeric (leading /
-    trailing ``._=/+-`` stripped). Empty result → ``agent-<hash8>``
-    fallback (D6).
-    """
-    if not isinstance(name, str):
-        raise TypeError(f"name must be str, got {type(name).__name__}")
-    decomposed = unicodedata.normalize("NFKD", name)
-    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
-    folded = stripped.encode("ascii", "ignore").decode("ascii").lower()
-    folded = _SEPARATORS.sub("-", folded)
-    folded = "".join(c for c in folded if c.isalnum() or c in "._=/+-")
-    folded = folded.strip("._=/+-")
-    if len(folded) > SLUG_MAX_LEN:
-        folded = folded[:SLUG_MAX_LEN].strip("._=/+-")
-    if not folded or not SLUG_GRAMMAR.fullmatch(folded):  # grammar is a hard law
-        return _fallback_slug(name)
-    return folded
+async def ensure_identity(nick: str, channel: str) -> bool:
+    """Create (and connect) an identity; True when ready to send."""
+    ep = _endpoint()
+    if not ep:
+        return False
+    host, port, password = ep
+    pool = get_pool()
+    if pool.get(channel) is not None:
+        return True
+    conn = IdentityConn(host=host, port=port, password=password,
+                        nick=nick, channel=channel)
+    pool.track(conn)
+    ok = await conn.send(f"{nick} online.")
+    if not ok:
+        pool.drop(channel)
+    return ok
 
 
-def assign_slug(name: str, state: "ObservatoryState") -> str:
-    """Unique-among-LIVE slug for a new agent (D17).
-
-    Base slug first; if a LIVE agent already holds it, walk ``-2``, ``-3``,
-    … Dead and purged predecessors do NOT count — their MXID is inherited
-    by exactly this path, with nothing else attached.
-    """
-    base = slugify(name)
-    if not state.find_live_by_slug(base):
-        return base
-    n = 2
-    while state.find_live_by_slug(f"{base}-{n}"):
-        n += 1
-    return f"{base}-{n}"
+async def send_as_identity(channel: str, text: str) -> bool:
+    """Send via the room's identity; False when none exists (caller falls
+    back to the main bot). Never raises."""
+    try:
+        conn = get_pool().get(channel)
+        if conn is None:
+            return False
+        return await conn.send(text)
+    except Exception:
+        logger.debug("identity: send_as failed for %s", channel, exc_info=True)
+        return False
 
 
-# --- display name ---------------------------------------------------------------
-
-#: Matrix caps displaynames at 256 codepoints; stay tighter — spec O5
-#: leaves the exact cap to implementation, this is it.
-DISPLAY_NAME_MAX_LEN = 96
-
-#: Zero-width joiners that are legitimate inside names: ZWJ glues emoji
-#: sequences (must survive), ZWNJ is load-bearing in several scripts.
-_FORMAT_CHARS_KEPT = {"\u200d", "\u200c"}
-
-#: Bidi embedding/override/isolate controls and directional marks: spoofing
-#: vectors with no legitimate use in a name (spec O5 sanity rule).
-_BIDI_CONTROLS = set(
-    "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
-    "\u200e\u200f\u206b\u206c\u206d\u206e\u206f"
-)
-
-
-def sanitize_display_name(name: str) -> str:
-    """Render-safe display name: the user's unicode PRESERVED (Cyrillic,
-    CJK, emoji incl. ZWJ sequences) minus C0/C1 controls, bidi-override
-    characters and stray format chars, capped in codepoints."""
-    if not isinstance(name, str):
-        raise TypeError(f"name must be str, got {type(name).__name__}")
-    kept = [
-        c
-        for c in name
-        if (unicodedata.category(c) not in ("Cc", "Cf") or c in _FORMAT_CHARS_KEPT)
-        and c not in _BIDI_CONTROLS
-    ]
-    out = "".join(kept)
-    if len(out) > DISPLAY_NAME_MAX_LEN:
-        out = out[:DISPLAY_NAME_MAX_LEN].rstrip() or "?"
-    return out
-
-
-def qualified_display_name(name: str, position: str | None = None) -> str:
-    """Display name = chosen unicode name + tree position (spec §4:
-    ``"2.1 auth-refactor"``). Position prefixes when present."""
-    display = sanitize_display_name(name)
-    return f"{position} {display}" if position else display
-
-
-def tree_position(indices: list[int] | tuple[int, ...]) -> str:
-    """Sibling-index path → ``"2.1"`` style label (1-based, dot-joined)."""
-    return ".".join(str(i) for i in indices)
+async def drop_identity(channel: str) -> bool:
+    """Forget (and close) a room's identity. Never raises."""
+    try:
+        conn = get_pool().drop(channel)
+        if conn is None:
+            return False
+        await conn.close()
+        return True
+    except Exception:
+        logger.debug("identity: drop failed for %s", channel, exc_info=True)
+        return False

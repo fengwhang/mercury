@@ -255,11 +255,9 @@ def get_read_block_error(path: str) -> Optional[str]:
       * Credential / secret stores under HERMES_HOME and the global Mercury
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
         ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
-        ``cache/bws_cache.json``, the Matrix Observatory secrets
-        (``observatory/owner-credentials.json`` — owner password +
-        access_token, ``observatory/tuwunel.toml`` +
-        ``observatory/tuwunel-bootstrap.toml`` — registration token, and
-        ``observatory/appservices/merc-observatory.yaml`` — as/hs tokens),
+        ``cache/bws_cache.json``, the IRC Observatory listener passwords
+        (``IRC_BOUNCER_PASSWORD`` / ``IRC_AGENT_PASSWORD`` in
+        ``$MERCURY_HOME/.env`` — covered by the ``.env`` entry below),
         and anything under ``mcp-tokens/``. These hold plaintext provider keys,
         OAuth tokens, and HMAC secrets that the agent never needs to read
         directly — provider tools / gateway adapters consume them through
@@ -341,17 +339,6 @@ def get_read_block_error(path: str) -> Optional[str]:
         # to avoid re-fetching across back-to-back CLI invocations. The file
         # was introduced by #31968 but not added to this guard.
         os.path.join("cache", "bws_cache.json"),
-        # Matrix Observatory plaintext secrets (0600): the owner password +
-        # access_token (owner-credentials.json), the homeserver registration
-        # token (tuwunel.toml + transient tuwunel-bootstrap.toml), and the
-        # sidecar as/hs tokens (appservice registration YAML). Exact files
-        # only — logs/binary/db under observatory/ stay readable.
-        os.path.join("observatory", "owner-credentials.json"),
-        os.path.join("observatory", "tuwunel.toml"),
-        os.path.join("observatory", "tuwunel-bootstrap.toml"),
-        os.path.join(
-            "observatory", "appservices", "merc-observatory.yaml"
-        ),
     )
     for hd in mercury_dirs:
         for name in credential_file_names:

@@ -2273,16 +2273,25 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 		// already folded into the message text; the item's presence is what
 		// satisfies the provider contract, mirroring the empty `reasoning_content`
 		// placeholder used on the chat-completions path.
+		//
+		// HERMES-OMP PATCH (Meta/OpenRouter 400): the item carries an `id`
+		// ONLY when a real upstream reasoning item id survived
+		// (`synthesizedReasoningItemId`, set from a thinking block's itemId
+		// above). A fabricated `rs_<hash>` id is rejected by Meta's
+		// Responses endpoint ("Referenced reasoning item ... was not found
+		// or has expired", surfaced via OpenRouter as a bare `400 Provider
+		// returned error`), which permanently poisons any session whose
+		// history contains a tool-call turn from another provider.
+		// DeepSeek, Kimi, and Meta all accept the id-less item.
 		const reasoningText = carriedReasoningTexts.join("\n");
-		const reasoningId =
-			synthesizedReasoningItemId ?? `rs_${Bun.hash(`${model.id}:${msgIndex}:${reasoningText}`).toString(36)}`;
-		const reasoningItem: ResponseReasoningItem = {
+		const reasoningItem = {
 			type: "reasoning",
-			id: reasoningId,
+			...(synthesizedReasoningItemId ? { id: synthesizedReasoningItemId } : {}),
 			summary: [],
 			content: [{ type: "reasoning_text", text: reasoningText }],
-		};
-		outputItems.unshift(reasoningItem);
+		} satisfies Omit<ResponseReasoningItem, "id"> & Partial<Pick<ResponseReasoningItem, "id">>;
+		// The vendored SDK type marks `id` required; the wire accepts its absence.
+		outputItems.unshift(reasoningItem as ResponseReasoningItem);
 	}
 
 	return outputItems;

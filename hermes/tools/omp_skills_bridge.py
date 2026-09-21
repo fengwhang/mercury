@@ -56,14 +56,15 @@ and — via bridge.py ``--render-omp`` — before every omp spawn (delegate
 RPC children, ``/omp``, cron omp_direct, post-setup sync), so a
 long-running gateway converges without a reboot.
 
-omp agent-dir resolution mirrors omp/packages/utils/src/dirs.ts
-(getConfigDirName / getConfigAgentDirName / DirResolver):
+omp agent-dir resolution (Mercury ONE-home form; the stock dirs.ts
+``PI_CONFIG_DIR``/``~/.omp`` default never applies under Mercury because
+the launcher always forces ``PI_CODING_AGENT_DIR``):
   - active profile (``OMP_PROFILE`` canonical, ``PI_PROFILE`` legacy
     fallback; an explicitly empty ``OMP_PROFILE`` selects the default
-    profile) → ``<home>/<PI_CONFIG_DIR|.omp>/profiles/<profile>/agent``
+    profile) → ``$MERCURY_HOME/profiles/<profile>/omp``
   - else ``PI_CODING_AGENT_DIR`` (absolute, or resolved against cwd like
-    Node's path.resolve) → that dir
-  - else ``<home>/<PI_CONFIG_DIR|.omp>/agent``
+    Node's path.resolve) → that dir (production: ``$MERCURY_HOME/omp``)
+  - else ``$MERCURY_HOME/omp`` (``~/.mercury/omp`` when home=~)
 Mercury's launcher forces ``PI_CODING_AGENT_DIR=$MERCURY_HOME/omp``, so the
 bridge lands in the ONE state tree under mercury. (omp defines no
 ``OMP_AGENT_DIR``; ``XDG_*_HOME`` only redirects data/state/cache, never
@@ -148,18 +149,38 @@ def _active_profile() -> Optional[str]:
 def resolve_omp_agent_dir(home: Optional[Path] = None) -> Path:
     """The omp agent dir whose ``skills/`` the bridge manages.
 
-    Mirrors omp dirs.ts precedence — see module docstring.
+    Mercury ONE-home form. Precedence:
+
+      1. ``PI_CODING_AGENT_DIR`` set (the launcher ALWAYS sets it) → that
+         dir, verbatim (production: ``$MERCURY_HOME/omp``; profiles: the
+         profile dir's ``omp/``). Never appends ``profiles/`` — the
+         launcher already resolved the profile.
+      2. ``OMP_PROFILE``/``PI_PROFILE`` active, no override → the named
+         profile's ``omp/`` under ``MERCURY_HOME`` (else ``~/.mercury``).
+      3. ``MERCURY_HOME`` → ``$MERCURY_HOME/omp``; ``home`` → its
+         ``.mercury/omp``; bare ``~`` → ``~/.mercury/omp``.
+
+    ``PI_CONFIG_DIR`` is deliberately NOT consulted: a host-set
+    ``PI_CONFIG_DIR=.omp`` once silently pointed the bridge at a foreign
+    stock tree, splitting skills reconciliation away from the engine root
+    omp actually boots with.
     """
-    base = Path(home) if home is not None else Path(os.path.expanduser("~"))
-    config_dir = os.environ.get("PI_CONFIG_DIR") or ".omp"
-    profile = _active_profile()
-    if profile:
-        return base / config_dir / "profiles" / profile / "agent"
     override = os.environ.get("PI_CODING_AGENT_DIR", "").strip()
     if override:
         p = Path(override)
         return p if p.is_absolute() else (Path.cwd() / p).resolve()
-    return base / config_dir / "agent"
+    profile = _active_profile()
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if profile:
+        # No override: the named profile nests under the Mercury root.
+        if mercury:
+            return Path(mercury) / "profiles" / profile / "omp"
+        base = Path(home) if home is not None else Path(os.path.expanduser("~"))
+        return base / ".mercury" / "profiles" / profile / "omp"
+    if mercury:
+        return Path(mercury) / "omp"
+    base = Path(home) if home is not None else Path(os.path.expanduser("~"))
+    return base / ".mercury" / "omp"
 
 
 def resolve_mercury_skills_dir(home: Optional[Path] = None) -> Path:

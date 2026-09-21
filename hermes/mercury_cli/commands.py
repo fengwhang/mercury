@@ -399,9 +399,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", desktop="terminal"),
     CommandDef("version", "Show Mercury version", "Info", aliases=("v",),
                busy_policy="dispatch", execute="version"),
-    CommandDef("spawn", "Spawn a hermes-side orchestrator (Matrix observatory, gateway room only)", "Session",
+    CommandDef("spawn", "Spawn a hermes-side agent (IRC observatory, gateway room only)", "Session",
                gateway_only=True, args_hint="<name>", busy_policy="dispatch"),
-    CommandDef("spawnomp", "Spawn an omp-side orchestrator (Matrix observatory, gateway room only)", "Session",
+    CommandDef("spawnomp", "Spawn an omp-side agent (IRC observatory, gateway room only)", "Session",
                gateway_only=True, args_hint="<name>", busy_policy="dispatch"),
 
     # Exit

@@ -505,3 +505,108 @@ describe("Responses direct-provider max-token defaults", () => {
 		expect(body).not.toHaveProperty("max_output_tokens");
 	});
 });
+
+describe("Responses replay: synthesized reasoning item carries no fabricated id", () => {
+	function makeToolCallAssistantMsg(): AssistantMessage {
+		return {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "call_1|fc_1",
+					name: "read",
+					arguments: { path: "README.md" },
+				},
+			],
+			timestamp: Date.now(),
+			provider: "anthropic",
+			model: "claude-fable-5",
+			api: "anthropic-messages",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+		};
+	}
+
+	function makeResponsesModel(): Model<"openai-responses"> {
+		return buildModel({
+			id: "meta/muse-spark-1.3-contributor",
+			name: "Muse Spark 1.3 Contributor",
+			api: "openai-responses",
+			provider: "openrouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200000,
+			maxTokens: 64000,
+		} as ModelSpec<"openai-responses">);
+	}
+
+	it("emits the synthesized reasoning item id-less so Meta accepts the replay", async () => {
+		const { convertResponsesAssistantMessage } = await import(
+			"@oh-my-pi/pi-ai/providers/openai-shared"
+		);
+		const items = convertResponsesAssistantMessage(
+			makeToolCallAssistantMsg(),
+			makeResponsesModel(),
+			0,
+			new Set<string>(),
+			false,
+			undefined,
+			false,
+			true,
+			undefined,
+			undefined,
+			true,
+			true,
+		);
+		expect(items.length).toBeGreaterThan(0);
+		const reasoning = items[0] as { type: string; id?: unknown };
+		expect(reasoning.type).toBe("reasoning");
+		expect("id" in reasoning).toBe(false);
+	});
+
+	it("keeps a real upstream reasoning item id on the synthesized item", async () => {
+		const { convertResponsesAssistantMessage } = await import(
+			"@oh-my-pi/pi-ai/providers/openai-shared"
+		);
+		const msg = makeToolCallAssistantMsg();
+		msg.content.unshift({
+			type: "thinking",
+			thinking: "consider the read",
+			thinkingSignature: undefined,
+		});
+		// A thinking block that carried a native upstream id keeps it: the
+		// block shape has no id field of its own in this codebase, so plant
+		// it via the signature replay path instead.
+		msg.content[0] = {
+			type: "thinking",
+			thinking: "",
+			thinkingSignature: JSON.stringify({ type: "reasoning", id: "rs_real_upstream", summary: [] }),
+		};
+		const items = convertResponsesAssistantMessage(
+			msg,
+			makeResponsesModel(),
+			0,
+			new Set<string>(),
+			true,
+			undefined,
+			false,
+			true,
+			undefined,
+			undefined,
+			true,
+			true,
+		);
+		const reasoning = items[0] as { type: string; id?: unknown };
+		expect(reasoning.type).toBe("reasoning");
+		expect(reasoning.id).toBe("rs_real_upstream");
+	});
+});

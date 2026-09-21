@@ -1,17 +1,16 @@
-"""Gateway-process side of Matrix observatory prompt delivery (M4a/M5c).
+"""Gateway-process side of IRC observatory prompt delivery.
 
-The observatory sidecar owns all Matrix I/O, but the gateway agent's hermes
-session lives in (and is resumed by) the gateway process itself — the D18
-respawn pass deliberately never builds a handle for it
-(``observatory.respawn`` SKIP_RESPAWN_KINDS). So a gateway-room prompt must
-cross into the gateway process: the sidecar sends the ``inject`` verb over
-the gateway control socket (``gateway.control_socket``) and the gateway
-answers it with :func:`run_gateway_prompt` here.
+The gateway agent's hermes session lives in (and is resumed by) the
+gateway process itself — boot resync deliberately never builds a
+handle for it (SKIP_RESPAWN_KINDS). A gateway-room prompt may also
+arrive over the gateway control socket (``gateway.control_socket``
+``inject`` verb); the gateway answers it with :func:`run_gateway_prompt`
+here.
 
 Execution is a headless AIAgent turn on a STABLE session id
 (``GATEWAY_SESSION_ID``) — the same machinery ``mercury -z`` uses
 (``mercury_cli.oneshot``: config-resolved runtime + ``run_conversation``),
-except the agent is cached per session so consecutive Matrix messages share
+except the agent is cached per session so consecutive IRC messages share
 one transcript. Turns are serialized per session: a headless session is
 always idle between turns, so steer-vs-prompt (a busy-session distinction)
 collapses — every injection starts a turn, and ``kind`` selects the entry
@@ -20,9 +19,8 @@ first tries the gateway slash dispatch (the same table
 ``GatewayRunner._handle_message`` uses) and falls back to a turn for
 unknown verbs.
 
-The gateway-session agent is built with ``platform="matrix"`` so the
-system prompt picks the Matrix formatting hint; spawned orchestrators
-(``observatory.spawn``) keep the ``cli`` default.
+The gateway-session agent is built with ``platform="irc"`` so the
+system prompt picks the plain-text hint.
 """
 
 from __future__ import annotations
@@ -31,7 +29,6 @@ import asyncio
 import json
 import logging
 import os
-import socket
 import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -46,44 +43,13 @@ GATEWAY_SESSION_ID = "gateway"
 #: ``command`` tries slash dispatch first. Anything else is a caller bug.
 INJECT_KINDS = frozenset({"prompt", "steer", "command"})
 
-#: Live-progress datagram socket name under ``$MERCURY_HOME/observatory``.
-#: The turn collector fire-and-forget sends one ``SOCK_DGRAM`` datagram per
-#: captured event; the sidecar ingests them for live room streaming (§5).
-#: Best-effort: no listener or send error = drop silently.
-GATEWAY_PROGRESS_SOCK_NAME = "gateway-progress.sock"
-
-#: Datagram ``kind`` values on the gateway-progress socket. The turn
-#: collector sends ``{node_id, seq, event}`` with NO kind (legacy shape —
-#: the sidecar defaults it to ``TURN_PROGRESS_KIND``); gateway-origin
-#: omp-child frames carry an explicit kind so the sidecar can create and
-#: render child nodes from wire bytes alone. The sidecar MUST NEVER
-#: import the gateway's in-process ``tools.omp_delegation._live_children``
-#: table (separate processes in production — that import always fails
-#: there); the gateway reads its OWN table same-process and pushes bytes.
+#: Queue ``kind`` values for gateway→rooms frames. The room pump reads
+#: its OWN process queue (same process — no socket hop).
 TURN_PROGRESS_KIND = "turn_progress"
 #: ``{"kind": "child_lifecycle", "node_id", "lifecycle": "start"|"stop",
-#: "name", "goal", "delegation_id", "task_index", "parent_session",
-#: "status", "summary"}`` — the gateway-child feed watcher emits start
-#: when a ``_live_children`` entry appears, stop when it disappears.
-CHILD_LIFECYCLE_KIND = "child_lifecycle"
-#: ``{"kind": "child_event", "node_id", "feed": {...}}`` — one forwarded
-#: ``OmpFeed`` typed event (node/tool/thought/message) for a live child.
-CHILD_EVENT_KIND = "child_event"
-#: ``{"kind": "approval_prompt", "node_id", "request_id", "command",
-#: "description", "session_key"}`` — one guard approval raised by a gateway
-#: Matrix turn, forwarded so the sidecar mirrors it into the node's room.
-#: The turn blocks in ``tools.approval``'s gateway queue under
-#: :data:`GATEWAY_APPROVAL_SESSION_KEY`; the room /approve resolves that
-#: same queue (via the sidecar bridge + ``resolve-approval`` control verb).
-APPROVAL_PROMPT_KIND = "approval_prompt"
 
-#: Canonical ``tools.approval`` session key for gateway Matrix turns
+#: Canonical ``tools.approval`` session key for gateway turns
 #: (``session:gateway`` — the gateway node's ``session_ref`` in state.db).
-#: BOTH processes use this one value: the gateway turn sets it as the
-#: ambient approval key and registers the datagram forwarder under it;
-#: the sidecar registers the bridge ingest (``gateway_notify``) under it.
-#: One shared constant — never recompute per side — so the key the turn
-#: blocks on is always the key the room resolves.
 GATEWAY_APPROVAL_SESSION_KEY = "session:gateway"
 
 #: Gateway-child feed watcher poll cadence (seconds).
@@ -107,19 +73,18 @@ def _session_lock(session_id: str) -> threading.Lock:
 def _default_agent(session_id: str) -> Any:
     """Fresh-or-resumed AIAgent on the session id.
 
-    Same builder the D18 respawn pass uses for spawned hermes
-    orchestrators (dedicated SessionDB handle on the home's hermes
-    state.db — never a borrowed live object). The turn prologue resolves
-    the compression-lineage tip and loads prior history, so a stored
+    Same builder boot resync uses for spawned hermes orchestrators
+    (dedicated SessionDB handle on the home's hermes state.db — never a
+    borrowed live object). The turn prologue resolves the
+    compression-lineage tip and loads prior history, so a stored
     session resumes and a missing one starts fresh.
 
-    The gateway session renders into a Matrix room, so it is built with
-    ``platform="matrix"`` (Matrix markdown hint). Spawned orchestrators
-    keep the ``cli`` default in ``build_hermes_agent``.
+    The gateway session renders into an IRC channel, so it is built with
+    ``platform="irc"`` (plain-text hint, no markdown).
     """
     from observatory.spawn import build_hermes_agent
 
-    return build_hermes_agent(session_id=session_id, platform="matrix")
+    return build_hermes_agent(session_id=session_id, platform="irc")
 
 
 def drop_cached_agent(session_id: str = GATEWAY_SESSION_ID) -> None:
@@ -252,7 +217,7 @@ def _dispatch_slash_command(
                 internal=True,
             )
         except Exception:
-            logger.debug("gateway_session: matrix event synth failed", exc_info=True)
+            logger.debug("gateway_session: event synth failed", exc_info=True)
             return None
         try:
             coro = runner._handle_message(event)
@@ -288,18 +253,6 @@ def _dispatch_slash_command(
         return None
 
 
-def _progress_socket_path() -> Path:
-    """``$MERCURY_HOME/observatory/gateway-progress.sock`` (never raises)."""
-    try:
-        from observatory.provision import _mercury_home
-
-        return Path(_mercury_home()) / "observatory" / GATEWAY_PROGRESS_SOCK_NAME
-    except Exception:
-        env = os.environ.get("MERCURY_HOME", "").strip()
-        home = Path(env).expanduser() if env else Path.home() / ".mercury"
-        return home / "observatory" / GATEWAY_PROGRESS_SOCK_NAME
-
-
 def _normalize_text(text: Any) -> str:
     """Whitespace-collapsed compare form (reply-echo + double-capture dedupe)."""
     return " ".join(str(text).split())
@@ -322,83 +275,37 @@ def _strip_thinking_markup(text: Any) -> str:
 
 
 def _push_progress(node_id: str, seq: int, event: dict[str, Any], *, internal: bool = False) -> None:
-    """Fire-and-forget one live-progress datagram; never raises.
+    """Fire-and-forget one live-progress frame into the rooms queue.
 
-    Payload is ``{node_id, seq, event}`` where ``event`` is the existing
-    shape (no ``seq`` inside — it rides beside it). No listener, missing
-    socket dir, or any send error = drop silently. ``internal=True`` marks
-    follow-up turns (quiet gates only the final reply — the live stream
-    renders like a normal turn; seqs still feed the replay dedupe).
+    Maps collector shapes to feed frames (gateway_session is the gateway
+    room's trace source). Never raises; no listener = drop silently.
     """
     try:
-        payload_obj: dict[str, Any] = {"node_id": node_id, "seq": seq, "event": event}
-        if internal:
-            payload_obj["internal"] = True
-        payload = json.dumps(payload_obj).encode("utf-8")
-    except Exception:
-        return
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        try:
-            sock.sendto(payload, str(_progress_socket_path()))
-        finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
-    except Exception:
-        pass
+        kind = str((event or {}).get("type") or "")
+        if kind == "thinking":
+            feed = {"feed": "thought", "subagent_id": "",
+                    "text": str(event.get("text") or "")}
+        elif kind == "tool_call":
+            feed = {"feed": "tool", "subagent_id": "",
+                    "tool": str(event.get("tool") or "tool"),
+                    "args": event.get("args") or {}}
+        else:
+            return
+        from observatory.rooms import (
+            channel_for_node_id, format_frame, say_nowait,
+        )
 
-
-def _send_child_datagram(payload: dict[str, Any]) -> None:
-    """Fire-and-forget one child-feed datagram; never raises."""
-    try:
-        raw = json.dumps(payload).encode("utf-8")
-    except Exception:
-        return
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        try:
-            sock.sendto(raw, str(_progress_socket_path()))
-        finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
+        channel = channel_for_node_id(node_id)
+        if channel:
+            line = format_frame(feed)
+            if line:
+                say_nowait(channel, line)
     except Exception:
         pass
-
-
-def push_approval_prompt(
-    node_id: str,
-    *,
-    request_id: str,
-    command: str,
-    description: str = "",
-    session_key: str = GATEWAY_APPROVAL_SESSION_KEY,
-) -> None:
-    """Fire-and-forget one approval-prompt datagram; never raises.
-
-    Same best-effort law as the other gateway→sidecar datagrams: no
-    listener or send error = drop silently (the turn still blocks in the
-    gateway queue until timeout — fail-closed deny — it just never
-    surfaces in the room)."""
-    _send_child_datagram({
-        "kind": APPROVAL_PROMPT_KIND,
-        "node_id": node_id,
-        "request_id": request_id,
-        "command": command,
-        "description": description,
-        "session_key": session_key,
-    })
-
-
 def gateway_approval_notify(node_id: str):
     """``tools.approval.register_gateway_notify`` callback for gateway
-    Matrix turns: mirrors the guard prompt to the sidecar over the
-    progress socket. Runs on the blocked agent thread; the send is
-    fire-and-forget datagram I/O (the socket pattern the
-    register_gateway_notify docstring prescribes — never block here)."""
+    turns: mirrors the guard prompt into the room. Runs on the
+    blocked agent thread; the send is fire-and-forget (never block)."""
     def _notify(approval_data) -> None:
         try:
             data = dict(approval_data or {})
@@ -414,57 +321,32 @@ def gateway_approval_notify(node_id: str):
     return _notify
 
 
-def push_child_lifecycle(
+def push_approval_prompt(
     node_id: str,
-    lifecycle: str,
     *,
-    name: str | None = None,
-    goal: str | None = None,
-    delegation_id: str | None = None,
-    task_index: int | None = None,
-    parent_session: str | None = None,
-    status: str | None = None,
-    summary: str | None = None,
+    request_id: str,
+    command: str,
+    description: str = "",
+    session_key: str = GATEWAY_APPROVAL_SESSION_KEY,
 ) -> None:
-    """Push one child-lifecycle datagram; never raises.
+    """Fire-and-forget one approval-prompt line; never raises.
 
-    ``lifecycle`` is ``"start"`` (entry appeared in the gateway's own
-    ``_live_children`` table) or ``"stop"`` (entry disappeared — the
-    watcher cannot know the terminal status, so stop carries
-    ``status="unknown"`` and no summary; the post-delegate follow-up
-    still verifies the result through the gateway turn).
+    Direct to the room (no queue): resolves the channel from state and
+    sends via the loop-hop. Runs on the blocked agent thread.
     """
-    payload: dict[str, Any] = {
-        "kind": CHILD_LIFECYCLE_KIND,
-        "node_id": node_id,
-        "lifecycle": lifecycle,
-    }
-    if name is not None:
-        payload["name"] = name
-    if goal is not None:
-        payload["goal"] = goal
-    if delegation_id is not None:
-        payload["delegation_id"] = delegation_id
-    if task_index is not None:
-        payload["task_index"] = task_index
-    if parent_session is not None:
-        payload["parent_session"] = parent_session
-    if status is not None:
-        payload["status"] = status
-    if summary is not None:
-        payload["summary"] = summary
-    _send_child_datagram(payload)
-
-
-def push_child_feed_event(node_id: str, feed_event: dict[str, Any]) -> None:
-    """Push one forwarded child feed frame; never raises."""
     try:
-        feed = dict(feed_event)
+        from observatory.rooms import channel_for_node_id, say_nowait
+
+        channel = channel_for_node_id(node_id)
+        if channel:
+            say_nowait(
+                channel,
+                f"approval requested: `{command}`"
+                f" — {description} "
+                f"(reply /approve or /deny in the parent room)",
+            )
     except Exception:
-        return
-    _send_child_datagram(
-        {"kind": CHILD_EVENT_KIND, "node_id": node_id, "feed": feed}
-    )
+        pass
 
 
 def _feed_event_to_dict(event: Any) -> dict[str, Any] | None:
@@ -609,9 +491,21 @@ def replay_child_turn_frames(child_id: str, frames: Any) -> int:
                         pass
             keys = [child_frame_key(f) for f in wanted]
             surplus = dd.replay_indexes(keys)
+            try:
+                from observatory.rooms import (
+                    channel_for_node_id, format_frame, say_nowait,
+                )
+
+                channel = channel_for_node_id(cid)
+            except Exception:
+                channel = ""
             for i in surplus:
                 try:
-                    push_child_feed_event(cid, wanted[i])
+                    if not channel:
+                        continue
+                    line = format_frame(wanted[i])
+                    if line:
+                        say_nowait(channel, line)
                 except Exception:
                     continue
             return len(surplus)
@@ -620,14 +514,135 @@ def replay_child_turn_frames(child_id: str, frames: Any) -> int:
         return 0
 
 
-async def _forward_child_feed(
-    child_id: str, transport: Any, feeds: dict[str, Any]
-) -> None:
-    """Subscribe one OmpFeed and push its frames as datagrams until cancelled.
+def _grandchild_name(feed: dict[str, Any], sid: str) -> str:
+    name = (str(feed.get("agent") or "").strip()
+            or str(feed.get("task") or "").strip())
+    return name or f"sub-{sid[:8]}"
 
-    SELF tool/thought/message frames consult the turn multiset (a frame the
-    batched replay already covered is skipped); grandchildren and lifecycle
-    frames always push (the replay never covers them)."""
+
+def _publish_live_payload(
+    child_id: str, payload: dict[str, Any], grands: dict[str, str] | None,
+) -> None:
+    """One live feed frame into its room (watcher thread)."""
+    from observatory.rooms import format_frame, say_nowait
+
+    try:
+        if not isinstance(payload, dict):
+            return
+        sub = str(payload.get("subagent_id") or "")
+        manager = _watcher_manager()
+        if manager is None:
+            return
+        if str(payload.get("feed") or "") == "node":
+            if sub:
+                _route_grandchild_frame(
+                    manager, child_id, payload, grands or {})
+            return
+        if sub:
+            _route_grandchild_frame(
+                manager, child_id, payload, grands or {})
+            return
+        try:
+            channel = manager.channel_for_node(child_id)
+        except Exception:
+            channel = ""
+        if not channel:
+            return
+        line = format_frame(payload)
+        if line:
+            say_nowait(channel, line)
+    except Exception:
+        pass
+
+
+def _route_grandchild_frame(
+    manager, owner_id: str, feed: dict[str, Any],
+    cache: dict[str, str],
+) -> None:
+    """One N>1 frame into its own room (watcher thread)."""
+    from observatory.rooms import format_frame, say_nowait
+
+    try:
+        sid = str(feed.get("subagent_id") or "")
+        if not sid:
+            return
+        kind = str(feed.get("kind") or "")
+        if kind in ("add", "death"):
+            if kind == "add":
+                channel = cache.get(sid)
+                if not channel:
+                    node_id = f"{owner_id}/sub-{sid}"
+                    channel = _hop(manager._ensure_child_room_for(node_id, {
+                        "name": _grandchild_name(feed, sid),
+                        "parent_name": owner_id,
+                        "engine": "omp",
+                        "subagent_id": sid,
+                        "session_ref": str(feed.get("session_file") or node_id),
+                    })) or ""
+                    if channel:
+                        cache[sid] = channel
+                if channel:
+                    flat = dict(feed)
+                    flat["subagent_id"] = ""
+                    line = format_frame(flat)
+                    if line:
+                        say_nowait(channel, line)
+            else:
+                node_id = f"{owner_id}/sub-{sid}"
+                try:
+                    row_channel = manager.channel_for_node(node_id)
+                except Exception:
+                    row_channel = ""
+                if row_channel:
+                    flat = dict(feed)
+                    flat["subagent_id"] = ""
+                    line = format_frame(flat)
+                    if line:
+                        say_nowait(row_channel, line)
+                cache.pop(sid, None)
+                _hop(manager._retire_child_room(node_id))
+            return
+        channel = cache.get(sid)
+        if not channel:
+            node_id = f"{owner_id}/sub-{sid}"
+            try:
+                row_channel = manager.channel_for_node(node_id)
+            except Exception:
+                row_channel = ""
+            if row_channel:
+                channel = row_channel
+                cache[sid] = channel
+            else:
+                channel = _hop(manager._ensure_child_room_for(node_id, {
+                    "name": _grandchild_name(feed, sid),
+                    "parent_name": owner_id,
+                    "engine": "omp",
+                    "subagent_id": sid,
+                    "session_ref": node_id,
+                })) or ""
+                if channel:
+                    cache[sid] = channel
+        if channel:
+            flat = dict(feed)
+            flat["subagent_id"] = ""
+            line = format_frame(flat)
+            if line:
+                say_nowait(channel, line)
+    except Exception:
+        pass
+
+
+async def _forward_child_feed(
+    child_id: str, transport: Any, feeds: dict[str, Any],
+    grands: dict[str, str] | None = None,
+) -> None:
+    """Subscribe one OmpFeed and publish its frames direct until cancelled.
+
+    SELF frames go to the child's own room; grandchild (N>1) frames get
+    their own chained rooms. SELF frames consult the turn multiset (a
+    frame the batched replay already covered is skipped). Direct sends
+    only — no queue. Runs on the watcher loop; sends hop threads.
+    """
     try:
         from observatory.omp_feed import OmpFeed
     except Exception:
@@ -679,7 +694,7 @@ async def _forward_child_feed(
                             skip = False
                         if skip:
                             continue
-                    push_child_feed_event(child_id, payload)
+                    _publish_live_payload(child_id, payload, grands)
                 except Exception:
                     continue
         except asyncio.CancelledError:
@@ -701,6 +716,127 @@ async def _forward_child_feed(
             pass
 
 
+def _ensure_watcher_room(child_id: str, meta: dict[str, Any]) -> str:
+    """Create the delegate room inline (watcher thread).
+
+    Row + join + subscribe + invite + start line, via the gateway loop
+    where transport is involved. Returns the channel ("" when unavailable).
+    Never raises.
+    """
+    try:
+        from observatory.rooms import format_lifecycle, say_nowait
+
+        manager = _watcher_manager()
+        if manager is None:
+            return ""
+        item = {
+            "name": str(meta.get("name") or child_id),
+            "parent_name": str(meta.get("owner_session_id") or ""),
+            "engine": "omp",
+            "session_ref": child_id,
+        }
+        channel = _hop(manager._ensure_child_room_for(child_id, item)) or ""
+        if channel:
+            logger.info("observatory: room ensured %s for %s", channel, child_id)
+            say_nowait(channel, format_lifecycle(
+                "start", name=str(meta.get("name") or child_id)))
+        return channel
+    except Exception:
+        return ""
+
+
+def _retire_watcher_room(child_id: str, *, name=None, summary: str = "") -> None:
+    """Retire a finished delegate room inline (watcher thread)."""
+    try:
+        from observatory.rooms import format_lifecycle, say_nowait
+
+        manager = _watcher_manager()
+        if manager is None:
+            return
+        channel = ""
+        try:
+            channel = manager.channel_for_node(child_id)
+        except Exception:
+            pass
+        if channel:
+            say_nowait(channel, format_lifecycle(
+                "stop", name=str(name or child_id), summary=summary))
+        _hop(manager._retire_child_room(child_id, summary=summary))
+    except Exception:
+        pass
+
+
+def _register_watcher_steer(child_id: str, meta: dict[str, Any]) -> None:
+    """Register the room steerer for a live omp child (best-effort).
+
+    RPC transports steer mid-run; one-shot Popen transports (steerable
+    False, no ``steer`` method) get no room steering — their room stays
+    a read-only trace. Never raises.
+    """
+    try:
+        from observatory.rooms import drop_child_steer, register_child_steer
+        transport = (meta or {}).get("transport")
+        if not bool((meta or {}).get("steerable", False)):
+            drop_child_steer(child_id)
+            return
+        if transport is None or not callable(getattr(transport, "steer", None)):
+            drop_child_steer(child_id)
+            return
+
+        def _steer(text: str, _transport: Any = transport) -> bool:
+            try:
+                _transport.steer(text)
+                return True
+            except Exception:
+                return False
+
+        register_child_steer(child_id, _steer)
+    except Exception:
+        pass
+
+
+def _hop(coro, timeout: float = 30.0):
+    """Run a rooms coroutine on the gateway loop; return its result.
+
+    Watcher/worker threads only — blocking on the loop's own thread
+    would deadlock, so that misuse degrades loudly instead of hanging.
+    Timeout/failure reads as None (best-effort). Never raises.
+    """
+    try:
+        import asyncio as _asyncio
+
+        from observatory.rooms import _loop_now, call_soon
+
+        try:
+            running = _asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and running is _loop_now():
+            logger.warning("observatory: hop from the gateway loop itself")
+            try:
+                if coro is not None:
+                    coro.close()
+            except Exception:
+                pass
+            return None
+        fut = call_soon(coro)
+        if fut is None:
+            return None
+        return fut.result(timeout=timeout)
+    except Exception:
+        return None
+
+
+def _watcher_manager():
+    """Live room manager for the watcher thread (global, never builds)."""
+    try:
+        from observatory.rooms import get_room_manager
+
+        return get_room_manager()
+    except Exception:
+        return None
+
+
 async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None:
     """Poll the OWN live-child table; push lifecycle + forward feed frames."""
     try:
@@ -712,6 +848,7 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
     known: dict[str, dict[str, Any]] = {}
     tasks: dict[str, Any] = {}
     feeds: dict[str, Any] = {}
+    grands: dict[str, dict[str, str]] = {}
     stops_pushed: set[str] = set()
     while True:
         try:
@@ -723,33 +860,23 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
                 continue
             known[child_id] = meta
             stops_pushed.discard(child_id)
+            logger.info("observatory: watcher child start %s", child_id)
+            logger.info("observatory: watcher child start %s", child_id)
             try:
-                task_index = meta.get("task_index")
-                push_child_lifecycle(
-                    child_id,
-                    "start",
-                    name=(str(meta.get("name")) if meta.get("name") is not None else None),
-                    goal=(str(meta.get("goal")) if meta.get("goal") is not None else None),
-                    delegation_id=(
-                        str(meta.get("delegation_id"))
-                        if meta.get("delegation_id") is not None else None
-                    ),
-                    task_index=(int(task_index) if isinstance(task_index, int) else None),
-                    parent_session=(
-                        str(meta.get("owner_session_id"))
-                        if meta.get("owner_session_id") else None
-                    ),
-                )
+                _ensure_watcher_room(child_id, meta)
+                _register_watcher_steer(child_id, meta)
             except Exception:
-                logger.debug("child start push failed for %s", child_id, exc_info=True)
+                logger.debug("child start failed for %s", child_id, exc_info=True)
             try:
                 transport = meta.get("transport")
             except Exception:
                 transport = None
             if _child_transport_feedable(transport):
                 try:
+                    grands.setdefault(child_id, {})
                     tasks[child_id] = asyncio.create_task(
-                        _forward_child_feed(child_id, transport, feeds),
+                        _forward_child_feed(
+                            child_id, transport, feeds, grands[child_id]),
                         name=f"observatory-child-feed-{child_id}",
                     )
                 except Exception:
@@ -757,7 +884,13 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
         for child_id in list(known):
             if child_id in snapshot:
                 continue
-            known.pop(child_id, None)
+            gone_meta = known.pop(child_id, None) or {}
+            try:
+                from observatory.rooms import drop_child_steer
+                drop_child_steer(child_id)
+            except Exception:
+                pass
+            grands.pop(child_id, None)
             task = tasks.pop(child_id, None)
             if task is not None:
                 try:
@@ -772,10 +905,13 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
                         pass
             if child_id not in stops_pushed:
                 stops_pushed.add(child_id)
+                logger.info("observatory: watcher child stop %s", child_id)
+                logger.info("observatory: watcher child stop %s", child_id)
                 try:
-                    push_child_lifecycle(child_id, "stop", status="unknown")
+                    _retire_watcher_room(
+                        child_id, name=gone_meta.get("name"))
                 except Exception:
-                    logger.debug("child stop push failed for %s", child_id, exc_info=True)
+                    logger.debug("child stop failed for %s", child_id, exc_info=True)
         try:
             await asyncio.sleep(interval)
         except asyncio.CancelledError:
@@ -1074,8 +1210,7 @@ def run_gateway_prompt_with_events(
     turn blocks in ``tools.approval`` under the canonical
     :data:`GATEWAY_APPROVAL_SESSION_KEY` with
     :func:`gateway_approval_notify` registered, so every guard prompt is
-    forwarded to the sidecar (which mirrors it into the node's room and
-    resolves this exact queue on /approve|/deny). Registration is undone
+    forwarded into the rooms queue (mirrored into the node's channel). Registration is undone
     when the turn ends (same register/unregister law as the gateway's own
     ``_run_agent_turn``). When ``tools.approval`` is unavailable the turn
     runs unwrapped (approvals take their existing default path)."""
@@ -1248,7 +1383,7 @@ def steer_gateway_agent(text: str, *, session_id: str = GATEWAY_SESSION_ID) -> d
     return {"steered": True, "reason": ""}
 
 
-def interrupt_gateway_agent(reason: str = "matrix /stop", *, session_id: str = GATEWAY_SESSION_ID) -> dict[str, Any]:
+def interrupt_gateway_agent(reason: str = "irc /stop", *, session_id: str = GATEWAY_SESSION_ID) -> dict[str, Any]:
     """Interrupt the cached gateway-session agent (BUG3 /stop wiring).
 
     Calls ``agent.interrupt(reason, hard_cancel=True)`` on the live cached

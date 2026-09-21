@@ -43,7 +43,7 @@ def test_matrix_adapter_registers_plain_label():
 
 
 def test_gateway_menu_frames_secondary_platforms(monkeypatch, capsys, tmp_path):
-    """setup_gateway checklist asks for *secondary* platforms (Matrix lives
+    """setup_gateway checklist asks for *secondary* platforms (IRC lives
     in the observatory section that now runs first)."""
     import mercury_cli.gateway as gateway_mod
     from mercury_cli import setup as setup_mod
@@ -67,6 +67,6 @@ def test_gateway_menu_frames_secondary_platforms(monkeypatch, capsys, tmp_path):
     assert questions == ["Select secondary chat platforms to configure:"]
     out = capsys.readouterr().out
     assert (
-        "The Matrix observatory is your primary chat. "
+        "The IRC observatory is your primary chat. "
         "These secondary platforms are optional extras." in out
     )

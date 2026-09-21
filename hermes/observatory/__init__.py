@@ -1,66 +1,31 @@
-"""Matrix Observatory — Mercury's bundled local Matrix stack.
+"""IRC Observatory — Mercury's bundled local chat network.
 
-Spec: docs/design/matrix-observatory.md. Tuwunel bundling is fetch-at-install
-(per D16). This package is the bundled appservice sidecar, which ships in
-the tarball (provision.py + sidecar_main.py); the modules below import and
-test without a live homeserver.
+One stdlib asyncio IRC daemon (``ircd``: agent listener + bouncer
+listener on the same channel state, SQLite history replay), one
+channel per live agent, driven in-process by the gateway
+(``rooms`` + ``spawn`` + ``gateway_session`` feed producers).
 
 Modules:
-  config_gen — pure generators for tuwunel.toml, the appservice
-      registration YAML and the systemd user unit (no I/O; unit-tested).
-  tuwunel — GitHub release query (>= 1.8.1 hard gate), download and
-      install/refresh of the static binary (fetch boundary injectable).
-  provision — idempotent fail-hard orchestrator: config, appservice
-      registration, owner bootstrap, systemd unit. Entry point for
-      install.sh, the first-gateway-start hook, and `mercury update`.
+  ircd — the daemon (two listeners, OPER/DESTROY, history persist).
+  rooms — channel naming, frame formatting, room manager, producer
+      queue, child/omp inbound steering.
+  spawn — /spawn + /spawnomp + /exit lifecycle over channels.
   state — agent-tree SQLite store ($MERCURY_HOME/observatory/state.db,
-      WAL) with D8 depth semantics and D17 live-only slug collisions.
-  identity — display-name (unicode-preserving) + MXID slug policy
-      (strict lowercase ASCII, ``merc_`` prefix, live-only suffixing).
-  tree — pure forest assembly + desired space hierarchy + diff plan
-      (create/attach/detach/room-add) against a matrix snapshot.
-  appservice — aiohttp transaction intake (dedup by txnId,
-      token middleware, event queue). Imported lazily: aiohttp is an
-      optional extra and config_gen/provision must stay importable
-      without it.
+      WAL): room_id is the IRC channel, mxid the agent nick.
+  config_gen — pure generators for ircd.json + the systemd user unit.
+  provision — idempotent orchestrator: config, passwords, unit install.
+      Entry point for install.sh and `mercury setup observatory`.
+  gateway_session — gateway-turn runner + child feed producers (the
+      queue side; the room side lives in rooms.py).
+  gateway_transport — control-socket transport (engine-agnostic).
+  platform_hook — gateway boot seam (LAST_BOOT, try_boot, open_state).
 """
 from observatory.config_gen import ObservatoryPaths
-from observatory.identity import (
-    assign_slug,
-    qualified_display_name,
-    sanitize_display_name,
-    slugify,
-    virtual_mxid,
-)
 from observatory.state import SCHEMA_VERSION, ObservatoryState, purge_on_death
-from observatory.tree import (
-    build_forest,
-    desired_plan,
-    diff_plan,
-)
 
 __all__ = [
-    "APPSERVICE_PORT_DEFAULT",
     "ObservatoryPaths",
     "ObservatoryState",
     "SCHEMA_VERSION",
-    "TransactionIntake",
-    "assign_slug",
-    "build_forest",
-    "desired_plan",
-    "diff_plan",
-    "make_app",
     "purge_on_death",
-    "qualified_display_name",
-    "sanitize_display_name",
-    "slugify",
-    "virtual_mxid",
 ]
-
-
-def __getattr__(name: str):  # PEP 562 — aiohttp is optional
-    if name in ("TransactionIntake", "make_app"):
-        from observatory import appservice
-
-        return getattr(appservice, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

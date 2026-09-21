@@ -3882,11 +3882,11 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
     normalized = " ".join(str(message).strip().split()).lower()
     return normalized in _CONTROL_INTERRUPT_MESSAGES
 
-def _matrix_steer_text_targets_live_turn(kind: object, internal: object) -> bool:
-    """True when Matrix room plain text may land in a live gateway turn.
+def _room_steer_text_targets_live_turn(kind: object, internal: object) -> bool:
+    """True when room plain text may land in a live gateway turn.
 
-    Only ``kind == "steer"`` (gateway-room SteerText from
-    ``observatory.control``) with ``internal == False`` qualifies: quiet
+    Only ``kind == "steer"`` (gateway-room steer text) with
+    ``internal == False`` qualifies: quiet
     parent-continuations (``internal=True``) and engine commands
     (``kind == "command"``) must keep their fresh-turn path, as must every
     other prompt kind. Content-agnostic: the text itself is never inspected
@@ -3898,7 +3898,7 @@ def _matrix_steer_text_targets_live_turn(kind: object, internal: object) -> bool
         return False
 
 
-def _attempt_matrix_live_steer(text: object, *, session_id: str = "gateway") -> dict:
+def _attempt_room_live_steer(text: object, *, session_id: str = "gateway") -> dict:
     """Try redirect-then-steer into the live gateway-session agent.
 
     Calls ``observatory.gateway_session.steer_gateway_agent`` (which tries
@@ -3964,7 +3964,7 @@ def _observatory_inject_dispatch(params: object, run_prompt_fn) -> dict:
     """Dispatch one Matrix ``inject`` with gateway-side live-steer first.
 
     Matrix room plain text (``kind == "steer"``, non-internal) tries
-    :func:`_attempt_matrix_live_steer` before anything else: when the
+    :func:`_attempt_room_live_steer` before anything else: when the
     gateway-session turn is live the SAME cached agent absorbs the text
     into its running turn and no fresh turn runs (no second turn, no
     second reply — the live turn's reply carries the reaction). Every miss
@@ -3977,8 +3977,8 @@ def _observatory_inject_dispatch(params: object, run_prompt_fn) -> dict:
     node_id = params.get("node_id", "gw") if isinstance(params, dict) else "gw"
     room_id = params.get("room_id") if isinstance(params, dict) else None
     internal = bool(params.get("internal", False)) if isinstance(params, dict) else False
-    if _matrix_steer_text_targets_live_turn(kind, internal):
-        live = _attempt_matrix_live_steer(text)
+    if _room_steer_text_targets_live_turn(kind, internal):
+        live = _attempt_room_live_steer(text)
         if isinstance(live, dict) and live.get("steered") is True:
             return {"reply": "", "events": [], "steered": True}
     _reply, _events = run_prompt_fn(
@@ -4807,6 +4807,9 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
     return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
 
 
+_OBS_MIRROR_LOGGED: set[str] = set()
+
+
 class TurnRunner:
     """Per-turn collaborator carrying the tool-progress callbacks that used to
     be nested closures inside ``GatewayRunner._run_agent_inner``.
@@ -4825,6 +4828,49 @@ class TurnRunner:
 
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
+        # Observatory mirror (IRC rooms show their agent's tool calls
+        # live, like CLI verbose): depth-0 rooms have no feed producer of
+        # their own, so tool/thinking lines are formatted here and handed
+        # to the gateway loop for a direct send — the pump queue is not
+        # used (it stalls when the boot thread never finishes the global
+        # manager). Never blocks the turn, never raises into the loop.
+        try:
+            _ctx0 = self._ctx
+            _src = getattr(_ctx0, "source", None)
+            if getattr(_src, "platform", None) == Platform("irc"):
+                _chat = str(getattr(_src, "chat_id", "") or "")
+                if _chat.startswith("#"):
+                    from observatory import rooms as _obs_rooms
+                    _line = None
+                    if (event_type == "tool.started" and tool_name
+                            and tool_name != "_thinking"):
+                        _line = _obs_rooms.format_frame({
+                            "feed": "tool", "tool": str(tool_name),
+                            "args": preview if preview else (args or {}),
+                        })
+                    elif ((event_type == "_thinking" or tool_name == "_thinking")
+                            and getattr(_ctx0, "_thinking_enabled", False)):
+                        _txt = preview if tool_name == "_thinking" else tool_name
+                        if _txt:
+                            _line = _obs_rooms.format_frame({
+                                "feed": "thought", "text": str(_txt),
+                            })
+                    if _line:
+                        _bot = _obs_rooms.get_bot_sink()
+                        _loop = getattr(_ctx0, "_loop_for_step", None)
+                        if _bot is not None and _loop is not None:
+                            if _chat not in _OBS_MIRROR_LOGGED:
+                                _OBS_MIRROR_LOGGED.add(_chat)
+                                logger.info(
+                                    "observatory mirror live for %s", _chat)
+                            safe_schedule_threadsafe(
+                                _bot.say(_chat, _line),
+                                _loop,
+                                logger=logger,
+                                log_message="observatory mirror send failed",
+                            )
+        except Exception:
+            pass
         ctx = self._ctx
         # Failed subagent → one clean user-facing notice. Handled FIRST,
         # before every progress-queue gate: platforms that keep
@@ -14406,8 +14452,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # confirmed-delivered has its answer in the ledger — redelivering it
         # is strictly cheaper and more correct than re-running the whole turn.
         self._schedule_resume_pending_sessions()
-        # M5a observatory seam (spec §2 component 3): fire-and-forget
-        # sidecar boot on a daemon thread; never raises, never blocks.
+        # IRC observatory seam: fire-and-forget observatory boot on a
+        # daemon thread; never raises, never blocks.
         try:
             from observatory.platform_hook import try_boot_sidecar
             try_boot_sidecar()
@@ -33237,10 +33283,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler}
         )
-        # observatory prompt delivery (matrix-observatory §5): the sidecar
-        # sends room text as `inject` with {text, kind, node_id, room_id};
-        # the handler runs one headless turn on the gateway session and
-        # answers with {reply}. Handlers run on the socket's executor
+        # observatory prompt delivery (irc-observatory): room text arrives
+        # as `inject` with {text, kind, node_id, room_id}; the handler runs
+        # one headless turn on the gateway session and answers with {reply}. Handlers run on the socket's executor
         # thread (never the gateway loop), so the blocking turn cannot
         # stall platform traffic; per-session locking serializes turns.
         try:
@@ -33249,7 +33294,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
 
             def _observatory_inject_handler(params: dict) -> dict:
-                # Matrix room plain text (kind == "steer") tries the live
+                # Room plain text (kind == "steer") tries the live
                 # gateway-session turn first inside _observatory_inject_dispatch
                 # (same cached agent absorbs it mid-turn — no second turn);
                 # every miss runs the normal fresh turn unchanged.
@@ -33264,12 +33309,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 # gateway-session agent's in-flight turn. Runs on the
                 # socket executor thread; interrupt() is thread-safe
                 # (sets the flag the agent loop polls at the next boundary).
-                reason = params.get("reason", "matrix /stop") if isinstance(params, dict) else "matrix /stop"
+                reason = params.get("reason", "irc /stop") if isinstance(params, dict) else "irc /stop"
                 try:
                     from observatory.gateway_session import (
                         interrupt_gateway_agent as _interrupt_gateway_agent,
                     )
-                    return dict(_interrupt_gateway_agent(str(reason or "matrix /stop")))
+                    return dict(_interrupt_gateway_agent(str(reason or "irc /stop")))
                 except Exception as exc:
                     logger.debug("Observatory interrupt verb failed: %s", exc)
                     return {"interrupted": False, "reason": f"interrupt failed: {exc}"}
@@ -33296,9 +33341,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _control_server.register_handler(
                 "steer", _observatory_steer_handler, takes_params=True
             )
-            # M4b room-side approval resolution (matrix-observatory §5):
-            # the sidecar mirrors gateway-turn guard prompts into rooms
-            # (approval_prompt datagrams); /approve|/deny there resolves
+            # Room-side approval resolution: the rooms queue mirrors
+            # gateway-turn guard prompts into channels; /approve|/deny there resolves
             # THIS process's guard queue (the queue the blocked turn waits
             # on) via resolve_gateway_approval. Best-effort: unknown keys
             # resolve 0 (the room then hears "already resolved").
@@ -33331,11 +33375,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _control_server.register_handler(
                 "resolve-approval", _observatory_resolve_approval_handler, takes_params=True
             )
-            # Gateway-child feed (matrix-observatory cross-process feed):
-            # forward the gateway's OWN omp live-child table as datagrams
-            # on gateway-progress.sock (lifecycle + OmpFeed frames) so the
-            # sidecar renders gateway-origin children without ever
-            # importing this process's memory. Best-effort daemon thread.
+            # Gateway-child feed: forward the gateway's OWN omp live-child
+            # table into the rooms queue (lifecycle + OmpFeed frames) so
+            # child rooms stream without ever leaving this process.
+            # Best-effort daemon thread.
             try:
                 from observatory.gateway_session import (
                     ensure_child_feed_watcher as _ensure_child_feed,

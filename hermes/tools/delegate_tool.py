@@ -484,7 +484,7 @@ def _handle_control_action(
                     "live_transcript": getattr(agent, "_live_transcript_path", None),
                 }
             )
-        # M0A (matrix observatory §8.1 item 2): Mercury's children are omp
+        # M0A (observatory naming/steer contract item 2): Mercury's children are omp
         # children — merge the omp engine's live registry (owned only) so
         # one action='list' sees the whole spawn tree.
         try:
@@ -949,7 +949,7 @@ def _validate_batch_tasks(task_list: List[Dict[str, Any]]) -> Optional[str]:
 
 
 def normalize_delegation_names(task_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Stamp a per-task ``name`` on every task (M0A, matrix observatory §8.1).
+    """Stamp a per-task ``name`` on every task (M0A, observatory naming/steer contract).
 
     Rule (D6): the name is the child's identity in delegation listings,
     steer/stop targeting, and the observatory UI — model-facing schema
@@ -1263,7 +1263,7 @@ def _build_dynamic_schema_overrides() -> dict:
     overrides_params["properties"] = {
         k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()
     }
-    # M0A (matrix observatory §8.1 item 1 / D6): mirror the static schema —
+    # M0A (observatory naming/steer contract item 1 / D6): mirror the static schema —
     # `name` is hard-required in tasks.items model-facing; the handler
     # derives task-<n> fallbacks for non-model callers (legacy single-goal
     # shape, cron, direct python).
@@ -1352,7 +1352,7 @@ DELEGATE_TASK_SCHEMA = {
                             ),
                         },
                     },
-                    # M0A (matrix observatory §8.1 item 1 / D6): `name` is
+                    # M0A (observatory naming/steer contract item 1 / D6): `name` is
                     # hard-required in the MODEL-FACING schema. The handler
                     # still derives fallback names for non-model callers
                     # (legacy single-goal shape, cron, direct python) so

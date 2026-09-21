@@ -18,8 +18,8 @@ Contract kept from the old path:
 
 No role routing, ever: model + fallback come from bridge.py --delegate
 (delegate_default/delegate_fallback slots), task text is passed VERBATIM as
-one argv element, and ~/.omp/agent/config.yml is rendered (star-pinned) once
-per process before the first spawn.
+one argv element, and the agent config.yml is rendered (star-pinned) once
+per process before the first spawn (under $MERCURY_HOME/omp, never ~/.omp).
 """
 from __future__ import annotations
 
@@ -137,7 +137,7 @@ def _kill_procs(procs: List[Any]) -> None:
                 pass
 
 
-# HERMES-OMP PATCH (matrix observatory §8.1 item 2): live-child registry.
+# HERMES-OMP PATCH (observatory naming/steer contract item 2): live-child registry.
 # Maps a steer/stop address to the child's LIVE transport handle so
 # delegate_task(action='steer'/'stop') can be forwarded into the running
 # omp process instead of being rejected. Entries hold the OmpRpcChild
@@ -158,6 +158,8 @@ def _register_live_child(meta: Dict[str, Any], transport: Any) -> None:
             **meta, "transport": transport,
             "started_at": time.time(), "stop_requested": False,
         }
+    logger.info("observatory: live child registered %s (%s)",
+                meta.get("child_id"), meta.get("name"))
     # Keep the legacy process list in sync (counts + _kill_live_children).
     with _live_procs_lock:
         _live_procs.append(transport)
@@ -467,6 +469,32 @@ def _delegate_fallback_thinking_level() -> str:
     return env.get("OMP_FALLBACK_THINKING_LEVEL") or _delegate_thinking_level()
 
 
+def ensure_omp_home_env(env: Dict[str, str],
+                        mercury_home: Optional[str] = None) -> Dict[str, str]:
+    """Pin the omp agent home + worktrees + natives under ``$MERCURY_HOME``.
+
+    The omp binary defaults to ``~/.omp`` — left open for classic stock
+    installs. Every Mercury-spawned child sets these (setdefault: an
+    explicit user export always wins). Mutates and returns ``env``.
+
+    Natives: the pi-natives loader extracts to ``$XDG_DATA_HOME/omp/natives``
+    but ONLY when ``$XDG_DATA_HOME/omp`` already exists, else ``~/.omp`` —
+    so the directory is created here (exist_ok, never raises).
+    """
+    home = (mercury_home or os.environ.get("MERCURY_HOME", "")).strip()
+    if not home:
+        home = str(Path.home() / ".mercury")
+    base = str(Path(home) / "omp")
+    env.setdefault("PI_CODING_AGENT_DIR", base)
+    env.setdefault("OMP_WORKTREE_DIR", base + "/wt")
+    env.setdefault("XDG_DATA_HOME", str(Path(home) / ".local" / "share"))
+    try:
+        Path(env["XDG_DATA_HOME"], "omp").mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return env
+
+
 def _shared_env_overrides() -> Dict[str, str]:
     """ONE-env safety net: keys from MERCURY_HOME/.env not already in env.
 
@@ -474,7 +502,6 @@ def _shared_env_overrides() -> Dict[str, str]:
     inherit everything. This net catches the cases where the parent's
     environment predates the .env (long-running gateway, cron, IDE
     subprocess) — reading the same single file both engines share.
-
     Pure function of the current process env (no caching here): the batch
     builder below calls it once per dispatch and shares the result, so an
     N-child fan-out performs exactly ONE .env read and ONE gateway
@@ -531,7 +558,7 @@ def _delegate_batch_base_env() -> Dict[str, str]:
     """
     base = os.environ.copy()
     base.update(_shared_env_overrides())
-    return base
+    return ensure_omp_home_env(base)
 
 
 
@@ -624,9 +651,8 @@ def _resolve_omp_binary() -> Optional[str]:
         return found
     return _vendored_omp_binary()
 
-
 def _render_omp_config_once() -> None:
-    """Render ~/.omp/agent/config.yml (star-pinned roles) once per process.
+    """Render the agent config.yml (star-pinned roles) once per process.
 
     Belt-and-suspenders on top of the compiled-in role-strip patch: the
     rendered config pins every role to the session model even if a future
@@ -945,7 +971,7 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
     re-run on the other transport (double-execution hazard for
     side-effecting tasks).
 
-    M0A (matrix observatory §8.1): every live child registers in the
+    M0A (observatory naming/steer contract): every live child registers in the
     steer/stop registry under ``<delegation_id>/<task_index>`` while it
     runs, and its result entry carries the task ``name`` so delegation
     records/completions stay name-addressable.
@@ -1341,7 +1367,7 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     """B1 entry point — replaces Mercury-child spawn for delegate_task.
 
     Control actions (list/steer/stop) forward into the live-child registry
-    (M0A, matrix observatory §8.1): RPC children are steered over their
+    (M0A, observatory naming/steer contract): RPC children are steered over their
     connection and stopped via graceful abort + SIGKILL fallback; one-shot
     children are listed/stoppable but not steerable.
     """

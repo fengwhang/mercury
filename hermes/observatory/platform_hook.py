@@ -1,38 +1,13 @@
-"""M5a (matrix observatory §2 component 3): the gateway integration seam.
+"""Gateway boot seam for the IRC observatory.
 
-The one place the GATEWAY process touches the observatory at startup —
-post-provision, pre-traffic. Everything here is an importable pure-ish
-function over ``$MERCURY_HOME``; the long-lived sidecar daemon (appservice
-HTTP endpoint, transaction intake, control router, feed loops —
-``sidecar_main``, which ships) is assembled FROM these builders, not
-replaced by them.
-
-What boot does (D18 ordering — recovery before traffic):
-1. open the observatory state store (``<MERCURY_HOME>/observatory/state.db``);
-2. build the renderer IF a matrix client is supplied (the sidecar_main /
-   provisioned path; without one this is a state-only boot);
-3. replay the write-ahead purge journal (crashed /exit purges finish);
-4. run the respawn pass (live 0-agents resume; rooms/spaces re-ensured).
-
-THE GATEWAY SEAM (for the sidecar_main agent — one additive insertion in
-``gateway/run.py``'s ``start_gateway``, placed AFTER platform adapters
-connect and BEFORE ``await self._finish_startup_restore()`` opens the
-inbound gate, i.e. post-provision / pre-traffic, ~line 14283):
-
-    try:  # M5a observatory seam (spec §2 component 3)
-        from observatory.platform_hook import try_boot_sidecar
-        try_boot_sidecar()
-    except ImportError:
-        pass
-
-``try_boot_sidecar`` never raises and never blocks the loop: it runs the
-async boot on a private event loop in a daemon thread (the respawn pass
-spawns real omp subprocesses; the gateway loop must not stall on them),
-stores the result on this module (``LAST_BOOT``) for the sidecar daemon to
-adopt, and logs one line either way. Full in-process wiring (aiohttp
-appservice, discovery stream consumption) lives in sidecar_main, which
-calls :func:`boot_sidecar` directly on the gateway loop.
+The gateway owns the whole feature in-process: state.db rows, the
+OrchestratorRegistry, the RoomManager, and the IRC adapter (bot sink).
+``try_boot_sidecar`` (name kept for the run.py call site) does the sync
+boot on a daemon thread; ``boot_resync`` runs after adapters connect
+(join live channels, drain the frame queue, replay the exit journal,
+resume omp handles, start the queue pump).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,257 +19,115 @@ from typing import Any, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
-#: Set by :func:`try_boot_sidecar` / read by the sidecar daemon to adopt a
-#: boot that already happened on the gateway thread (idempotent handoff).
+#: Set by :func:`try_boot_sidecar` / read by slash handlers (same process).
 LAST_BOOT: Optional["BootResult"] = None
 
 
 def observatory_enabled(
-    config: Optional[Mapping[str, Any]] = None,
+    config: Mapping[str, Any] | None = None,
     mercury_home: str | Path | None = None,
 ) -> bool:
-    """D1: default ON; ``observatory.enabled: false`` freezes (never
-    deletes) — the hook then boots nothing and leaves all durable state
-    untouched for the next re-enable."""
-    if config is None:
-        config = _load_home_config(mercury_home)
-    obs = config.get("observatory") if isinstance(config, Mapping) else None
-    enabled = (obs or {}).get("enabled") if isinstance(obs, Mapping) else None
-    if enabled is None:
-        return True  # D1: absent key defaults ON
-    return bool(enabled) and str(enabled).strip().lower() not in (
-        "0", "false", "no", "off",
-    )
+    """Default ON; ``observatory.enabled: false`` freezes (never deletes)."""
+    try:
+        if config is not None:
+            obs = config.get("observatory")
+            if isinstance(obs, dict) and "enabled" in obs:
+                return bool(obs.get("enabled"))
+        from mercury_cli.config import cfg_get, load_config
+
+        return bool(cfg_get(load_config(), "observatory", "enabled", default=True))
+    except Exception:
+        return True
 
 
 def _load_home_config(mercury_home: str | Path | None) -> Mapping[str, Any]:
-    """Read ``<mercury_home>/config.yaml`` when a home is given (the boot
-    seam must honor the home it was passed, not ambient env); fall back
-    to the CLI loader (MERCURY_CONFIG resolution)."""
-    if mercury_home is not None:
-        try:
-            import yaml
-
-            doc = yaml.safe_load(
-                (Path(mercury_home) / "config.yaml").read_text(encoding="utf-8")
-            )
-            if isinstance(doc, Mapping):
-                return dict(doc)
-        except (OSError, ValueError):
-            logger.debug("observatory: %s/config.yaml unreadable — CLI config path",
-                         mercury_home)
-        except Exception:  # noqa: BLE001 — broken config must not wedge boot
-            logger.exception("observatory: config load failed — treating as enabled")
     try:
         from mercury_cli.config import load_config
 
-        cfg = load_config()
-        return cfg if isinstance(cfg, Mapping) else {}
-    except Exception:  # noqa: BLE001
-        logger.exception("observatory: config load failed — treating as enabled")
+        return load_config() or {}
+    except Exception:
         return {}
 
 
-# ============================================================================
-# Component builders (pure constructors — no I/O beyond path derivation)
-# ============================================================================
-
-
 def mercury_home_path(mercury_home: str | Path | None = None) -> Path:
-    """Resolve $MERCURY_HOME exactly like provisioning does (never a
-    second derivation)."""
     from observatory.provision import _mercury_home
 
     return _mercury_home(mercury_home)
 
 
-def hermes_state_db_path(mercury_home: str | Path | None = None) -> Path:
-    """The hermes engine's state.db (async_delegations + sessions) inside
-    the ONE state tree — discovery's poll source."""
-    return mercury_home_path(mercury_home) / "hermes" / "state.db"
-
-
 def open_state(mercury_home: str | Path | None = None) -> Any:
-    """Open :class:`ObservatoryState` at the canonical observatory path."""
     from observatory.state import ObservatoryState, default_state_db_path
 
     return ObservatoryState(default_state_db_path(mercury_home))
 
 
-def build_discovery(mercury_home: str | Path | None = None, **engine_kwargs: Any) -> Any:
-    """:class:`DiscoveryEngine` over the hermes state.db (§7 poll source).
-    Not started — the sidecar daemon owns loop lifetimes."""
-    from observatory.discovery import DiscoveryEngine
-
-    return DiscoveryEngine(hermes_state_db_path(mercury_home), **engine_kwargs)
-
-
-def build_renderer(
-    state: Any,
-    *,
-    client: Any,
-    gateway_node_id: str,
-    owner_mxid: str,
-    server_name: str = "mercury.local",
-    gateway_mxid: str = "",
-) -> Any:
-    """Renderer + IntentExecutor bound to a live MatrixClient (the
-    appservice token / admin token come from the provisioned home —
-    sidecar_main's job to read; this stays a pure constructor).
-
-    The ``server_name="mercury.local"`` default is TEST/SMOKE-ONLY.
-    Production MUST pass the live domain (the sidecar daemon builds its
-    renderer from the toml-derived ``self.server_name``); the default
-    exists so unit tests can construct renderers without a provisioned
-    home."""
-    from observatory.renderer import IntentExecutor, Renderer
-
-    if not gateway_mxid:
-        try:
-            gateway_mxid = str(state.get(gateway_node_id)["mxid"])
-        except Exception:  # noqa: BLE001 — unseeded state keeps owner-only invites
-            gateway_mxid = ""
-    return Renderer(
-        state,
-        gateway_node_id=gateway_node_id,
-        server_name=server_name,
-        owner_mxid=owner_mxid,
-        executor=IntentExecutor(
-            client, state, owner_mxid=owner_mxid, server_name=server_name,
-            gateway_mxid=gateway_mxid,
-        ),
-    )
-
-
-# ============================================================================
-# Boot
-# ============================================================================
-
-
 @dataclass
 class BootResult:
-    """What a boot produced — the sidecar daemon adopts these handles."""
+    """What a boot produced — slash handlers read these live objects."""
 
     mercury_home: str
     enabled: bool = True
     state: Any = None
-    renderer: Any = None
     registry: Any = None
-    report: Any = None  # RespawnReport
+    manager: Any = None
     errors: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
-        report = getattr(self.report, "as_dict", None)
         return {
             "mercury_home": self.mercury_home,
             "enabled": self.enabled,
-            "resumed": list(getattr(self.report, "resumed", []) or []),
-            "skipped": list(getattr(self.report, "skipped", []) or []),
-            "failed": list(getattr(self.report, "failed", []) or []),
-            "deferred_purges": list(getattr(self.report, "deferred_purges", []) or []),
             "errors": list(self.errors),
         }
 
 
-async def boot_sidecar(
+def boot_observatory(
     mercury_home: str | Path | None = None,
     *,
-    client: Any = None,
-    gateway_node_id: str = "gw",
-    owner_mxid: str = "",
-    server_name: str = "mercury.local",
-    discovery: bool = True,
     config: Optional[Mapping[str, Any]] = None,
     registry: Any = None,
 ) -> BootResult:
-    """The real boot (callable from any loop — sidecar_main calls it on
-    the gateway loop). Builds state + renderer (when ``client`` given),
-    replays the purge journal and runs the respawn pass. The discovery
-    engine is CONSTRUCTED here (ready to start) but not started: its
-    poll task lifecycle belongs to the daemon.
+    """Sync boot: state + registry + manager + gateway row. Never raises."""
+    from observatory.provision import live_server_name
+    from observatory.rooms import RoomManager, set_room_manager
+    from observatory.spawn import OrchestratorRegistry
 
-    The ``server_name="mercury.local"`` default is TEST/SMOKE-ONLY (same
-    law as :func:`build_renderer`): production callers MUST pass the live
-    domain — the sidecar daemon never uses this default (it builds its
-    renderer directly from the toml-derived ``self.server_name``)."""
     home = mercury_home_path(mercury_home)
     result = BootResult(mercury_home=str(home))
-
-    if not observatory_enabled(config, mercury_home=home):
+    if not observatory_enabled(
+        config if config is not None else _load_home_config(home), mercury_home=home
+    ):
         result.enabled = False
-        logger.info("observatory: disabled (D1) — frozen, nothing booted")
+        logger.info("observatory: disabled — frozen, nothing booted")
         return result
-
     try:
         result.state = open_state(home)
     except Exception as exc:  # noqa: BLE001 — boot must report, not raise
         result.errors.append(f"state open failed: {exc}")
-        logger.exception("observatory: state open failed")
         return result
-    # BUG1-SPAWN-SERVERNAME: the gateway process has no live renderer (it
-    # lives in the sidecar daemon), so /spawn resolves the live domain from
-    # the shared state.db gateway ghost mxid. The gateway-thread boot runs
-    # with client=None (renderer None) — project the live toml domain +
-    # gateway ghost into shared state HERE so the spawn legs hit even when
-    # the sidecar daemon has not booted yet. Live toml value only, never
-    # the ``mercury.local`` param default; unprovisioned homes stay
-    # untouched (callers fail loud with the setup message). Best-effort:
-    # projection problems are reported, never fatal to the boot.
     try:
-        from observatory.provision import project_live_server_name
+        live = live_server_name(home)
+        if live:
+            from observatory.provision import ensure_gateway_node_in_state
 
-        project_live_server_name(home, result.state)
-    except Exception as exc:  # noqa: BLE001 — boot must report, not raise
-        result.errors.append(f"gateway projection failed: {exc}")
-        logger.exception("observatory: gateway projection failed")
-
-    if client is not None:
-        try:
-            result.renderer = build_renderer(
-                result.state,
-                client=client,
-                gateway_node_id=gateway_node_id,
-                owner_mxid=owner_mxid,
-                server_name=server_name,
-            )
-        except Exception as exc:  # noqa: BLE001
-            result.errors.append(f"renderer build failed: {exc}")
-            logger.exception("observatory: renderer build failed")
-
-    from observatory.respawn import respawn_pass
-    from observatory.spawn import OrchestratorRegistry
-
-    if registry is not None:
-        result.registry = registry
-    else:
-        # Handoff durability: a gateway reboot must not drop post-boot spawn
-        # handles. Reuse the live LAST_BOOT registry when one exists so the
-        # same object (same handles) survives; only a first boot mints fresh.
-        # The respawn pass skips nodes already holding a live handle, so
-        # reuse never double-respawns. Never raises (fresh on any doubt).
-        try:
-            prior_registry = getattr(globals().get("LAST_BOOT"), "registry", None)
-        except Exception:
-            prior_registry = None
-        result.registry = prior_registry if prior_registry is not None else OrchestratorRegistry()
-    try:
-        result.report = await respawn_pass(
-            state=result.state,
-            registry=result.registry,
-            renderer=result.renderer,
-            mercury_home=home,
-        )
+            ensure_gateway_node_in_state(result.state, server_name=live)
     except Exception as exc:  # noqa: BLE001
-        result.errors.append(f"respawn pass failed: {exc}")
-        logger.exception("observatory: respawn pass failed")
+        result.errors.append(f"gateway row ensure failed: {exc}")
+    try:
+        prior = getattr(globals().get("LAST_BOOT"), "registry", None)
+        result.registry = (
+            registry
+            if registry is not None
+            else (prior if prior is not None else OrchestratorRegistry())
+        )
+    except Exception:
+        from observatory.spawn import OrchestratorRegistry as _R
 
-    if discovery:
-        try:
-            build_discovery(home)  # construct-only (see docstring)
-        except Exception as exc:  # noqa: BLE001
-            result.errors.append(f"discovery build failed: {exc}")
-            logger.exception("observatory: discovery build failed")
-
+        result.registry = _R()
+    try:
+        result.manager = RoomManager(result.state)
+        set_room_manager(result.manager)
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"room manager build failed: {exc}")
     logger.info("observatory: boot complete — %s", result.as_dict())
     return result
 
@@ -302,24 +135,24 @@ async def boot_sidecar(
 def _boot_thread_body(kwargs: dict[str, Any]) -> None:
     global LAST_BOOT
     try:
-        LAST_BOOT = asyncio.run(boot_sidecar(**kwargs))
+        LAST_BOOT = boot_observatory(**kwargs)
     except Exception:  # noqa: BLE001 — the seam never propagates
-        logger.exception("observatory: sidecar boot thread failed")
+        logger.exception("observatory: boot thread failed")
 
 
 def try_boot_sidecar(
     mercury_home: str | Path | None = None, **boot_kwargs: Any
 ) -> Optional[threading.Thread]:
     """The gateway's one-call seam: fire-and-forget boot on a daemon
-    thread (respawn spawns real omp subprocesses — the gateway loop must
-    not stall on them). The result lands in ``LAST_BOOT`` when the thread
-    finishes; sidecar_main adopts it. Never raises; returns the thread."""
+    thread. The result lands in ``LAST_BOOT``; never raises."""
     try:
         kwargs = dict(boot_kwargs)
         if mercury_home is not None:
             kwargs["mercury_home"] = mercury_home
         t = threading.Thread(
-            target=_boot_thread_body, args=(kwargs,), daemon=True,
+            target=_boot_thread_body,
+            args=(kwargs,),
+            daemon=True,
             name="mercury-observatory-boot",
         )
         t.start()
@@ -327,3 +160,122 @@ def try_boot_sidecar(
     except Exception:  # noqa: BLE001 — seam must never break the gateway
         logger.exception("observatory: try_boot_sidecar failed")
         return None
+
+
+async def boot_resync(
+    manager: Any = None, state: Any = None, registry: Any = None
+) -> dict[str, Any]:
+    """Post-adapter resync: join every live channel, drain the frame
+    queue, replay the exit journal, resume omp handles, start the pump.
+
+    Called once after adapters connect (and safe to re-run). Never raises.
+    """
+    from observatory.rooms import get_bot_sink, get_room_manager, set_room_manager
+    from observatory.spawn import (
+        OrchestratorRegistry,
+        build_omp_child,
+        replay_purge_journal,
+    )
+
+    report: dict[str, Any] = {
+        "joined": [],
+        "resumed": [],
+        "failed": [],
+        "deferred_purges": [],
+        "pumped": 0,
+    }
+    try:
+        manager = manager or get_room_manager()
+        boot = globals().get("LAST_BOOT")
+        if state is None and boot is not None:
+            state = getattr(boot, "state", None)
+        if registry is None and boot is not None:
+            registry = getattr(boot, "registry", None)
+        if manager is None and state is not None:
+            from observatory.rooms import RoomManager
+
+            manager = RoomManager(state)
+            set_room_manager(manager)
+        if manager is None or state is None:
+            report["failed"].append("no state (unprovisioned?)")
+            return report
+        if registry is None:
+            registry = OrchestratorRegistry()
+        try:
+            live = list(state.get_live())
+        except Exception:
+            live = []
+        bot = get_bot_sink()
+        for row in live:
+            try:
+                channel = str((row or {}).get("room_id") or "")
+                if not channel:
+                    continue
+                if bot is not None:
+                    try:
+                        if await bot.join_channel(channel):
+                            report["joined"].append(channel)
+                            try:
+                                from observatory.identity import ensure_identity
+
+                                nick = str((row or {}).get("mxid") or "")
+                                if nick:
+                                    await ensure_identity(nick, channel)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                # Resume omp handles the registry lost (restart crash).
+                if (
+                    str((row or {}).get("engine") or "") == "omp"
+                    and str((row or {}).get("status") or "") == "live"
+                ):
+                    node_id = str((row or {}).get("node_id") or "")
+                    try:
+                        if registry.get(node_id) is None:
+                            ref = str((row or {}).get("session_ref") or "")
+                            child = build_omp_child(resume_session=ref or None)
+                            from observatory.spawn import OrchestratorHandle
+
+                            registry.register(
+                                OrchestratorHandle(
+                                    node_id=node_id,
+                                    engine="omp",
+                                    name=str((row or {}).get("name") or node_id),
+                                    session_ref=ref,
+                                    rpc=child,
+                                )
+                            )
+                            from observatory.rooms import register_omp_room
+
+                            register_omp_room(node_id, channel, child)
+                            report["resumed"].append(node_id)
+                    except Exception as exc:
+                        report["failed"].append(f"{node_id}: {exc}")
+            except Exception:
+                continue
+        try:
+            # Lobby self-heal: restarts/upgrades must never leave the
+            # user without its gateway room (no setup run required).
+            # The Lounge learns it via INVITE (no bouncer subscription).
+            from observatory.provision import get_lounge_nick, live_server_name
+            from observatory.rooms import gateway_channel
+
+            lobby = gateway_channel(live_server_name(None) or "mercury")
+            try:
+                if bot is not None and await bot.invite_user(
+                        get_lounge_nick(None), lobby):
+                    report["lobby"] = lobby
+                    report["lobby_invited"] = True
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            deferred = await replay_purge_journal(state)
+            report["deferred_purges"] = deferred
+        except Exception as exc:
+            report["failed"].append(f"journal replay: {exc}")
+    except Exception as exc:  # noqa: BLE001 — resync never breaks the gateway
+        report["failed"].append(str(exc))
+    return report

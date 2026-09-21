@@ -13776,7 +13776,7 @@ def main():
     build_peer_parser(subparsers)
 
     # =========================================================================
-    # observatory command — pending device-rotation approvals (trust-device)
+    # observatory command — IRC status + room listing
     # =========================================================================
     from mercury_cli.subcommands.observatory import build_observatory_parser
 

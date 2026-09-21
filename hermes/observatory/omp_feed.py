@@ -1,4 +1,4 @@
-"""M3b (matrix observatory §7/§5): OmpFeed — typed events from a live omp child.
+"""OmpFeed — typed events from a live omp child (observatory feed source).
 
 Given a live ``OmpRpcChild`` (``tools/omp_rpc_transport.py`` — or any thin
 wrapper exposing the same surface), the feed:

@@ -3999,7 +3999,7 @@ def _launcher_env_pins(hermes_home: Path) -> tuple[str, str, str]:
     ``MERCURY_CONFIG=$MERCURY_HOME/config.yaml`` (bin/mercury:54) plus
     ``PI_CODING_AGENT_DIR=$MERCURY_HOME/omp`` (bin/mercury:76) so omp
     children keep their state (sessions, agent.db) inside the ONE mercury
-    tree instead of the platform default ``~/.omp/agent``. The engine home
+    tree instead of the platform default ``~/.mercury/omp/agent``. The engine home
     carries the ``…/hermes`` suffix only when the launcher forced it; the
     platform default (``~/.mercury``), per-profile homes, and custom homes
     ARE the mercury root already — hence "parent when suffixed, else self".
@@ -4030,7 +4030,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # env/config against HERMES_HOME alone — reading ~/.mercury/hermes/.env
     # (never written under the ONE-env rule) instead of THE ~/.mercury/.env,
     # engine-local config.yaml instead of the unified file, and omp children
-    # fall back to the platform default ~/.omp/agent. Derived from the
+    # fall back to the platform default ~/.mercury/omp/agent. Derived from the
     # resolved engine home (…/hermes -> parent) so profile/custom homes keep
     # their relative layout. The system branch below RE-derives all three
     # from the target user's remapped home.
@@ -4129,6 +4129,7 @@ Environment="HERMES_HOME={mercury_home}"
 Environment="MERCURY_HOME={mercury_env_home}"
 Environment="MERCURY_CONFIG={mercury_env_config}"
 Environment="PI_CODING_AGENT_DIR={mercury_env_agent_dir}"
+Environment="XDG_DATA_HOME={mercury_env_home}/.local/share"
 Environment="HERMES_OMP_BIN={omp_bin_pin_system}"
 Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
@@ -4172,6 +4173,7 @@ Environment="HERMES_HOME={mercury_home}"
 Environment="MERCURY_HOME={mercury_env_home}"
 Environment="MERCURY_CONFIG={mercury_env_config}"
 Environment="PI_CODING_AGENT_DIR={mercury_env_agent_dir}"
+Environment="XDG_DATA_HOME={mercury_env_home}/.local/share"
 Environment="HERMES_OMP_BIN={omp_bin_pin}"
 Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
@@ -6992,6 +6994,12 @@ def _all_platforms() -> list[dict]:
         # Windows (python-olm has no Windows wheel) — applies whether matrix is
         # a built-in or, post-#41112, a registry-discovered plugin.
         if sys.platform == "win32" and entry.name == "matrix":
+            continue
+        # IRC is owned by the observatory (bot transport, wired by
+        # `mercury setup observatory`): offering it here lets users
+        # silently clobber the bot wiring with a "second" connection
+        # the single-identity adapter cannot serve. Not offered, ever.
+        if entry.name == "irc":
             continue
         platforms.append(
             {
