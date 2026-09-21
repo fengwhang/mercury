@@ -307,3 +307,47 @@ def test_provision_applies_password_to_existing_user(
     out = lounge_mod.provision_lounge(username="owner", password=None)
     assert reset_to == []
     assert out["user"]["action"] == "current"
+
+
+def test_ensure_non_prepare_failure_raises(tmp_path, monkeypatch) -> None:
+    import types as _types
+    from observatory import lounge as lounge_mod
+
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.setattr(
+        lounge_mod, "_run",
+        lambda *a, **k: _types.SimpleNamespace(
+            returncode=1, stdout="", stderr="404 not found"))
+    import pytest
+
+    with pytest.raises(lounge_mod.LoungeError, match="404"):
+        lounge_mod.ensure_lounge_installed()
+
+
+def test_ensure_slow_path_links_patched_tree(tmp_path, monkeypatch) -> None:
+    import types as _types
+    from observatory import lounge as lounge_mod
+
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+
+    def _fake_run(args, **kwargs):
+        return _types.SimpleNamespace(
+            returncode=1, stdout="",
+            stderr="git dep preparation failed")
+
+    def _fake_patch(npm, path, tmp):
+        final = (home / "observatory" / "lounge" / "pkg")
+        final.mkdir(parents=True)
+        (final / "index.js").write_text("#!/usr/bin/env node\n")
+        (final / "package.json").write_text("{}")
+        return final
+
+    monkeypatch.setattr(lounge_mod, "_run", _fake_run)
+    monkeypatch.setattr(lounge_mod, "_patched_lounge_tree", _fake_patch)
+    out = lounge_mod.ensure_lounge_installed()
+    assert out.endswith("npm/bin/thelounge")
+    import os as _os
+
+    assert _os.path.realpath(out).endswith("lounge/pkg/index.js")
