@@ -27,6 +27,96 @@ NPM_PREFIX_DIRNAME = "npm"
 #: npm cache lives here too — ~/.npm must stay untouched so rm -rf
 #: ~/.mercury truly removes every lounge trace.
 NPM_CACHE_DIRNAME = "npm-cache"
+#: Pinned thelounge release. The frontend no-focus patch below targets
+#: this exact bundle — bump only with the patch re-verified, or rooms
+#: will yank UI focus again on every spawn.
+LOUNGE_VERSION = "4.5.2"
+#: Minified channel-join opener in the 4.5.2 bundle: the frontend opens
+#: EVERY channel join, ignoring the server's shouldOpen flag (queries
+#: excepted). Patched to respect it, so auto-joined agent rooms land in
+#: the sidebar without stealing focus from the current chat.
+FRONTEND_JOIN_OPEN = "e.chan.type===`query`&&!e.shouldOpen"
+FRONTEND_JOIN_OPEN_FIXED = "!e.shouldOpen"
+
+
+def patch_lounge_frontend_text(js: str) -> tuple:
+    """No-focus-steal transform for the bundle JS (pure, idempotent).
+
+    Returns (text, changed). Absent pattern means already-patched or
+    version drift — either way returns unchanged (caller goes loud).
+    """
+    if FRONTEND_JOIN_OPEN not in js:
+        return js, False
+    return js.replace(FRONTEND_JOIN_OPEN, FRONTEND_JOIN_OPEN_FIXED), True
+
+
+def patch_lounge_frontend(paths: "LoungePaths") -> dict:
+    """Apply the no-focus patch to the installed bundle (never raises).
+
+    Runs on every provision (fresh installs patch before first start;
+    live ones pick it up on browser reload via changed mtime). A state
+    file records patched bundles (name + size + mtime): "current" means
+    WE patched this exact file before; "pattern-missing" means the
+    opener is gone under an unfamiliar shape (version drift — setup
+    surfaces it loudly). Returns {"action": ...}.
+    """
+    try:
+        import json as _json
+
+        assets = paths.dir / "pkg" / "public" / "assets"
+        state_file = paths.dir / "frontend-patch.json"
+        try:
+            state = _json.loads(state_file.read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                state = {}
+        except Exception:
+            state = {}
+        if not assets.is_dir():
+            return {"action": "skipped", "reason": "no installed bundle yet"}
+        changed_any = False
+        saw_bundles = False
+        for bundle in sorted(assets.glob("index-*.js")):
+            try:
+                st = bundle.stat()
+                key = f"{bundle.name}:{st.st_size}:{int(st.st_mtime)}"
+            except Exception:
+                continue
+            saw_bundles = True
+            if state.get(key) == "patched":
+                continue
+            try:
+                text = bundle.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if FRONTEND_JOIN_OPEN not in text:
+                try:
+                    state[key] = "pattern-missing"
+                except Exception:
+                    pass
+                continue
+            patched, changed = patch_lounge_frontend_text(text)
+            if changed:
+                bundle.write_text(patched, encoding="utf-8")
+                changed_any = True
+                try:
+                    nst = bundle.stat()
+                    state[f"{bundle.name}:{nst.st_size}:{int(nst.st_mtime)}"] = "patched"
+                except Exception:
+                    pass
+        try:
+            state_file.write_text(_json.dumps(state, indent=2) + "\n",
+                                  encoding="utf-8")
+        except Exception:
+            pass
+        if not saw_bundles:
+            return {"action": "skipped", "reason": "no bundle found"}
+        if changed_any:
+            return {"action": "patched"}
+        if any(v == "pattern-missing" for v in state.values()):
+            return {"action": "pattern-missing"}
+        return {"action": "current"}
+    except Exception as exc:
+        return {"action": "failed", "reason": str(exc)[:200]}
 
 
 def lounge_npm_cache(mercury_home: str | Path | None = None) -> Path:
@@ -143,7 +233,7 @@ def _patched_lounge_tree(npm: str, path: str, tmp: Path,
     import tarfile as _tarfile
 
     packed = _run(
-        [npm, "pack", "thelounge", "--pack-destination", str(tmp),
+        [npm, "pack", f"thelounge@{LOUNGE_VERSION}", "--pack-destination", str(tmp),
          "--cache", str(lounge_npm_cache(mercury_home))],
         extra_env={"PATH": path}, timeout=600)
     if packed.returncode != 0:
@@ -208,7 +298,7 @@ def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
     if npm is None:
         raise LoungeError(
             "thelounge not installed and npm not found — install Node.js, "
-            "then run: npm install -g thelounge")
+            "then run: npm install -g thelounge@{0}".format(LOUNGE_VERSION))
     import os as _os
     import tempfile as _tempfile
 
@@ -224,7 +314,7 @@ def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
     out = _run(
         [npm, "install", "-g", "--prefix", str(prefix),
          "--ignore-scripts", "--cache", str(lounge_npm_cache(mercury_home)),
-         "thelounge"],
+         f"thelounge@{LOUNGE_VERSION}"],
         extra_env=env, timeout=900)
     if out.returncode == 0:
         try:
@@ -582,6 +672,10 @@ def provision_lounge(
     summary: dict = {"node": str(ensure_node())}
     summary["bin"] = str(ensure_lounge_installed())
     spaths = LoungePaths(home)
+    # Sidebar without focus-steal: patch before first start (fresh) or
+    # live (browser picks it up on reload). Loud on drift — a silently
+    # unpatched bundle reintroduces the yank on every spawn.
+    summary["frontend"] = patch_lounge_frontend(spaths)
     # Was the unit already answering? A running server only picks up
     # user/network changes on restart (a fresh start loads them).
     was_active = lounge_unit_active()

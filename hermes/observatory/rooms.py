@@ -477,6 +477,17 @@ class RoomManager:
                 await bot.invite_user(get_lounge_nick(None), channel)
         except Exception:
             logger.debug("rooms: lounge invite failed for %s", channel)
+        try:
+            # Voice of the room: without its own identity every frame
+            # arrives stamped vm_gateway (the bot connection). The nick
+            # mirrors the room name (mxid convention) so #vm_alpha-bravo
+            # speaks as vm_alpha-bravo.
+            from observatory.identity import ensure_identity
+
+            await ensure_identity(
+                agent_nick(channel.lstrip("#"), server=""), channel)
+        except Exception:
+            logger.debug("rooms: identity ensure failed for %s", channel)
         return channel
 
     async def _retire_child_room(self, node_id: str, *, summary: str = "") -> None:

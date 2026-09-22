@@ -4043,6 +4043,12 @@ def _offer_lounge(obs, ts: dict | None) -> None:
             print_error(f"Lounge provisioning failed: {exc}")
             print_info("Install it by hand: npm install -g thelounge")
             return
+        _frontend = (summary.get("frontend") or {}).get("action")
+        if _frontend in ("pattern-missing", "failed"):
+            print_warning(
+                "Lounge frontend focus patch not applied "
+                f"({_frontend}) — new rooms may steal UI focus. "
+                "Re-run setup after a Lounge update pins a known bundle.")
         created = (summary.get("user") or {}).get("action") in (
             "created", "reset")
         if created:

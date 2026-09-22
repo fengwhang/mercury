@@ -326,3 +326,19 @@ async def test_unresolvable_parent_falls_back_to_gateway(tmp_path, monkeypatch) 
     row = state.get("deleg_z/0")
     assert row["depth"] == 1
     assert row["parent_node_id"] == "gw"
+
+
+@pytest.mark.asyncio
+async def test_child_room_gets_own_identity(tmp_path, monkeypatch) -> None:
+    """Delegate rooms speak as the room name, not vm_gateway."""
+    import observatory.identity as identity_mod
+
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
+    seen = []
+    monkeypatch.setattr(
+        identity_mod, "ensure_identity",
+        lambda nick, channel: seen.append((nick, channel)) or True)
+    channel = await mgr._ensure_child_room_for(
+        "d1", {"name": "bravo", "parent_name": "alpha-node", "engine": "omp"})
+    assert seen == [("vm_alpha-bravo", channel)]

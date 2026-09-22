@@ -369,3 +369,61 @@ def test_ensure_lounge_network_current_when_identical(tmp_path) -> None:
         paths, "owner", net_name="vm", host="100.9.9.9", port=6670,
         server_password="pw", nick="owner", channel="#vm_gateway")
     assert out["action"] == "current"
+
+
+_SNIPPET = "x.splice(e.index||-1,0,n),e.chan.type===`query`&&!e.shouldOpen)return;y()"
+
+
+def test_frontend_patch_respects_should_open() -> None:
+    from observatory import lounge as lounge_mod
+
+    assert lounge_mod.FRONTEND_JOIN_OPEN in _SNIPPET
+    patched, changed = lounge_mod.patch_lounge_frontend_text(_SNIPPET)
+    assert changed is True
+    assert lounge_mod.FRONTEND_JOIN_OPEN not in patched
+    assert patched.endswith("!e.shouldOpen)return;y()")
+
+
+def test_frontend_patch_idempotent_and_drift(tmp_path) -> None:
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    assets = paths.dir / "pkg" / "public" / "assets"
+    assets.mkdir(parents=True)
+    bundle = assets / "index-abc123.js"
+    bundle.write_text("var a=1;" + _SNIPPET)
+    first = lounge_mod.patch_lounge_frontend(paths)
+    assert first["action"] == "patched"
+    assert lounge_mod.patch_lounge_frontend(paths)["action"] == "current"
+    assert lounge_mod.FRONTEND_JOIN_OPEN not in bundle.read_text()
+
+
+def test_frontend_patch_drift_is_loud(tmp_path) -> None:
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    assets = paths.dir / "pkg" / "public" / "assets"
+    assets.mkdir(parents=True)
+    (assets / "index-zzz.js").write_text("var a=1;")
+    assert lounge_mod.patch_lounge_frontend(paths)["action"] == "pattern-missing"
+
+
+def test_install_pins_lounge_version(tmp_path, monkeypatch) -> None:
+    import types as _types
+    from observatory import lounge as lounge_mod
+
+    assert lounge_mod.LOUNGE_VERSION == "4.5.2"
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    seen = {}
+
+    def _fake_run(args, **kwargs):
+        seen["args"] = list(args)
+        (home / "observatory" / "lounge" / "npm" / "bin").mkdir(parents=True)
+        (home / "observatory" / "lounge" / "npm" / "bin"
+         / "thelounge").write_text("#!/bin/sh\n")
+        return _types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(lounge_mod, "_run", _fake_run)
+    lounge_mod.ensure_lounge_installed()
+    assert "thelounge@4.5.2" in seen["args"]
