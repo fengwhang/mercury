@@ -28,6 +28,7 @@ Or via environment variables (overrides config.yaml):
 """
 
 import asyncio
+import functools
 import logging
 import os
 
@@ -1360,16 +1361,73 @@ def register(ctx):
     )
 
 
-#: Goguma intercepts /commands client-side (they never reach the bot),
-#: so !verb aliases /verb for the verbs that matter. Anything else
-#: starting with ! is plain chat (never rewritten).
-BANG_VERBS = frozenset({"spawn", "spawnomp", "exit", "stop", "approve", "deny"})
+#: OMP-side slash verbs mirrored for the `!` rewrite.
+#: Regenerated from omp/packages/coding-agent/src/slash-commands/builtin-*.ts
+#: (`name: "..."` plus word-like aliases). Hermes-side verbs resolve
+#: dynamically via is_gateway_known_command (no drift); this set has
+#: a drift test (tests/plugins/platforms/irc/test_irc_bang_commands.py).
+OMP_BANG_VERBS = frozenset({
+    "add", "add-dir", "advisor", "agents", "append", "auto", "branch", "browser",
+    "btw", "budget", "cancel", "changelog", "cleanse", "clear", "collab", "collapse",
+    "compact", "compare", "computer", "configure", "context", "copy", "debug", "delete",
+    "diagnose", "dirs", "disable", "discover", "disposition", "done", "drop", "dump",
+    "edit", "elide", "enable", "enqueue", "exit", "expand", "export", "extended-context",
+    "extensions", "fast", "force", "fork", "fresh", "full", "git", "goal",
+    "guided-goal", "handoff", "headless", "help", "hotkeys", "hub", "images", "import",
+    "info", "install", "installed", "jobs", "join", "leave", "list", "live",
+    "login", "logout", "loop", "marketplace", "mcp", "memory", "model", "models",
+    "move", "new", "notifications", "off", "omfg", "on", "open", "pause",
+    "pin", "plan", "plan-review", "plugins", "prewalk", "prompts", "providers", "q",
+    "queue", "quit", "reauth", "rebuild", "reconnect", "reload", "reload-plugins", "remove",
+    "remove-dir", "rename", "reset", "resources", "restart", "resume", "retry", "rewind",
+    "rm", "scan", "scans", "security", "session", "set", "settings", "setup",
+    "shake", "share", "show", "skillful", "smithery-login", "smithery-logout", "smithery-search", "ssh",
+    "start", "stats", "status", "stop", "switch", "sync", "tan", "test",
+    "thinking", "todo", "tools", "trace", "tree", "unauth", "uninstall", "update",
+    "upgrade", "usage", "validate", "vibe", "view", "visible", "vision", "worktree",
+    "wt",
+})
+
+
+def _is_hermes_known_verb(verb: str) -> bool:
+    """is_gateway_known_command, cached (plugin scan must not run per message)."""
+    try:
+        from mercury_cli.commands import is_gateway_known_command
+    except Exception:
+        raise
+    return bool(is_gateway_known_command(verb))
+
+
+_is_hermes_known_verb = functools.lru_cache(maxsize=512)(_is_hermes_known_verb)
+
+
+def _is_known_verb(verb: str) -> bool:
+    """True when `verb` is a command on either engine.
+
+    OMP verbs are a static mirror (see above); hermes verbs resolve
+    dynamically so plugin commands work too. Results for the
+    hermes side are cached — plugin discovery must not run per
+    message. Never raises; on lookup failure only the core
+    verbs still rewrite (the bot never breaks).
+    """
+    if verb in OMP_BANG_VERBS:
+        return True
+    try:
+        return bool(_is_hermes_known_verb(verb))
+    except Exception:
+        return verb in ("spawn", "spawnomp", "exit", "stop",
+                          "approve", "deny")
 
 
 def bang_to_slash(text: str) -> str:
-    """Rewrite a leading !verb to /verb for known verbs only."""
+    """Rewrite a leading !verb to /verb for known verbs only.
+
+    `!!` escapes the rewrite; anything else starting with `!` whose
+    verb is unknown on both engines stays plain chat.
+    """
     if text.startswith("!") and not text.startswith("!!"):
         verb, _, rest = text[1:].partition(" ")
-        if verb.lower() in BANG_VERBS:
-            return "/" + verb.lower() + (" " + rest if rest.strip() else "")
+        lowered = verb.lower()
+        if lowered and _is_known_verb(lowered):
+            return "/" + lowered + (" " + rest if rest.strip() else "")
     return text
