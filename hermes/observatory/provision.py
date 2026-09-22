@@ -157,23 +157,46 @@ def _upsert_env_key(env_path: Path, key: str, value: str) -> None:
 def mirror_irc_env(
     mercury_home: str | Path | None, bouncer_password: str, agent_password: str
 ) -> Path:
-    """Mirror both listener passwords into $MERCURY_HOME/.env (0600)."""
+    """Mirror both listener passwords into $MERCURY_HOME/.env (0600).
+
+    Also syncs os.environ in-process: readers that prefer the environment
+    must see the just-written values for the rest of this process, never
+    a startup snapshot.
+    """
     env_path = _mercury_home(mercury_home) / ".env"
     _upsert_env_key(env_path, ENV_BOUNCER_PASSWORD, bouncer_password)
     _upsert_env_key(env_path, ENV_AGENT_PASSWORD, agent_password)
+    try:
+        os.environ[ENV_BOUNCER_PASSWORD] = bouncer_password
+        os.environ[ENV_AGENT_PASSWORD] = agent_password
+    except Exception:
+        pass
     return env_path
 
 
 def read_irc_passwords(mercury_home: str | Path | None = None) -> dict[str, str]:
-    """Passwords from env/.env (never generated here — provisioning owns that)."""
-    try:
-        from mercury_cli.config import get_env_value
+    """Passwords from .env first, os.environ only as fallback.
 
-        bouncer = str(get_env_value(ENV_BOUNCER_PASSWORD) or "")
-        agent = str(get_env_value(ENV_AGENT_PASSWORD) or "")
+    The daemons consume the FILE (systemd EnvironmentFile), so the file
+    is truth — never generated here, provisioning owns that. Env-first
+    reads served stale shell values after mid-setup rotations and
+    produced persistent 464s ("Password mismatch" in the lobby) while
+    every file on disk agreed.
+    """
+    try:
+        from mercury_cli.config import get_env_value_prefer_dotenv
+
+        bouncer = str(get_env_value_prefer_dotenv(ENV_BOUNCER_PASSWORD) or "")
+        agent = str(get_env_value_prefer_dotenv(ENV_AGENT_PASSWORD) or "")
     except Exception:
-        bouncer = os.environ.get(ENV_BOUNCER_PASSWORD, "")
-        agent = os.environ.get(ENV_AGENT_PASSWORD, "")
+        try:
+            from mercury_cli.config import get_env_value
+
+            bouncer = str(get_env_value(ENV_BOUNCER_PASSWORD) or "")
+            agent = str(get_env_value(ENV_AGENT_PASSWORD) or "")
+        except Exception:
+            bouncer = os.environ.get(ENV_BOUNCER_PASSWORD, "")
+            agent = os.environ.get(ENV_AGENT_PASSWORD, "")
     return {"bouncer": bouncer, "agent": agent}
 
 
@@ -1001,9 +1024,11 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
     removed: list[str] = []
     try:
         # npm/ is a sibling of home/ (binary, not data) — untouched.
-        from observatory.lounge import LoungePaths
+        # npm-cache/ IS wiped: rm -rf ~/.mercury must leave no lounge
+        # trace anywhere.
+        from observatory.lounge import LoungePaths, lounge_npm_cache
         lpaths = LoungePaths(home)
-        for target in (lpaths.conf, lpaths.home):
+        for target in (lpaths.conf, lpaths.home, lounge_npm_cache(home)):
             try:
                 if target.is_dir() and not target.is_symlink():
                     shutil.rmtree(target)

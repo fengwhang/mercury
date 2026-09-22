@@ -337,7 +337,7 @@ def test_ensure_slow_path_links_patched_tree(tmp_path, monkeypatch) -> None:
             returncode=1, stdout="",
             stderr="git dep preparation failed")
 
-    def _fake_patch(npm, path, tmp):
+    def _fake_patch(npm, path, tmp, mercury_home=None):
         final = (home / "observatory" / "lounge" / "pkg")
         final.mkdir(parents=True)
         (final / "index.js").write_text("#!/usr/bin/env node\n")

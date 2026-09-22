@@ -24,6 +24,17 @@ LOUNGE_UNIT_DESCRIPTION = "Mercury The Lounge frontend (observatory UI)"
 LOUNGE_DIRNAME = "lounge"
 FILE_LOUNGE_CONFIG = "config.js"
 NPM_PREFIX_DIRNAME = "npm"
+#: npm cache lives here too — ~/.npm must stay untouched so rm -rf
+#: ~/.mercury truly removes every lounge trace.
+NPM_CACHE_DIRNAME = "npm-cache"
+
+
+def lounge_npm_cache(mercury_home: str | Path | None = None) -> Path:
+    """Cache dir for our npm invocations (under the observatory)."""
+    from observatory.provision import _mercury_home  # local import: no cycle
+
+    return (Path(_mercury_home(mercury_home)) / "observatory"
+            / LOUNGE_DIRNAME / NPM_CACHE_DIRNAME)
 
 
 class LoungeError(RuntimeError):
@@ -121,7 +132,8 @@ def ensure_node() -> str:
 FRAMEWORK_REGISTRY_RANGE = "^4.14.0"
 
 
-def _patched_lounge_tree(npm: str, path: str, tmp: Path) -> Path:
+def _patched_lounge_tree(npm: str, path: str, tmp: Path,
+                         mercury_home: str | Path | None = None) -> Path:
     """Install thelounge's deps into ``tmp/pkg/package`` with the
     git-pinned irc-framework swapped for the registry release.
 
@@ -131,7 +143,8 @@ def _patched_lounge_tree(npm: str, path: str, tmp: Path) -> Path:
     import tarfile as _tarfile
 
     packed = _run(
-        [npm, "pack", "thelounge", "--pack-destination", str(tmp)],
+        [npm, "pack", "thelounge", "--pack-destination", str(tmp),
+         "--cache", str(lounge_npm_cache(mercury_home))],
         extra_env={"PATH": path}, timeout=600)
     if packed.returncode != 0:
         raise LoungeError(
@@ -162,7 +175,8 @@ def _patched_lounge_tree(npm: str, path: str, tmp: Path) -> Path:
     env = {"PATH": path}
     deps_out = _run(
         [npm, "install", "--prefix", str(src), "--omit=dev", "--no-audit",
-         "--no-fund", "--legacy-peer-deps"],
+         "--no-fund", "--legacy-peer-deps",
+         "--cache", str(lounge_npm_cache(mercury_home))],
         extra_env=env, timeout=900)
     if deps_out.returncode != 0:
         raise LoungeError(
@@ -209,7 +223,8 @@ def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
     # --ignore-scripts for git-dep preparation, e.g. npm 11).
     out = _run(
         [npm, "install", "-g", "--prefix", str(prefix),
-         "--ignore-scripts", "thelounge"],
+         "--ignore-scripts", "--cache", str(lounge_npm_cache(mercury_home)),
+         "thelounge"],
         extra_env=env, timeout=900)
     if out.returncode == 0:
         try:
@@ -234,7 +249,8 @@ def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
     else:
         with _tempfile.TemporaryDirectory(
                 prefix=f"lounge-patch-") as tmpname:
-            src = _patched_lounge_tree(npm, path, Path(tmpname))
+            src = _patched_lounge_tree(npm, path, Path(tmpname),
+                                   mercury_home)
             try:
                 if src.resolve() == final.resolve():
                     pass

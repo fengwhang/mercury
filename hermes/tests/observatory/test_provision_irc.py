@@ -325,3 +325,40 @@ def test_provision_reports_daemon_key(tmp_path, monkeypatch) -> None:
     assert out["daemon"]["action"] in (
         "current", "started-fresh", "restarted", "skipped")
     assert out["passwords"]["action"] == "generated"
+
+
+def test_passwords_prefer_dotenv_over_stale_environ(
+        tmp_path, monkeypatch) -> None:
+    """The file is daemon truth: a stale exported secret never wins."""
+    import os as _os
+
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    home.mkdir(parents=True)
+    (home / ".env").write_text("IRC_BOUNCER_PASSWORD=live-17\n")
+    monkeypatch.setenv("IRC_BOUNCER_PASSWORD", "stale-32-char-password-here")
+    assert (provision.read_irc_passwords(home)["bouncer"]
+            == "live-17")
+    assert _os.environ["IRC_BOUNCER_PASSWORD"] == (
+        "stale-32-char-password-here")
+
+
+def test_mirror_syncs_environ(tmp_path, monkeypatch) -> None:
+    import os as _os
+
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.delenv("IRC_BOUNCER_PASSWORD", raising=False)
+    provision.mirror_irc_env(home, "fresh-b", "fresh-a")
+    assert _os.environ["IRC_BOUNCER_PASSWORD"] == "fresh-b"
+    assert _os.environ["IRC_AGENT_PASSWORD"] == "fresh-a"
+
+
+def test_reset_wipes_npm_cache(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    cache = home / "observatory" / "lounge" / "npm-cache"
+    cache.mkdir(parents=True)
+    (cache / "index").write_text("cached")
+    provision.reset_observatory_data(home)
+    assert not cache.exists()
