@@ -88,10 +88,8 @@ export class ShareFileTool implements AgentTool<typeof shareFileSchema, ShareFil
 	readonly label = "Share file";
 	readonly loadMode = "essential";
 	readonly description =
-		"Share a local file in the current chat (the paperclip button). " +
-		"Stages the file as a Lounge upload and returns its URL — post the URL " +
-		"in your reply so the user can open it. The link is only visible in " +
-		"this room.";
+		"Share a local file in this chat (the paperclip button). Returns " +
+		"its Lounge URL — post it in your reply.";
 	readonly parameters = shareFileSchema;
 
 	async execute(

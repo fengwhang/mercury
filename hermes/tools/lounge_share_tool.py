@@ -13,7 +13,10 @@ from tools.registry import registry, tool_result
 
 logger = logging.getLogger(__name__)
 
-_TOOLSET = "mercury-observatory"
+# Platform toolset (NOT a feature name): plugin-platform agents only
+# receive tools tagged with the bare platform ("irc"). Anything else
+# is silently invisible — verified against toolsets.resolve_toolset.
+_TOOLSET = "irc"
 
 
 async def _handle_lounge_share(args, **kw):
@@ -58,10 +61,8 @@ registry.register(
     schema={
         "name": "lounge_share",
         "description": (
-            "Share a local file in the current IRC channel (the paperclip "
-            "button). Stages the file as a Lounge upload and posts the link "
-            "in THIS channel only. Use when the user asks for a file, or when "
-            "a report/artifact you produced should be handed over."
+            "Share a local file in THIS IRC channel (the paperclip button). "
+            "Posts the Lounge link here; use for handoffs the user asked for."
         ),
         "parameters": {
             "type": "object",

@@ -8,13 +8,26 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
-def test_registered_in_observatory_toolset():
+def test_registered_under_irc_toolset():
+    """Plugin-platform agents only see tools tagged with the bare platform."""
     from tools import lounge_share_tool as _  # noqa: F401 (registration)
     from tools.registry import registry
 
     entry = registry.get_entry("lounge_share")
     assert entry is not None
-    assert entry.toolset == "mercury-observatory"
+    assert entry.toolset == "irc"
+
+
+def test_resolves_through_platform_toolsets():
+    from gateway.platform_registry import platform_registry
+    from toolsets import resolve_toolset
+
+    platform_registry.register_deferred("irc", lambda: None)
+    try:
+        names = resolve_toolset("mercury-irc")
+    finally:
+        platform_registry.unregister("irc")
+    assert "lounge_share" in names
 
 
 def test_posts_link_in_current_channel_only(tmp_path, monkeypatch):
@@ -41,7 +54,7 @@ def test_posts_link_in_current_channel_only(tmp_path, monkeypatch):
         rooms_mod, "say_nowait",
         lambda channel, text: posted.append((channel, text)) or True)
     out = json.loads(_run(share_mod._handle_lounge_share(
-        {"path": str(src), "caption": "read this"}, )))
+        {"path": str(src), "caption": "read this"})))
     assert out["success"] is True
     assert out["url"] == "http://h:9000/uploads/ab/cdef/notes.txt"
     assert out["channel"] == "#vm_ace"
