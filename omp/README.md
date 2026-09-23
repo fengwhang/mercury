@@ -2,14 +2,13 @@
 
 <p align="center">
   <strong>A coding agent with the IDE wired in.</strong>
-  <strong><a href="https://omp.sh">omp.sh</a></strong>
+  <strong>Ships with <a href="https://github.com/Fengwhang/mercury">Mercury</a></strong>
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent"><img src="https://img.shields.io/npm/v/@oh-my-pi/pi-coding-agent?style=flat&colorA=222222&colorB=CB3837" alt="npm version"></a>
-  <a href="https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-keep-E05735?style=flat&colorA=222222" alt="Changelog"></a>
-  <a href="https://github.com/can1357/oh-my-pi/actions"><img src="https://img.shields.io/github/actions/workflow/status/can1357/oh-my-pi/ci.yml?style=flat&colorA=222222&colorB=3FB950" alt="CI"></a>
-  <a href="https://github.com/can1357/oh-my-pi/blob/main/LICENSE"><img src="https://img.shields.io/github/license/can1357/oh-my-pi?style=flat&colorA=222222&colorB=58A6FF" alt="License"></a>
+  <a href="https://github.com/Fengwhang/mercury/blob/main/omp/packages/coding-agent/CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-keep-E05735?style=flat&colorA=222222" alt="Changelog"></a>
+  <a href="https://github.com/Fengwhang/mercury/actions"><img src="https://img.shields.io/github/actions/workflow/status/Fengwhang/mercury/ci.yml?style=flat&colorA=222222&colorB=3FB950" alt="CI"></a>
+  <a href="https://github.com/Fengwhang/mercury/blob/main/omp/LICENSE"><img src="https://img.shields.io/github/license/Fengwhang/mercury?style=flat&colorA=222222&colorB=58A6FF" alt="License"></a>
   <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&colorA=222222&logo=typescript&logoColor=white" alt="TypeScript"></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-DEA584?style=flat&colorA=222222&logo=rust&logoColor=white" alt="Rust"></a>
   <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat&colorA=222222" alt="Bun"></a>
@@ -32,64 +31,27 @@ The most capable agent surface that ships. Continuously tuned by real-world use 
 
 ## Install
 
-**macOS · Linux**
+omp ships inside the Mercury release tarballs
+(`mercury-<version>-{x64,arm64}.tar.gz`) published at
+[github.com/Fengwhang/mercury](https://github.com/Fengwhang/mercury/releases).
+Install or refresh with:
 
 ```sh
-curl -fsSL https://omp.sh/install | sh
+curl -fsSL https://raw.githubusercontent.com/Fengwhang/mercury/main/install.sh | bash
 ```
 
-> **Alpine / musl:** the prebuilt musl binary links `libstdc++`/`libgcc` dynamically, which stock Alpine does not ship. Install them first: `apk add libstdc++ libgcc`.
+The installer detects your CPU, unpacks a prebuilt tree under `~/.mercury` —
+no Bun, Rust, or Node toolchain needed — and `mercury omp` drops you into
+the omp engine directly. Linux · macOS · WSL2.
 
-**Homebrew**
+Keep it current with:
 
 ```sh
-brew install can1357/tap/omp
+mercury update
 ```
 
-**Bun (recommended)**
-
-```sh
-bun install -g @oh-my-pi/pi-coding-agent
-```
-
-**Nix**
-
-```sh
-# Run without installing
-nix run github:can1357/oh-my-pi
-
-# Or install into the active profile
-nix profile install github:can1357/oh-my-pi
-```
-
-Flake consumers can use `packages.<system>.omp`, `overlays.default`, `nixosModules.default`, or `homeManagerModules.default`. A Home Manager configuration can install OMP and own its settings declaratively:
-
-```nix
-{
-  inputs.omp.url = "github:can1357/oh-my-pi";
-
-  # In your Home Manager module:
-  imports = [ inputs.omp.homeManagerModules.default ];
-  programs.omp = {
-    enable = true;
-    settings.startup.quiet = true;
-  };
-}
-```
-
-**Windows (PowerShell)**
-
-```powershell
-irm https://omp.sh/install.ps1 | iex
-```
-
-**Pinned versions (mise)**
-
-```sh
-mise use -g github:can1357/oh-my-pi
-```
-
-macOS · Linux · Windows · bun ≥ 1.3.14
+`mercury update` pulls the latest release tarball; your `~/.mercury` state
+survives the re-fetch.
 
 ### Shell completions
 
@@ -132,13 +94,9 @@ Originally built on [Mario Zechner](https://github.com/mariozechner)'s wonderful
 
 Most harnesses give the agent a Python sandbox and call it done. Ours runs persistent Python and a Bun worker, and either kernel can call back into the agent's own tools — read, search, task — over a loopback bridge. The agent loads a CSV with tool.read from inside Python, charts it from JavaScript, and never leaves the cell.
 
-![omp TUI running Python code and rendering a chart.](https://github.com/can1357/oh-my-pi/blob/main/assets/python.webp)
-
 ### 02 · LSP wired into every write
 
 Ask for a rename and you get a rename. The call goes through workspace/willRenameFiles, so re-exports, barrel files, and aliased imports update before the file moves. Everything your IDE knows, the agent knows.
-
-![omp TUI with TypeScript and Biome language servers active.](https://github.com/can1357/oh-my-pi/blob/main/assets/lspv.webp)
 
 _[Read the LSP config docs](docs/lsp-config.md)_
 
@@ -146,25 +104,13 @@ _[Read the LSP config docs](docs/lsp-config.md)_
 
 A C binary segfaults: the agent attaches lldb, steps to the bad pointer, reads the frame. A Go service hangs: it attaches dlv and walks the goroutines. A Python process is wedged: debugpy, pause, inspect, evaluate. Most agents are still sprinkling print statements.
 
-![omp TUI: a live lldb-dap session against a native binary at /tmp/omp-native/demo. Adapter=lldb-dap, Status=stopped, Frame=xorshift32, Instruction pointer 0x10000055C, Location demo.c:6:10. Debug scopes and Debug variables cards show locals (x = 57351) and the agent confirms the math: x went from 7 → 57351 (= 7 ^ (7<<13)).](https://omp.sh/clips/dap-poster.webp)
-
-_[Watch the capture ↗](https://omp.sh/clips/dap.mp4)_
-
 ### 04 · Time-traveling stream rules
 
 Your rules sit dormant until the model goes off-script. A regex match aborts the stream mid-token, injects the rule as a system reminder, and retries from the same point. You get course-correction without paying context tax on every turn. Injections survive compaction, so the fix sticks.
 
-![omp TUI: agent reading src.rs and about to write Box::leak when the request aborts (red `Error: Request was aborted`), an amber `⚠ Injecting rule: box-leak` card injects the rule body `Don't reach for Box::leak in production code paths`, and the agent then course-corrects by proposing `Arc<str>` and asking the user to confirm.](https://omp.sh/clips/ttsr-poster.webp)
-
-_[Watch the capture ↗](https://omp.sh/clips/ttsr.mp4)_
-
 ### 05 · First-class subagents
 
 Split a job across workers and get typed results back. task fans out into isolated worktrees, each worker runs its own tool surface, and the final yield is a schema-validated object the parent reads directly. No prose to parse, no merge conflicts between siblings, no orphaned edits.
-
-![omp TUI showing `task` spawning two subagents `ComponentsExports` and `RoutesExports`, the constraints block requiring an IRC DM between peers, the per-subagent status cards with cost and duration, and a final Findings section listing both exports plus an honest 'IRC coordination note' about a one-sided handshake.](https://omp.sh/clips/irc-poster.webp)
-
-_[Watch the capture ↗](https://omp.sh/clips/irc.mp4)_
 
 Watch the fan-out while it runs: `Alt+A` opens [Agent Hub](docs/agent-hub.md), where the roster shows current activity and usage for every subagent. Open one to read its live transcript, type a steering message, revive a parked worker, or kill a stuck one without aborting the parent session.
 
@@ -172,25 +118,13 @@ Watch the fan-out while it runs: `Alt+A` opens [Agent Hub](docs/agent-hub.md), w
 
 Pair a reviewer model to the 'advisor' role and it reads every turn the main agent takes, injecting notes inline — a quiet aside, a concern, or a hard blocker. It runs on its own context and its own model, so it catches what the doer rushed past. The main agent sees the note and course-corrects, or tells you why it won't.
 
-![omp TUI: /advisor status shows the advisor running on openai-codex/gpt-5.5; after the main agent scopes a catch to ENOENT instead of swallowing every error, an amber 'Advisor 1 note (concern)' card warns the fix no longer matches the user's literal acceptance criterion.](https://omp.sh/clips/advisor-poster.webp)
-
-_[Watch the capture ↗](https://omp.sh/clips/advisor.mp4)_
-
 ### 07 · Hand someone the link, they're in.
 
 /collab puts your live session on a relay and hands back a link — and a QR. A teammate joins from another terminal with omp join, or just opens it in a browser. Share read-write to pair on the same agent, or /collab view for a read-only link anyone can watch but no one can steer. Frames are sealed client-side; the relay never sees your keys.
 
-![omp TUI: /collab view prints 'Collab session started!' with an omp join command, a my.omp.sh browser link, the note 'Anyone with this link can watch the session but cannot prompt the agent', and a large scannable QR code.](https://omp.sh/clips/collab-poster.webp)
-
-_[Watch the capture ↗](https://omp.sh/clips/collab.mp4)_
-
 ### 08 · Read a pdf on arxiv, why not?
 
 web_search chains twenty-three ranked providers and hands whatever URLs it finds straight to read. Arxiv PDFs, GitHub pages, Stack Overflow threads come back as structured markdown with anchors intact — the same tool surface you use on local files. Cite, follow, quote, never lose where you came from.
-
-![omp TUI: web_search returns 10 ranked Perplexity sources for inference-time compute scaling, the agent picks an arxiv paper, calls read https://arxiv.org/pdf/2604.10739v1, and summarizes the paper's headline result with real numbers.](https://omp.sh/clips/web-poster.webp)
-
-_[Watch the capture ↗](https://omp.sh/clips/web.mp4)_
 
 ### 09 · Unapologetically native. Even on Windows.
 
@@ -232,17 +166,9 @@ Sixteen internal schemes — `pr://`, `issue://`, `agent://`, `skill://`, `ssh:/
 
 Each merge conflict becomes one URL. The agent writes `@theirs`, `@ours`, or `@base` to `conflict://N` and the file resolves cleanly. Bulk form: `conflict://*`.
 
-![omp TUI: ✓ Read src/session.ts (⚠ 1 conflict), then ✓ Write conflict://1 · 1 line with content @theirs, then a confirmation 'Resolved.'](https://omp.sh/clips/conflict-poster.webp)
-
-_[Watch the capture ↗](https://omp.sh/clips/conflict.mp4)_
-
 ### 19 · Preview, then accept.
 
 `ast_edit` returns a _(proposed)_ card with the replacement count. The change is staged. The agent writes a one-line reason to `xd://resolve`; the TUI turns it into an **Accept** card and the disk move happens — atomic, all or nothing.
-
-![omp TUI: ✓ AST Edit: console.log($X) (proposed) 3 replacements · 1 file, then ✓ Accept: 3 replacements in 1 file (AST Edit), followed by 'Applied 3 replacements in src/auth.ts.'](https://omp.sh/clips/codemod-poster.webp)
-
-_[Watch the capture ↗](https://omp.sh/clips/codemod.mp4)_
 
 ### 20 · Drives a _real browser_. _Or your Slack?_
 
@@ -307,7 +233,7 @@ Stealth's on by default, so pages see a normal user instead of a headless bot. T
 
 Setting-gated, off by default: `github`, `security_scan`, `generate_image`, `tts`, `checkpoint`, `rewind`, and the memory tools (`retain`/`recall`/`reflect`/`memory_edit`, per `memory.backend`). `inspect_image` activates automatically when the active model can't see.
 
-[Full reference →](https://omp.sh/docs/tools)
+[Full reference →](docs/tools)
 
 ### Prompt controls
 
@@ -383,7 +309,7 @@ modelRoles:
 - **Path-scoped models** — Scope `enabledModels` and `disabledProviders` entries to a `path:` prefix to pin a different model set on one repo without touching the global config. Scoped entries cover the path and everything under it.
 - **Round-robin credentials** — Stack API keys per provider and the runtime rotates with session affinity and per-credential backoff. Useful when one key would burn its quota by lunch.
 
-Full provider & routing reference at [omp.sh/docs/providers](https://omp.sh/docs/providers).
+Full provider & routing reference in [docs/providers.md](docs/providers.md).
 
 ## Twenty-three backends. _One tool the agent already knows_.
 
@@ -442,7 +368,7 @@ Vuln lookups answer with vendor data, not blog summaries.
 - **OSV** — open source vuln feed
 - **CISA KEV** — known exploited vulns
 
-[`web_search` reference ↗](https://omp.sh/docs/tools#web_search)
+[`web_search` reference](docs/tools/web_search.md)
 
 ## Roughly **~80,000** lines of Rust, doing the work other harnesses shell out for.
 
@@ -500,8 +426,6 @@ The TUI is the default surface. Tool calls render as cards, edits preview before
 
 The same prompt cards surface over ACP, so editors get the picker without writing one.
 
-![omp TUI showing a multi-select question from the ask tool.](https://github.com/can1357/oh-my-pi/blob/main/assets/ask.webp)
-
 ### SDK — embed in Node
 
 `@oh-my-pi/pi-coding-agent`
@@ -555,13 +479,13 @@ The [Agent Client Protocol](https://github.com/zed-industries/agent-client-proto
 | `write`      | `fs/write_text_file`                |
 | `edit, bash` | `session/request_permission`        |
 
-Full reference: [omp.sh/docs/sdk](https://omp.sh/docs/sdk).
+Full reference: [docs/sdk.md](docs/sdk.md).
 
 ## A harness worth keeping is one you _don't_ outgrow.
 
-Pick it up at **[omp.sh](https://omp.sh)**.
+It ships with **[Mercury](https://github.com/Fengwhang/mercury)** — install it, then run `mercury omp`.
 
-omp is a fork of [Pi](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), rewritten as a coding-first surface: sessions, subagents, slash commands, extensions — all TypeScript, all MIT, all on [GitHub](https://github.com/can1357/oh-my-pi). Shape it from config, hook it from outside, or read the source when you need to.
+omp is a fork of [Pi](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), rewritten as a coding-first surface: sessions, subagents, slash commands, extensions — all TypeScript, all MIT, all on [GitHub](https://github.com/Fengwhang/mercury). Shape it from config, hook it from outside, or read the source when you need to.
 
 ### Primitives
 
@@ -646,7 +570,7 @@ For architecture and contribution guidelines, see [packages/coding-agent/DEVELOP
 | **[@oh-my-pi/pi-utils](packages/utils)**                                      | Shared utilities (logging, streams, dirs/env/process helpers)               |
 | **[@oh-my-pi/pi-wire](packages/wire)**                                        | Shared collab live-session protocol types and relay constants               |
 | **[@oh-my-pi/hashline](packages/hashline)**                                   | Line-anchored patch language and applier behind the `edit` tool             |
-| **[@oh-my-pi/pi-mnemopi](packages/mnemopi)**                                  | Local SQLite memory engine for Oh My Pi agents                              |
+| **[@oh-my-pi/pi-mnemopi](packages/mnemopi)**                                  | Local SQLite memory engine for Mercury agents                              |
 | **[@oh-my-pi/snapcompact](packages/snapcompact)**                             | Bitmap-frame context compression package and SQuAD eval suite               |
 | **[@oh-my-pi/browser-relay](packages/browser-relay)**                         | Chrome extension that lets the browser tool drive your existing tabs        |
 | **[@oh-my-pi/pi-metaharness](packages/metaharness)**                          | Unified benchmark runners, Harbor run storage, REST/SSE API, live dashboard |
@@ -686,12 +610,11 @@ component-local notices for attribution and additional terms.
 © 2025 Mario Zechner  
 © 2025-2026 Can Bölük  
 © 2026 Stencil Labs, Inc.
+© 2026 Mercury contributors
 
 _made for terminals that stay open_
 
-- [omp.sh](https://omp.sh)
-- [GitHub](https://github.com/can1357/oh-my-pi)
-- [Changelog](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/CHANGELOG.md)
-- [npm](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent)
+- [Mercury](https://github.com/Fengwhang/mercury)
+- [Changelog](https://github.com/Fengwhang/mercury/blob/main/omp/packages/coding-agent/CHANGELOG.md)
 - [Discord](https://discord.gg/4NMW9cdXZa)
-- [MIT](https://github.com/can1357/oh-my-pi/blob/main/LICENSE)
+- [MIT](https://github.com/Fengwhang/mercury/blob/main/omp/LICENSE)

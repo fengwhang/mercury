@@ -1,9 +1,9 @@
 {
 	"name": "omp",
 	"private": true,
-	"homepage": "https://omp.sh",
+	"homepage": "https://github.com/Fengwhang/mercury",
 	"license": "MIT",
-	"author": "Stencil Labs, Inc.",
+	"author": "Mercury (https://github.com/Fengwhang/mercury)",
 	"workspaces": {
 		"packages": [
 			"packages/*",

@@ -3,16 +3,16 @@
   "name": "@oh-my-pi/omptype",
   "version": "18.1.6",
   "description": "ArkType-compatible runtime schema validation with lazy JIT compilation",
-  "homepage": "https://omp.sh",
-  "author": "Stencil Labs, Inc.",
+  "homepage": "https://github.com/Fengwhang/mercury",
+  "author": "Mercury (https://github.com/Fengwhang/mercury)",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
+    "url": "git+https://github.com/Fengwhang/mercury.git",
     "directory": "packages/omptype"
   },
   "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
+    "url": "https://github.com/Fengwhang/mercury/issues"
   },
   "keywords": [
     "schema",
