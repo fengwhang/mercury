@@ -36,7 +36,7 @@ from mercury_cli.config import get_env_value
 import re
 import ssl
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
@@ -387,6 +387,7 @@ class IRCAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         target = chat_id  # channel name or nick for DMs
+        content = self._expand_media_tags(content)
         # Per-agent identity first: rooms with a live identity speak as
         # their own nick (vm_charlie, not vm_gateway). All-or-nothing
         # per message (a split identity looks worse than a fallback).
@@ -416,6 +417,117 @@ class IRCAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=str(e))
 
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))
+    # ── Lounge file delivery (paperclip parity) ──────────────────────────
+    # IRC has no attachment primitive, so files go out as Lounge links:
+    # stage into the uploads dir, verify it serves, post the URL. Same
+    # scheme as a human clicking upload — the room sees a plain link.
+
+    async def _stage_media_link(self, path: str) -> str | None:
+        """Stage a local file; return its Lounge URL or None. Never raises."""
+        try:
+            from observatory import lounge as lounge_mod
+
+            staged = lounge_mod.stage_lounge_upload(None, path)
+            url = lounge_mod.lounge_base_url(None) + "/" + staged["url_path"]
+            if lounge_mod.check_upload_serves(url):
+                return url
+            logger.debug("IRC: staged link does not serve, dropping")
+            return None
+        except Exception:
+            logger.debug("IRC: media stage failed", exc_info=True)
+            return None
+
+    def _expand_media_tags(self, content: str) -> str:
+        """Replace MEDIA:<path> tags with Lounge links (best-effort).
+
+        Synchronous: staging is a local file copy. No serve-verify here
+        (the dedicated overrides verify); a failed stage keeps the raw
+        tag so nothing is silently lost.
+        """
+        import re as _re
+
+        def _one(match) -> str:
+            try:
+                from observatory import lounge as lounge_mod
+
+                staged = lounge_mod.stage_lounge_upload(None, match.group(1))
+                return lounge_mod.lounge_base_url(None) + "/" + staged["url_path"]
+            except Exception:
+                return match.group(0)
+
+        try:
+            return _re.sub(r"MEDIA:([^\s]+)", _one, content)
+        except Exception:
+            return content
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Deliver a file as a Lounge link (IRC has no attachments)."""
+        url = await self._stage_media_link(file_path)
+        if url is None:
+            return SendResult(success=False,
+                              error="could not stage file for Lounge link")
+        text = f"{caption}\n{url}".strip() if caption else url
+        return await self.send(chat_id=chat_id, content=text)
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Deliver images as Lounge links (one line per file)."""
+        from urllib.parse import unquote as _unquote
+
+        lines = []
+        for image_url, _alt in images or []:
+            path = image_url[7:] if image_url.startswith("file://") else image_url
+            path = _unquote(path)
+            if image_url.startswith("http"):
+                lines.append(image_url)
+                continue
+            url = await self._stage_media_link(path)
+            lines.append(url or f"(could not attach {path})")
+            if human_delay > 0:
+                await asyncio.sleep(human_delay)
+        if lines:
+            await self.send(chat_id=chat_id, content="\n".join(lines))
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Deliver audio as a Lounge link (no voice bubbles on IRC)."""
+        return await self.send_document(
+            chat_id, audio_path, caption=caption, metadata=metadata)
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Deliver video as a Lounge link (no inline playback on IRC)."""
+        return await self.send_document(
+            chat_id, video_path, caption=caption, metadata=metadata)
+
     # ── Observatory rooms (BotSink surface for observatory.rooms) ──────────
 
     def managed_channels(self) -> set[str]:

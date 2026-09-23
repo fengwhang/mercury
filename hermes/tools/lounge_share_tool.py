@@ -37,6 +37,11 @@ async def _handle_lounge_share(args, **kw):
 
         staged = lounge_mod.stage_lounge_upload(None, path)
         url = lounge_mod.lounge_base_url(None) + "/" + staged["url_path"]
+        if not lounge_mod.check_upload_serves(url):
+            return tool_result({"success": False,
+                                "error": "staged but the link does not "
+                                         "serve (Lounge unreachable?) — "
+                                         "not posted"})
     except Exception as exc:
         logger.debug("lounge_share: stage failed", exc_info=True)
         return tool_result({"success": False, "error": str(exc)[:300]})

@@ -803,6 +803,21 @@ def stage_lounge_upload(mercury_home: str | Path | None,
             "filename": name}
 
 
+def check_upload_serves(url: str, timeout: float = 5.0) -> bool:
+    """Best-effort GET check that a staged link actually serves.
+
+    Catches the embarrassing post-a-dead-link case (server mid-restart,
+    wrong bind). Never raises; a failed check means "don't post".
+    """
+    try:
+        import urllib.request as _urlopen
+
+        with _urlopen.urlopen(url, timeout=timeout) as resp:
+            return 200 <= int(getattr(resp, "status", 200)) < 300
+    except Exception:
+        return False
+
+
 def lounge_base_url(mercury_home: str | Path | None = None) -> str:
     """Public base URL of this box's Lounge (for staged file links)."""
     st = status_lounge(mercury_home)

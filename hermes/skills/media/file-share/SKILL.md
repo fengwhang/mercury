@@ -1,12 +1,12 @@
 ---
 name: file-share
-description: "Share local files in the current IRC channel as Lounge links."
+description: "Send files in chat as links (paperclip, attachment)."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [IRC, Lounge, Files, Sharing]
 ---
 
@@ -15,10 +15,14 @@ metadata:
 Post a local file in the room you are already in. Same result as the
 human clicking the attachment button: a link only visible in that room.
 
-## Tools (use the one for your engine)
+## Procedure (one tool call)
 
-- Hermes: `lounge_share(path, caption?)` — posts the link itself.
-- OMP: `share_file(path, caption?)` — returns the URL; post it in reply.
+Hermes: `lounge_share(path, caption?)` stages, verifies, and posts the
+link in your current room by itself — one call, done. OMP:
+`share_file(path, caption?)` returns the URL; post it in your reply.
+
+Do NOT reimplement with terminal commands. If the tool errors, report
+the error text instead of working around it.
 
 ## Rules
 
