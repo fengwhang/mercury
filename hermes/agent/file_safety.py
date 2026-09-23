@@ -256,7 +256,7 @@ def get_read_block_error(path: str) -> Optional[str]:
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
         ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
         ``cache/bws_cache.json``, the IRC Observatory listener passwords
-        (``IRC_BOUNCER_PASSWORD`` / ``IRC_AGENT_PASSWORD`` in
+        (``IRC_CLIENT_PASSWORD`` / ``IRC_AGENT_PASSWORD`` in
         ``$MERCURY_HOME/.env`` — covered by the ``.env`` entry below),
         and anything under ``mcp-tokens/``. These hold plaintext provider keys,
         OAuth tokens, and HMAC secrets that the agent never needs to read

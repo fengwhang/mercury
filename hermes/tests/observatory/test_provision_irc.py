@@ -63,14 +63,16 @@ def test_ensure_config_accepts_explicit_over_corrupt_file(tmp_path, monkeypatch)
 def test_ensure_passwords_generates_once(tmp_path, monkeypatch) -> None:
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.delenv("IRC_CLIENT_PASSWORD", raising=False)
     monkeypatch.delenv("IRC_BOUNCER_PASSWORD", raising=False)
     monkeypatch.delenv("IRC_AGENT_PASSWORD", raising=False)
     first = provision.ensure_passwords(home)
     assert first["action"] == "generated"
     env_text = (home / ".env").read_text(encoding="utf-8")
-    assert "IRC_BOUNCER_PASSWORD=" in env_text
+    assert "IRC_CLIENT_PASSWORD=" in env_text
     assert "IRC_AGENT_PASSWORD=" in env_text
-    monkeypatch.setenv("IRC_BOUNCER_PASSWORD", "x" * 16)
+    assert "IRC_BOUNCER_PASSWORD=" not in env_text
+    monkeypatch.setenv("IRC_CLIENT_PASSWORD", "x" * 16)
     monkeypatch.setenv("IRC_AGENT_PASSWORD", "y" * 16)
     second = provision.ensure_passwords(home)
     assert second["action"] == "current"
@@ -79,6 +81,7 @@ def test_ensure_passwords_generates_once(tmp_path, monkeypatch) -> None:
 def test_provision_full_flow(tmp_path, monkeypatch) -> None:
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.delenv("IRC_CLIENT_PASSWORD", raising=False)
     monkeypatch.delenv("IRC_BOUNCER_PASSWORD", raising=False)
     monkeypatch.delenv("IRC_AGENT_PASSWORD", raising=False)
     summary = provision.provision(home, server_name="mercury", systemd=False)
@@ -86,7 +89,8 @@ def test_provision_full_flow(tmp_path, monkeypatch) -> None:
     assert summary["unit"] == "skipped (--no-systemd)"
     assert summary["gateway"] == "mercury_gateway"
     cfg = json.loads((home / "observatory" / "ircd.json").read_text(encoding="utf-8"))
-    assert cfg["agent_port"] == 6669 and cfg["bouncer_port"] == 6670
+    assert cfg["agent_port"] == 6669 and cfg["server_port"] == 6670
+    assert "bouncer_port" not in cfg
     # gateway row carries the channel
     from observatory.state import ObservatoryState, default_state_db_path
 
@@ -150,6 +154,7 @@ def test_ensure_tls_cert_generates_once(tmp_path, monkeypatch) -> None:
 def test_provision_flow_includes_tls(tmp_path, monkeypatch) -> None:
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.delenv("IRC_CLIENT_PASSWORD", raising=False)
     monkeypatch.delenv("IRC_BOUNCER_PASSWORD", raising=False)
     monkeypatch.delenv("IRC_AGENT_PASSWORD", raising=False)
     summary = provision.provision(home, server_name="mercury", systemd=False)
@@ -224,13 +229,15 @@ def test_reset_blanks_listener_passwords(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("MERCURY_HOME", str(home))
     home.mkdir(parents=True)
     (home / ".env").write_text(
-        "OTHER=keep\nIRC_BOUNCER_PASSWORD=old1\nIRC_AGENT_PASSWORD=old2\n")
+        "OTHER=keep\nIRC_CLIENT_PASSWORD=new1\nIRC_BOUNCER_PASSWORD=old1\n"
+        "IRC_AGENT_PASSWORD=old2\n")
     removed = provision.reset_observatory_data(home)
     rest = (home / ".env").read_text()
+    assert "IRC_CLIENT_PASSWORD" not in rest
     assert "IRC_BOUNCER_PASSWORD" not in rest
     assert "IRC_AGENT_PASSWORD" not in rest
     assert "OTHER=keep" in rest
-    assert ".env:IRC_BOUNCER_PASSWORD" in removed
+    assert ".env:IRC_CLIENT_PASSWORD" in removed
     # next provision generates fresh secrets
     made = provision.ensure_passwords(home)
     assert made["action"] == "generated"
@@ -348,10 +355,12 @@ def test_mirror_syncs_environ(tmp_path, monkeypatch) -> None:
 
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
-    monkeypatch.delenv("IRC_BOUNCER_PASSWORD", raising=False)
+    monkeypatch.delenv("IRC_CLIENT_PASSWORD", raising=False)
+    monkeypatch.setenv("IRC_BOUNCER_PASSWORD", "stale-b")
     provision.mirror_irc_env(home, "fresh-b", "fresh-a")
-    assert _os.environ["IRC_BOUNCER_PASSWORD"] == "fresh-b"
+    assert _os.environ["IRC_CLIENT_PASSWORD"] == "fresh-b"
     assert _os.environ["IRC_AGENT_PASSWORD"] == "fresh-a"
+    assert "IRC_BOUNCER_PASSWORD" not in _os.environ
 
 
 def test_reset_wipes_npm_cache(tmp_path, monkeypatch) -> None:
@@ -362,3 +371,32 @@ def test_reset_wipes_npm_cache(tmp_path, monkeypatch) -> None:
     (cache / "index").write_text("cached")
     provision.reset_observatory_data(home)
     assert not cache.exists()
+
+
+def test_old_keys_honored_as_fallback(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.delenv("IRC_CLIENT_PASSWORD", raising=False)
+    monkeypatch.delenv("IRC_BOUNCER_PASSWORD", raising=False)
+    monkeypatch.delenv("IRC_AGENT_PASSWORD", raising=False)
+    home.mkdir(parents=True)
+    (home / ".env").write_text("IRC_BOUNCER_PASSWORD=legacy16chars\n")
+    assert (provision.read_irc_passwords(home)["bouncer"]
+            == "legacy16chars")
+    obs = home / "observatory"
+    obs.mkdir(parents=True)
+    import json as _json
+    (obs / "ircd.json").write_text(_json.dumps(
+        {"server_name": "vm", "bouncer_host": "100.9.9.9",
+         "bouncer_port": 6670}))
+    assert (provision.server_key({"bouncer_host": "x"}, "server_host")
+            == "x")
+    assert (provision.server_key({"server_host": "y", "bouncer_host": "x"},
+                                 "server_host") == "y")
+    out = provision.provision(home, server_name="vm", systemd=False)
+    cfg = _json.loads((obs / "ircd.json").read_text())
+    assert cfg["server_host"] == "100.9.9.9"
+    assert cfg["server_port"] == 6670
+    assert "bouncer_host" not in cfg and "bouncer_port" not in cfg
+    assert out["daemon"]["action"] in (
+        "current", "started-fresh", "restarted", "skipped")

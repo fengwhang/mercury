@@ -268,7 +268,7 @@ _open_observatory_firewall() { # $1 = server chat port (default 6670). Best-effo
     return 0
 }
 install_observatory() {
-    # Optional: export OBSERVATORY_BOUNCER_PASSWORD (min 8 chars) to pin
+    # Optional: export OBSERVATORY_SERVER_PASSWORD (min 8 chars) to pin
     # the server password instead of generating one. The environment
     # passes through to provisioning below — never pass it as an
     # argument (argv is ps-visible). The daemon restart applies it.
@@ -284,10 +284,10 @@ install_observatory() {
         || { log_error "observatory provisioning failed (see output above)"; exit 1; }
     # No bouncer layer: the stdlib ircd owns the client ports directly
     # (6670/6697) — the old soju step is retired, not replaced.
-    local _bouncer_port _tls_port
-    _bouncer_port="$("$VENV_PY" -c "import json;print(json.load(open('$MERCURY_HOME/observatory/ircd.json'))['bouncer_port'])" 2>/dev/null)" || _bouncer_port=""
+    local _server_port _tls_port
+    _server_port="$("$VENV_PY" -c "import json;d=json.load(open('$MERCURY_HOME/observatory/ircd.json'));print(d.get('server_port') or d.get('bouncer_port'))" 2>/dev/null)" || _server_port=""
     _tls_port="$("$VENV_PY" -c "import json;print(json.load(open('$MERCURY_HOME/observatory/ircd.json')).get('tls_port') or 6697)" 2>/dev/null)" || _tls_port=""
-    _open_observatory_firewall "${_bouncer_port:-6670}"
+    _open_observatory_firewall "${_server_port:-6670}"
     _open_observatory_firewall "${_tls_port:-6697}"
     log_success "observatory ready: $MERCURY_HOME/observatory/"
 }

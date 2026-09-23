@@ -48,6 +48,8 @@ SERVER_NAME_META_KEY = "server_name"
 
 #: $MERCURY_HOME/.env keys for the IRC listeners (0600; the setup card
 #: points here — NEVER printed to the terminal).
+ENV_CLIENT_PASSWORD = "IRC_CLIENT_PASSWORD"
+#: Pre-rename key, read-only fallback (old installs).
 ENV_BOUNCER_PASSWORD = "IRC_BOUNCER_PASSWORD"
 ENV_AGENT_PASSWORD = "IRC_AGENT_PASSWORD"
 
@@ -164,10 +166,12 @@ def mirror_irc_env(
     a startup snapshot.
     """
     env_path = _mercury_home(mercury_home) / ".env"
-    _upsert_env_key(env_path, ENV_BOUNCER_PASSWORD, bouncer_password)
+    _upsert_env_key(env_path, ENV_CLIENT_PASSWORD, bouncer_password)
+    _remove_env_key(env_path, ENV_BOUNCER_PASSWORD)
     _upsert_env_key(env_path, ENV_AGENT_PASSWORD, agent_password)
     try:
-        os.environ[ENV_BOUNCER_PASSWORD] = bouncer_password
+        os.environ[ENV_CLIENT_PASSWORD] = bouncer_password
+        os.environ.pop(ENV_BOUNCER_PASSWORD, None)
         os.environ[ENV_AGENT_PASSWORD] = agent_password
     except Exception:
         pass
@@ -183,21 +187,25 @@ def read_irc_passwords(mercury_home: str | Path | None = None) -> dict[str, str]
     produced persistent 464s ("Password mismatch" in the lobby) while
     every file on disk agreed.
     """
-    try:
-        from mercury_cli.config import get_env_value_prefer_dotenv
+    def _one(*keys: str) -> str:
+        for key in keys:
+            try:
+                from mercury_cli.config import get_env_value_prefer_dotenv
 
-        bouncer = str(get_env_value_prefer_dotenv(ENV_BOUNCER_PASSWORD) or "")
-        agent = str(get_env_value_prefer_dotenv(ENV_AGENT_PASSWORD) or "")
-    except Exception:
-        try:
-            from mercury_cli.config import get_env_value
+                val = str(get_env_value_prefer_dotenv(key) or "")
+            except Exception:
+                try:
+                    from mercury_cli.config import get_env_value
 
-            bouncer = str(get_env_value(ENV_BOUNCER_PASSWORD) or "")
-            agent = str(get_env_value(ENV_AGENT_PASSWORD) or "")
-        except Exception:
-            bouncer = os.environ.get(ENV_BOUNCER_PASSWORD, "")
-            agent = os.environ.get(ENV_AGENT_PASSWORD, "")
-    return {"bouncer": bouncer, "agent": agent}
+                    val = str(get_env_value(key) or "")
+                except Exception:
+                    val = os.environ.get(key, "")
+            if val:
+                return val
+        return ""
+
+    return {"bouncer": _one(ENV_CLIENT_PASSWORD, ENV_BOUNCER_PASSWORD),
+            "agent": _one(ENV_AGENT_PASSWORD)}
 
 
 # --- config ------------------------------------------------------------------
@@ -208,11 +216,27 @@ def default_config(*, server_name: str = SERVER_NAME_DEFAULT) -> dict[str, Any]:
         "server_name": server_name,
         "agent_host": IRCD_ADDRESS,
         "agent_port": IRCD_AGENT_PORT_DEFAULT,
-        "bouncer_host": IRCD_ADDRESS,
-        "bouncer_port": IRCD_BOUNCER_PORT_DEFAULT,
+        "server_host": IRCD_ADDRESS,
+        "server_port": IRCD_BOUNCER_PORT_DEFAULT,
         "tls_port": IRCD_TLS_PORT_DEFAULT,
         "history_limit": HISTORY_LIMIT_DEFAULT,
     }
+
+
+#: ircd.json rename (bouncer_* -> server_*): readers take the new key
+#: with the old as fallback so pre-rename installs keep working; writers
+#: emit new keys only (old keys are popped on the next provision write).
+SERVER_KEY_FALLBACKS = {"server_host": "bouncer_host",
+                        "server_port": "bouncer_port"}
+
+
+def server_key(cfg: dict | None, key: str, default: Any = None) -> Any:
+    """Read a renamed ircd.json key (new preferred, old accepted)."""
+    cfg = cfg or {}
+    val = cfg.get(key)
+    if val in (None, ""):
+        val = cfg.get(SERVER_KEY_FALLBACKS.get(key, key), default)
+    return val
 
 
 def read_config(mercury_home: str | Path | None = None) -> dict[str, Any] | None:
@@ -245,14 +269,17 @@ def ensure_config(
     current = read_config(paths.root.parent)
     had_config = isinstance(current, dict)
     cfg = default_config() if not had_config else dict(current)
+    for _new, _old in SERVER_KEY_FALLBACKS.items():
+        if _new not in cfg and _old in cfg:
+            cfg[_new] = cfg.pop(_old)
     explicit = {
         "server_name": (
             validate_server_name(server_name) if server_name is not None else None
         ),
         "agent_host": agent_host,
         "agent_port": agent_port,
-        "bouncer_host": bouncer_host,
-        "bouncer_port": bouncer_port,
+        "server_host": bouncer_host,
+        "server_port": bouncer_port,
         "tls_port": tls_port,
         "history_limit": history_limit,
     }
@@ -298,7 +325,7 @@ def ensure_passwords(mercury_home: str | Path | None = None) -> dict[str, Any]:
 #: Env var carrying a user-chosen bouncer password into provisioning
 #: (install.sh passes the environment through; never an argv flag —
 #: secrets stay out of ps output). Validated like a wizard-typed one.
-ENV_CHOSEN_BOUNCER_PASSWORD = "OBSERVATORY_BOUNCER_PASSWORD"
+ENV_CHOSEN_BOUNCER_PASSWORD = "OBSERVATORY_SERVER_PASSWORD"
 
 
 def set_bouncer_password(
@@ -675,11 +702,11 @@ def detect_tailscale() -> dict:
 
 
 def current_listen_addresses(mercury_home: str | Path | None = None) -> list[str]:
-    """Configured [agent_host, bouncer_host] (deduped, for the bind trap check)."""
+    """Configured [agent_host, server_host] (deduped, for the bind trap check)."""
     cfg = read_config(mercury_home) or {}
     addrs = [
         str(cfg.get("agent_host") or IRCD_ADDRESS),
-        str(cfg.get("bouncer_host") or IRCD_ADDRESS),
+        str(server_key(cfg, "server_host", IRCD_ADDRESS)),
     ]
     out: list[str] = []
     for addr in addrs:
@@ -721,7 +748,8 @@ def set_ircd_bind(
             "run 'mercury setup observatory' install first"
         )
     if listener in ("bouncer", "both"):
-        cfg["bouncer_host"] = target
+        cfg["server_host"] = target
+        cfg.pop("bouncer_host", None)
     if listener in ("agent", "both"):
         cfg["agent_host"] = target
     paths.config_file.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
@@ -973,8 +1001,8 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
         # "mercury" default (status used to omit this and every card
         # printed #mercury_gateway regardless of the chosen name).
         "server_name": live_server_name(home),
-        "bouncer": f"{(cfg or {}).get('bouncer_host', IRCD_ADDRESS)}:"
-        f"{(cfg or {}).get('bouncer_port', IRCD_BOUNCER_PORT_DEFAULT)}",
+        "bouncer": f"{server_key(cfg, 'server_host', IRCD_ADDRESS)}:"
+        f"{server_key(cfg, 'server_port', IRCD_BOUNCER_PORT_DEFAULT)}",
         "tls_port": _safe_port((cfg or {}).get("tls_port"), IRCD_TLS_PORT_DEFAULT),
         "tls_ready": bool(
             (ObservatoryPaths(home).tls_cert.is_file())
@@ -1040,7 +1068,8 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
                 pass
     except Exception:
         pass
-    for key in (ENV_BOUNCER_PASSWORD, ENV_AGENT_PASSWORD):
+    for key in (ENV_CLIENT_PASSWORD, ENV_BOUNCER_PASSWORD,
+                  ENV_AGENT_PASSWORD):
         try:
             if _remove_env_key(home / ".env", key):
                 removed.append(f".env:{key}")

@@ -1,6 +1,6 @@
 """Regression tests for the IRC observatory secret closure.
 
-Law: the listener passwords ``IRC_BOUNCER_PASSWORD`` /
+Law: the listener passwords ``IRC_CLIENT_PASSWORD`` /
 ``IRC_AGENT_PASSWORD`` in ``$MERCURY_HOME/.env`` (0600) must never reach
 model context through file tools. Every model-facing file-reading tool
 refuses these reads (read_file, patch replace + V4A, search_files
@@ -35,7 +35,8 @@ def fake_mercury(tmp_path, monkeypatch):
     monkeypatch.setattr(fs, "_hermes_root_path", lambda: home)
     env = home / ".env"
     env.write_text(
-        f"IRC_BOUNCER_PASSWORD={SENTINEL_BOUNCER}\n"
+        f"IRC_CLIENT_PASSWORD={SENTINEL_BOUNCER}\n"
+        f"IRC_BOUNCER_PASSWORD=legacy-{SENTINEL_BOUNCER}\n"
         f"IRC_AGENT_PASSWORD={SENTINEL_AGENT}\n",
         encoding="utf-8",
     )
@@ -95,8 +96,8 @@ class TestPatchRefusesObservatorySecrets:
             "*** Begin Patch\n"
             f"*** Update File: {fake_mercury['env']}\n"
             "@@\n"
-            f"-IRC_BOUNCER_PASSWORD={SENTINEL_BOUNCER}\n"
-            "+IRC_BOUNCER_PASSWORD=hacked\n"
+            f"-IRC_CLIENT_PASSWORD={SENTINEL_BOUNCER}\n"
+            "+IRC_CLIENT_PASSWORD=hacked\n"
             "*** End Patch\n"
         )
         result = json.loads(patch_tool(mode="patch", patch=v4a))
@@ -155,4 +156,4 @@ class TestWizardSurfacesCarryNoValues:
         assert SENTINEL_BOUNCER not in out
         assert SENTINEL_AGENT not in out
         # Location / variable names may remain; values must not.
-        assert "IRC_BOUNCER_PASSWORD" in out
+        assert "IRC_CLIENT_PASSWORD" in out

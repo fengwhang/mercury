@@ -219,7 +219,8 @@ def test_setup_card_mentions_bouncer_not_password(capsys):
     out = capsys.readouterr().out
     assert "127.0.0.1:6670" in out
     assert "#mercury_gateway" in out
-    assert "IRC_BOUNCER_PASSWORD" in out
+    assert "IRC_CLIENT_PASSWORD" in out
+    assert "IRC_BOUNCER_PASSWORD" not in out
     assert "bouncer address" not in out
     assert "server address" in out
     assert "client address" not in out
@@ -768,8 +769,8 @@ def test_lounge_offer_seeds_live_bouncer_bind(monkeypatch) -> None:
     monkeypatch.setattr(provision_mod, "_mercury_home", lambda home: "/h")
     monkeypatch.setattr(
         provision_mod, "read_config",
-        lambda home: {"server_name": "vm", "bouncer_host": "100.9.9.9",
-                      "bouncer_port": 6670})
+        lambda home: {"server_name": "vm", "server_host": "100.9.9.9",
+                      "server_port": 6670})
     monkeypatch.setattr(
         provision_mod, "read_irc_passwords",
         lambda home: {"bouncer": "pw", "agent": "pw2"})
@@ -796,8 +797,8 @@ def test_converge_repoints_drifted_uplink(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(provision_mod, "_mercury_home", lambda h: home)
     monkeypatch.setattr(
         provision_mod, "read_config",
-        lambda h: {"server_name": "vm", "bouncer_host": "100.9.9.9",
-                   "bouncer_port": 6670})
+        lambda h: {"server_name": "vm", "server_host": "100.9.9.9",
+                   "server_port": 6670})
     monkeypatch.setattr(
         provision_mod, "read_irc_passwords",
         lambda h: {"bouncer": "pw", "agent": "pw2"})
@@ -850,3 +851,38 @@ def test_converge_failure_is_loud(monkeypatch, capsys) -> None:
     monkeypatch.setattr(provision_mod, "_mercury_home", _boom)
     setup_mod._converge_lounge_uplink()
     assert "converge failed" in capsys.readouterr().out
+
+
+def test_converge_applies_config_template_drift(tmp_path, monkeypatch) -> None:
+    import json as _json
+    import observatory.lounge as lounge_mod
+    from observatory import provision as provision_mod
+
+    home = tmp_path / "mercury"
+    monkeypatch.setattr(provision_mod, "_mercury_home", lambda h: home)
+    monkeypatch.setattr(
+        provision_mod, "read_config",
+        lambda h: {"server_name": "vm", "server_host": "127.0.0.1",
+                   "server_port": 6670})
+    monkeypatch.setattr(
+        provision_mod, "read_irc_passwords",
+        lambda h: {"bouncer": "pw", "agent": "pw2"})
+    paths = lounge_mod.LoungePaths(home)
+    users = paths.home / "users"
+    users.mkdir(parents=True)
+    (users / "owner.json").write_text(_json.dumps({"networks": [{
+        "name": "vm", "host": "127.0.0.1", "port": 6670,
+        "password": "pw", "nick": "owner", "username": "owner",
+        "channels": [{"name": "#vm_gateway", "muted": False,
+                      "key": ""}]}]}))
+    # stale template: config without fileUpload
+    paths.dir.mkdir(parents=True, exist_ok=True)
+    (paths.dir / "config.js").write_text(
+        'module.exports = {\n\thost: "127.0.0.1",\n\tport: 9000,\n};\n')
+    monkeypatch.setattr(lounge_mod, "lounge_unit_active", lambda: True)
+    restarted = []
+    monkeypatch.setattr(lounge_mod, "restart_lounge",
+                        lambda: restarted.append(True))
+    setup_mod._converge_lounge_uplink()
+    assert "fileUpload" in (paths.dir / "config.js").read_text()
+    assert restarted == [True]

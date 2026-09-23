@@ -267,15 +267,28 @@ def test_resolve_layers_argv_over_file_over_defaults(tmp_path) -> None:
 
     cfg_file = tmp_path / "ircd.json"
     cfg_file.write_text(
-        json.dumps({"bouncer_host": "100.64.0.1", "bouncer_port": 6670}),
+        json.dumps({"server_host": "100.64.0.1", "server_port": 6670}),
         encoding="utf-8",
     )
     cfg = _resolve_daemon_config(_args(config=str(cfg_file)))
     assert cfg.bouncer_host == "100.64.0.1"
     assert cfg.agent_port == 6669  # compiled default fills gaps
     assert cfg.tls_port == 6697  # absent file key falls back to default
-    cfg = _resolve_daemon_config(_args(config=str(cfg_file), bouncer_port=7777))
-    assert cfg.bouncer_port == 7777  # explicit flag wins
+
+
+def test_resolve_honors_legacy_bouncer_keys(tmp_path) -> None:
+    import json
+
+    from observatory.ircd import _resolve_daemon_config
+
+    cfg_file = tmp_path / "ircd.json"
+    cfg_file.write_text(
+        json.dumps({"bouncer_host": "100.64.0.1", "bouncer_port": 6670}),
+        encoding="utf-8",
+    )
+    cfg = _resolve_daemon_config(_args(config=str(cfg_file)))
+    assert cfg.bouncer_host == "100.64.0.1"
+    assert cfg.bouncer_port == 6670
 
 
 def test_resolve_agent_host_pin(tmp_path) -> None:

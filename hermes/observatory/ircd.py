@@ -1217,7 +1217,8 @@ def _resolve_daemon_config(args: Any) -> DaemonConfig:
 
     password = getattr(args, "password", None)
     if password is None:
-        password = _os.environ.get("IRC_BOUNCER_PASSWORD", "")
+        password = _os.environ.get("IRC_CLIENT_PASSWORD", "") or _os.environ.get(
+            "IRC_BOUNCER_PASSWORD", "")
     agent_password = getattr(args, "agent_password", None)
     if agent_password is None:
         agent_password = _os.environ.get("IRC_AGENT_PASSWORD", "")
@@ -1240,14 +1241,20 @@ def _resolve_daemon_config(args: Any) -> DaemonConfig:
     _agent_host = file_cfg.get("agent_host")
     if isinstance(_agent_host, str) and _agent_host.strip():
         file_cfg = dict(file_cfg, host=_agent_host.strip())
-    # The client (bouncer) listener binds per ircd.json directly —
-    # direct IRC clients and The Lounge connect here.
-    bouncer_host = _pick("bouncer_host", "127.0.0.1")
+    # The client listener binds per ircd.json directly — direct IRC
+    # clients and The Lounge connect here. Pre-rename files still say
+    # bouncer_host/bouncer_port: honor them in memory (provision pops
+    # them on its next write).
+    for _new, _old in (("server_host", "bouncer_host"),
+                       ("server_port", "bouncer_port")):
+        if _new not in file_cfg and _old in file_cfg:
+            file_cfg = dict(file_cfg, **{_new: file_cfg[_old]})
+    bouncer_host = _pick("server_host", "127.0.0.1")
     return DaemonConfig(
         host=_pick("host", "127.0.0.1"),
         agent_port=_pick("agent_port", 6669),
         bouncer_host=bouncer_host,
-        bouncer_port=_pick("bouncer_port", 6670),
+        bouncer_port=_pick("server_port", 6670),
         tls_port=_pick("tls_port", 6697),
         tls_cert=tls_cert,
         tls_key=tls_key,
@@ -1268,8 +1275,6 @@ def main(argv: list[str] | None = None) -> int:
     # --state-dir so bind edits never go stale.
     parser.add_argument("--host", default=None)
     parser.add_argument("--agent-port", type=int, default=None)
-    parser.add_argument("--bouncer-host", default=None)
-    parser.add_argument("--bouncer-port", type=int, default=None)
     parser.add_argument("--server-name", default=None)
     # Passwords: explicit flags win; env fallback keeps secrets out of
     # ps output (the systemd unit passes none — EnvironmentFile only).

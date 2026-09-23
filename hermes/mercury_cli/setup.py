@@ -3017,7 +3017,7 @@ def _bouncer_port(bouncer: str) -> str:
 
 
 def _current_listen_addrs(obs) -> list[str] | None:
-    """Configured [agent_host, bouncer_host] (None when unreadable)."""
+    """Configured [agent_host, server_host] (None when unreadable)."""
     try:
         fn = getattr(obs, "current_listen_addresses", None)
         if fn is None:
@@ -3064,11 +3064,11 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
             _bind(ip)
         except Exception as exc:  # noqa: BLE001
             print_warning(f"Could not expose the IRC server on {ip}: {exc}")
-            print_info("Edit `bouncer_host` in observatory/ircd.json by hand instead.")
+            print_info("Edit `server_host` in observatory/ircd.json by hand instead.")
             return
     except Exception as exc:  # noqa: BLE001
         print_warning(f"Could not expose the IRC server on {ip}: {exc}")
-        print_info("Edit `bouncer_host` in observatory/ircd.json by hand instead.")
+        print_info("Edit `server_host` in observatory/ircd.json by hand instead.")
         return
     try:
         from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
@@ -3316,7 +3316,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     lines.extend(
         [
             "nickname:             pick any nick (no accounts — the password is the auth)",
-            "server password:      your .env file (IRC_BOUNCER_PASSWORD,",
+            "server password:      your .env file (IRC_CLIENT_PASSWORD,",
             "                      mode 0600 — paste it when the client asks)",
             "",
             "this box from another Lounge:",
@@ -3915,6 +3915,7 @@ def _converge_lounge_uplink() -> None:
         from observatory.provision import (
             _mercury_home as _mh, read_config as _read_cfg,
             read_irc_passwords as _read_pw,
+            server_key as provision_server_key,
         )
 
         home = _mh(None)
@@ -3927,13 +3928,28 @@ def _converge_lounge_uplink() -> None:
         out = lounge_mod.ensure_lounge_network(
             lounge_mod.LoungePaths(home), users[0],
             net_name=server,
-            host=str(cfg.get("bouncer_host") or "127.0.0.1"),
-            port=int(cfg.get("bouncer_port") or 6670),
+            host=str(provision_server_key(cfg, "server_host") or "127.0.0.1"),
+            port=int(provision_server_key(cfg, "server_port") or 6670),
             server_password=str((pw or {}).get("bouncer") or ""),
             nick=users[0], channel=f"#{server}_gateway")
-        if out.get("action") == "seeded" and lounge_mod.lounge_unit_active():
+        need_restart = bool(out.get("action") == "seeded")
+        # Template drift (new config.js keys like fileUpload): re-render
+        # with the LIVE bind so existing installs pick up provisioning
+        # changes without reinstalling. The skip path otherwise freezes
+        # the config at first-install time forever.
+        try:
+            li = lounge_mod.status_lounge(home)
+            conf = lounge_mod.ensure_lounge_config(
+                lounge_mod.LoungePaths(home),
+                host=str(li.get("host") or "127.0.0.1"),
+                port=int(li.get("port") or lounge_mod.LOUNGE_PORT_DEFAULT))
+            if conf.get("action") not in ("current",):
+                need_restart = True
+        except Exception as exc:  # noqa: BLE001 — network seed stands alone
+            print_warning(f"Lounge config converge failed: {exc}")
+        if need_restart and lounge_mod.lounge_unit_active():
             lounge_mod.restart_lounge()
-            print_info("Lounge uplink re-pointed at the live chat port.")
+            print_info("Lounge re-pointed at the live chat port.")
     except Exception as exc:  # noqa: BLE001 — converge never kills
         try:
             print_warning(f"Lounge uplink converge failed: {exc}")
@@ -4026,6 +4042,7 @@ def _offer_lounge(obs, ts: dict | None) -> None:
             from observatory.provision import (
                 _mercury_home as _mh, read_config as _read_cfg,
                 read_irc_passwords as _read_pw,
+                server_key as provision_server_key,
             )
             _cfg = _read_cfg(_mh(None)) or {}
             _server = str(_cfg.get("server_name") or "mercury")
@@ -4033,11 +4050,11 @@ def _offer_lounge(obs, ts: dict | None) -> None:
             # Uplink MUST use the live bouncer bind, not localhost:
             # a tailnet-pinned chat port refuses 127.0.0.1 and the
             # pre-seeded network dies with ECONNREFUSED (verified live).
-            _uplink_host = str(_cfg.get("bouncer_host") or "127.0.0.1")
+            _uplink_host = str(provision_server_key(_cfg, "server_host") or "127.0.0.1")
             summary = lounge_mod.provision_lounge(
                 host=host, username=username, password=password,
                 uplink_host=_uplink_host,
-                uplink_port=int(_cfg.get("bouncer_port") or 6670),
+                uplink_port=int(provision_server_key(_cfg, "server_port") or 6670),
                 uplink_password=str((_pw or {}).get("bouncer") or ""),
                 uplink_name=_server, uplink_nick=username,
                 uplink_channel=f"#{_server}_gateway")
