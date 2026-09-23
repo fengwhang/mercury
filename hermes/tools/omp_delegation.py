@@ -485,6 +485,10 @@ def ensure_omp_home_env(env: Dict[str, str],
     if not home:
         home = str(Path.home() / ".mercury")
     base = str(Path(home) / "omp")
+    # The engine keys its config root off MERCURY_HOME (dirs.ts ONE-home
+    # patch): without it a scrubbed env falls back to ~/.omp — shared with
+    # stock installs. setdefault so an explicit user export always wins.
+    env.setdefault("MERCURY_HOME", home)
     env.setdefault("PI_CODING_AGENT_DIR", base)
     env.setdefault("OMP_WORKTREE_DIR", base + "/wt")
     env.setdefault("XDG_DATA_HOME", str(Path(home) / ".local" / "share"))

@@ -15,6 +15,7 @@ import {
 	getStatsDbPath,
 	normalizeProfileName,
 	resolveProfileEnv,
+	refreshDirsFromEnv,
 	setAgentDir,
 	setProfile,
 } from "@oh-my-pi/pi-utils/dirs";
@@ -43,6 +44,7 @@ describe("profile directories", () => {
 	let originalProfile: string | undefined;
 	let originalAgentDirEnv: string | undefined;
 	let originalOmpProfileEnv: string | undefined;
+	let originalMercuryHome: string | undefined;
 	let originalPiProfileEnv: string | undefined;
 	let originalConfigDir: string | undefined;
 	let originalXdgDataHome: string | undefined;
@@ -54,6 +56,8 @@ describe("profile directories", () => {
 		originalProfile = getActiveProfile();
 		originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
 		originalOmpProfileEnv = process.env.OMP_PROFILE;
+		originalMercuryHome = process.env.MERCURY_HOME;
+		delete process.env.MERCURY_HOME;
 		originalPiProfileEnv = process.env.PI_PROFILE;
 		originalConfigDir = process.env.PI_CONFIG_DIR;
 		originalXdgDataHome = process.env.XDG_DATA_HOME;
@@ -107,6 +111,11 @@ describe("profile directories", () => {
 			delete process.env.OMP_PROFILE;
 		} else {
 			process.env.OMP_PROFILE = originalOmpProfileEnv;
+		}
+		if (originalMercuryHome === undefined) {
+			delete process.env.MERCURY_HOME;
+		} else {
+			process.env.MERCURY_HOME = originalMercuryHome;
 		}
 		if (originalPiProfileEnv === undefined) {
 			delete process.env.PI_PROFILE;
@@ -276,6 +285,22 @@ describe("profile env + name validation", () => {
 	});
 });
 
+describe("Mercury ONE-home config root", () => {
+	it("nests the config root under MERCURY_HOME instead of ~/.omp", () => {
+		const prev = process.env.MERCURY_HOME;
+		const mh = path.join(os.tmpdir(), `mercury-one-home-${Snowflake.next()}`);
+		process.env.MERCURY_HOME = mh;
+		try {
+			refreshDirsFromEnv();
+			expect(getConfigRootDir()).toBe(path.join(mh, "omp"));
+		} finally {
+			if (prev === undefined) delete process.env.MERCURY_HOME;
+			else process.env.MERCURY_HOME = prev;
+			refreshDirsFromEnv();
+		}
+	});
+});
+
 describe("dirs module import behavior", () => {
 	it("does not scrub inherited macOS malloc logging env variables on import", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-utils-dirs-import-"));
@@ -295,6 +320,8 @@ describe("dirs module import behavior", () => {
 
 			const childEnv: Record<string, string | undefined> = {
 				...process.env,
+				// Stock-behavior probes: never inherit a Mercury home.
+				MERCURY_HOME: undefined,
 				MallocStackLogging: "0",
 				MallocStackLoggingNoCompact: "0",
 			};
@@ -340,6 +367,8 @@ describe("dirs module import behavior", () => {
 
 			const childEnv: Record<string, string | undefined> = {
 				...process.env,
+				// Stock-behavior probes: never inherit a Mercury home.
+				MERCURY_HOME: undefined,
 				PI_CODING_AGENT_DIR: agentDir,
 			};
 			delete childEnv.OMP_WORKER_HOST_PROBE;
@@ -387,6 +416,8 @@ describe("dirs module import behavior", () => {
 
 				const childEnv: Record<string, string | undefined> = {
 					...process.env,
+					// Stock-behavior probes: never inherit a Mercury home.
+					MERCURY_HOME: undefined,
 					PI_CONFIG_DIR: probeConfigDir,
 					OMP_PROFILE: ompProfile,
 					PI_PROFILE: "work",
@@ -450,6 +481,8 @@ describe("dirs module import behavior", () => {
 
 			const childEnv: Record<string, string | undefined> = {
 				...process.env,
+				// Stock-behavior probes: never inherit a Mercury home.
+				MERCURY_HOME: undefined,
 				HOME: homeDir,
 				PI_CONFIG_DIR: profileConfigDir,
 				OMP_PROFILE: "work",

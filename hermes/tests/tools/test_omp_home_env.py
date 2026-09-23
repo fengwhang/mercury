@@ -15,6 +15,7 @@ def test_helper_pins_all_dirs(monkeypatch, tmp_path) -> None:
     env: dict = {}
     out = ensure_omp_home_env(env, str(home))
     assert out == {
+        "MERCURY_HOME": str(home),
         "PI_CODING_AGENT_DIR": str(home / "omp"),
         "OMP_WORKTREE_DIR": str(home / "omp" / "wt"),
         "XDG_DATA_HOME": str(home / ".local" / "share"),
@@ -22,6 +23,12 @@ def test_helper_pins_all_dirs(monkeypatch, tmp_path) -> None:
     assert env is out
     # The natives loader only honors XDG when the omp dir already exists.
     assert (home / ".local" / "share" / "omp").is_dir()
+
+
+def test_helper_never_overrides_explicit_mercury_home() -> None:
+    env: dict = {"MERCURY_HOME": "/custom-mercury"}
+    out = ensure_omp_home_env(env, "/h/mercury")
+    assert out["MERCURY_HOME"] == "/custom-mercury"
 
 
 def test_helper_never_overrides_explicit_xdg(monkeypatch, tmp_path) -> None:
