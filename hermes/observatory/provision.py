@@ -1055,8 +1055,10 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
         # npm-cache/ IS wiped: rm -rf ~/.mercury must leave no lounge
         # trace anywhere.
         from observatory.lounge import LoungePaths, lounge_npm_cache
+        from observatory.lounge import FILE_LOUNGE_CONFIG as _conf_name
         lpaths = LoungePaths(home)
-        for target in (lpaths.conf, lpaths.home, lounge_npm_cache(home)):
+        for target in (lpaths.conf, lpaths.home, lpaths.dir / _conf_name,
+                       lounge_npm_cache(home)):
             try:
                 if target.is_dir() and not target.is_symlink():
                     shutil.rmtree(target)

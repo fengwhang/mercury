@@ -161,8 +161,12 @@ class LoungePaths:
     def __init__(self, mercury_home: str | Path):
         self.root = Path(mercury_home).expanduser()
         self.dir = self.root / "observatory" / LOUNGE_DIRNAME
-        self.conf = self.dir / FILE_LOUNGE_CONFIG
         self.home = self.dir / "home"
+        # config.js lives IN the home: that is the only file the server
+        # reads ($THELOUNGE_HOME/config.js). A config anywhere else is
+        # decoration — including our own pre-0.131 dir/config.js, which
+        # ensure removes when it finds it.
+        self.conf = self.home / FILE_LOUNGE_CONFIG
 
 
 def lounge_prefix(mercury_home: str | Path | None = None) -> Path:
@@ -402,6 +406,12 @@ def ensure_lounge_config(paths: LoungePaths, *, host: str, port: int) -> dict:
         paths.home.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
         raise LoungeError(f"lounge dir create failed: {exc}") from exc
+    try:
+        stale = paths.dir / FILE_LOUNGE_CONFIG
+        if stale != paths.conf and stale.is_file():
+            stale.unlink()
+    except Exception:
+        pass
     rendered = render_lounge_config(host=host, port=port)
     try:
         current = paths.conf.read_text(encoding="utf-8") if paths.conf.is_file() else None

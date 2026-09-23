@@ -429,3 +429,26 @@ def test_install_pins_lounge_version(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(lounge_mod, "_run", _fake_run)
     lounge_mod.ensure_lounge_installed()
     assert "thelounge@4.5.2" in seen["args"]
+
+
+def test_conf_lives_in_lounge_home(tmp_path) -> None:
+    """config.js must be $THELOUNGE_HOME/config.js — the only file read."""
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    assert paths.conf == paths.home / "config.js"
+
+
+def test_ensure_removes_stale_dir_config(tmp_path) -> None:
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    paths.dir.mkdir(parents=True)
+    (paths.dir / "config.js").write_text("// stale pre-0.131 location\n")
+    out = lounge_mod.ensure_lounge_config(paths, host="127.0.0.1", port=9000)
+    assert out["action"] == "wrote"
+    assert not (paths.dir / "config.js").exists()
+    live = (paths.home / "config.js").read_text()
+    assert "fileUpload" in live
+    assert lounge_mod.ensure_lounge_config(
+        paths, host="127.0.0.1", port=9000)["action"] == "current"
