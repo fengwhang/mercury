@@ -3,16 +3,16 @@
   "name": "@oh-my-pi/pi-utils",
   "version": "18.1.6",
   "description": "Shared utilities for pi packages",
-  "homepage": "https://omp.sh",
-  "author": "Stencil Labs, Inc.",
+  "homepage": "https://github.com/Fengwhang/mercury",
+  "author": "Mercury (https://github.com/Fengwhang/mercury)",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
+    "url": "git+https://github.com/Fengwhang/mercury.git",
     "directory": "packages/utils"
   },
   "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
+    "url": "https://github.com/Fengwhang/mercury/issues"
   },
   "keywords": [
     "utilities",

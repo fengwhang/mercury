@@ -1,9 +1,9 @@
 # macOS signing & notarization
 
-The compiled macOS `omp` binaries shipped on GitHub Releases can be signed with a
+The compiled macOS `omp` binaries shipped with Mercury releases can be signed with a
 **Developer ID Application** certificate and **notarized** by Apple. This makes
 them Gatekeeper-acceptable and is the prerequisite for an official Homebrew
-submission (see [#776](https://github.com/can1357/oh-my-pi/issues/776)).
+submission (see #776).
 
 Signing happens in CI in the `release_binary_darwin` matrix legs
 (`.github/workflows/ci.yml`), via `scripts/ci-macos-sign.sh`. The workflow step
@@ -52,15 +52,12 @@ signing or credential failure.
 
 What this means in practice:
 
-- `curl https://omp.sh/install | sh` — `curl` sets no quarantine bit, so
-  Gatekeeper is not consulted.
-- Homebrew **formula** installs — Homebrew does not quarantine formula files, so
+- Mercury release tarballs — `curl`-fetched and unpacked by `install.sh`, so
   Gatekeeper is not consulted.
 - Anything that **quarantines** the binary (a browser download, or a Homebrew
   **cask**) needs Apple's online ticket lookup. For an offline-distributable
   artifact, wrap the binary in a stapleable, notarized **`.pkg` or `.dmg`**
-  (`xcrun stapler staple` works on those). That is not required for the
-  `curl`/formula paths.
+  (`xcrun stapler staple` works on those). That is not required for the tarball path.
 
 ## Required GitHub secrets
 
@@ -101,7 +98,7 @@ over stdin — no secret is ever printed to the terminal, argv, or shell history
 ```sh
 scripts/ci-macos-upload-secrets.sh ~/omp-signing --dry-run   # validate first
 scripts/ci-macos-upload-secrets.sh ~/omp-signing             # upload all five
-gh secret list --repo can1357/oh-my-pi                       # confirm
+gh secret list --repo Fengwhang/mercury                       # confirm
 ```
 
 Re-run it whenever the certificate is renewed.
