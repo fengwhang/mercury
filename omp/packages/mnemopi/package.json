@@ -2,20 +2,20 @@
   "type": "module",
   "name": "@oh-my-pi/pi-mnemopi",
   "version": "18.1.6",
-  "description": "Local SQLite memory engine for Oh My Pi agents",
-  "homepage": "https://omp.sh",
-  "author": "Stencil Labs, Inc.",
+  "description": "Local SQLite memory engine for Mercury agents",
+  "homepage": "https://github.com/Fengwhang/mercury",
+  "author": "Mercury (https://github.com/Fengwhang/mercury)",
   "contributors": [
     "Abdias J"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
+    "url": "git+https://github.com/Fengwhang/mercury.git",
     "directory": "packages/mnemopi"
   },
   "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
+    "url": "https://github.com/Fengwhang/mercury/issues"
   },
   "keywords": [
     "memory",

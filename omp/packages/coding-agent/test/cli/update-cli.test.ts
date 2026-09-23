@@ -130,3 +130,80 @@ describe("getLatestRelease proxy errors", () => {
 		expect(err?.message).toMatch(/https?:\/\//i);
 	});
 });
+
+describe("Mercury builds skip the omp update flow", () => {
+	const savedMercuryVersion = process.env.MERCURY_VERSION;
+	afterEach(() => {
+		vi.restoreAllMocks();
+		if (savedMercuryVersion === undefined) delete process.env.MERCURY_VERSION;
+		else process.env.MERCURY_VERSION = savedMercuryVersion;
+	});
+
+	function stubUnreachableFetch() {
+		const fetchStub = Object.assign(
+			async () => {
+				throw new Error("network must not be touched on Mercury builds");
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		);
+		return vi.spyOn(globalThis, "fetch").mockImplementation(fetchStub);
+	}
+
+	it("runUpdateCommand prints the mercury-update pointer and never hits the network", async () => {
+		process.env.MERCURY_VERSION = "9.9.9-mercury-test";
+		const logs: string[] = [];
+		vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			logs.push(args.map(String).join(" "));
+		});
+		const fetchSpy = stubUnreachableFetch();
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+			throw new Error("process.exit must not be called on Mercury builds");
+		}) as () => never);
+
+		// Both the check path and the install path must no-op.
+		await runUpdateCommand({ force: false, check: true });
+		await runUpdateCommand({ force: true, check: false });
+
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(exitSpy).not.toHaveBeenCalled();
+		expect(logs.join("\n")).toContain("mercury update");
+		expect(logs.join("\n")).toContain("Fengwhang/mercury");
+	});
+
+	it("getLatestRelease rejects with the pointer without fetching", async () => {
+		process.env.MERCURY_VERSION = "9.9.9-mercury-test";
+		const fetchSpy = stubUnreachableFetch();
+
+		const err = await getLatestRelease().then(
+			() => null,
+			(e: unknown) => e as Error,
+		);
+
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(err?.message).toContain("mercury update");
+	});
+
+	it("dev path still queries the registry when MERCURY_VERSION is unset", async () => {
+		delete process.env.MERCURY_VERSION;
+		const urls: string[] = [];
+		const fetchStub = Object.assign(
+			async (input: FetchInput) => {
+				urls.push(String(input));
+				return Response.json({ version: "999.0.0" });
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		);
+		vi.spyOn(globalThis, "fetch").mockImplementation(fetchStub);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const release = await getLatestRelease();
+		await runUpdateCommand({ force: false, check: true });
+
+		expect(release.version).toBe("999.0.0");
+		// One fetch for the direct call above, one for the --check run below.
+		expect(urls).toEqual([
+			"https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/latest",
+			"https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/latest",
+		]);
+	});
+});

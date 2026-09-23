@@ -63,7 +63,7 @@ class TestProfileScopedDiscovery:
         # profiles inside profiles is how a `-p work` CLI and its gateway end
         # up reading different files. Patch that seam, not get_hermes_home.
         with patch("gateway.pairing.PAIRING_DIR", global_dir), patch(
-            "gateway.pairing.get_default_hermes_root", return_value=home
+            "mercury_cli.profiles._get_default_hermes_dir", return_value=home
         ):
             store = PairingStore(profile="alice")
             # Scoped under the mocked root's profile dir, using the same

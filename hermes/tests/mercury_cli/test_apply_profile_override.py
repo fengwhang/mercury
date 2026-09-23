@@ -103,8 +103,9 @@ class TestApplyProfileOverrideHermesHomeGuard:
         """sudo elias ... should resolve `-p elias` under SUDO_USER, not root."""
         root_home = tmp_path / "root"
         user_home = tmp_path / "home" / "mercury"
-        profile_dir = user_home / ".mercury" / "profiles" / "elias"
-        profile_dir.mkdir(parents=True, exist_ok=True)
+        # Pre-migration layout: the sudo path migrates old -> new and resolves new.
+        (user_home / ".mercury" / "profiles" / "elias").mkdir(parents=True, exist_ok=True)
+        profile_dir = user_home / ".mercury" / "hermes" / "profiles" / "elias"
         (root_home / ".mercury").mkdir(parents=True, exist_ok=True)
 
         monkeypatch.setattr(Path, "home", lambda: root_home)

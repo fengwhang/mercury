@@ -413,21 +413,20 @@ def _agent_skills_dir(agent: Any) -> Optional[Path]:
 def _profile_name_for_home(home: Path) -> str:
     """Derive the profile name for an explicit agent home.
 
-    ``<root>/profiles/X`` -> ``"X"``; anything else -> ``"default"``.
+    ``<hermes-home>/profiles/X`` -> ``"X"``; anything else -> ``"default"``.
 
-    Uses :func:`get_default_hermes_root` (NOT ``get_hermes_home()``): on a
-    correctly bound profile session the ambient home IS the profile dir, so
-    ``get_hermes_home()/profiles`` would never contain ``home`` and every
-    profile would misreport as "default".
+    Delegates to :func:`named_profile_home` (NOT ``get_hermes_home()``): on
+    a correctly bound profile session the ambient home IS the profile dir,
+    so ``get_hermes_home()/profiles`` would never contain ``home`` and
+    every profile would misreport as "default".
     """
     try:
-        from mercury_constants import get_default_hermes_root
+        from mercury_constants import named_profile_home
 
-        root = get_default_hermes_root()
-        rel = home.resolve().relative_to((root / "profiles").resolve())
-        return rel.parts[0] if rel.parts else "default"
-    except (ValueError, OSError):
-        # Home IS the root (default profile) or unrelatable -> default.
+        found = named_profile_home(home.resolve())
+        return found.name if found is not None else "default"
+    except OSError:
+        # Unresolvable home -> default.
         return "default"
 
 
@@ -781,7 +780,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Active-profile hint — names the Mercury profile the agent is running
     # under so it doesn't conflate ~/.mercury/skills/ (default profile) with
-    # ~/.mercury/profiles/<active>/skills/ (this profile's). Deterministic
+    # ~/.mercury/hermes/profiles/<active>/skills/ (this profile's). Deterministic
     # for the lifetime of the agent — profile name doesn't change
     # mid-session, so this doesn't break the prompt cache.
     # See file_safety._resolve_active_profile_name + classify_cross_profile_target
@@ -824,7 +823,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         )
     else:
         # A non-default name is only ever returned when the resolved home is
-        # ALREADY <root>/profiles/<name> — that is exactly how both
+        # ALREADY <hermes-home>/profiles/<name> — that is exactly how both
         # _profile_name_for_home() and _resolve_active_profile_name() derive
         # it. So the profile home is the session home itself; appending
         # /profiles/<name> again doubled it (#72894). The default profile's

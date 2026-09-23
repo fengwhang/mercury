@@ -68,7 +68,7 @@ def _ensure_croniter() -> bool:
 # Cron is per-profile by design (issue #4707). Each profile owns its own cron
 # store under its own HERMES_HOME, and a profile-scoped gateway runs that
 # profile's jobs under that same HERMES_HOME — so a job authored in profile
-# `coder` lives in `~/.mercury/profiles/coder/cron/jobs.json` and executes with
+# `coder` lives in `~/.mercury/hermes/profiles/coder/cron/jobs.json` and executes with
 # `coder`'s `.env`, `config.yaml`, and skills. We deliberately anchor on
 # `get_hermes_home()` (the active profile home), NOT `get_default_hermes_root()`
 # (the shared root). Anchoring at the root would funnel every profile's jobs

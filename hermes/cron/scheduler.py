@@ -2793,7 +2793,7 @@ def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
     ``-p`` flag is needed at send time) or an explicit profile name that
     must exist in THIS machine's profile root.  Cross-machine delivery is
     intentionally unsupported: names resolve only against the local
-    ``~/.mercury/profiles/`` tree, so same-named profiles on other gateways
+    ``~/.mercury/hermes/profiles/`` tree, so same-named profiles on other gateways
     can never be targeted by accident.
     """
     if not profile_arg:

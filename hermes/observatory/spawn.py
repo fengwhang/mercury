@@ -107,6 +107,50 @@ def orchestrator_node_id() -> str:
     return f"orch-{uuid.uuid4().hex[:8]}"
 
 
+def parse_spawn_args(args: str) -> tuple[str, str | None]:
+    """Split ``/spawn`` args into ``(name, profile)``.
+
+    ``bravo -p alpha`` / ``-p alpha bravo`` / ``--profile=alpha bravo`` all
+    yield ``("bravo", "alpha")`` — the IRC twin of ``mercury -p alpha``.
+    No ``-p`` → ``(name, None)``. Raises ``ValueError`` on missing name,
+    extra positionals, or a dangling ``-p``.
+    """
+    import shlex
+
+    try:
+        tokens = shlex.split(args or "")
+    except ValueError as exc:
+        raise ValueError(f"spawn: cannot parse args: {exc}")
+    name_parts: list[str] = []
+    profile: str | None = None
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("-p", "--profile"):
+            i += 1
+            if i >= len(tokens):
+                raise ValueError("spawn: -p needs a profile name")
+            if profile is not None:
+                raise ValueError("spawn: duplicate -p flag")
+            profile = tokens[i]
+        elif tok.startswith("--profile="):
+            if profile is not None:
+                raise ValueError("spawn: duplicate -p flag")
+            profile = tok.split("=", 1)[1]
+            if not profile:
+                raise ValueError("spawn: -p needs a profile name")
+        elif tok.startswith("-"):
+            raise ValueError(f"spawn: unknown flag {tok}")
+        else:
+            name_parts.append(tok)
+        i += 1
+    if not name_parts:
+        raise ValueError("spawn: name is required")
+    if len(name_parts) > 1:
+        raise ValueError("spawn: expected one agent name")
+    return name_parts[0], profile
+
+
 def omp_sessions_dir(mercury_home: str | Path | None = None) -> Path:
     """``<MERCURY_HOME>/observatory/omp-sessions`` — created on demand."""
     from observatory.provision import _mercury_home
@@ -308,6 +352,7 @@ def build_omp_child(
     omp_path: Optional[str] = None,
     thinking_level: Optional[str] = None,
     startup_timeout: float = RPC_STARTUP_TIMEOUT,
+    profile_home: str | Path | None = None,
 ) -> Any:
     """Start one headless omp orchestrator (``OmpRpcChild`` with a pinned
     argv). Model defaults to the bridge-validated delegate slot
@@ -342,6 +387,10 @@ def build_omp_child(
     child_env = _shared_env_overrides()
     if mercury_home is not None:
         child_env.setdefault("MERCURY_HOME", str(mercury_home))
+    if profile_home is not None:
+        # A profile spawn is the whole point: the child MUST read the
+        # profile's config/memories, never inherit the gateway's home.
+        child_env["HERMES_HOME"] = str(profile_home)
     child = OmpRpcChild(
         omp_path=binary,
         model=resolved_model,
@@ -482,6 +531,7 @@ async def spawn_orchestrator(
     mercury_home: str | Path | None = None,
     model: Optional[str] = None,
     workdir: Optional[str] = None,
+    profile: str | None = None,
     agent_factory: Optional[Callable[[], Any]] = None,
     omp_child_factory: Optional[Callable[[], Any]] = None,
     validate_session_ref: Optional[bool] = None,
@@ -506,7 +556,13 @@ async def spawn_orchestrator(
         raise ValueError("spawn: name is required")
     if engine not in ENGINES:
         raise ValueError(f"spawn: engine must be one of {ENGINES}, got {engine!r}")
+    profile_home: str | None = None
+    if profile is not None:
+        from mercury_cli.profiles import get_profile_dir, profile_exists
 
+        if not profile_exists(profile):
+            raise ValueError(f"spawn: profile '{profile}' does not exist")
+        profile_home = str(get_profile_dir(profile))
     handle_agent = None
     handle_rpc = None
     if engine == "hermes":
@@ -524,6 +580,7 @@ async def spawn_orchestrator(
             model=model,
             mercury_home=mercury_home,
             workdir=workdir,
+            profile_home=profile_home,
         )))()
         session_ref = omp_session_file(handle_rpc)
     _handle = handle_agent if engine == "hermes" else handle_rpc
@@ -560,6 +617,7 @@ async def spawn_orchestrator(
         extra={
             "model": stamped_model,
             SESSION_MATERIALIZED_KEY: False,
+            **({"profile": profile} if profile is not None else {}),
         },
     )
     try:

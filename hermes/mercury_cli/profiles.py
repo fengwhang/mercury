@@ -3,7 +3,7 @@ Profile management for multiple isolated Mercury instances.
 
 Each profile is a fully independent HERMES_HOME directory with its own
 config.yaml, .env, memory, sessions, skills, gateway, cron, and logs.
-Profiles live under ``~/.mercury/profiles/<name>/`` by default.
+Profiles live under ``~/.mercury/hermes/profiles/<name>/`` by default.
 
 The "default" profile is ``~/.mercury`` itself — backward compatible,
 zero migration needed.
@@ -279,18 +279,112 @@ _HERMES_SUBCOMMANDS = frozenset({
 # Path helpers
 # ---------------------------------------------------------------------------
 
+def _get_default_hermes_dir(env_home: str | None = None) -> Path:
+    """Return the HERMES_HOME of the default profile (parent of ``profiles/``).
+
+    Profiles are a hermes-side feature: they live at
+    ``<hermes-home>/profiles/<name>`` — ``~/.mercury/hermes/profiles/<name>``
+    in standard deployments (the launcher forces
+    ``HERMES_HOME=$MERCURY_HOME/hermes``), ``<home>/profiles/<name>`` in
+    Docker/custom deployments where HERMES_HOME is the whole home.
+    Unlike :func:`_get_default_hermes_home` (the mercury ROOT, home of
+    ``active_profile``/``.env``/``honcho.json``), this is stable regardless
+    of whether the current process runs in the default profile or a named
+    one — resolving the profiles root against the live HERMES_HOME is what
+    stranded ``-p <name>``.
+
+    ``env_home`` overrides the HERMES_HOME lookup (s6/docker callers with
+    their own default, e.g. ``/opt/data``); None reads the environment.
+    """
+    from mercury_constants import _get_platform_default_hermes_home
+
+    native_root = _get_platform_default_hermes_home()
+    if env_home is None:
+        env_home = os.environ.get("HERMES_HOME", "").strip()
+    else:
+        env_home = env_home.strip()
+    if env_home:
+        env_path = Path(env_home)
+        try:
+            env_path.resolve().relative_to(native_root.resolve())
+            # Standard layout (forced default or any profile, old or new):
+            # the default hermes home is always <root>/hermes.
+            return native_root / "hermes"
+        except ValueError:
+            pass
+        # Docker/custom: a profile-shaped env means the grandparent;
+        # otherwise the env home IS the hermes home.
+        if env_path.parent.name == "profiles":
+            return env_path.parent.parent
+        return env_path
+    return native_root / "hermes"
+
+
+def _move_profiles_tree(old_root: Path, new_root: Path) -> None:
+    """Move every entry of *old_root* missing at *new_root* (best-effort).
+
+    Never overwrites; keeps a leftover empty old dir so concurrent
+    processes mid-migration cannot observe a half-moved tree as missing.
+    """
+    try:
+        if not old_root.is_dir():
+            return
+    except OSError:
+        return
+    try:
+        if old_root.resolve() == new_root.resolve():
+            return
+    except OSError:
+        return
+    try:
+        new_root.mkdir(parents=True, exist_ok=True)
+        for entry in sorted(old_root.iterdir()):
+            dest = new_root / entry.name
+            if dest.exists():
+                continue
+            try:
+                shutil.move(str(entry), str(dest))
+            except OSError:
+                logger.warning("profile migration: could not move %s", entry)
+    except OSError:
+        logger.warning("profile migration: could not create %s", new_root)
+
+
+def _migrate_profiles_to_hermes_home() -> None:
+    """One-way move of pre-0.0.137 profiles into the hermes home.
+
+    Old location ``~/.mercury/profiles/`` → new
+    ``~/.mercury/hermes/profiles/``. Runs on every profiles-root access
+    (including the sudo fallback in ``main`` via
+    :func:`migrate_user_profiles_to_hermes_home`).
+    """
+    from mercury_constants import _get_platform_default_hermes_home
+
+    _move_profiles_tree(
+        _get_platform_default_hermes_home() / "profiles",
+        _get_default_hermes_dir() / "profiles",
+    )
+
+
+def migrate_user_profiles_to_hermes_home(user_home: Path) -> None:
+    """Migrate one user's pre-0.0.137 profiles (sudo path in ``main``)."""
+    home = Path(user_home)
+    _move_profiles_tree(
+        home / ".mercury" / "profiles",
+        home / ".mercury" / "hermes" / "profiles",
+    )
+
+
 def _get_profiles_root() -> Path:
     """Return the directory where named profiles are stored.
 
-    Anchored to the mercury root, NOT to the current HERMES_HOME
-    (which may itself be a profile).  This ensures ``coder profile list``
+    Anchored to the DEFAULT hermes home
+    (:func:`_get_default_hermes_dir`), NOT to the current HERMES_HOME
+    (which may itself be a profile). This ensures ``coder profile list``
     can see all profiles.
-
-    In Docker/custom deployments where HERMES_HOME points outside
-    ``~/.mercury``, profiles live under ``HERMES_HOME/profiles/`` so
-    they persist on the mounted volume.
     """
-    return _get_default_hermes_home() / "profiles"
+    _migrate_profiles_to_hermes_home()
+    return _get_default_hermes_dir() / "profiles"
 
 
 def _get_default_hermes_home() -> Path:
@@ -788,10 +882,15 @@ def _seed_model_config(profile_dir: Path) -> None:
         return
     try:
         import yaml
-        from mercury_constants import get_hermes_home
+        from mercury_constants import get_hermes_home, named_profile_home
         from mercury_cli.config import read_user_config_raw
 
-        source = get_hermes_home() / "config.yaml"
+        ambient = get_hermes_home()
+        # The default profile's config lives at the mercury ROOT (the ONE
+        # config), not the hermes subdir — same law as clone sources.
+        source_home = ambient if named_profile_home(ambient) is not None \
+            else _get_default_hermes_home()
+        source = source_home / "config.yaml"
         if not source.is_file():
             return
         model_cfg = read_user_config_raw(source).get("model")
@@ -1239,9 +1338,14 @@ def create_profile(
     source_dir = None
     if clone_from is not None or clone_all or clone_config:
         if clone_from is None:
-            # Default: clone from active profile
-            from mercury_constants import get_hermes_home
-            source_dir = get_hermes_home()
+            # Default: clone from active profile. The default profile's
+            # user files live at the mercury ROOT (config.yaml is the ONE
+            # config), not the hermes subdir — resolve accordingly.
+            from mercury_constants import get_hermes_home, named_profile_home
+
+            ambient = get_hermes_home()
+            source_dir = ambient if named_profile_home(ambient) is not None \
+                else _get_default_hermes_home()
         else:
             clone_from = normalize_profile_name(clone_from)
             validate_profile_name(clone_from)
@@ -1252,7 +1356,7 @@ def create_profile(
             )
 
     if clone_all and source_dir:
-        # Full copy of source profile (exclude sibling ~/.mercury/profiles/)
+        # Full copy of source profile (exclude sibling ~/.mercury/hermes/profiles/)
         shutil.copytree(
             source_dir,
             profile_dir,
@@ -2092,7 +2196,7 @@ def get_active_profile_name() -> str:
     """Infer the current profile name from HERMES_HOME.
 
     Returns ``"default"`` if HERMES_HOME is not set or points to ``~/.mercury``.
-    Returns the profile name if HERMES_HOME points into ``~/.mercury/profiles/<name>``.
+    Returns the profile name if HERMES_HOME points into ``~/.mercury/hermes/profiles/<name>``.
     Returns ``"custom"`` if HERMES_HOME is set to an unrecognized path.
     """
     from mercury_constants import get_hermes_home
@@ -2364,7 +2468,9 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
     """Rename Honcho host blocks for a renamed profile without changing peers."""
     old_host = f"hermes_{old_name}"
     legacy_old_host = f"mercury.{old_name}"
-    new_host = f"hermes_{new_name}"
+    # set below once the present family is known (legacy mercury.* stays
+    # mercury.*; hermes_* stays hermes_*)
+    new_host = ""
 
     candidates = [
         new_dir / "honcho.json",
@@ -2393,6 +2499,8 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
         source_host = old_host if old_host in hosts else legacy_old_host
         if source_host not in hosts:
             continue
+        new_host = (f"hermes_{new_name}" if source_host.startswith("hermes_")
+                    else f"mercury.{new_name}")
 
         if new_host in hosts:
             print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
@@ -2507,15 +2615,24 @@ def resolve_profile_env(profile_name: str) -> str:
     canon = normalize_profile_name(profile_name)
     validate_profile_name(canon)
     env_home = os.environ.get("HERMES_HOME", "").strip()
-    if env_home:
-        env_path = Path(env_home)
-        # A profile-shaped env value means the root is the grandparent
-        # (mirrors get_default_hermes_root()).
-        root = env_path.parent.parent if env_path.parent.name == "profiles" else env_path
-    else:
-        root = _get_default_hermes_home()
     if canon == "default":
-        return str(root)
+        # Existing contract: launch root as configured (junction spelling
+        # preserved); a profile-shaped env resolves to its root.
+        if env_home:
+            env_path = Path(env_home)
+            if env_path.parent.name == "profiles":
+                return str(env_path.parent.parent)
+            return env_home
+        return str(_get_default_hermes_home())
+    if env_home:
+        # The launcher forces HERMES_HOME=$MERCURY_HOME/hermes: the hermes
+        # home itself is the anchor (profiles live beneath it), never the
+        # env value verbatim — that misread is what stranded -p lookups
+        # under ~/.mercury/hermes/profiles.
+        root = _get_default_hermes_dir()
+    else:
+        root = _get_default_hermes_dir()
+    _migrate_profiles_to_hermes_home()
     profile_dir = root / "profiles" / canon
 
     if not profile_dir.is_dir() or named_profile_is_deleted(profile_dir):

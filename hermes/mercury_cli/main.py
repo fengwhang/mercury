@@ -564,7 +564,10 @@ def _apply_profile_override() -> None:
         except Exception:
             return None
 
-        candidate = home / ".mercury" / "profiles" / name
+        from mercury_cli.profiles import migrate_user_profiles_to_hermes_home
+
+        migrate_user_profiles_to_hermes_home(home)
+        candidate = home / ".mercury" / "hermes" / "profiles" / name
         try:
             if candidate.is_dir():
                 return str(candidate)
@@ -627,7 +630,7 @@ def _apply_profile_override() -> None:
     # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it
     # only when it already points to a specific profile directory.  The
     # distinguishing heuristic: a profile path has "profiles" as its immediate
-    # parent directory name (e.g. ~/.mercury/profiles/coder or
+    # parent directory name (e.g. ~/.mercury/hermes/profiles/coder or
     # /opt/data/profiles/coder).  If HERMES_HOME points to the mercury root
     # instead (e.g. systemd hardcodes HERMES_HOME=/root/.mercury), we must
     # still read active_profile — the user may have switched profiles via

@@ -3,19 +3,19 @@
   "name": "@oh-my-pi/pi-tui",
   "version": "18.1.6",
   "description": "Terminal User Interface library with differential rendering for efficient text-based applications",
-  "homepage": "https://omp.sh",
-  "author": "Stencil Labs, Inc.",
+  "homepage": "https://github.com/Fengwhang/mercury",
+  "author": "Mercury (https://github.com/Fengwhang/mercury)",
   "contributors": [
     "Mario Zechner"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
+    "url": "git+https://github.com/Fengwhang/mercury.git",
     "directory": "packages/tui"
   },
   "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
+    "url": "https://github.com/Fengwhang/mercury/issues"
   },
   "keywords": [
     "tui",

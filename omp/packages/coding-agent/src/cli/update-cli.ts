@@ -29,6 +29,27 @@ const HOMEBREW_FORMULA = "can1357/tap/omp";
 const MISE_TOOL = "github:can1357/oh-my-pi";
 const NIX_STORE_DIR = "/nix/store";
 /**
+ * Mercury release home. Mercury builds ship their own tarballs from
+ * github.com/Fengwhang/mercury and update via `mercury update` — never via
+ * the omp release flow below. MERCURY_VERSION is baked at compile time for
+ * Mercury builds and unset in dev/upstream builds.
+ */
+const MERCURY_REPO = "Fengwhang/mercury";
+
+/** User-facing pointer shown instead of the omp update flow under Mercury. */
+export const MERCURY_UPDATE_MESSAGE =
+	`This Mercury build updates via \`mercury update\` (releases: github.com/${MERCURY_REPO}).`;
+
+/**
+ * Whether this is a Mercury build (MERCURY_VERSION baked at compile time).
+ * Reads both $env (Bun.env) and process.env so tests and embedders that set
+ * either one are honored. Exported as a stable domain concept: the update
+ * command, the release check, and the tests below all key off this one name.
+ */
+export function isMercuryBuild(): boolean {
+	return (($env.MERCURY_VERSION ?? process.env.MERCURY_VERSION ?? "").trim() !== "");
+}
+/**
  * Official npm registry origin.
  *
  * Pinned across both the version check and the bun install step so the two
@@ -801,6 +822,12 @@ async function fetchLatestManifest(
 export async function getLatestRelease(
 	options: { timeoutMs?: number; channel?: UpdateChannel } = {},
 ): Promise<ReleaseInfo> {
+	// Mercury builds never query omp releases: they ship Mercury tarballs and
+	// update via `mercury update`. Fail without touching the network so every
+	// check/notify caller surfaces the pointer instead of an upstream version.
+	if (isMercuryBuild()) {
+		throw new Error(MERCURY_UPDATE_MESSAGE);
+	}
 	const timeoutMs = options.timeoutMs ?? RELEASE_METADATA_TIMEOUT_MS;
 	const channel = options.channel ?? "stable";
 	const packages: ReleasePackages = { ...CURRENT_PACKAGES };
@@ -1944,6 +1971,13 @@ export async function runUpdateCommand(opts: {
 	check: boolean;
 	channel?: UpdateChannel;
 }): Promise<void> {
+	// Mercury builds update via `mercury update` (Mercury tarballs), never via
+	// the omp release flow: print the pointer and no-op with exit 0.
+	if (isMercuryBuild()) {
+		console.log(chalk.dim(`Current version: ${VERSION}`));
+		console.log(MERCURY_UPDATE_MESSAGE);
+		return;
+	}
 	console.log(chalk.dim(`Current version: ${VERSION}`));
 	const persistedChannel = readPersistedChannel() ?? "stable";
 	const channel = opts.channel ?? persistedChannel;

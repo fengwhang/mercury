@@ -56,13 +56,15 @@ from mercury_cli.config import DEFAULT_CONFIG
 def profile_env(tmp_path, monkeypatch):
     """Set up an isolated environment for profile tests.
 
-    * Path.home() -> tmp_path  (so _get_profiles_root() = tmp_path/.mercury/profiles)
-    * HERMES_HOME  -> tmp_path/.mercury  (so get_hermes_home() agrees)
-    * Creates the bare-minimum ~/.mercury directory.
+    Mirrors the launcher: HERMES_HOME = <root>/hermes (forced), so
+    _get_profiles_root() = tmp_path/.mercury/hermes/profiles.
+    * Path.home() -> tmp_path
+    * HERMES_HOME  -> tmp_path/.mercury/hermes  (so get_hermes_home() agrees)
+    * Creates the bare-minimum ~/.mercury/hermes directory.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    default_home = tmp_path / ".mercury"
-    default_home.mkdir(exist_ok=True)
+    default_home = tmp_path / ".mercury" / "hermes"
+    default_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(default_home))
     return tmp_path
 
@@ -560,7 +562,7 @@ class TestGetActiveProfileName:
     def test_profile_path_returns_profile_name(self, profile_env, monkeypatch):
         tmp_path = profile_env
         create_profile("coder", no_alias=True)
-        profile_dir = tmp_path / ".mercury" / "profiles" / "coder"
+        profile_dir = tmp_path / ".mercury" / "hermes" / "profiles" / "coder"
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         assert get_active_profile_name() == "coder"
 
@@ -720,7 +722,7 @@ class TestRenameProfile:
     def test_renames_directory(self, profile_env):
         tmp_path = profile_env
         create_profile("oldname", no_alias=True)
-        old_dir = tmp_path / ".mercury" / "profiles" / "oldname"
+        old_dir = tmp_path / ".mercury" / "hermes" / "profiles" / "oldname"
         assert old_dir.is_dir()
 
         # Mock alias collision to avoid subprocess calls
@@ -729,7 +731,7 @@ class TestRenameProfile:
 
         assert not old_dir.is_dir()
         assert new_dir.is_dir()
-        assert new_dir == tmp_path / ".mercury" / "profiles" / "newname"
+        assert new_dir == tmp_path / ".mercury" / "hermes" / "profiles" / "newname"
 
     def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
         tmp_path = profile_env
@@ -755,8 +757,8 @@ class TestRenameProfile:
 
         cfg = json.loads(honcho_path.read_text())
         assert "mercury.ssi_health" not in cfg["hosts"]
-        assert cfg["hosts"]["mercury_heimdall"]["aiPeer"] == "ssi_health"
-        assert cfg["hosts"]["mercury_heimdall"]["peerName"] == "user-peer"
+        assert cfg["hosts"]["mercury.heimdall"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["mercury.heimdall"]["peerName"] == "user-peer"
 
 
 # ===================================================================

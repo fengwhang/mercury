@@ -388,7 +388,7 @@ def _ordered_enabled_sources(
 def _active_profile_name(home_path: Optional[Path]) -> str:
     """Best-effort active profile name for profile-scoped secret aliases.
 
-    A named profile's HERMES_HOME is ``~/.mercury/profiles/<name>``; the
+    A named profile's HERMES_HOME is ``~/.mercury/hermes/profiles/<name>``; the
     default profile (``~/.mercury``) returns "".
     """
     if home_path is not None:

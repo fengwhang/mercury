@@ -260,6 +260,9 @@ def _is_hermes_profiles_root(profiles_dir: Path) -> bool:
     root = profiles_dir.parent
     if root.name == ".mercury":
         return True
+    if root.name == "hermes" and root.parent.name == ".mercury":
+        # Standard forced layout: <root>/hermes/profiles/<name>.
+        return True
     try:
         if (profiles_dir / _DELETED_PROFILES_DIR).is_dir():
             return True

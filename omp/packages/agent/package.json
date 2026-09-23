@@ -3,19 +3,19 @@
   "name": "@oh-my-pi/pi-agent-core",
   "version": "18.1.6",
   "description": "General-purpose agent with transport abstraction, state management, and attachment support",
-  "homepage": "https://omp.sh",
-  "author": "Stencil Labs, Inc.",
+  "homepage": "https://github.com/Fengwhang/mercury",
+  "author": "Mercury (https://github.com/Fengwhang/mercury)",
   "contributors": [
     "Mario Zechner"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
+    "url": "git+https://github.com/Fengwhang/mercury.git",
     "directory": "packages/agent"
   },
   "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
+    "url": "https://github.com/Fengwhang/mercury/issues"
   },
   "keywords": [
     "ai",

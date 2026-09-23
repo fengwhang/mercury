@@ -172,11 +172,11 @@ def resolve_omp_agent_dir(home: Optional[Path] = None) -> Path:
     profile = _active_profile()
     mercury = os.environ.get("MERCURY_HOME", "").strip()
     if profile:
-        # No override: the named profile nests under the Mercury root.
+        # No override: the named profile nests under the hermes home.
         if mercury:
-            return Path(mercury) / "profiles" / profile / "omp"
+            return Path(mercury) / "hermes" / "profiles" / profile / "omp"
         base = Path(home) if home is not None else Path(os.path.expanduser("~"))
-        return base / ".mercury" / "profiles" / profile / "omp"
+        return base / ".mercury" / "hermes" / "profiles" / profile / "omp"
     if mercury:
         return Path(mercury) / "omp"
     base = Path(home) if home is not None else Path(os.path.expanduser("~"))

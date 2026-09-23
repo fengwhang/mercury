@@ -843,7 +843,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     except (OSError, RuntimeError):
         pass
 
-    # All named profiles (~/.mercury/profiles/*/skills)
+    # All named profiles (~/.mercury/hermes/profiles/*/skills)
     profiles_root = root / "profiles"
     if profiles_root.is_dir():
         try:

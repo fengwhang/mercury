@@ -340,20 +340,21 @@ def _profile_dir_for_gateway_service(name: str) -> Path:
 
     s6 lifecycle commands may be invoked from any active profile, including
     ``gateway stop --all``. Do not write the caller's HERMES_HOME blindly;
-    derive the shared profile root from the current HERMES_HOME and map the
-    service suffix to either the root default profile or
-    ``<root>/profiles/<profile>``.
+    delegate to the canonical resolver — profiles live at
+    ``<hermes-home>/profiles/<profile>``. Keeps the historical ``/opt/data``
+    fallback for HERMES_HOME-less docker contexts via the explicit parameter.
     """
     import os
 
+    from mercury_cli.profiles import _get_default_hermes_dir
+
     profile = name[len(S6_SERVICE_PREFIX):] if name.startswith(S6_SERVICE_PREFIX) else name
     validate_profile_name(profile)
-    mercury_home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
-    if mercury_home.parent.name == "profiles":
-        root = mercury_home.parent.parent
-    else:
-        root = mercury_home
-    return root if profile == "default" else root / "profiles" / profile
+    hermes_dir = _get_default_hermes_dir(
+        env_home=os.environ.get("HERMES_HOME", "/opt/data"))
+    if profile == "default":
+        return hermes_dir
+    return hermes_dir / "profiles" / profile
 
 
 def _write_gateway_desired_state(name: str, desired_state: str) -> None:

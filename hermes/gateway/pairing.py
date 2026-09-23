@@ -452,12 +452,9 @@ class PairingStore:
         # Resolve storage directory lazily — tests use a temp HERMES_HOME
         # and PairingStore may be constructed before the env is set.
         if profile:
-            root = get_default_hermes_root()
-            profile_home = (
-                root
-                if profile == "default"
-                else root / "profiles" / profile
-            )
+            from mercury_cli.profiles import get_profile_dir
+
+            profile_home = get_profile_dir(profile)
             self._dir = get_hermes_dir(
                 "platforms/pairing",
                 "pairing",
