@@ -70,6 +70,7 @@ logger = logging.getLogger(__name__)
 # is discovered but the gateway hasn't been fully initialised yet.
 # ---------------------------------------------------------------------------
 
+from observatory.rooms import OMP_COMMAND_VERBS as OMP_BANG_VERBS
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -848,15 +849,34 @@ class IRCAdapter(BasePlatformAdapter):
                 if manager is not None and route in ("child", "spawn-omp"):
                     if route == "child":
                         reply = await manager.handle_child_message(chat_id, user_name, text)
+                        if reply:
+                            await self.send(chat_id, reply)
+                        # The room owned this text: a gateway turn here would
+                        # answer a second time in someone else's room. Slash
+                        # commands still fall through (exit/status/...).
+                        if not text.lstrip().startswith("/"):
+                            return
                     else:
-                        reply = await manager.handle_omp_message(chat_id, user_name, text)
-                    if reply:
-                        await self.send(chat_id, reply)
-                    # The room owned this text: a gateway turn here would
-                    # answer a second time in someone else's room. Slash
-                    # commands still fall through (exit/status/...).
-                    if not text.lstrip().startswith("/"):
-                        return
+                        from observatory.rooms import classify_omp_slash
+                        kind = classify_omp_slash(text)
+                        if kind in ("observatory", "gateway"):
+                            # Gateway-owned (room lifecycle, hermes-only,
+                            # unknown): never pump into the omp task — the
+                            # task would chew a command as a job (and leak
+                            # system context answering it). Gateway dispatch
+                            # below owns the reply.
+                            pass
+                        else:
+                            reply = await manager.handle_omp_message(chat_id, user_name, text)
+                            if reply:
+                                await self.send(chat_id, reply)
+                            if kind == "omp":
+                                # OMP owns it: answered (or silently started)
+                                # above — gateway stays out, no hermes-flavored
+                                # double answer.
+                                return
+                            # Plain chat: room owned it, no gateway turn.
+                            return
             except Exception:
                 logger.debug("IRC: room route failed, falling through", exc_info=True)
         if not self._message_handler:
@@ -1361,32 +1381,6 @@ def register(ctx):
     )
 
 
-#: OMP-side slash verbs mirrored for the `!` rewrite.
-#: Regenerated from omp/packages/coding-agent/src/slash-commands/builtin-*.ts
-#: (`name: "..."` plus word-like aliases). Hermes-side verbs resolve
-#: dynamically via is_gateway_known_command (no drift); this set has
-#: a drift test (tests/plugins/platforms/irc/test_irc_bang_commands.py).
-OMP_BANG_VERBS = frozenset({
-    "add", "add-dir", "advisor", "agents", "append", "auto", "branch", "browser",
-    "btw", "budget", "cancel", "changelog", "cleanse", "clear", "collab", "collapse",
-    "compact", "compare", "computer", "configure", "context", "copy", "debug", "delete",
-    "diagnose", "dirs", "disable", "discover", "disposition", "done", "drop", "dump",
-    "edit", "elide", "enable", "enqueue", "exit", "expand", "export", "extended-context",
-    "extensions", "fast", "force", "fork", "fresh", "full", "git", "goal",
-    "guided-goal", "handoff", "headless", "help", "hotkeys", "hub", "images", "import",
-    "info", "install", "installed", "jobs", "join", "leave", "list", "live",
-    "login", "logout", "loop", "marketplace", "mcp", "memory", "model", "models",
-    "move", "new", "notifications", "off", "omfg", "on", "open", "pause",
-    "pin", "plan", "plan-review", "plugins", "prewalk", "prompts", "providers", "q",
-    "queue", "quit", "reauth", "rebuild", "reconnect", "reload", "reload-plugins", "remove",
-    "remove-dir", "rename", "reset", "resources", "restart", "resume", "retry", "rewind",
-    "rm", "scan", "scans", "security", "session", "set", "settings", "setup",
-    "shake", "share", "show", "skillful", "smithery-login", "smithery-logout", "smithery-search", "ssh",
-    "start", "stats", "status", "stop", "switch", "sync", "tan", "test",
-    "thinking", "todo", "tools", "trace", "tree", "unauth", "uninstall", "update",
-    "upgrade", "usage", "validate", "vibe", "view", "visible", "vision", "worktree",
-    "wt",
-})
 
 
 def _is_hermes_known_verb(verb: str) -> bool:

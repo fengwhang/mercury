@@ -679,8 +679,10 @@ class TestIRCRoomOwnedDispatch:
         monkeypatch.setattr(adapter, "handle_message", fake_handle)
         monkeypatch.setattr(adapter, "_message_handler", lambda event: None)
         await adapter._handle_line(":owner!u@mercury PRIVMSG #vm_bravo :/exit")
-        assert sent == [("#vm_bravo", "room ack")]
+        # Observatory verbs are gateway-owned: never pumped as a task.
+        assert sent == []
         assert len(gateway_calls) == 1
+        assert gateway_calls[0].text == "/exit"
 
 
 class TestIRCReadHandleSplit:

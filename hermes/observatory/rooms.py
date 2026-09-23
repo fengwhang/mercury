@@ -142,6 +142,59 @@ def get_bot_sink() -> BotSink | None:
 # --- channel naming --------------------------------------------------------
 
 
+#: Verbs the omp engine owns (mirror of the TS slash registry;
+#: adapter's drift test pins the two together).
+OMP_COMMAND_VERBS = frozenset({
+    "add", "add-dir", "advisor", "agents", "append", "auto", "branch", "browser",
+    "btw", "budget", "cancel", "changelog", "cleanse", "clear", "collab", "collapse",
+    "compact", "compare", "computer", "configure", "context", "copy", "debug", "delete",
+    "diagnose", "dirs", "disable", "discover", "disposition", "done", "drop", "dump",
+    "edit", "elide", "enable", "enqueue", "exit", "expand", "export", "extended-context",
+    "extensions", "fast", "force", "fork", "fresh", "full", "git", "goal",
+    "guided-goal", "handoff", "headless", "help", "hotkeys", "hub", "images", "import",
+    "info", "install", "installed", "jobs", "join", "leave", "list", "live",
+    "login", "logout", "loop", "marketplace", "mcp", "memory", "model", "models",
+    "move", "new", "notifications", "off", "omfg", "on", "open", "pause",
+    "pin", "plan", "plan-review", "plugins", "prewalk", "prompts", "providers", "q",
+    "queue", "quit", "reauth", "rebuild", "reconnect", "reload", "reload-plugins", "remove",
+    "remove-dir", "rename", "reset", "resources", "restart", "resume", "retry", "rewind",
+    "rm", "scan", "scans", "security", "session", "set", "settings", "setup",
+    "shake", "share", "show", "skillful", "smithery-login", "smithery-logout", "smithery-search", "ssh",
+    "start", "stats", "status", "stop", "switch", "sync", "tan", "test",
+    "thinking", "todo", "tools", "trace", "tree", "unauth", "uninstall", "update",
+    "upgrade", "usage", "validate", "vibe", "view", "visible", "vision", "worktree",
+    "wt",
+})
+
+#: Observatory verbs: room lifecycle owned by the gateway side.
+#: In omp rooms these must reach gateway dispatch and must NEVER
+#: be pumped into the omp task (an "/exit" task is nonsense).
+OBSERVATORY_ROOM_VERBS = frozenset({
+    "spawn", "spawnomp", "exit", "stop", "approve", "deny",
+})
+
+
+def classify_omp_slash(text: str) -> str:
+    """Route a line in a spawned-omp room: chat | omp | observatory | gateway.
+
+    omp: the verb is omp-owned — pump as task, gateway stays out
+    (no hermes-flavored double answer). observatory: gateway-owned
+    room lifecycle — never a task. gateway: hermes-only or unknown
+    verbs — gateway dispatch owns the reply (including the
+    unknown-command notice). chat: plain text pumps as a task.
+    """
+    stripped = str(text or "").lstrip()
+    if not stripped.startswith("/"):
+        return "chat"
+    verb = stripped[1:].split(None, 1)[0].lower() if len(stripped) > 1 else ""
+    if not verb:
+        return "gateway"
+    if verb in OBSERVATORY_ROOM_VERBS:
+        return "observatory"
+    if verb in OMP_COMMAND_VERBS:
+        return "omp"
+    return "gateway"
+
 def gateway_channel(server_name: str) -> str:
     """``#<server>_gateway`` — e.g. server ``mercury`` → ``#mercury_gateway``."""
     base = clean_channel(server_name or "mercury").lstrip("#")
