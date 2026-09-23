@@ -1576,7 +1576,7 @@ class PluginContext:
         ``_cli_ref`` (which is ``None`` outside an interactive CLI run).
 
         Returns ``"default"`` for the default profile, the profile id when
-        running under ``~/.mercury/profiles/<name>``, or ``"custom"`` when
+        running under ``~/.mercury/hermes/profiles/<name>``, or ``"custom"`` when
         ``HERMES_HOME`` points somewhere unrecognized.
         """
         try:

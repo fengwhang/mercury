@@ -54,7 +54,7 @@ def _hermes_home() -> Path:
 def _canonical_root() -> Path:
     """Fleet-wide Mercury root, even when this process is a profile gateway.
 
-    Profile gateways launch with HERMES_HOME=~/.mercury/profiles/<name>.
+    Profile gateways launch with HERMES_HOME=~/.mercury/hermes/profiles/<name>.
     ``mercury pause`` from an operator seat writes ~/.mercury/ESTOP. If we
     only inspect the profile home, the emergency stop does not bind
     (jarvis-os/t_7b65ff88: fleet-analyst kept dispatching through pause).

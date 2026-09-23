@@ -165,8 +165,8 @@ _PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 def _profile_label_for_home(home: Path | str) -> Optional[str]:
     """Best-effort profile label for a HERMES_HOME path.
 
-    Returns the profile name for ``<root>/profiles/<name>`` layouts (both
-    ``~/.mercury/profiles/coder`` and Docker ``/opt/data/profiles/coder``),
+    Returns the profile name for ``<hermes-home>/profiles/<name>`` layouts (both
+    ``~/.mercury/hermes/profiles/coder`` and Docker ``/opt/data/profiles/coder``),
     ``"default"`` for the deployment's root home, and ``None`` when no label
     can be inferred.  Never raises — this feeds diagnostics only.
     """
@@ -579,7 +579,7 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
 def _profile_name_for_home(profile_home: Path) -> Optional[str]:
     """Return the profile id a HERMES_HOME directory represents, or None.
 
-    A named profile's home is ``<root>/profiles/<name>`` (immediate parent is
+    A named profile's home is ``<hermes-home>/profiles/<name>`` (immediate parent is
     ``profiles``).  The root/default home (``~/.mercury`` or ``$HERMES_HOME``)
     has no such parent, so it maps to the default profile (``None`` here, which
     callers treat as "the bare, flag-less gateway").

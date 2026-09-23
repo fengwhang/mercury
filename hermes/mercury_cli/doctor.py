@@ -26,7 +26,7 @@ from mercury_constants import agent_browser_runnable
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
-_DHH = display_hermes_home()  # user-facing display path (e.g. ~/.mercury or ~/.mercury/profiles/coder)
+_DHH = display_hermes_home()  # user-facing display path (e.g. ~/.mercury or ~/.mercury/hermes/profiles/coder)
 
 # Load environment variables from ~/.mercury/.env so API key checks work
 _env_path = get_env_path()

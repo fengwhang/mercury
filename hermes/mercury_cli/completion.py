@@ -102,7 +102,7 @@ def generate_bash(parser: argparse.ArgumentParser) -> str:
 #   eval "$(mercury completion bash)"
 
 _hermes_profiles() {{
-    local profiles_dir="$HOME/.mercury/profiles"
+    local profiles_dir="$HOME/.mercury/hermes/profiles"
     local profiles="default"
     if [ -d "$profiles_dir" ]; then
         for f in "$profiles_dir"/*/; do
@@ -207,8 +207,8 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
 _hermes_profiles() {{
     local -a profiles
     profiles=(default)
-    if [[ -d "$HOME/.mercury/profiles" ]]; then
-        profiles+=($HOME/.mercury/profiles/*(N/:t))
+    if [[ -d "$HOME/.mercury/hermes/profiles" ]]; then
+        profiles+=($HOME/.mercury/hermes/profiles/*(N/:t))
     fi
     _describe 'profile' profiles
 }}
@@ -261,8 +261,8 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
         "# Helper: list available profiles",
         "function __hermes_profiles",
         "    echo default",
-        "    if test -d $HOME/.mercury/profiles",
-        "        for d in $HOME/.mercury/profiles/*/",
+        "    if test -d $HOME/.mercury/hermes/profiles",
+        "        for d in $HOME/.mercury/hermes/profiles/*/",
         "            basename $d",
         "        end",
         "    end",

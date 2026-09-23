@@ -6536,10 +6536,11 @@ class GatewaySlashCommandsMixin:
             return None
 
     async def _handle_observatory_spawn(self, event: MessageEvent, *, engine: str, verb: str) -> str:
-        from observatory.spawn import spawn_orchestrator
-        name = (event.get_command_args() or "").strip()
-        if not name:
-            return f"usage: /{verb} <name> — name is required (it becomes the agent's room)"
+        from observatory.spawn import parse_spawn_args, spawn_orchestrator
+        try:
+            name, profile = parse_spawn_args(event.get_command_args() or "")
+        except ValueError:
+            return f"usage: /{verb} <name> [-p <profile>] — name is required (it becomes the agent's room)"
         handles, reason = self._observatory_handles()
         if handles is None:
             return f"✗ /{verb} failed: {reason}"
@@ -6557,7 +6558,8 @@ class GatewaySlashCommandsMixin:
             row = await spawn_orchestrator(
                 name, engine, state=state, registry=registry,
                 mercury_home=self._observatory_mercury_home(),
-                server_name=_live_server_label(self._observatory_mercury_home()))
+                server_name=_live_server_label(self._observatory_mercury_home()),
+                profile=profile)
         except Exception as exc:
             import logging as _logging
 
@@ -6566,7 +6568,7 @@ class GatewaySlashCommandsMixin:
             return _spawn_error_reply(verb, exc)
         channel = str((row or {}).get("room_id") or "")
         node_id = str((row or {}).get("node_id") or "")
-        return f"🚀 spawned {engine} agent '{name}' (node {node_id}) — join {channel or 'its room'} to chat."
+        return f"🚀 spawned {engine} agent '{name}'{f' (profile {profile})' if profile else ''} (node {node_id}) — join {channel or 'its room'} to chat."
 
     async def _handle_spawn_command(self, event: MessageEvent) -> str:
         """Handle /spawn <name> — hermes-side agent (own room, CLI parity)."""

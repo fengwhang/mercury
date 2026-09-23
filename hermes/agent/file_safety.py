@@ -297,7 +297,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     # Resolve BOTH the active HERMES_HOME (profile-aware) AND the global
     # Mercury root so credential stores at <root>/auth.json etc. are also
     # blocked when running under a profile (HERMES_HOME points at
-    # <root>/profiles/<name> in profile mode). Same shape as the write
+    # <hermes-home>/profiles/<name> in profile mode). Same shape as the write
     # deny widening (#15981, #14157).
     mercury_dirs: list[Path] = []
     for base in (_hermes_home_path(), _hermes_root_path()):
@@ -450,7 +450,7 @@ def raise_if_read_blocked(path: str) -> None:
 # Cross-profile write guard (#TBD)
 #
 # Mercury profiles are separate HERMES_HOME dirs under
-# ``<root>/profiles/<name>/``. Each profile has its own skills/, plugins/,
+# ``<hermes-home>/profiles/<name>/``. Each profile has its own skills/, plugins/,
 # cron/, memories/. When an agent runs under one profile, writing into
 # ANOTHER profile's directories is almost always wrong — those skills /
 # plugins / cron jobs / memories affect a different session the user runs
@@ -463,12 +463,12 @@ def raise_if_read_blocked(path: str) -> None:
 # exists, and explicit user direction is required to cross it.
 #
 # Reference: May 2026 incident where a mercury-security profile session
-# edited skills under both ``~/.mercury/profiles/mercury-security/skills/``
+# edited skills under both ``~/.mercury/hermes/profiles/mercury-security/skills/``
 # AND ``~/.mercury/skills/`` (the default profile's skills) without realizing
 # the second path belonged to a different profile.
 # ---------------------------------------------------------------------------
 
-# Profile-scoped directories under HERMES_HOME / <root> / <root>/profiles/<X>/
+# Profile-scoped directories under HERMES_HOME / <root> / <hermes-home>/profiles/<X>/
 # that should be guarded. Adding a new area here extends the guard with no
 # other code change.
 PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories")
@@ -477,26 +477,20 @@ PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories")
 def _resolve_active_profile_name() -> str:
     """Return the active profile name derived from HERMES_HOME.
 
-    ``~/.mercury``              -> ``"default"``
-    ``~/.mercury/profiles/X``  -> ``"X"``
+    ``~/.mercury`` or ``~/.mercury/hermes`` -> ``"default"``;
+    any ``.../profiles/X`` home -> ``"X"`` (old, new, and Docker layouts).
 
     Falls back to ``"default"`` on any resolution failure so the guard
     never raises into the tool path.
     """
     try:
+        from mercury_constants import named_profile_home  # local import to avoid cycles
+
         home_real = _hermes_home_path().resolve()
-        root_real = _hermes_root_path().resolve()
+        found = named_profile_home(home_real)
+        return found.name if found is not None else "default"
     except (OSError, RuntimeError):
         return "default"
-    profiles_dir = root_real / "profiles"
-    try:
-        rel = home_real.relative_to(profiles_dir)
-        parts = rel.parts
-        if len(parts) >= 1:
-            return parts[0]
-    except ValueError:
-        pass
-    return "default"
 
 
 def classify_cross_profile_target(path: str) -> Optional[dict]:
@@ -543,7 +537,7 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
         and len(parts) >= 3
         and parts[2] in PROFILE_SCOPED_AREAS
     ):
-        # ``<root>/profiles/<name>/<area>/...`` → named profile.
+        # ``<hermes-home>/profiles/<name>/<area>/...`` → named profile.
         target_profile = parts[1]
         area = parts[2]
     else:

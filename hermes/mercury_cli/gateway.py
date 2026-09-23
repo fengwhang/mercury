@@ -2747,7 +2747,7 @@ def _profile_suffix() -> str:
     """Derive a service-name suffix from the current HERMES_HOME.
 
     Returns ``""`` for the default root, the profile name for
-    ``<root>/profiles/<name>``, or a short hash for any other path.
+    ``<hermes-home>/profiles/<name>``, or a short hash for any other path.
     Works correctly in Docker (HERMES_HOME=/opt/data) and standard deployments.
     """
     import hashlib
@@ -2758,8 +2758,9 @@ def _profile_suffix() -> str:
     default = get_default_hermes_root().resolve()
     if home == default:
         return ""
-    # Detect <root>/profiles/<name> pattern → use the profile name
-    profiles_root = (default / "profiles").resolve()
+    # Detect <hermes-home>/profiles/<name> pattern → use the profile name
+    from mercury_cli.profiles import _get_profiles_root
+    profiles_root = _get_profiles_root().resolve()
     try:
         rel = home.relative_to(profiles_root)
         parts = rel.parts
@@ -2774,7 +2775,7 @@ def _profile_suffix() -> str:
 def _profile_arg(mercury_home: str | None = None, default_root: str | Path | None = None) -> str:
     """Return ``--profile <name>`` only when HERMES_HOME is a named profile.
 
-    For ``~/.mercury/profiles/<name>``, returns ``"--profile <name>"``.
+    For ``~/.mercury/hermes/profiles/<name>``, returns ``"--profile <name>"``.
     For the default profile or hash-based custom paths, returns the empty string.
 
     Args:
@@ -2793,7 +2794,8 @@ def _profile_arg(mercury_home: str | None = None, default_root: str | Path | Non
     default = Path(default_root).resolve() if default_root else get_default_hermes_root().resolve()
     if home == default:
         return ""
-    profiles_root = (default / "profiles").resolve()
+    from mercury_cli.profiles import _get_profiles_root
+    profiles_root = _get_profiles_root().resolve()
     try:
         rel = home.relative_to(profiles_root)
         parts = rel.parts
@@ -2818,7 +2820,7 @@ def get_service_name() -> str:
     """Derive a systemd service name scoped to this HERMES_HOME.
 
     Default ``~/.mercury`` returns ``mercury-gateway`` (backward compatible).
-    Profile ``~/.mercury/profiles/coder`` returns ``mercury-gateway-coder``.
+    Profile ``~/.mercury/hermes/profiles/coder`` returns ``mercury-gateway-coder``.
     Any other HERMES_HOME appends a short hash for uniqueness.
     """
     suffix = _profile_suffix()
@@ -3627,7 +3629,7 @@ def get_launchd_plist_path() -> Path:
     """Return the launchd plist path, scoped per profile.
 
     Default ``~/.mercury`` → ``ai.mercury.gateway.plist`` (backward compatible).
-    Profile ``~/.mercury/profiles/coder`` → ``ai.mercury.gateway-coder.plist``.
+    Profile ``~/.mercury/hermes/profiles/coder`` → ``ai.mercury.gateway-coder.plist``.
     """
     suffix = _profile_suffix()
     name = f"ai.mercury.gateway-{suffix}" if suffix else "ai.mercury.gateway"
@@ -3804,7 +3806,7 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
     When installing a system service via sudo, get_hermes_home() resolves to
     root's home.  This translates it to the target user's equivalent path:
       /root/.mercury                    → /home/alice/.mercury
-      /root/.mercury/profiles/coder     → /home/alice/.mercury/profiles/coder
+      /root/.mercury/hermes/profiles/coder → /home/alice/.mercury/hermes/profiles/coder
       /opt/custom-mercury               → /opt/custom-mercury  (kept as-is)
     """
     current_hermes_raw = os.environ.get("HERMES_HOME", "").strip()
@@ -8234,7 +8236,7 @@ def _dispatch_via_service_manager_if_s6(
         return False
     if profile is None:
         # _profile_suffix() returns the bare profile name for
-        # HERMES_HOME=<root>/profiles/<name>, "" for the default root,
+        # HERMES_HOME=<hermes-home>/profiles/<name>, "" for the default root,
         # or a hash for unrelated paths. Map "" → "default" so the
         # default-profile gateway is reachable as gateway-default.
         profile = _profile_suffix() or "default"

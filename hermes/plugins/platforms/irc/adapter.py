@@ -1009,7 +1009,38 @@ class IRCAdapter(BasePlatformAdapter):
             timestamp=__import__("datetime").datetime.now(),
         )
 
-        await self.handle_message(event)
+        # Profile-spawned rooms (!spawn <name> -p <profile>): run the
+        # gateway turn under the profile's home via the context-local
+        # override (same seam as embedded /chat --open-profile) so the
+        # agent reads the profile's config/memories/skills. Reset in
+        # finally — the adapter serves many rooms concurrently.
+        _profile_token = None
+        if chat_type == "group":
+            try:
+                from observatory.rooms import get_room_manager
+                from mercury_cli.profiles import get_profile_dir
+                from mercury_constants import (
+                    reset_hermes_home_override,
+                    set_hermes_home_override,
+                )
+                _manager = get_room_manager()
+                _row = _manager.node_for_channel(chat_id) if _manager else None
+                _prof = ((_row.get("extra") or {}).get("profile")
+                         if isinstance(_row, dict) else None)
+                if _prof:
+                    _profile_token = set_hermes_home_override(
+                        str(get_profile_dir(_prof)))
+            except Exception:
+                logger.debug("IRC: profile override lookup failed", exc_info=True)
+        try:
+            await self.handle_message(event)
+        finally:
+            if _profile_token is not None:
+                try:
+                    from mercury_constants import reset_hermes_home_override
+                    reset_hermes_home_override(_profile_token)
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------
