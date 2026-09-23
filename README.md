@@ -1,14 +1,18 @@
 # Mercury 🌡️
 
-**A hybrid agent distribution: [Hermes](https://github.com/NousResearch/hermes-agent) by Nous Research + [omp](https://github.com/can1357/oh-my-pi) by can1357 — one install, one config, one agent that orchestrates and executes.**
+**Mercury is Hermes + OMP + The Lounge — one install, one config, one agent that orchestrates and executes, plus the chat surface where you watch it work.**
 
-Mercury glues two proven halves into a single harness. The hermes half is
-the conversation agent — memory, skills, scheduling, messaging platforms,
-the CLI/TUI you chat in. The omp half is the coding engine — the same
-batteries-included agent that drives LSP, DAP debuggers, real browsers,
-and parallel subagents. In Mercury, hermes orchestrates and omp executes:
-every coding task — down to a hello world — fans out to omp subagents,
-and those subagents can spawn subagents of their own.
+Mercury glues three proven pieces into a single harness. The hermes half
+is the conversation agent — memory, skills, scheduling, messaging
+platforms, the CLI/TUI you chat in. The omp half is the coding engine —
+the same batteries-included agent that drives LSP, DAP debuggers, real
+browsers, and parallel subagents. In Mercury, hermes orchestrates and omp
+executes: every coding task — down to a hello world — fans out to omp
+subagents, and those subagents can spawn subagents of their own. **The
+Lounge** is the third piece: Mercury's own self-hosted IRC server (the
+observatory) where every one of those agents gets a room and you get the
+paperclip. CLI for focus, messaging apps for reach, the Lounge for
+oversight — same agent behind all three.
 
 ## Quick install (Linux / macOS / WSL2)
 
@@ -180,7 +184,7 @@ bypass), and the hardline floor (disk-wipe-at-root, block-device
 overwrites, host shutdown) is unconditional. Yolo is an explicit choice,
 never a default.
 
-## What each half gives you
+## What each piece gives you
 
 **hermes half (the orchestrator):** terminal TUI with slash commands ·
 memory that persists across sessions (MEMORY/USER/SOUL) · self-improving
@@ -205,6 +209,38 @@ control · first-class subagents (isolated worktrees, typed results).
   agent turn in the loop.
 - Tool-provider union — hermes can search/scrape through ANY of omp's 24
   providers (`omp-bridge:<id>`), so one key lights up both engines.
+
+## The Lounge — Mercury's third surface (v0.0.136)
+
+The observatory is Mercury's own self-hosted IRC server plus a bouncer
+for your client — a multi-agent chat surface with full CLI parity. Same
+agent, same slash commands, same skills and plugins; what changes is
+that every agent gets a room and you can watch them all work.
+
+```bash
+mercury setup observatory      # provision server + bouncer (tailscale offered)
+mercury observatory status     # server, bouncer, live rooms
+mercury observatory rooms      # list agent rooms
+```
+
+- **Gateway agent** at `#<server>_gateway` — behaves exactly like Mercury
+  over chat or CLI: slash commands, skills, approvals, mid-turn queueing.
+- **`/spawn <name>`** (hermes) and **`/spawnomp <name>`** (omp) open
+  `#<name>` — a full agent in its own room. **`/exit`** stops the agent
+  and destroys the room.
+- **Subagent trace rooms** — when an agent delegates, the child streams
+  its thinking traces and tool calls into `#<parent>-<child>` (the parent
+  names the child). Message the room mid-run and you steer the live child,
+  interrupting exactly the way CLI steering interrupts a turn.
+- **The paperclip** — agents share local files as room-local Lounge links
+  (`lounge_share` on hermes, `share_file` on omp): staged, verified with
+  a GET check, then posted. Dead links are refused, never pasted.
+
+> **Tailscale is highly recommended.** Pin the server and the bouncer to
+> your tailnet and the Lounge follows you everywhere — phone IRC client
+> on the couch, desktop at work — with no open ports and no public
+> internet in the path. Provisioning detects tailscale and offers to pin
+> both listeners; Lounge links then resolve on every tailed device.
 
 ## Configuration
 
