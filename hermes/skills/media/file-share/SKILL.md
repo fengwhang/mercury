@@ -15,14 +15,14 @@ metadata:
 Post a local file in the room you are already in. Same result as the
 human clicking the attachment button: a link only visible in that room.
 
-## Procedure (one tool call)
+## Procedure (one tool call — do NOT reimplement with terminal)
 
-Hermes: `lounge_share(path, caption?)` stages, verifies, and posts the
-link in your current room by itself — one call, done. OMP:
-`share_file(path, caption?)` returns the URL; post it in your reply.
+Call the tool for your engine. It stages, verifies, and posts by
+itself. If it errors, report the error text; never hand-run the
+staging steps below the hood.
 
-Do NOT reimplement with terminal commands. If the tool errors, report
-the error text instead of working around it.
+Hermes: `lounge_share(path, caption?)`. OMP: `share_file(path,
+caption?)`, then post the returned URL in your reply.
 
 ## Rules
 
