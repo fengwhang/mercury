@@ -229,9 +229,11 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-# Session-gated GUI toolsets. Off ``_HERMES_CORE_TOOLS`` so non-GUI clients
-# never pay their schema; once a session enables them they stay direct.
-_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
+# Session-gated surface toolsets. Off ``_HERMES_CORE_TOOLS`` so other
+# surfaces never pay their schema; once a session enables them they stay
+# direct. ``irc`` holds the Lounge paperclip (lounge_share) — the IRC
+# surface's primary handoff affordance, always one call away.
+_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project", "irc"})
 
 
 def is_deferrable_tool_name(name: str) -> bool:
