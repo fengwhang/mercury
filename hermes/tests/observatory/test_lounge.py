@@ -11,7 +11,7 @@ def test_render_lounge_config() -> None:
     assert "port: 9000" in conf
     assert "public: false" in conf
     assert "enable: true" in conf
-    assert "maxFileSize: 0" in conf
+    assert "maxFileSize: -1" in conf
 
 
 def test_ensure_lounge_config_idempotent(tmp_path) -> None:
