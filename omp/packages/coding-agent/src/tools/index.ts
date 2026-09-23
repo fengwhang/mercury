@@ -66,6 +66,7 @@ import type { PlanProposalHandler } from "./resolve";
 import { SecurityScanTool } from "./security-scan";
 import { supportsExternalThinking, ThinkTool } from "./think";
 import { type TodoPhase, TodoTool } from "./todo";
+import { ShareFileTool } from "./share-file";
 import { WriteTool } from "./write";
 import { isMountableUnderXdev, type XdevState } from "./xdev";
 import { YieldTool } from "./yield";
@@ -108,6 +109,7 @@ export * from "./review";
 export * from "./security-scan";
 export * from "./think";
 export * from "./todo";
+export * from "./share-file";
 export * from "./tts";
 export * from "./vibe";
 export * from "./write";
@@ -476,6 +478,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	task: s => TaskTool.create(s),
 	hub: s => new HubTool(s),
 	todo: s => new TodoTool(s),
+	share_file: () => new ShareFileTool(),
 	web_search: s => new WebSearchTool(s),
 	write: s => new WriteTool(s),
 	memory_edit: MemoryEditTool.createIf,

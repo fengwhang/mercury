@@ -32,6 +32,7 @@ export const ESSENTIAL_BUILTIN_TOOL_NAMES: Record<string, true> = {
 	hub: true,
 	learn: true,
 	manage_skill: true,
+	share_file: true,
 };
 
 /**

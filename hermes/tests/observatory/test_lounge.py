@@ -452,3 +452,40 @@ def test_ensure_removes_stale_dir_config(tmp_path) -> None:
     assert "fileUpload" in live
     assert lounge_mod.ensure_lounge_config(
         paths, host="127.0.0.1", port=9000)["action"] == "current"
+
+
+def test_stage_upload_happy_path(tmp_path, monkeypatch) -> None:
+    from observatory import lounge as lounge_mod
+
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    src = tmp_path / "report.pdf"
+    src.write_bytes(b"%PDF-1.4 data")
+    out = lounge_mod.stage_lounge_upload(home, src)
+    assert out["url_path"].startswith("uploads/")
+    assert out["url_path"].endswith("/report.pdf")
+    assert out["filename"] == "report.pdf"
+    token = out["url_path"].split("/")[1]
+    stored = (home / "observatory" / "lounge" / "home" / "uploads"
+              / token[:2] / token)
+    assert stored.read_bytes() == b"%PDF-1.4 data"
+
+
+def test_stage_upload_refusals(tmp_path, monkeypatch) -> None:
+    import pytest
+    from observatory import lounge as lounge_mod
+
+    home = tmp_path / "mercury"
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    with pytest.raises(lounge_mod.LoungeError):
+        lounge_mod.stage_lounge_upload(home, tmp_path / "missing.txt")
+    with pytest.raises(lounge_mod.LoungeError):
+        lounge_mod.stage_lounge_upload(home, "/etc/hostname")
+    key = tmp_path / "id_rsa.key"
+    key.write_text("x")
+    with pytest.raises(lounge_mod.LoungeError):
+        lounge_mod.stage_lounge_upload(home, key)
+    d = tmp_path / "sub"
+    d.mkdir()
+    with pytest.raises(lounge_mod.LoungeError):
+        lounge_mod.stage_lounge_upload(home, d)

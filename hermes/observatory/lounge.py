@@ -730,6 +730,90 @@ def provision_lounge(
     return summary
 
 
+#: Denied staging sources for agent-uploaded files (mirrors the
+#: gateway MEDIA pipeline denylist in gateway/platforms/base.py: system
+#: dirs, credential homes, and secret-looking basenames). An agent that
+#: could stage /etc/passwd or a token file would turn the share link
+#: into an exfil channel.
+UPLOAD_DENIED_PREFIXES = ("/etc", "/proc", "/sys", "/dev", "/root",
+                          "/boot", "/var/log")
+UPLOAD_DENIED_HOME_PARTS = (".ssh", ".aws", ".gnupg", ".kube", ".docker",
+                            ".config", ".azure", ".gcloud")
+UPLOAD_DENIED_BASENAMES = (".env",)
+
+
+def stage_lounge_upload(mercury_home: str | Path | None,
+                        src: str | Path) -> dict:
+    """Stage a local file as a Lounge upload; return link parts.
+
+    Layout mirrors the server's own scheme (``uploads/<2hex>/<16hex>``,
+    original name only in the URL), so the file is served verbatim
+    without touching the upload API. Returns {"url_path", "filename"}.
+    Raises LoungeError on missing/non-file/denied sources.
+    """
+    import secrets as _secrets
+    import shutil as _shutil
+    import urllib.parse as _urlparse
+
+    from observatory.provision import _mercury_home  # local import: no cycle
+
+    raw = str(src or "")
+    if not raw:
+        raise LoungeError("no file path given")
+    try:
+        resolved = Path(raw).expanduser().resolve(strict=True)
+    except Exception:
+        raise LoungeError(f"file not found: {raw[:200]}") from None
+    if not resolved.is_file():
+        raise LoungeError(f"not a regular file: {raw[:200]}")
+    parts = resolved.parts
+    if any(str(resolved).startswith(prefix + "/") or str(resolved) == prefix
+           for prefix in UPLOAD_DENIED_PREFIXES):
+        raise LoungeError(f"refusing system path: {raw[:200]}")
+    home = str(Path.home())
+    if str(resolved).startswith(home + "/"):
+        rel = str(resolved)[len(home) + 1:].split("/", 1)
+        if rel and rel[0] in UPLOAD_DENIED_HOME_PARTS:
+            raise LoungeError(f"refusing credential path: {raw[:200]}")
+    lowered = resolved.name.lower()
+    if lowered in UPLOAD_DENIED_BASENAMES or lowered.endswith((".key", ".pem")):
+        raise LoungeError(f"refusing secret-looking file: {raw[:200]}")
+    try:
+        from observatory.provision import _mercury_home as _mh
+
+        mhome = str(Path(_mh(mercury_home)).expanduser().resolve())
+        uploads = str((LoungePaths(_mh(mercury_home)).home / "uploads"))
+        if str(resolved).startswith(mhome + "/") and not str(resolved).startswith(uploads + "/"):
+            raise LoungeError(f"refusing mercury-home file: {raw[:200]}")
+    except LoungeError:
+        raise
+    except Exception:
+        pass
+    token = _secrets.token_hex(8)
+    dest_dir = (LoungePaths(_mercury_home(mercury_home)).home / "uploads"
+                / token[:2])
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / token
+        _shutil.copyfile(resolved, dest)
+    except Exception as exc:
+        raise LoungeError(f"upload stage failed: {exc}") from exc
+    name = resolved.name[:128] or "file"
+    return {"url_path": f"uploads/{token}/{_urlparse.quote(name)}",
+            "filename": name}
+
+
+def lounge_base_url(mercury_home: str | Path | None = None) -> str:
+    """Public base URL of this box's Lounge (for staged file links)."""
+    st = status_lounge(mercury_home)
+    host = str(st.get("host") or "127.0.0.1")
+    try:
+        port = int(st.get("port") or LOUNGE_PORT_DEFAULT)
+    except (TypeError, ValueError):
+        port = LOUNGE_PORT_DEFAULT
+    return f"http://{host}:{port}"
+
+
 def lounge_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
     """True when something answers on the Lounge web-UI port (never raises)."""
     import socket as _socket
