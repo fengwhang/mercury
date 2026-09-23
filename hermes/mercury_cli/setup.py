@@ -3725,7 +3725,7 @@ def _offer_bouncer_password_rotate(obs) -> None:
         home = _mercury_home(None)
         if custom:
             chosen = _prompt_validated(
-                "New bouncer password (min 8 characters)",
+                "New server password (min 8 characters)",
                 default=None,
                 validate=obs.validate_bouncer_password,
                 password=True,
@@ -4113,7 +4113,7 @@ def _wire_gateway_irc_env(home_label: str) -> bool:
         save_env_value("IRC_NICKNAME", f"{server}_gateway")
         save_env_value("IRC_CHANNEL", f"#{server}_gateway")
         save_env_value("IRC_MANAGED_BY", "observatory")
-        # Single-owner tailnet perimeter (design D7): the bouncer password
+        # Single-owner tailnet perimeter (design D7): the server password
         # is the auth. A stale per-nick allowlist from a manual setup
         # would silently drop the owner's messages — never gate here.
         save_env_value("IRC_ALLOW_ALL_USERS", "true")
@@ -4245,7 +4245,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
             if not was_provisioned:
                 # Fresh install: the user chooses the network label, then
                 # everything else is automatic (passwords generated) —
-                # with a chance to set the bouncer password right away.
+                # with a chance to set the server password right away.
                 label = _prompt_server_label(obs)
                 obs.provision_in_wizard(server_name=label)
                 steps = _run_observatory_auto_steps(obs)
