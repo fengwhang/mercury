@@ -380,10 +380,11 @@ def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
 def render_lounge_config(*, host: str, port: int) -> str:
     """Render config.js (pure string templating, no I/O).
 
-    File uploads on (drag-and-drop in the web UI, stored under the
-    Lounge home so reset wipes them). maxFileSize 0 = unlimited
-    (busboy Infinity) — uploads never expire server-side, so prune
-    the uploads dir by hand when it grows.
+    File uploads on (drag-and-drop or the upload dialog in the web UI,
+    stored under the Lounge home so reset wipes them). maxFileSize -1
+    = unlimited per the official docs (code accepts <1; -1 is the
+    documented value, so a future exact-check can't turn 0 into
+    "0 KB allowed"). Uploads never expire server-side — prune by hand.
     """
     return f"""// Managed by `mercury setup observatory` — hand edits are overwritten.
 module.exports = {{
@@ -393,7 +394,7 @@ module.exports = {{
 	theme: "default",
 	fileUpload: {{
 		enable: true,
-		maxFileSize: 0,
+		maxFileSize: -1,
 	}},
 }};
 """
