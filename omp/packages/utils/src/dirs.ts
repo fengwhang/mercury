@@ -122,6 +122,13 @@ function readProfileFromEnvSafe(): string | undefined {
 }
 
 function getBaseConfigRoot(): string {
+	// HERMES-OMP PATCH (ONE home): under Mercury the launcher always sets
+	// MERCURY_HOME, so the engine nests its whole state tree (config root
+	// AND agent dir) under it — never ~/.omp, which a stock omp install on
+	// the same machine owns. Without this, logs/plugins/caches/worktrees/
+	// browser profiles/auth snapshots are shared between the two products.
+	const mercury = process.env.MERCURY_HOME?.trim();
+	if (mercury) return path.join(mercury, "omp");
 	return path.join(os.homedir(), getConfigDirName());
 }
 
