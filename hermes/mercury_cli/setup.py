@@ -3252,6 +3252,8 @@ def _lounge_card_lines(status: dict, tailscale: dict | None = None) -> list:
         "this server:          pre-added as a network — just open",
         f"                      #{server}_gateway and talk to the gateway",
         "                      (no IRC client needed for anything below)",
+        "uploads:              drag-and-drop works, no size cap — files",
+        "                      never expire, prune them by hand if needed",
     ]
 
 
