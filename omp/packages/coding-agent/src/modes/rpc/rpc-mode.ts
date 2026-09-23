@@ -36,6 +36,7 @@ import { AgentRegistry } from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
+import { localSlashResponse } from "./rpc-local-slash";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import type { EventBus } from "../../utils/event-bus";
@@ -1239,6 +1240,11 @@ export async function runRpcMode(
 						output({ type: "config_update", model: session.model, thinkingLevel: session.thinkingLevel });
 					},
 				});
+				const localSlash = localSlashResponse(command.message);
+				if (localSlash !== null) {
+					output({ type: "command_output", text: localSlash });
+					return success(id, "prompt", { agentInvoked: false });
+				}
 				if (builtinResult !== false) {
 					if ("prompt" in builtinResult) {
 						watchAndReportLocalOnlyPromptResult({
