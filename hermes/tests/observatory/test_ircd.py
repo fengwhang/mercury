@@ -893,3 +893,26 @@ async def test_oper_accepts_either_listener_secret(tmp_path) -> None:
             assert await bot.next_match("464")
         finally:
             await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_register_auto_joins_gateway_room(tmp_path) -> None:
+    """Every authenticated user-listener client lands in #*_gateway —
+    local or remote. Agent-listener bots do not."""
+    async with running_daemon(tmp_path, password="s3cret") as (_, agent_port, server_port):
+        u = RawClient()
+        await u.connect(server_port)
+        try:
+            await u.register("remote", password="s3cret")
+            join = await u.next_match("JOIN #", timeout=5.0)
+            assert "_gateway" in join
+        finally:
+            await u.close()
+        bot = RawClient()
+        await bot.connect(agent_port)
+        try:
+            await bot.register("bot")
+            with pytest.raises(TimeoutError):
+                await bot.next_match("JOIN #", timeout=0.5)
+        finally:
+            await bot.close()
