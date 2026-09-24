@@ -24,12 +24,23 @@ have() { # asset already attached?
         | python3 -c "import json,sys; print(any(a['name']=='$1' for a in json.load(sys.stdin)))"
 }
 
-# The installer one-liner fetches these — refuse to publish without them.
-for alias in mercury-x64.tar.gz mercury-arm64.tar.gz mercury-x64.tar.gz.sha256 mercury-arm64.tar.gz.sha256; do
-    [ -f "$DIST/$alias" ] || { echo "missing required alias asset: $DIST/$alias (run make-dist.sh)" >&2; exit 1; }
-done
+if [ "${3:-}" = "--aliases" ]; then
+    # The installer one-liner fetches these — refuse to publish without them.
+    for alias in mercury-x64.tar.gz mercury-arm64.tar.gz mercury-x64.tar.gz.sha256 mercury-arm64.tar.gz.sha256; do
+        [ -f "$DIST/$alias" ] || { echo "missing required alias asset: $DIST/$alias (run make-dist.sh)" >&2; exit 1; }
+    done
+fi
 
-for f in "$DIST"/mercury-*.tar.gz "$DIST"/mercury-*.tar.gz.sha256; do
+ver="${TAG#v}"
+# Aliases only belong on the latest release (the installer reads them
+# from releases/latest). Pass --aliases for that release only.
+files=("$DIST"/mercury-"$ver"-x64.tar.gz "$DIST"/mercury-"$ver"-arm64.tar.gz
+       "$DIST"/mercury-"$ver"-x64.tar.gz.sha256 "$DIST"/mercury-"$ver"-arm64.tar.gz.sha256)
+if [ "${3:-}" = "--aliases" ]; then
+    files+=("$DIST"/mercury-x64.tar.gz "$DIST"/mercury-arm64.tar.gz
+            "$DIST"/mercury-x64.tar.gz.sha256 "$DIST"/mercury-arm64.tar.gz.sha256)
+fi
+for f in "${files[@]}"; do
     [ -f "$f" ] || continue
     name="$(basename "$f")"
     if [ "$(have "$name")" = "True" ]; then
