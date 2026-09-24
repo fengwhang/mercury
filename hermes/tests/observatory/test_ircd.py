@@ -916,3 +916,35 @@ async def test_register_auto_joins_gateway_room(tmp_path) -> None:
                 await bot.next_match("JOIN #", timeout=0.5)
         finally:
             await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_register_auto_joins_all_live_rooms(tmp_path) -> None:
+    """Zero manual joins: registration pulls every live agent room."""
+    from observatory import rooms as rooms_mod
+    from observatory.state import ObservatoryState
+
+    state = ObservatoryState(tmp_path / "state.db")
+    row = state.add_node(
+        "orch-1", engine="hermes", name="bravo", slug="bravo",
+        mxid="bravo", session_ref="#bravo",
+    )
+    state.set_room_id(row["node_id"], "#bravo")
+    manager = rooms_mod.RoomManager(state, None)
+    rooms_mod.set_room_manager(manager)
+    try:
+        async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
+            u = RawClient()
+            await u.connect(server_port)
+            try:
+                await u.register("remote", password="s3cret")
+                joins = []
+                for _ in range(2):
+                    joins.append(await u.next_match("JOIN #", timeout=5.0))
+                blob = "\n".join(joins)
+                assert "_gateway" in blob
+                assert "#bravo" in blob
+            finally:
+                await u.close()
+    finally:
+        rooms_mod.set_room_manager(None)

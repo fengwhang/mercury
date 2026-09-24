@@ -706,17 +706,31 @@ class IrcDaemon:
         # (or 422) Goguma waits forever and reconnects in a loop.
         await self._numeric(client, 422, nick, "MOTD File is missing")
         if listener != "agent":
-            # Parity: every authenticated user lands in the gateway room,
-            # local or remote. The single-nick INVITE only covers the local
-            # Lounge; a remote client would otherwise join an empty server.
+            # Parity: every authenticated user lands in every live agent
+            # room, local or remote — zero manual joins. The single-nick
+            # INVITE only covers the local Lounge; a remote client would
+            # otherwise join an empty server. Gateway first, then the rest
+            # in state order.
             base = clean_channel(name or "mercury").lstrip("#")
-            display = f"#{base}_gateway"
-            key = display.lower()
-            async with self._lock:
-                self._channels[key].add(nick.lower())
-                self._display.setdefault(key, display)
-                client.channels.add(key)
-            await self._emit_join(client, key, display)
+            targets: list[str] = [f"#{base}_gateway"]
+            try:
+                from observatory.rooms import get_room_manager
+
+                manager = get_room_manager()
+                if manager is not None:
+                    for row in manager.live_rows():
+                        room = str((row or {}).get("room_id") or "").strip()
+                        if room.startswith("#") and room not in targets:
+                            targets.append(room)
+            except Exception:
+                logger.debug("ircd: room list lookup failed", exc_info=True)
+            for display in targets:
+                key = display.lower()
+                async with self._lock:
+                    self._channels[key].add(nick.lower())
+                    self._display.setdefault(key, display)
+                    client.channels.add(key)
+                await self._emit_join(client, key, display)
 
     async def _cmd_join(self, client: _Client, arg: str) -> None:
         if not arg:
