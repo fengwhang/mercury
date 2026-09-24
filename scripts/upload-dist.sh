@@ -40,6 +40,7 @@ if [ "${3:-}" = "--aliases" ]; then
     files+=("$DIST"/mercury-x64.tar.gz "$DIST"/mercury-arm64.tar.gz
             "$DIST"/mercury-x64.tar.gz.sha256 "$DIST"/mercury-arm64.tar.gz.sha256)
 fi
+fail=0
 for f in "${files[@]}"; do
     [ -f "$f" ] || continue
     name="$(basename "$f")"
