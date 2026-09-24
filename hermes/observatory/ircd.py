@@ -705,6 +705,18 @@ class IrcDaemon:
         # Clients consider login complete at end-of-MOTD; without 376
         # (or 422) Goguma waits forever and reconnects in a loop.
         await self._numeric(client, 422, nick, "MOTD File is missing")
+        if listener != "agent":
+            # Parity: every authenticated user lands in the gateway room,
+            # local or remote. The single-nick INVITE only covers the local
+            # Lounge; a remote client would otherwise join an empty server.
+            base = clean_channel(name or "mercury").lstrip("#")
+            display = f"#{base}_gateway"
+            key = display.lower()
+            async with self._lock:
+                self._channels[key].add(nick.lower())
+                self._display.setdefault(key, display)
+                client.channels.add(key)
+            await self._emit_join(client, key, display)
 
     async def _cmd_join(self, client: _Client, arg: str) -> None:
         if not arg:
