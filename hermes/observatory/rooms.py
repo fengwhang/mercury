@@ -520,7 +520,7 @@ class RoomManager:
             channel, greet=f"live trace for subagent '{name}' streams here"
         )
         logger.info("observatory: room ensured %s for %s", channel, node_id)
-        # No bouncer subscription: The Lounge sees rooms via INVITE
+        # No server subscription: The Lounge sees rooms via INVITE
         # and prunes them itself on destroy.
         try:
             from observatory.provision import get_lounge_nick
@@ -617,7 +617,7 @@ class RoomManager:
                 await self.destroy_room(channel)
             except Exception:
                 pass
-            # No unsubscribe step: without a bouncer there is no
+            # No unsubscribe step: without a lingering subscription there is no
             # phone-side subscription — The Lounge prunes the destroyed
             # room itself.
             try:

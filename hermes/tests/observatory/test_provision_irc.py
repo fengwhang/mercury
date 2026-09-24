@@ -18,10 +18,10 @@ def test_validate_server_name() -> None:
         provision.validate_server_name("")
 
 
-def test_validate_bouncer_password() -> None:
-    assert provision.validate_bouncer_password("long-enough") == "long-enough"
+def test_validate_server_password() -> None:
+    assert provision.validate_server_password("long-enough") == "long-enough"
     with pytest.raises(ValueError):
-        provision.validate_bouncer_password("short")
+        provision.validate_server_password("short")
 
 
 def test_ensure_config_idempotent(tmp_path, monkeypatch) -> None:
@@ -162,40 +162,40 @@ def test_provision_flow_includes_tls(tmp_path, monkeypatch) -> None:
     assert summary["config"]["config"]["tls_port"] == 6697
 
 
-def test_set_bouncer_password_keeps_agent(tmp_path, monkeypatch) -> None:
+def test_set_server_password_keeps_agent(tmp_path, monkeypatch) -> None:
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
     first = provision.provision(home, server_name="mercury", systemd=False)
     assert first["passwords"]["action"] == "generated"
-    out = provision.set_bouncer_password(home, "my-chosen-pw")
+    out = provision.set_server_password(home, "my-chosen-pw")
     assert out == {"action": "set", "agent": "kept"}
     have = provision.read_irc_passwords(home)
-    assert have["bouncer"] == "my-chosen-pw"
+    assert have["server"] == "my-chosen-pw"
     assert have["agent"]  # untouched
 
 
-def test_set_bouncer_password_rejects_short(tmp_path, monkeypatch) -> None:
+def test_set_server_password_rejects_short(tmp_path, monkeypatch) -> None:
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
     import pytest
 
     with pytest.raises(ValueError):
-        provision.set_bouncer_password(home, "short")
+        provision.set_server_password(home, "short")
 
 
 def test_provision_honors_chosen_password_env(tmp_path, monkeypatch) -> None:
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
-    monkeypatch.setenv(provision.ENV_CHOSEN_BOUNCER_PASSWORD, "env-chosen-pw")
+    monkeypatch.setenv(provision.ENV_CHOSEN_SERVER_PASSWORD, "env-chosen-pw")
     summary = provision.provision(home, server_name="mercury", systemd=False)
     assert summary["chosen_password"]["action"] == "set"
-    assert provision.read_irc_passwords(home)["bouncer"] == "env-chosen-pw"
+    assert provision.read_irc_passwords(home)["server"] == "env-chosen-pw"
 
 
 def test_provision_rejects_bad_chosen_password_env(tmp_path, monkeypatch) -> None:
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
-    monkeypatch.setenv(provision.ENV_CHOSEN_BOUNCER_PASSWORD, "short")
+    monkeypatch.setenv(provision.ENV_CHOSEN_SERVER_PASSWORD, "short")
     import pytest
 
     with pytest.raises(provision.ProvisionError):
@@ -241,7 +241,7 @@ def test_reset_blanks_listener_passwords(tmp_path, monkeypatch) -> None:
     # next provision generates fresh secrets
     made = provision.ensure_passwords(home)
     assert made["action"] == "generated"
-    assert provision.read_irc_passwords(home)["bouncer"]
+    assert provision.read_irc_passwords(home)["server"]
 
 
 def test_remove_legacy_soju(tmp_path, monkeypatch) -> None:
@@ -318,7 +318,7 @@ def test_restart_fires_on_password_regen(monkeypatch) -> None:
         lambda args, **kw: calls.append(list(args)) or _types.SimpleNamespace(
             returncode=0, stdout=b"", stderr=b""))
     out = provision._restart_ircd_if_changed(
-        config_action="current", passwords_made=["bouncer"],
+        config_action="current", passwords_made=["server"],
         tls_action="current")
     assert out == {"action": "restarted"}
     assert any(a[-1] == "daemon-reload" for a in calls)
@@ -344,7 +344,7 @@ def test_passwords_prefer_dotenv_over_stale_environ(
     home.mkdir(parents=True)
     (home / ".env").write_text("IRC_BOUNCER_PASSWORD=live-17\n")
     monkeypatch.setenv("IRC_BOUNCER_PASSWORD", "stale-32-char-password-here")
-    assert (provision.read_irc_passwords(home)["bouncer"]
+    assert (provision.read_irc_passwords(home)["server"]
             == "live-17")
     assert _os.environ["IRC_BOUNCER_PASSWORD"] == (
         "stale-32-char-password-here")
@@ -381,7 +381,7 @@ def test_old_keys_honored_as_fallback(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("IRC_AGENT_PASSWORD", raising=False)
     home.mkdir(parents=True)
     (home / ".env").write_text("IRC_BOUNCER_PASSWORD=legacy16chars\n")
-    assert (provision.read_irc_passwords(home)["bouncer"]
+    assert (provision.read_irc_passwords(home)["server"]
             == "legacy16chars")
     obs = home / "observatory"
     obs.mkdir(parents=True)
@@ -398,5 +398,8 @@ def test_old_keys_honored_as_fallback(tmp_path, monkeypatch) -> None:
     assert cfg["server_host"] == "100.9.9.9"
     assert cfg["server_port"] == 6670
     assert "bouncer_host" not in cfg and "bouncer_port" not in cfg
+    summary = provision.status_summary(home)
+    assert summary["server"] == "100.9.9.9:6670"
+    assert summary["server_password_set"] is True
     assert out["daemon"]["action"] in (
         "current", "started-fresh", "restarted", "skipped")

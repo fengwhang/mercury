@@ -19,16 +19,16 @@ commands, same mid-turn steering.
 | # | Decision |
 |---|----------|
 | D1 | Bundled, default ON at install; `observatory.enabled: false` freezes (never deletes). |
-| D2 | Ships its own network: stdlib asyncio ircd, no downloads, no message crypto. Agent listener (`127.0.0.1:6669`, or the tailnet IP on request) + plaintext bouncer (`127.0.0.1:6670`) + TLS bouncer (`127.0.0.1:6697`) on the same channel state. The daemon replays the last N messages per channel on JOIN (SQLite-persisted, survives restarts). TLS serves strict clients only (self-signed CA in `observatory/tls/`); the tailnet stays the perimeter. Frontend is The Lounge (one per user, npm-installed, points at every mercury ircd as a network); direct IRC clients may use the bouncer listeners. |
+| D2 | Ships its own network: stdlib asyncio ircd, no downloads, no message crypto. Agent listener (`127.0.0.1:6669`, or the tailnet IP on request) + plaintext server (`127.0.0.1:6670`) + TLS server (`127.0.0.1:6697`) on the same channel state. The daemon replays the last N messages per channel on JOIN (SQLite-persisted, survives restarts). TLS serves strict clients only (self-signed CA in `observatory/tls/`); the tailnet stays the perimeter. Frontend is The Lounge (one per user, npm-installed, points at every mercury ircd as a network); direct IRC clients may use the server listeners. |
 | D3 | The gateway owns ALL IRC I/O in-process (rooms + spawn + feed producers). No sidecar, no cross-process handle handoff — the bug class that killed Matrix cannot recur. |
 | D4 | One channel per agent. Gateway → `#<server>_gateway`; `/spawn` + `/spawnomp <name>` → `#<name>`; delegate children → `#<parent>-<child>` (parent names the child). IRC channels are created on first JOIN and destroyed server-side (OPER `DESTROY`) on `/exit`. |
 | D5 | Full steering: chat with any delegate child AND any omp in-process subagent, all depths. Tool calls render as `🔧` lines, thinking as `💭` lines, grandchild frames tagged `[id]`. |
 | D6 | Agent `name` is required at both spawn surfaces. Unicode allowed in display/channel topics; channel slugs are lowercase (`clean_channel`). |
-| D7 | Single owner; the bouncer password is the auth (any nick). No per-user ACL in v1 — the tailnet is the perimeter. |
+| D7 | Single owner; the server password is the auth (any nick). No per-user ACL in v1 — the tailnet is the perimeter. |
 | D8 | Annihilation semantics: `/exit` dead-marks the whole subtree + journals channels atomically, stops engines, destroys channels, deletes rows. Crashed destroys replay from the journal on next boot (dead-or-deleted in every observable state). Restart is not death: live 0-agents rejoin + resume (omp via session files). |
 | D9 | `/spawn <name>` = hermes-side agent: a plain gateway session keyed by channel (first message starts it — slash commands, approvals, mid-turn steering free). `/spawnomp <name>` = headless omp RPC child pumped by `rooms.handle_omp_message` (idle → task, busy → steer). No cap on live orchestrators. |
 | D10 | Child rooms steer the live child: omp children via `transport.steer` (registered by the feed watcher; one-shots are read-only traces); spawned-omp rooms via `run_task`/`steer`. Mid-turn text lands at the next safe boundary — the in-flight tool call is never cut. |
-| D11 | Tailscale pins: the bouncer listener pins to the tailnet IP on request, and the agent listener offers localhost-vs-tailnet at setup (whole fleet reachable when pinned). The Lounge binds localhost or tailnet by choice. `mercury setup observatory` offers each when the tailnet is up. |
+| D11 | Tailscale pins: the server listener pins to the tailnet IP on request, and the agent listener offers localhost-vs-tailnet at setup (whole fleet reachable when pinned). The Lounge binds localhost or tailnet by choice. `mercury setup observatory` offers each when the tailnet is up. |
 | D12 | Gateway wiring is explicit: `mercury setup observatory` offers to write the gateway's `IRC_*` env (server/port/nick/channel/password) so the gateway bot joins the network as `<server>_gateway`. |
 
 ## 2. Architecture
@@ -66,5 +66,5 @@ is the perimeter) and cost everything: per-device Olm machines,
 one-time-key pools, Megolm sessions, cross-signing trust, and a second
 daemon whose handle handoff never worked. IRC gives presence, history,
 and rooms with ~700 lines of stdlib. TLS termination exists on the ircd
-(a 6697 bouncer with a provisioned CA) for strict clients —
+(a 6697 server with a provisioned CA) for strict clients —
 not message-layer crypto.

@@ -14,7 +14,7 @@ from observatory.ircd import DaemonConfig, IrcDaemon
 @asynccontextmanager
 async def running_daemon(tmp_path, **kwargs):
     config = DaemonConfig(
-        agent_port=0, bouncer_port=0, state_dir=str(tmp_path), **kwargs)
+        agent_port=0, server_port=0, state_dir=str(tmp_path), **kwargs)
     d = IrcDaemon(config)
     await d.start()
     try:

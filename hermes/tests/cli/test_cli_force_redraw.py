@@ -351,7 +351,7 @@ class TestFirstSigwinchBaseline:
 
         assert bare_cli._last_resize_width == 132
         assert app._on_resize is not original  # hook installed
-        app._on_resize()  # simulated SIGWINCH → routes to the debouncer
+        app._on_resize()  # simulated SIGWINCH → routes to the delayed handler
         assert len(scheduled) == 1
         assert scheduled[0][0] is app
         assert scheduled[0][1] is original

@@ -1,6 +1,6 @@
 """Idempotent IRC observatory provisioner (replaces the tuwunel stack).
 
-Provisions, in order: ``ircd.json`` config → bouncer/agent passwords
+Provisions, in order: ``ircd.json`` config → server/agent passwords
 (mirrored in ``$MERCURY_HOME/.env``) → gateway state row → systemd
 user unit. Fail-hard like every other provision step; never touches
 the network (no downloads — the daemon is stdlib-only).
@@ -22,7 +22,7 @@ from observatory.config_gen import (
     HISTORY_LIMIT_DEFAULT,
     IRCD_ADDRESS,
     IRCD_AGENT_PORT_DEFAULT,
-    IRCD_BOUNCER_PORT_DEFAULT,
+    IRCD_SERVER_PORT_DEFAULT,
     IRCD_TLS_PORT_DEFAULT,
     OBSERVATORY_UNIT_NAME,
     SERVER_NAME_DEFAULT,
@@ -53,9 +53,9 @@ ENV_CLIENT_PASSWORD = "IRC_CLIENT_PASSWORD"
 ENV_BOUNCER_PASSWORD = "IRC_BOUNCER_PASSWORD"
 ENV_AGENT_PASSWORD = "IRC_AGENT_PASSWORD"
 
-#: Strength floor for user-chosen bouncer passwords (generated ones carry
+#: Strength floor for user-chosen server passwords (generated ones carry
 #: ~192 bits and bypass this).
-BOUNCER_PASSWORD_MIN_LENGTH = 8
+SERVER_PASSWORD_MIN_LENGTH = 8
 
 _SERVER_NAME_RE = r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?"
 
@@ -95,12 +95,12 @@ def validate_server_name(value: str) -> str:
     return clean
 
 
-def validate_bouncer_password(value: str) -> str:
+def validate_server_password(value: str) -> str:
     clean = str(value or "")
-    if len(clean) < BOUNCER_PASSWORD_MIN_LENGTH:
+    if len(clean) < SERVER_PASSWORD_MIN_LENGTH:
         raise ValueError(
-            "bouncer password must be at least "
-            f"{BOUNCER_PASSWORD_MIN_LENGTH} characters"
+            "server password must be at least "
+            f"{SERVER_PASSWORD_MIN_LENGTH} characters"
         )
     return clean
 
@@ -157,7 +157,7 @@ def _upsert_env_key(env_path: Path, key: str, value: str) -> None:
 
 
 def mirror_irc_env(
-    mercury_home: str | Path | None, bouncer_password: str, agent_password: str
+    mercury_home: str | Path | None, server_password: str, agent_password: str
 ) -> Path:
     """Mirror both listener passwords into $MERCURY_HOME/.env (0600).
 
@@ -166,11 +166,11 @@ def mirror_irc_env(
     a startup snapshot.
     """
     env_path = _mercury_home(mercury_home) / ".env"
-    _upsert_env_key(env_path, ENV_CLIENT_PASSWORD, bouncer_password)
+    _upsert_env_key(env_path, ENV_CLIENT_PASSWORD, server_password)
     _remove_env_key(env_path, ENV_BOUNCER_PASSWORD)
     _upsert_env_key(env_path, ENV_AGENT_PASSWORD, agent_password)
     try:
-        os.environ[ENV_CLIENT_PASSWORD] = bouncer_password
+        os.environ[ENV_CLIENT_PASSWORD] = server_password
         os.environ.pop(ENV_BOUNCER_PASSWORD, None)
         os.environ[ENV_AGENT_PASSWORD] = agent_password
     except Exception:
@@ -204,7 +204,7 @@ def read_irc_passwords(mercury_home: str | Path | None = None) -> dict[str, str]
                 return val
         return ""
 
-    return {"bouncer": _one(ENV_CLIENT_PASSWORD, ENV_BOUNCER_PASSWORD),
+    return {"server": _one(ENV_CLIENT_PASSWORD, ENV_BOUNCER_PASSWORD),
             "agent": _one(ENV_AGENT_PASSWORD)}
 
 
@@ -217,13 +217,13 @@ def default_config(*, server_name: str = SERVER_NAME_DEFAULT) -> dict[str, Any]:
         "agent_host": IRCD_ADDRESS,
         "agent_port": IRCD_AGENT_PORT_DEFAULT,
         "server_host": IRCD_ADDRESS,
-        "server_port": IRCD_BOUNCER_PORT_DEFAULT,
+        "server_port": IRCD_SERVER_PORT_DEFAULT,
         "tls_port": IRCD_TLS_PORT_DEFAULT,
         "history_limit": HISTORY_LIMIT_DEFAULT,
     }
 
 
-#: ircd.json rename (bouncer_* -> server_*): readers take the new key
+#: ircd.json rename (old client-listener keys -> server_*): readers take the new key
 #: with the old as fallback so pre-rename installs keep working; writers
 #: emit new keys only (old keys are popped on the next provision write).
 SERVER_KEY_FALLBACKS = {"server_host": "bouncer_host",
@@ -255,8 +255,8 @@ def ensure_config(
     server_name: str | None = None,
     agent_host: str | None = None,
     agent_port: int | None = None,
-    bouncer_host: str | None = None,
-    bouncer_port: int | None = None,
+    server_host: str | None = None,
+    server_port: int | None = None,
     tls_port: int | None = None,
     history_limit: int | None = None,
 ) -> dict[str, Any]:
@@ -278,8 +278,8 @@ def ensure_config(
         ),
         "agent_host": agent_host,
         "agent_port": agent_port,
-        "server_host": bouncer_host,
-        "server_port": bouncer_port,
+        "server_host": server_host,
+        "server_port": server_port,
         "tls_port": tls_port,
         "history_limit": history_limit,
     }
@@ -311,34 +311,34 @@ def ensure_passwords(mercury_home: str | Path | None = None) -> dict[str, Any]:
     """Generate missing listener passwords and mirror them into .env."""
     have = read_irc_passwords(mercury_home)
     made: list[str] = []
-    if not have["bouncer"]:
-        have["bouncer"] = generate_password()
-        made.append("bouncer")
+    if not have["server"]:
+        have["server"] = generate_password()
+        made.append("server")
     if not have["agent"]:
         have["agent"] = generate_password()
         made.append("agent")
     if made:
-        mirror_irc_env(mercury_home, have["bouncer"], have["agent"])
+        mirror_irc_env(mercury_home, have["server"], have["agent"])
     return {"action": "generated" if made else "current", "made": made}
 
 
-#: Env var carrying a user-chosen bouncer password into provisioning
+#: Env var carrying a user-chosen server password into provisioning
 #: (install.sh passes the environment through; never an argv flag —
 #: secrets stay out of ps output). Validated like a wizard-typed one.
-ENV_CHOSEN_BOUNCER_PASSWORD = "OBSERVATORY_SERVER_PASSWORD"
+ENV_CHOSEN_SERVER_PASSWORD = "OBSERVATORY_SERVER_PASSWORD"
 
 
-def set_bouncer_password(
+def set_server_password(
     mercury_home: str | Path | None, password: str
 ) -> dict[str, Any]:
-    """Set the bouncer password to a chosen value (min 8 chars).
+    """Set the server password to a chosen value (min 8 chars).
 
     The agent password is kept as-is (generated when missing); both are
     mirrored to .env. The caller MUST restart the daemon afterwards — a
     live daemon keeps the old password in memory until then, which is
     exactly the ".env says X, daemon rejects X" desync.
     """
-    clean = validate_bouncer_password(password)
+    clean = validate_server_password(password)
     have = read_irc_passwords(mercury_home)
     agent = have.get("agent") or generate_password()
     mirror_irc_env(mercury_home, clean, agent)
@@ -348,7 +348,7 @@ def set_bouncer_password(
 
 
 def ensure_tls_cert(mercury_home: str | Path | None = None) -> dict[str, Any]:
-    """Idempotent self-signed CA + server cert for the TLS bouncer.
+    """Idempotent self-signed CA + server cert for the TLS server.
 
     Strict clients (Goguma-style: TLS default, no plaintext toggle) need
     TLS even on a tailnet. The CA is generated once and kept (clients
@@ -716,7 +716,7 @@ def current_listen_addresses(mercury_home: str | Path | None = None) -> list[str
 
 
 def set_ircd_bind(
-    ip: str, mercury_home: str | Path | None = None, *, listener: str = "bouncer"
+    ip: str, mercury_home: str | Path | None = None, *, listener: str = "server"
 ) -> str:
     """Pin one listener to the tailnet IP (localhost retained on the
     other listener by default — pass listener="agent" to pin the agent
@@ -737,8 +737,10 @@ def set_ircd_bind(
         raise ProvisionError(
             f"refusing to bind loopback {target!r} — localhost is already bound"
         )
-    if listener not in ("bouncer", "agent", "both"):
-        raise ProvisionError(f"listener must be bouncer|agent|both, got {listener!r}")
+    if listener == "bouncer":  # legacy alias (pre-rename callers)
+        listener = "server"
+    if listener not in ("server", "agent", "both"):
+        raise ProvisionError(f"listener must be server|agent|both, got {listener!r}")
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
     cfg = read_config(home)
@@ -747,7 +749,7 @@ def set_ircd_bind(
             f"observatory not provisioned (ircd.json missing at {paths.config_file}) — "
             "run 'mercury setup observatory' install first"
         )
-    if listener in ("bouncer", "both"):
+    if listener in ("server", "both"):
         cfg["server_host"] = target
         cfg.pop("bouncer_host", None)
     if listener in ("agent", "both"):
@@ -765,8 +767,8 @@ def provision(
     server_name: str | None = None,
     agent_host: str | None = None,
     agent_port: int | None = None,
-    bouncer_host: str | None = None,
-    bouncer_port: int | None = None,
+    server_host: str | None = None,
+    server_port: int | None = None,
     history_limit: int | None = None,
     systemd: bool = True,
 ) -> dict:
@@ -783,22 +785,22 @@ def provision(
             server_name=server_name,
             agent_host=agent_host,
             agent_port=agent_port,
-            bouncer_host=bouncer_host,
-            bouncer_port=bouncer_port,
+            server_host=server_host,
+            server_port=server_port,
             history_limit=history_limit,
         ),
         "passwords": ensure_passwords(home),
         "tls": ensure_tls_cert(home),
     }
-    chosen = os.environ.get(ENV_CHOSEN_BOUNCER_PASSWORD)
+    chosen = os.environ.get(ENV_CHOSEN_SERVER_PASSWORD)
     if chosen:
         # Explicit choice wins over generated/current (install.sh
         # passes the env through; the wizard has its own prompt).
         try:
-            summary["chosen_password"] = set_bouncer_password(home, chosen)
+            summary["chosen_password"] = set_server_password(home, chosen)
         except ValueError as exc:
             raise ProvisionError(
-                f"{ENV_CHOSEN_BOUNCER_PASSWORD} invalid: {exc}"
+                f"{ENV_CHOSEN_SERVER_PASSWORD} invalid: {exc}"
             ) from exc
     live = live_server_name(home)
     if not live:
@@ -890,7 +892,7 @@ LEGACY_SOJU_FILES = (
 
 
 def remove_legacy_soju(mercury_home: str | Path | None = None) -> list[str]:
-    """Stop/disable/remove the pre-Lounge soju bouncer (never raises).
+    """Stop/disable/remove the pre-Lounge soju relay (never raises).
 
     Pre-pivot installs left ``mercury-soju.service`` active+enabled with
     an upstream-less config: it squats 6670/6697 and relays nothing,
@@ -1001,13 +1003,13 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
         # "mercury" default (status used to omit this and every card
         # printed #mercury_gateway regardless of the chosen name).
         "server_name": live_server_name(home),
-        "bouncer": f"{server_key(cfg, 'server_host', IRCD_ADDRESS)}:"
-        f"{server_key(cfg, 'server_port', IRCD_BOUNCER_PORT_DEFAULT)}",
+        "server": f"{server_key(cfg, 'server_host', IRCD_ADDRESS)}:"
+        f"{server_key(cfg, 'server_port', IRCD_SERVER_PORT_DEFAULT)}",
         "tls_port": _safe_port((cfg or {}).get("tls_port"), IRCD_TLS_PORT_DEFAULT),
         "tls_ready": bool(
             (ObservatoryPaths(home).tls_cert.is_file())
             and (ObservatoryPaths(home).tls_key.is_file())),
-        "bouncer_password_set": bool(passwords["bouncer"]),
+        "server_password_set": bool(passwords["server"]),
         "agent_password_set": bool(passwords["agent"]),
         "config_path": str(ObservatoryPaths(home).config_file),
     }
@@ -1167,8 +1169,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--server-name", default=None)
     parser.add_argument("--agent-host", default=None)
     parser.add_argument("--agent-port", type=int, default=None)
-    parser.add_argument("--bouncer-host", default=None)
-    parser.add_argument("--bouncer-port", type=int, default=None)
+    parser.add_argument("--server-host", default=None)
+    parser.add_argument("--server-port", type=int, default=None)
     parser.add_argument("--no-systemd", action="store_true")
     parser.add_argument("--mercury-home", default=None)
     args = parser.parse_args(argv)
@@ -1179,8 +1181,8 @@ def main(argv: list[str] | None = None) -> int:
             server_name=args.server_name,
             agent_host=args.agent_host,
             agent_port=args.agent_port,
-            bouncer_host=args.bouncer_host,
-            bouncer_port=args.bouncer_port,
+            server_host=args.server_host,
+            server_port=args.server_port,
             systemd=not args.no_systemd,
         )
     except ProvisionError as exc:

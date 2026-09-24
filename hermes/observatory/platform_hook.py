@@ -257,7 +257,7 @@ async def boot_resync(
         try:
             # Lobby self-heal: restarts/upgrades must never leave the
             # user without its gateway room (no setup run required).
-            # The Lounge learns it via INVITE (no bouncer subscription).
+            # The Lounge learns it via INVITE (no server subscription).
             from observatory.provision import get_lounge_nick, live_server_name
             from observatory.rooms import gateway_channel
 

@@ -1,6 +1,6 @@
 """IRC Observatory — Mercury's bundled local chat network.
 
-One stdlib asyncio IRC daemon (``ircd``: agent listener + bouncer
+One stdlib asyncio IRC daemon (``ircd``: agent listener + server
 listener on the same channel state, SQLite history replay), one
 channel per live agent, driven in-process by the gateway
 (``rooms`` + ``spawn`` + ``gateway_session`` feed producers).

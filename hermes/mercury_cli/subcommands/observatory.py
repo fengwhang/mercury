@@ -34,8 +34,8 @@ def _cmd_status(args) -> int:
     except Exception as exc:
         print(f"status failed: {exc}", file=sys.stderr)
         return 1
-    for key in ("enabled", "provisioned", "server_name", "agent", "bouncer",
-                "unit", "bouncer_password_set", "agent_password_set", "config_path"):
+    for key in ("enabled", "provisioned", "server_name", "agent", "server",
+                "unit", "server_password_set", "agent_password_set", "config_path"):
         print(f"{key}: {status.get(key)}")
     return 0
 

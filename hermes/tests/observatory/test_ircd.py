@@ -1,4 +1,4 @@
-"""IRC daemon tests: join/msg fanout, bouncer replay, destroy, auth."""
+"""IRC daemon tests: join/msg fanout, server replay, destroy, auth."""
 
 from __future__ import annotations
 
@@ -87,14 +87,14 @@ class RawClient:
 async def running_daemon(tmp_path, **kwargs):
     """Start an IrcDaemon on ephemeral ports (fixtures stay sync per convention)."""
     config = DaemonConfig(
-        agent_port=0, bouncer_port=0, state_dir=str(tmp_path), **kwargs
+        agent_port=0, server_port=0, state_dir=str(tmp_path), **kwargs
     )
     d = IrcDaemon(config)
     await d.start()
     agent_port = d._servers[0].sockets[0].getsockname()[1]
-    bouncer_port = d._servers[1].sockets[0].getsockname()[1]
+    server_port = d._servers[1].sockets[0].getsockname()[1]
     try:
-        yield d, agent_port, bouncer_port
+        yield d, agent_port, server_port
     finally:
         await d.stop()
 
@@ -122,8 +122,8 @@ async def test_join_and_privmsg_fanout(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bouncer_replay_on_join(tmp_path) -> None:
-    async with running_daemon(tmp_path) as (_, agent_port, bouncer_port):
+async def test_server_replay_on_join(tmp_path) -> None:
+    async with running_daemon(tmp_path) as (_, agent_port, server_port):
         a = RawClient()
         await a.connect(agent_port)
         try:
@@ -136,7 +136,7 @@ async def test_bouncer_replay_on_join(tmp_path) -> None:
         finally:
             await a.close()
         u = RawClient()
-        await u.connect(bouncer_port)
+        await u.connect(server_port)
         try:
             await u.register("user")
             await u.send("JOIN #replay")
@@ -166,10 +166,10 @@ async def test_destroy_channel_parts_members(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bouncer_password_enforced(tmp_path) -> None:
-    async with running_daemon(tmp_path, password="s3cret") as (_, __, bouncer_port):
+async def test_server_password_enforced(tmp_path) -> None:
+    async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
         u = RawClient()
-        await u.connect(bouncer_port)
+        await u.connect(server_port)
         try:
             await u.send("NICK user")
             await u.send("USER user 0 * :test")
@@ -183,7 +183,7 @@ async def test_bouncer_password_enforced(tmp_path) -> None:
         finally:
             await u.close()
         v = RawClient()
-        await v.connect(bouncer_port)
+        await v.connect(server_port)
         try:
             await v.register("user2", password="s3cret")
         finally:
@@ -247,8 +247,8 @@ def _args(**kw):
     base = dict(
         host=None,
         agent_port=None,
-        bouncer_host=None,
-        bouncer_port=None,
+        server_host=None,
+        server_port=None,
         server_name=None,
         password=None,
         agent_password=None,
@@ -271,12 +271,12 @@ def test_resolve_layers_argv_over_file_over_defaults(tmp_path) -> None:
         encoding="utf-8",
     )
     cfg = _resolve_daemon_config(_args(config=str(cfg_file)))
-    assert cfg.bouncer_host == "100.64.0.1"
+    assert cfg.server_host == "100.64.0.1"
     assert cfg.agent_port == 6669  # compiled default fills gaps
     assert cfg.tls_port == 6697  # absent file key falls back to default
 
 
-def test_resolve_honors_legacy_bouncer_keys(tmp_path) -> None:
+def test_resolve_honors_legacy_keys(tmp_path) -> None:
     import json
 
     from observatory.ircd import _resolve_daemon_config
@@ -287,8 +287,41 @@ def test_resolve_honors_legacy_bouncer_keys(tmp_path) -> None:
         encoding="utf-8",
     )
     cfg = _resolve_daemon_config(_args(config=str(cfg_file)))
-    assert cfg.bouncer_host == "100.64.0.1"
-    assert cfg.bouncer_port == 6670
+    assert cfg.server_host == "100.64.0.1"
+    assert cfg.server_port == 6670
+
+
+@pytest.mark.asyncio
+async def test_legacy_keys_bind_server_listener(tmp_path) -> None:
+    """Pre-rename ircd.json (old client-listener keys) still binds."""
+    import json
+
+    from observatory.ircd import _resolve_daemon_config
+
+    cfg_file = tmp_path / "ircd.json"
+    cfg_file.write_text(
+        json.dumps({"bouncer_host": "127.0.0.1", "bouncer_port": 0}),
+        encoding="utf-8",
+    )
+    cfg = _resolve_daemon_config(_args(config=str(cfg_file)))
+    assert cfg.server_host == "127.0.0.1"
+    cfg.agent_port = 0
+    cfg.state_dir = str(tmp_path)
+    d = IrcDaemon(cfg)
+    await d.start()
+    try:
+        assert len(d._servers) >= 2
+        port = d._servers[1].sockets[0].getsockname()[1]
+        c = RawClient()
+        await c.connect(port)
+        try:
+            await c.register("legacy")
+            await c.send("JOIN #legacy")
+            await c.next_match("JOIN #legacy")
+        finally:
+            await c.close()
+    finally:
+        await d.stop()
 
 
 def test_resolve_agent_host_pin(tmp_path) -> None:
@@ -336,20 +369,20 @@ def test_unit_passes_only_state_dir(tmp_path) -> None:
         log_dir="/h/observatory/logs",
     )
     assert "--state-dir /h/observatory" in unit
-    assert "--bouncer-host" not in unit
+    assert "--server-host" not in unit
     assert "--agent-port" not in unit
 
 
 @pytest.mark.asyncio
-async def test_bouncer_bind_failure_degrades_not_dies(tmp_path) -> None:
-    """Unbindable bouncer (Tailscale down) must not take the agent down."""
+async def test_server_bind_failure_degrades_not_dies(tmp_path) -> None:
+    """Unbindable server (Tailscale down) must not take the agent down."""
     from observatory.ircd import DaemonConfig, IrcDaemon
 
     d = IrcDaemon(
         DaemonConfig(
             agent_port=0,
-            bouncer_host="203.0.113.1",
-            bouncer_port=0,
+            server_host="203.0.113.1",
+            server_port=0,
             state_dir=str(tmp_path),
         )
     )
@@ -381,7 +414,7 @@ async def test_both_listeners_down_raises(tmp_path) -> None:
     port = held.getsockname()[1]
     d = IrcDaemon(
         DaemonConfig(
-            agent_port=port, bouncer_host="127.0.0.1", bouncer_port=port,
+            agent_port=port, server_host="127.0.0.1", server_port=port,
             state_dir=str(tmp_path),
         )
     )
@@ -397,9 +430,9 @@ async def test_both_listeners_down_raises(tmp_path) -> None:
 async def test_sasl_plain_login(tmp_path) -> None:
     import base64
 
-    async with running_daemon(tmp_path, password="s3cret") as (_, __, bouncer_port):
+    async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
         c = RawClient()
-        await c.connect(bouncer_port)
+        await c.connect(server_port)
         try:
             await c.send("CAP LS 302")
             got = await c.next_match("CAP ")
@@ -424,9 +457,9 @@ async def test_sasl_plain_login(tmp_path) -> None:
 async def test_sasl_wrong_password_stays_out(tmp_path) -> None:
     import base64
 
-    async with running_daemon(tmp_path, password="s3cret") as (d, _, bouncer_port):
+    async with running_daemon(tmp_path, password="s3cret") as (d, _, server_port):
         c = RawClient()
-        await c.connect(bouncer_port)
+        await c.connect(server_port)
         try:
             await c.send("AUTHENTICATE PLAIN")
             await c.next_match("AUTHENTICATE +")
@@ -444,9 +477,9 @@ async def test_sasl_wrong_password_stays_out(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_sasl_abort(tmp_path) -> None:
-    async with running_daemon(tmp_path, password="s3cret") as (_, __, bouncer_port):
+    async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
         c = RawClient()
-        await c.connect(bouncer_port)
+        await c.connect(server_port)
         try:
             await c.send("AUTHENTICATE PLAIN")
             await c.next_match("AUTHENTICATE +")
@@ -491,7 +524,7 @@ async def test_tls_listener_serves_strict_clients(tmp_path) -> None:
     d = IrcDaemon(
         DaemonConfig(
             agent_port=0,
-            bouncer_port=0,
+            server_port=0,
             tls_port=free_tls_port,
             tls_cert=str(paths.tls_cert),
             tls_key=str(paths.tls_key),
@@ -551,9 +584,9 @@ async def test_tls_listener_serves_strict_clients(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_pass_last_order_registers(tmp_path) -> None:
     """NICK/USER before PASS (the Goguma order) must still register."""
-    async with running_daemon(tmp_path, password="s3cret") as (_, __, bouncer_port):
+    async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
         c = RawClient()
-        await c.connect(bouncer_port)
+        await c.connect(server_port)
         try:
             await c.send("NICK late")
             await c.send("USER late 0 * :test")
@@ -571,9 +604,9 @@ async def test_sasl_after_nick_user_registers(tmp_path) -> None:
     """SASL PLAIN after NICK/USER must complete registration (903 → 001)."""
     import base64
 
-    async with running_daemon(tmp_path, password="s3cret") as (_, __, bouncer_port):
+    async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
         c = RawClient()
-        await c.connect(bouncer_port)
+        await c.connect(server_port)
         try:
             await c.send("NICK sasluser")
             await c.send("USER sasluser 0 * :test")
@@ -597,9 +630,9 @@ async def test_failed_pass_logs_shape_not_secret(tmp_path, caplog) -> None:
     """A wrong PASS logs attempt shape (lengths) but never the secret."""
     import logging
 
-    async with running_daemon(tmp_path, password="s3cret") as (_, __, bouncer_port):
+    async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
         c = RawClient()
-        await c.connect(bouncer_port)
+        await c.connect(server_port)
         try:
             with caplog.at_level(logging.INFO, logger="observatory.ircd"):
                 await c.send("NICK nosy")
@@ -846,7 +879,7 @@ async def test_invite_auto_joins_target(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_oper_accepts_either_listener_secret(tmp_path) -> None:
-    """OPER with the server (bouncer) password works when both set."""
+    """OPER with the server password works when both set."""
     async with running_daemon(
         tmp_path, password="s3cret", agent_password="op-secret"
     ) as (_, agent_port, __):

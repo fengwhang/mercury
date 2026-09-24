@@ -57,9 +57,9 @@ def _base_status(**kw):
         "provisioned": False,
         "server_name": "mercury",
         "agent": "127.0.0.1:6669",
-        "bouncer": "127.0.0.1:6670",
+        "server": "127.0.0.1:6670",
         "unit": "active",
-        "bouncer_password_set": True,
+        "server_password_set": True,
         "agent_password_set": True,
         "config_path": "/h/observatory/ircd.json",
     }
@@ -91,7 +91,7 @@ def _patch_common(stack, fake, *, choice=1, yes_answers=None):
     stack.enter_context(
         patch.object(setup_mod, "_offer_observatory_reset", return_value=False)
     )
-    stack.enter_context(patch.object(setup_mod, "_offer_bouncer_password_rotate"))
+    stack.enter_context(patch.object(setup_mod, "_offer_server_password_rotate"))
     stack.enter_context(patch.object(setup_mod, "_prompt_server_label", return_value="mercury"))
     stack.enter_context(patch.object(setup_mod, "_wire_gateway_irc_env"))
     stack.enter_context(patch.object(setup_mod, "_offer_agent_bind"))
@@ -150,7 +150,7 @@ def test_reconfigure_no_keeps_everything():
     assert fake.provision_calls == []
 
 
-def test_bind_offer_pins_bouncer(monkeypatch):
+def test_bind_offer_pins_server(monkeypatch):
     fake = _FakeObs(_base_status(provisioned=True))
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda q, default=False: True)
     monkeypatch.setattr(setup_mod, "_load_observatory_provision", lambda: None)
@@ -187,9 +187,9 @@ def test_bind_mismatch_action_lines():
     assert setup_mod._bind_mismatch_action_line(None, ts_up) is None
 
 
-def test_bouncer_port_parsing():
-    assert setup_mod._bouncer_port("127.0.0.1:6670") == "6670"
-    assert setup_mod._bouncer_port("") == "6670"
+def test_server_port_parsing():
+    assert setup_mod._server_port("127.0.0.1:6670") == "6670"
+    assert setup_mod._server_port("") == "6670"
 
 
 def test_headless_setup_provisions():
@@ -211,7 +211,7 @@ def test_headless_setup_provisions():
     assert fake.provision_calls == [{}]
 
 
-def test_setup_card_mentions_bouncer_not_password(capsys):
+def test_setup_card_mentions_server_not_password(capsys):
     status = _base_status(provisioned=True)
     setup_mod._print_observatory_setup_card(
         status, dict(available=False, up=False, ip=None, dns_name=None)
@@ -220,8 +220,6 @@ def test_setup_card_mentions_bouncer_not_password(capsys):
     assert "127.0.0.1:6670" in out
     assert "#mercury_gateway" in out
     assert "IRC_CLIENT_PASSWORD" in out
-    assert "IRC_BOUNCER_PASSWORD" not in out
-    assert "bouncer address" not in out
     assert "server address" in out
     assert "client address" not in out
     assert "The Lounge" in out
@@ -302,13 +300,13 @@ def test_verify_daemon_listening_live_and_dead():
     live_port = srv.getsockname()[1]
     try:
         ok, detail = setup_mod._verify_daemon_listening(
-            {"agent": f"127.0.0.1:{live_port}", "bouncer": "127.0.0.1:1"}
+            {"agent": f"127.0.0.1:{live_port}", "server": "127.0.0.1:1"}
         )
         assert ok is False
         assert f"127.0.0.1:{live_port}" not in detail
         assert "127.0.0.1:1" in detail
         ok, _ = setup_mod._verify_daemon_listening(
-            {"agent": f"127.0.0.1:{live_port}", "bouncer": f"127.0.0.1:{live_port}"}
+            {"agent": f"127.0.0.1:{live_port}", "server": f"127.0.0.1:{live_port}"}
         )
         assert ok is True
     finally:
@@ -427,7 +425,7 @@ def test_verify_retries_restart_window(monkeypatch):
     monkeypatch.setattr(setup_mod, "_probe_tcp", _flaky)
     monkeypatch.setattr("time.sleep", lambda s: None)
     ok, detail = setup_mod._verify_daemon_listening(
-        {"agent": "127.0.0.1:6669", "bouncer": "127.0.0.1:6670"})
+        {"agent": "127.0.0.1:6669", "server": "127.0.0.1:6670"})
     assert ok is True
     assert calls["n"] >= 3  # retried past the dead window
 
@@ -438,7 +436,7 @@ def test_verify_gives_up_with_both_down(monkeypatch):
     monkeypatch.setattr(setup_mod, "_probe_tcp", lambda addr: False)
     monkeypatch.setattr("time.sleep", lambda s: None)
     ok, detail = setup_mod._verify_daemon_listening(
-        {"agent": "127.0.0.1:6669", "bouncer": "127.0.0.1:6670"}, retries=2)
+        {"agent": "127.0.0.1:6669", "server": "127.0.0.1:6670"}, retries=2)
     assert ok is False
     assert "systemctl --user restart" in detail
 
@@ -449,7 +447,7 @@ def test_rotate_offer_with_chosen_password_restarts(monkeypatch, tmp_path):
 
     calls = {}
     monkeypatch.setattr(
-        provision_mod, "set_bouncer_password",
+        provision_mod, "set_server_password",
         lambda home, pw: calls.setdefault("set", (str(home), pw)),
     )
     monkeypatch.setattr(
@@ -468,10 +466,10 @@ def test_rotate_offer_with_chosen_password_restarts(monkeypatch, tmp_path):
     )
 
     class _Obs:
-        def validate_bouncer_password(self, value):
-            return provision_mod.validate_bouncer_password(value)
+        def validate_server_password(self, value):
+            return provision_mod.validate_server_password(value)
 
-    setup_mod._offer_bouncer_password_rotate(_Obs())
+    setup_mod._offer_server_password_rotate(_Obs())
     assert calls["set"] == (str(tmp_path / "mercury"), "my-chosen-pw")
     assert ran and ran[0][:3] == ["systemctl", "--user", "restart"]
 
@@ -485,7 +483,7 @@ def test_rotate_offer_random_without_restart_prints_manual(monkeypatch, capsys):
     )
     monkeypatch.setattr(
         provision_mod, "read_irc_passwords",
-        lambda home: {"bouncer": "old", "agent": "ag"},
+        lambda home: {"server": "old", "agent": "ag"},
     )
     monkeypatch.setattr(
         provision_mod, "generate_password", lambda *a: "new-random-pw"
@@ -498,7 +496,7 @@ def test_rotate_offer_random_without_restart_prints_manual(monkeypatch, capsys):
     class _Obs:
         pass
 
-    setup_mod._offer_bouncer_password_rotate(_Obs())
+    setup_mod._offer_server_password_rotate(_Obs())
     assert "systemctl --user restart" in capsys.readouterr().out
 
 
@@ -509,7 +507,7 @@ def test_password_offer_runs_on_fresh_install():
     with ExitStack() as stack:
         _patch_common(stack, fake, choice=0)
         offer = stack.enter_context(
-            patch.object(setup_mod, "_offer_bouncer_password_rotate")
+            patch.object(setup_mod, "_offer_server_password_rotate")
         )
         setup_mod.setup_observatory({})
     assert fake.provision_calls == [{"server_name": "mercury"}]
@@ -526,7 +524,7 @@ def test_password_offer_runs_on_reset_path():
             patch.object(setup_mod, "_offer_observatory_reset", return_value=True)
         )
         offer = stack.enter_context(
-            patch.object(setup_mod, "_offer_bouncer_password_rotate")
+            patch.object(setup_mod, "_offer_server_password_rotate")
         )
         setup_mod.setup_observatory({})
     assert offer.call_count == 1
@@ -594,7 +592,7 @@ def test_wire_gateway_sets_allow_all(monkeypatch):
                       "agent_port": 6669})
     monkeypatch.setattr(
         provision_mod, "read_irc_passwords",
-        lambda home: {"bouncer": "b", "agent": "a"})
+        lambda home: {"server": "b", "agent": "a"})
     assert setup_mod._wire_gateway_irc_env("vm") is True
     assert saved["IRC_ALLOW_ALL_USERS"] == "true"
     assert saved["IRC_CHANNEL"] == "#vm_gateway"
@@ -632,7 +630,7 @@ def test_offer_agent_bind_localhost_wires_env(tmp_path, monkeypatch) -> None:
                         lambda k, v: saved.__setitem__(k, v))
     import observatory.provision as provision_mod
     monkeypatch.setattr(provision_mod, "read_irc_passwords",
-                        lambda home: {"bouncer": "b", "agent": "a"})
+                        lambda home: {"server": "b", "agent": "a"})
     setup_mod._offer_agent_bind(None, "vm", {"up": False})
     cfg = _json.loads((obs / "ircd.json").read_text())
     assert cfg["agent_host"] == "127.0.0.1"
@@ -655,7 +653,7 @@ def test_offer_agent_bind_tailscale_pins_ip(tmp_path, monkeypatch) -> None:
                         lambda k, v: saved.__setitem__(k, v))
     import observatory.provision as provision_mod
     monkeypatch.setattr(provision_mod, "read_irc_passwords",
-                        lambda home: {"bouncer": "b", "agent": "a"})
+                        lambda home: {"server": "b", "agent": "a"})
     setup_mod._offer_agent_bind(
         None, "vm", {"up": True, "ip": "100.9.9.9", "dns_name": None})
     cfg = _json.loads((obs / "ircd.json").read_text())
@@ -756,8 +754,8 @@ def test_password_reset_skipped_after_fresh_creation(monkeypatch) -> None:
     assert setup_mod._JUST_CREATED_LOUNGE_USER is None
 
 
-def test_lounge_offer_seeds_live_bouncer_bind(monkeypatch) -> None:
-    """Pre-seeded uplink uses the live bouncer_host, never localhost."""
+def test_lounge_offer_seeds_live_server_bind(monkeypatch) -> None:
+    """Pre-seeded uplink uses the live server_host, never localhost."""
     import observatory.lounge as lounge_mod
     from observatory import provision as provision_mod
 
@@ -773,7 +771,7 @@ def test_lounge_offer_seeds_live_bouncer_bind(monkeypatch) -> None:
                       "server_port": 6670})
     monkeypatch.setattr(
         provision_mod, "read_irc_passwords",
-        lambda home: {"bouncer": "pw", "agent": "pw2"})
+        lambda home: {"server": "pw", "agent": "pw2"})
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
     monkeypatch.setattr(setup_mod, "prompt_choice", lambda *a, **k: 0)
     monkeypatch.setattr(setup_mod, "prompt", lambda *a, **k: "owner")
@@ -801,7 +799,7 @@ def test_converge_repoints_drifted_uplink(tmp_path, monkeypatch) -> None:
                    "server_port": 6670})
     monkeypatch.setattr(
         provision_mod, "read_irc_passwords",
-        lambda h: {"bouncer": "pw", "agent": "pw2"})
+        lambda h: {"server": "pw", "agent": "pw2"})
     users = lounge_mod.LoungePaths(home).home / "users"
     users.mkdir(parents=True)
     (users / "owner.json").write_text(_json.dumps({"networks": [{
@@ -835,9 +833,9 @@ def test_rotate_reseeds_lounge_uplink(tmp_path, monkeypatch) -> None:
         setup_mod, "_converge_lounge_uplink",
         lambda: converged.append(True))
     import types as _types
-    setup_mod._offer_bouncer_password_rotate(
+    setup_mod._offer_server_password_rotate(
         _types.SimpleNamespace(
-            validate_bouncer_password=lambda p: p))
+            validate_server_password=lambda p: p))
     assert converged == [True]
     assert "custom-password-123" in (home / ".env").read_text()
 
@@ -866,7 +864,7 @@ def test_converge_applies_config_template_drift(tmp_path, monkeypatch) -> None:
                    "server_port": 6670})
     monkeypatch.setattr(
         provision_mod, "read_irc_passwords",
-        lambda h: {"bouncer": "pw", "agent": "pw2"})
+        lambda h: {"server": "pw", "agent": "pw2"})
     paths = lounge_mod.LoungePaths(home)
     users = paths.home / "users"
     users.mkdir(parents=True)
