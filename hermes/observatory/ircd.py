@@ -5,8 +5,8 @@ channel state:
 
 - **agent listener** (default ``127.0.0.1:6669``): the gateway and its
   agents connect here. Localhost-bound by default.
-- **bouncer listener** (default ``127.0.0.1:6670``): the user connects
-  here with any IRC client. Bouncer semantics: the daemon keeps the
+- **server listener** (default ``127.0.0.1:6670``): the user connects
+  here with any IRC client. Server semantics: the daemon keeps the
   last ``history_limit`` messages per channel (persisted in SQLite so
   they survive restarts) and replays them on JOIN, so a client that
   disconnects and returns sees what it missed. Agent connections stay
@@ -73,13 +73,13 @@ class HistoryMessage:
 class DaemonConfig:
     host: str = "127.0.0.1"
     agent_port: int = 6669
-    bouncer_host: str = "127.0.0.1"
-    bouncer_port: int = 6670
+    server_host: str = "127.0.0.1"
+    server_port: int = 6670
     server_name: str = "mercury"
     tls_port: int = 6697  # 0 disables the TLS listener entirely
     tls_cert: str = ""
     tls_key: str = ""
-    password: str = ""  # required PASS on the bouncer listener when set
+    password: str = ""  # required PASS on the server listener when set
     agent_password: str = ""  # required PASS on the agent listener when set
     history_limit: int = 200
     state_dir: Path | str = ""
@@ -224,10 +224,10 @@ class IrcDaemon:
         errors: list[str] = []
         agent = await self._listen(
             "agent", cfg.host, cfg.agent_port, errors)
-        bouncer = await self._listen(
-            "bouncer", cfg.bouncer_host, cfg.bouncer_port, errors)
+        server = await self._listen(
+            "server", cfg.server_host, cfg.server_port, errors)
         tls = await self._listen_tls(errors)
-        self._servers = [s for s in (agent, bouncer, tls) if s is not None]
+        self._servers = [s for s in (agent, server, tls) if s is not None]
         if not self._servers:
             raise OSError(
                 "ircd: no listener bound — "
@@ -235,11 +235,11 @@ class IrcDaemon:
         for err in errors:
             logger.error("ircd: degraded listener: %s", err)
         logger.info(
-            "ircd: agent %s:%d bouncer %s:%d (%s)",
+            "ircd: agent %s:%d server %s:%d (%s)",
             cfg.host,
             cfg.agent_port,
-            cfg.bouncer_host,
-            cfg.bouncer_port,
+            cfg.server_host,
+            cfg.server_port,
             cfg.network_name,
         )
         self._ping_task = asyncio.create_task(self._ping_loop())
@@ -257,13 +257,13 @@ class IrcDaemon:
         except Exception as exc:
             errors.append(
                 f"{listener} {host}:{port} not bound ({exc}) — "
-                f"{'check Tailscale / the bind address' if listener == 'bouncer' else 'check for a stale daemon holding the port'}"
+                f"{'check Tailscale / the bind address' if listener == 'server' else 'check for a stale daemon holding the port'}"
             )
             return None
 
     async def _listen_tls(self, errors: list[str]) -> asyncio.AbstractServer | None:
-        """TLS bouncer on the bouncer host (strict clients: TLS default,
-        no plaintext toggle). Same rooms, bouncer password. Missing cert,
+        """TLS server on the server host (strict clients: TLS default,
+        no plaintext toggle). Same rooms, server password. Missing cert,
         zero port, or bind failure degrades to plaintext-only (loud)."""
         import ssl as _ssl
 
@@ -281,14 +281,14 @@ class IrcDaemon:
             return None
         try:
             return await asyncio.start_server(
-                lambda r, w: self._handle(r, w, listener="bouncer-tls"),
-                cfg.bouncer_host,
+                lambda r, w: self._handle(r, w, listener="server-tls"),
+                cfg.server_host,
                 int(cfg.tls_port),
                 ssl=ctx,
             )
         except Exception as exc:
             errors.append(
-                f"tls {cfg.bouncer_host}:{cfg.tls_port} not bound ({exc})")
+                f"tls {cfg.server_host}:{cfg.tls_port} not bound ({exc})")
             return None
 
     async def stop(self) -> None:
@@ -643,7 +643,7 @@ class IrcDaemon:
             return
         key = nick.lower()
         if key in self._clients and self._clients[key] is not client:
-            # Bouncer semantics: the newest connection wins (reclaim).
+            # Server semantics: the newest connection wins (reclaim).
             old = self._clients.pop(key)
             try:
                 await self._send(old, f"ERROR :nick {nick} reclaimed")
@@ -739,7 +739,7 @@ class IrcDaemon:
                 peer, 331, f"{peer.nick} {display}", "No topic is set"
             )
         await self._send_names(peer, key, display)
-        # Bouncer replay: recent history on every JOIN.
+        # Server replay: recent history on every JOIN.
         for msg in self.channel_history(
             display, limit=int(self.config.history_limit)
         ):
@@ -967,7 +967,7 @@ class IrcDaemon:
                 members.discard(client.nick.lower())
                 client.channels.discard(key)
                 if not members:
-                    # Keep empty channels (and their history) — the bouncer
+                    # Keep empty channels (and their history) — the server
                     # replays them on rejoin; only destroy_channel deletes.
                     pass
                 await self._send(
@@ -1242,19 +1242,19 @@ def _resolve_daemon_config(args: Any) -> DaemonConfig:
     if isinstance(_agent_host, str) and _agent_host.strip():
         file_cfg = dict(file_cfg, host=_agent_host.strip())
     # The client listener binds per ircd.json directly — direct IRC
-    # clients and The Lounge connect here. Pre-rename files still say
-    # bouncer_host/bouncer_port: honor them in memory (provision pops
+    # clients and The Lounge connect here. Pre-rename files still use the
+    # old client-listener keys: honor them in memory (provision pops
     # them on its next write).
     for _new, _old in (("server_host", "bouncer_host"),
                        ("server_port", "bouncer_port")):
         if _new not in file_cfg and _old in file_cfg:
             file_cfg = dict(file_cfg, **{_new: file_cfg[_old]})
-    bouncer_host = _pick("server_host", "127.0.0.1")
+    server_host = _pick("server_host", "127.0.0.1")
     return DaemonConfig(
         host=_pick("host", "127.0.0.1"),
         agent_port=_pick("agent_port", 6669),
-        bouncer_host=bouncer_host,
-        bouncer_port=_pick("server_port", 6670),
+        server_host=server_host,
+        server_port=_pick("server_port", 6670),
         tls_port=_pick("tls_port", 6697),
         tls_cert=tls_cert,
         tls_key=tls_key,

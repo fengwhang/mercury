@@ -1,6 +1,6 @@
-"""install.sh bouncer-firewall helper — extraction + functional tests.
+"""install.sh observatory-firewall helper — extraction + functional tests.
 
-Phones reach the bouncer over the tailnet, but host firewalls (Fedora
+Phones reach the server over the tailnet, but host firewalls (Fedora
 default) drop inbound TCP to unlisted ports — a silent client timeout.
 ``_open_observatory_firewall`` opens the port when firewalld is active
 and degrades to a hint otherwise; it must NEVER fail the install.

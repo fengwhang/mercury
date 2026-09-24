@@ -1,7 +1,7 @@
 """Pure generators for IRC observatory provisioning artifacts.
 
 The observatory is a small stdlib asyncio IRC network (``ircd``): one
-agent listener for the gateway/agents, one bouncer listener for the
+agent listener for the gateway/agents, one server listener for the
 user's IRC client, on the same channel state with SQLite-backed
 history replay. No homeserver, no crypto stack, no appservice.
 """
@@ -16,16 +16,18 @@ from pathlib import Path
 SERVER_NAME_DEFAULT = "mercury"
 
 #: Localhost only by default. Phones/clients arrive over Tailscale/VPN
-#: (provision can pin the bouncer listener to the tailnet IP).
+#: (provision can pin the server listener to the tailnet IP).
 IRCD_ADDRESS = "127.0.0.1"
 #: Distinct from common IRC defaults (6667) so a pre-existing ircd on
 #: the box is never collided with.
 IRCD_AGENT_PORT_DEFAULT = 6669
-IRCD_BOUNCER_PORT_DEFAULT = 6670
-#: TLS bouncer for strict clients (Goguma-style): same rooms, IRCv3 + TLS.
+IRCD_SERVER_PORT_DEFAULT = 6670
+#: Pre-rename alias (old installs import this name).
+IRCD_BOUNCER_PORT_DEFAULT = IRCD_SERVER_PORT_DEFAULT
+#: TLS server for strict clients (Goguma-style): same rooms, IRCv3 + TLS.
 IRCD_TLS_PORT_DEFAULT = 6697
 
-#: History replay depth for the bouncer listener.
+#: History replay depth for the server listener.
 HISTORY_LIMIT_DEFAULT = 200
 
 #: The ONE systemd user unit (provision installs it; never provision()
@@ -50,7 +52,7 @@ FILE_TLS_KEY = "server.key"
 
 
 def new_secret(nbytes: int = 32) -> str:
-    """URL-safe random secret (bouncer/agent/oper passwords)."""
+    """URL-safe random secret (server/agent/oper passwords)."""
     return secrets.token_urlsafe(nbytes)
 
 
@@ -128,7 +130,7 @@ class ObservatoryPaths:
         self.tls_cert = self.tls_dir / FILE_TLS_CERT
         self.tls_key = self.tls_dir / FILE_TLS_KEY
 
-    def bouncer_url(
-        self, *, address: str = IRCD_ADDRESS, port: int = IRCD_BOUNCER_PORT_DEFAULT
+    def server_url(
+        self, *, address: str = IRCD_ADDRESS, port: int = IRCD_SERVER_PORT_DEFAULT
     ) -> str:
         return f"irc://{address}:{port}"

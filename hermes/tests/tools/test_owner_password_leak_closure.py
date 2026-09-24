@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-SENTINEL_BOUNCER = "bounce-SENTINEL-7c3a9e1f5b2d"
+SENTINEL_SERVER = "server-SENTINEL-7c3a9e1f5b2d"
 SENTINEL_AGENT = "agent-SENTINEL-4f8c2a6e0b1d3f5a"
 
 _TS_ABSENT = {"available": False, "up": False, "ip": None, "dns_name": None}
@@ -35,8 +35,8 @@ def fake_mercury(tmp_path, monkeypatch):
     monkeypatch.setattr(fs, "_hermes_root_path", lambda: home)
     env = home / ".env"
     env.write_text(
-        f"IRC_CLIENT_PASSWORD={SENTINEL_BOUNCER}\n"
-        f"IRC_BOUNCER_PASSWORD=legacy-{SENTINEL_BOUNCER}\n"
+        f"IRC_CLIENT_PASSWORD={SENTINEL_SERVER}\n"
+        f"IRC_BOUNCER_PASSWORD=legacy-{SENTINEL_SERVER}\n"
         f"IRC_AGENT_PASSWORD={SENTINEL_AGENT}\n",
         encoding="utf-8",
     )
@@ -47,7 +47,7 @@ def _assert_location_only(result: dict) -> None:
     assert result.get("error"), f"secret read must be refused: {result}"
     assert "access denied" in result["error"].lower()
     blob = json.dumps(result)
-    assert SENTINEL_BOUNCER not in blob
+    assert SENTINEL_SERVER not in blob
     assert SENTINEL_AGENT not in blob
 
 
@@ -96,7 +96,7 @@ class TestPatchRefusesObservatorySecrets:
             "*** Begin Patch\n"
             f"*** Update File: {fake_mercury['env']}\n"
             "@@\n"
-            f"-IRC_CLIENT_PASSWORD={SENTINEL_BOUNCER}\n"
+            f"-IRC_CLIENT_PASSWORD={SENTINEL_SERVER}\n"
             "+IRC_CLIENT_PASSWORD=hacked\n"
             "*** End Patch\n"
         )
@@ -117,7 +117,7 @@ class TestSearchRefusesObservatorySecrets:
         )
         assert direct.get("error"), f"direct creds search must be refused: {direct}"
         assert "access denied" in direct["error"].lower()
-        assert SENTINEL_BOUNCER not in json.dumps(direct)
+        assert SENTINEL_SERVER not in json.dumps(direct)
 
     def test_dir_search_filters_credential_matches(self, fake_mercury, tmp_path):
         from tools.file_tools import search_tool
@@ -130,30 +130,30 @@ class TestSearchRefusesObservatorySecrets:
             )
         )
         blob = json.dumps(result)
-        assert SENTINEL_BOUNCER not in blob
+        assert SENTINEL_SERVER not in blob
         assert SENTINEL_AGENT not in blob
 
 
 class TestWizardSurfacesCarryNoValues:
     def test_status_summary_has_no_secret_values(self, fake_mercury, monkeypatch):
         from observatory import provision as provision_mod
-        monkeypatch.setenv("IRC_BOUNCER_PASSWORD", SENTINEL_BOUNCER)
+        monkeypatch.setenv("IRC_BOUNCER_PASSWORD", SENTINEL_SERVER)
         monkeypatch.setenv("IRC_AGENT_PASSWORD", SENTINEL_AGENT)
         summary = provision_mod.status_summary(fake_mercury["home"])
         blob = json.dumps(summary)
-        assert SENTINEL_BOUNCER not in blob
+        assert SENTINEL_SERVER not in blob
         assert SENTINEL_AGENT not in blob
-        assert summary["bouncer_password_set"] is True
+        assert summary["server_password_set"] is True
 
     def test_setup_card_prints_no_secret_values(self, fake_mercury, capsys):
         import mercury_cli.setup as setup_mod
         status = {
             "server_name": "mercury",
-            "bouncer": "127.0.0.1:6670",
+            "server": "127.0.0.1:6670",
         }
         setup_mod._print_observatory_setup_card(status, dict(_TS_ABSENT))
         out = capsys.readouterr().out
-        assert SENTINEL_BOUNCER not in out
+        assert SENTINEL_SERVER not in out
         assert SENTINEL_AGENT not in out
         # Location / variable names may remain; values must not.
         assert "IRC_CLIENT_PASSWORD" in out

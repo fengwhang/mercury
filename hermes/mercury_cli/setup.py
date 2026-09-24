@@ -2930,9 +2930,9 @@ def _observatory_state_lines(status: dict) -> None:
     if status.get("provisioned"):
         print_info(f"network:              {status.get('server_name')}")
         print_info(f"agent listener:       {status.get('agent')}")
-        print_info(f"server address:       {status.get('bouncer')}")
+        print_info(f"server address:       {status.get('server')}")
         print_info(f"unit:                 {status.get('unit')}")
-        print_info(f"server password:      {'set' if status.get('bouncer_password_set') else 'MISSING'}  (.env)")
+        print_info(f"server password:      {'set' if status.get('server_password_set') else 'MISSING'}  (.env)")
 
 
 def _prompt_observatory_enabled_toggle(config: dict) -> None:
@@ -2996,7 +2996,7 @@ def _tailscale_status(obs=None) -> dict:
 
 
 def _tailscale_phone_host(ts: dict | None) -> str | None:
-    """Tailnet host for the bouncer: MagicDNS preferred, IPv4 fallback."""
+    """Tailnet host for the server: MagicDNS preferred, IPv4 fallback."""
     try:
         if not isinstance(ts, dict) or not ts.get("up"):
             return None
@@ -3008,10 +3008,10 @@ def _tailscale_phone_host(ts: dict | None) -> str | None:
         return None
 
 
-def _bouncer_port(bouncer: str) -> str:
+def _server_port(server: str) -> str:
     """Port tail of a ``host:port`` listener string (best-effort)."""
     try:
-        return str(bouncer or "").rsplit(":", 1)[-1].strip() or "6670"
+        return str(server or "").rsplit(":", 1)[-1].strip() or "6670"
     except Exception:  # noqa: BLE001
         return "6670"
 
@@ -3270,7 +3270,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     except Exception:
         SERVER_NAME_DEFAULT = "mercury"
     server = str(status.get("server_name") or SERVER_NAME_DEFAULT)
-    bouncer = str(status.get("bouncer") or "127.0.0.1:6670")
+    server_addr = str(status.get("server") or "127.0.0.1:6670")
     gateway_channel = f"#{server}_gateway"
 
     if tailscale is None:
@@ -3278,15 +3278,15 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     phone_host = _tailscale_phone_host(tailscale)
     phone_line = None
     if phone_host:
-        phone_line = f"on your phone:       host {phone_host}, port {_bouncer_port(bouncer)}  (over Tailscale, TLS OFF)"
+        phone_line = f"on your phone:       host {phone_host}, port {_server_port(server_addr)}  (over Tailscale, TLS OFF)"
     elif bool((tailscale or {}).get("available")):
         phone_line = (
             "on your phone:       Tailscale installed but not connected"
             " — run `tailscale up`, then re-run setup"
         )
 
-    bouncer_host = str(bouncer or "").rsplit(":", 1)[0].strip() or "127.0.0.1"
-    bouncer_port = _bouncer_port(bouncer)
+    server_host = str(server_addr or "").rsplit(":", 1)[0].strip() or "127.0.0.1"
+    server_port = _server_port(server_addr)
     lines = [
         "Mercury chat — open The Lounge in a browser",
         "",
@@ -3299,9 +3299,9 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         "subagent rooms:       #parent-child channels stream live tool/thinking traces",
         "",
         "or connect any IRC client directly to this server:",
-        f"server address:       {bouncer}",
-        f"server host:          {bouncer_host}  (bare hostname — no irc://, no :port)",
-        f"server port:          {bouncer_port}  (own field in the client, TLS OFF)",
+        f"server address:       {server_addr}",
+        f"server host:          {server_host}  (bare hostname — no irc://, no :port)",
+        f"server port:          {server_port}  (own field in the client, TLS OFF)",
         f"TLS port:             {status.get('tls_port', 6697)}  (same rooms, for TLS-only clients —",
         "                      trust observatory/tls/ca.crt on the phone once)",
         "                      (IRC ports — IRC apps only, never a browser)",
@@ -3321,7 +3321,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
             "",
             "this box from another Lounge:",
             "                      add a network with host",
-            f"                      {bouncer_host} port {bouncer_port} (TLS OFF)",
+            f"                      {server_host} port {server_port} (TLS OFF)",
             f"                      or port {status.get('tls_port', 6697)} (TLS on —",
             "                      trust observatory/tls/ca.crt once there),",
             "                      server password = the password above,",
@@ -3526,7 +3526,7 @@ def _probe_tcp(listener: str, timeout: float = 3.0) -> bool:
 
 
 def _verify_daemon_listening(status: dict, *, retries: int = 3) -> tuple[bool, str]:
-    """Probe the agent + bouncer listeners from the status summary.
+    """Probe the agent + server listeners from the status summary.
 
     The wizard must never report success while the daemon is down — this
     is the check that was missing behind every "it said complete but
@@ -3540,16 +3540,16 @@ def _verify_daemon_listening(status: dict, *, retries: int = 3) -> tuple[bool, s
 
     try:
         agent = str((status or {}).get("agent") or "")
-        bouncer = str((status or {}).get("bouncer") or "")
-        if not agent and not bouncer:
+        server_addr = str((status or {}).get("server") or "")
+        if not agent and not server_addr:
             return True, "skipped (no listeners configured yet)"
         down: list[tuple[str, str]] = []
         attempts = max(1, int(retries))
         for _ in range(attempts):
-            down = [(label, addr) for label, addr in (("agent", agent), ("bouncer", bouncer))
+            down = [(label, addr) for label, addr in (("agent", agent), ("server", server_addr))
                     if addr and not _probe_tcp(addr)]
             if not down:
-                return True, "agent + bouncer answer"
+                return True, "agent + server answer"
             _time.sleep(3)
         try:
             from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
@@ -3687,7 +3687,7 @@ def _restart_observatory_unit(reason: str) -> bool:
     return True
 
 
-def _offer_bouncer_password_rotate(obs) -> None:
+def _offer_server_password_rotate(obs) -> None:
     """Offer rotating the server password (re-run path only).
 
     Random or user-chosen (min 8 chars); restarts the daemon so the new
@@ -3719,7 +3719,7 @@ def _offer_bouncer_password_rotate(obs) -> None:
             generate_password,
             mirror_irc_env,
             read_irc_passwords,
-            set_bouncer_password,
+            set_server_password,
         )
 
         home = _mercury_home(None)
@@ -3727,10 +3727,10 @@ def _offer_bouncer_password_rotate(obs) -> None:
             chosen = _prompt_validated(
                 "New server password (min 8 characters)",
                 default=None,
-                validate=obs.validate_bouncer_password,
+                validate=obs.validate_server_password,
                 password=True,
             )
-            set_bouncer_password(home, chosen)
+            set_server_password(home, chosen)
         else:
             have = read_irc_passwords(home)
             agent = have.get("agent") or generate_password()
@@ -3930,7 +3930,7 @@ def _converge_lounge_uplink() -> None:
             net_name=server,
             host=str(provision_server_key(cfg, "server_host") or "127.0.0.1"),
             port=int(provision_server_key(cfg, "server_port") or 6670),
-            server_password=str((pw or {}).get("bouncer") or ""),
+            server_password=str((pw or {}).get("server") or ""),
             nick=users[0], channel=f"#{server}_gateway")
         need_restart = bool(out.get("action") == "seeded")
         # Template drift (new config.js keys like fileUpload): re-render
@@ -4047,7 +4047,7 @@ def _offer_lounge(obs, ts: dict | None) -> None:
             _cfg = _read_cfg(_mh(None)) or {}
             _server = str(_cfg.get("server_name") or "mercury")
             _pw = _read_pw(_mh(None))
-            # Uplink MUST use the live bouncer bind, not localhost:
+            # Uplink MUST use the live server bind, not localhost:
             # a tailnet-pinned chat port refuses 127.0.0.1 and the
             # pre-seeded network dies with ECONNREFUSED (verified live).
             _uplink_host = str(provision_server_key(_cfg, "server_host") or "127.0.0.1")
@@ -4055,7 +4055,7 @@ def _offer_lounge(obs, ts: dict | None) -> None:
                 host=host, username=username, password=password,
                 uplink_host=_uplink_host,
                 uplink_port=int(provision_server_key(_cfg, "server_port") or 6670),
-                uplink_password=str((_pw or {}).get("bouncer") or ""),
+                uplink_password=str((_pw or {}).get("server") or ""),
                 uplink_name=_server, uplink_nick=username,
                 uplink_channel=f"#{_server}_gateway")
         except Exception as exc:
@@ -4204,8 +4204,8 @@ def setup_observatory(config: dict, *, quick: bool = False):
 
     Shows current state, offers idempotent install/repair (config +
     passwords + unit + gateway row, all automatic) or skip, offers the
-    ``observatory.enabled`` toggle, the Tailscale bouncer pin, the
-    gateway IRC wiring, and prints the bouncer login card when
+    ``observatory.enabled`` toggle, the Tailscale server pin, the
+    gateway IRC wiring, and prints the server login card when
     provisioned. Never gates the rest of the wizard: every failure
     degrades to a printed hint and the section returns.
     """
@@ -4242,7 +4242,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
         yn = lambda flag: "yes" if flag else "no"  # noqa: E731
         if not _ask_reconfigure(
             "Observatory",
-            f"provisioned, bouncer={status.get('bouncer')}, "
+            f"provisioned, server={status.get('server')}, "
             f"enabled={yn(status.get('enabled'))}",
         ):
             return
@@ -4266,7 +4266,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
                 label = _prompt_server_label(obs)
                 obs.provision_in_wizard(server_name=label)
                 steps = _run_observatory_auto_steps(obs)
-                _offer_bouncer_password_rotate(obs)
+                _offer_server_password_rotate(obs)
                 status = obs.status_summary()
                 if _unit_failed(steps):
                     print_info(
@@ -4287,7 +4287,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
                     label = _prompt_server_label(obs, current=status.get("server_name"))
                     obs.provision_in_wizard(server_name=label)
                     steps = _run_observatory_auto_steps(obs, unit_loud=True)
-                    _offer_bouncer_password_rotate(obs)
+                    _offer_server_password_rotate(obs)
                     status = obs.status_summary()
                     if _unit_failed(steps):
                         print_error(
@@ -4303,7 +4303,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
                             print_error(f"Reset done but the daemon is NOT answering: {detail}")
                     _offer_agent_bind(obs, label, _tailscale_status(obs))
                 else:
-                    _offer_bouncer_password_rotate(obs)
+                    _offer_server_password_rotate(obs)
                     obs.provision_in_wizard()
                     _run_observatory_auto_steps(obs)
                     status = obs.status_summary()
@@ -4332,7 +4332,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
         except Exception:  # noqa: BLE001 — keep the pre-bind status
             pass
         try:
-            _ensure_firewall_port(_bouncer_port(status.get("bouncer") or ""))
+            _ensure_firewall_port(_server_port(status.get("server") or ""))
             _ensure_firewall_port(status.get("tls_port", 6697))
         except Exception:  # noqa: BLE001 — firewall never kills setup
             pass
