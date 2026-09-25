@@ -3074,17 +3074,17 @@ def terminal_tool(
         # never restart. This mirrors the `mercury gateway restart` guard in
         # mercury_cli/gateway.py and the cron-path guard in mercury_cli/cron.py,
         # but applies unconditionally (force=True cannot help here).
-        # Gate on the SUPERVISED-gateway probe, not the raw _HERMES_GATEWAY
-        # marker: gateway.run sets it at import time, so it leaks into every
-        # process that merely imports gateway.run (mercury serve --isolated,
-        # CLI, web server) which are NOT the gateway and must be able to
-        # restart it. A plain foreground `mercury gateway run` (env set, PID
-        # owned, no supervisor) now also PASSES this guard: intentional and
-        # harmless, since without a supervisor there is no KeepAlive to turn a
-        # self-restart into a respawn loop.
-        from tools.process_registry import _is_supervised_gateway_process
+        # Gate on supervised-TREE membership, not PID ownership: an agent's
+        # terminal child never owns the PID file, so the PID check let
+        # `mercury gateway restart` through from agent shells — killing the
+        # gateway mid-turn while KeepAlive resurrects it into the same
+        # poisoned turn (restart loop). Tree membership still excludes
+        # import-leak processes (mercury serve --isolated, CLI, web server
+        # carry _HERMES_GATEWAY=1 from the import but no supervisor
+        # markers), which must keep managing the gateway.
+        from tools.process_registry import _is_in_supervised_gateway_tree
 
-        if _is_supervised_gateway_process():
+        if _is_in_supervised_gateway_tree():
             from cron.lifecycle_guard import (
                 _MAX_REFERENCED_SCRIPT_BYTES,
                 contains_gateway_lifecycle_command_or_referenced_script,

@@ -280,6 +280,31 @@ def _is_supervised_gateway_process() -> bool:
         return False
 
 
+def _is_in_supervised_gateway_tree() -> bool:
+    """Return whether this process runs anywhere under a supervised gateway.
+
+    Same markers as :func:`_is_supervised_gateway_process` but WITHOUT the
+    PID-ownership check — supervisor markers and ``_HERMES_GATEWAY`` are
+    inherited by every descendant, including agent terminal children. Use
+    this for kill-loop guards (stop/restart refusal): a restart issued
+    from an agent's terminal kills the gateway mid-turn and the supervisor
+    resurrects it into the same poisoned turn — the exact loop the PID
+    check lets through. Keep the PID-strict variant for decisions that
+    genuinely need process identity (systemd scope wrapping).
+    """
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        return False
+    if os.environ.get("HERMES_SUPERVISED_CHILD"):
+        return True
+
+    try:
+        from gateway.restart import is_gateway_supervisor_process
+
+        return bool(is_gateway_supervisor_process())
+    except Exception as exc:
+        logger.debug("Could not verify supervised gateway tree: %s", exc)
+        return False
+
 def _build_systemd_scope_argv(
     shell_argv: List[str],
     unit_suffix: str,

@@ -8652,6 +8652,24 @@ def _gateway_command_inner(args):
                     f"✓ Killed {killed} stale gateway process(es) across all profiles"
                 )
                 _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+        else:
+            # A live gateway for this home (manual, wedged, or supervised)
+            # plus a fresh `start` is how duplicate gateways are born —
+            # both answer, both poll, rooms double-reply. Refuse instead;
+            # `restart` takes over cleanly (its stop phase sweeps).
+            try:
+                live = [p for p in find_gateway_pids()
+                        if p != os.getpid()]
+            except Exception:
+                live = []
+            if live:
+                print_error(
+                    f"Refusing to start: gateway already running for this home "
+                    f"(PID {', '.join(map(str, live))}).\n"
+                    "Use `mercury gateway restart` to take over, or "
+                    "`mercury gateway stop` first."
+                )
+                sys.exit(1)
 
         if is_termux():
             print(
@@ -8704,15 +8722,15 @@ def _gateway_command_inner(args):
             sys.exit(1)
 
     elif subcmd == "stop":
-        # Defense: refuse self-targeting gateway stop from inside the gateway.
-        # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        # The supervised probe also PASSES a plain foreground `mercury gateway run`
-        # (env set, PID owned, but no supervisor): that is intentional and
-        # harmless — with no supervisor there is no KeepAlive, so a self-stop is
-        # a one-shot exit rather than a respawn loop.
-        from tools.process_registry import _is_supervised_gateway_process
+        # Defense: refuse self-targeting gateway stop from anywhere inside
+        # the supervised tree — INCLUDING agent terminal children, which do
+        # not own the PID file but inherit the supervisor markers. A stop
+        # issued mid-turn kills the gateway under itself; KeepAlive
+        # resurrects it into the same poisoned turn (restart loop).
+        # Uninstall keeps the PID-ownership rule (#92560): it cannot loop.
+        from tools.process_registry import _is_in_supervised_gateway_tree
 
-        if _is_supervised_gateway_process():
+        if _is_in_supervised_gateway_tree():
             print_error(
                 "Refusing to stop the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
@@ -8801,17 +8819,26 @@ def _gateway_command_inner(args):
                     print("✗ No gateway running for this profile")
             else:
                 print(f"✓ Stopped {get_service_name()} service")
+            # Sweep stragglers the PID file never owned (nohup/foreground
+            # runs, wedged duplicates): a `stop` that leaves a live
+            # gateway behind is how "stopped" gateways keep answering.
+            try:
+                stragglers = kill_gateway_processes(all_profiles=False)
+                if stragglers:
+                    print(f"✓ Cleared {stragglers} untracked gateway process(es)")
+            except Exception:
+                pass
 
     elif subcmd == "restart":
-        # Defense: refuse self-targeting gateway restart from inside the gateway.
-        # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        # The supervised probe also PASSES a plain foreground `mercury gateway run`
-        # (env set, PID owned, but no supervisor): that is intentional and
-        # harmless — with no supervisor there is no KeepAlive, so a self-restart
-        # is a single relaunch rather than a respawn loop.
-        from tools.process_registry import _is_supervised_gateway_process
+        # Defense: refuse self-targeting gateway restart from anywhere
+        # inside the supervised tree — INCLUDING agent terminal children.
+        # The PID-ownership check let `mercury gateway restart` through
+        # from an agent's shell: it kills the gateway mid-turn and
+        # KeepAlive resurrects it into the same turn (restart loop).
+        # Uninstall keeps the PID-ownership rule (#92560): it cannot loop.
+        from tools.process_registry import _is_in_supervised_gateway_tree
 
-        if _is_supervised_gateway_process():
+        if _is_in_supervised_gateway_tree():
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
