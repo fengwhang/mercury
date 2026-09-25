@@ -20,6 +20,18 @@ oversight — same agent behind all three.
 curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash
 ```
 
+Two tracks. Stable (above) installs the `mercury` command to
+`~/.mercury` and `mercury update` follows stable releases. Nightly
+installs a fully separate `mercury-nightly` to `~/.mercury-nightly`
+— own home, own command, own updates:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install-nightly.sh | bash
+```
+
+`mercury-nightly update` follows the nightly prereleases. The tracks
+never touch each other (separate homes, shims, and services).
+
 The command installs to `~/.mercury/bin/mercury` — on PATH by default on
 modern Linux (and macOS) — so `mercury` works immediately after install,
 same terminal, no extra steps. **No arguments needed**: the installer
