@@ -422,11 +422,12 @@ def update_from_release(*, assume_yes: bool = False) -> int:
     if _pytest_owns_live_checkout(_project_root()):
         print("✗ update_from_release refused: running under pytest against the live checkout.")
         return 1
-    print(f"🌡️ Updating Mercury ({_install_channel()} channel: "
+    _channel = _install_channel()
+    print(f"🌡️ Updating Mercury ({_channel} channel: "
           f"{MERCURY_REPO_OWNER}/{MERCURY_REPO_NAME})...")
     print()
 
-    rel = _latest_release()
+    rel = _latest_release(channel=_channel)
     if not rel:
         print("✗ Could not reach the GitHub API for release info.")
         print("  Check connectivity, or update manually from:")
@@ -682,9 +683,13 @@ def update_from_release(*, assume_yes: bool = False) -> int:
                 print(f"  🌡️ {_obs_line}")
         except Exception as _obs_exc:
             print(f"  ⚠ observatory refresh skipped: {_obs_exc}")
-
         _new_sha = _sha256(tar_path)
         _record_build_id(root, _new_sha)
+        try:
+            _home = Path(os.environ.get("MERCURY_HOME", "") or Path.home() / ".mercury")
+            (_home / "channel").write_text(_channel + "\n", encoding="utf-8")
+        except (OSError, UnicodeError):
+            pass
         print()
         print(f"✓ Mercury updated to v{latest} (build {_new_sha[:12]}).")
         print("  Restart any running sessions to pick up the new code.")
