@@ -948,3 +948,42 @@ async def test_register_auto_joins_all_live_rooms(tmp_path) -> None:
                 await u.close()
     finally:
         rooms_mod.set_room_manager(None)
+
+
+@pytest.mark.asyncio
+async def test_failed_listener_rebinds_when_port_frees(tmp_path) -> None:
+    """Boot race cover: a bind that fails at start (tailscaled not up)
+    recovers in the background once the port is free."""
+    import socket
+
+    from observatory.ircd import DaemonConfig, IrcDaemon
+
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    blocked_port = blocker.getsockname()[1]
+    config = DaemonConfig(
+        agent_port=0, server_host="127.0.0.1", server_port=blocked_port,
+        state_dir=str(tmp_path),
+    )
+    d = IrcDaemon(config, rebind_interval=0.1)
+    await d.start()
+    try:
+        assert len(d._servers) == 1  # agent bound, server deferred
+        assert d._pending_binds, "server bind must be pending retry"
+        blocker.close()
+        for _ in range(100):
+            if not d._pending_binds:
+                break
+            await asyncio.sleep(0.1)
+        assert not d._pending_binds
+        assert len(d._servers) == 2
+        c = RawClient()
+        await c.connect(blocked_port)
+        try:
+            await c.register("late")  # 001 consumed here — registration done
+        finally:
+            await c.close()
+    finally:
+        await d.stop()

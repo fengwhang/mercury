@@ -142,9 +142,11 @@ class IrcDaemon:
         self,
         config: DaemonConfig | None = None,
         on_privmsg: Callable[[str, str, str], None] | None = None,
+        rebind_interval: float = 30.0,
     ):
         self.config = config or DaemonConfig()
         self.on_privmsg = on_privmsg  # (sender, target, text) hook, e.g. router
+        self.rebind_interval = max(0.05, float(rebind_interval))
         self._clients: dict[str, _Client] = {}  # folded nick -> client
         self._channels: dict[str, set[str]] = defaultdict(set)  # folded -> nicks
         self._display: dict[str, str] = {}  # folded channel -> display name
@@ -156,6 +158,9 @@ class IrcDaemon:
         self._db: sqlite3.Connection | None = None
         self._lock = asyncio.Lock()
         self._ping_task: asyncio.Task | None = None
+        self._pending_binds: list[tuple[str, str, int]] = []
+        self._pending_tls: bool = False
+        self._rebind_task: asyncio.Task | None = None
 
     def _db_path(self) -> Path | None:
         if not self.config.state_dir:
@@ -232,6 +237,18 @@ class IrcDaemon:
             raise OSError(
                 "ircd: no listener bound — "
                 + "; ".join(errors))
+        # Boot race (tailscaled not up yet): a bound localhost listener
+        # keeps the gateway alive while the tailnet bind fails. Retry the
+        # failures in the background instead of staying degraded forever.
+        self._pending_binds = []
+        if agent is None:
+            self._pending_binds.append(("agent", cfg.host, cfg.agent_port))
+        if server is None:
+            self._pending_binds.append(
+                ("server", cfg.server_host, cfg.server_port))
+        self._pending_tls = tls is None and bool(int(cfg.tls_port or 0))
+        if self._pending_binds or self._pending_tls:
+            self._rebind_task = asyncio.create_task(self._rebind_loop())
         for err in errors:
             logger.error("ircd: degraded listener: %s", err)
         logger.info(
@@ -244,7 +261,38 @@ class IrcDaemon:
         )
         self._ping_task = asyncio.create_task(self._ping_loop())
         return self
+    async def _rebind_loop(self) -> None:
+        """Retry failed listener binds until they all succeed or stop().
 
+        Boot race cover: tailscaled may not hold the tailnet IP yet when
+        the gateway starts. Without this the server listener stays down
+        forever behind a healthy-looking gateway.
+        """
+        try:
+            while self._pending_binds or self._pending_tls:
+                await asyncio.sleep(self.rebind_interval)
+                errors: list[str] = []
+                for entry in list(self._pending_binds):
+                    listener, host, port = entry
+                    server = await self._listen(listener, host, port, errors)
+                    if server is not None:
+                        self._servers.append(server)
+                        self._pending_binds.remove(entry)
+                        logger.error(
+                            "ircd: late bind recovered: %s %s:%d",
+                            listener, host, port)
+                if self._pending_tls:
+                    tls_errors: list[str] = []
+                    tls = await self._listen_tls(tls_errors)
+                    if tls is not None:
+                        self._servers.append(tls)
+                        self._pending_tls = False
+                        logger.error("ircd: late bind recovered: tls")
+                    errors.extend(tls_errors)
+                for err in errors:
+                    logger.debug("ircd: rebind deferred: %s", err)
+        except asyncio.CancelledError:
+            pass
     async def _listen(self, listener: str, host: str, port: int,
                       errors: list[str]) -> asyncio.AbstractServer | None:
         """Bind one listener; None (plus a loud error) instead of dying."""
@@ -292,6 +340,9 @@ class IrcDaemon:
             return None
 
     async def stop(self) -> None:
+        if self._rebind_task is not None:
+            self._rebind_task.cancel()
+            self._rebind_task = None
         if self._ping_task is not None:
             self._ping_task.cancel()
             self._ping_task = None
