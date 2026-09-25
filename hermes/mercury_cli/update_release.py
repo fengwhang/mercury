@@ -30,6 +30,31 @@ from pathlib import Path
 MERCURY_REPO_OWNER = "fengwhang"
 MERCURY_REPO_NAME = "mercury"
 RELEASES_API = f"https://api.github.com/repos/{MERCURY_REPO_OWNER}/{MERCURY_REPO_NAME}/releases/latest"
+RELEASES_LIST_API = f"https://api.github.com/repos/{MERCURY_REPO_OWNER}/{MERCURY_REPO_NAME}/releases?per_page=20"
+
+
+def _install_channel() -> str:
+    """This install's release track: ``stable`` or ``nightly``.
+
+    Written by install.sh (``$MERCURY_HOME/channel``). Pre-channel installs
+    default by version shape: the entire v0.0.x history IS the nightly
+    track, so a 0.0.* install without a channel file stays nightly.
+    """
+    try:
+        home = os.environ.get("MERCURY_HOME", "").strip()
+        if home:
+            marker = (Path(home) / "channel").read_text(
+                encoding="utf-8").strip().lower()
+            if marker in ("stable", "nightly"):
+                return marker
+    except (OSError, UnicodeDecodeError):
+        pass
+    try:
+        if str(_installed_version()).strip().startswith("0.0."):
+            return "nightly"
+    except Exception:
+        pass
+    return "stable"
 
 PRESERVED_TOP_LEVEL = {".venv", "venv", ".git", ".env", "dist", "node_modules", ".mercury", ".mercury-build-id"}
 
@@ -130,13 +155,36 @@ def _normalize(v: str) -> tuple[int, ...]:
     return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
 
 
-def _latest_release(timeout: float = 20.0) -> dict | None:
-    req = urllib.request.Request(RELEASES_API, headers={"User-Agent": "mercury-update"})
+def _latest_release(
+    timeout: float = 20.0, channel: str | None = None,
+) -> dict | None:
+    """Latest release on this install's track.
+
+    Stable uses ``/releases/latest`` (GitHub skips prereleases there).
+    Nightly lists releases and takes the newest non-draft prerelease.
+    """
+    if (channel or _install_channel()) != "nightly":
+        req = urllib.request.Request(
+            RELEASES_API, headers={"User-Agent": "mercury-update"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode())
+        except Exception:
+            return None
+    req = urllib.request.Request(
+        RELEASES_LIST_API, headers={"User-Agent": "mercury-update"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode())
+            releases = json.loads(r.read().decode())
     except Exception:
         return None
+    if not isinstance(releases, list):
+        return None
+    for rel in releases:
+        if (isinstance(rel, dict) and not rel.get("draft")
+                and rel.get("prerelease")):
+            return rel
+    return None
 
 
 def is_current() -> bool:
@@ -374,7 +422,7 @@ def update_from_release(*, assume_yes: bool = False) -> int:
     if _pytest_owns_live_checkout(_project_root()):
         print("✗ update_from_release refused: running under pytest against the live checkout.")
         return 1
-    print("🌡️ Updating Mercury (release channel: "
+    print(f"🌡️ Updating Mercury ({_install_channel()} channel: "
           f"{MERCURY_REPO_OWNER}/{MERCURY_REPO_NAME})...")
     print()
 

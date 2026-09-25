@@ -8,22 +8,19 @@
 # binary, arch rigor, checksum, smoke test) — combined, redundancies stripped
 # (model provider asked ONCE, via `mercury setup`).
 #
-# Usage:
+# Usage (stable track — installs `mercury` to ~/.mercury):
 #   curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash -s -- <tarball-url>
 #   bash install.sh <tarball-url>     # from a checkout
 #   bash install.sh                   # reinstall in place
+# Nightly track (`mercury-nightly` to ~/.mercury-nightly) has its own
+# one-liner: install-nightly.sh (resolves the latest nightly tag, then
+# execs this script with MERCURY_CHANNEL=nightly).
 #
 # Options:
 #   --tarball URL        Distribution tarball (else $1, else in-place)
+#   --channel TRACK      stable|nightly (default stable; nightly needs a tag)
+#   --command NAME       Command/shim name (default mercury)
 #   --dir PATH           Installation directory (default ~/.local/share/mercury)
-#   --skip-setup         Skip the interactive setup wizard
-#   --non-interactive|--yes   Non-interactive: no wizard, no questions
-#   --skip-browser       Skip Browser Use CLI + Chromium (browser tools off)
-#   --skip-computer-use  Skip the cua-driver (desktop control off)
-#   --skip-observatory   Skip the IRC Observatory network (ircd)
-#   --no-skills          Blank slate — seed no bundled skills
-#   --skip-gateway       Skip the gateway install question
-#   --ensure DEPS        Install only these deps: browser,computer-use,ripgrep,ffmpeg
 # ============================================================================
 set -euo pipefail
 
@@ -53,11 +50,13 @@ export MERCURY_HOME
 # the COMMAND is a tiny shim in ~/.local/bin — already on PATH by default
 # on modern distros, which is why hermes' one-liner needs zero extra steps.
 #   code+state -> $MERCURY_HOME (default ~/.mercury; code at mercury-agent/)
-#   command    -> $BIN_DIR       (default ~/.local/bin — ON PATH by default)
-#   managed bins (uv, browser-use) -> $MERCURY_HOME/bin
-INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-$HOME/.mercury/mercury-agent}"
 BIN_DIR="${MERCURY_BIN_DIR:-$HOME/.local/bin}"
 MANAGED_BIN="$MERCURY_HOME/bin"
+# Release track + command name. Stable installs `mercury` to
+# ~/.mercury; nightly installs `mercury-nightly` to ~/.mercury-nightly
+# (install-nightly.sh execs this script with both set).
+MERCURY_CMD="${MERCURY_CMD:-mercury}"
+MERCURY_CHANNEL="${MERCURY_CHANNEL:-stable}"
 TARBALL_URL=""
 RUN_SETUP=true
 NON_INTERACTIVE=false
@@ -71,11 +70,12 @@ UV_CMD=""
 
 IS_INTERACTIVE=true
 [ -t 0 ] || IS_INTERACTIVE=false
-
 while [[ $# -gt 0 ]]; do
     case $1 in
         --tarball) TARBALL_URL="$2"; shift 2 ;;
         --dir) INSTALL_ROOT="$2"; shift 2 ;;
+        --channel) MERCURY_CHANNEL="$2"; shift 2 ;;
+        --command|--cmd) MERCURY_CMD="$2"; shift 2 ;;
         --skip-setup) RUN_SETUP=false; shift ;;
         --non-interactive|--yes|-y) NON_INTERACTIVE=true; RUN_SETUP=false; shift ;;
         --skip-browser|--no-playwright) SKIP_BROWSER=true; shift ;;
@@ -86,6 +86,10 @@ while [[ $# -gt 0 ]]; do
         -h|--help) sed -n '3,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)
             if [ -z "$TARBALL_URL" ] && { [[ "$1" == http* ]] || [ -f "$1" ]; }; then TARBALL_URL="$1"; shift
+            # Bare tag (v0.1.0, v0.0.142): resolved to a tarball URL
+            # after arch detection below.
+            elif [ -z "$TARBALL_URL" ] && [ -z "${TAG_ARG:-}" ] && [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                TAG_ARG="$1"; shift
             else echo "Unknown option: $1"; exit 1; fi ;;
     esac
 done
@@ -298,10 +302,11 @@ install_observatory() {
 # source + python
 # ============================================================================
 fetch_tarball() {
-    # NO URL GIVEN -> construct it from the host arch against the LATEST
-    # release (GitHub's permanent releases/latest/download redirect; no API
-    # call, no rate limit). The README one-liner is therefore simply:
-    #   curl -fsSL .../install.sh | bash
+    # NO URL GIVEN -> construct it from the host arch. Stable tracks
+    # releases/latest (GitHub skips prereleases there: stable only; no API
+    # call, no rate limit). A bare tag resolves to that release directly.
+    # Nightly has no redirect (GitHub offers no "latest prerelease"):
+    # install-nightly.sh resolves the tag via API and passes it here.
     if [ -z "$TARBALL_URL" ]; then
         case "$(uname -m)" in
             x86_64|amd64)  _def_arch="x64" ;;
@@ -311,8 +316,17 @@ fetch_tarball() {
                 log_error "supported: x86_64/amd64, aarch64/arm64"
                 exit 1 ;;
         esac
-        TARBALL_URL="https://github.com/fengwhang/mercury/releases/latest/download/mercury-${_def_arch}.tar.gz"
-        log_info "$_def_arch host — auto-selected latest release tarball"
+        if [ -n "${TAG_ARG:-}" ]; then
+            TARBALL_URL="https://github.com/fengwhang/mercury/releases/download/${TAG_ARG}/mercury-${_def_arch}.tar.gz"
+            log_info "$_def_arch host — release $TAG_ARG tarball"
+        elif [ "$MERCURY_CHANNEL" = "nightly" ]; then
+            log_error "nightly installs need a release tag (no latest-nightly redirect exists)"
+            log_error "use the nightly installer, or pass a tag: bash install.sh v0.0.142"
+            exit 1
+        else
+            TARBALL_URL="https://github.com/fengwhang/mercury/releases/latest/download/mercury-${_def_arch}.tar.gz"
+            log_info "$_def_arch host — auto-selected latest stable tarball"
+        fi
     fi
     if [ -n "$TARBALL_URL" ]; then
         # PER-ARCH ASSETS (user directive): the release publishes one tarball
@@ -484,7 +498,7 @@ smoke_test() {
 run_setup_wizard() {
     if [ "$RUN_SETUP" = false ]; then log_info "skipping setup wizard (--skip-setup/--non-interactive)"; return 0; fi
     if ! (: </dev/tty) 2>/dev/null; then
-        log_info "setup wizard skipped (no terminal). Run 'mercury setup' after install."
+        log_info "setup wizard skipped (no terminal). Run '$MERCURY_CMD setup' after install."
         return 0
     fi
     echo ""
@@ -503,7 +517,7 @@ run_setup_wizard() {
         HERMES_HOME="$MERCURY_HOME/hermes" \
         PI_CODING_AGENT_DIR="$MERCURY_HOME/omp" \
         PYTHONPATH="$INSTALL_ROOT/hermes" \
-        "$VENV/bin/python" -m mercury_cli.main setup </dev/tty ) || log_warn "setup wizard exited non-zero — run 'mercury setup' later"
+        "$VENV/bin/python" -m mercury_cli.main setup </dev/tty ) || log_warn "setup wizard exited non-zero — run '$MERCURY_CMD setup' later"
 
     # Approval mode (user directive): the installer ASKS. One knob, both
     # engines — omp inherits the hermes agent's mode at spawn (bridge maps
@@ -558,15 +572,15 @@ maybe_start_gateway() {
     log_info "Messaging platform token detected — the gateway must run for the bot to work."
     if ! (: </dev/tty) 2>/dev/null; then return 0; fi
     prompt "Install the gateway as a background service?" yes || return 0
-    local MERCURY_CMD="$BIN_DIR/mercury"
+    local MERCURY_CMD="$BIN_DIR/$MERCURY_CMD"
     if command -v systemctl >/dev/null 2>&1 && [ "$DISTRO" != "termux" ]; then
         log_info "installing systemd service..."
         if "$MERCURY_CMD" gateway install >/dev/null 2>&1; then
             log_success "gateway service installed"
             "$MERCURY_CMD" gateway start >/dev/null 2>&1 && log_success "gateway started — your bot is online" \
-                || log_warn "service installed but failed to start: mercury gateway start"
+                || log_warn "service installed but failed to start: $MERCURY_CMD gateway start"
         else
-            log_warn "systemd install failed: start manually with 'mercury gateway'"
+            log_warn "systemd install failed: start manually with '$MERCURY_CMD gateway'"
         fi
     else
         nohup "$MERCURY_CMD" gateway > "$MERCURY_HOME/logs/gateway.log" 2>&1 &
@@ -578,6 +592,8 @@ maybe_start_gateway() {
 # seeds + path
 # ============================================================================
 seed_defaults() {
+    # Release track marker for `mercury update` (stable|nightly).
+    echo "$MERCURY_CHANNEL" > "$MERCURY_HOME/channel"
     # ONE env (user rule — no legacy paths, no symlinks): if a PREVIOUS
     # Mercury build left its env at the old engine path, adopt it into THE
     # shared file once, visibly, then REMOVE the old file. The code never
@@ -641,23 +657,26 @@ setup_path() {
     # HERMES PATTERN (faithful): a real shim SCRIPT in the default-PATH dir —
     # not a symlink. Clears PYTHONPATH/PYTHONHOME so an inherited env can't
     # shadow the install; rm-first so an old symlink is never followed.
-    rm -f "$BIN_DIR/mercury"
-    cat > "$BIN_DIR/mercury" <<EOF
+    rm -f "$BIN_DIR/$MERCURY_CMD"
+    cat > "$BIN_DIR/$MERCURY_CMD" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
 export MERCURY_HOME="${MERCURY_HOME:-$HOME/.mercury}"
 exec "$INSTALL_ROOT/bin/mercury" "\$@"
 EOF
-    chmod +x "$BIN_DIR/mercury"
-    log_success "mercury command → $BIN_DIR/mercury (shim; ~/.local/bin is on PATH by default)"
+    chmod +x "$BIN_DIR/$MERCURY_CMD"
+    log_success "$MERCURY_CMD command → $BIN_DIR/$MERCURY_CMD (shim; ~/.local/bin is on PATH by default)"
 
-    # Stale residue from earlier Mercury layouts (NOT the shim above):
+    # Stale residue from earlier Mercury layouts (NOT the shim above).
+    # Stable-track only: a nightly install must never delete stable paths.
+    if [ "$MERCURY_CMD" = "mercury" ]; then
     for _stale in "$HOME/.mercury/bin/mercury" "/usr/local/bin/mercury" "/usr/local/bin/mercury-acp" "/usr/local/bin/mercury-agent"; do
-        if [ "$_stale" != "$BIN_DIR/mercury" ] && { [ -e "$_stale" ] || [ -L "$_stale" ]; }; then
+        if [ "$_stale" != "$BIN_DIR/$MERCURY_CMD" ] && { [ -e "$_stale" ] || [ -L "$_stale" ]; }; then
             rm -f "$_stale" && log_info "removed stale: $_stale"
         fi
     done
+    fi
     local _stale_tree="$HOME/.local/share/mercury"
     if [ -d "$_stale_tree" ] && [ "$INSTALL_ROOT" != "$_stale_tree" ]; then
         rm -rf "$_stale_tree" && log_info "removed stale install tree: $_stale_tree"
@@ -672,8 +691,8 @@ ensure_path_configured() {
     # mercury, write the PATH export into EVERY existing shell rc.
     # Permanent across reboots; covers login, non-login, and new shells.
     if env -i HOME="$HOME" TERM="${TERM:-dumb}" PATH="/usr/local/bin:/usr/bin:/bin" \
-        bash -i -c 'command -v mercury' >/dev/null 2>&1; then
-        log_success "mercury resolves in interactive shells (PATH already configured)"
+        bash -i -c "command -v $MERCURY_CMD" >/dev/null 2>&1; then
+        log_success "$MERCURY_CMD resolves in interactive shells (PATH already configured)"
         return 0
     fi
 
@@ -735,8 +754,8 @@ ensure_path_configured() {
 
     # verify: the SAME probe must now succeed
     if env -i HOME="$HOME" TERM="${TERM:-dumb}" PATH="/usr/local/bin:/usr/bin:/bin" \
-        bash -i -c 'command -v mercury' >/dev/null 2>&1; then
-        log_success "mercury command ready (verified in a fresh interactive shell)"
+        bash -i -c "command -v $MERCURY_CMD" >/dev/null 2>&1; then
+        log_success "$MERCURY_CMD command ready (verified in a fresh interactive shell)"
     else
         log_warn "PATH written; open a new terminal for it to take effect"
     fi
@@ -745,13 +764,13 @@ ensure_path_configured() {
 print_success() {
     echo ""
     echo -e "${GREEN}✓ Mercury installed.${NC}"
-    echo "  Command:     $BIN_DIR/mercury  (the only mercury executable)"
+    echo "  Command:     $BIN_DIR/$MERCURY_CMD  (the only mercury executable)"
     echo ""
     echo "  THIS terminal:   source ~/.bashrc      (zsh: ~/.zshrc, fish: config.fish)"
     echo "  New terminals:   automatic (PATH is on disk)"
-    echo "  First run:   mercury"
-    echo "  omp engine:  mercury omp"
-    echo "  Reconfigure: mercury setup   (both engines)"
+    echo "  First run:   $MERCURY_CMD"
+    echo "  omp engine:  $MERCURY_CMD omp"
+    echo "  Reconfigure: $MERCURY_CMD setup   (both engines)"
     echo "  Docs:        https://github.com/fengwhang/mercury"
     echo ""
     echo "  Mercury is a hybrid distribution of Hermes by Nous Research"
