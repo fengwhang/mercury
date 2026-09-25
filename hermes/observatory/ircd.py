@@ -106,6 +106,7 @@ class _Client:
         "caps",
         "pending_label",
         "channels",
+        "listener",
         "send_lock",
         "last_in",
         "ping_out",
@@ -446,6 +447,7 @@ class IrcDaemon:
         peer = writer.get_extra_info("peername")
         addr = str(peer[0]) if peer else "?"
         client = _Client(reader, writer, addr)
+        client.listener = listener
         password = (
             self.config.agent_password if listener == "agent" else self.config.password
         )
@@ -816,7 +818,12 @@ class IrcDaemon:
                 peer, 331, f"{peer.nick} {display}", "No topic is set"
             )
         await self._send_names(peer, key, display)
-        # Server replay: recent history on every JOIN.
+        # Server replay: recent history on every JOIN — for HUMAN clients
+        # only. Bots on the agent listener keep their turn state in
+        # state.db; replaying history at them re-executes old commands on
+        # every reconnect (version/spawn/restart loops across restarts).
+        if getattr(peer, "listener", "") == "agent":
+            return
         for msg in self.channel_history(
             display, limit=int(self.config.history_limit)
         ):
@@ -826,7 +833,6 @@ class IrcDaemon:
                 + f":{msg.sender}!relay@mercury {msg.kind.upper()} "
                 f"{display} :{msg.text}",
             )
-
     async def _send_names(self, client: _Client, key: str, display: str) -> None:
         members = sorted(self._channels.get(key, ()))
         nicks = " ".join(self._clients[n].nick for n in members if n in self._clients)

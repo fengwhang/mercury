@@ -870,6 +870,14 @@ class IRCAdapter(BasePlatformAdapter):
             # Ignore our own messages
             if sender_nick.lower() == self._current_nick.lower():
                 return
+            # History replay is display-only: the server re-sends recent
+            # room history (sender!relay@mercury) on every JOIN. Executing
+            # it would re-run old commands on every reconnect (version /
+            # spawn / restart loops across restarts) — and every replayed
+            # spawn mints a NEW room, so the loop also litters channels.
+            # Live traffic always carries the sender's real user host.
+            if "!relay@" in (msg.get("prefix") or "").lower():
+                return
             try:
                 # Agent identities speaking in their rooms are never user
                 # turns — routing them back would make agents answer

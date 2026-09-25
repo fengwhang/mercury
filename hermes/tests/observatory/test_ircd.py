@@ -987,3 +987,31 @@ async def test_failed_listener_rebinds_when_port_frees(tmp_path) -> None:
             await c.close()
     finally:
         await d.stop()
+
+
+@pytest.mark.asyncio
+async def test_agent_listener_gets_no_history_replay(tmp_path) -> None:
+    """Bots on the agent listener must never receive replay: re-executing
+    it on every reconnect loops version/spawn/restart across restarts."""
+    async with running_daemon(tmp_path, password="s3cret") as (_, agent_port, server_port):
+        u = RawClient()
+        await u.connect(server_port)
+        try:
+            await u.register("owner", password="s3cret")
+            await u.send("JOIN #replay")
+            await u.next_match("JOIN #replay")
+            await u.send("PRIVMSG #replay :/spawn lago")
+            await asyncio.sleep(0.2)
+        finally:
+            await u.close()
+        bot = RawClient()
+        await bot.connect(agent_port)
+        try:
+            await bot.register("bot")
+            await bot.send("JOIN #replay")
+            await bot.next_match("JOIN #replay")
+            # JOIN/332/NAMES arrive; no PRIVMSG replay follows.
+            with pytest.raises(TimeoutError):
+                await bot.next_match("PRIVMSG #replay", timeout=0.5)
+        finally:
+            await bot.close()
