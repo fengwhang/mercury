@@ -3028,33 +3028,45 @@ def _current_listen_addrs(obs) -> list[str] | None:
         return None
 
 
-def _offer_tailscale_bind(obs, ts: dict | None) -> None:
-    """Offer exposing the IRC server on the tailnet IP.
+def _offer_tailscale_bind(obs, ts: dict | None) -> bool:
+    """Offer binding the SERVER port to the tailnet IP. Returns True when
+    the bind changed (caller restarts the daemon once at the end).
 
-    The agent listener stays on localhost (gateway + agents are local);
-    only the IRC server port moves. Delegates to ``provision.set_ircd_bind``
-    (never starts/stops the daemon here); every failure degrades to a
-    hand-edit hint. The new bind needs a unit restart to take effect.
+    The server port (6670) is where your IRC apps connect — The Lounge,
+    Goguma, phones. Tailscale here is what makes the server reachable
+    away from home; localhost keeps working regardless. The bot port is
+    a separate question (asked elsewhere). Never starts/stops the daemon
+    here; every failure degrades to a hand-edit hint.
     """
     try:
         if not isinstance(ts, dict) or not ts.get("up"):
-            return
+            return False
         ip = ts.get("ip")
         if not ip or not str(ip).strip():
-            return
+            return False
         ip = str(ip).strip()
         want = prompt_yes_no(
-            "Expose the CHAT port on Tailscale too? (where IRC apps connect — The Lounge has its own pin)"
-            " (phones reach it over the tailnet; localhost keeps working)",
+            f"Bind the SERVER port (6670 — where your IRC apps connect) to the tailnet ({ip})?"
+            " (phones and remote boxes reach it; localhost keeps working)",
             default=False,
         )
     except KeyboardInterrupt:
         raise
     except Exception:  # noqa: BLE001 — a bind offer never kills the wizard
-        return
+        return False
     if not want:
-        print_info("Keeping the chat port on its current address.")
-        return
+        print_info("Keeping the server port on its current address.")
+        return False
+    try:
+        from observatory.provision import _mercury_home, read_config
+
+        current = str((read_config(_mercury_home(None)) or {}).get(
+            "server_host") or "127.0.0.1").strip()
+    except Exception:
+        current = "127.0.0.1"
+    if current == ip:
+        print_info(f"Server port already on {ip}.")
+        return False
     try:
         obs.set_ircd_bind(ip)
     except AttributeError:
@@ -3065,44 +3077,13 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> None:
         except Exception as exc:  # noqa: BLE001
             print_warning(f"Could not expose the IRC server on {ip}: {exc}")
             print_info("Edit `server_host` in observatory/ircd.json by hand instead.")
-            return
+            return False
     except Exception as exc:  # noqa: BLE001
         print_warning(f"Could not expose the IRC server on {ip}: {exc}")
         print_info("Edit `server_host` in observatory/ircd.json by hand instead.")
-        return
-    try:
-        from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
-    except Exception:  # noqa: BLE001
-        _unit = "mercury-observatory.service"
-    print_success(f"Chat port will listen on {ip} after a restart (localhost kept on the agent port).")
-    try:
-        restart_now = prompt_yes_no(
-            "Restart the IRC server now? (necessary to apply the new bind)",
-            default=True,
-        )
-    except KeyboardInterrupt:
-        raise
-    except Exception:  # noqa: BLE001 — a restart offer never kills the wizard
-        print_info(f"Restart it to apply: systemctl --user restart {_unit}")
-        return
-    if not restart_now:
-        print_info(f"Restart it to apply: systemctl --user restart {_unit}")
-        return
-    try:
-        import subprocess
-
-        subprocess.run(
-            ["systemctl", "--user", "restart", _unit],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except Exception as exc:  # noqa: BLE001 — best-effort restart, never raises
-        print_warning(f"Could not restart {_unit}: {exc}")
-        print_info(f"Restart it manually: systemctl --user restart {_unit}")
-        return
-    print_success(f"IRC server restarted ({_unit}).")
+        return False
+    print_success(f"Server port will listen on {ip} (applies at the final restart).")
+    return True
 
 
 _LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
@@ -3687,11 +3668,13 @@ def _restart_observatory_unit(reason: str) -> bool:
     return True
 
 
-def _offer_server_password_rotate(obs) -> None:
-    """Offer rotating the server password (re-run path only).
+def _offer_server_password_rotate(obs) -> bool:
+    """Offer rotating the server password (re-run path only). Returns True
+    when rotated (caller restarts the daemon once at the end).
 
-    Random or user-chosen (min 8 chars); restarts the daemon so the new
-    password goes live immediately instead of desyncing from .env.
+    Random or user-chosen (min 8 chars). The Lounge uplink is reseeded
+    here; the daemon restart that makes the new password live happens
+    once at the end of setup, not here.
     """
     try:
         want = prompt_yes_no(
@@ -3701,9 +3684,9 @@ def _offer_server_password_rotate(obs) -> None:
     except KeyboardInterrupt:
         raise
     except Exception:  # noqa: BLE001 — an offer never kills the wizard
-        return
+        return False
     if not want:
-        return
+        return False
     try:
         custom = prompt_yes_no(
             "Type your own password? (No = generate a random one)",
@@ -3712,7 +3695,7 @@ def _offer_server_password_rotate(obs) -> None:
     except KeyboardInterrupt:
         raise
     except Exception:  # noqa: BLE001 — an offer never kills the wizard
-        return
+        return False
     try:
         from observatory.provision import (
             _mercury_home,
@@ -3736,21 +3719,20 @@ def _offer_server_password_rotate(obs) -> None:
             agent = have.get("agent") or generate_password()
             mirror_irc_env(home, generate_password(), agent)
         print_success("Server password updated (mirrored to .env — update your IRC client).")
-        _restart_observatory_unit("necessary to apply the new password")
-        # The Lounge uplink holds the OLD secret: reseed + restart it
-        # now, or every send dies with 464 ("Password mismatch" in the
-        # lobby) until some later setup happens to converge.
+        # The Lounge uplink holds the OLD secret: reseed it now (it
+        # reconnects onto the new password after the final restart).
         try:
             _converge_lounge_uplink()
         except Exception as exc:  # noqa: BLE001 — loud, never fatal
             print_warning(f"Lounge uplink not re-pointed: {exc} — "
                           "re-run setup to heal it.")
+        return True
     except KeyboardInterrupt:
         raise
     except Exception as exc:
         print_error(f"Password rotation failed: {exc}")
         print_info("Retry any time with: mercury setup observatory")
-        return
+        return False
 
 
 def _offer_observatory_reset(obs) -> bool:
@@ -4147,56 +4129,63 @@ def _wire_gateway_irc_env(home_label: str) -> bool:
         return False
 
 
-def _offer_agent_bind(obs, label: str, ts: dict | None) -> None:
-    """Pin the agent listener to localhost or Tailscale.
+def _offer_agent_bind(obs, label: str, ts: dict | None) -> bool:
+    """Offer the BOT port bind (localhost or Tailscale). Returns True when
+    the bind changed (caller restarts the daemon once at the end).
 
-    This is the whole IRC server's agent side — the gateway bot plus
-    every spawned agent and subagent room — not just one bot. Tailscale
-    exposes agent traffic (passwords still required) so a remote
-    frontend can reach every room. Localhost keeps bots on this box.
-    Never starts/stops the daemon here; the final restart applies it.
+    The bot port (6669) is daemon-side traffic only: the gateway bot and
+    spawned agents reach the server here. Your IRC apps never touch it —
+    they use the server port. Tailscale is only useful multi-box (a remote
+    frontend driving this box's agents); single-box stays on localhost.
+    Never starts/stops the daemon here.
     """
     try:
         ip = (ts or {}).get("ip") if isinstance(ts, dict) else None
         tail_ok = bool(isinstance(ts, dict) and ts.get("up") and ip)
-        choices = ["Localhost only (bots stay on this box)"]
+        choices = ["Localhost (this box's bots only — normal)"]
         if tail_ok:
-            choices.append(f"Tailscale ({ip} — the whole fleet reachable)")
+            choices.append(f"Tailscale ({ip} — only for multi-box agent driving)")
         choice = prompt_choice(
-            "Pin the AGENT port (gateway bot + spawned agents) to localhost or Tailscale?",
+            "Bot port (6669) bind — localhost, or Tailscale for multi-box setups?",
             choices,
             0,
         )
     except KeyboardInterrupt:
         raise
     except Exception:  # noqa: BLE001 — a bind offer never kills the wizard
-        return
+        return False
     try:
         from observatory.provision import _mercury_home, read_config
         from observatory.config_gen import ObservatoryPaths
     except Exception:
-        return
+        return False
     try:
         import json as _json
 
         home = _mercury_home(None)
         cfg = read_config(home) or {}
-        if choice == 1 and tail_ok:
-            cfg["agent_host"] = str(ip).strip()
-            print_success(
-                "Agent listener will bind the tailnet after a restart.")
-        else:
-            cfg["agent_host"] = "127.0.0.1"
-            print_info("Keeping the agent listener on localhost.")
+        raw = cfg.get("agent_host")
+        current = str(raw or "127.0.0.1").strip()
+        want = str(ip).strip() if (choice == 1 and tail_ok) else "127.0.0.1"
+        cfg["agent_host"] = want
         paths = ObservatoryPaths(home)
         paths.config_file.write_text(
             _json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        if want == current and raw is not None:
+            print_info(f"Bot port stays on {current}.")
+            _wire_gateway_irc_env(label)
+            return False
+        if want == "127.0.0.1":
+            print_info("Bot port back on localhost (applies at the final restart).")
+        else:
+            print_success(
+                f"Bot port will bind {want} (applies at the final restart).")
     except Exception as exc:  # noqa: BLE001
-        print_warning(f"Could not write the agent bind: {exc}")
+        print_warning(f"Could not write the bot bind: {exc}")
         print_info("Edit `agent_host` in observatory/ircd.json by hand instead.")
-        return
+        return False
     _wire_gateway_irc_env(label)
-
+    return True
 
 
 def setup_observatory(config: dict, *, quick: bool = False):
@@ -4209,7 +4198,6 @@ def setup_observatory(config: dict, *, quick: bool = False):
     provisioned. Never gates the rest of the wizard: every failure
     degrades to a printed hint and the section returns.
     """
-    print_header("IRC Observatory (bundled)")
     print_info("A private IRC network for your agents: one channel per agent,")
     print_info("with its own server port so any IRC client stays in sync.")
     print_info("Localhost-only; phones reach this server over Tailscale.")
@@ -4256,6 +4244,9 @@ def setup_observatory(config: dict, *, quick: bool = False):
         0 if not status["provisioned"] else 1,
     )
 
+    # One daemon restart for the whole section: binds + password rotate
+    # only set this flag; the single offer lives after the Lounge block.
+    needs_restart = False
     if choice == 0:
         was_provisioned = bool(status.get("provisioned"))
         try:
@@ -4266,7 +4257,7 @@ def setup_observatory(config: dict, *, quick: bool = False):
                 label = _prompt_server_label(obs)
                 obs.provision_in_wizard(server_name=label)
                 steps = _run_observatory_auto_steps(obs)
-                _offer_server_password_rotate(obs)
+                needs_restart = _offer_server_password_rotate(obs)
                 status = obs.status_summary()
                 if _unit_failed(steps):
                     print_info(
@@ -4280,14 +4271,15 @@ def setup_observatory(config: dict, *, quick: bool = False):
                         print_success(f"Observatory provisioning complete ({detail}).")
                     else:
                         print_error(f"Provisioned but the daemon is NOT answering: {detail}")
-                _offer_agent_bind(obs, label, _tailscale_status(obs))
+                needs_restart = _offer_agent_bind(
+                    obs, label, _tailscale_status(obs)) or needs_restart
             else:
                 wiped = _offer_observatory_reset(obs)
                 if wiped:
                     label = _prompt_server_label(obs, current=status.get("server_name"))
                     obs.provision_in_wizard(server_name=label)
                     steps = _run_observatory_auto_steps(obs, unit_loud=True)
-                    _offer_server_password_rotate(obs)
+                    needs_restart = _offer_server_password_rotate(obs)
                     status = obs.status_summary()
                     if _unit_failed(steps):
                         print_error(
@@ -4301,9 +4293,10 @@ def setup_observatory(config: dict, *, quick: bool = False):
                             print_success(f"Observatory reset + reprovisioned ({detail}).")
                         else:
                             print_error(f"Reset done but the daemon is NOT answering: {detail}")
-                    _offer_agent_bind(obs, label, _tailscale_status(obs))
+                    needs_restart = _offer_agent_bind(
+                        obs, label, _tailscale_status(obs)) or needs_restart
                 else:
-                    _offer_server_password_rotate(obs)
+                    needs_restart = _offer_server_password_rotate(obs)
                     obs.provision_in_wizard()
                     _run_observatory_auto_steps(obs)
                     status = obs.status_summary()
@@ -4312,7 +4305,9 @@ def setup_observatory(config: dict, *, quick: bool = False):
                         print_success(f"Observatory repair complete ({detail}).")
                     else:
                         print_error(f"Repair done but the daemon is NOT answering: {detail}")
-                    _offer_agent_bind(obs, str(status.get("server_name") or "mercury"), _tailscale_status(obs))
+                    needs_restart = _offer_agent_bind(
+                        obs, str(status.get("server_name") or "mercury"),
+                        _tailscale_status(obs)) or needs_restart
         except KeyboardInterrupt:
             raise
         except Exception as exc:
@@ -4324,7 +4319,10 @@ def setup_observatory(config: dict, *, quick: bool = False):
 
     if status.get("provisioned"):
         ts = _tailscale_status(obs)
-        _offer_tailscale_bind(obs, ts)
+        needs_restart = _offer_tailscale_bind(obs, ts) or needs_restart
+        if needs_restart:
+            _restart_observatory_unit(
+                "to apply the new bind/password (one restart for all changes)")
         # Post-bind refresh: the offer may have rewritten the bind, so the
         # card sees the fresh address.
         try:

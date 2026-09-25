@@ -441,8 +441,9 @@ def test_verify_gives_up_with_both_down(monkeypatch):
     assert "systemctl --user restart" in detail
 
 
-def test_rotate_offer_with_chosen_password_restarts(monkeypatch, tmp_path):
-    """Choosing your own password sets it and restarts the daemon."""
+def test_rotate_offer_with_chosen_password_defers_restart(monkeypatch, tmp_path):
+    """Choosing your own password sets it and reports dirty (the single
+    end-of-setup restart applies it, no inline restart)."""
     import observatory.provision as provision_mod
 
     calls = {}
@@ -453,29 +454,25 @@ def test_rotate_offer_with_chosen_password_restarts(monkeypatch, tmp_path):
     monkeypatch.setattr(
         provision_mod, "_mercury_home", lambda home: tmp_path / "mercury"
     )
-    answers = iter([True, True, True])  # rotate, custom, restart now
+    answers = iter([True, True])  # rotate, custom
     monkeypatch.setattr(
         setup_mod, "prompt_yes_no", lambda *a, **k: next(answers)
     )
     monkeypatch.setattr(
         setup_mod, "_prompt_validated", lambda *a, **k: "my-chosen-pw"
     )
-    ran = []
-    monkeypatch.setattr(
-        "subprocess.run", lambda *a, **k: ran.append(a[0])
-    )
+    monkeypatch.setattr(setup_mod, "_converge_lounge_uplink", lambda: None)
 
     class _Obs:
         def validate_server_password(self, value):
             return provision_mod.validate_server_password(value)
 
-    setup_mod._offer_server_password_rotate(_Obs())
+    assert setup_mod._offer_server_password_rotate(_Obs()) is True
     assert calls["set"] == (str(tmp_path / "mercury"), "my-chosen-pw")
-    assert ran and ran[0][:3] == ["systemctl", "--user", "restart"]
 
 
-def test_rotate_offer_random_without_restart_prints_manual(monkeypatch, capsys):
-    """Random rotate without restart leaves a manual command (no crash)."""
+def test_rotate_offer_random_reports_dirty(monkeypatch, capsys):
+    """Random rotate reports dirty for the end-of-setup restart (no crash)."""
     import observatory.provision as provision_mod
 
     monkeypatch.setattr(
@@ -488,16 +485,17 @@ def test_rotate_offer_random_without_restart_prints_manual(monkeypatch, capsys):
     monkeypatch.setattr(
         provision_mod, "generate_password", lambda *a: "new-random-pw"
     )
-    answers = iter([True, False, False])  # rotate, generated, no restart
+    answers = iter([True, False])  # rotate, generated
     monkeypatch.setattr(
         setup_mod, "prompt_yes_no", lambda *a, **k: next(answers)
     )
+    monkeypatch.setattr(setup_mod, "_converge_lounge_uplink", lambda: None)
 
     class _Obs:
         pass
 
-    setup_mod._offer_server_password_rotate(_Obs())
-    assert "systemctl --user restart" in capsys.readouterr().out
+    assert setup_mod._offer_server_password_rotate(_Obs()) is True
+    assert "Server password updated" in capsys.readouterr().out
 
 
 def test_password_offer_runs_on_fresh_install():
