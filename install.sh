@@ -52,6 +52,7 @@ export MERCURY_HOME
 #   code+state -> $MERCURY_HOME (default ~/.mercury; code at mercury-agent/)
 BIN_DIR="${MERCURY_BIN_DIR:-$HOME/.local/bin}"
 MANAGED_BIN="$MERCURY_HOME/bin"
+INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-$MERCURY_HOME/mercury-agent}"
 # Release track + command name. Stable installs `mercury` to
 # ~/.mercury; nightly installs `mercury-nightly` to ~/.mercury-nightly
 # (install-nightly.sh execs this script with both set).
