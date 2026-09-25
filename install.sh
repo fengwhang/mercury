@@ -48,6 +48,7 @@ echo -e "${MAGENTA}└───────────────────�
 
 # --- config ---
 MERCURY_HOME="${MERCURY_HOME:-$HOME/.mercury}"
+export MERCURY_HOME
 # MERCURY LAYOUT (hermes pattern, faithful): code + state under one home;
 # the COMMAND is a tiny shim in ~/.local/bin — already on PATH by default
 # on modern distros, which is why hermes' one-liner needs zero extra steps.
@@ -773,8 +774,23 @@ main() {
     install_observatory
     seed_defaults
     run_setup_wizard
+    sweep_stray_omp_logs
     maybe_start_gateway
     print_success
+}
+
+# Stray ~/.omp/logs from env-naked engine runs (pre-fix smoke tests wrote
+# here when MERCURY_HOME wasn't exported yet). A stock omp install keeps
+# agent/, config, sessions — a dir holding nothing but logs is installer
+# residue, never theirs. Remove it only when no stock omp binary exists.
+sweep_stray_omp_logs() {
+    local stray="$HOME/.omp" leftovers
+    [ -d "$stray" ] || return 0
+    command -v omp >/dev/null 2>&1 && return 0
+    # `ls -A` sees dotfiles too; an unexpanded glob would lie.
+    leftovers="$(ls -A "$stray" 2>/dev/null)" || return 0
+    [ "$leftovers" = "logs" ] || return 0
+    rm -rf "$stray" && log_info "removed stray ~/.omp (logs-only residue, no stock omp installed)"
 }
 
 if [ -n "$ENSURE_DEPS" ]; then
