@@ -4014,6 +4014,16 @@ def _launcher_env_pins(hermes_home: Path) -> tuple[str, str, str]:
     )
 
 
+def _launcher_cmd_pin() -> str:
+    """This install's command for supervised units (mercury|mercury-nightly).
+
+    Read live (not baked) so regenerated units follow renames/re-tracks.
+    """
+    from mercury_constants import mercury_command
+
+    return mercury_command()
+
+
 def _launcher_omp_bin_pin() -> str:
     """Return the repo-vendored omp binary path for service units.
 
@@ -4040,6 +4050,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         _launcher_env_pins(get_hermes_home())
     )
     omp_bin_pin = _launcher_omp_bin_pin()
+    mercury_cmd_pin = _launcher_cmd_pin()
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
@@ -4133,6 +4144,7 @@ Environment="MERCURY_CONFIG={mercury_env_config}"
 Environment="PI_CODING_AGENT_DIR={mercury_env_agent_dir}"
 Environment="XDG_DATA_HOME={mercury_env_home}/.local/share"
 Environment="HERMES_OMP_BIN={omp_bin_pin_system}"
+Environment="MERCURY_CMD={mercury_cmd_pin}"
 Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
 RestartSec=5
@@ -4177,6 +4189,7 @@ Environment="MERCURY_CONFIG={mercury_env_config}"
 Environment="PI_CODING_AGENT_DIR={mercury_env_agent_dir}"
 Environment="XDG_DATA_HOME={mercury_env_home}/.local/share"
 Environment="HERMES_OMP_BIN={omp_bin_pin}"
+Environment="MERCURY_CMD={mercury_cmd_pin}"
 Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
 RestartSec=5
@@ -5389,6 +5402,7 @@ def generate_launchd_plist() -> str:
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
+    mercury_cmd_pin = _launcher_cmd_pin()
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
@@ -5466,6 +5480,8 @@ def generate_launchd_plist() -> str:
         <string>{mercury_home}</string>
         <key>HERMES_SUPERVISED_CHILD</key>
         <string>1</string>
+        <key>MERCURY_CMD</key>
+        <string>{mercury_cmd_pin}</string>
     </dict>
 
     <key>LimitLoadToSessionType</key>
@@ -5476,7 +5492,7 @@ def generate_launchd_plist() -> str:
     
     <key>RunAtLoad</key>
     <true/>
-    
+
     <key>KeepAlive</key>
     <true/>
 

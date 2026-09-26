@@ -3792,9 +3792,11 @@ def _restart_gateway(reason: str) -> bool:
         import shutil
         import subprocess
 
-        mercury_bin = shutil.which("mercury")
+        from mercury_constants import mercury_command
+
+        mercury_bin = shutil.which(mercury_command())
         if mercury_bin is None:
-            print_info("Restart it to apply: mercury gateway restart")
+            print_info(f"Restart it to apply: {mercury_command()} gateway restart")
             return False
         subprocess.run(
             [mercury_bin, "gateway", "restart"],

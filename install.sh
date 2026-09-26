@@ -666,6 +666,8 @@ setup_path() {
 unset PYTHONPATH
 unset PYTHONHOME
 export MERCURY_HOME="${MERCURY_HOME:-$HOME/.mercury}"
+export MERCURY_CMD="$MERCURY_CMD"
+export MERCURY_CHANNEL="$MERCURY_CHANNEL"
 exec "$INSTALL_ROOT/bin/mercury" "\$@"
 EOF
     chmod +x "$BIN_DIR/$MERCURY_CMD"

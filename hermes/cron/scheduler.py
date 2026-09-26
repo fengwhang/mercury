@@ -2645,7 +2645,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
     job_id = job.get("id", "?")
     job_name = job.get("name", job_id)
 
-    mercury_bin = _shutil.which("mercury")
+    from mercury_constants import mercury_command
+
+    mercury_bin = _shutil.which(mercury_command())
     if mercury_bin:
         argv = [mercury_bin]
     else:

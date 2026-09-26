@@ -4348,18 +4348,21 @@ def _get_channel_override(
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
-    """Resolve the Mercury update command as argv parts.
+    """Resolve this install's command as argv parts.
 
     Tries in order:
-    1. ``shutil.which("mercury")`` — standard PATH lookup
+    1. ``shutil.which(mercury_command())`` — standard PATH lookup under
+       this install's own command name (``mercury`` or ``mercury-nightly``)
     2. ``sys.executable -m mercury_cli.main`` — fallback when Mercury is running
-       from a venv/module invocation and the ``mercury`` shim is not on PATH
+       from a venv/module invocation and the shim is not on PATH
 
     Returns argv parts ready for quoting/joining, or ``None`` if neither works.
     """
     import shutil
 
-    mercury_bin = shutil.which("mercury")
+    from mercury_constants import mercury_command
+
+    mercury_bin = shutil.which(mercury_command())
     if mercury_bin:
         return [mercury_bin]
 
