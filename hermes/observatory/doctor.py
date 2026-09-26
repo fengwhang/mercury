@@ -164,29 +164,49 @@ def _established_to(port: int) -> int:
         except OSError:
             continue
 def _gateway_log_snippets(home: Path) -> list[str]:
-    """Recent gateway log lines about the IRC adapter (any source)."""
+    """Recent gateway log lines mentioning irc (any source, any case)."""
+    import re as _re
+
+    want = _re.compile(r"\birc\b", _re.IGNORECASE)
     out: list[str] = []
     try:
         import subprocess as _sp
 
-        proc = _sp.run(
-            ["journalctl", "--user", "--since", "2 hours ago",
-             "--no-pager", "-q", "--grep", "IRC: "],
-            capture_output=True, text=True, timeout=15)
-        if proc.returncode == 0 and proc.stdout.strip():
-            out.extend(proc.stdout.strip().splitlines()[-30:])
+        for pattern in ("IRC", "irc"):
+            proc = _sp.run(
+                ["journalctl", "--user", "--since", "2 hours ago",
+                 "--no-pager", "-q", "--grep", pattern],
+                capture_output=True, text=True, timeout=15)
+            if proc.returncode == 0 and proc.stdout.strip():
+                out.extend(
+                    ln for ln in proc.stdout.strip().splitlines()[-60:]
+                    if want.search(ln))
     except Exception:
         pass
     try:
         logf = home / "logs" / "gateway.log"
         if logf.is_file():
             tails = logf.read_text(
-                encoding="utf-8", errors="replace").splitlines()[-500:]
+                encoding="utf-8", errors="replace").splitlines()[-1000:]
             out.extend(
-                ln for ln in tails if "IRC: " in ln)
+                ln for ln in tails if want.search(ln))
     except OSError:
         pass
     return out[-30:]
+
+
+def _gateway_proc_home(pid: int) -> str | None:
+    """MERCURY_HOME the live gateway process actually runs with."""
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        for item in raw:
+            if item.startswith(b"MERCURY_HOME="):
+                return item.split(b"=", 1)[1].decode(
+                    "utf-8", errors="replace")
+    except OSError:
+        pass
+    return None
+
 
 
 
@@ -255,6 +275,18 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
         pid = get_running_pid(cleanup_stale=False)
         if pid:
             results.append((True, "gateway process", f"PID {pid}"))
+            proc_home = _gateway_proc_home(pid)
+            if proc_home is None:
+                results.append((False, "gateway home",
+                                f"could not read /proc/{pid}/environ"))
+            elif Path(proc_home).resolve() == mercury_home.resolve():
+                results.append((True, "gateway home",
+                                f"gateway runs with this home ({proc_home})"))
+            else:
+                results.append((False, "gateway home",
+                                f"gateway runs with {proc_home} but doctor "
+                                f"checked {mercury_home} — wrong instance: "
+                                "restart the gateway from this home"))
         else:
             results.append((False, "gateway process",
                             "no live gateway PID — start it: "
@@ -287,10 +319,7 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
             results.append((True, "bot connection",
                             f"{conns} established TCP connection(s) to the agent port"))
         else:
-            snippets = [ln for ln in _gateway_log_snippets(mercury_home)
-                        if "IRC: connected to" in ln or "IRC: failed" in ln
-                        or "IRC: registration" in ln or "IRC: server and" in ln
-                        or "already in use" in ln or "connection lost" in ln]
+            snippets = _gateway_log_snippets(mercury_home)
             if snippets:
                 last = snippets[-1]
                 tail = last[-160:] if len(last) > 160 else last
