@@ -46,9 +46,29 @@ async def test_adapter_joins_says_and_tracks_managed(tmp_path) -> None:
             assert not adapter.is_managed("#ace")
             assert await adapter.join_channel("#ace")
             assert adapter.is_managed("#ace")
-            assert await adapter.say("#ace", "hello room")
-            await asyncio.sleep(0.3)
-            assert [m.text for m in d.channel_history("#ace")] == ["hello room"]
+            # Delivery proof via a live server-listener client — history
+            # replay is gone, so a second pair of eyes is the evidence.
+            server_port = d._servers[1].sockets[0].getsockname()[1]
+            rd, wr = await asyncio.open_connection("127.0.0.1", server_port)
+            try:
+                wr.write(b"USER lis 0 * :x\r\nNICK lis\r\nJOIN #ace\r\n")
+                await wr.drain()
+                await asyncio.sleep(0.3)
+                assert await adapter.say("#ace", "hello room")
+                loop = asyncio.get_running_loop()
+                got = b""
+                deadline = loop.time() + 3.0
+                while b"hello room" not in got:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    chunk = await asyncio.wait_for(rd.read(4096), timeout=remaining)
+                    if not chunk:
+                        break
+                    got += chunk
+                assert b"hello room" in got, got
+            finally:
+                wr.close()
             assert await adapter.part_channel("#ace")
             assert not adapter.is_managed("#ace")
         finally:

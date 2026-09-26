@@ -27,9 +27,6 @@ IRCD_BOUNCER_PORT_DEFAULT = IRCD_SERVER_PORT_DEFAULT
 #: TLS server for strict clients (Goguma-style): same rooms, IRCv3 + TLS.
 IRCD_TLS_PORT_DEFAULT = 6697
 
-#: History replay depth for the server listener.
-HISTORY_LIMIT_DEFAULT = 200
-
 #: The ONE systemd user unit (provision installs it; never provision()
 #: itself — the gateway boots provision(), so auto-installing there
 #: would restart its own unit mid-boot).

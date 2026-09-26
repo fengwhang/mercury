@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 from observatory.config_gen import (
-    HISTORY_LIMIT_DEFAULT,
     IRCD_ADDRESS,
     IRCD_AGENT_PORT_DEFAULT,
     IRCD_SERVER_PORT_DEFAULT,
@@ -239,7 +238,6 @@ def default_config(*, server_name: str = SERVER_NAME_DEFAULT) -> dict[str, Any]:
         "server_host": IRCD_ADDRESS,
         "server_port": IRCD_SERVER_PORT_DEFAULT,
         "tls_port": IRCD_TLS_PORT_DEFAULT,
-        "history_limit": HISTORY_LIMIT_DEFAULT,
     }
 
 
@@ -278,7 +276,6 @@ def ensure_config(
     server_host: str | None = None,
     server_port: int | None = None,
     tls_port: int | None = None,
-    history_limit: int | None = None,
 ) -> dict[str, Any]:
     """Idempotent ircd.json: stored values win unless explicitly passed
     (explicit disagreement with a STORED value fails hard — never
@@ -301,7 +298,6 @@ def ensure_config(
         "server_host": server_host,
         "server_port": server_port,
         "tls_port": tls_port,
-        "history_limit": history_limit,
     }
     changed: list[str] = []
     for key, value in explicit.items():
@@ -789,7 +785,6 @@ def provision(
     agent_port: int | None = None,
     server_host: str | None = None,
     server_port: int | None = None,
-    history_limit: int | None = None,
     systemd: bool = True,
 ) -> dict:
     """Run every provisioning step (config → passwords → TLS cert →
@@ -807,7 +802,6 @@ def provision(
             agent_port=agent_port,
             server_host=server_host,
             server_port=server_port,
-            history_limit=history_limit,
         ),
         "passwords": ensure_passwords(home),
         "tls": ensure_tls_cert(home),

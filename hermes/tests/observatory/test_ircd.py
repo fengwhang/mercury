@@ -115,14 +115,14 @@ async def test_join_and_privmsg_fanout(tmp_path) -> None:
             await a.send("PRIVMSG #parent-child :hello bob")
             got = await b.next_match("PRIVMSG #parent-child :hello bob")
             assert "alice" in got
-            assert [m.text for m in d.channel_history("#parent-child")] == ["hello bob"]
         finally:
             await a.close()
             await b.close()
 
 
 @pytest.mark.asyncio
-async def test_server_replay_on_join(tmp_path) -> None:
+async def test_join_never_replays_history(tmp_path) -> None:
+    """History replay is GONE: a late joiner sees no old lines (ever)."""
     async with running_daemon(tmp_path) as (_, agent_port, server_port):
         a = RawClient()
         await a.connect(agent_port)
@@ -141,9 +141,8 @@ async def test_server_replay_on_join(tmp_path) -> None:
             await u.register("user")
             await u.send("JOIN #replay")
             await u.next_match("JOIN #replay")
-            got1 = await u.next_match(":first")
-            got2 = await u.next_match(":second")
-            assert "PRIVMSG #replay" in got1 and "PRIVMSG #replay" in got2
+            with pytest.raises(TimeoutError):
+                await u.next_match("PRIVMSG", timeout=0.5)
         finally:
             await u.close()
 
@@ -190,22 +189,6 @@ async def test_server_password_enforced(tmp_path) -> None:
             await v.close()
 
 
-@pytest.mark.asyncio
-async def test_history_survives_restart(tmp_path) -> None:
-    async with running_daemon(tmp_path) as (_, agent_port, __):
-        a = RawClient()
-        await a.connect(agent_port)
-        try:
-            await a.register("alice")
-            await a.send("JOIN #persist")
-            await a.next_match("JOIN #persist")
-            await a.send("PRIVMSG #persist :remember me")
-            await asyncio.sleep(0.3)
-        finally:
-            await a.close()
-    async with running_daemon(tmp_path) as (d2, _, __):
-        assert [m.text for m in d2.channel_history("#persist")] == ["remember me"]
-
 
 @pytest.mark.asyncio
 async def test_oper_destroy_kills_room(tmp_path) -> None:
@@ -229,13 +212,12 @@ async def test_oper_destroy_kills_room(tmp_path) -> None:
             await mem.send("DESTROY #doomed")
             await mem.next_match("481")
             assert "#doomed" in d.channel_names()
-            # oper destroy PARTs members and drops history
+            # oper destroy PARTs members
             await bot.send("OPER op-secret")
             await bot.next_match("381")
             await bot.send("DESTROY #doomed")
             await mem.next_match("PART #doomed")
             assert d.channel_names() == []
-            assert d.channel_history("#doomed") == []
         finally:
             await bot.close()
             await mem.close()
@@ -252,7 +234,6 @@ def _args(**kw):
         server_name=None,
         password=None,
         agent_password=None,
-        history_limit=None,
         state_dir="",
         config="",
     )
@@ -700,11 +681,11 @@ async def test_cap_negotiates_subset(tmp_path) -> None:
             await c.send("CAP LS 302")
             ls = await c.next_match("CAP ")
             for cap in ("sasl", "message-tags", "server-time", "batch",
-                        "echo-message", "labeled-response", "draft/chathistory"):
+                        "echo-message", "labeled-response"):
                 assert cap in ls
-            await c.send("CAP REQ :sasl draft/chathistory bogus-cap")
+            await c.send("CAP REQ :sasl message-tags bogus-cap")
             ack = await c.next_match("ACK ")
-            assert "sasl" in ack and "draft/chathistory" in ack
+            assert "sasl" in ack and "message-tags" in ack
             nak = await c.next_match("NAK ")
             assert "bogus-cap" in nak
             await c.send("CAP END")
@@ -727,7 +708,6 @@ async def test_labeled_privmsg_routes_and_echoes(tmp_path) -> None:
             await a.send("@label=xyz PRIVMSG #echo :hello")
             echo = await a.next_match("PRIVMSG #echo :hello")
             assert "@label=xyz" in echo or "label=xyz" in echo
-            assert "alice" in d.channel_history("#echo")[-1].sender
         finally:
             await a.close()
 
@@ -758,31 +738,6 @@ async def test_server_time_tagged_only_when_negotiated(tmp_path) -> None:
         finally:
             await a.close()
 
-
-@pytest.mark.asyncio
-async def test_chathistory_latest_batch(tmp_path) -> None:
-    """CHATHISTORY LATEST returns a framed batch of backlog."""
-    async with running_daemon(tmp_path) as (_, agent_port, __):
-        a = RawClient()
-        await a.connect(agent_port)
-        try:
-            await a.register("hist")
-            await a.send("CAP REQ :batch message-tags server-time")
-            assert await a.next_match("ACK ")
-            await a.send("JOIN #h")
-            assert await a.next_match("JOIN #h")
-            await a.send("PRIVMSG #h :one")
-            await a.send("PRIVMSG #h :two")
-            await asyncio.sleep(0.3)
-            await a.send("CHATHISTORY LATEST #h * 10")
-            start = await a.next_match("BATCH +")
-            assert "draft/chathistory #h" in start
-            first = await a.next_match("PRIVMSG #h :one")
-            assert "msgid=" in first
-            assert await a.next_match("PRIVMSG #h :two")
-            assert await a.next_match("BATCH -")
-        finally:
-            await a.close()
 
 
 @pytest.mark.asyncio

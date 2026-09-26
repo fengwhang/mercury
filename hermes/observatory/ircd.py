@@ -6,11 +6,10 @@ channel state:
 - **agent listener** (default ``127.0.0.1:6669``): the gateway and its
   agents connect here. Localhost-bound by default.
 - **server listener** (default ``127.0.0.1:6670``): the user connects
-  here with any IRC client. Server semantics: the daemon keeps the
-  last ``history_limit`` messages per channel (persisted in SQLite so
-  they survive restarts) and replays them on JOIN, so a client that
-  disconnects and returns sees what it missed. Agent connections stay
-  up, so nothing is ever lost server-side.
+  here with any IRC client. The daemon keeps NO chat history and never
+  replays anything on JOIN — clients keep their own scrollback (The
+  Lounge persists its own); server-side replay only ever duplicated
+  lines. Agent connections stay up, so nothing is lost server-side.
 
 Protocol: RFC 1459 subset (NICK/USER/PASS/JOIN/PART/PRIVMSG/NOTICE/
 TOPIC/NAMES/WHO/PING/PONG/QUIT/MODE-noop, plus OPER/DESTROY for the
@@ -20,8 +19,7 @@ internet. No NickServ, no federation, single network.
 
 Channel lifecycle is the agent lifecycle: IRC channels are created on
 first JOIN and destroyed explicitly via :meth:`IrcDaemon.destroy_channel`
-(``/exit``), which PARTs every member. History of a destroyed channel
-is dropped.
+(``/exit``), which PARTs every member.
 """
 
 from __future__ import annotations
@@ -29,9 +27,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import sqlite3
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -66,7 +63,7 @@ class HistoryMessage:
     target: str
     text: str
     kind: str = "privmsg"  # privmsg | notice | system
-    msgid: str = ""  # stable id for draft/chathistory anchors
+    msgid: str = ""  # stable id for client echo dedupe
 
 
 @dataclass
@@ -81,7 +78,6 @@ class DaemonConfig:
     tls_key: str = ""
     password: str = ""  # required PASS on the server listener when set
     agent_password: str = ""  # required PASS on the agent listener when set
-    history_limit: int = 200
     state_dir: Path | str = ""
     network_name: str = "mercury"
 
@@ -153,80 +149,17 @@ class IrcDaemon:
         self._channels: dict[str, set[str]] = defaultdict(set)  # folded -> nicks
         self._display: dict[str, str] = {}  # folded channel -> display name
         self._topics: dict[str, tuple[str, str, float]] = {}
-        self._history: dict[str, deque[HistoryMessage]] = defaultdict(deque)
-        self._msg_seq = 0  # fallback msgids when no SQLite (ephemeral tests)
-        self._batch_seq = 0  # draft/chathistory BATCH refs
+        self._msg_seq = 0  # msgid sequence for client echo dedupe
         self._servers: list[asyncio.AbstractServer] = []
-        self._db: sqlite3.Connection | None = None
         self._lock = asyncio.Lock()
         self._ping_task: asyncio.Task | None = None
         self._pending_binds: list[tuple[str, str, int]] = []
         self._pending_tls: bool = False
         self._rebind_task: asyncio.Task | None = None
 
-    def _db_path(self) -> Path | None:
-        if not self.config.state_dir:
-            return None
-        root = Path(self.config.state_dir)
-        root.mkdir(parents=True, exist_ok=True)
-        return root / "irc-history.db"
-
-    # -- persistence ----------------------------------------------------
-    def _open_db(self) -> None:
-        path = self._db_path()
-        if path is None:
-            return
-        self._db = sqlite3.connect(str(path))
-        self._db.execute(
-            "CREATE TABLE IF NOT EXISTS history "
-            "(channel TEXT, ts REAL, sender TEXT, target TEXT, text TEXT, kind TEXT)"
-        )
-        self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_history_channel ON history(channel)"
-        )
-        self._db.commit()
-        limit = int(self.config.history_limit)
-        for rowid, chan, ts, sender, target, text, kind in self._db.execute(
-            "SELECT rowid, channel, ts, sender, target, text, kind FROM history "
-            "ORDER BY ts ASC"
-        ):
-            hist = self._history[chan]
-            hist.append(HistoryMessage(
-                ts, sender, target, text, kind or "privmsg", msgid=f"h{rowid}"))
-            while len(hist) > limit:
-                hist.popleft()
-
-    def _store(self, msg: HistoryMessage) -> None:
-        chan = msg.target.lower()
-        hist = self._history[chan]
-        hist.append(msg)
-        limit = int(self.config.history_limit)
-        while len(hist) > limit:
-            hist.popleft()
-        if self._db is not None:
-            try:
-                cur = self._db.execute(
-                    "INSERT INTO history(channel, ts, sender, target, text, kind)"
-                    " VALUES (?,?,?,?,?,?)",
-                    (chan, msg.ts, msg.sender, msg.target, msg.text, msg.kind),
-                )
-                msg.msgid = f"h{cur.lastrowid}"
-                self._db.execute(
-                    "DELETE FROM history WHERE rowid NOT IN "
-                    "(SELECT rowid FROM history WHERE channel=? "
-                    "ORDER BY ts DESC LIMIT ?)",
-                    (chan, limit),
-                )
-                self._db.commit()
-            except Exception:
-                logger.debug("ircd: history persist failed", exc_info=True)
-        elif not msg.msgid:
-            self._msg_seq += 1
-            msg.msgid = f"m{self._msg_seq}"
     # -- lifecycle ------------------------------------------------------
 
     async def start(self) -> "IrcDaemon":
-        self._open_db()
         cfg = self.config
         errors: list[str] = []
         agent = await self._listen(
@@ -365,12 +298,6 @@ class IrcDaemon:
             except Exception:
                 pass
         self._clients.clear()
-        if self._db is not None:
-            try:
-                self._db.close()
-            except Exception:
-                pass
-            self._db = None
 
     async def _ping_loop(self) -> None:
         """Drive the liveness sweep every PING_INTERVAL (see _ping_sweep)."""
@@ -409,12 +336,8 @@ class IrcDaemon:
     def channel_names(self) -> list[str]:
         return sorted(self._display.get(k, k) for k in self._channels)
 
-    def channel_history(self, channel: str, limit: int = 50) -> list[HistoryMessage]:
-        hist = self._history.get(channel.lower(), ())
-        return list(hist)[-max(0, limit) :]
-
     async def destroy_channel(self, channel: str, reason: str = "room closed") -> int:
-        """PART every member and drop the channel + its history.
+        """PART every member and drop the channel.
 
         Returns the number of members removed. Never raises.
         """
@@ -423,13 +346,6 @@ class IrcDaemon:
             members = sorted(self._channels.pop(key, ()))
             self._display.pop(key, None)
             self._topics.pop(key, None)
-            self._history.pop(key, None)
-            if self._db is not None:
-                try:
-                    self._db.execute("DELETE FROM history WHERE channel=?", (key,))
-                    self._db.commit()
-                except Exception:
-                    pass
         for nick in members:
             client = self._clients.get(nick)
             if client is None:
@@ -441,7 +357,7 @@ class IrcDaemon:
         return len(members)
 
     async def server_notice(self, channel: str, text: str) -> None:
-        """Post a server-originated notice into a channel (stored + fanned)."""
+        """Post a server-originated notice into a channel (fanned to members)."""
         msg = HistoryMessage(
             time.time(), self.config.server_name, channel, text, kind="notice"
         )
@@ -553,8 +469,6 @@ class IrcDaemon:
             await self._cmd_msg(client, rest, kind="notice")
         elif cmd == "LIST":
             await self._cmd_list(client, rest.strip())
-        elif cmd == "CHATHISTORY":
-            await self._cmd_chathistory(client, rest.strip())
         elif cmd == "TOPIC":
             await self._cmd_topic(client, rest.strip())
         elif cmd == "NAMES":
@@ -592,7 +506,6 @@ class IrcDaemon:
         "batch",
         "echo-message",
         "labeled-response",
-        "draft/chathistory",
     )
 
     async def _cmd_cap(self, client: _Client, arg: str) -> None:
@@ -813,7 +726,7 @@ class IrcDaemon:
             await self._emit_join(client, key, display)
 
     async def _emit_join(self, peer: _Client, key: str, display: str) -> None:
-        """JOIN + topic + names + history replay for a new member."""
+        """JOIN + topic + names for a new member."""
         await self._send(
             peer, f":{peer.nick}!{peer.user}@{self.config.server_name} JOIN {display}"
         )
@@ -826,21 +739,7 @@ class IrcDaemon:
                 peer, 331, f"{peer.nick} {display}", "No topic is set"
             )
         await self._send_names(peer, key, display)
-        # Server replay: recent history on every JOIN — for HUMAN clients
-        # only. Bots on the agent listener keep their turn state in
-        # state.db; replaying history at them re-executes old commands on
-        # every reconnect (version/spawn/restart loops across restarts).
-        if getattr(peer, "listener", "") == "agent":
-            return
-        for msg in self.channel_history(
-            display, limit=int(self.config.history_limit)
-        ):
-            await self._send(
-                peer,
-                self._tags(peer, ts=msg.ts, msgid=msg.msgid)
-                + f":{msg.sender}!relay@{self.config.server_name} {msg.kind.upper()} "
-                f"{display} :{msg.text}",
-            )
+
     async def _send_names(self, client: _Client, key: str, display: str) -> None:
         members = sorted(self._channels.get(key, ()))
         nicks = " ".join(self._clients[n].nick for n in members if n in self._clients)
@@ -900,57 +799,6 @@ class IrcDaemon:
             text = topic[0] if topic else ""
             await self._send(client, f":{name} 322 {nick} {display} {count} :{text}")
         await self._send(client, f":{name} 323 {nick} :End of /LIST")
-
-    async def _cmd_chathistory(self, client: _Client, arg: str) -> None:
-        """draft/chathistory LATEST/AFTER/BEFORE against the local backlog."""
-        parts = arg.split()
-        sub = parts[0].upper() if parts else ""
-        if sub not in ("LATEST", "AFTER", "BEFORE"):
-            await self._numeric(client, 410, "CHATHISTORY", "Invalid subcommand")
-            return
-        if len(parts) < 4:
-            await self._numeric(client, 461, "CHATHISTORY", "Not enough parameters")
-            return
-        _, target, anchor, raw_limit = parts[:4]
-        try:
-            limit = max(1, min(int(raw_limit), 100))
-        except ValueError:
-            limit = 20
-        key = target.lower()
-        if key not in self._channels:
-            await self._numeric(client, 403, target, "No such channel")
-            return
-        hist = list(self._history.get(key, ()))
-        if sub == "LATEST":
-            if anchor == "*":
-                msgs = hist[-limit:]
-            else:
-                at = [i for i, m in enumerate(hist) if m.msgid == anchor]
-                msgs = hist[max(0, at[-1] - limit + 1):at[-1] + 1] if at else []
-        elif sub == "AFTER":
-            at = [i for i, m in enumerate(hist) if m.msgid == anchor]
-            msgs = hist[at[-1] + 1:at[-1] + 1 + limit] if at else []
-        else:  # BEFORE
-            at = [i for i, m in enumerate(hist) if m.msgid == anchor]
-            msgs = hist[max(0, at[-1] - limit):at[-1]] if at else []
-        name = self.config.server_name
-        display = self._display.get(key, target)
-        framed = "batch" in client.caps
-        ref = ""
-        if framed:
-            self._batch_seq += 1
-            ref = f"ch{self._batch_seq}"
-            await self._send(
-                client, f":{name} BATCH +{ref} draft/chathistory {display}")
-        for msg in msgs:
-            await self._send(
-                client,
-                self._tags(client, ts=msg.ts, msgid=msg.msgid)
-                + f":{msg.sender}!relay@{self.config.server_name} {msg.kind.upper()} "
-                f"{display} :{msg.text}",
-            )
-        if framed:
-            await self._send(client, f":{name} BATCH -{ref}")
 
     async def _cmd_invite(self, client: _Client, arg: str) -> None:
         """INVITE <nick> <#channel> — 341 to the sender, relay + join.
@@ -1058,8 +906,7 @@ class IrcDaemon:
                 members.discard(client.nick.lower())
                 client.channels.discard(key)
                 if not members:
-                    # Keep empty channels (and their history) — the server
-                    # replays them on rejoin; only destroy_channel deletes.
+                    # Keep empty channels around — only destroy_channel deletes.
                     pass
                 await self._send(
                     client,
@@ -1166,7 +1013,9 @@ class IrcDaemon:
 
     async def _fanout(self, msg: HistoryMessage) -> None:
         key = msg.target.lower()
-        self._store(msg)
+        if not msg.msgid:
+            self._msg_seq += 1
+            msg.msgid = f"m{self._msg_seq}"
         members = sorted(self._channels.get(key, ()))
         display = self._display.get(key, msg.target)
         body = (
@@ -1366,7 +1215,6 @@ def _resolve_daemon_config(args: Any) -> DaemonConfig:
         server_name=_pick("server_name", "mercury"),
         password=password or "",
         agent_password=agent_password or "",
-        history_limit=_pick("history_limit", 200),
         state_dir=state_dir,
     )
 
@@ -1385,7 +1233,6 @@ def main(argv: list[str] | None = None) -> int:
     # ps output (the systemd unit passes none — EnvironmentFile only).
     parser.add_argument("--password", default=None)
     parser.add_argument("--agent-password", default=None)
-    parser.add_argument("--history-limit", type=int, default=None)
     parser.add_argument("--tls-port", type=int, default=None)
     parser.add_argument("--tls-cert", default=None)
     parser.add_argument("--tls-key", default=None)
