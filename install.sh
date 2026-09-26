@@ -318,7 +318,9 @@ fetch_tarball() {
                 exit 1 ;;
         esac
         if [ -n "${TAG_ARG:-}" ]; then
-            TARBALL_URL="https://github.com/fengwhang/mercury/releases/download/${TAG_ARG}/mercury-${_def_arch}.tar.gz"
+            # Versioned asset name (only stable releases carry the
+            # version-less aliases; the arch rewrite below still applies).
+            TARBALL_URL="https://github.com/fengwhang/mercury/releases/download/${TAG_ARG}/mercury-${TAG_ARG#v}-${_def_arch}.tar.gz"
             log_info "$_def_arch host — release $TAG_ARG tarball"
         elif [ "$MERCURY_CHANNEL" = "nightly" ]; then
             log_error "nightly installs need a release tag (no latest-nightly redirect exists)"
