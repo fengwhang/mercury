@@ -3941,6 +3941,54 @@ def _converge_lounge_uplink() -> None:
             pass
 
 
+def _converge_gateway_credential() -> None:
+    """Re-wire the gateway bot credential when it drifted from the agent
+    password. Best-effort, never raises; runs on every setup.
+
+    Password rotates update .env but historically left the adapter's saved
+    copy (``IRC_SERVER_PASSWORD``) stale: the bot then fails auth (silent
+    464 — running gateway, invisible unresponsive bot) until someone
+    re-runs setup's gateway wiring by hand. Only touches the default
+    wiring (adapter pointed at the agent listener); a hand-repointed
+    adapter is left alone.
+    """
+    try:
+        from mercury_cli.config import get_env_value
+        from observatory.provision import (
+            _mercury_home as _mh, read_config as _read_cfg,
+            read_irc_passwords as _read_pw,
+        )
+        from observatory.config_gen import (
+            IRCD_ADDRESS, IRCD_AGENT_PORT_DEFAULT,
+        )
+
+        home = _mh(None)
+        cfg = _read_cfg(home) or {}
+        agent_host = str(cfg.get("agent_host") or IRCD_ADDRESS)
+        agent_port = int(cfg.get("agent_port") or IRCD_AGENT_PORT_DEFAULT)
+        wired_host = (get_env_value("IRC_SERVER") or "").strip()
+        wired_port = (get_env_value("IRC_PORT") or "").strip()
+        if wired_host and wired_host != agent_host:
+            return
+        if wired_port and wired_port != str(agent_port):
+            return
+        pw = _read_pw(home) or {}
+        agent_pw = str((pw or {}).get("agent") or "")
+        if not agent_pw:
+            return
+        saved = (get_env_value("IRC_SERVER_PASSWORD") or "").strip()
+        if saved == agent_pw:
+            return
+        server = str(cfg.get("server_name") or "mercury")
+        if _wire_gateway_irc_env(server):
+            print_info("Gateway bot credential re-pointed at the current agent password.")
+    except Exception as exc:  # noqa: BLE001 — converge never kills setup
+        try:
+            print_warning(f"Gateway credential converge failed: {exc}")
+        except Exception:
+            pass
+
+
 def _offer_lounge(obs, ts: dict | None) -> None:
     """Offer installing The Lounge (only one required per user)."""
     try:
@@ -4336,6 +4384,9 @@ def setup_observatory(config: dict, *, quick: bool = False):
             _ensure_firewall_port(status.get("tls_port", 6697))
         except Exception:  # noqa: BLE001 — firewall never kills setup
             pass
+        # Bot credential drift (rotates predate the mirror fix): re-wire
+        # when the saved copy no longer matches the agent password.
+        _converge_gateway_credential()
         try:
             from observatory import lounge as lounge_mod
 
