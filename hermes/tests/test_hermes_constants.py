@@ -1152,3 +1152,19 @@ class TestHealAttemptFlagSemantics:
         # The flag is set, so the once-per-process budget is spent.
         assert heal_hermes_managed_node() is False
         assert calls["n"] == 1
+
+
+def test_mercury_command_tracks_install(monkeypatch) -> None:
+    from mercury_constants import mercury_command
+
+    monkeypatch.delenv("MERCURY_CMD", raising=False)
+    monkeypatch.delenv("MERCURY_HOME", raising=False)
+    assert mercury_command() == "mercury"
+    monkeypatch.setenv("MERCURY_CMD", "mercury-nightly")
+    assert mercury_command() == "mercury-nightly"
+    # Pre-decoupling shims lack MERCURY_CMD: the home decides.
+    monkeypatch.delenv("MERCURY_CMD", raising=False)
+    monkeypatch.setenv("MERCURY_HOME", "/home/user/.mercury-nightly")
+    assert mercury_command() == "mercury-nightly"
+    monkeypatch.setenv("MERCURY_HOME", "/home/user/.mercury")
+    assert mercury_command() == "mercury"
