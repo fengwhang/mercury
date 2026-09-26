@@ -1724,10 +1724,20 @@ def get_config_dir() -> Path:
 def mercury_command() -> str:
     """This install's user-facing command name (``mercury`` or
     ``mercury-nightly``). The shim bakes ``MERCURY_CMD`` at install time;
-    unset means a stable-shaped invocation. Import-safe (stdlib only) so
-    gateways, cron, and installers can share it instead of hardcoding.
+    when it is missing (pre-decoupling shims), fall back to the home
+    basename: a ``.mercury-nightly`` home means the nightly command.
+    Import-safe (stdlib only) so gateways, cron, and installers can share
+    it instead of hardcoding.
     """
-    return os.environ.get("MERCURY_CMD", "").strip() or "mercury"
+    if os.environ.get("MERCURY_CMD", "").strip():
+        return os.environ["MERCURY_CMD"].strip()
+    try:
+        home = os.environ.get("MERCURY_HOME", "").strip()
+        if home and Path(home).name == ".mercury-nightly":
+            return "mercury-nightly"
+    except Exception:
+        pass
+    return "mercury"
 
 
 def get_command_link_dir() -> Path:
