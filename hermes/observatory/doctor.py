@@ -237,6 +237,59 @@ def _proc_uptime(pid: int) -> str | None:
         return None
 
 
+def _daemon_unit_state() -> tuple[str | None, str | None, str | None]:
+    """(unit, active-since, restarts) for the observatory daemon unit."""
+    try:
+        import subprocess as _sp
+
+        units = _sp.run(
+            ["systemctl", "--user", "list-units", "mercury-*",
+             "--all", "--no-legend", "--no-pager"],
+            capture_output=True, text=True, timeout=15)
+        unit = None
+        fallback = None
+        for line in (units.stdout or "").splitlines():
+            name = line.split()[0] if line.split() else ""
+            if not (name.endswith(".service") and "observatory" in name):
+                continue
+            if "homeserver" in name or "matrix" in name or "tuwunel" in name:
+                continue
+            if name == "mercury-observatory.service":
+                unit = name
+                break
+            fallback = fallback or name
+        if unit is None:
+            unit = fallback
+        if unit is None:
+            return None, None, None
+        show = _sp.run(
+            ["systemctl", "--user", "show", unit, "-p",
+             "ActiveEnterTimestamp,NRestarts",
+             "--value"],
+            capture_output=True, text=True, timeout=15)
+        vals = (show.stdout or "").strip().splitlines()
+        since = vals[0].strip() if len(vals) > 0 else ""
+        restarts = vals[1].strip() if len(vals) > 1 else ""
+        return unit, since or None, restarts or None
+    except Exception:
+        return None, None, None
+
+
+def _daemon_crash_lines(unit: str) -> list[str]:
+    """Recent error/exit lines for the daemon unit (no secrets)."""
+    try:
+        import subprocess as _sp
+
+        proc = _sp.run(
+            ["journalctl", "--user", "-u", unit, "--since", "2 hours ago",
+             "--no-pager", "-q", "--grep",
+             "[Ee]rror|[Tt]raceback|[Kk]illed|[Ee]xit|OOM|exception"],
+            capture_output=True, text=True, timeout=15)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip().splitlines()[-10:]
+    except Exception:
+        pass
+    return []
 
 def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     """Run every check. Returns [(ok, label, detail)]. Secrets never leave."""
@@ -263,6 +316,19 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
         results.append((True, "passwords", "agent + server passwords provisioned"))
 
     agent_up = _tcp_ok(agent_host, agent_port)
+    unit, since, restarts = _daemon_unit_state()
+    if unit is None:
+        results.append((False, "daemon stability",
+                        "no observatory daemon unit found — is it installed?"))
+    else:
+        crash = _daemon_crash_lines(unit)
+        detail = f"{unit} active since {since or 'unknown'} ({restarts or '0'} restarts)"
+        if crash:
+            detail += f"; latest error: {crash[-1][-160:]}"
+        bad = bool(crash) or (restarts not in (None, "", "0"))
+        if bad:
+            detail += " — the daemon is dying under the bot; fix this first"
+        results.append((not bad, "daemon stability", detail))
     results.append((agent_up, "agent listener",
                     f"{agent_host}:{agent_port} "
                     + ("answers" if agent_up else "NOTHING LISTENING — is the gateway/ircd up?")))
