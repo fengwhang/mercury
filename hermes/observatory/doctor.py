@@ -163,7 +163,31 @@ def _established_to(port: int) -> int:
                         count += 1
         except OSError:
             continue
-    return count
+def _gateway_log_snippets(home: Path) -> list[str]:
+    """Recent gateway log lines about the IRC adapter (any source)."""
+    out: list[str] = []
+    try:
+        import subprocess as _sp
+
+        proc = _sp.run(
+            ["journalctl", "--user", "--since", "2 hours ago",
+             "--no-pager", "-q", "--grep", "IRC: "],
+            capture_output=True, text=True, timeout=15)
+        if proc.returncode == 0 and proc.stdout.strip():
+            out.extend(proc.stdout.strip().splitlines()[-30:])
+    except Exception:
+        pass
+    try:
+        logf = home / "logs" / "gateway.log"
+        if logf.is_file():
+            tails = logf.read_text(
+                encoding="utf-8", errors="replace").splitlines()[-500:]
+            out.extend(
+                ln for ln in tails if "IRC: " in ln)
+    except OSError:
+        pass
+    return out[-30:]
+
 
 
 def run_doctor(home=None) -> list[tuple[bool, str, str]]:
@@ -237,17 +261,46 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
                             f"{os.environ.get('MERCURY_CMD', '').strip() or 'mercury'} gateway start"))
     except Exception:
         results.append((False, "gateway process", "could not check (status module unavailable)"))
+    try:
+        from gateway.config import load_gateway_config
 
+        gcfg = load_gateway_config()
+        plats = {getattr(p, "value", str(p)): bool(c.enabled)
+                 for p, c in (gcfg.platforms or {}).items()}
+        if plats.get("irc"):
+            results.append((True, "gateway platforms", "irc adapter enabled"))
+        elif plats:
+            results.append((False, "gateway platforms",
+                            f"irc adapter NOT enabled (enabled: "
+                            f"{', '.join(sorted(k for k, v in plats.items() if v)) or 'none'}) — "
+                            "run setup gateway to enable IRC"))
+        else:
+            results.append((False, "gateway platforms",
+                            "no platforms configured at all — "
+                            "run setup gateway to enable IRC"))
+    except Exception as exc:
+        results.append((False, "gateway platforms",
+                        f"could not load gateway config ({exc})"))
     if agent_up:
         conns = _established_to(agent_port)
         if conns:
             results.append((True, "bot connection",
                             f"{conns} established TCP connection(s) to the agent port"))
         else:
-            results.append((False, "bot connection",
-                            "nothing is connected to the agent port — the adapter "
-                            "never dialed (not configured? crashed on boot? "
-                            "check the gateway log for IRC errors)"))
+            snippets = [ln for ln in _gateway_log_snippets(mercury_home)
+                        if "IRC: connected to" in ln or "IRC: failed" in ln
+                        or "IRC: registration" in ln or "IRC: server and" in ln
+                        or "already in use" in ln or "connection lost" in ln]
+            if snippets:
+                last = snippets[-1]
+                tail = last[-160:] if len(last) > 160 else last
+                results.append((False, "bot connection",
+                                f"nothing connected; gateway log says: {tail}"))
+            else:
+                results.append((False, "bot connection",
+                                "nothing is connected to the agent port and the "
+                                "gateway log shows no IRC adapter lines at all — "
+                                "the adapter never started"))
 
     if agent_up and agent_pw:
         probe = _Probe(agent_host, agent_port,
