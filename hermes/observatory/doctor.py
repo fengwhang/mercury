@@ -208,6 +208,34 @@ def _gateway_proc_home(pid: int) -> str | None:
     return None
 
 
+def _gateway_candidate_pids() -> list[int]:
+    """PIDs whose cmdline looks like a running mercury gateway."""
+    found: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            parts = (entry / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        text = b" ".join(parts).decode("utf-8", errors="replace")
+        if "mercury_cli" in text and "gateway" in text and " run" in text:
+            found.append(int(entry.name))
+    return sorted(found)
+
+
+def _proc_uptime(pid: int) -> str | None:
+    """Human uptime of *pid* via ps (None when unreadable)."""
+    try:
+        import subprocess as _sp
+
+        proc = _sp.run(["ps", "-p", str(pid), "-o", "etime="],
+                       capture_output=True, text=True, timeout=10)
+        out = (proc.stdout or "").strip()
+        return out or None
+    except Exception:
+        return None
+
 
 
 def run_doctor(home=None) -> list[tuple[bool, str, str]]:
@@ -274,7 +302,16 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
 
         pid = get_running_pid(cleanup_stale=False)
         if pid:
-            results.append((True, "gateway process", f"PID {pid}"))
+            uptime = _proc_uptime(pid)
+            results.append((True, "gateway process",
+                            f"PID {pid}" + (f", up {uptime}" if uptime else "")))
+            dups = [p for p in _gateway_candidate_pids() if p != pid]
+            if dups:
+                results.append((False, "duplicate gateway",
+                                f"extra gateway process(es) {dups} fight yours "
+                                f"for the bot nick — kill them, keep {pid}"))
+            else:
+                results.append((True, "duplicate gateway", "only one running"))
             proc_home = _gateway_proc_home(pid)
             if proc_home is None:
                 results.append((False, "gateway home",
