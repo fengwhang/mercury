@@ -363,7 +363,7 @@ fetch_tarball() {
                 fi
             fi
         fi
-        log_info "fetching distribution tarball"
+        log_info "fetching distribution tarball ($TARBALL_URL)"
         TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
         if [ -f "$TARBALL_URL" ]; then cp "$TARBALL_URL" "$TMP/mercury.tar.gz"
         else
