@@ -882,3 +882,83 @@ def test_converge_applies_config_template_drift(tmp_path, monkeypatch) -> None:
     setup_mod._converge_lounge_uplink()
     assert "fileUpload" in (paths.dir / "config.js").read_text()
     assert restarted == [True]
+
+
+def test_converge_gateway_credential_rewires_on_drift(monkeypatch, tmp_path, capsys) -> None:
+    """Stale bot credential (rotate without rewire) is repaired by setup."""
+    import json as _json
+
+    import mercury_cli.setup as _setup
+    import observatory.provision as provision_mod
+
+    home = tmp_path / "mercury"
+    (home / "observatory").mkdir(parents=True)
+    (home / "observatory" / "ircd.json").write_text(_json.dumps({
+        "server_name": "vm", "agent_host": "127.0.0.1", "agent_port": 6669,
+    }))
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.setattr(
+        provision_mod, "read_irc_passwords",
+        lambda h: {"server": "b", "agent": "new-a"})
+    values = {"IRC_SERVER_PASSWORD": "stale-a"}
+    monkeypatch.setattr(
+        "mercury_cli.config.get_env_value", lambda k: values.get(k, ""))
+    rewired = []
+    monkeypatch.setattr(
+        _setup, "_wire_gateway_irc_env",
+        lambda label: rewired.append(label) or True)
+    _setup._converge_gateway_credential()
+    assert rewired == ["vm"]
+
+
+def test_converge_gateway_credential_leaves_healthy_alone(monkeypatch, tmp_path) -> None:
+    import json as _json
+
+    import mercury_cli.setup as _setup
+    import observatory.provision as provision_mod
+
+    home = tmp_path / "mercury"
+    (home / "observatory").mkdir(parents=True)
+    (home / "observatory" / "ircd.json").write_text(_json.dumps({
+        "server_name": "vm", "agent_host": "127.0.0.1", "agent_port": 6669,
+    }))
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.setattr(
+        provision_mod, "read_irc_passwords",
+        lambda h: {"server": "b", "agent": "a"})
+    monkeypatch.setattr(
+        "mercury_cli.config.get_env_value",
+        lambda k: {"IRC_SERVER_PASSWORD": "a"}.get(k, ""))
+    rewired = []
+    monkeypatch.setattr(
+        _setup, "_wire_gateway_irc_env",
+        lambda label: rewired.append(label) or True)
+    _setup._converge_gateway_credential()
+    assert rewired == []
+
+
+def test_converge_gateway_credential_leaves_repointed_alone(monkeypatch, tmp_path) -> None:
+    import json as _json
+
+    import mercury_cli.setup as _setup
+    import observatory.provision as provision_mod
+
+    home = tmp_path / "mercury"
+    (home / "observatory").mkdir(parents=True)
+    (home / "observatory" / "ircd.json").write_text(_json.dumps({
+        "server_name": "vm", "agent_host": "127.0.0.1", "agent_port": 6669,
+    }))
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.setattr(
+        provision_mod, "read_irc_passwords",
+        lambda h: {"server": "b", "agent": "a"})
+    monkeypatch.setattr(
+        "mercury_cli.config.get_env_value",
+        lambda k: {"IRC_SERVER": "10.9.9.9",
+                   "IRC_SERVER_PASSWORD": "elsewhere"}.get(k, ""))
+    rewired = []
+    monkeypatch.setattr(
+        _setup, "_wire_gateway_irc_env",
+        lambda label: rewired.append(label) or True)
+    _setup._converge_gateway_credential()
+    assert rewired == []
