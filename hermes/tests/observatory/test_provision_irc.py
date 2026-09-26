@@ -403,3 +403,34 @@ def test_old_keys_honored_as_fallback(tmp_path, monkeypatch) -> None:
     assert summary["server_password_set"] is True
     assert out["daemon"]["action"] in (
         "current", "started-fresh", "restarted", "skipped")
+
+
+def test_mirror_repoints_autowired_bot_credential(tmp_path, monkeypatch) -> None:
+    """Rotates must reach the gateway adapter's saved credential: a bot
+    authenticating with the previous agent password gets silent 464s
+    (running gateway, invisible unresponsive bot)."""
+    import os as _os
+
+    home = tmp_path / "mercury"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    envf = home / ".env"
+    envf.write_text(
+        "IRC_CLIENT_PASSWORD=old-b\nIRC_AGENT_PASSWORD=old-a\n"
+        "IRC_SERVER_PASSWORD=old-a\n")
+    provision.mirror_irc_env(home, "new-b", "new-a")
+    text = envf.read_text()
+    assert "IRC_SERVER_PASSWORD=new-a" in text
+    assert _os.environ["IRC_SERVER_PASSWORD"] == "new-a"
+
+
+def test_mirror_preserves_hand_customized_bot_credential(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "mercury"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    envf = home / ".env"
+    envf.write_text(
+        "IRC_CLIENT_PASSWORD=old-b\nIRC_AGENT_PASSWORD=old-a\n"
+        "IRC_SERVER_PASSWORD=hand-set\n")
+    provision.mirror_irc_env(home, "new-b", "new-a")
+    assert "IRC_SERVER_PASSWORD=hand-set" in envf.read_text()
