@@ -33,6 +33,18 @@ class TestResolveHermesBin:
         assert relaunch_mod.resolve_hermes_bin() == "/usr/bin/mercury"
 
 
+    def test_which_uses_track_command(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["-c"])  # not a real path
+        monkeypatch.setenv("MERCURY_CMD", "mercury-nightly")
+        seen = []
+        def fake_which(name):
+            seen.append(name)
+            return "/usr/bin/mercury-nightly" if name == "mercury-nightly" else None
+        monkeypatch.setattr(relaunch_mod.shutil, "which", fake_which)
+        assert relaunch_mod.resolve_hermes_bin() == "/usr/bin/mercury-nightly"
+        assert seen == ["mercury-nightly"]
+
+
 class TestExtractInheritedFlags:
     def test_extracts_tui_and_dev(self):
         argv = ["--tui", "--dev", "chat"]

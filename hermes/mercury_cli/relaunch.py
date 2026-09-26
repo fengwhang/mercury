@@ -113,8 +113,10 @@ def resolve_hermes_bin() -> Optional[str]:
             if not (_is_windows and _is_python_script(abs_path)):
                 return abs_path
 
-    # PATH lookup
-    path_bin = shutil.which("mercury")
+    # PATH lookup under this install's own command name.
+    from mercury_constants import mercury_command
+
+    path_bin = shutil.which(mercury_command())
     if path_bin:
         return path_bin
 

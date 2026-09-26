@@ -631,7 +631,9 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     else:
         wrapper_path = wrapper_dir / canon
         try:
-            mercury_exe = shutil.which("mercury") or "mercury"
+            from mercury_constants import mercury_command
+
+            mercury_exe = shutil.which(mercury_command()) or mercury_command()
             wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(mercury_exe)} -p {profile} "$@"\n', encoding="utf-8")
             wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
             return wrapper_path

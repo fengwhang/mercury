@@ -26,8 +26,13 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 
+def mercury_command() -> str:
+    import os as _os
+    return _os.environ.get("MERCURY_CMD", "").strip() or "mercury"
+
+
 def mercury_available() -> bool:
-    return shutil.which("mercury") is not None
+    return shutil.which(mercury_command()) is not None
 
 
 def kanban_list(tenant: str) -> list[dict]:

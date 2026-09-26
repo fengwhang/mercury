@@ -1721,6 +1721,14 @@ def get_config_dir() -> Path:
     base = Path(mercury_home) if mercury_home else _get_platform_default_hermes_home()
     return base / "config"
 
+def mercury_command() -> str:
+    """This install's user-facing command name (``mercury`` or
+    ``mercury-nightly``). The shim bakes ``MERCURY_CMD`` at install time;
+    unset means a stable-shaped invocation. Import-safe (stdlib only) so
+    gateways, cron, and installers can share it instead of hardcoding.
+    """
+    return os.environ.get("MERCURY_CMD", "").strip() or "mercury"
+
 
 def get_command_link_dir() -> Path:
     """MERCURY LAYOUT (user rule): everything lives under ~/.mercury.
