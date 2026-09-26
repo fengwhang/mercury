@@ -3802,6 +3802,22 @@ def _offer_observatory_reset(obs) -> bool:
         print_info("Nothing to reset — observatory was already clean.")
     return True
 
+def _restart_observatory_daemon() -> dict:
+    """Bounce the observatory daemon onto the code now on disk (never raises).
+
+    Config-unchanged skips can't see code updates: a live daemon keeps
+    the old modules in memory until it restarts. Returns the provision
+    restart summary; setup runs this before the final gateway restart.
+    """
+    try:
+        from observatory.provision import restart_daemon
+
+        return restart_daemon(force=True)
+    except Exception as exc:  # noqa: BLE001 — restart offer never kills setup
+        print_warning(f"Could not restart the observatory daemon: {exc}")
+        return {"action": "skipped", "error": str(exc)}
+
+
 def _restart_gateway(reason: str) -> bool:
     """Offer + perform a gateway restart (it reads .env only at boot).
 
@@ -4440,9 +4456,16 @@ def setup_observatory(config: dict, *, quick: bool = False):
         else:
             print_error(f"Setup finished but the daemon is NOT answering: {detail}")
         _maybe_print_bind_mismatch_action(obs, ts)
-        # Final step: the converge above bounced daemons the
-        # gateway was already connected to, so a gateway restarted
-        # earlier is wedged until it restarts onto the final topology.
+        # Final step 1: the daemon must run the code now on disk — a
+        # config-unchanged converge leaves it on pre-update modules.
+        daemon_action = _restart_observatory_daemon().get("action")
+        if daemon_action == "restarted":
+            print_success("Observatory daemon restarted onto current code.")
+        elif daemon_action in ("not-running", "started-fresh"):
+            print_info("Observatory daemon not running — start it with: "
+                       "systemctl --user restart mercury-observatory.service")
+        # Final step 2: the gateway reconnects onto that fresh daemon
+        # (a gateway restarted earlier is wedged against the old one).
         _restart_gateway(
             "final step — later setup stages bounced daemons under it")
         bot_ok, bot_detail = _verify_gateway_bot()

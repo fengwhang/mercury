@@ -434,3 +434,33 @@ def test_mirror_preserves_hand_customized_bot_credential(tmp_path, monkeypatch) 
         "IRC_SERVER_PASSWORD=hand-set\n")
     provision.mirror_irc_env(home, "new-b", "new-a")
     assert "IRC_SERVER_PASSWORD=hand-set" in envf.read_text()
+
+
+class _FakeProc:
+    returncode = 0
+    stdout = b""
+    stderr = b""
+
+
+def test_restart_daemon_force_restarts_without_config_change(monkeypatch) -> None:
+    """A code update is invisible to the change gate; force must bounce."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(provision, "_ircd_unit_active", lambda: True)
+    monkeypatch.setattr(
+        provision.subprocess, "run",
+        lambda *a, **k: calls.append(list(a[0])) or _FakeProc())
+    summary = provision.restart_daemon(force=True)
+    assert summary == {"action": "restarted"}
+    assert any("restart" in c for c in calls)
+
+
+def test_restart_gate_stays_closed_without_force(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(provision, "_ircd_unit_active", lambda: True)
+    monkeypatch.setattr(
+        provision.subprocess, "run",
+        lambda *a, **k: calls.append(list(a[0])) or _FakeProc())
+    summary = provision._restart_ircd_if_changed(
+        config_action="", passwords_made=[], tls_action="")
+    assert summary == {"action": "current"}
+    assert calls == []

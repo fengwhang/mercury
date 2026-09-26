@@ -864,7 +864,7 @@ def _ircd_unit_active() -> bool:
 
 
 def _restart_ircd_if_changed(*, config_action: str, passwords_made: list,
-                             tls_action: str) -> dict[str, Any]:
+                             tls_action: str, force: bool = False) -> dict[str, Any]:
     """Restart a live ircd whose files just changed (never raises).
 
     Provision rewrites ircd.json, .env secrets, and TLS certs, but a
@@ -878,10 +878,10 @@ def _restart_ircd_if_changed(*, config_action: str, passwords_made: list,
         or bool(passwords_made)
         or tls_action == "generated"
     )
-    if not changed:
+    if not changed and not force:
         return {"action": "current"}
     if not _ircd_unit_active():
-        return {"action": "started-fresh"}
+        return {"action": "started-fresh" if changed else "not-running"}
     try:
         from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
     except Exception:  # noqa: BLE001
@@ -897,6 +897,18 @@ def _restart_ircd_if_changed(*, config_action: str, passwords_made: list,
     if out.returncode != 0:
         return {"action": "restart-failed"}
     return {"action": "restarted"}
+
+
+def restart_daemon(*, force: bool = False) -> dict[str, Any]:
+    """Restart the live observatory daemon regardless of config change.
+
+    A code update lands on disk with NO config change, and a running
+    daemon keeps the old modules (and their bugs) in memory — the
+    change gate below can never see that. Setup calls this with
+    ``force=True`` so post-update runs actually restart the daemon.
+    """
+    return _restart_ircd_if_changed(
+        config_action="", passwords_made=[], tls_action="", force=force)
 
 
 SOJU_UNIT_NAME = "mercury-soju.service"

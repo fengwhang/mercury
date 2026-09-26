@@ -95,3 +95,30 @@ def test_doctor_flags_credential_drift(tmp_path, monkeypatch) -> None:
                 for ok, label, detail in run_doctor(home)}
     assert by_label["bot credential"][0] is False
     assert by_label["agent listener"][0] is False  # nothing bound in tmp
+
+
+def test_code_version_reads_declared_version(tmp_path) -> None:
+    from observatory.doctor import _code_version
+
+    hermes = tmp_path / "hermes"
+    (hermes / "mercury_cli").mkdir(parents=True)
+    (hermes / "mercury_cli" / "__init__.py").write_text(
+        '__version__ = "1.2.3"\n', encoding="utf-8")
+    assert _code_version(hermes) == "1.2.3"
+    assert _code_version(tmp_path / "nope") is None
+
+
+def test_listening_pid_finds_own_listener() -> None:
+    import os as _os
+    import socket as _socket
+
+    from observatory.doctor import _listening_pid
+
+    srv = _socket.socket()
+    try:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        assert _listening_pid(port) == _os.getpid()
+    finally:
+        srv.close()

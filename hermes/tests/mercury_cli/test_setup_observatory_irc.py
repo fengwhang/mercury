@@ -120,6 +120,13 @@ def _patch_common(stack, fake, *, choice=1, yes_answers=None):
             setup_mod, "_verify_gateway_bot", return_value=(True, "mocked")
         )
     )
+    stack.enter_context(
+        patch.object(
+            setup_mod,
+            "_restart_observatory_daemon",
+            return_value={"action": "restarted"},
+        )
+    )
     return {"auto": auto}
 
 
@@ -978,6 +985,33 @@ def test_verify_gateway_bot_ok_first_try(monkeypatch):
     ok, detail = setup_mod._verify_gateway_bot(tries=2, wait=0.01)
     assert ok is True
     assert "nick present" in detail
+
+
+def test_setup_restarts_daemon_before_gateway(monkeypatch):
+    """Code updates bounce the daemon, then the gateway reconnects to it."""
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    order: list[str] = []
+    fake = _FakeObs(_base_status(provisioned=True))
+    with ExitStack() as stack:
+        _patch_common(stack, fake, choice=1, yes_answers=[False])
+        stack.enter_context(
+            patch.object(
+                setup_mod,
+                "_restart_observatory_daemon",
+                lambda: order.append("daemon") or {"action": "restarted"},
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                setup_mod,
+                "_restart_gateway",
+                lambda reason: order.append("gateway") or True,
+            )
+        )
+        setup_mod.setup_observatory({})
+    assert order == ["daemon", "gateway"]
 
 
 def test_verify_gateway_bot_fails_with_verdict(monkeypatch):

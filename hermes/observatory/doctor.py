@@ -300,6 +300,88 @@ def _daemon_crash_lines(unit: str) -> list[str]:
         pass
     return []
 
+def _cli_version() -> str | None:
+    """__version__ of the mercury_cli package this doctor runs under."""
+    try:
+        from mercury_cli import __version__
+
+        return str(__version__)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _code_version(hermes_dir: Path) -> str | None:
+    """__version__ declared in <hermes_dir>/mercury_cli/__init__.py."""
+    import re as _re
+
+    try:
+        text = (hermes_dir / "mercury_cli" / "__init__.py").read_text(
+            encoding="utf-8", errors="replace")[:4096]
+    except OSError:
+        return None
+    m = _re.search(r'__version__\s*=\s*"([^"]+)"', text)
+    return m.group(1) if m else None
+
+
+def _proc_tree(pid: int) -> tuple[str | None, str | None]:
+    """(hermes-tree, code version) of the tree *pid* runs from.
+
+    argv0 ``.../<hermes>/.venv/bin/python`` resolves to ``<hermes>``. The
+    version is read from THAT tree — a process launched before an update
+    keeps the old modules in memory while this CLI already shows the new
+    version, and comparing the two exposes exactly that split.
+    """
+    candidates: list[Path] = []
+    try:
+        argv0 = (Path(f"/proc/{pid}/cmdline").read_bytes()
+                 .split(b"\0")[0].decode("utf-8", errors="replace"))
+        if argv0:
+            candidates.append(Path(argv0).parent.parent.parent)
+    except (OSError, IndexError):
+        pass
+    try:
+        candidates.append(Path(os.readlink(f"/proc/{pid}/cwd")))
+    except OSError:
+        pass
+    for cand in candidates:
+        ver = _code_version(cand)
+        if ver:
+            return str(cand), ver
+    return (str(candidates[0]) if candidates else None), None
+
+
+def _listening_pid(port: int) -> int | None:
+    """PID whose LISTEN socket owns *port* (/proc scan, Linux only)."""
+    want = f"{port:04X}"
+    inodes: set[str] = set()
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            for line in Path(path).read_text(
+                    encoding="utf-8", errors="replace").splitlines()[1:]:
+                parts = line.split()
+                if (len(parts) > 9 and parts[3] == "0A"
+                        and parts[1].rsplit(":", 1)[-1].upper() == want):
+                    inodes.add(parts[9])
+        except OSError:
+            continue
+    if not inodes:
+        return None
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            for fd in (entry / "fd").iterdir():
+                try:
+                    target = os.readlink(fd)
+                except OSError:
+                    continue
+                if any(target == f"socket:[{ino}]" for ino in inodes):
+                    return int(entry.name)
+        except OSError:
+            continue
+    return None
+
+
 def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     """Run every check. Returns [(ok, label, detail)]. Secrets never leave."""
     from observatory.provision import read_config, read_irc_passwords
@@ -387,6 +469,16 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
                                 f"for the bot nick — kill them, keep {pid}"))
             else:
                 results.append((True, "duplicate gateway", "only one running"))
+            gtree, gver = _proc_tree(pid)
+            gcli = _cli_version()
+            gdetail = f"PID {pid} runs {gver or 'unknown-version'} from {gtree or '?'}"
+            if gcli and gver and gver != gcli:
+                results.append((False, "gateway code",
+                                f"{gdetail} but this CLI is {gcli} — restart "
+                                "the gateway onto current code: "
+                                "mercury gateway restart"))
+            else:
+                results.append((True, "gateway code", gdetail))
             proc_home = _gateway_proc_home(pid)
             if proc_home is None:
                 results.append((False, "gateway home",
@@ -425,6 +517,24 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     except Exception as exc:
         results.append((False, "gateway platforms",
                         f"could not load gateway config ({exc})"))
+    lp = _listening_pid(agent_port)
+    if lp is None:
+        results.append((False, "daemon code",
+                        f"nothing LISTENS on agent port {agent_port} — "
+                        "the daemon is down"))
+    else:
+        tree, ver = _proc_tree(lp)
+        cli_ver = _cli_version()
+        detail = f"PID {lp} runs {ver or 'unknown-version'} from {tree or '?'}"
+        if cli_ver and ver and ver != cli_ver:
+            results.append((False, "daemon code",
+                            f"{detail} but this CLI is {cli_ver} — the "
+                            "daemon predates the update and runs old code "
+                            "in memory; run setup observatory to restart it"))
+        else:
+            results.append((True, "daemon code",
+                            f"{detail} (CLI {cli_ver or '?'})"))
+
     if agent_up:
         conns = _established_to(agent_port)
         if conns:
