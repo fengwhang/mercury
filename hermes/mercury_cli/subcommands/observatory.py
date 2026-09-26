@@ -68,7 +68,29 @@ def cmd_observatory(args) -> int:
     action = getattr(args, "observatory_action", None) or "status"
     if action == "rooms":
         return _cmd_rooms(args)
+    if action == "doctor":
+        return _cmd_doctor(args)
     return _cmd_status(args)
+
+
+def _cmd_doctor(args) -> int:
+    try:
+        from observatory.doctor import run_doctor
+    except Exception as exc:
+        print(f"doctor unavailable: {exc}", file=sys.stderr)
+        return 1
+    home = getattr(args, "home", None)
+    if home:
+        import os as _os
+        _os.environ["MERCURY_HOME"] = home
+    results = run_doctor(home)
+    failed = 0
+    for ok, label, detail in results:
+        mark = "ok" if ok else "FAIL"
+        if not ok:
+            failed += 1
+        print(f"[{mark}] {label}: {detail}")
+    return 1 if failed else 0
 
 
 def build_observatory_parser(subparsers) -> None:
@@ -82,4 +104,6 @@ def build_observatory_parser(subparsers) -> None:
     p_status.add_argument("--home", default=None, help="Mercury home override")
     p_rooms = subs.add_parser("rooms", help="List live agent rooms")
     p_rooms.add_argument("--home", default=None, help="Mercury home override")
+    p_doctor = subs.add_parser("doctor", help="Diagnose user-to-agent chat path")
+    p_doctor.add_argument("--home", default=None, help="Mercury home override")
     parser.set_defaults(func=cmd_observatory)
