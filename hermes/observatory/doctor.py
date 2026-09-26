@@ -140,6 +140,32 @@ class _Probe:
             self.sock = None
 
 
+def _established_to(port: int) -> int:
+    """Count ESTABLISHED TCP connections touching *port* (either side).
+
+    Reads /proc/net/tcp directly: no ss dependency, no auth, works for
+    any local client including the gateway bot. Returns 0 when unreadable.
+    """
+    count = 0
+    want = f"{int(port):04X}"
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                next(fh, None)
+                for line in fh:
+                    parts = line.split()
+                    if len(parts) < 4 or parts[3] != "01":
+                        continue
+                    local, remote = parts[1], parts[2]
+                    if local.rsplit(":", 1)[-1].upper() == want:
+                        count += 1
+                    elif remote.rsplit(":", 1)[-1].upper() == want:
+                        count += 1
+        except OSError:
+            continue
+    return count
+
+
 def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     """Run every check. Returns [(ok, label, detail)]. Secrets never leave."""
     from observatory.provision import read_config, read_irc_passwords
@@ -207,9 +233,21 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
             results.append((True, "gateway process", f"PID {pid}"))
         else:
             results.append((False, "gateway process",
-                            "no live gateway PID — start it: <cmd> gateway start"))
+                            "no live gateway PID — start it: "
+                            f"{os.environ.get('MERCURY_CMD', '').strip() or 'mercury'} gateway start"))
     except Exception:
         results.append((False, "gateway process", "could not check (status module unavailable)"))
+
+    if agent_up:
+        conns = _established_to(agent_port)
+        if conns:
+            results.append((True, "bot connection",
+                            f"{conns} established TCP connection(s) to the agent port"))
+        else:
+            results.append((False, "bot connection",
+                            "nothing is connected to the agent port — the adapter "
+                            "never dialed (not configured? crashed on boot? "
+                            "check the gateway log for IRC errors)"))
 
     if agent_up and agent_pw:
         probe = _Probe(agent_host, agent_port,
