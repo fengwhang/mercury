@@ -17,6 +17,15 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+
+
+def mercury_command() -> str:
+    try:
+        from mercury_constants import mercury_command as _mc
+
+        return _mc()
+    except Exception:
+        return "mercury"
 import hashlib
 import inspect
 import logging
@@ -93,7 +102,7 @@ def _model_switch_skew_guard() -> Optional[str]:
         error=(
             f"This gateway is running code from {boot_rev} but the checkout on "
             f"disk is now {disk_rev}. Switching models would risk a stale-module "
-            f"crash — restart the gateway to load the new code: mercury gateway restart"
+            f"crash — restart the gateway to load the new code: {mercury_command()} gateway restart"
         ),
     )
 
@@ -1492,7 +1501,7 @@ class GatewaySlashCommandsMixin:
                 return (
                     f"✓ {platform.value} paused. "
                     f"Resume with `/platform resume {platform.value}` or "
-                    f"`mercury gateway restart` to reset."
+                    f"`{mercury_command()} gateway restart` to reset."
                 )
             # action == "resume"
             if platform not in failed:

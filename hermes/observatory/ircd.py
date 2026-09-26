@@ -428,7 +428,7 @@ class IrcDaemon:
                 continue
             client.channels.discard(key)
             await self._send(
-                client, f":{client.nick}!{client.user}@mercury PART {channel} :{reason}"
+                client, f":{client.nick}!{client.user}@{self.config.server_name} PART {channel} :{reason}"
             )
         return len(members)
 
@@ -807,7 +807,7 @@ class IrcDaemon:
     async def _emit_join(self, peer: _Client, key: str, display: str) -> None:
         """JOIN + topic + names + history replay for a new member."""
         await self._send(
-            peer, f":{peer.nick}!{peer.user}@mercury JOIN {display}"
+            peer, f":{peer.nick}!{peer.user}@{self.config.server_name} JOIN {display}"
         )
         topic = self._topics.get(key)
         if topic is not None:
@@ -830,7 +830,7 @@ class IrcDaemon:
             await self._send(
                 peer,
                 self._tags(peer, ts=msg.ts, msgid=msg.msgid)
-                + f":{msg.sender}!relay@mercury {msg.kind.upper()} "
+                + f":{msg.sender}!relay@{self.config.server_name} {msg.kind.upper()} "
                 f"{display} :{msg.text}",
             )
     async def _send_names(self, client: _Client, key: str, display: str) -> None:
@@ -938,7 +938,7 @@ class IrcDaemon:
             await self._send(
                 client,
                 self._tags(client, ts=msg.ts, msgid=msg.msgid)
-                + f":{msg.sender}!relay@mercury {msg.kind.upper()} "
+                + f":{msg.sender}!relay@{self.config.server_name} {msg.kind.upper()} "
                 f"{display} :{msg.text}",
             )
         if framed:
@@ -972,7 +972,7 @@ class IrcDaemon:
             client, 341, f"{client.nick} {peer.nick}", display)
         await self._send(
             peer,
-            f":{client.nick}!{client.user}@mercury INVITE {peer.nick} :{display}",
+            f":{client.nick}!{client.user}@{self.config.server_name} INVITE {peer.nick} :{display}",
         )
         # Auto-join: on this network an invite IS the join. The Lounge
         # surfaces INVITEs as messages and never joins, so the invited
@@ -991,7 +991,7 @@ class IrcDaemon:
                 if other is not None and other is not peer:
                     await self._send(
                         other,
-                        f":{peer.nick}!{peer.user}@mercury JOIN {display}",
+                        f":{peer.nick}!{peer.user}@{self.config.server_name} JOIN {display}",
                     )
             await self._emit_join(peer, key, display)
 
@@ -1055,7 +1055,7 @@ class IrcDaemon:
                     pass
                 await self._send(
                     client,
-                    f":{client.nick}!{client.user}@mercury PART "
+                    f":{client.nick}!{client.user}@{self.config.server_name} PART "
                     f"{self._display.get(key, chan.strip())} :{reason}",
                 )
 
@@ -1097,7 +1097,7 @@ class IrcDaemon:
                 await self._send(
                     client,
                     self._tags(client, ts=msg.ts, msgid=msg.msgid, label=label)
-                    + f":{sender}!{client.user}@mercury {kind.upper()} "
+                    + f":{sender}!{client.user}@{self.config.server_name} {kind.upper()} "
                     f"{display} :{text}",
                 )
         else:
@@ -1109,14 +1109,14 @@ class IrcDaemon:
             await self._send(
                 peer,
                 self._tags(peer, ts=now)
-                + f":{sender}!{client.user}@mercury {kind.upper()} "
+                + f":{sender}!{client.user}@{self.config.server_name} {kind.upper()} "
                 f"{peer.nick} :{text}",
             )
             if "echo-message" in client.caps:
                 await self._send(
                     client,
                     self._tags(client, ts=now, label=label)
-                    + f":{sender}!{client.user}@mercury {kind.upper()} "
+                    + f":{sender}!{client.user}@{self.config.server_name} {kind.upper()} "
                     f"{peer.nick} :{text}",
                 )
             if self.on_privmsg is not None and kind == "privmsg":
@@ -1162,7 +1162,7 @@ class IrcDaemon:
         members = sorted(self._channels.get(key, ()))
         display = self._display.get(key, msg.target)
         body = (
-            f":{msg.sender}!relay@mercury {msg.kind.upper()} "
+            f":{msg.sender}!relay@{self.config.server_name} {msg.kind.upper()} "
             f"{display} :{msg.text}"
         )
         for nick in members:
