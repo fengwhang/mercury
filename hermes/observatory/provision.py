@@ -164,8 +164,16 @@ def mirror_irc_env(
     Also syncs os.environ in-process: readers that prefer the environment
     must see the just-written values for the rest of this process, never
     a startup snapshot.
+
+    Also re-points the gateway adapter's saved credential
+    (``IRC_SERVER_PASSWORD``): it must equal the agent password, and a
+    rotate would otherwise leave the bot authenticating with the previous
+    one (silent 464 — connected gateway, invisible unresponsive bot).
+    A hand-customized value (differs from the previous agent password)
+    is left alone.
     """
     env_path = _mercury_home(mercury_home) / ".env"
+    previous = read_irc_passwords(mercury_home)
     _upsert_env_key(env_path, ENV_CLIENT_PASSWORD, server_password)
     _remove_env_key(env_path, ENV_BOUNCER_PASSWORD)
     _upsert_env_key(env_path, ENV_AGENT_PASSWORD, agent_password)
@@ -173,6 +181,18 @@ def mirror_irc_env(
         os.environ[ENV_CLIENT_PASSWORD] = server_password
         os.environ.pop(ENV_BOUNCER_PASSWORD, None)
         os.environ[ENV_AGENT_PASSWORD] = agent_password
+    except Exception:
+        pass
+    try:
+        from mercury_cli.config import get_env_value_prefer_dotenv
+
+        saved = str(get_env_value_prefer_dotenv("IRC_SERVER_PASSWORD") or "")
+        if not saved or saved == (previous.get("agent") or ""):
+            _upsert_env_key(env_path, "IRC_SERVER_PASSWORD", agent_password)
+            try:
+                os.environ["IRC_SERVER_PASSWORD"] = agent_password
+            except Exception:
+                pass
     except Exception:
         pass
     return env_path
