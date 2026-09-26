@@ -2548,7 +2548,7 @@ def is_linux() -> bool:
     return sys.platform.startswith("linux")
 
 
-from mercury_constants import is_container, is_termux, is_wsl
+from mercury_constants import is_container, is_termux, is_wsl, mercury_command
 
 
 def _wsl_systemd_operational() -> bool:
@@ -8608,7 +8608,7 @@ def _gateway_command_inner(args):
             print_error(
                 "Refusing to uninstall the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent the gateway from terminating itself.\n"
-                "Use `mercury gateway uninstall` from a shell outside the running gateway."
+                f"Use `{mercury_command()} gateway uninstall` from a shell outside the running gateway."
             )
             sys.exit(1)
 
@@ -8682,8 +8682,8 @@ def _gateway_command_inner(args):
                 print_error(
                     f"Refusing to start: gateway already running for this home "
                     f"(PID {', '.join(map(str, live))}).\n"
-                    "Use `mercury gateway restart` to take over, or "
-                    "`mercury gateway stop` first."
+                    f"Use `{mercury_command()} gateway restart` to take over, or "
+                    f"`{mercury_command()} gateway stop` first."
                 )
                 sys.exit(1)
 
@@ -8750,7 +8750,7 @@ def _gateway_command_inner(args):
             print_error(
                 "Refusing to stop the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
-                "Use `mercury gateway stop` from a shell outside the running gateway."
+                f"Use `{mercury_command()} gateway stop` from a shell outside the running gateway."
             )
             sys.exit(1)
 
@@ -8858,7 +8858,7 @@ def _gateway_command_inner(args):
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
-                "Use `mercury gateway restart` from a shell outside the running gateway."
+                f"Use `{mercury_command()} gateway restart` from a shell outside the running gateway."
             )
             sys.exit(1)
 
