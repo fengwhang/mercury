@@ -179,6 +179,9 @@ class IRCAdapter(BasePlatformAdapter):
             or _derive_channel(self.nickname)
         )
         self.server_password = _get_scoped_secret("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
+        # The bot dials the AGENT listener, which takes the AGENT password —
+        # not the server password (that's for the client/bouncer listener).
+        self.agent_password = _get_scoped_secret("IRC_AGENT_PASSWORD") or extra.get("agent_password", "")
         self.nickserv_password = _get_scoped_secret("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
         self.oper_password = _get_scoped_secret("IRC_OPER_PASSWORD") or extra.get("oper_password", "") or self.server_password
         # Observability rooms: extra agent channels the bot joins dynamically
@@ -259,9 +262,12 @@ class IRCAdapter(BasePlatformAdapter):
             self._set_fatal_error("connect_failed", str(e), retryable=True)
             return False
 
-        # IRC registration sequence
-        if self.server_password:
-            await self._send_raw(f"PASS {self.server_password}")
+        # IRC registration sequence. PASS carries the agent password when
+        # set (observatory agent listener); otherwise the server password
+        # (public IRC servers, back-compat setups with a single password).
+        reg_password = self.agent_password or self.server_password
+        if reg_password:
+            await self._send_raw(f"PASS {reg_password}")
         await self._send_raw(f"NICK {self.nickname}")
         await self._send_raw(f"USER {self.nickname} 0 * :Mercury")
 
@@ -1324,6 +1330,8 @@ async def _standalone_send(
         use_tls = bool(extra.get("use_tls", True))
 
     server_password = _get_scoped_secret("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
+    # Agent listener takes the agent password; public servers take PASS too.
+    reg_password = _get_scoped_secret("IRC_AGENT_PASSWORD") or extra.get("agent_password", "") or server_password
     nickserv_password = _get_scoped_secret("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
 
     # Reject control characters in chat_id to block IRC command injection.
@@ -1358,8 +1366,8 @@ async def _standalone_send(
     nick_attempts = 0
     max_nick_attempts = 5
     try:
-        if server_password:
-            await _raw(f"PASS {_strip_irc_control_chars(server_password)}")
+        if reg_password:
+            await _raw(f"PASS {_strip_irc_control_chars(reg_password)}")
         await _raw(f"NICK {standalone_nick}")
         await _raw(f"USER {standalone_nick} 0 * :Mercury (cron)")
 

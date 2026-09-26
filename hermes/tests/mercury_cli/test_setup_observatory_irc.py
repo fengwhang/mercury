@@ -115,6 +115,11 @@ def _patch_common(stack, fake, *, choice=1, yes_answers=None):
             setup_mod, "_verify_daemon_listening", return_value=(True, "mocked")
         )
     )
+    stack.enter_context(
+        patch.object(
+            setup_mod, "_verify_gateway_bot", return_value=(True, "mocked")
+        )
+    )
     return {"auto": auto}
 
 
@@ -962,3 +967,26 @@ def test_converge_gateway_credential_leaves_repointed_alone(monkeypatch, tmp_pat
         lambda label: rewired.append(label) or True)
     _setup._converge_gateway_credential()
     assert rewired == []
+
+
+def test_verify_gateway_bot_ok_first_try(monkeypatch):
+    monkeypatch.setattr(
+        "observatory.doctor.run_doctor",
+        lambda: [(True, "bot in room", "nick present"),
+                 (True, "bot connection", "1 conns")],
+    )
+    ok, detail = setup_mod._verify_gateway_bot(tries=2, wait=0.01)
+    assert ok is True
+    assert "nick present" in detail
+
+
+def test_verify_gateway_bot_fails_with_verdict(monkeypatch):
+    monkeypatch.setattr(
+        "observatory.doctor.run_doctor",
+        lambda: [(False, "bot in room", "nick NOT in #x"),
+                 (False, "bot connection", "nothing connected; log says y")],
+    )
+    ok, detail = setup_mod._verify_gateway_bot(tries=2, wait=0.01)
+    assert ok is False
+    assert "nick NOT in #x" in detail
+    assert "nothing connected" in detail

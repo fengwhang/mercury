@@ -3545,6 +3545,39 @@ def _verify_daemon_listening(status: dict, *, retries: int = 3) -> tuple[bool, s
         return False, f"verification error: {exc}"
 
 
+def _verify_gateway_bot(*, tries: int = 9, wait: float = 10.0) -> tuple[bool, str]:
+    """Poll until the gateway bot joins its room (setup must prove it).
+
+    A restarted gateway needs time (interpreter boot + adapter connect +
+    registration + JOIN), so this polls the live room instead of sampling
+    once. Returns (ok, detail); on failure the detail carries the
+    doctor's bot-connection verdict (including the gateway log tail).
+    Never raises.
+    """
+    import time as _time
+
+    try:
+        from observatory.doctor import run_doctor
+    except Exception as exc:  # noqa: BLE001
+        return False, f"could not load chat-path checks ({exc})"
+    last = "no check ran"
+    try:
+        for _ in range(max(1, int(tries))):
+            rows = run_doctor()
+            by_label = {label: (ok, detail) for ok, label, detail in rows}
+            room_ok, room_detail = by_label.get("bot in room", (False, "no room check"))
+            if room_ok:
+                return True, room_detail
+            conn_detail = by_label.get("bot connection", (False, last))[1]
+            last = f"{room_detail} :: {conn_detail}"
+            _time.sleep(max(1.0, float(wait)))
+    except Exception as exc:  # noqa: BLE001 — verification never kills setup
+        return False, f"verification error: {exc}"
+    return False, (
+        f"gateway bot never joined its room ({last}) — "
+        "run mercury observatory doctor for the full chat-path report")
+
+
 def _run_observatory_auto_steps(obs, *, unit_loud: bool = False) -> dict:
     """Run every post-provision auto step in order: unit → gateway row.
     Idempotent; each step degrades independently. Returns
@@ -4412,6 +4445,11 @@ def setup_observatory(config: dict, *, quick: bool = False):
         # earlier is wedged until it restarts onto the final topology.
         _restart_gateway(
             "final step — later setup stages bounced daemons under it")
+        bot_ok, bot_detail = _verify_gateway_bot()
+        if bot_ok:
+            print_success(f"Gateway bot is in its room ({bot_detail}).")
+        else:
+            print_error(f"Setup finished but {bot_detail}")
     else:
         print_info(_OBSERVATORY_GUIDE_LINE)
 
