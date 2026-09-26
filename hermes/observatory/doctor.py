@@ -264,12 +264,20 @@ def _daemon_unit_state() -> tuple[str | None, str | None, str | None]:
             return None, None, None
         show = _sp.run(
             ["systemctl", "--user", "show", unit, "-p",
-             "ActiveEnterTimestamp,NRestarts",
-             "--value"],
+             "ActiveEnterTimestamp", "-p", "NRestarts"],
             capture_output=True, text=True, timeout=15)
-        vals = (show.stdout or "").strip().splitlines()
-        since = vals[0].strip() if len(vals) > 0 else ""
-        restarts = vals[1].strip() if len(vals) > 1 else ""
+        # Named Key=Value output: --value ordering is NOT stable across
+        # systemd versions (older ones swapped the two and the row read
+        # "active since 0").
+        since = restarts = ""
+        for line in (show.stdout or "").splitlines():
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            if key.strip() == "ActiveEnterTimestamp":
+                since = value.strip()
+            elif key.strip() == "NRestarts":
+                restarts = value.strip()
         return unit, since or None, restarts or None
     except Exception:
         return None, None, None
@@ -283,7 +291,8 @@ def _daemon_crash_lines(unit: str) -> list[str]:
         proc = _sp.run(
             ["journalctl", "--user", "-u", unit, "--since", "2 hours ago",
              "--no-pager", "-q", "--grep",
-             "[Ee]rror|[Tt]raceback|[Kk]illed|[Ee]xit|OOM|exception"],
+             "[Tt]raceback|OOM|[Kk]illed process|SIGSEGV|SIGABRT"
+             "|FAILURE|status=[1-9]"],
             capture_output=True, text=True, timeout=15)
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip().splitlines()[-10:]

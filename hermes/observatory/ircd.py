@@ -87,6 +87,7 @@ class DaemonConfig:
 
 PING_INTERVAL = 60.0  # seconds between server PINGs to idle clients
 PING_TIMEOUT = 180.0  # drop a registered client silent this long
+SEND_TIMEOUT = 10.0  # one wedged client may never block others longer than this
 
 class _Client:
     __slots__ = (
@@ -372,31 +373,38 @@ class IrcDaemon:
             self._db = None
 
     async def _ping_loop(self) -> None:
-        """Liveness sweep: PING idle clients, drop the long-silent.
-
-        Without this, a daemon restart leaves every client believing it
-        is still connected (half-open): sends vanish, no error surfaces.
-        """
+        """Drive the liveness sweep every PING_INTERVAL (see _ping_sweep)."""
         try:
             while True:
                 await asyncio.sleep(PING_INTERVAL)
-                now = time.monotonic()
-                for client in list(self._clients.values()):
-                    try:
-                        idle = now - client.last_in
-                        if idle >= PING_TIMEOUT:
-                            client.writer.close()
-                        elif idle >= PING_INTERVAL and not client.ping_out:
-                            client.ping_out = True
-                            await self._send(
-                                client,
-                                f":{self.config.server_name} PING "
-                                f":{self.config.server_name}",
-                            )
-                    except Exception:
-                        pass
+                await self._ping_sweep()
         except asyncio.CancelledError:
             pass
+
+    async def _ping_sweep(self) -> None:
+        """One liveness tick: PING idle clients, drop the long-silent.
+
+        Without this, a daemon restart leaves every client believing it
+        is still connected (half-open): sends vanish, no error surfaces.
+        Clients are handled independently and every send is bounded (_send
+        drops a wedged socket), so one dead client can never stall the
+        sweep for the rest.
+        """
+        now = time.monotonic()
+        for client in list(self._clients.values()):
+            try:
+                idle = now - client.last_in
+                if idle >= PING_TIMEOUT:
+                    client.writer.close()
+                elif idle >= PING_INTERVAL and not client.ping_out:
+                    client.ping_out = True
+                    await self._send(
+                        client,
+                        f":{self.config.server_name} PING "
+                        f":{self.config.server_name}",
+                    )
+            except Exception:
+                pass
 
     def channel_names(self) -> list[str]:
         return sorted(self._display.get(k, k) for k in self._channels)
@@ -1222,13 +1230,27 @@ class IrcDaemon:
             parts.append(f"label={label}")
         return ("@" + ";".join(parts) + " ") if parts else ""
 
-    async def _send(self, client: _Client, line: str) -> None:
+    async def _send(self, client: _Client, line: str) -> bool:
+        """One line to one client. Returns False when the client is dropped.
+
+        A wedged reader (kernel buffer full, peer gone silent) stalls
+        drain() forever; every loop that awaits _send would then freeze
+        behind that one dead socket — including the PING sweep, which is
+        what keeps half-open connections honest. The drain is therefore
+        bounded; a client that cannot take the line within SEND_TIMEOUT
+        is closed (its read loop reaps it) and the caller moves on.
+        """
         try:
             async with client.send_lock:
                 client.writer.write((line + "\r\n").encode("utf-8", "replace"))
-                await client.writer.drain()
+                await asyncio.wait_for(client.writer.drain(), timeout=SEND_TIMEOUT)
+            return True
         except Exception:
-            pass
+            try:
+                client.writer.close()
+            except Exception:
+                pass
+            return False
 
     async def _numeric(self, client: _Client, code: int, tail: str, text: str) -> None:
         await self._send(

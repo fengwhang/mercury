@@ -1015,3 +1015,71 @@ async def test_agent_listener_gets_no_history_replay(tmp_path) -> None:
                 await bot.next_match("PRIVMSG #replay", timeout=0.5)
         finally:
             await bot.close()
+
+
+class _FakeWriter:
+    """Duck-typed StreamWriter whose drain can wedge forever."""
+
+    def __init__(self, wedged: bool = False) -> None:
+        self.wedged = wedged
+        self.closed = False
+        self.written: list[bytes] = []
+
+    def write(self, data: bytes) -> None:
+        self.written.append(data)
+
+    async def drain(self) -> None:
+        if self.wedged:
+            await asyncio.Event().wait()  # never fires: buffer full, peer silent
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _fake_client(writer: _FakeWriter, last_in: float, nick: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        writer=writer,
+        send_lock=asyncio.Lock(),
+        last_in=last_in,
+        ping_out=False,
+        nick=nick,
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_drops_wedged_client_within_timeout(tmp_path, monkeypatch) -> None:
+    """A client whose drain never completes is dropped, not awaited."""
+    from observatory import ircd as ircd_mod
+
+    monkeypatch.setattr(ircd_mod, "SEND_TIMEOUT", 0.05)
+    daemon = IrcDaemon(DaemonConfig(state_dir=str(tmp_path)))
+    wedged = _FakeWriter(wedged=True)
+    ok = await asyncio.wait_for(
+        daemon._send(_fake_client(wedged, 0.0, "w"), "PING :x"), timeout=2.0
+    )
+    assert ok is False
+    assert wedged.closed is True
+
+
+@pytest.mark.asyncio
+async def test_ping_sweep_survives_wedged_client(tmp_path, monkeypatch) -> None:
+    """One wedged socket must never stop PINGs to everybody else."""
+    import time as _time
+
+    from observatory import ircd as ircd_mod
+
+    monkeypatch.setattr(ircd_mod, "SEND_TIMEOUT", 0.05)
+    daemon = IrcDaemon(DaemonConfig(state_dir=str(tmp_path)))
+    stale = _time.monotonic() - ircd_mod.PING_INTERVAL - 1.0  # PING due, not dead
+    wedged = _FakeWriter(wedged=True)
+    healthy = _FakeWriter()
+    daemon._clients.update({
+        "w": _fake_client(wedged, stale, "w"),  # first: pre-fix the sweep hangs here
+        "h": _fake_client(healthy, stale, "h"),
+    })
+    await asyncio.wait_for(daemon._ping_sweep(), timeout=2.0)
+    assert wedged.closed is True
+    assert b"PING" in b"".join(healthy.written)
+    assert healthy.closed is False
