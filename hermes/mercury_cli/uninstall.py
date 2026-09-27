@@ -713,6 +713,13 @@ def _remove_observatory_units_only() -> None:
             log_success(f"Stopped stray ircd server(s): {', '.join(map(str, killed))}")
     except Exception as e:  # noqa: BLE001 — best-effort, never kills uninstall
         log_warn(f"Could not stop stray ircd servers: {e}")
+    try:
+        from observatory.provision import _kill_stray_lounge
+        killed = _kill_stray_lounge()
+        if killed:
+            log_success(f"Stopped stray chat client(s): {', '.join(map(str, killed))}")
+    except Exception as e:  # noqa: BLE001 — best-effort, never kills uninstall
+        log_warn(f"Could not stop stray chat clients: {e}")
 
 
 def _ask_observatory_wipe(mercury_home) -> str | None:

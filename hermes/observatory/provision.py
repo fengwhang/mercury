@@ -1221,10 +1221,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def observatory_data_present(mercury_home: str | Path | None = None) -> bool:
     """True when any IRC observatory data exists under the home."""
+    from observatory.lounge import LOUNGE_DIRNAME
+
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
     candidates = (paths.config_file, paths.history_db,
-                  paths.root / "state.db", paths.root / "omp-sessions")
+                  paths.root / "state.db", paths.root / "omp-sessions",
+                  paths.root / LOUNGE_DIRNAME)
     try:
         return any(p.exists() for p in candidates)
     except Exception:
@@ -1273,20 +1276,26 @@ def wipe_observatory_data(mercury_home: str | Path | None = None,
 
 
 def _stop_and_remove_units() -> list[str]:
-    """Stop + disable + delete the observatory unit file. Never raises."""
+    """Stop + disable + delete the observatory unit files. Never raises."""
+    from observatory.lounge import LOUNGE_UNIT_NAME
+
     removed: list[str] = []
     if not _systemctl_available():
         return removed
+    for unit in (OBSERVATORY_UNIT_NAME, LOUNGE_UNIT_NAME):
+        try:
+            _run_systemctl(["stop", unit], check=False)
+            _run_systemctl(["disable", unit], check=False)
+        except Exception:
+            pass
+        try:
+            unit_file = Path.home() / ".config" / "systemd" / "user" / unit
+            if unit_file.is_file():
+                unit_file.unlink()
+                removed.append(unit)
+        except Exception:
+            pass
     try:
-        _run_systemctl(["stop", OBSERVATORY_UNIT_NAME], check=False)
-        _run_systemctl(["disable", OBSERVATORY_UNIT_NAME], check=False)
-    except Exception:
-        pass
-    try:
-        unit_file = Path.home() / ".config" / "systemd" / "user" / OBSERVATORY_UNIT_NAME
-        if unit_file.is_file():
-            unit_file.unlink()
-            removed.append(OBSERVATORY_UNIT_NAME)
         _run_systemctl(["daemon-reload"], check=False)
     except Exception:
         pass
@@ -1299,6 +1308,34 @@ def _kill_stray_ircd() -> list[int]:
     killed: list[int] = []
     try:
         proc = subprocess.run(["pgrep", "-f", "observatory.ircd"],
+                              capture_output=True, text=True, timeout=10)
+    except Exception:
+        return killed
+    if proc.returncode != 0:
+        return killed
+    import os as _os
+    import signal as _signal
+    for line in (proc.stdout or "").splitlines():
+        try:
+            pid = int(line.strip())
+        except ValueError:
+            continue
+        if pid == _os.getpid():
+            continue
+        try:
+            _os.kill(pid, _signal.SIGTERM)
+            killed.append(pid)
+        except Exception:
+            pass
+    return killed
+
+
+def _kill_stray_lounge() -> list[int]:
+    """SIGTERM stray thelounge processes (started outside the unit, or
+    survivors of the unit stop). Never raises; returns killed PIDs."""
+    killed: list[int] = []
+    try:
+        proc = subprocess.run(["pgrep", "-f", "thelounge"],
                               capture_output=True, text=True, timeout=10)
     except Exception:
         return killed
