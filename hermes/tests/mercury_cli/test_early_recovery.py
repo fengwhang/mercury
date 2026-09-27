@@ -545,3 +545,15 @@ def test_bump_marker_attempts_handles_missing_and_corrupt_bodies(tmp_path):
 
 
 
+
+
+def test_find_uv_binary_prefers_mercury_home(tmp_path, monkeypatch):
+    """Nightly uv lives in $MERCURY_HOME/bin, not ~/.mercury/bin."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    night = tmp_path / ".mercury-nightly"
+    (night / "bin").mkdir(parents=True)
+    (night / "bin" / "uv").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("MERCURY_HOME", str(night))
+    assert er._find_uv_binary() == str(night / "bin" / "uv")

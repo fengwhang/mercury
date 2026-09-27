@@ -302,11 +302,15 @@ def _find_uv_binary() -> str | None:
     (``~/.mercury/bin/uv.exe``) or the user has on PATH.  Stdlib-only.
     """
     exe = "uv.exe" if sys.platform == "win32" else "uv"
-    candidates = [
+    candidates = []
+    mercury_home = os.environ.get("MERCURY_HOME", "").strip()
+    if mercury_home:
+        candidates.append(Path(mercury_home).expanduser() / "bin" / exe)
+    candidates.extend([
         Path.home() / ".mercury" / "bin" / exe,
         Path.home() / ".local" / "bin" / exe,
         Path.home() / ".cargo" / "bin" / exe,
-    ]
+    ])
     for path in candidates:
         if path.is_file():
             return str(path)

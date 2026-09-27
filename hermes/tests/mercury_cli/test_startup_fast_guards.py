@@ -104,3 +104,37 @@ def test_fast_version_reports_install_method_stamp(tmp_path):
     result = _run_version({"HERMES_HOME": str(home), "TERMUX_VERSION": ""})
     assert result.returncode == 0, result.stderr
     assert "Install method: git" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# $MERCURY_HOME consolidation — forks/state resolve under the track home
+# ---------------------------------------------------------------------------
+
+
+def test_resolved_home_honors_mercury_home(monkeypatch, tmp_path):
+    import mercury_cli._startup_fast as sf
+
+    night = tmp_path / ".mercury-nightly"
+    night.mkdir()
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("MERCURY_HOME", str(night))
+    assert sf._resolved_home() == str(night)
+
+
+def test_resolved_home_hermes_home_still_wins(monkeypatch, tmp_path):
+    import mercury_cli._startup_fast as sf
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path / ".mercury-nightly"))
+    assert sf._resolved_home() == str(tmp_path / "hermes")
+
+
+def test_container_probe_uses_mercury_home(monkeypatch, tmp_path):
+    import mercury_cli._startup_fast as sf
+
+    night = tmp_path / ".mercury-nightly"
+    night.mkdir()
+    (night / ".container-mode").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("MERCURY_HOME", str(night))
+    assert sf.container_mode_may_be_active() is True

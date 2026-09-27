@@ -109,6 +109,9 @@ def _resolved_home() -> str:
     mercury_home = os.environ.get("HERMES_HOME", "").strip()
     if mercury_home:
         return mercury_home
+    mercury_home = os.environ.get("MERCURY_HOME", "").strip()
+    if mercury_home:
+        return mercury_home
     return os.path.join(os.path.expanduser("~"), ".mercury")
 
 
@@ -136,7 +139,7 @@ def container_mode_may_be_active() -> bool:
             and active_profile_may_override_home(mercury_home)
         )
 
-    default_home = os.path.join(os.path.expanduser("~"), ".mercury")
+    default_home = _resolved_home()
     if active_profile_may_override_home(default_home):
         return True
     return os.path.exists(os.path.join(default_home, ".container-mode"))
