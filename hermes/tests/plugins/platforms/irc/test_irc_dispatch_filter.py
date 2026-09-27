@@ -45,6 +45,7 @@ async def test_live_peer_line_dispatches(monkeypatch) -> None:
     ad, seen = await _record(monkeypatch)
     await ad._handle_line(
         ":owner!relay@nixpi4b PRIVMSG #nixpi4b_gateway :hello")
+    assert await ad._flush_irc_batch_now(("#nixpi4b_gateway", "owner")) is True
     assert len(seen) == 1
     assert seen[0]["text"] == "hello"
     assert seen[0]["chat_id"] == "#nixpi4b_gateway"

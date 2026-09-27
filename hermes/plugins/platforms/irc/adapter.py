@@ -200,6 +200,18 @@ class IRCAdapter(BasePlatformAdapter):
         # (/spawn rooms, #parent-child subagent rooms). Managed channels
         # never require nick-addressing: every message there is for the agent.
         self.extra_channels: set[str] = set()
+        # Multi-line paste coalescing: IRC has no multi-line PRIVMSG, so a
+        # pasted paragraph arrives as N rapid lines. Hold plain text for a
+        # short quiet window and flush once joined with newlines — one
+        # steering event instead of N interrupts (weixin pattern).
+        try:
+            self._irc_batch_delay = float(
+                extra.get("text_batch_delay_seconds")
+                or get_env_value("IRC_TEXT_BATCH_DELAY_SECONDS")
+                or 1.0)
+        except (TypeError, ValueError):
+            self._irc_batch_delay = 1.0
+        self._irc_batches: dict = {}
 
         # Auth
         self.allowed_users: list = extra.get("allowed_users", [])
@@ -380,8 +392,12 @@ class IRCAdapter(BasePlatformAdapter):
                 pass
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
-
-        self._reader = None
+        for _buf in list(getattr(self, "_irc_batches", {}).values()):
+            _task = _buf.get("task")
+            if _task is not None and not _task.done():
+                _task.cancel()
+        if hasattr(self, "_irc_batches"):
+            self._irc_batches.clear()
         self._writer = None
         self._registered = False
         self._registration_event.clear()
@@ -656,36 +672,42 @@ class IRCAdapter(BasePlatformAdapter):
         max_bytes = 510 - overhead
         user_limit = self.max_message_length
 
-        lines: List[str] = []
-        for paragraph in content.split("\n"):
-            if not paragraph.strip():
+        # One PRIVMSG per *paragraph* (blank-line-separated block), packed
+        # to the byte limit — not one per source line. The wire cannot
+        # carry newlines, so soft line breaks inside a paragraph become
+        # spaces; blank lines stay message boundaries. Ten short lines
+        # go out as one full message instead of ten dribbles.
+        chunks: List[str] = []
+        for paragraph in re.split(r"\n\s*\n", content):
+            para = " ".join(
+                line.strip() for line in paragraph.split("\n") if line.strip())
+            if not para:
                 continue
             while True:
-                para_bytes = paragraph.encode("utf-8")
+                para_bytes = para.encode("utf-8")
                 limit = min(user_limit, max_bytes)
                 if len(para_bytes) <= limit:
-                    if paragraph.strip():
-                        lines.append(paragraph)
+                    chunks.append(para)
                     break
                 # Binary search for a safe character boundary <= limit
-                low, high = 1, len(paragraph)
+                low, high = 1, len(para)
                 best = 0
                 while low <= high:
                     mid = (low + high) // 2
-                    if len(paragraph[:mid].encode("utf-8")) <= limit:
+                    if len(para[:mid].encode("utf-8")) <= limit:
                         best = mid
                         low = mid + 1
                     else:
                         high = mid - 1
                 split_at = best
                 # Prefer a space boundary
-                space = paragraph.rfind(" ", 0, split_at)
+                space = para.rfind(" ", 0, split_at)
                 if space > split_at // 3:
                     split_at = space
-                lines.append(paragraph[:split_at].rstrip())
-                paragraph = paragraph[split_at:].lstrip()
+                chunks.append(para[:split_at].rstrip())
+                para = para[split_at:].lstrip()
 
-        return lines if lines else [""]
+        return chunks if chunks else [""]
 
     @staticmethod
     def _strip_markdown(text: str) -> str:
@@ -953,18 +975,78 @@ class IRCAdapter(BasePlatformAdapter):
                 logger.debug("IRC: ignoring message from unauthorized user %s", sender_nick)
                 return
 
-            await self._dispatch_message(
-                text=text,
-                chat_id=chat_id,
-                chat_type=chat_type,
-                user_id=sender_nick,
-                user_name=sender_nick,
-            )
+            key = self._irc_batch_key(chat_id, sender_nick)
+            if self._is_irc_command(text):
+                # Commands run alone: flush buffered text first so ordering
+                # is preserved, then dispatch the command immediately.
+                await self._flush_irc_batch_now(key)
+                await self._dispatch_message(
+                    text=text,
+                    chat_id=chat_id,
+                    chat_type=chat_type,
+                    user_id=sender_nick,
+                    user_name=sender_nick,
+                )
+            else:
+                self._enqueue_irc_text(
+                    key,
+                    text=text,
+                    chat_id=chat_id,
+                    chat_type=chat_type,
+                    user_id=sender_nick,
+                    user_name=sender_nick,
+                )
 
         # NICK — track our own nick changes
         if command == "NICK" and _extract_nick(msg["prefix"]).lower() == self._current_nick.lower():
             if params:
                 self._current_nick = params[0]
+
+    @staticmethod
+    def _is_irc_command(text: str) -> bool:
+        """Slash commands and known bang verbs bypass the text batch."""
+        stripped = (text or "").lstrip()
+        if stripped.startswith("/"):
+            return True
+        return bang_to_slash(stripped) != stripped
+
+    @staticmethod
+    def _irc_batch_key(chat_id: str, sender_nick: str) -> tuple:
+        """Batch scope: one burst per sender per chat (no cross-talk)."""
+        return (chat_id, sender_nick.lower())
+
+    def _enqueue_irc_text(self, key, *, text, chat_id, chat_type, user_id, user_name) -> None:
+        """Buffer one line and restart the quiet-window flush timer."""
+        buf = self._irc_batches.get(key)
+        if buf is None:
+            buf = {"texts": [], "kwargs": {}, "task": None}
+            self._irc_batches[key] = buf
+        buf["texts"].append(text)
+        buf["kwargs"] = {"chat_id": chat_id, "chat_type": chat_type,
+                         "user_id": user_id, "user_name": user_name}
+        old = buf.get("task")
+        if old is not None and not old.done():
+            old.cancel()
+        buf["task"] = asyncio.create_task(
+            self._flush_irc_batch_after(key, self._irc_batch_delay))
+
+    async def _flush_irc_batch_after(self, key, delay: float) -> None:
+        """Quiet-window timer: flush the burst as one dispatch."""
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        await self._flush_irc_batch_now(key)
+
+    async def _flush_irc_batch_now(self, key) -> bool:
+        """Dispatch the buffered burst joined with newlines, once."""
+        buf = self._irc_batches.pop(key, None)
+        if not buf or not buf["texts"]:
+            return False
+        kwargs = dict(buf["kwargs"])
+        kwargs["text"] = "\n".join(buf["texts"])
+        await self._dispatch_message(**kwargs)
+        return True
 
     async def _dispatch_message(
         self,

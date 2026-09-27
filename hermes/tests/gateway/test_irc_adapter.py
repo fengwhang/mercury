@@ -136,7 +136,9 @@ class TestIRCAdapterMessageParsing:
         adapter._message_handler = AsyncMock()
 
         await adapter._handle_line(":user!u@host PRIVMSG #test :just talking")
+        assert await adapter._flush_irc_batch_now(("#test", "user")) is True
         await adapter._handle_line(":user!u@host PRIVMSG #test :mercury: hello there")
+        assert await adapter._flush_irc_batch_now(("#test", "user")) is True
         assert len(dispatched) == 2
         assert dispatched[0]["text"] == "just talking"
         assert dispatched[0]["chat_id"] == "#test"
@@ -156,6 +158,7 @@ class TestIRCAdapterMessageParsing:
         await adapter._handle_line(":user!u@host PRIVMSG #other :just talking")
         assert len(dispatched) == 0
         await adapter._handle_line(":user!u@host PRIVMSG #other :mercury: hello")
+        assert await adapter._flush_irc_batch_now(("#other", "user")) is True
         assert len(dispatched) == 1
         assert dispatched[0]["text"] == "hello"
 
@@ -172,6 +175,7 @@ class TestIRCAdapterMessageParsing:
         adapter._message_handler = AsyncMock()
 
         await adapter._handle_line(":user!u@host PRIVMSG mercury :\x01ACTION waves\x01")
+        assert await adapter._flush_irc_batch_now(("user", "user")) is True
         assert len(dispatched) == 1
         assert dispatched[0]["text"] == "* user waves"
 
@@ -222,6 +226,18 @@ class TestIRCAdapterSplitting:
         for line in lines:
             overhead = len(f"PRIVMSG #test :{line}\r\n".encode("utf-8"))
             assert overhead <= 512, f"line over 512 bytes: {overhead}"
+
+    def test_split_packs_short_lines_into_one_message(self):
+        """Ten short lines must fill one PRIVMSG, not dribble as ten."""
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={"server": "x", "channel": "#x"})
+        adapter = IRCAdapter(cfg)
+        adapter._current_nick = "bot"
+        text = "\n".join(f"line {i}" for i in range(10))
+        lines = adapter._split_message(text, "#test")
+        assert len(lines) == 1
+        for i in range(10):
+            assert f"line {i}" in lines[0]
 
 
 class TestIRCProtocolHelpersExtra:
@@ -605,6 +621,7 @@ class TestIRCAgentEchoGuard:
             calls.append(kwargs)
         monkeypatch.setattr(adapter, "_dispatch_message", fake_dispatch)
         await adapter._handle_line(":owner!u@mercury PRIVMSG #test :watchbot: hello")
+        assert await adapter._flush_irc_batch_now(("#test", "owner")) is True
         assert len(calls) == 1
         assert calls[0]["chat_id"] == "#test"
 
@@ -660,6 +677,7 @@ class TestIRCRoomOwnedDispatch:
         monkeypatch.setattr(adapter, "handle_message", fake_handle)
         monkeypatch.setattr(adapter, "_message_handler", lambda event: None)
         await adapter._handle_line(":owner!u@mercury PRIVMSG #vm_bravo :hello")
+        await adapter._flush_irc_batch_now(("#vm_bravo", "owner"))
         assert sent == [("#vm_bravo", "bravo says hi")]
         assert gateway_calls == []
 

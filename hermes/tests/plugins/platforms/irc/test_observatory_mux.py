@@ -155,6 +155,7 @@ async def test_child_room_routes_to_steer_not_dispatch(tmp_path) -> None:
                 rooms.register_child_steer("deleg-1", seen.append)
                 try:
                     await adapter._handle_line(":op!u@h PRIVMSG #gateway-cow :stop that")
+                    await adapter._flush_irc_batch_now(("#gateway-cow", "op"))
                 finally:
                     rooms.drop_child_steer("deleg-1")
                 assert seen == ["stop that"]
