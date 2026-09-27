@@ -203,14 +203,18 @@ class IRCAdapter(BasePlatformAdapter):
         # Multi-line paste coalescing: IRC has no multi-line PRIVMSG, so a
         # pasted paragraph arrives as N rapid lines. Hold plain text for a
         # short quiet window and flush once joined with newlines — one
-        # steering event instead of N interrupts (weixin pattern).
+        # steering event instead of N interrupts (weixin pattern). Paste
+        # lines land in the same TCP burst (microseconds apart), so 250ms
+        # catches the burst while staying below human perception; there is
+        # no end-of-paste marker on the wire, so a short hold is inherent.
+        # Tune with extra text_batch_delay_seconds / IRC_TEXT_BATCH_DELAY_SECONDS.
         try:
             self._irc_batch_delay = float(
                 extra.get("text_batch_delay_seconds")
                 or get_env_value("IRC_TEXT_BATCH_DELAY_SECONDS")
-                or 1.0)
+                or 0.25)
         except (TypeError, ValueError):
-            self._irc_batch_delay = 1.0
+            self._irc_batch_delay = 0.25
         self._irc_batches: dict = {}
 
         # Auth

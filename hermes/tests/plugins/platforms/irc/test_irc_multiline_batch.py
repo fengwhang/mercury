@@ -85,3 +85,19 @@ async def test_senders_never_merge(monkeypatch) -> None:
         ":friend!relay@nixpi4b PRIVMSG #nixpi4b_gateway :friend line")
     await asyncio.sleep(0.3)
     assert sorted(d["text"] for d in seen) == ["friend line", "owner line"]
+
+
+def test_default_batch_window_is_subperceptual(monkeypatch) -> None:
+    """No end-of-paste marker exists on the wire, so a short hold is
+    inherent — but it must stay below human perception, not a full second."""
+    from gateway.config import PlatformConfig
+    from plugins.platforms.irc import adapter as adapter_mod
+
+    for key in ("IRC_SERVER", "IRC_TEXT_BATCH_DELAY_SECONDS"):
+        monkeypatch.delenv(key, raising=False)
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"server": "127.0.0.1", "port": 6669,
+               "nickname": "nixpi4b_gateway", "channel": "#nixpi4b_gateway"},
+    )
+    assert adapter_mod.IRCAdapter(cfg)._irc_batch_delay == 0.25
