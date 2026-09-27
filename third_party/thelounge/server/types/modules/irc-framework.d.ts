@@ -179,7 +179,7 @@ declare module "irc-framework" {
 
 		sendMessage(commandName: string, target: string, message: string): string[];
 
-		say(target: string, message: string): string[];
+	say(target: string, message: string, tags?: Record<string, string>): string[];
 
 		notice(target: string, message: string): string[];
 

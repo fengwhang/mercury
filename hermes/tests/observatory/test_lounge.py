@@ -204,17 +204,29 @@ def test_reset_lounge_password_runs_cli(tmp_path, monkeypatch) -> None:
     assert seen["env"] == str(paths.home)
 
 
-def test_ensure_lounge_installed_uses_prefix_and_ignore_scripts(
+def test_ensure_lounge_installed_uses_shipped_fork(
         tmp_path, monkeypatch) -> None:
+    import json as _json
     import types as _types
     from observatory import lounge as lounge_mod
 
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
+    shipped = tmp_path / "fork"
+    (shipped / "dist" / "server").mkdir(parents=True)
+    (shipped / "package.json").write_text(_json.dumps(
+        {"version": "4.5.2-mercury.9"}))
+    (shipped / "dist" / "server" / "index.js").write_text("// built\n")
+    (shipped / "index.js").write_text("#!/usr/bin/env node\n")
+    monkeypatch.setattr(
+        lounge_mod, "_fork_source_tree", lambda: shipped)
     seen = {}
 
     def _fake_run(args, **kwargs):
         seen["args"] = list(args)
+        assert not any("thelounge@" in str(a) for a in seen["args"])
+        final = home / "observatory" / "lounge" / "pkg"
+        (final / "node_modules" / "irc-framework").mkdir(parents=True)
         (home / "observatory" / "lounge" / "npm" / "bin").mkdir(
             parents=True)
         (home / "observatory" / "lounge" / "npm" / "bin"
@@ -223,7 +235,7 @@ def test_ensure_lounge_installed_uses_prefix_and_ignore_scripts(
 
     monkeypatch.setattr(lounge_mod, "_run", _fake_run)
     out = lounge_mod.ensure_lounge_installed()
-    assert "--ignore-scripts" in seen["args"]
+    assert "--omit=dev" in seen["args"]
     assert "--prefix" in seen["args"]
     assert out.endswith("npm/bin/thelounge")
     # prefix-first resolution on the next call (no install attempted)
@@ -232,8 +244,6 @@ def test_ensure_lounge_installed_uses_prefix_and_ignore_scripts(
         lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("must not reinstall")))
     assert lounge_mod.ensure_lounge_installed() == out
-
-
 def test_ensure_lounge_user_creates_users_dir(tmp_path) -> None:
     from observatory import lounge as lounge_mod
 
@@ -311,12 +321,20 @@ def test_provision_applies_password_to_existing_user(
     assert out["user"]["action"] == "current"
 
 
-def test_ensure_non_prepare_failure_raises(tmp_path, monkeypatch) -> None:
+def test_ensure_fork_install_failure_raises(tmp_path, monkeypatch) -> None:
+    import json as _json
     import types as _types
     from observatory import lounge as lounge_mod
 
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
+    shipped = tmp_path / "fork"
+    (shipped / "dist" / "server").mkdir(parents=True)
+    (shipped / "package.json").write_text(_json.dumps(
+        {"version": "4.5.2-mercury.9"}))
+    (shipped / "dist" / "server" / "index.js").write_text("// built\n")
+    monkeypatch.setattr(
+        lounge_mod, "_fork_source_tree", lambda: shipped)
     monkeypatch.setattr(
         lounge_mod, "_run",
         lambda *a, **k: _types.SimpleNamespace(
@@ -327,32 +345,43 @@ def test_ensure_non_prepare_failure_raises(tmp_path, monkeypatch) -> None:
         lounge_mod.ensure_lounge_installed()
 
 
-def test_ensure_slow_path_links_patched_tree(tmp_path, monkeypatch) -> None:
+def test_ensure_replaces_upstream_with_fork(tmp_path, monkeypatch) -> None:
+    import json as _json
     import types as _types
     from observatory import lounge as lounge_mod
 
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
+    shipped = tmp_path / "fork"
+    (shipped / "dist" / "server").mkdir(parents=True)
+    (shipped / "package.json").write_text(_json.dumps(
+        {"version": "4.5.2-mercury.9"}))
+    (shipped / "dist" / "server" / "index.js").write_text("// built\n")
+    (shipped / "index.js").write_text("#!/usr/bin/env node\n")
+    monkeypatch.setattr(
+        lounge_mod, "_fork_source_tree", lambda: shipped)
+    # a hand-installed upstream already here
+    final = home / "observatory" / "lounge" / "pkg"
+    final.mkdir(parents=True)
+    (final / "package.json").write_text(_json.dumps({"version": "4.5.2"}))
+    (final / "index.js").write_text("// upstream\n")
 
     def _fake_run(args, **kwargs):
-        return _types.SimpleNamespace(
-            returncode=1, stdout="",
-            stderr="git dep preparation failed")
-
-    def _fake_patch(npm, path, tmp, mercury_home=None):
-        final = (home / "observatory" / "lounge" / "pkg")
-        final.mkdir(parents=True)
-        (final / "index.js").write_text("#!/usr/bin/env node\n")
-        (final / "package.json").write_text("{}")
-        return final
+        (final / "node_modules" / "irc-framework").mkdir(parents=True)
+        (home / "observatory" / "lounge" / "npm" / "bin").mkdir(
+            parents=True)
+        (home / "observatory" / "lounge" / "npm" / "bin"
+         / "thelounge").write_text("#!/bin/sh\n")
+        return _types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(lounge_mod, "_run", _fake_run)
-    monkeypatch.setattr(lounge_mod, "_patched_lounge_tree", _fake_patch)
     out = lounge_mod.ensure_lounge_installed()
     assert out.endswith("npm/bin/thelounge")
     import os as _os
 
     assert _os.path.realpath(out).endswith("lounge/pkg/index.js")
+    assert _json.loads((final / "package.json").read_text())["version"] == \
+        "4.5.2-mercury.9"
 
 
 def test_ensure_lounge_network_current_when_identical(tmp_path) -> None:
@@ -410,25 +439,29 @@ def test_frontend_patch_drift_is_loud(tmp_path) -> None:
     assert lounge_mod.patch_lounge_frontend(paths)["action"] == "pattern-missing"
 
 
-def test_install_pins_lounge_version(tmp_path, monkeypatch) -> None:
-    import types as _types
+def test_install_pins_fork_version(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
     from observatory import lounge as lounge_mod
 
-    assert lounge_mod.LOUNGE_VERSION == "4.5.2"
-    home = tmp_path / "mercury"
-    monkeypatch.setenv("MERCURY_HOME", str(home))
-    seen = {}
+    tree = Path(lounge_mod.__file__).resolve().parents[2] / "third_party" / "thelounge"
+    assert "mercury" in lounge_mod._fork_tree_version(tree)
 
-    def _fake_run(args, **kwargs):
-        seen["args"] = list(args)
-        (home / "observatory" / "lounge" / "npm" / "bin").mkdir(parents=True)
-        (home / "observatory" / "lounge" / "npm" / "bin"
-         / "thelounge").write_text("#!/bin/sh\n")
-        return _types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(lounge_mod, "_run", _fake_run)
-    lounge_mod.ensure_lounge_installed()
-    assert "thelounge@4.5.2" in seen["args"]
+def test_frontend_patch_skips_fork_bundle(tmp_path) -> None:
+    import json as _json
+    from observatory import lounge as lounge_mod
+
+    paths = lounge_mod.LoungePaths(tmp_path / "mercury")
+    pkg = paths.dir / "pkg"
+    assets = pkg / "public" / "assets"
+    assets.mkdir(parents=True)
+    (pkg / "package.json").write_text(_json.dumps(
+        {"version": "4.5.2-mercury.1"}))
+    bundle = assets / "index-abc123.js"
+    bundle.write_text("var a=1;")
+    assert lounge_mod.patch_lounge_frontend(paths)["action"] == "skipped"
+    assert bundle.read_text() == "var a=1;"
 
 
 def test_conf_lives_in_lounge_home(tmp_path) -> None:

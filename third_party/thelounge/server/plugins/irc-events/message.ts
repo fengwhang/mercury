@@ -47,11 +47,10 @@ export default <IrcEventHandler>function (irc, network) {
 		if (!buffered || buffered.length === 0) {
 			return;
 		}
-		const first = buffered[0];
-		handleMessage({
-			...first,
-			message: buffered.map((part) => part.message).join("\n"),
-		});
+		const first = buffered[0] as HandleInput & {batch?: unknown};
+		const joined = buffered.map((part) => part.message).join("\n");
+		delete first.batch;
+		handleMessage({...first, message: joined});
 	}
 
 	irc.on("batch end draft/multiline", (event: {id: string}) => {

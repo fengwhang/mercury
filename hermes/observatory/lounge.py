@@ -27,10 +27,9 @@ NPM_PREFIX_DIRNAME = "npm"
 #: npm cache lives here too — ~/.npm must stay untouched so rm -rf
 #: ~/.mercury truly removes every lounge trace.
 NPM_CACHE_DIRNAME = "npm-cache"
-#: Pinned thelounge release. The frontend no-focus patch below targets
-#: this exact bundle — bump only with the patch re-verified, or rooms
-#: will yank UI focus again on every spawn.
-LOUNGE_VERSION = "4.5.2"
+#: Vendored fork base (third_party/thelounge). The fork carries its own
+#: version (package.json, *-mercury.*); the bundle-text patch below only
+#: applies to legacy upstream installs.
 #: Minified channel-join opener in the 4.5.2 bundle: the frontend opens
 #: EVERY channel join, ignoring the server's shouldOpen flag (queries
 #: excepted). Patched to respect it, so auto-joined agent rooms land in
@@ -63,6 +62,15 @@ def patch_lounge_frontend(paths: "LoungePaths") -> dict:
     try:
         import json as _json
 
+        try:
+            _ver = _json.loads(
+                (paths.dir / "pkg" / "package.json").read_text(
+                    encoding="utf-8")).get("version", "")
+        except Exception:
+            _ver = ""
+        if "mercury" in str(_ver):
+            return {"action": "skipped",
+                    "reason": "fork bundle (no-focus fix lives in source)"}
         assets = paths.dir / "pkg" / "public" / "assets"
         state_file = paths.dir / "frontend-patch.json"
         try:
@@ -221,142 +229,114 @@ def ensure_node() -> str:
         "by hand (Fedora: sudo dnf install -y nodejs npm), then re-run setup")
 
 
-#: Registry irc-framework the pinned git commit is swapped for (verified
-#: live against thelounge 4.5.2: register + join through our ircd).
-FRAMEWORK_REGISTRY_RANGE = "^4.14.0"
+#: The fork ships inside the mercury distribution with client bundle +
+#: server already built on the release host (like the omp binaries), so
+#: user machines never compile. Install = copy the tree, npm install
+#: runtime deps only, link the bin. No upstream download links anywhere.
 
 
-def _patched_lounge_tree(npm: str, path: str, tmp: Path,
-                         mercury_home: str | Path | None = None) -> Path:
-    """Install thelounge's deps into ``tmp/pkg/package`` with the
-    git-pinned irc-framework swapped for the registry release.
+def _fork_source_tree() -> Path | None:
+    """Vendored fork tree, release-built (never user-compiled).
 
-    ``npm pack`` + ``tarfile`` + ``npm install --prefix`` need no cwd
-    support. ``--legacy-peer-deps`` dodges an npm-10 arborist crash on
-    the jsdom/canvas peer chains. Returns the source dir."""
-    import tarfile as _tarfile
-
-    packed = _run(
-        [npm, "pack", f"thelounge@{LOUNGE_VERSION}", "--pack-destination", str(tmp),
-         "--cache", str(lounge_npm_cache(mercury_home))],
-        extra_env={"PATH": path}, timeout=600)
-    if packed.returncode != 0:
-        raise LoungeError(
-            "npm pack thelounge failed: "
-            f"{(packed.stderr or packed.stdout).strip()[-2000:]}")
-    balls = sorted(tmp.glob("thelounge-*.tgz"))
-    if not balls:
-        raise LoungeError("npm pack produced no tarball")
+    Returns third_party/thelounge only when it carries a fork version
+    AND built server output (dist/server/index.js) — i.e. a release-host
+    build. Otherwise None (dev checkouts build it via
+    scripts/build-lounge-fork.sh; user machines must update mercury).
+    """
+    root = Path(__file__).resolve().parents[2] / "third_party" / "thelounge"
     try:
-        with _tarfile.open(balls[-1], "r:gz") as tar:
-            tar.extractall(tmp / "pkg")
-    except Exception as exc:
-        raise LoungeError(f"thelounge tarball extract failed: {exc}") from exc
-    src = tmp / "pkg" / "package"
-    cfg_file = src / "package.json"
+        pkg = root / "package.json"
+        if not pkg.is_file():
+            return None
+        version = str(json.loads(pkg.read_text(encoding="utf-8")).get(
+            "version", ""))
+        if "mercury" not in version:
+            return None
+        if not (root / "dist" / "server" / "index.js").is_file():
+            return None
+    except Exception:
+        return None
+    return root
+
+
+def _fork_tree_version(tree: Path) -> str:
+    """Fork version from the vendored tree (single source of truth)."""
     try:
-        data = json.loads(cfg_file.read_text(encoding="utf-8"))
-        deps = data.get("dependencies")
-        if not isinstance(deps, dict) or "irc-framework" not in deps:
-            raise LoungeError("thelounge package has no irc-framework dep")
-        deps["irc-framework"] = FRAMEWORK_REGISTRY_RANGE
-        cfg_file.write_text(json.dumps(data, indent=2) + "\n",
-                            encoding="utf-8")
-    except LoungeError:
-        raise
-    except Exception as exc:
-        raise LoungeError(f"thelounge dep patch failed: {exc}") from exc
-    env = {"PATH": path}
-    deps_out = _run(
-        [npm, "install", "--prefix", str(src), "--omit=dev", "--no-audit",
-         "--no-fund", "--legacy-peer-deps",
-         "--cache", str(lounge_npm_cache(mercury_home))],
-        extra_env=env, timeout=900)
-    if deps_out.returncode != 0:
-        raise LoungeError(
-            "thelounge dependency install failed: "
-            f"{(deps_out.stderr or deps_out.stdout).strip()[-2000:]}")
-    return src
+        return str(json.loads((tree / "package.json").read_text(
+            encoding="utf-8")).get("version", ""))
+    except Exception:
+        return ""
+
+
+def _installed_fork_version(final: Path) -> str | None:
+    """Fork version of the installed tree, or None when absent."""
+    try:
+        pkg = final / "package.json"
+        if not pkg.is_file():
+            return None
+        return str(json.loads(pkg.read_text(encoding="utf-8")).get("version") or "")
+    except Exception:
+        return None
 
 
 def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
-    """Make sure ``thelounge`` exists, installing via npm if asked-for.
+    """Install the vendored Mercury fork (never upstream, never compile).
 
-    Installs into our own prefix (never system globals — no sudo, no
-    PATH dependence). Fast path is a plain global install with
-    ``--ignore-scripts`` (npm 11 honors it for git-dep preparation).
-    Slow path (npm 10 and friends, which run the git-pinned
-    irc-framework's prepare anyway and die on unlinked dev tools):
-    repack locally with the pin swapped for the registry release and
-    install deps — the server runs from ``src/``/``dist/server``
-    directly, so no build step is needed (verified live: HTTP 200,
-    register + join through our ircd).
-    Never installs unprompted: raises with the exact command when the
-    binary is missing so the wizard can offer it.
+    The fork ships inside the mercury distribution with its client bundle
+    + server already built on the release host (like the omp binaries).
+    Install here = copy the tree, ``npm install --omit=dev`` for runtime
+    deps only, link the bin. Reinstalls when the installed version
+    differs — this is also how a hand-installed upstream gets replaced
+    by the fork. Raises with the exact state when the shipped tree is
+    missing so the wizard can offer it (update mercury).
     """
+    shipped = _fork_source_tree()
+    if shipped is None:
+        raise LoungeError(
+            "no vendored lounge fork found — update mercury to a release "
+            "that ships third_party/thelounge built (dist/server/index.js)")
+    want = _fork_tree_version(shipped)
+    prefix = lounge_prefix(mercury_home)
+    final = prefix.parent / "pkg"
     try:
-        return str(lounge_bin(mercury_home))
+        existing_bin = lounge_bin(mercury_home)
     except LoungeError:
-        pass
+        existing_bin = None
+    if (_installed_fork_version(final) == want and existing_bin is not None
+            and (final / "node_modules" / "irc-framework").is_dir()):
+        return str(existing_bin)
     npm = shutil.which("npm")
     if npm is None:
         raise LoungeError(
-            "thelounge not installed and npm not found — install Node.js, "
-            "then run: npm install -g thelounge@{0}".format(LOUNGE_VERSION))
+            "thelounge fork needs Node.js + npm on PATH — install Node.js, "
+            "then re-run setup")
     import os as _os
-    import tempfile as _tempfile
 
-    prefix = lounge_prefix(mercury_home)
     node = shutil.which("node") or ""
     path = _os.pathsep.join(
         [str(prefix / "bin"),
-         str(Path(npm).parent), str(Path(node).parent)]
-        + [_os.environ.get("PATH", "")])
+         str(Path(npm).parent), str(Path(node).parent) if node else "",
+         _os.environ.get("PATH", "")])
     env = {"PATH": path}
-    # Fast path: straight global install (works where npm honors
-    # --ignore-scripts for git-dep preparation, e.g. npm 11).
+    try:
+        if final.exists() or final.is_symlink():
+            if final.is_dir() and not final.is_symlink():
+                shutil.rmtree(final)
+            else:
+                final.unlink()
+        shutil.copytree(
+            shipped, final,
+            ignore=shutil.ignore_patterns("node_modules", ".git"))
+    except Exception as exc:
+        raise LoungeError(f"thelounge fork stage failed: {exc}") from exc
     out = _run(
-        [npm, "install", "-g", "--prefix", str(prefix),
-         "--ignore-scripts", "--cache", str(lounge_npm_cache(mercury_home)),
-         f"thelounge@{LOUNGE_VERSION}"],
+        [npm, "install", "--prefix", str(final), "--omit=dev", "--no-audit",
+         "--no-fund", "--cache", str(lounge_npm_cache(mercury_home))],
         extra_env=env, timeout=900)
-    if out.returncode == 0:
-        try:
-            return str(lounge_bin(mercury_home))
-        except LoungeError:
-            pass
-    elif "git dep preparation failed" not in (
-            (out.stderr or "") + (out.stdout or "")):
+    if out.returncode != 0:
         raise LoungeError(
-            "npm install -g thelounge failed: "
+            "thelounge dependency install failed: "
             f"{(out.stderr or out.stdout).strip()[-3000:]}")
-    # Slow path: npm <11 runs the git-pinned irc-framework's prepare
-    # despite --ignore-scripts, and its dev tools are never linked
-    # (babel: command not found). Repack locally with the pin swapped
-    # for the registry release (server runs from src/, so no build is
-    # needed), install deps, self-link the bin.
-    lounge_dir = prefix.parent
-    final = lounge_dir / "pkg"
-    if (final / "package.json").is_file() and (
-            final / "node_modules" / "irc-framework").is_dir():
-        pass
-    else:
-        with _tempfile.TemporaryDirectory(
-                prefix=f"lounge-patch-") as tmpname:
-            src = _patched_lounge_tree(npm, path, Path(tmpname),
-                                   mercury_home)
-            try:
-                if src.resolve() == final.resolve():
-                    pass
-                elif final.exists() or final.is_symlink():
-                    if final.is_dir() and not final.is_symlink():
-                        shutil.rmtree(final)
-                    else:
-                        final.unlink()
-                shutil.move(str(src), str(final))
-            except Exception as exc:
-                raise LoungeError(
-                    f"thelounge tree stage failed: {exc}") from exc
     link = prefix / "bin" / "thelounge"
     try:
         link.parent.mkdir(parents=True, exist_ok=True)
@@ -375,7 +355,6 @@ def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
     except LoungeError:
         raise LoungeError(
             "thelounge install finished but no binary resolves") from None
-
 
 def render_lounge_config(*, host: str, port: int) -> str:
     """Render config.js (pure string templating, no I/O).

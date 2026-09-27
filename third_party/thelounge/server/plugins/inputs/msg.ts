@@ -104,11 +104,11 @@ const input: PluginInputHandler = function (network, chan, cmd, args) {
 		const ref = `ml${Date.now().toString(36)}${Math.floor(
 			Math.random() * 0xffffff
 		).toString(36)}`;
-		network.irc.raw(["BATCH", `+${ref}`, "draft/multiline", targetName]);
+		network.irc.raw("BATCH", `+${ref}`, "draft/multiline", targetName);
 		for (const line of lines) {
 			network.irc.say(targetName, line, {batch: ref});
 		}
-		network.irc.raw(["BATCH", `-${ref}`]);
+		network.irc.raw("BATCH", `-${ref}`);
 	} else {
 		network.irc.say(targetName, msg);
 	}
