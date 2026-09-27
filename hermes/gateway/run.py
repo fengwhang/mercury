@@ -12932,18 +12932,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         the ledger, and the background task later redelivered them too
         (duplicate delivery + re-paid turn).
         """
-        claimed = await self._claim_pending_obligations()
+        try:
+            claimed = await self._claim_pending_obligations()
+        except Exception:
+            logger.exception("boot-path obligation claim failed")
+            claimed = []
 
         async def _boot_sends() -> None:
-            await self._send_restart_notification()
+            # Every step here is best-effort BY CONTRACT: a boot-path send
+            # that raises must never abort startup. With drain_timeout=0
+            # the await below re-raises task exceptions — one poisoned
+            # obligation row used to kill the gateway right after the
+            # home-channel announce, leaving a silent restart loop where
+            # the bot only ever flashed into its room.
+            try:
+                await self._send_restart_notification()
+            except Exception:
+                logger.exception("boot-path restart notification failed")
             if planned_restart_notification_pending:
                 try:
                     await self._send_home_channel_startup_notifications(
                         skip_targets=None,
                     )
+                except Exception:
+                    logger.exception("boot-path home-channel notification failed")
                 finally:
                     _clear_planned_restart_notification()
-            await self._redeliver_claimed_obligations(claimed)
+            try:
+                await self._redeliver_claimed_obligations(claimed)
+            except Exception:
+                logger.exception("boot-path obligation redelivery failed")
 
         boot_task = asyncio.create_task(_boot_sends())
         timeout = _startup_restore_drain_timeout_secs()
@@ -13090,12 +13108,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         redelivered = 0
         for row in claimed:
+            if not isinstance(row, dict):
+                logger.debug(
+                    "obligation row: malformed %r — skipped",
+                    type(row).__name__,
+                )
+                continue
+            _obligation_id = row.get("obligation_id")
             try:
                 platform = Platform(row["platform"])
             except Exception:
                 logger.debug(
                     "obligation %s: unknown platform %r",
-                    row["obligation_id"], row.get("platform"),
+                    _obligation_id, row.get("platform"),
                 )
                 continue
             if "profile" in row:
@@ -13125,7 +13150,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 # Startup claims preserve their historical state; attempts cap
                 # + stale cutoff bound later retries.
                 continue
-            content = row["content"]
+            content = row.get("content")
+            if content is None:
+                logger.warning(
+                    "obligation %s: malformed row (no content) — skipped",
+                    _obligation_id,
+                )
+                continue
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
             metadata = (
@@ -13141,7 +13172,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception as send_err:
                 logger.warning(
                     "obligation %s: redelivery send raised: %s",
-                    row["obligation_id"], send_err,
+                    _obligation_id, send_err,
                 )
                 result = None
             try:

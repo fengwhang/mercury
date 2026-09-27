@@ -145,7 +145,7 @@ def _cmd_restart(args) -> int:
     try:
         from mercury_cli.setup import _verify_gateway_bot
 
-        ok, detail = _verify_gateway_bot(tries=6, wait=10)
+        ok, detail = _verify_gateway_bot(tries=6, wait=10, stable_samples=3)
     except Exception as exc:
         print(f"bot check unavailable: {exc}", file=sys.stderr)
         return 0

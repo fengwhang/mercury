@@ -1014,6 +1014,30 @@ def test_setup_restarts_daemon_before_gateway(monkeypatch):
     assert order == ["daemon", "gateway"]
 
 
+def test_verify_gateway_bot_requires_stable_presence(monkeypatch):
+    """A crashlooping gateway flashes its bot in — one sample proves nothing."""
+    seq = iter([
+        [(True, "bot in room", "present")],
+        [(False, "bot in room", "gone")],
+    ])
+    monkeypatch.setattr(
+        "observatory.doctor.run_doctor", lambda: next(seq))
+    ok, detail = setup_mod._verify_gateway_bot(
+        tries=2, wait=0.01, stable_samples=2, gap=0.01)
+    assert ok is False
+    assert "left the room" in detail
+
+
+def test_verify_gateway_bot_passes_when_presence_holds(monkeypatch):
+    monkeypatch.setattr(
+        "observatory.doctor.run_doctor",
+        lambda: [(True, "bot in room", "present")],
+    )
+    ok, _detail = setup_mod._verify_gateway_bot(
+        tries=2, wait=0.01, stable_samples=3, gap=0.01)
+    assert ok is True
+
+
 def test_verify_gateway_bot_fails_with_verdict(monkeypatch):
     monkeypatch.setattr(
         "observatory.doctor.run_doctor",

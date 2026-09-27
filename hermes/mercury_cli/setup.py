@@ -3545,7 +3545,9 @@ def _verify_daemon_listening(status: dict, *, retries: int = 3) -> tuple[bool, s
         return False, f"verification error: {exc}"
 
 
-def _verify_gateway_bot(*, tries: int = 9, wait: float = 10.0) -> tuple[bool, str]:
+def _verify_gateway_bot(*, tries: int = 9, wait: float = 10.0,
+                        stable_samples: int = 1,
+                        gap: float = 8.0) -> tuple[bool, str]:
     """Poll until the gateway bot joins its room (setup must prove it).
 
     A restarted gateway needs time (interpreter boot + adapter connect +
@@ -3567,6 +3569,17 @@ def _verify_gateway_bot(*, tries: int = 9, wait: float = 10.0) -> tuple[bool, st
             by_label = {label: (ok, detail) for ok, label, detail in rows}
             room_ok, room_detail = by_label.get("bot in room", (False, "no room check"))
             if room_ok:
+                # A crashlooping gateway flashes its bot into the room;
+                # one lucky sample proves nothing. Require the bot to STAY.
+                for sample in range(max(0, int(stable_samples) - 1)):
+                    _time.sleep(max(0.0, float(gap)))
+                    again = {label: (ok, detail) for ok, label, detail in run_doctor()}
+                    ok2, detail2 = again.get("bot in room", (False, "no room check"))
+                    if not ok2:
+                        return False, (
+                            f"bot left the room after {sample + 1}/"
+                            f"{stable_samples} checks — crashloop "
+                            f"({detail2})")
                 return True, room_detail
             conn_detail = by_label.get("bot connection", (False, last))[1]
             last = f"{room_detail} :: {conn_detail}"

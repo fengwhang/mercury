@@ -105,6 +105,17 @@ class _Probe:
             lines.append(raw.decode("utf-8", errors="replace").rstrip("\r"))
         return lines
 
+    def say(self, target: str, text: str) -> None:
+        self._send(f"PRIVMSG {target} :{text}")
+
+    def watch(self, seconds: float) -> list[str]:
+        """Collect raw server lines for *seconds* (sliced 0.5s reads)."""
+        lines: list[str] = []
+        deadline = time.monotonic() + max(0.0, float(seconds))
+        while time.monotonic() < deadline:
+            lines.extend(self._drain())
+        return lines
+
     def names(self, channel: str, timeout: float = 5.0) -> list[str] | None:
         """Members of *channel*, or None when the join fails."""
         try:
@@ -382,6 +393,70 @@ def _listening_pid(port: int) -> int | None:
     return None
 
 
+def verify_message_path(home=None, *, wait: float = 25.0) -> tuple[bool, str]:
+    """Speak into the gateway room and watch who answers; name the dead layer.
+
+    Three signal classes make one run decisive: **fanout** (our own line
+    came back = the daemon delivers), **humans** (another nick spoke
+    during the window = a chat client's uplink reaches the server), and
+    the **agent reply** (the bot nick answered = end to end). ok=True
+    only on the agent reply. Type into the room while this waits.
+    """
+    mercury_home = _home(home)
+    cfg = read_config(mercury_home) or {}
+    pw = read_irc_passwords(mercury_home) or {}
+    server_name = str(cfg.get("server_name") or "mercury")
+    server_host = str(cfg.get("server_host") or "127.0.0.1")
+    server_port = int(cfg.get("server_port") or 6670)
+    channel = f"#{server_name}_gateway"
+    bot_nick = f"{server_name}_gateway".lower()
+    tag = f"mercury-probe-{os.getpid() % 10000}"
+    probe = _Probe(server_host, server_port, tag, str(pw.get("server") or ""))
+    agent_reply = ""
+    fanout = False
+    human = ""
+    try:
+        if not probe.connect():
+            return False, f"probe could not register on {server_host}:{server_port}"
+        if probe.names(channel) is None:
+            return False, f"probe could not JOIN {channel}"
+        marker = (f"path probe: {tag} speaking — agent, reply here so I know "
+                  "you hear this room")
+        probe.say(channel, marker)
+        slices = max(1, int(wait))
+        for _ in range(slices):
+            for line in probe.watch(1.0):
+                if " PRIVMSG " not in line:
+                    continue
+                nick = line.split("!", 1)[0].lstrip(":")
+                if nick.lower() == tag.lower():
+                    fanout = True
+                elif nick.lower() == bot_nick:
+                    agent_reply = line.split(" :", 1)[-1][:120]
+                else:
+                    human = f"{nick} said {line.split(' :', 1)[-1][:60]!r}"
+            if agent_reply:
+                break
+    except OSError as exc:
+        return False, f"probe connection broke: {exc}"
+    finally:
+        probe.close()
+    parts = [
+        "fanout ok (the server delivers)" if fanout
+        else "NO fanout — the probe's own line never came back",
+        f"human message seen: {human}" if human
+        else "no human message seen — type into the room while this waits",
+        f"agent replied: {agent_reply!r}" if agent_reply
+        else "the agent never answered",
+    ]
+    if agent_reply:
+        return True, "; ".join(parts)
+    tail = _gateway_log_snippets(mercury_home)
+    if tail:
+        parts.append(f"gateway log tail: {tail[-1][-140:]}")
+    return False, "; ".join(parts)
+
+
 def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     """Run every check. Returns [(ok, label, detail)]. Secrets never leave."""
     from observatory.provision import read_config, read_irc_passwords
@@ -427,6 +502,25 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     results.append((server_up, "server listener",
                     f"{server_host}:{server_port} "
                     + ("answers" if server_up else "NOTHING LISTENING — clients cannot connect")))
+    try:
+        from observatory.lounge import lounge_prefix, lounge_unit_active
+
+        lounge_on = lounge_unit_active()
+        lounge_installed = Path(lounge_prefix(mercury_home)).exists()
+    except Exception:  # noqa: BLE001
+        lounge_on = False
+        lounge_installed = False
+    if lounge_on:
+        results.append((True, "chat frontend",
+                        "The Lounge uplink active (your browser chat)"))
+    elif lounge_installed:
+        results.append((False, "chat frontend",
+                        "The Lounge is installed but NOT running — your "
+                        "browser chat is dead; mercury observatory restart "
+                        "restarts it"))
+    else:
+        results.append((True, "chat frontend",
+                        "The Lounge not installed (raw IRC client users: fine)"))
 
     dotenv = _read_dotenv(mercury_home)
     wired_host = _env("IRC_SERVER", dotenv) or "127.0.0.1"

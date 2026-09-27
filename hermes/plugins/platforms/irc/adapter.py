@@ -184,6 +184,18 @@ class IRCAdapter(BasePlatformAdapter):
         self.agent_password = _get_scoped_secret("IRC_AGENT_PASSWORD") or extra.get("agent_password", "")
         self.nickserv_password = _get_scoped_secret("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
         self.oper_password = _get_scoped_secret("IRC_OPER_PASSWORD") or extra.get("oper_password", "") or self.server_password
+        # Mercury's PRIMARY agent surface (design D7): IRC here is not a
+        # secondary messaging platform. The observatory perimeter (PASS-
+        # authed agent listener on localhost/tailnet) IS the authorization,
+        # exactly like the relay's trusted upstream — so pairing/allowlist
+        # policies must never gate the agent interface. Public (non-
+        # observatory) IRC keeps the ordinary allowlist policy.
+        self._observatory_managed = (
+            (get_env_value("IRC_MANAGED_BY") or "").strip().lower()
+            == "observatory"
+            or str(extra.get("managed_by") or "").strip().lower()
+            == "observatory"
+        )
         # Observability rooms: extra agent channels the bot joins dynamically
         # (/spawn rooms, #parent-child subagent rooms). Managed channels
         # never require nick-addressing: every message there is for the agent.
@@ -535,6 +547,18 @@ class IRCAdapter(BasePlatformAdapter):
             chat_id, video_path, caption=caption, metadata=metadata)
 
     # ── Observatory rooms (BotSink surface for observatory.rooms) ──────────
+
+    @property
+    def authorization_is_upstream(self) -> bool:
+        """Observatory perimeter is this surface's authorization.
+
+        Overridden from ``BasePlatformAdapter`` (default False): the
+        observatory-managed bot talks only over the PASS-authed agent
+        listener on localhost/tailnet (design D7) — a trusted upstream,
+        like the relay. Pairing/allowlist policy must never gate
+        Mercury's primary agent interface. Public IRC stays False.
+        """
+        return bool(getattr(self, "_observatory_managed", False))
 
     def managed_channels(self) -> set[str]:
         """Channels that never require nick-addressing (gateway + agent rooms)."""
