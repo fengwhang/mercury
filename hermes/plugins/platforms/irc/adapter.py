@@ -246,6 +246,13 @@ class IRCAdapter(BasePlatformAdapter):
         self._oper = False  # set by 381, cleared by 464/481
         self._registration_event = asyncio.Event()
         self._current_nick = self.nickname
+        # draft/multiline negotiation state (learned per connect; cleared
+        # on disconnect). Untagged traffic keeps the quiet-window timer.
+        self._server_caps: set = set()
+        self._server_multiline = False
+        self._cap_event = asyncio.Event()
+        self._in_batches: dict = {}
+        self._batch_seq = 0
 
     @property
     def name(self) -> str:
@@ -312,6 +319,23 @@ class IRCAdapter(BasePlatformAdapter):
             await self.disconnect()
             self._set_fatal_error("registration_timeout", "IRC server did not send RPL_WELCOME", retryable=True)
             return False
+        # IRCv3 multiline: learn server caps (best-effort, short timeouts —
+        # a server without CAP support just means packed PRIVMSGs as before).
+        self._server_caps = set()
+        self._server_multiline = False
+        self._cap_event.clear()
+        try:
+            await self._send_raw("CAP LS 302")
+            await asyncio.wait_for(self._cap_event.wait(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+        if "draft/multiline" in self._server_caps:
+            self._cap_event.clear()
+            try:
+                await self._send_raw("CAP REQ :draft/multiline")
+                await asyncio.wait_for(self._cap_event.wait(), timeout=2.0)
+            except (asyncio.TimeoutError, Exception):
+                pass
 
         # NickServ identification
         if self.nickserv_password:
@@ -405,6 +429,14 @@ class IRCAdapter(BasePlatformAdapter):
         self._writer = None
         self._registered = False
         self._registration_event.clear()
+        self._server_multiline = False
+        self._server_caps = set()
+        try:
+            self._cap_event.clear()
+        except Exception:
+            pass
+        if hasattr(self, "_in_batches"):
+            self._in_batches.clear()
         try:
             from observatory.rooms import get_bot_sink, set_bot_sink
             if get_bot_sink() is self:
@@ -445,12 +477,37 @@ class IRCAdapter(BasePlatformAdapter):
             logger.debug("IRC: identity send failed, using main bot",
                          exc_info=True)
         lines = self._split_message(content, target)
+        batch_ref = ""
+        if self._server_multiline and len(lines) > 1:
+            # One logical message: BATCH frames + tagged lines for capable
+            # peers; legacy peers still get the bare packed lines via the
+            # daemon relay. Re-split accounting for the tag prefix so
+            # tagged lines still fit the wire limit.
+            batch_ref = f"m{int(time.time() * 1000)}-{self._batch_seq}"
+            self._batch_seq += 1
+            lines = self._split_message(
+                content, target, extra_overhead=len(f"@batch={batch_ref} "))
+            if len(lines) == 1:
+                batch_ref = ""
+        if batch_ref:
+            try:
+                await self._send_raw(f"BATCH +{batch_ref} draft/multiline {target}")
+            except Exception as e:
+                return SendResult(success=False, error=str(e))
 
         for line in lines:
             try:
-                await self._send_raw(f"PRIVMSG {target} :{line}")
+                if batch_ref:
+                    await self._send_raw(f"@batch={batch_ref} PRIVMSG {target} :{line}")
+                else:
+                    await self._send_raw(f"PRIVMSG {target} :{line}")
                 # Basic rate limiting to avoid excess flood
                 await asyncio.sleep(0.3)
+            except Exception as e:
+                return SendResult(success=False, error=str(e))
+        if batch_ref:
+            try:
+                await self._send_raw(f"BATCH -{batch_ref}")
             except Exception as e:
                 return SendResult(success=False, error=str(e))
 
@@ -663,17 +720,19 @@ class IRCAdapter(BasePlatformAdapter):
 
     # ── Message splitting ─────────────────────────────────────────────────
 
-    def _split_message(self, content: str, target: str) -> List[str]:
+    def _split_message(self, content: str, target: str,
+                       extra_overhead: int = 0) -> List[str]:
         """Split a long message into IRC-safe chunks.
 
         IRC has a ~512 byte line limit.  After accounting for protocol
         overhead (``PRIVMSG <target> :``), we split content into chunks.
+        ``extra_overhead`` reserves room for a tag prefix (batch sends).
         """
         # Strip markdown formatting that doesn't render in IRC
         content = self._strip_markdown(content)
 
         overhead = len(f"PRIVMSG {target} :".encode("utf-8")) + 2  # +2 for \r\n
-        max_bytes = 510 - overhead
+        max_bytes = 510 - overhead - extra_overhead
         user_limit = self.max_message_length
 
         # One PRIVMSG per *paragraph* (blank-line-separated block), packed
@@ -873,6 +932,15 @@ class IRCAdapter(BasePlatformAdapter):
     async def _handle_line(self, raw: str) -> None:
         """Dispatch a single IRC protocol line."""
         self._last_inbound = time.monotonic()
+        batch = ""
+        if raw.startswith("@"):
+            tagstr, _, raw = raw[1:].partition(" ")
+            for part in tagstr.split(";"):
+                k, _, v = part.partition("=")
+                if k == "batch" and v:
+                    batch = v[:64]
+            if not raw:
+                return
         msg = _parse_irc_message(raw)
         command = msg["command"]
         params = msg["params"]
@@ -890,6 +958,22 @@ class IRCAdapter(BasePlatformAdapter):
             if params:
                 # Server may confirm our nick in the first param
                 self._current_nick = params[0]
+            return
+
+        # CAP negotiation replies (draft/multiline discovery)
+        if command == "CAP" and len(params) >= 2:
+            sub = params[1].upper()
+            if sub == "LS" and len(params) >= 3:
+                rest = params[2:]
+                if rest and rest[0] == "*":
+                    self._server_caps.update(" ".join(rest[1:]).split())
+                else:
+                    self._server_caps.update(" ".join(rest).split())
+                    self._cap_event.set()
+            elif sub in ("ACK", "NAK"):
+                if sub == "ACK" and "draft/multiline" in " ".join(params[2:]).split():
+                    self._server_multiline = True
+                self._cap_event.set()
             return
 
         # RPL_YOUREOPER (381) / ERR_PASSWDMISMATCH (464) — oper state.
@@ -917,94 +1001,132 @@ class IRCAdapter(BasePlatformAdapter):
             await self._send_raw(f"NICK {self._current_nick}")
             return
 
+        # BATCH frames (draft/multiline reassembly)
+        if command == "BATCH":
+            await self._close_in_batch(params)
+            return
+
         # PRIVMSG — incoming message (channel or DM)
         if command == "PRIVMSG" and len(params) >= 2:
             sender_nick = _extract_nick(msg["prefix"])
             target = params[0]
             text = params[1]
-
-            # Ignore our own messages
-            if sender_nick.lower() == self._current_nick.lower():
+            if batch:
+                self._accumulate_in_batch(sender_nick, batch, target, text)
                 return
-            # NO host-based "relay" filter here — and never reintroduce one.
-            # The daemon renders EVERY peer-to-peer channel line as
-            # sender!relay@<server_name> (ircd _fanout; server_name is the
-            # operator's custom observatory name, not a constant). A
-            # !relay@ drop therefore swallows LIVE traffic: it shipped
-            # once (v0.1.3..v0.1.22) and the symptom was a bot that
-            # announces "Gateway online" and then answers nothing. The
-            # loop it guarded against — history replay re-executing old
-            # commands on reconnect — is gone SERVER-SIDE (no JOIN replay,
-            # no history storage): there is nothing to re-execute.
-            try:
-                # Agent identities speaking in their rooms are never user
-                # turns — routing them back would make agents answer
-                # themselves in a loop.
-                from observatory.identity import get_pool
+            await self._route_text(sender_nick, target, text)
 
-                if sender_nick.lower() in get_pool().nicks():
-                    return
-            except Exception:
-                pass
+    def _accumulate_in_batch(self, sender_nick: str, ref: str, target: str, text: str) -> None:
+        """Hold one tagged line; BATCH -ref flushes the burst as one turn."""
+        key = (sender_nick.lower(), ref)
+        entry = self._in_batches.get(key)
+        if entry is None:
+            if len(self._in_batches) >= 32:
+                oldest = next(iter(self._in_batches))
+                del self._in_batches[oldest]
+            entry = {"sender": sender_nick, "target": target, "texts": []}
+            self._in_batches[key] = entry
+        entry["texts"].append(text)
 
-            # CTCP ACTION (/me) — convert to text
-            if text.startswith("\x01ACTION ") and text.endswith("\x01"):
-                text = f"* {sender_nick} {text[8:-1]}"
+    async def _close_in_batch(self, params: list) -> None:
+        """BATCH -ref: join the burst, route once with explicit boundaries."""
+        ref = next((p[1:] for p in params if p.startswith("-")), "")
+        if not ref:
+            return
+        for key in [k for k in self._in_batches if k[1] == ref]:
+            entry = self._in_batches.pop(key, None)
+            if not entry or not entry["texts"]:
+                continue
+            await self._route_text(
+                entry["sender"], entry["target"], "\n".join(entry["texts"]),
+                immediate=True)
 
-            # Ignore other CTCP
-            if text.startswith("\x01"):
+    async def _route_text(self, sender_nick: str, target: str, text: str,
+                          *, immediate: bool = False) -> None:
+        """Addressing, auth, then dispatch — now or after the quiet window.
+
+        Batch-complete lines carry explicit boundaries, so they dispatch
+        immediately; untagged lines wait out the quiet window so a paste
+        becomes one turn instead of N interrupts.
+        """
+        # Ignore our own messages
+        if sender_nick.lower() == self._current_nick.lower():
+            return
+        # NO host-based "relay" filter here — and never reintroduce one.
+        # The daemon renders EVERY peer-to-peer channel line as
+        # sender!relay@<server_name> (ircd _fanout; server_name is the
+        # operator's custom observatory name, not a constant). A
+        # !relay@ drop therefore swallows LIVE traffic: it shipped
+        # once (v0.1.3..v0.1.22) and the symptom was a bot that
+        # announces "Gateway online" and then answers nothing. The
+        # loop it guarded against — history replay re-executing old
+        # commands on reconnect — is gone SERVER-SIDE (no JOIN replay,
+        # no history storage): there is nothing to re-execute.
+        try:
+            # Agent identities speaking in their rooms are never user
+            # turns — routing them back would make agents answer
+            # themselves in a loop.
+            from observatory.identity import get_pool
+
+            if sender_nick.lower() in get_pool().nicks():
                 return
+        except Exception:
+            pass
 
-            # Determine if this is a channel message or DM
-            is_channel = target.startswith("#") or target.startswith("&")
-            chat_id = target if is_channel else sender_nick
-            chat_type = "group" if is_channel else "dm"
+        # CTCP ACTION (/me) — convert to text
+        if text.startswith("\x01ACTION ") and text.endswith("\x01"):
+            text = f"* {sender_nick} {text[8:-1]}"
 
-            # Addressing (nick: or nick,): stripped everywhere, but only
-            # REQUIRED outside managed rooms. In the bot's own rooms every
-            # message is for the agent, like CLI.
-            if is_channel:
-                addressed = False
-                for prefix in (f"{self._current_nick}:", f"{self._current_nick},",
-                               f"{self._current_nick} "):
-                    if text.lower().startswith(prefix.lower()):
-                        text = text[len(prefix):].strip()
-                        addressed = True
-                        break
-                if not addressed and not self.is_managed(target):
-                    return  # Ignore unaddressed channel messages
+        # Ignore other CTCP
+        if text.startswith("\x01"):
+            return
 
-            # Auth check (case-insensitive)
-            if self._allowed_users_lower and sender_nick.lower() not in self._allowed_users_lower:
-                logger.debug("IRC: ignoring message from unauthorized user %s", sender_nick)
-                return
+        # Determine if this is a channel message or DM
+        is_channel = target.startswith("#") or target.startswith("&")
+        chat_id = target if is_channel else sender_nick
+        chat_type = "group" if is_channel else "dm"
 
-            key = self._irc_batch_key(chat_id, sender_nick)
-            if self._is_irc_command(text):
-                # Commands run alone: flush buffered text first so ordering
-                # is preserved, then dispatch the command immediately.
-                await self._flush_irc_batch_now(key)
-                await self._dispatch_message(
-                    text=text,
-                    chat_id=chat_id,
-                    chat_type=chat_type,
-                    user_id=sender_nick,
-                    user_name=sender_nick,
-                )
-            else:
-                self._enqueue_irc_text(
-                    key,
-                    text=text,
-                    chat_id=chat_id,
-                    chat_type=chat_type,
-                    user_id=sender_nick,
-                    user_name=sender_nick,
-                )
+        # Addressing (nick: or nick,): stripped everywhere, but only
+        # REQUIRED outside managed rooms. In the bot's own rooms every
+        # message is for the agent, like CLI.
+        if is_channel:
+            addressed = False
+            for prefix in (f"{self._current_nick}:", f"{self._current_nick},",
+                           f"{self._current_nick} "):
+                if text.lower().startswith(prefix.lower()):
+                    text = text[len(prefix):].strip()
+                    addressed = True
+                    break
+            if not addressed and not self.is_managed(target):
+                return  # Ignore unaddressed channel messages
 
-        # NICK — track our own nick changes
-        if command == "NICK" and _extract_nick(msg["prefix"]).lower() == self._current_nick.lower():
-            if params:
-                self._current_nick = params[0]
+        # Auth check (case-insensitive)
+        if self._allowed_users_lower and sender_nick.lower() not in self._allowed_users_lower:
+            logger.debug("IRC: ignoring message from unauthorized user %s", sender_nick)
+            return
+
+        key = self._irc_batch_key(chat_id, sender_nick)
+        if immediate or self._is_irc_command(text):
+            # Batch-complete lines carry explicit boundaries; commands
+            # run alone. Either way flush buffered text first so
+            # ordering is preserved, then dispatch immediately.
+            await self._flush_irc_batch_now(key)
+            await self._dispatch_message(
+                text=text,
+                chat_id=chat_id,
+                chat_type=chat_type,
+                user_id=sender_nick,
+                user_name=sender_nick,
+            )
+        else:
+            self._enqueue_irc_text(
+                key,
+                text=text,
+                chat_id=chat_id,
+                chat_type=chat_type,
+                user_id=sender_nick,
+                user_name=sender_nick,
+            )
 
     @staticmethod
     def _is_irc_command(text: str) -> bool:

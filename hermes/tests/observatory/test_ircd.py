@@ -1038,3 +1038,53 @@ async def test_ping_sweep_survives_wedged_client(tmp_path, monkeypatch) -> None:
     assert wedged.closed is True
     assert b"PING" in b"".join(healthy.written)
     assert healthy.closed is False
+
+
+@pytest.mark.asyncio
+async def test_cap_ls_advertises_multiline(tmp_path) -> None:
+    """draft/multiline must be negotiable for single-visual-message."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        c = RawClient()
+        await c.connect(agent_port)
+        try:
+            await c.send("CAP LS 302")
+            ls = await c.next_match("CAP ")
+            assert "draft/multiline" in ls
+        finally:
+            await c.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_relay_multiline(tmp_path) -> None:
+    """A draft/multiline batch relays frames+tags to capable peers,
+    bare lines to legacy peers — one logical message, no new behavior
+    for clients that never negotiated it."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        a, b, c = RawClient(), RawClient(), RawClient()
+        for client in (a, b, c):
+            await client.connect(agent_port)
+        try:
+            await a.register("alice")
+            await b.register("bruno")
+            await c.register("cara")
+            for client in (a, b, c):
+                await client.send("JOIN #multi")
+                await client.next_match("JOIN #multi")
+            await b.send("CAP REQ :draft/multiline")
+            ack = await b.next_match("ACK ")
+            assert "draft/multiline" in ack
+            await a.send("BATCH +r1 draft/multiline #multi")
+            await a.send("@batch=r1 PRIVMSG #multi :line one")
+            await a.send("@batch=r1 PRIVMSG #multi :line two")
+            await a.send("BATCH -r1")
+            assert "draft/multiline #multi" in await b.next_match("BATCH +")
+            assert "batch=r1" in await b.next_match("line one")
+            assert "batch=r1" in await b.next_match("line two")
+            await b.next_match("BATCH -")
+            c1 = await c.next_match("line one")
+            assert "batch=" not in c1
+            c2 = await c.next_match("line two")
+            assert "batch=" not in c2
+        finally:
+            for client in (a, b, c):
+                await client.close()

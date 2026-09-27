@@ -102,6 +102,8 @@ class _Client:
         "away",
         "caps",
         "pending_label",
+        "pending_batch",
+        "batch_out",
         "channels",
         "listener",
         "send_lock",
@@ -123,9 +125,11 @@ class _Client:
         self.pass_noticed = False
         self.oper = False
         self.sasl = None
+        self.addr = addr
         self.caps: set[str] = set()
         self.pending_label: str | None = None
-        self.addr = addr
+        self.batch_out: dict[str, str] = {}
+        self.pending_batch: str | None = None
         self.away: str | None = None
         self.channels: set[str] = set()  # folded channel keys
         self.send_lock = asyncio.Lock()
@@ -405,6 +409,8 @@ class IrcDaemon:
                 k, _, v = part.partition("=")
                 if k == "label" and v:
                     client.pending_label = v[:64]
+                elif k == "batch" and v:
+                    client.pending_batch = v[:64]
             if not line:
                 return
         client.last_in = time.monotonic()
@@ -482,12 +488,14 @@ class IrcDaemon:
             await self._numeric(client, 324, f"{client.nick} {target} +", "End of MODE")
         elif cmd == "OPER":
             await self._cmd_oper(client, rest.strip())
+        elif cmd == "BATCH":
+            await self._cmd_batch(client, rest.strip())
+        elif cmd == "INVITE":
+            await self._cmd_invite(client, rest.strip())
         elif cmd == "DESTROY":
             await self._cmd_destroy(client, rest.strip())
         elif cmd == "QUIT":
             await self._quit(client, rest.lstrip(":") or "quit")
-        elif cmd == "INVITE":
-            await self._cmd_invite(client, rest.strip())
         elif cmd == "USERHOST" or cmd == "ISON":
             pass  # accepted, ignored
         else:
@@ -504,6 +512,7 @@ class IrcDaemon:
         "message-tags",
         "server-time",
         "batch",
+        "draft/multiline",
         "echo-message",
         "labeled-response",
     )
@@ -935,6 +944,7 @@ class IrcDaemon:
             return
         sender = client.nick
         label, client.pending_label = client.pending_label, None
+        batch, client.pending_batch = client.pending_batch, None
         if target.startswith("#"):
             key = target.lower()
             async with self._lock:
@@ -947,11 +957,12 @@ class IrcDaemon:
                     return
                 display = self._display.get(key, target)
             msg = HistoryMessage(time.time(), sender, display, text, kind=kind)
-            await self._fanout(msg)
+            await self._fanout(msg, batch=batch)
             if "echo-message" in client.caps:
                 await self._send(
                     client,
-                    self._tags(client, ts=msg.ts, msgid=msg.msgid, label=label)
+                    self._tags(client, ts=msg.ts, msgid=msg.msgid, label=label,
+                               batch=batch)
                     + f":{sender}!{client.user}@{self.config.server_name} {kind.upper()} "
                     f"{display} :{text}",
                 )
@@ -963,14 +974,14 @@ class IrcDaemon:
             now = time.time()
             await self._send(
                 peer,
-                self._tags(peer, ts=now)
+                self._tags(peer, ts=now, batch=batch)
                 + f":{sender}!{client.user}@{self.config.server_name} {kind.upper()} "
                 f"{peer.nick} :{text}",
             )
             if "echo-message" in client.caps:
                 await self._send(
                     client,
-                    self._tags(client, ts=now, label=label)
+                    self._tags(client, ts=now, label=label, batch=batch)
                     + f":{sender}!{client.user}@{self.config.server_name} {kind.upper()} "
                     f"{peer.nick} :{text}",
                 )
@@ -1010,8 +1021,7 @@ class IrcDaemon:
             time.time(), client.nick, display, f"topic: {text[:256]}", kind="notice"
         )
         await self._fanout(notice)
-
-    async def _fanout(self, msg: HistoryMessage) -> None:
+    async def _fanout(self, msg: HistoryMessage, batch: str = "") -> None:
         key = msg.target.lower()
         if not msg.msgid:
             self._msg_seq += 1
@@ -1029,8 +1039,63 @@ class IrcDaemon:
             if peer is not None:
                 await self._send(
                     peer,
-                    self._tags(peer, ts=msg.ts, msgid=msg.msgid) + body,
+                    self._tags(peer, ts=msg.ts, msgid=msg.msgid, batch=batch) + body,
                 )
+
+    def _batch_target_ok(self, client: _Client, target: str) -> bool:
+        """A batch may only address where the sender could already speak."""
+        if target.startswith("#"):
+            members = self._channels.get(target.lower())
+            return bool(members) and client.nick.lower() in members
+        peer = self._clients.get(target.lower())
+        return bool(peer is not None and peer.registered)
+
+    async def _relay_batch_frame(self, client: _Client, target: str, line: str) -> None:
+        """Forward one BATCH frame to multiline-capable recipients only."""
+        if target.startswith("#"):
+            members = sorted(self._channels.get(target.lower(), ()))
+            for nick in members:
+                if nick == client.nick.lower():
+                    continue
+                peer = self._clients.get(nick)
+                if peer is not None and "draft/multiline" in peer.caps:
+                    await self._send(peer, line)
+        else:
+            peer = self._clients.get(target.lower())
+            if peer is not None and peer.registered and "draft/multiline" in peer.caps:
+                await self._send(peer, line)
+
+    async def _cmd_batch(self, client: _Client, arg: str) -> None:
+        """Relay draft/multiline batches; ignore other batch types.
+
+        Open (+ref draft/multiline target) validates membership, records
+        ref→target, and forwards the frame to capable recipients. Tagged
+        lines then fan out with the batch tag preserved (see _cmd_msg);
+        close (-ref) forwards and drops the mapping. Bounded per client.
+        """
+        parts = arg.split()
+        if not parts:
+            return
+        token = parts[0]
+        if token.startswith("+"):
+            ref = token[1:]
+            if not ref or len(parts) < 3 or parts[1] != "draft/multiline":
+                return
+            target = parts[2]
+            if not self._batch_target_ok(client, target):
+                return
+            if len(client.batch_out) >= 16:
+                oldest = next(iter(client.batch_out))
+                del client.batch_out[oldest]
+            client.batch_out[ref] = target
+            await self._relay_batch_frame(
+                client, target, f"BATCH +{ref} draft/multiline {target}")
+        elif token.startswith("-"):
+            ref = token[1:]
+            target = client.batch_out.pop(ref, None)
+            if not ref or target is None:
+                return
+            await self._relay_batch_frame(client, target, f"BATCH -{ref}")
 
     async def _quit(self, client: _Client, reason: str) -> None:
         key = client.nick.lower() if client.nick else ""
@@ -1068,6 +1133,7 @@ class IrcDaemon:
         ts: float | None = None,
         msgid: str = "",
         label: str | None = None,
+        batch: str | None = None,
     ) -> str:
         """IRCv3 tag prefix, gated on negotiated caps (never sent raw)."""
         parts: list[str] = []
@@ -1077,6 +1143,8 @@ class IrcDaemon:
             parts.append(f"msgid={msgid}")
         if label and "labeled-response" in client.caps:
             parts.append(f"label={label}")
+        if batch and "draft/multiline" in client.caps:
+            parts.append(f"batch={batch}")
         return ("@" + ";".join(parts) + " ") if parts else ""
 
     async def _send(self, client: _Client, line: str) -> bool:
