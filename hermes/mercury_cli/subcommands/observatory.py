@@ -105,29 +105,41 @@ def _restart_gateway_now() -> int:
     return 0
 
 
+def _print_doctor() -> None:
+    """Dump the full chat-path diagnosis (the answer, in the same output)."""
+    try:
+        from observatory.doctor import run_doctor
+
+        for ok, label, detail in run_doctor():
+            print(f"[{'ok' if ok else 'FAIL'}] {label}: {detail}")
+    except Exception as exc:
+        print(f"doctor unavailable: {exc}", file=sys.stderr)
+
+
 def _cmd_restart(args) -> int:
     """Freshen the chat surface: daemon + gateway, then verify the bot.
 
-    The setup wizard's last steps, minus the wizard — after an update
-    this is the one command that puts every process on the code now on
-    disk and tells you whether the bot is actually back in its room.
+    A service unit bakes an interpreter path at render time, so a plain
+    restart re-runs whatever tree was current when the unit was last
+    written — updates then never reach the running daemon. This
+    RE-RENDERS the unit from this install first (ensuring also restarts
+    it), so "restart" always means "restart onto the code now on disk".
+    When the bot does not come back, the full diagnosis prints here.
     """
     try:
-        from observatory.provision import restart_daemon
+        from observatory.provision import ensure_observatory_unit
+
+        unit_result = str(ensure_observatory_unit())
     except Exception as exc:
         print(f"observatory unavailable: {exc}", file=sys.stderr)
         return 1
-    result = restart_daemon(force=True)
-    action = str(result.get("action") or "")
-    if action == "restarted":
+    if unit_result == "installed":
         print("daemon: restarted onto current code")
-    elif action == "restart-failed":
-        print("daemon: restart FAILED (systemctl error) — check: "
-              "systemctl --user status mercury-observatory.service",
-              file=sys.stderr)
-        return 1
+    elif unit_result == "skipped":
+        print("daemon: skipped (no systemd on this host)")
     else:
-        print(f"daemon: {action}")
+        print(f"daemon: FAILED ({unit_result})", file=sys.stderr)
+        return 1
     if _restart_gateway_now() != 0:
         return 1
     try:
@@ -141,6 +153,7 @@ def _cmd_restart(args) -> int:
         print(f"bot: {detail}")
         return 0
     print(f"bot: {detail}", file=sys.stderr)
+    _print_doctor()
     return 1
 
 

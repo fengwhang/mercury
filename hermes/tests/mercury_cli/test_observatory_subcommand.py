@@ -21,12 +21,11 @@ def test_restart_wired_in_parser() -> None:
     assert args.func is obs_mod.cmd_observatory
 
 
-def test_restart_bounces_daemon_then_gateway_then_verifies(monkeypatch, capsys) -> None:
+def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys) -> None:
     calls: list[str] = []
     monkeypatch.setattr(
-        "observatory.provision.restart_daemon",
-        lambda **kw: calls.append(f"daemon:{sorted(kw.items())}")
-        or {"action": "restarted"},
+        "observatory.provision.ensure_observatory_unit",
+        lambda *a, **kw: calls.append("unit") or "installed",
     )
     monkeypatch.setattr(
         obs_mod, "_restart_gateway_now", lambda: calls.append("gateway") or 0)
@@ -36,17 +35,16 @@ def test_restart_bounces_daemon_then_gateway_then_verifies(monkeypatch, capsys) 
     )
     rc = obs_mod.cmd_observatory(_args())
     assert rc == 0
-    assert calls[0] == "daemon:[('force', True)]"
-    assert calls[1] == "gateway"
+    assert calls == ["unit", "gateway"]  # unit re-render BEFORE anything else
     out = capsys.readouterr().out
     assert "daemon: restarted onto current code" in out
     assert "bot: nick present" in out
 
 
-def test_restart_stops_on_daemon_failure(monkeypatch, capsys) -> None:
+def test_restart_stops_on_unit_failure(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
-        "observatory.provision.restart_daemon",
-        lambda **kw: {"action": "restart-failed"},
+        "observatory.provision.ensure_observatory_unit",
+        lambda *a, **kw: "installed (start failed: boom)",
     )
 
     def _boom() -> int:
@@ -55,19 +53,28 @@ def test_restart_stops_on_daemon_failure(monkeypatch, capsys) -> None:
     monkeypatch.setattr(obs_mod, "_restart_gateway_now", _boom)
     rc = obs_mod.cmd_observatory(_args())
     assert rc == 1
-    assert "restart FAILED" in capsys.readouterr().err
+    assert "FAILED" in capsys.readouterr().err
 
 
-def test_restart_fails_when_bot_never_joins(monkeypatch, capsys) -> None:
+def test_restart_prints_full_diagnosis_when_bot_never_joins(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
-        "observatory.provision.restart_daemon",
-        lambda **kw: {"action": "restarted"},
+        "observatory.provision.ensure_observatory_unit",
+        lambda *a, **kw: "installed",
     )
     monkeypatch.setattr(obs_mod, "_restart_gateway_now", lambda: 0)
     monkeypatch.setattr(
         "mercury_cli.setup._verify_gateway_bot",
         lambda **kw: (False, "nick NOT in #x — bot is down"),
     )
+    monkeypatch.setattr(
+        "observatory.doctor.run_doctor",
+        lambda: [(True, "daemon code", "PID 1 runs 9.9.9"),
+                 (False, "bot connection", "nothing connected")],
+    )
     rc = obs_mod.cmd_observatory(_args())
     assert rc == 1
-    assert "nick NOT in #x" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    text = captured.err + captured.out
+    assert "nick NOT in #x" in text
+    assert "[ok] daemon code" in text
+    assert "[FAIL] bot connection" in text
