@@ -454,6 +454,17 @@ def test_restart_daemon_force_restarts_without_config_change(monkeypatch) -> Non
     assert any("restart" in c for c in calls)
 
 
+def test_restart_daemon_force_starts_stopped_unit(monkeypatch) -> None:
+    """force=True restarts even a dead unit (systemd starts it)."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(provision, "_ircd_unit_active", lambda: False)
+    monkeypatch.setattr(
+        provision.subprocess, "run",
+        lambda *a, **k: calls.append(list(a[0])) or _FakeProc())
+    assert provision.restart_daemon(force=True) == {"action": "restarted"}
+    assert any("restart" in c for c in calls)
+
+
 def test_restart_gate_stays_closed_without_force(monkeypatch) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(provision, "_ircd_unit_active", lambda: True)

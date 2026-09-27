@@ -1,7 +1,9 @@
-"""``mercury observatory`` — IRC observatory status and room listing.
+"""``mercury observatory`` — IRC observatory status, rooms, doctor, restart.
 
 ``status`` prints the provisioned network (listeners, unit, gateway
-channel); ``rooms`` lists live agent rooms from state.db.
+channel); ``rooms`` lists live agent rooms from state.db; ``restart``
+freshens the chat surface without the setup wizard: daemon + gateway
+onto the code on disk, then verifies the bot joined its room.
 """
 from __future__ import annotations
 
@@ -70,7 +72,76 @@ def cmd_observatory(args) -> int:
         return _cmd_rooms(args)
     if action == "doctor":
         return _cmd_doctor(args)
+    if action == "restart":
+        return _cmd_restart(args)
     return _cmd_status(args)
+
+
+def _restart_gateway_now() -> int:
+    """Restart the gateway service so the bot rebuilds on current code."""
+    try:
+        import shutil
+        import subprocess
+
+        from mercury_constants import mercury_command
+
+        bin_ = shutil.which(mercury_command())
+        if bin_ is None:
+            print("gateway: command not found on PATH", file=sys.stderr)
+            return 1
+        proc = subprocess.run(
+            [bin_, "gateway", "restart"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception as exc:
+        print(f"gateway: restart failed ({exc})", file=sys.stderr)
+        return 1
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:]
+        print("gateway: restart failed" + (f" ({tail[0]})" if tail else ""),
+              file=sys.stderr)
+        return 1
+    print("gateway: restarted")
+    return 0
+
+
+def _cmd_restart(args) -> int:
+    """Freshen the chat surface: daemon + gateway, then verify the bot.
+
+    The setup wizard's last steps, minus the wizard — after an update
+    this is the one command that puts every process on the code now on
+    disk and tells you whether the bot is actually back in its room.
+    """
+    try:
+        from observatory.provision import restart_daemon
+    except Exception as exc:
+        print(f"observatory unavailable: {exc}", file=sys.stderr)
+        return 1
+    result = restart_daemon(force=True)
+    action = str(result.get("action") or "")
+    if action == "restarted":
+        print("daemon: restarted onto current code")
+    elif action == "restart-failed":
+        print("daemon: restart FAILED (systemctl error) — check: "
+              "systemctl --user status mercury-observatory.service",
+              file=sys.stderr)
+        return 1
+    else:
+        print(f"daemon: {action}")
+    if _restart_gateway_now() != 0:
+        return 1
+    try:
+        from mercury_cli.setup import _verify_gateway_bot
+
+        ok, detail = _verify_gateway_bot(tries=6, wait=10)
+    except Exception as exc:
+        print(f"bot check unavailable: {exc}", file=sys.stderr)
+        return 0
+    if ok:
+        print(f"bot: {detail}")
+        return 0
+    print(f"bot: {detail}", file=sys.stderr)
+    return 1
 
 
 def _cmd_doctor(args) -> int:
@@ -106,4 +177,8 @@ def build_observatory_parser(subparsers) -> None:
     p_rooms.add_argument("--home", default=None, help="Mercury home override")
     p_doctor = subs.add_parser("doctor", help="Diagnose user-to-agent chat path")
     p_doctor.add_argument("--home", default=None, help="Mercury home override")
+    p_restart = subs.add_parser(
+        "restart",
+        help="Restart daemon + gateway onto current code, verify the bot",
+    )
     parser.set_defaults(func=cmd_observatory)
