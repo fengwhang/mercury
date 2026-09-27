@@ -900,14 +900,16 @@ class IRCAdapter(BasePlatformAdapter):
             # Ignore our own messages
             if sender_nick.lower() == self._current_nick.lower():
                 return
-            # History replay is display-only: the server re-sends recent
-            # room history (sender!relay@mercury) on every JOIN. Executing
-            # it would re-run old commands on every reconnect (version /
-            # spawn / restart loops across restarts) — and every replayed
-            # spawn mints a NEW room, so the loop also litters channels.
-            # Live traffic always carries the sender's real user host.
-            if "!relay@" in (msg.get("prefix") or "").lower():
-                return
+            # NO host-based "relay" filter here — and never reintroduce one.
+            # The daemon renders EVERY peer-to-peer channel line as
+            # sender!relay@<server_name> (ircd _fanout; server_name is the
+            # operator's custom observatory name, not a constant). A
+            # !relay@ drop therefore swallows LIVE traffic: it shipped
+            # once (v0.1.3..v0.1.22) and the symptom was a bot that
+            # announces "Gateway online" and then answers nothing. The
+            # loop it guarded against — history replay re-executing old
+            # commands on reconnect — is gone SERVER-SIDE (no JOIN replay,
+            # no history storage): there is nothing to re-execute.
             try:
                 # Agent identities speaking in their rooms are never user
                 # turns — routing them back would make agents answer
