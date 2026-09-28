@@ -260,6 +260,19 @@ class IRCAdapter(BasePlatformAdapter):
 
     # ── Connection lifecycle ──────────────────────────────────────────────
 
+    async def _ensure_multiline(self) -> None:
+        """Late CAP REQ for a multiline LS that arrived after the 2s
+        connect-time wait (slow daemon at restart). No-op when already
+        negotiated or the server never advertised it. Best-effort."""
+        try:
+            if self._server_multiline or "draft/multiline" not in self._server_caps:
+                return
+            self._cap_event.clear()
+            await self._send_raw("CAP REQ :draft/multiline")
+            await asyncio.wait_for(self._cap_event.wait(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IRC server, register, and join the channel."""
         if not self.server or not self.channel:
@@ -348,6 +361,10 @@ class IRCAdapter(BasePlatformAdapter):
         await self._send_raw(f"JOIN {self.channel}")
         for extra in sorted(self.extra_channels):
             await self._send_raw(f"JOIN {extra}")
+        await self._ensure_multiline()
+        logger.info("IRC: multiline %s (server caps: %s)",
+                    "on" if self._server_multiline else "off",
+                    ",".join(sorted(self._server_caps)) or "none")
 
         # OPER for the observatory /exit room kill (no-op when unconfigured).
         if self.oper_password:

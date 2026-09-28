@@ -151,6 +151,61 @@ class _Probe:
             self.sock = None
 
 
+def _probe_server_caps(host: str, port: int, password: str = "",
+                       timeout: float = 5.0) -> set[str]:
+    """CAP LS against the live daemon (never raises; empty set on failure).
+
+    Pre-registration: answers whether the RUNNING daemon (not just the
+    code on disk) supports draft/multiline batching. The password goes
+    on the wire only, never into results."""
+    caps: set[str] = set()
+    try:
+        sock = socket.create_connection((host, int(port)), timeout=timeout)
+    except (OSError, ValueError):
+        return caps
+    try:
+        sock.settimeout(timeout)
+        if password:
+            sock.sendall(f"PASS {password}\r\n".encode())
+        sock.sendall(b"CAP LS 302\r\n")
+        deadline = time.monotonic() + timeout
+        buf = b""
+        while time.monotonic() < deadline:
+            try:
+                ready, _, _ = select.select([sock], [], [], 0.5)
+            except (OSError, ValueError):
+                break
+            if not ready:
+                continue
+            try:
+                data = sock.recv(4096)
+            except OSError:
+                break
+            if not data:
+                break
+            buf += data
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                parts = raw.decode("utf-8", errors="replace").split()
+                # Reply shape: ``:srv CAP <nick|*> LS [*] :caps...``
+                # (parts still carry the source prefix here).
+                if len(parts) >= 4 and parts[1] == "CAP" and parts[3].upper() == "LS":
+                    rest = " ".join(parts[4:])
+                    if rest.startswith("*"):
+                        caps.update(rest[1:].lstrip(" :").split())
+                    else:
+                        caps.update(rest.lstrip(" :").split())
+                        return caps
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+    return caps
+
+
 def _established_to(port: int) -> int:
     """Count ESTABLISHED TCP connections touching *port* (either side).
 
@@ -502,6 +557,18 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     results.append((server_up, "server listener",
                     f"{server_host}:{server_port} "
                     + ("answers" if server_up else "NOTHING LISTENING — clients cannot connect")))
+    if server_up:
+        caps = _probe_server_caps(server_host, server_port, server_pw)
+        if "draft/multiline" in caps:
+            results.append((True, "multiline caps",
+                            "daemon advertises draft/multiline "
+                            "(multi-line messages arrive as one row)"))
+        else:
+            results.append((False, "multiline caps",
+                            "daemon does NOT advertise draft/multiline — "
+                            "clients fall back to one row per line; the "
+                            "running daemon predates the code on disk, "
+                            "restart it"))
     try:
         from observatory.lounge import lounge_prefix, lounge_unit_active
 

@@ -832,3 +832,51 @@ class TestIRCReadHandleSplit:
         await adapter._handle_task()
         assert seen == [":a PRIVMSG #t :one", ":a PRIVMSG #t :two"]
 
+
+
+class TestIRCAdapterMultilineReconcile:
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667,
+                   "nickname": "testbot", "channel": "#test",
+                   "use_tls": False},
+        )
+        from plugins.platforms.irc.adapter import IRCAdapter
+        return IRCAdapter(cfg)
+
+    @pytest.mark.asyncio
+    async def test_ensure_multiline_requests_late_cap(self, adapter, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        sent = []
+        adapter._server_caps = {"draft/multiline"}
+        adapter._server_multiline = False
+
+        async def fake_send_raw(line):
+            sent.append(line)
+            adapter._server_multiline = True
+            adapter._cap_event.set()
+
+        monkeypatch.setattr(adapter, "_send_raw", fake_send_raw)
+        await adapter._ensure_multiline()
+        assert sent == ["CAP REQ :draft/multiline"]
+
+    @pytest.mark.asyncio
+    async def test_ensure_multiline_noop_when_on_or_unsupported(self, adapter, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        async def boom(line):
+            raise AssertionError("no CAP traffic expected")
+
+        monkeypatch.setattr(adapter, "_send_raw", boom)
+        adapter._server_caps = {"draft/multiline"}
+        adapter._server_multiline = True
+        await adapter._ensure_multiline()
+        adapter._server_caps = set()
+        adapter._server_multiline = False
+        await adapter._ensure_multiline()

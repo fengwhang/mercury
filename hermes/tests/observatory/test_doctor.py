@@ -122,3 +122,73 @@ def test_listening_pid_finds_own_listener() -> None:
         assert _listening_pid(port) == _os.getpid()
     finally:
         srv.close()
+
+
+def test_probe_server_caps_sees_multiline(tmp_path) -> None:
+    """The caps probe sees draft/multiline on a live daemon, empty on refusal."""
+    import socket as _socket
+
+    from observatory import doctor as doctor_mod
+    from observatory.ircd import DaemonConfig, IrcDaemon
+
+    async def _run() -> None:
+        config = DaemonConfig(
+            agent_port=0, server_port=0,
+            server_name="vm", password="s3cret", agent_password="a3cret",
+            state_dir=str(tmp_path))
+        d = IrcDaemon(config)
+        await d.start()
+        try:
+            port = d._servers[1].sockets[0].getsockname()[1]
+            caps = await __import__("asyncio").to_thread(
+                doctor_mod._probe_server_caps, "127.0.0.1", port, "s3cret")
+            assert "draft/multiline" in caps
+        finally:
+            await d.stop()
+
+    import asyncio as _asyncio
+    _asyncio.run(_run())
+    s = _socket.socket()
+    s.bind(("127.0.0.1", 0))
+    free = s.getsockname()[1]
+    s.close()
+    assert doctor_mod._probe_server_caps("127.0.0.1", free, "") == set()
+
+
+@pytest.mark.asyncio
+async def test_doctor_reports_multiline_caps(tmp_path, monkeypatch) -> None:
+    """run_doctor gains a multiline-caps row when the server listener is up."""
+    import asyncio
+    import json as _json
+
+    from observatory.doctor import run_doctor
+    from observatory.ircd import DaemonConfig, IrcDaemon
+
+    home = tmp_path / "mercury"
+    (home / "observatory").mkdir(parents=True)
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    for key in ("IRC_SERVER", "IRC_PORT", "IRC_SERVER_PASSWORD",
+                "IRC_CLIENT_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+
+    config = DaemonConfig(
+        agent_port=0, server_host="127.0.0.1", server_port=0,
+        server_name="vm", password="s3cret", agent_password="a3cret",
+        state_dir=str(tmp_path),
+    )
+    d = IrcDaemon(config)
+    await d.start()
+    try:
+        server_port = d._servers[1].sockets[0].getsockname()[1]
+        (home / "observatory" / "ircd.json").write_text(_json.dumps({
+            "server_name": "vm", "agent_host": "127.0.0.1",
+            "agent_port": 1, "server_host": "127.0.0.1",
+            "server_port": server_port,
+        }))
+        (home / ".env").write_text("IRC_CLIENT_PASSWORD=s3cret\n")
+        results = await asyncio.to_thread(run_doctor, home)
+        by_label = {label: (ok, detail) for ok, label, detail in results}
+        ok, detail = by_label["multiline caps"]
+        assert ok is True, detail
+    finally:
+        await d.stop()

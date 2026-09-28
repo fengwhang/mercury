@@ -256,7 +256,10 @@ async def send_multiline(channel: str, lines: list[str]) -> bool:
         conn = get_pool().get(channel)
         if conn is None:
             return False
-        return await conn.send_batch(lines)
+        ok = await conn.send_batch(lines)
+        logger.debug("identity: batch %d lines -> %s (%s)",
+                     len(lines), channel, "ok" if ok else "FAIL")
+        return ok
     except Exception:
         logger.debug("identity: send_ml failed for %s", channel, exc_info=True)
         return False
