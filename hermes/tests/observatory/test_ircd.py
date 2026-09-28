@@ -1088,3 +1088,19 @@ async def test_batch_relay_multiline(tmp_path) -> None:
         finally:
             for client in (a, b, c):
                 await client.close()
+
+
+@pytest.mark.asyncio
+async def test_004_reports_mercury_version(tmp_path) -> None:
+    """The daemon's 004 carries the Mercury release (one version everywhere)."""
+    from mercury_cli import __version__ as mercury_version
+
+    async with running_daemon(tmp_path) as (d, agent_port, _server_port):
+        c = RawClient()
+        await c.connect(agent_port)
+        try:
+            await c.register("vercheck")
+            got = await c.next_match(" 004 ")
+            assert mercury_version in got
+        finally:
+            await c.close()

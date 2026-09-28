@@ -440,12 +440,16 @@ def test_frontend_patch_drift_is_loud(tmp_path) -> None:
 
 
 def test_install_pins_fork_version(tmp_path, monkeypatch) -> None:
+    import json as _json
     from pathlib import Path
 
+    from mercury_cli import __version__ as mercury_version
     from observatory import lounge as lounge_mod
 
     tree = Path(lounge_mod.__file__).resolve().parents[2] / "third_party" / "thelounge"
-    assert "mercury" in lounge_mod._fork_tree_version(tree)
+    pkg = _json.loads((tree / "package.json").read_text(encoding="utf-8"))
+    assert pkg.get("mercuryFork") is True
+    assert lounge_mod._fork_tree_version(tree) == mercury_version
 
 
 def test_frontend_patch_skips_fork_bundle(tmp_path) -> None:
@@ -611,10 +615,12 @@ def test_refresh_reinstalls_current_shipped_tree(tmp_path, monkeypatch) -> None:
 
     shipped = _Path(lounge_mod.__file__).resolve().parents[2] / "third_party" / "thelounge"
     want = lounge_mod._fork_tree_version(shipped)
-    assert "mercury" in want
+    from mercury_cli import __version__ as mercury_version
+
+    assert want == mercury_version  # fork IS the release: one version
     monkeypatch.setattr(lounge_mod, "_fork_source_tree", lambda: shipped)
     monkeypatch.setattr(
-        lounge_mod, "_installed_fork_version", lambda final: "4.5.2-mercury.0")
+        lounge_mod, "_installed_fork_version", lambda final: "0.0.0")
     called = []
     monkeypatch.setattr(
         lounge_mod, "ensure_lounge_installed",
@@ -637,3 +643,25 @@ def test_fork_versions_reports_pair(tmp_path, monkeypatch) -> None:
     have, want = lounge_mod.fork_versions(home)
     assert want == "9.9"
     assert have is None  # nothing installed under the fake home
+
+
+def test_is_fork_tree_markers(tmp_path) -> None:
+    import json as _json
+    from observatory import lounge as lounge_mod
+
+    def _tree(marker: bool, dist: bool) -> object:
+        root = tmp_path / f"t{marker}{dist}"
+        root.mkdir(exist_ok=True)
+        pkg = {"version": "0.0.0"}
+        if marker:
+            pkg["mercuryFork"] = True
+        (root / "package.json").write_text(_json.dumps(pkg))
+        if dist:
+            srv = root / "dist" / "server"
+            srv.mkdir(parents=True)
+            (srv / "index.js").write_text("// built\n")
+        return root
+
+    assert lounge_mod._is_fork_tree(_tree(True, True)) is True
+    assert lounge_mod._is_fork_tree(_tree(True, False)) is False
+    assert lounge_mod._is_fork_tree(_tree(False, True)) is False

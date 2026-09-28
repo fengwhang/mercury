@@ -27,9 +27,10 @@ NPM_PREFIX_DIRNAME = "npm"
 #: npm cache lives here too — ~/.npm must stay untouched so rm -rf
 #: ~/.mercury truly removes every lounge trace.
 NPM_CACHE_DIRNAME = "npm-cache"
-#: Vendored fork base (third_party/thelounge). The fork carries its own
-#: version (package.json, *-mercury.*); the bundle-text patch below only
-#: applies to legacy upstream installs.
+#: Vendored fork base (third_party/thelounge). The fork carries the Mercury
+#: release version (package.json ``version`` + ``mercuryFork: true``
+#: marker); the bundle-text patch below only applies to legacy upstream
+#: installs.
 #: Minified channel-join opener in the 4.5.2 bundle: the frontend opens
 #: EVERY channel join, ignoring the server's shouldOpen flag (queries
 #: excepted). Patched to respect it, so auto-joined agent rooms land in
@@ -235,28 +236,35 @@ def ensure_node() -> str:
 #: runtime deps only, link the bin. No upstream download links anywhere.
 
 
-def _fork_source_tree() -> Path | None:
-    """Vendored fork tree, release-built (never user-compiled).
-
-    Returns third_party/thelounge only when it carries a fork version
-    AND built server output (dist/server/index.js) — i.e. a release-host
-    build. Otherwise None (dev checkouts build it via
-    scripts/build-lounge-fork.sh; user machines must update mercury).
-    """
-    root = Path(__file__).resolve().parents[2] / "third_party" / "thelounge"
+def _is_fork_tree(root: Path) -> bool:
+    """True when *root* is the Mercury fork: explicit marker plus built
+    server output. Version alone proves nothing (upstream shares the
+    name); the marker is stamped by scripts/bump-version.sh."""
     try:
         pkg = root / "package.json"
         if not pkg.is_file():
-            return None
-        version = str(json.loads(pkg.read_text(encoding="utf-8")).get(
-            "version", ""))
-        if "mercury" not in version:
-            return None
+            return False
+        if json.loads(pkg.read_text(encoding="utf-8")).get(
+                "mercuryFork") is not True:
+            return False
         if not (root / "dist" / "server" / "index.js").is_file():
-            return None
+            return False
     except Exception:
-        return None
-    return root
+        return False
+    return True
+
+
+def _fork_source_tree() -> Path | None:
+    """Vendored fork tree, release-built (never user-compiled).
+
+    Returns third_party/thelounge only when it carries the Mercury fork
+    marker (package.json ``mercuryFork: true``) AND built server output
+    (dist/server/index.js) — i.e. a release-host build. Otherwise None
+    (dev checkouts build it via scripts/build-lounge-fork.sh; user
+    machines must update mercury).
+    """
+    root = Path(__file__).resolve().parents[2] / "third_party" / "thelounge"
+    return root if _is_fork_tree(root) else None
 
 
 def _fork_tree_version(tree: Path) -> str:
@@ -365,10 +373,11 @@ def refresh_lounge_fork(mercury_home: str | Path | None = None) -> str:
     ``"reinstalled"``, ``"reinstalled-no-restart: ..."`` (new code on
     disk, service bounce failed), or ``"skipped-..."``.
 
-    FORK AUTHORS: the version string in third_party/thelounge/package.json
-    is the ONLY reinstall signal — EVERY change under the fork's client/
-    or server/ MUST bump the ``-mercury.N`` suffix, or this returns
-    ``"current"`` for stale content forever (seen live in v0.1.29)."""
+    FORK AUTHORS: the fork's package.json ``version`` (== the Mercury
+    release, stamped by scripts/bump-version.sh) is the ONLY reinstall
+    signal — EVERY release MUST restamp it, even when the fork is
+    untouched, or this returns ``"current"`` for stale content forever
+    (seen live in v0.1.29, when a content change shipped without a bump)."""
     prefix = lounge_prefix(mercury_home)
     final = prefix.parent / "pkg"
     try:

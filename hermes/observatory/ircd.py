@@ -25,6 +25,7 @@ first JOIN and destroyed explicitly via :meth:`IrcDaemon.destroy_channel`
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import re
 import time
@@ -37,6 +38,27 @@ logger = logging.getLogger(__name__)
 
 #: IRC-safe channel slug: lowercase, letters/digits/-/_ only.
 _CLEAN_RE = re.compile(r"[^a-z0-9_-]+")
+
+
+@functools.lru_cache(maxsize=1)
+def mercury_version() -> str:
+    """Mercury release for the 004 numeric (user directive: one version
+    everywhere — no sub-versions). Parsed from the tree: importing
+    mercury_cli would drag the daemon into the CLI's dependency wall.
+    Falls back to the legacy literal when unreadable."""
+    try:
+        text = (
+            Path(__file__).resolve().parents[1]
+            / "mercury_cli"
+            / "__init__.py"
+        ).read_text(encoding="utf-8")
+        m = re.search(r'__version__ = "([^"]+)"', text)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "mercury-ircd"
+
 
 
 def clean_channel(name: str) -> str:
@@ -679,14 +701,13 @@ class IrcDaemon:
         await self._send(
             client, f":{name} 003 {nick} :This server was created for Mercury"
         )
-        await self._send(client, f":{name} 004 {nick} {name} mercury-ircd o o")
+        await self._send(client, f":{name} 004 {nick} {name} {mercury_version()} o o")
         await self._send(
             client,
             f":{name} 005 {nick} CHANTYPES=# NICKLEN=32 "
             f"TOPICLEN=256 :are supported by this server",
         )
         # Clients consider login complete at end-of-MOTD; without 376
-        # (or 422) Goguma waits forever and reconnects in a loop.
         await self._numeric(client, 422, nick, "MOTD File is missing")
         if listener != "agent":
             # Parity: every authenticated user lands in every live agent

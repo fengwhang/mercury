@@ -1,7 +1,7 @@
 {
   "name": "thelounge",
   "description": "The self-hosted Web IRC client",
-  "version": "4.5.2-mercury.3",
+  "version": "0.1.33",
   "type": "commonjs",
   "preferGlobal": true,
   "bin": {
@@ -141,5 +141,6 @@
     "vue-eslint-parser": "9.4.3",
     "vue-router": "4.0.15",
     "vuex": "4.0.2"
-  }
+  },
+  "mercuryFork": true
 }

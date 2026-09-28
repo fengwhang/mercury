@@ -43,10 +43,8 @@ echo "== vite build (client) + tsc (server)"
 [ -f "$TMP/tree/dist/server/index.js" ] \
     || { echo "FATAL: server build produced no dist/server/index.js" >&2; exit 1; }
 FORK_VERSION="$(python3 -c "import json; print(json.load(open('$TMP/tree/package.json'))['version'])")"
-case "$FORK_VERSION" in
-    *-mercury.*) ;;
-    *) echo "FATAL: fork tree is not versioned ($FORK_VERSION)" >&2; exit 1 ;;
-esac
+python3 -c "import json,sys; sys.exit(0 if json.load(open('$TMP/tree/package.json')).get('mercuryFork') is True else 1)" \
+    || { echo "FATAL: fork tree lacks the mercuryFork marker" >&2; exit 1; }
 SOURCE_SHA="$(cd "$SRC" && find . -type f -not -path './node_modules/*' -not -path './.git/*' | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)"
 MERCURY_REV="$(cd "$REPO" && git rev-parse --short HEAD)"
 
