@@ -2951,3 +2951,142 @@ part/quit messages where we don't load previews (adds a blank line otherwise) */
 	justify-content: center;
 	align-items: center;
 }
+
+/* Mercury: single-column message layout. The 3-column time|nick|text gutter
+ * becomes a header row (nick left, timestamp right) with full-width content
+ * below. Flex ordering only, so every message-type branch keeps working
+ * untouched. Mobile (<480px) block layout is unaffected: order, flex-basis
+ * and margins are inert outside flexbox. */
+#chat .msg {
+	flex-wrap: wrap;
+}
+
+#chat .from {
+	order: 1;
+	flex: 0 1 auto;
+	width: auto;
+	max-width: 100%;
+	padding: 8px 8px 0 10px;
+	text-align: left;
+	mask-image: none;
+	text-overflow: ellipsis;
+}
+
+#chat .time {
+	order: 2;
+	flex: 0 0 auto;
+	width: auto;
+	margin-left: auto;
+	padding: 8px 6px 0 0;
+	font-size: 12px;
+}
+
+#chat .content {
+	order: 3;
+	flex: 1 1 100%;
+	box-sizing: border-box;
+	border-left: none;
+	padding: 1px 6px 3px 10px;
+}
+
+/* Consecutive messages from the same nick: hide the repeated nick, keep the
+ * timestamp so the header row still anchors the group. */
+#chat .msg.previous-source .from {
+	display: none;
+}
+
+#chat .msg.previous-source .time {
+	padding-top: 2px;
+}
+
+/* Mercury: Jupyter-style markdown + LaTeX. Block wrappers emitted by
+ * client/js/helpers/parse.ts for fenced code, math, headings, quotes,
+ * and lists. Inline emphasis reuses the irc-* classes from control codes. */
+#chat .md-h1,
+#chat .md-h2,
+#chat .md-h3,
+#chat .md-h4,
+#chat .md-h5,
+#chat .md-h6 {
+	font-weight: bold;
+	margin: 8px 0 4px;
+}
+
+#chat .md-h1 {
+	font-size: 1.4em;
+}
+
+#chat .md-h2 {
+	font-size: 1.25em;
+}
+
+#chat .md-h3,
+#chat .md-h4,
+#chat .md-h5,
+#chat .md-h6 {
+	font-size: 1.1em;
+}
+
+#chat .md-quote {
+	border-left: 3px solid var(--body-color-muted, #ccc);
+	padding-left: 8px;
+	margin: 4px 0;
+}
+
+#chat .md-ul {
+	position: relative;
+	padding-left: 1.2em;
+}
+
+#chat .md-ul::before {
+	content: "•";
+	position: absolute;
+	left: 0.2em;
+}
+
+#chat .md-ol {
+	padding-left: 1.5em;
+}
+
+#chat .md-hr {
+	border-top: 1px solid var(--body-color-muted, #ccc);
+	margin: 8px 0;
+}
+
+#chat .md-code {
+	background: rgba(127, 127, 127, 0.12);
+	border-radius: 6px;
+	padding: 8px 10px;
+	overflow-x: auto;
+	margin: 6px 0;
+}
+
+#chat .md-code code {
+	font-family: monospace;
+	font-size: 0.92em;
+	white-space: pre;
+	background: none;
+	padding: 0;
+}
+
+#chat .hljs-comment {
+	opacity: 0.65;
+	font-style: italic;
+}
+
+#chat .hljs-keyword,
+#chat .hljs-selector-tag,
+#chat .hljs-built_in,
+#chat .hljs-type {
+	font-weight: bold;
+}
+
+#chat .hljs-string,
+#chat .hljs-regexp {
+	color: #2f9e44;
+}
+
+#chat .md-math-display {
+	overflow-x: auto;
+	padding: 4px 0;
+}

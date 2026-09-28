@@ -1,7 +1,7 @@
 {
   "name": "thelounge",
   "description": "The self-hosted Web IRC client",
-  "version": "4.5.2-mercury.1",
+  "version": "4.5.2-mercury.2",
   "type": "commonjs",
   "preferGlobal": true,
   "bin": {
@@ -63,8 +63,9 @@
     "express": "4.20.0",
     "file-type": "16.5.4",
     "filenamify": "4.3.0",
-    "got": "11.8.6",
+    "highlight.js": "11.12.0",
     "irc-framework": "github:kiwiirc/irc-framework#9578e59",
+    "katex": "0.18.9",
     "ldapjs": "2.3.3",
     "linkify-it": "3.0.3",
     "lodash": "4.17.21",

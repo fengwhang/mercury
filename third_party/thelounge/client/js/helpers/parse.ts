@@ -14,6 +14,16 @@ import LinkPreviewFileSize from "../../components/LinkPreviewFileSize.vue";
 import InlineChannel from "../../components/InlineChannel.vue";
 import Username from "../../components/Username.vue";
 import {ClientMessage, ClientNetwork} from "../types";
+import {
+	detectBlock,
+	extractBlocks,
+	inlineMdToIrcCodes,
+	MdBlock,
+	renderCodeBlock,
+	renderMathDisplay,
+	renderMathSpan,
+	splitInlineMath,
+} from "./markdown";
 
 const emojiModifiersRegex = /[\u{1f3fb}-\u{1f3ff}]|\u{fe0f}/gu;
 
@@ -102,10 +112,67 @@ function createFragment(fragment: StyledFragment): VNode | string | undefined {
 // real line breaks. Split first so links/channels/emoji never match across
 // a line boundary, then join the per-line vnode lists with <br>.
 function parse(text: string, message?: ClientMessage, network?: ClientNetwork) {
-	return text.split("\n").flatMap((line, index) => {
-		const parts = parseLine(line, message, network);
+	const {text: carved, blocks} = extractBlocks(text);
+	return carved.split("\n").flatMap((line, index) => {
+		const parts = parseRichLine(line, message, network, blocks);
 		return index === 0 ? parts : [createElement("br"), ...parts];
 	});
+}
+
+function parseRichLine(
+	line: string,
+	message?: ClientMessage,
+	network?: ClientNetwork,
+	blocks: MdBlock[]
+) {
+	const desc = detectBlock(line, blocks);
+
+	switch (desc.type) {
+		case "code":
+			return [renderCodeBlock(desc.block)];
+		case "math":
+			return [renderMathDisplay(desc.block)];
+		case "hr":
+			return [createElement("div", {class: "md-hr"})];
+		case "h":
+			return [
+				createElement(
+					"div",
+					{class: `md-h${desc.level}`},
+					parseProse(desc.inner, message, network)
+				),
+			];
+		case "quote":
+			return [
+				createElement(
+					"div",
+					{class: "md-quote"},
+					parseProse(desc.inner, message, network)
+				),
+			];
+		case "ul":
+		case "ol":
+			return [
+				createElement(
+					"div",
+					{
+						class: desc.type === "ul" ? "md-ul" : "md-ol",
+						style: desc.indent > 0 ? {marginLeft: `${desc.indent}ch`} : undefined,
+					},
+					parseProse(desc.inner, message, network)
+				),
+			];
+		default:
+			return parseProse(line, message, network);
+	}
+}
+
+function parseProse(text: string, message?: ClientMessage, network?: ClientNetwork) {
+	return splitInlineMath(text).flatMap((piece) =>
+		typeof piece === "string"
+			? parseLine(inlineMdToIrcCodes(piece), message, network)
+			: [renderMathSpan(piece.tex)]
+	);
 }
 
 function parseLine(text: string, message?: ClientMessage, network?: ClientNetwork) {
