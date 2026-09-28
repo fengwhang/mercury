@@ -172,11 +172,9 @@ async def test_server_password_enforced(tmp_path) -> None:
         try:
             await u.send("NICK user")
             await u.send("USER user 0 * :test")
-            # No 464 before an auth attempt: clients latch an early 464
-            # as fatal (Goguma). A NOTICE (automaton-safe) instead.
-            assert "needs PASS" in await u.next_match("NOTICE", timeout=2.0)
-            with pytest.raises(TimeoutError):
-                await u.next_match("464", timeout=0.5)
+            # Fork-only: every client sends PASS first, so a missing
+            # password fails fast with 464 (no wait-for-late-PASS).
+            assert await u.next_match("464")
             await u.send("PASS wrong")
             assert await u.next_match("464")
         finally:
@@ -406,73 +404,9 @@ async def test_both_listeners_down_raises(tmp_path) -> None:
         held.close()
         await d.stop()
 
-
-@pytest.mark.asyncio
-async def test_sasl_plain_login(tmp_path) -> None:
-    import base64
-
-    async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
-        c = RawClient()
-        await c.connect(server_port)
-        try:
-            await c.send("CAP LS 302")
-            got = await c.next_match("CAP ")
-            assert "sasl" in got
-            await c.send("CAP REQ :sasl")
-            await c.next_match("ACK :sasl")
-            await c.send("AUTHENTICATE PLAIN")
-            await c.next_match("AUTHENTICATE +")
-            blob = base64.b64encode(b"user\x00user\x00s3cret").decode()
-            await c.send(f"AUTHENTICATE {blob}")
-            await c.next_match("903")
-            await c.send("NICK sasluser")
-            await c.send("USER sasluser 0 * :t")
-            await c.next_match(" 001 ")
-            await c.send("JOIN #saslroom")
-            await c.next_match("JOIN #saslroom")
-        finally:
-            await c.close()
-
-
-@pytest.mark.asyncio
-async def test_sasl_wrong_password_stays_out(tmp_path) -> None:
-    import base64
-
-    async with running_daemon(tmp_path, password="s3cret") as (d, _, server_port):
-        c = RawClient()
-        await c.connect(server_port)
-        try:
-            await c.send("AUTHENTICATE PLAIN")
-            await c.next_match("AUTHENTICATE +")
-            blob = base64.b64encode(b"user\x00user\x00wrong").decode()
-            await c.send(f"AUTHENTICATE {blob}")
-            await c.next_match("904")
-            await c.send("NICK nosuch")
-            await c.send("USER nosuch 0 * :t")
-            await asyncio.sleep(0.3)
-            assert "nosuch" in d._clients  # nick reserved…
-            assert d._clients["nosuch"].registered is False  # …but never registered
-        finally:
-            await c.close()
-
-
-@pytest.mark.asyncio
-async def test_sasl_abort(tmp_path) -> None:
-    async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
-        c = RawClient()
-        await c.connect(server_port)
-        try:
-            await c.send("AUTHENTICATE PLAIN")
-            await c.next_match("AUTHENTICATE +")
-            await c.send("AUTHENTICATE *")
-            await c.next_match("906")
-        finally:
-            await c.close()
-
-
 @pytest.mark.asyncio
 async def test_tls_listener_serves_strict_clients(tmp_path) -> None:
-    """A TLS-only client (Goguma-style) registers and joins over TLS."""
+    """A TLS-only client registers and joins over TLS."""
     import ssl
 
     from observatory import provision as _prov
@@ -561,51 +495,6 @@ async def test_tls_listener_serves_strict_clients(tmp_path) -> None:
     finally:
         await d.stop()
 
-
-@pytest.mark.asyncio
-async def test_pass_last_order_registers(tmp_path) -> None:
-    """NICK/USER before PASS (the Goguma order) must still register."""
-    async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
-        c = RawClient()
-        await c.connect(server_port)
-        try:
-            await c.send("NICK late")
-            await c.send("USER late 0 * :test")
-            # Silence — no 464 before the password arrives.
-            with pytest.raises(TimeoutError):
-                await c.next_match("464", timeout=0.5)
-            await c.send("PASS s3cret")
-            assert await c.next_match(" 001 ", timeout=5.0)
-        finally:
-            await c.close()
-
-
-@pytest.mark.asyncio
-async def test_sasl_after_nick_user_registers(tmp_path) -> None:
-    """SASL PLAIN after NICK/USER must complete registration (903 → 001)."""
-    import base64
-
-    async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
-        c = RawClient()
-        await c.connect(server_port)
-        try:
-            await c.send("NICK sasluser")
-            await c.send("USER sasluser 0 * :test")
-            # Silence — no 464 before SASL completes.
-            with pytest.raises(TimeoutError):
-                await c.next_match("464", timeout=0.5)
-            await c.send("CAP REQ :sasl")
-            assert await c.next_match("ACK :sasl")
-            await c.send("AUTHENTICATE PLAIN")
-            assert await c.next_match("AUTHENTICATE +")
-            blob = base64.b64encode(b"sasluser\x00sasluser\x00s3cret").decode()
-            await c.send(f"AUTHENTICATE {blob}")
-            assert await c.next_match(" 903 ")
-            assert await c.next_match(" 001 ", timeout=5.0)
-        finally:
-            await c.close()
-
-
 @pytest.mark.asyncio
 async def test_failed_pass_logs_shape_not_secret(tmp_path, caplog) -> None:
     """A wrong PASS logs attempt shape (lengths) but never the secret."""
@@ -680,64 +569,19 @@ async def test_cap_negotiates_subset(tmp_path) -> None:
         try:
             await c.send("CAP LS 302")
             ls = await c.next_match("CAP ")
-            for cap in ("sasl", "message-tags", "server-time", "batch",
-                        "echo-message", "labeled-response"):
+            for cap in ("batch", "draft/multiline"):
                 assert cap in ls
-            await c.send("CAP REQ :sasl message-tags bogus-cap")
+            for dead in ("sasl", "message-tags", "server-time",
+                         "echo-message", "labeled-response"):
+                assert dead not in ls
+            await c.send("CAP REQ :draft/multiline bogus-cap")
             ack = await c.next_match("ACK ")
-            assert "sasl" in ack and "message-tags" in ack
+            assert "draft/multiline" in ack
             nak = await c.next_match("NAK ")
             assert "bogus-cap" in nak
             await c.send("CAP END")
         finally:
             await c.close()
-
-
-@pytest.mark.asyncio
-async def test_labeled_privmsg_routes_and_echoes(tmp_path) -> None:
-    """@label PRIVMSG still routes; echo-message returns it with the label."""
-    async with running_daemon(tmp_path) as (d, agent_port, __):
-        a = RawClient()
-        await a.connect(agent_port)
-        try:
-            await a.register("alice")
-            await a.send("CAP REQ :echo-message labeled-response message-tags")
-            assert await a.next_match("ACK ")
-            await a.send("JOIN #echo")
-            assert await a.next_match("JOIN #echo")
-            await a.send("@label=xyz PRIVMSG #echo :hello")
-            echo = await a.next_match("PRIVMSG #echo :hello")
-            assert "@label=xyz" in echo or "label=xyz" in echo
-        finally:
-            await a.close()
-
-
-@pytest.mark.asyncio
-async def test_server_time_tagged_only_when_negotiated(tmp_path) -> None:
-    """Relayed lines carry @time only for server-time clients."""
-    async with running_daemon(tmp_path) as (_, agent_port, __):
-        a = RawClient()
-        await a.connect(agent_port)
-        try:
-            await a.register("anna")
-            await a.send("JOIN #t")
-            assert await a.next_match("JOIN #t")
-            b = RawClient()
-            await b.connect(agent_port)
-            try:
-                await b.register("bob")
-                await b.send("CAP REQ :server-time message-tags")
-                assert await b.next_match("ACK ")
-                await b.send("JOIN #t")
-                assert await b.next_match("JOIN #t")
-                await a.send("PRIVMSG #t :hi bob")
-                got = await b.next_match("PRIVMSG #t :hi bob")
-                assert "@time=" in got
-            finally:
-                await b.close()
-        finally:
-            await a.close()
-
 
 
 @pytest.mark.asyncio
@@ -1056,23 +900,18 @@ async def test_cap_ls_advertises_multiline(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_batch_relay_multiline(tmp_path) -> None:
-    """A draft/multiline batch relays frames+tags to capable peers,
-    bare lines to legacy peers — one logical message, no new behavior
-    for clients that never negotiated it."""
+    """Fork-only relay: BATCH frames and tags go to every member —
+    no capable/legacy split, every client negotiates draft/multiline."""
     async with running_daemon(tmp_path) as (_, agent_port, __):
-        a, b, c = RawClient(), RawClient(), RawClient()
-        for client in (a, b, c):
+        a, b = RawClient(), RawClient()
+        for client in (a, b):
             await client.connect(agent_port)
         try:
             await a.register("alice")
             await b.register("bruno")
-            await c.register("cara")
-            for client in (a, b, c):
+            for client in (a, b):
                 await client.send("JOIN #multi")
                 await client.next_match("JOIN #multi")
-            await b.send("CAP REQ :draft/multiline")
-            ack = await b.next_match("ACK ")
-            assert "draft/multiline" in ack
             await a.send("BATCH +r1 draft/multiline #multi")
             await a.send("@batch=r1 PRIVMSG #multi :line one")
             await a.send("@batch=r1 PRIVMSG #multi :line two")
@@ -1081,12 +920,8 @@ async def test_batch_relay_multiline(tmp_path) -> None:
             assert "batch=r1" in await b.next_match("line one")
             assert "batch=r1" in await b.next_match("line two")
             await b.next_match("BATCH -")
-            c1 = await c.next_match("line one")
-            assert "batch=" not in c1
-            c2 = await c.next_match("line two")
-            assert "batch=" not in c2
         finally:
-            for client in (a, b, c):
+            for client in (a, b):
                 await client.close()
 
 

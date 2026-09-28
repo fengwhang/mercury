@@ -116,14 +116,10 @@ class _Client:
         "realname",
         "registered",
         "pass_ok",
-        "pass_attempted",
-        "pass_noticed",
         "oper",
-        "sasl",
         "addr",
         "away",
         "caps",
-        "pending_label",
         "pending_batch",
         "batch_out",
         "channels",
@@ -143,13 +139,9 @@ class _Client:
         self.realname = ""
         self.registered = False
         self.pass_ok = False
-        self.pass_attempted = False
-        self.pass_noticed = False
         self.oper = False
-        self.sasl = None
         self.addr = addr
         self.caps: set[str] = set()
-        self.pending_label: str | None = None
         self.batch_out: dict[str, str] = {}
         self.pending_batch: str | None = None
         self.away: str | None = None
@@ -423,15 +415,13 @@ class IrcDaemon:
     async def _line(
         self, client: _Client, line: str, listener: str, password: str
     ) -> None:
-        # IRCv3 message-tags: strip the @tag block before dispatch so a
-        # labeled PRIVMSG still routes; stash +label for labeled-response.
+        # IRCv3 message-tags: strip the @tag block before dispatch.
+        # Only +batch is honored (fork-only single-message reassembly).
         if line.startswith("@"):
             tagstr, _, line = line[1:].partition(" ")
             for part in tagstr.split(";"):
                 k, _, v = part.partition("=")
-                if k == "label" and v:
-                    client.pending_label = v[:64]
-                elif k == "batch" and v:
+                if k == "batch" and v:
                     client.pending_batch = v[:64]
             if not line:
                 return
@@ -443,7 +433,6 @@ class IrcDaemon:
         cmd = cmd.upper()
         if cmd == "PASS":
             given = rest.strip().lstrip(":")
-            client.pass_attempted = True
             client.pass_ok = given == password
             # Shape-only auth log (never the secret): attempt length vs
             # outcome distinguishes truncation/padding from wrong values.
@@ -473,9 +462,6 @@ class IrcDaemon:
             return
         if cmd == "CAP":
             await self._cmd_cap(client, rest.strip())
-            return
-        if cmd == "AUTHENTICATE":
-            await self._cmd_authenticate(client, rest.strip(), listener, password)
             return
         if not client.registered:
             return
@@ -527,16 +513,12 @@ class IrcDaemon:
     def _who(self, client: _Client) -> str:
         return client.nick or "*"
 
-    #: IRCv3 caps we actually honor (Goguma needs these for background
-    #: messaging; each is implemented below, not merely advertised).
+    #: Fork-only caps: the batch protocol every client negotiates.
+    #: (No server-time/message-tags/echo/SASL — nobody left uses them.)
+    #: (No server-time/message-tags/echo/SASL — nobody left uses them.)
     _OFFERED_CAPS = (
-        "sasl",
-        "message-tags",
-        "server-time",
         "batch",
         "draft/multiline",
-        "echo-message",
-        "labeled-response",
     )
 
     async def _cmd_cap(self, client: _Client, arg: str) -> None:
@@ -555,8 +537,6 @@ class IrcDaemon:
             ok = [w for w in wants if w in self._OFFERED_CAPS]
             no = [w for w in wants if w not in self._OFFERED_CAPS]
             client.caps.update(ok)
-            if "sasl" in ok:
-                client.sasl = "negotiated"
             if ok:
                 await self._send(
                     client,
@@ -572,72 +552,6 @@ class IrcDaemon:
         elif sub == "END":
             pass  # registration continues with NICK/USER as normal
         # anything else: ignored (no state change)
-
-    async def _cmd_authenticate(
-        self, client: _Client, arg: str, listener: str, password: str
-    ) -> None:
-        """SASL PLAIN against the listener password (Goguma-style clients).
-
-        Flow: ``AUTHENTICATE PLAIN`` → ``AUTHENTICATE +`` → client sends
-        base64(``authzid\\0authcid\\0passwd``) → 903 + pass (or 904).
-        ``AUTHENTICATE *`` aborts (906). Lenient: PLAIN is accepted even
-        without a prior CAP REQ (small private network, no downgrade risk
-        worth failing closed over).
-        """
-        import base64 as _b64
-
-        who = self._who(client)
-        token = arg.strip()
-        if token == "*":
-            client.sasl = None
-            await self._numeric(client, 906, who, "SASL authentication aborted")
-            return
-        if client.sasl == "plain-pending":
-            client.sasl = None
-            label, client.pending_label = client.pending_label, None
-            try:
-                decoded = _b64.b64decode(token, validate=True).decode("utf-8", "replace")
-            except Exception:
-                decoded = ""
-            parts = decoded.split("\x00")
-            given = parts[-1] if parts else ""
-            client.pass_attempted = True
-            # Shape-only: field count + attempt length, never content.
-            # (Trailing-NUL blobs have an empty last field → 904.)
-            logger.info(
-                "ircd: %s SASL blob fields=%d len=%d expected=%d -> %s",
-                listener, len(parts), len(given), len(password),
-                "903" if (not password or given == password) else "904",
-            )
-            tag = self._tags(client, label=label)
-            name = self.config.server_name
-            if not password or given == password:
-                client.pass_ok = True
-                await self._send(
-                    client, tag + f":{name} 903 {who} :SASL authentication successful")
-                # SASL-after-NICK/USER (the Goguma order): complete
-                # registration now, same as the PASS-last path above.
-                await self._maybe_register(client, listener, password)
-            else:
-                await self._send(
-                    client, tag + f":{name} 904 {who} :SASL authentication failed")
-            return
-        if token.upper() == "PLAIN":
-            client.sasl = "plain-pending"
-            await self._send(client, "AUTHENTICATE +")
-            return
-        # Shape-only: a stray blob here could carry secret material, so
-        # log the mechanism name only for known words, else just length.
-        _mech = token.upper()
-        _known = {
-            "LOGIN", "EXTERNAL", "SCRAM-SHA-1", "SCRAM-SHA-256",
-            "SCRAM-SHA-512", "OAUTHBEARER", "ECDSA-NIST256P-CHALLENGE",
-        }
-        logger.info(
-            "ircd: %s SASL mechanism=%s len=%d -> 904",
-            listener, _mech if _mech in _known else "blob-like", len(token),
-        )
-        await self._numeric(client, 904, who, "SASL authentication failed")
 
     async def _cmd_nick(
         self, client: _Client, nick: str, listener: str, password: str
@@ -673,23 +587,8 @@ class IrcDaemon:
         if client.registered or not client.nick or not client.user:
             return
         if password and not client.pass_ok:
-            # No 464 before the client has attempted auth: clients latch
-            # the first 464 as fatal and ignore a later 903/001 (Goguma
-            # sends NICK/USER before its password). Wrong-password
-            # attempts still get their 464 from the PASS/SASL handler.
-            if not client.pass_attempted:
-                # ...but pure silence freezes clients (and browsers
-                # pointed at the IRC port) with zero feedback. A NOTICE
-                # is automaton-safe: it trips no fatal latch.
-                if not client.pass_noticed:
-                    client.pass_noticed = True
-                    await self._send(
-                        client,
-                        f":{self.config.server_name} NOTICE * :This server needs PASS "
-                        "(the server password from setup) before login "
-                        "completes — set it as the server password and "
-                        "reconnect")
-                return
+            # Fork-only: every client sends PASS first, so a missing or
+            # wrong password fails fast here with no wait-for-late-PASS.
             await self._numeric(client, 464, "*", "Password incorrect")
             return
         client.registered = True
@@ -964,7 +863,6 @@ class IrcDaemon:
             await self._numeric(client, 412, "No text to send", "No text")
             return
         sender = client.nick
-        label, client.pending_label = client.pending_label, None
         batch, client.pending_batch = client.pending_batch, None
         if target.startswith("#"):
             key = target.lower()
@@ -979,14 +877,6 @@ class IrcDaemon:
                 display = self._display.get(key, target)
             msg = HistoryMessage(time.time(), sender, display, text, kind=kind)
             await self._fanout(msg, batch=batch)
-            if "echo-message" in client.caps:
-                await self._send(
-                    client,
-                    self._tags(client, ts=msg.ts, msgid=msg.msgid, label=label,
-                               batch=batch)
-                    + f":{sender}!{client.user}@{self.config.server_name} {kind.upper()} "
-                    f"{display} :{text}",
-                )
         else:
             peer = self._clients.get(target.lower())
             if peer is None or not peer.registered:
@@ -999,18 +889,29 @@ class IrcDaemon:
                 + f":{sender}!{client.user}@{self.config.server_name} {kind.upper()} "
                 f"{peer.nick} :{text}",
             )
-            if "echo-message" in client.caps:
-                await self._send(
-                    client,
-                    self._tags(client, ts=now, label=label, batch=batch)
-                    + f":{sender}!{client.user}@{self.config.server_name} {kind.upper()} "
-                    f"{peer.nick} :{text}",
-                )
             if self.on_privmsg is not None and kind == "privmsg":
                 try:
                     self.on_privmsg(sender, peer.nick, text)
                 except Exception:
                     logger.debug("ircd: on_privmsg hook failed", exc_info=True)
+
+    def _tags(
+        self,
+        client: _Client,
+        *,
+        ts: float | None = None,
+        msgid: str = "",
+        label: str | None = None,
+        batch: str | None = None,
+    ) -> str:
+        """IRCv3 tag prefix. The batch tag rides unconditionally
+        (fork-only: every client negotiates draft/multiline).
+        ts/msgid/label are accepted for call-compat but never emitted —
+        no remaining client negotiates those caps."""
+        parts: list[str] = []
+        if batch:
+            parts.append(f"batch={batch}")
+        return ("@" + ";".join(parts) + " ") if parts else ""
 
     async def _cmd_topic(self, client: _Client, arg: str) -> None:
         if not arg:
@@ -1042,6 +943,7 @@ class IrcDaemon:
             time.time(), client.nick, display, f"topic: {text[:256]}", kind="notice"
         )
         await self._fanout(notice)
+
     async def _fanout(self, msg: HistoryMessage, batch: str = "") -> None:
         key = msg.target.lower()
         if not msg.msgid:
@@ -1055,7 +957,7 @@ class IrcDaemon:
         )
         for nick in members:
             if nick == msg.sender.lower():
-                continue  # echo-message path in _cmd_msg covers the sender
+                continue  # sender never sees its own lines
             peer = self._clients.get(nick)
             if peer is not None:
                 await self._send(
@@ -1072,18 +974,19 @@ class IrcDaemon:
         return bool(peer is not None and peer.registered)
 
     async def _relay_batch_frame(self, client: _Client, target: str, line: str) -> None:
-        """Forward one BATCH frame to multiline-capable recipients only."""
+        """Forward one BATCH frame to every member (fork-only: all clients
+        negotiate draft/multiline, no capable/legacy split)."""
         if target.startswith("#"):
             members = sorted(self._channels.get(target.lower(), ()))
             for nick in members:
                 if nick == client.nick.lower():
                     continue
                 peer = self._clients.get(nick)
-                if peer is not None and "draft/multiline" in peer.caps:
+                if peer is not None:
                     await self._send(peer, line)
         else:
             peer = self._clients.get(target.lower())
-            if peer is not None and peer.registered and "draft/multiline" in peer.caps:
+            if peer is not None and peer.registered:
                 await self._send(peer, line)
 
     async def _cmd_batch(self, client: _Client, arg: str) -> None:
@@ -1146,27 +1049,6 @@ class IrcDaemon:
         return _dt.datetime.fromtimestamp(ts, _dt.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%S."
         ) + f"{int(ts * 1000) % 1000:03d}Z"
-
-    def _tags(
-        self,
-        client: _Client,
-        *,
-        ts: float | None = None,
-        msgid: str = "",
-        label: str | None = None,
-        batch: str | None = None,
-    ) -> str:
-        """IRCv3 tag prefix, gated on negotiated caps (never sent raw)."""
-        parts: list[str] = []
-        if ts is not None and "server-time" in client.caps:
-            parts.append(f"time={self._iso_time(ts)}")
-        if msgid and "message-tags" in client.caps:
-            parts.append(f"msgid={msgid}")
-        if label and "labeled-response" in client.caps:
-            parts.append(f"label={label}")
-        if batch and "draft/multiline" in client.caps:
-            parts.append(f"batch={batch}")
-        return ("@" + ";".join(parts) + " ") if parts else ""
 
     async def _send(self, client: _Client, line: str) -> bool:
         """One line to one client. Returns False when the client is dropped.

@@ -3032,8 +3032,8 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> bool:
     """Offer binding the SERVER port to the tailnet IP. Returns True when
     the bind changed (caller restarts the daemon once at the end).
 
-    The server port (6670) is where your IRC apps connect — The Lounge,
-    Goguma, phones. Tailscale here is what makes the server reachable
+    The server port (6670) is where browsers connect — The Lounge
+    (desktop or phone browsers). Tailscale here is what makes the server reachable
     away from home; localhost keeps working regardless. The bot port is
     a separate question (asked elsewhere). Never starts/stops the daemon
     here; every failure degrades to a hand-edit hint.
@@ -3275,8 +3275,8 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         f"gateway channel:      {gateway_channel} (the gateway agent lives here)",
         "spawn more agents:    /spawn <name> (hermes) or /spawnomp <name> (omp)",
         "                      each gets its own channel; /exit in its room kills it",
-        "                      (Goguma eats /commands: use !spawn, !spawnomp,",
-        "                      !exit, !stop, !approve, !deny instead)",
+        "                      (clients without slash support: use !spawn,",
+        "                      !spawnomp, !exit, !stop, !approve, !deny instead)",
         "subagent rooms:       #parent-child channels stream live tool/thinking traces",
         "",
         "or connect any IRC client directly to this server:",
