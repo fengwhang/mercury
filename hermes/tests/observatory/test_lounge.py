@@ -522,3 +522,80 @@ def test_stage_upload_refusals(tmp_path, monkeypatch) -> None:
     d.mkdir()
     with pytest.raises(lounge_mod.LoungeError):
         lounge_mod.stage_lounge_upload(home, d)
+
+
+def test_refresh_lounge_fork_current_touches_nothing(tmp_path, monkeypatch) -> None:
+    from observatory import lounge as lounge_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "_fork_source_tree", lambda: tmp_path / "shipped")
+    monkeypatch.setattr(
+        lounge_mod, "_fork_tree_version", lambda shipped: "4.5.2-mercury.2")
+    monkeypatch.setattr(
+        lounge_mod, "_installed_fork_version",
+        lambda final: "4.5.2-mercury.2")
+    called = []
+    monkeypatch.setattr(
+        lounge_mod, "ensure_lounge_installed",
+        lambda *a, **k: called.append("ensure"))
+    monkeypatch.setattr(
+        lounge_mod, "restart_lounge", lambda: called.append("restart"))
+    assert lounge_mod.refresh_lounge_fork(tmp_path / "mercury") == "current"
+    assert called == []
+
+
+def test_refresh_lounge_fork_reinstalls_and_restarts_on_drift(
+        tmp_path, monkeypatch) -> None:
+    from observatory import lounge as lounge_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "_fork_source_tree", lambda: tmp_path / "shipped")
+    monkeypatch.setattr(
+        lounge_mod, "_fork_tree_version", lambda shipped: "4.5.2-mercury.2")
+    monkeypatch.setattr(
+        lounge_mod, "_installed_fork_version",
+        lambda final: "4.5.2-mercury.1")
+    called = []
+    monkeypatch.setattr(
+        lounge_mod, "ensure_lounge_installed",
+        lambda *a, **k: called.append("ensure"))
+    monkeypatch.setattr(
+        lounge_mod, "restart_lounge", lambda: called.append("restart"))
+    assert lounge_mod.refresh_lounge_fork(tmp_path / "mercury") == "reinstalled"
+    assert called == ["ensure", "restart"]
+
+
+def test_refresh_lounge_fork_skipped_without_shipped_tree(
+        tmp_path, monkeypatch) -> None:
+    from observatory import lounge as lounge_mod
+
+    monkeypatch.setattr(lounge_mod, "_fork_source_tree", lambda: None)
+    called = []
+    monkeypatch.setattr(
+        lounge_mod, "ensure_lounge_installed",
+        lambda *a, **k: called.append("ensure"))
+    out = lounge_mod.refresh_lounge_fork(tmp_path / "mercury")
+    assert out.startswith("skipped")
+    assert called == []
+
+
+def test_refresh_lounge_fork_reports_failed_bounce(
+        tmp_path, monkeypatch) -> None:
+    from observatory import lounge as lounge_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "_fork_source_tree", lambda: tmp_path / "shipped")
+    monkeypatch.setattr(
+        lounge_mod, "_fork_tree_version", lambda shipped: "4.5.2-mercury.2")
+    monkeypatch.setattr(
+        lounge_mod, "_installed_fork_version",
+        lambda final: "4.5.2-mercury.1")
+    monkeypatch.setattr(
+        lounge_mod, "ensure_lounge_installed", lambda *a, **k: None)
+
+    def _boom() -> None:
+        raise lounge_mod.LoungeError("restart failed: boom")
+
+    monkeypatch.setattr(lounge_mod, "restart_lounge", _boom)
+    out = lounge_mod.refresh_lounge_fork(tmp_path / "mercury")
+    assert out.startswith("reinstalled-no-restart")

@@ -2989,14 +2989,12 @@ part/quit messages where we don't load previews (adds a blank line otherwise) */
 	padding: 1px 6px 3px 10px;
 }
 
-/* Consecutive messages from the same nick: hide the repeated nick, keep the
- * timestamp so the header row still anchors the group. */
-#chat .msg.previous-source .from {
-	display: none;
-}
-
+/* Consecutive messages from the same nick group into one visual block:
+ * the repeated header (nick + timestamp) hides, so a multi-line message
+ * shows a single timestamp on its first row. */
+#chat .msg.previous-source .from,
 #chat .msg.previous-source .time {
-	padding-top: 2px;
+	display: none;
 }
 
 /* Mercury: Jupyter-style markdown + LaTeX. Block wrappers emitted by
@@ -3054,7 +3052,7 @@ part/quit messages where we don't load previews (adds a blank line otherwise) */
 }
 
 #chat .md-code {
-	background: rgba(127, 127, 127, 0.12);
+	background: rgb(127 127 127 / 12%);
 	border-radius: 6px;
 	padding: 8px 10px;
 	overflow-x: auto;

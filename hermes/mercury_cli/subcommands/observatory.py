@@ -117,7 +117,7 @@ def _print_doctor() -> None:
 
 
 def _cmd_restart(args) -> int:
-    """Freshen the chat surface: daemon + gateway, then verify the bot.
+    """Freshen the chat surface: daemon + lounge fork + gateway, then verify.
 
     A service unit bakes an interpreter path at render time, so a plain
     restart re-runs whatever tree was current when the unit was last
@@ -140,6 +140,20 @@ def _cmd_restart(args) -> int:
     else:
         print(f"daemon: FAILED ({unit_result})", file=sys.stderr)
         return 1
+    try:
+        from observatory import lounge as lounge_mod
+
+        configured = bool(lounge_mod.status_lounge().get("configured"))
+    except Exception:  # noqa: BLE001 — a broken status read skips, never kills
+        configured = False
+    if configured:
+        try:
+            lounge_result = lounge_mod.refresh_lounge_fork()
+        except Exception as exc:  # noqa: BLE001 — refresh never kills restart
+            lounge_result = f"skipped-error: {exc}"
+        print(f"lounge: {lounge_result}")
+    else:
+        print("lounge: not installed, skipping")
     if _restart_gateway_now() != 0:
         return 1
     try:

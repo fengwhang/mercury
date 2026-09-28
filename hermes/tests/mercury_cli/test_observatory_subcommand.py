@@ -28,6 +28,14 @@ def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys) 
         lambda *a, **kw: calls.append("unit") or "installed",
     )
     monkeypatch.setattr(
+        "observatory.lounge.status_lounge",
+        lambda *a, **kw: {"configured": True},
+    )
+    monkeypatch.setattr(
+        "observatory.lounge.refresh_lounge_fork",
+        lambda *a, **kw: calls.append("lounge") or "current",
+    )
+    monkeypatch.setattr(
         obs_mod, "_restart_gateway_now", lambda: calls.append("gateway") or 0)
     monkeypatch.setattr(
         "mercury_cli.setup._verify_gateway_bot",
@@ -35,9 +43,10 @@ def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys) 
     )
     rc = obs_mod.cmd_observatory(_args())
     assert rc == 0
-    assert calls == ["unit", "gateway"]  # unit re-render BEFORE anything else
+    assert calls == ["unit", "lounge", "gateway"]  # unit re-render BEFORE anything else
     out = capsys.readouterr().out
     assert "daemon: restarted onto current code" in out
+    assert "lounge: current" in out
     assert "bot: nick present" in out
 
 
@@ -78,3 +87,27 @@ def test_restart_prints_full_diagnosis_when_bot_never_joins(monkeypatch, capsys)
     assert "nick NOT in #x" in text
     assert "[ok] daemon code" in text
     assert "[FAIL] bot connection" in text
+
+
+def test_restart_skips_lounge_when_unmanaged(monkeypatch, capsys) -> None:
+    """No managed Lounge (user declined it): restart must NOT install one."""
+    monkeypatch.setattr(
+        "observatory.provision.ensure_observatory_unit",
+        lambda *a, **kw: "installed",
+    )
+    monkeypatch.setattr(
+        "observatory.lounge.status_lounge",
+        lambda *a, **kw: {"configured": False},
+    )
+
+    def _boom(*a, **kw):
+        raise AssertionError("refresh must not run without a managed install")
+
+    monkeypatch.setattr("observatory.lounge.refresh_lounge_fork", _boom)
+    monkeypatch.setattr(obs_mod, "_restart_gateway_now", lambda: 0)
+    monkeypatch.setattr(
+        "mercury_cli.setup._verify_gateway_bot",
+        lambda **kw: (True, "nick present"),
+    )
+    assert obs_mod.cmd_observatory(_args()) == 0
+    assert "lounge: not installed, skipping" in capsys.readouterr().out

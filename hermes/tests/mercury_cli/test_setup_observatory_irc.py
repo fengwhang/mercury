@@ -741,13 +741,33 @@ def test_lounge_offer_skipped_when_users_exist(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         lounge_mod, "status_lounge",
         lambda *a, **k: {"configured": True, "users": ["owner"]})
+    seen = []
+    monkeypatch.setattr(
+        lounge_mod, "refresh_lounge_fork",
+        lambda *a, **k: seen.append(True) or "current")
     asked = []
     monkeypatch.setattr(
         setup_mod, "prompt_yes_no",
         lambda q, default=True: asked.append(q) or False)
     setup_mod._offer_lounge(None, None)
     assert not asked
+    assert seen == [True]
     assert "keeping it" in capsys.readouterr().out
+
+
+def test_lounge_keep_path_reports_fork_refresh(monkeypatch, capsys) -> None:
+    import observatory.lounge as lounge_mod
+
+    monkeypatch.setattr(
+        lounge_mod, "status_lounge",
+        lambda *a, **k: {"configured": True, "users": ["owner"]})
+    monkeypatch.setattr(
+        lounge_mod, "refresh_lounge_fork",
+        lambda *a, **k: "reinstalled")
+    monkeypatch.setattr(
+        setup_mod, "_converge_lounge_uplink", lambda: None)
+    setup_mod._offer_lounge(None, None)
+    assert "reinstalled" in capsys.readouterr().out
 
 
 def test_password_reset_skipped_after_fresh_creation(monkeypatch) -> None:

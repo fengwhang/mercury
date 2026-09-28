@@ -4058,7 +4058,14 @@ def _offer_lounge(obs, ts: dict | None) -> None:
 
         _st = _lounge_mod.status_lounge()
         if (_st.get("users")):
-            print_info("The Lounge already answers on :9000 — keeping it, no install offered.")
+            try:
+                _fork = _lounge_mod.refresh_lounge_fork()
+            except Exception as exc:  # noqa: BLE001 — refresh never kills setup
+                _fork = f"skipped-error: {exc}"
+            if _fork == "current":
+                print_info("The Lounge already answers on :9000 — keeping it, no install offered.")
+            else:
+                print_info(f"The Lounge fork refreshed ({_fork}) — keeping it, no install offered.")
             _converge_lounge_uplink()
             return
         if not _st.get("configured") and (

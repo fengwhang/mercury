@@ -356,6 +356,33 @@ def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
         raise LoungeError(
             "thelounge install finished but no binary resolves") from None
 
+
+def refresh_lounge_fork(mercury_home: str | Path | None = None) -> str:
+    """Reinstall the Lounge when the installed fork lags the shipped tree,
+    restarting the service so the new bundle actually serves. The fast
+    path (same version) touches nothing — no reinstall, no bounce.
+    Never raises; restart/setup print the status. Returns ``"current"``,
+    ``"reinstalled"``, ``"reinstalled-no-restart: ..."`` (new code on
+    disk, service bounce failed), or ``"skipped-..."``."""
+    prefix = lounge_prefix(mercury_home)
+    final = prefix.parent / "pkg"
+    try:
+        shipped = _fork_source_tree()
+        if shipped is None:
+            return "skipped-no-shipped-fork"
+        if _installed_fork_version(final) == _fork_tree_version(shipped):
+            return "current"
+        ensure_lounge_installed(mercury_home)
+    except LoungeError as exc:
+        return f"skipped-error: {exc}"
+    except Exception as exc:  # noqa: BLE001 — refresh never kills its caller
+        return f"skipped-error: {exc}"
+    try:
+        restart_lounge()
+    except Exception as exc:  # noqa: BLE001 — code is vended; report the bounce
+        return f"reinstalled-no-restart: {exc}"
+    return "reinstalled"
+
 def render_lounge_config(*, host: str, port: int) -> str:
     """Render config.js (pure string templating, no I/O).
 
