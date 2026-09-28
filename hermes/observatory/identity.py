@@ -145,9 +145,11 @@ class IdentityConn:
         if len(lines) == 1:
             return await self.send(lines[0])
         ref = f"i{int(time.time() * 1000):013d}-{next(_batch_seq) % 1000000:06d}"
+        # Blank chunks ride as one space: the daemon 412s empty text,
+        # and the reassembled row keeps the paragraph gap.
         return await self._write_lines(
             [f"BATCH +{ref} draft/multiline {self.channel}"] +
-            [f"@batch={ref} PRIVMSG {self.channel} :{ln}" for ln in lines] +
+            [f"@batch={ref} PRIVMSG {self.channel} :{ln or ' '}" for ln in lines] +
             [f"BATCH -{ref}"])
 
     async def close(self) -> None:

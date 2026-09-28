@@ -234,3 +234,32 @@ async def test_send_multiline_missing_room_reports_false(monkeypatch) -> None:
     pool = identity_mod.IdentityPool()
     monkeypatch.setattr(identity_mod, "_pool", pool)
     assert await identity_mod.send_multiline("#vm_nope", ["a", "b"]) is False
+
+
+@pytest.mark.asyncio
+async def test_identity_batch_preserves_blank_lines(tmp_path) -> None:
+    """Paragraph gaps survive the batch relay as empty tagged lines."""
+    async with running_daemon(tmp_path, password="s3cret") as (d, port):
+        conn = identity_mod.IdentityConn(
+            host="127.0.0.1", port=port, password="s3cret",
+            nick="vm_b3", channel="#vm_b3")
+        c = RawClient()
+        await c.connect(port)
+        try:
+            await c.send("PASS s3cret")
+            await c.send("CAP REQ :draft/multiline")
+            await c.send("NICK watcher")
+            await c.send("USER watcher 0 * :t")
+            await c.next_match(" 001 ")
+            await c.send("JOIN #vm_b3")
+            assert await c.next_match("JOIN #vm_b3")
+            assert await conn.send_batch(["para one", "", "para two"]) is True
+            assert await c.next_match("BATCH +")
+            assert "@batch=" in await c.next_match("para one")
+            blank = await c.next_match("@batch=")
+            assert blank.endswith(":") or blank.endswith(": ")
+            assert "@batch=" in await c.next_match("para two")
+            assert await c.next_match("BATCH -")
+        finally:
+            await c.close()
+            await conn.close()

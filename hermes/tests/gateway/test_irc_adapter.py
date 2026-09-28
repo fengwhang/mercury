@@ -227,17 +227,25 @@ class TestIRCAdapterSplitting:
             overhead = len(f"PRIVMSG #test :{line}\r\n".encode("utf-8"))
             assert overhead <= 512, f"line over 512 bytes: {overhead}"
 
-    def test_split_packs_short_lines_into_one_message(self):
-        """Ten short lines must fill one PRIVMSG, not dribble as ten."""
+    def test_split_preserves_line_breaks(self):
+        """One chunk per source line: batching reunites them into one row
+        with real breaks (ChatGPT-style), so packing with spaces is gone."""
         from gateway.config import PlatformConfig
         cfg = PlatformConfig(enabled=True, extra={"server": "x", "channel": "#x"})
         adapter = IRCAdapter(cfg)
         adapter._current_nick = "bot"
-        text = "\n".join(f"line {i}" for i in range(10))
+        text = "line one\nline two\n\npara two"
         lines = adapter._split_message(text, "#test")
-        assert len(lines) == 1
-        for i in range(10):
-            assert f"line {i}" in lines[0]
+        assert lines == ["line one", "line two", "", "para two"]
+
+    def test_split_keeps_markdown_intact(self):
+        """The client renders markdown — the wire must not strip it."""
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={"server": "x", "channel": "#x"})
+        adapter = IRCAdapter(cfg)
+        adapter._current_nick = "bot"
+        lines = adapter._split_message("**bold** and `code`", "#test")
+        assert lines == ["**bold** and `code`"]
 
 
 class TestIRCProtocolHelpersExtra:
@@ -512,7 +520,7 @@ class TestIRCAdapterIdentityRouting:
         adapter._server_multiline = True
         result = await adapter.send("#test", "line one\n\nline two")
         assert result.success is True
-        assert calls == [("#test", ["line one", "line two"])]
+        assert calls == [("#test", ["line one", "", "line two"])]
         adapter._writer.write.assert_not_called()
 
     @pytest.mark.asyncio
@@ -538,7 +546,7 @@ class TestIRCAdapterIdentityRouting:
         adapter._server_multiline = False
         result = await adapter.send("#test", "line one\n\nline two")
         assert result.success is True
-        assert sent == ["line one", "line two"]
+        assert sent == ["line one", "", "line two"]
 
 
 class TestIRCSilenceWatchdog:

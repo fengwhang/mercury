@@ -524,7 +524,9 @@ class IRCAdapter(BasePlatformAdapter):
         for line in lines:
             try:
                 if batch_ref:
-                    await self._send_raw(f"@batch={batch_ref} PRIVMSG {target} :{line}")
+                    # Blank chunks ride as one space: the daemon 412s
+                    # empty text, and the reassembled row keeps the gap.
+                    await self._send_raw(f"@batch={batch_ref} PRIVMSG {target} :{line or ' '}")
                 else:
                     await self._send_raw(f"PRIVMSG {target} :{line}")
                 # Basic rate limiting to avoid excess flood
@@ -748,29 +750,26 @@ class IRCAdapter(BasePlatformAdapter):
 
     def _split_message(self, content: str, target: str,
                        extra_overhead: int = 0) -> List[str]:
-        """Split a long message into IRC-safe chunks.
+        """Split a message into IRC-safe chunks, preserving line breaks.
 
         IRC has a ~512 byte line limit.  After accounting for protocol
-        overhead (``PRIVMSG <target> :``), we split content into chunks.
-        ``extra_overhead`` reserves room for a tag prefix (batch sends).
+        overhead (``PRIVMSG <target> :``), we emit one chunk per source
+        line (blank lines kept as paragraph gaps); only overlong single
+        lines are chunk-split by bytes.  Batching (draft/multiline)
+        reunites the chunks into ONE row with real line breaks, so
+        packing lines with spaces is gone — and markdown goes through
+        untouched (the client renders it).  ``extra_overhead`` reserves
+        room for a tag prefix (batch sends).
         """
-        # Strip markdown formatting that doesn't render in IRC
-        content = self._strip_markdown(content)
-
         overhead = len(f"PRIVMSG {target} :".encode("utf-8")) + 2  # +2 for \r\n
         max_bytes = 510 - overhead - extra_overhead
         user_limit = self.max_message_length
 
-        # One PRIVMSG per *paragraph* (blank-line-separated block), packed
-        # to the byte limit — not one per source line. The wire cannot
-        # carry newlines, so soft line breaks inside a paragraph become
-        # spaces; blank lines stay message boundaries. Ten short lines
-        # go out as one full message instead of ten dribbles.
         chunks: List[str] = []
-        for paragraph in re.split(r"\n\s*\n", content):
-            para = " ".join(
-                line.strip() for line in paragraph.split("\n") if line.strip())
+        for line in content.split("\n"):
+            para = line.rstrip()
             if not para:
+                chunks.append("")
                 continue
             while True:
                 para_bytes = para.encode("utf-8")
@@ -796,11 +795,17 @@ class IRCAdapter(BasePlatformAdapter):
                 chunks.append(para[:split_at].rstrip())
                 para = para[split_at:].lstrip()
 
+        while chunks and not chunks[0]:
+            chunks.pop(0)
+        while chunks and not chunks[-1]:
+            chunks.pop()
         return chunks if chunks else [""]
 
     @staticmethod
     def _strip_markdown(text: str) -> str:
-        """Convert basic markdown to plain text for IRC."""
+        """Convert basic markdown to plain text for non-rendering surfaces
+        (standalone senders without batching). NEVER on the wire path:
+        the client renders markdown, so the gateway sends it through."""
         # Bold: **text** or __text__ → text
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
         text = re.sub(r"__(.+?)__", r"\1", text)
