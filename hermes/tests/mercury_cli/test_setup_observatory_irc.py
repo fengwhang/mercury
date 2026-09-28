@@ -635,37 +635,46 @@ def test_offer_agent_bind_localhost_wires_env(tmp_path, monkeypatch) -> None:
     obs.mkdir(parents=True)
     (obs / "ircd.json").write_text(_json.dumps({"server_name": "vm"}))
     saved = {}
-    monkeypatch.setattr(setup_mod, "prompt_choice", lambda *a, **k: 0)
+
+    def _boom(*a, **k):
+        raise AssertionError("no prompt: the agent bind is always localhost")
+
+    monkeypatch.setattr(setup_mod, "prompt_choice", _boom)
     monkeypatch.setattr(setup_mod, "save_env_value",
                         lambda k, v: saved.__setitem__(k, v))
     import observatory.provision as provision_mod
     monkeypatch.setattr(provision_mod, "read_irc_passwords",
                         lambda home: {"server": "b", "agent": "a"})
-    setup_mod._offer_agent_bind(None, "vm", {"up": False})
+    assert setup_mod._offer_agent_bind(None, "vm", {"up": False}) is True
     cfg = _json.loads((obs / "ircd.json").read_text())
     assert cfg["agent_host"] == "127.0.0.1"
     assert saved["IRC_SERVER"] == "127.0.0.1"
     assert saved["IRC_NICKNAME"] == "vm_gateway"
 
 
-def test_offer_agent_bind_tailscale_pins_ip(tmp_path, monkeypatch) -> None:
-    """Tailscale choice pins the tailnet IP for the whole agent side."""
+def test_offer_agent_bind_respects_existing_pin(tmp_path, monkeypatch) -> None:
+    """A hand-set agent bind is never clobbered back to localhost."""
     import json as _json
 
     home = tmp_path / "mercury"
     monkeypatch.setenv("MERCURY_HOME", str(home))
     obs = home / "observatory"
     obs.mkdir(parents=True)
-    (obs / "ircd.json").write_text(_json.dumps({"server_name": "vm"}))
+    (obs / "ircd.json").write_text(_json.dumps(
+        {"server_name": "vm", "agent_host": "100.9.9.9"}))
     saved = {}
-    monkeypatch.setattr(setup_mod, "prompt_choice", lambda *a, **k: 1)
+
+    def _boom(*a, **k):
+        raise AssertionError("no prompt: the agent bind is always localhost")
+
+    monkeypatch.setattr(setup_mod, "prompt_choice", _boom)
     monkeypatch.setattr(setup_mod, "save_env_value",
                         lambda k, v: saved.__setitem__(k, v))
     import observatory.provision as provision_mod
     monkeypatch.setattr(provision_mod, "read_irc_passwords",
                         lambda home: {"server": "b", "agent": "a"})
-    setup_mod._offer_agent_bind(
-        None, "vm", {"up": True, "ip": "100.9.9.9", "dns_name": None})
+    assert setup_mod._offer_agent_bind(
+        None, "vm", {"up": True, "ip": "100.9.9.9"}) is False
     cfg = _json.loads((obs / "ircd.json").read_text())
     assert cfg["agent_host"] == "100.9.9.9"
     assert saved["IRC_SERVER"] == "100.9.9.9"

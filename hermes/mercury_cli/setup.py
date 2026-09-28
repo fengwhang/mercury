@@ -3033,10 +3033,11 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> bool:
     the bind changed (caller restarts the daemon once at the end).
 
     The server port (6670) is where browsers connect — The Lounge
-    (desktop or phone browsers). Tailscale here is what makes the server reachable
-    away from home; localhost keeps working regardless. The bot port is
-    a separate question (asked elsewhere). Never starts/stops the daemon
-    here; every failure degrades to a hand-edit hint.
+    (desktop or phone browsers). Tailscale here is what makes the server
+    reachable away from home; localhost keeps working regardless. The
+    bot port stays on localhost (bots always run on this box). Never
+    starts/stops the daemon here; every failure degrades to a hand-edit
+    hint.
     """
     try:
         if not isinstance(ts, dict) or not ts.get("up"):
@@ -4249,30 +4250,16 @@ def _wire_gateway_irc_env(home_label: str) -> bool:
 
 
 def _offer_agent_bind(obs, label: str, ts: dict | None) -> bool:
-    """Offer the BOT port bind (localhost or Tailscale). Returns True when
-    the bind changed (caller restarts the daemon once at the end).
+    """Pin the BOT port to localhost (no prompt). Returns True when the
+    bind changed (caller restarts the daemon once at the end).
 
     The bot port (6669) is daemon-side traffic only: the gateway bot and
-    spawned agents reach the server here. Your IRC apps never touch it —
-    they use the server port. Tailscale is only useful multi-box (a remote
-    frontend driving this box's agents); single-box stays on localhost.
-    Never starts/stops the daemon here.
+    spawned agents reach the server here, always from this box. A
+    Tailscale pin served only a multi-box topology nothing implements,
+    so the choice is gone; a hand-set bind is still respected, never
+    clobbered. Never starts/stops the daemon here.
     """
-    try:
-        ip = (ts or {}).get("ip") if isinstance(ts, dict) else None
-        tail_ok = bool(isinstance(ts, dict) and ts.get("up") and ip)
-        choices = ["Localhost (this box's bots only — normal)"]
-        if tail_ok:
-            choices.append(f"Tailscale ({ip} — only for multi-box agent driving)")
-        choice = prompt_choice(
-            "Bot port (6669) bind — localhost, or Tailscale for multi-box setups?",
-            choices,
-            0,
-        )
-    except KeyboardInterrupt:
-        raise
-    except Exception:  # noqa: BLE001 — a bind offer never kills the wizard
-        return False
+    _ = (obs, ts)
     try:
         from observatory.provision import _mercury_home, read_config
         from observatory.config_gen import ObservatoryPaths
@@ -4284,21 +4271,15 @@ def _offer_agent_bind(obs, label: str, ts: dict | None) -> bool:
         home = _mercury_home(None)
         cfg = read_config(home) or {}
         raw = cfg.get("agent_host")
-        current = str(raw or "127.0.0.1").strip()
-        want = str(ip).strip() if (choice == 1 and tail_ok) else "127.0.0.1"
-        cfg["agent_host"] = want
+        if raw is not None:
+            print_info(f"Bot port stays on {raw}.")
+            _wire_gateway_irc_env(label)
+            return False
+        cfg["agent_host"] = "127.0.0.1"
         paths = ObservatoryPaths(home)
         paths.config_file.write_text(
             _json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-        if want == current and raw is not None:
-            print_info(f"Bot port stays on {current}.")
-            _wire_gateway_irc_env(label)
-            return False
-        if want == "127.0.0.1":
-            print_info("Bot port back on localhost (applies at the final restart).")
-        else:
-            print_success(
-                f"Bot port will bind {want} (applies at the final restart).")
+        print_info("Bot port on localhost.")
     except Exception as exc:  # noqa: BLE001
         print_warning(f"Could not write the bot bind: {exc}")
         print_info("Edit `agent_host` in observatory/ircd.json by hand instead.")
