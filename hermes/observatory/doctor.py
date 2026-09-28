@@ -583,11 +583,19 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     if fork_have or fork_want:
         fork_detail = f" (fork installed {fork_have or 'absent'}, shipped {fork_want or 'unknown'})"
     if lounge_on:
-        if fork_have and fork_want and fork_have != fork_want:
+        try:
+            from observatory.lounge import fork_staleness as _stale
+
+            stale = _stale(mercury_home)
+        except Exception:  # noqa: BLE001 — versions detail is enough
+            stale = "current"
+        if stale in ("stale-version", "stale-content"):
+            why = ("a newer release" if stale == "stale-version"
+                   else "different sources under the same version")
             results.append((False, "chat frontend",
                             "The Lounge serves a STALE fork"
-                            f"{fork_detail} — run mercury observatory "
-                            "restart to vend the shipped bundle"))
+                            f"{fork_detail} ({why}) — run mercury "
+                            "observatory restart to vend the shipped bundle"))
         else:
             results.append((True, "chat frontend",
                             "The Lounge uplink active (your browser chat)"
@@ -600,7 +608,6 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     else:
         results.append((True, "chat frontend",
                         "The Lounge not installed (raw IRC client users: fine)"))
-
     dotenv = _read_dotenv(mercury_home)
     wired_host = _env("IRC_SERVER", dotenv) or "127.0.0.1"
     wired_port = _env("IRC_PORT", dotenv) or "6669"

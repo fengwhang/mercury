@@ -287,32 +287,78 @@ def _installed_fork_version(final: Path) -> str | None:
         return None
 
 
+def _fork_fingerprint(tree: Path) -> dict | None:
+    """``{fork_version, source_sha}`` from a tree's build record, else None.
+
+    The record is written by scripts/build-lounge-fork.sh and travels
+    with the tree (shipped payload and installed copy alike)."""
+    try:
+        data = json.loads((tree / ".mercury-fork-build.json").read_text(
+            encoding="utf-8"))
+        if isinstance(data, dict) and data.get("source_sha"):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def fork_staleness(mercury_home: str | Path | None = None) -> str:
+    """Two-tier freshness for every reinstall path: version numbers first,
+    then shasums. Returns ``"current"`` (nothing to do), ``"missing"``
+    (no usable install), ``"stale-version"`` (release moved on),
+    ``"stale-content"`` (same version, different sources — the
+    forgotten-bump class), or ``"no-shipped"`` (no vendored tree here).
+    Never raises."""
+    try:
+        shipped = _fork_source_tree()
+        if shipped is None:
+            return "no-shipped"
+        want = _fork_tree_version(shipped)
+        prefix = lounge_prefix(mercury_home)
+        final = prefix.parent / "pkg"
+        have = _installed_fork_version(final)
+        if have is None:
+            return "missing"
+        try:
+            existing_bin = lounge_bin(mercury_home)
+        except LoungeError:
+            existing_bin = None
+        if existing_bin is None or not (
+                final / "node_modules" / "irc-framework").is_dir():
+            return "missing"
+        if have != want:
+            return "stale-version"
+        shipped_fp = _fork_fingerprint(shipped)
+        installed_fp = _fork_fingerprint(final)
+        if (shipped_fp is not None and installed_fp is not None
+                and shipped_fp.get("source_sha")
+                != installed_fp.get("source_sha")):
+            return "stale-content"
+        return "current"
+    except Exception:
+        return "missing"
+
 def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
     """Install the vendored Mercury fork (never upstream, never compile).
 
     The fork ships inside the mercury distribution with its client bundle
     + server already built on the release host (like the omp binaries).
     Install here = copy the tree, ``npm install --omit=dev`` for runtime
-    deps only, link the bin. Reinstalls when the installed version
-    differs — this is also how a hand-installed upstream gets replaced
-    by the fork. Raises with the exact state when the shipped tree is
-    missing so the wizard can offer it (update mercury).
+    deps only, link the bin. Reinstalls on :func:`fork_staleness` —
+    missing install, version drift, or content drift (same version,
+    different sources) — which is also how a hand-installed upstream
+    gets replaced by the fork. Raises with the exact state when the
+    shipped tree is missing so the wizard can offer it (update mercury).
     """
+    if fork_staleness(mercury_home) == "current":
+        return str(lounge_bin(mercury_home))
     shipped = _fork_source_tree()
     if shipped is None:
         raise LoungeError(
             "no vendored lounge fork found — update mercury to a release "
             "that ships third_party/thelounge built (dist/server/index.js)")
-    want = _fork_tree_version(shipped)
     prefix = lounge_prefix(mercury_home)
     final = prefix.parent / "pkg"
-    try:
-        existing_bin = lounge_bin(mercury_home)
-    except LoungeError:
-        existing_bin = None
-    if (_installed_fork_version(final) == want and existing_bin is not None
-            and (final / "node_modules" / "irc-framework").is_dir()):
-        return str(existing_bin)
     npm = shutil.which("npm")
     if npm is None:
         raise LoungeError(
@@ -366,26 +412,24 @@ def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
 
 
 def refresh_lounge_fork(mercury_home: str | Path | None = None) -> str:
-    """Reinstall the Lounge when the installed fork lags the shipped tree,
-    restarting the service so the new bundle actually serves. The fast
-    path (same version) touches nothing — no reinstall, no bounce.
-    Never raises; restart/setup print the status. Returns ``"current"``,
-    ``"reinstalled"``, ``"reinstalled-no-restart: ..."`` (new code on
-    disk, service bounce failed), or ``"skipped-..."``.
+    """Reinstall the Lounge when :func:`fork_staleness` says the installed
+    fork lags the shipped tree, restarting the service so the new bundle
+    actually serves. The fast path (current) touches nothing — no
+    reinstall, no bounce. Never raises; restart/setup print the status.
+    Returns ``"current"``, ``"reinstalled"`` (missing install or version
+    drift), ``"reinstalled-content"`` (same version, different sources —
+    the forgotten-bump class), ``"reinstalled-no-restart: ..."`` (new
+    code on disk, service bounce failed), or ``"skipped-..."``.
 
-    FORK AUTHORS: the fork's package.json ``version`` (== the Mercury
-    release, stamped by scripts/bump-version.sh) is the ONLY reinstall
-    signal — EVERY release MUST restamp it, even when the fork is
-    untouched, or this returns ``"current"`` for stale content forever
-    (seen live in v0.1.29, when a content change shipped without a bump)."""
-    prefix = lounge_prefix(mercury_home)
-    final = prefix.parent / "pkg"
+    FORK AUTHORS: scripts/bump-version.sh restamps the fork version on
+    EVERY release, even untouched ones — the version tier only works
+    because of that. The shasum tier covers the rest."""
     try:
-        shipped = _fork_source_tree()
-        if shipped is None:
-            return "skipped-no-shipped-fork"
-        if _installed_fork_version(final) == _fork_tree_version(shipped):
+        stale = fork_staleness(mercury_home)
+        if stale == "current":
             return "current"
+        if stale == "no-shipped":
+            return "skipped-no-shipped-fork"
         ensure_lounge_installed(mercury_home)
     except LoungeError as exc:
         return f"skipped-error: {exc}"
@@ -395,7 +439,7 @@ def refresh_lounge_fork(mercury_home: str | Path | None = None) -> str:
         restart_lounge()
     except Exception as exc:  # noqa: BLE001 — code is vended; report the bounce
         return f"reinstalled-no-restart: {exc}"
-    return "reinstalled"
+    return "reinstalled-content" if stale == "stale-content" else "reinstalled"
 
 
 def fork_versions(mercury_home: str | Path | None = None) -> tuple[str | None, str | None]:

@@ -216,8 +216,42 @@ def test_doctor_frontend_row_shows_fork_versions(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(lounge_mod, "lounge_unit_active", lambda: True)
     monkeypatch.setattr(
         lounge_mod, "fork_versions", lambda home=None: ("4.5.2-mercury.2", "4.5.2-mercury.3"))
+    monkeypatch.setattr(
+        lounge_mod, "fork_staleness", lambda home=None: "stale-version")
     by_label = {label: (ok, detail)
                 for ok, label, detail in run_doctor(home)}
     ok, detail = by_label["chat frontend"]
     assert ok is False
     assert "4.5.2-mercury.2" in detail and "4.5.2-mercury.3" in detail
+
+
+def test_doctor_frontend_fails_on_content_drift(tmp_path, monkeypatch) -> None:
+    """Same versions, different sources: the frontend row FAILs loudly."""
+    import json as _json
+
+    import observatory.lounge as lounge_mod
+    from observatory.doctor import run_doctor
+
+    home = tmp_path / "mercury"
+    (home / "observatory").mkdir(parents=True)
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    for key in ("IRC_SERVER", "IRC_PORT", "IRC_SERVER_PASSWORD",
+                "IRC_CLIENT_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    (home / "observatory" / "ircd.json").write_text(_json.dumps({
+        "server_name": "vm", "agent_host": "127.0.0.1",
+        "agent_port": 1, "server_host": "127.0.0.1",
+        "server_port": 1,
+    }))
+    (home / ".env").write_text("IRC_CLIENT_PASSWORD=x\n")
+    monkeypatch.setattr(lounge_mod, "lounge_unit_active", lambda: True)
+    monkeypatch.setattr(
+        lounge_mod, "fork_versions",
+        lambda home=None: ("0.0.2", "0.0.2"))
+    monkeypatch.setattr(
+        lounge_mod, "fork_staleness", lambda home=None: "stale-content")
+    by_label = {label: (ok, detail)
+                for ok, label, detail in run_doctor(home)}
+    ok, detail = by_label["chat frontend"]
+    assert ok is False
+    assert "STALE" in detail

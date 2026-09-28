@@ -532,12 +532,7 @@ def test_refresh_lounge_fork_current_touches_nothing(tmp_path, monkeypatch) -> N
     from observatory import lounge as lounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "_fork_source_tree", lambda: tmp_path / "shipped")
-    monkeypatch.setattr(
-        lounge_mod, "_fork_tree_version", lambda shipped: "4.5.2-mercury.2")
-    monkeypatch.setattr(
-        lounge_mod, "_installed_fork_version",
-        lambda final: "4.5.2-mercury.2")
+        lounge_mod, "fork_staleness", lambda home=None: "current")
     called = []
     monkeypatch.setattr(
         lounge_mod, "ensure_lounge_installed",
@@ -553,12 +548,7 @@ def test_refresh_lounge_fork_reinstalls_and_restarts_on_drift(
     from observatory import lounge as lounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "_fork_source_tree", lambda: tmp_path / "shipped")
-    monkeypatch.setattr(
-        lounge_mod, "_fork_tree_version", lambda shipped: "4.5.2-mercury.2")
-    monkeypatch.setattr(
-        lounge_mod, "_installed_fork_version",
-        lambda final: "4.5.2-mercury.1")
+        lounge_mod, "fork_staleness", lambda home=None: "stale-version")
     called = []
     monkeypatch.setattr(
         lounge_mod, "ensure_lounge_installed",
@@ -573,7 +563,8 @@ def test_refresh_lounge_fork_skipped_without_shipped_tree(
         tmp_path, monkeypatch) -> None:
     from observatory import lounge as lounge_mod
 
-    monkeypatch.setattr(lounge_mod, "_fork_source_tree", lambda: None)
+    monkeypatch.setattr(
+        lounge_mod, "fork_staleness", lambda home=None: "no-shipped")
     called = []
     monkeypatch.setattr(
         lounge_mod, "ensure_lounge_installed",
@@ -588,12 +579,7 @@ def test_refresh_lounge_fork_reports_failed_bounce(
     from observatory import lounge as lounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "_fork_source_tree", lambda: tmp_path / "shipped")
-    monkeypatch.setattr(
-        lounge_mod, "_fork_tree_version", lambda shipped: "4.5.2-mercury.2")
-    monkeypatch.setattr(
-        lounge_mod, "_installed_fork_version",
-        lambda final: "4.5.2-mercury.1")
+        lounge_mod, "fork_staleness", lambda home=None: "stale-version")
     monkeypatch.setattr(
         lounge_mod, "ensure_lounge_installed", lambda *a, **k: None)
 
@@ -665,3 +651,91 @@ def test_is_fork_tree_markers(tmp_path) -> None:
     assert lounge_mod._is_fork_tree(_tree(True, True)) is True
     assert lounge_mod._is_fork_tree(_tree(True, False)) is False
     assert lounge_mod._is_fork_tree(_tree(False, True)) is False
+
+
+def _fake_shipped(root, *, version="0.0.2", sha="BBB", marker=True):
+    import json as _json
+
+    root.mkdir(parents=True, exist_ok=True)
+    pkg = {"version": version}
+    if marker:
+        pkg["mercuryFork"] = True
+    (root / "package.json").write_text(_json.dumps(pkg))
+    (root / "dist" / "server").mkdir(parents=True, exist_ok=True)
+    (root / "dist" / "server" / "index.js").write_text("// built\n")
+    (root / ".mercury-fork-build.json").write_text(_json.dumps(
+        {"fork_version": version, "source_sha": sha}))
+    (root / "index.js").write_text("#!/usr/bin/env node\n")
+    return root
+
+
+def _fake_installed(home, *, version="0.0.2", sha="BBB"):
+    import json as _json
+
+    final = home / "observatory" / "lounge" / "pkg"
+    (final).mkdir(parents=True, exist_ok=True)
+    (final / "package.json").write_text(_json.dumps({"version": version}))
+    (final / ".mercury-fork-build.json").write_text(_json.dumps(
+        {"fork_version": version, "source_sha": sha}))
+    (final / "node_modules" / "irc-framework").mkdir(parents=True, exist_ok=True)
+    prefix_bin = home / "observatory" / "lounge" / "npm" / "bin"
+    prefix_bin.mkdir(parents=True, exist_ok=True)
+    (prefix_bin / "thelounge").write_text("#!/bin/sh\n")
+    return final
+
+
+def test_fork_staleness_tiers(tmp_path, monkeypatch) -> None:
+    from observatory import lounge as lounge_mod
+
+    home = tmp_path / "mercury"
+    shipped = _fake_shipped(tmp_path / "fork")
+    monkeypatch.setattr(lounge_mod, "_fork_source_tree", lambda: shipped)
+    assert lounge_mod.fork_staleness(home) == "missing"
+    _fake_installed(home, version="0.0.1", sha="AAA")
+    assert lounge_mod.fork_staleness(home) == "stale-version"
+    _fake_installed(home, version="0.0.2", sha="AAA")
+    assert lounge_mod.fork_staleness(home) == "stale-content"
+    _fake_installed(home, version="0.0.2", sha="BBB")
+    assert lounge_mod.fork_staleness(home) == "current"
+
+
+def test_fork_staleness_no_shipped(tmp_path, monkeypatch) -> None:
+    from observatory import lounge as lounge_mod
+
+    monkeypatch.setattr(lounge_mod, "_fork_source_tree", lambda: None)
+    assert lounge_mod.fork_staleness(tmp_path / "mercury") == "no-shipped"
+
+
+def test_fork_staleness_missing_fingerprint_is_current(tmp_path, monkeypatch) -> None:
+    """No fingerprint either side + matching versions: can't prove drift."""
+    import json as _json
+    from observatory import lounge as lounge_mod
+
+    home = tmp_path / "mercury"
+    shipped = tmp_path / "fork"
+    shipped.mkdir(parents=True)
+    (shipped / "package.json").write_text(_json.dumps(
+        {"version": "0.0.2", "mercuryFork": True}))
+    monkeypatch.setattr(lounge_mod, "_fork_source_tree", lambda: shipped)
+    final = _fake_installed(home, version="0.0.2", sha="BBB")
+    (final / ".mercury-fork-build.json").unlink()
+    (shipped / ".mercury-fork-build.json").unlink(missing_ok=True)
+    assert lounge_mod.fork_staleness(home) == "current"
+
+
+def test_refresh_reinstalls_content_drift(tmp_path, monkeypatch) -> None:
+    """Same version, different shasums: revends and bounces, honestly labeled."""
+    from observatory import lounge as lounge_mod
+
+    home = tmp_path / "mercury"
+    shipped = _fake_shipped(tmp_path / "fork", version="0.0.2", sha="BBB")
+    monkeypatch.setattr(lounge_mod, "_fork_source_tree", lambda: shipped)
+    _fake_installed(home, version="0.0.2", sha="AAA")
+    called = []
+    monkeypatch.setattr(
+        lounge_mod, "ensure_lounge_installed",
+        lambda *a, **k: called.append("ensure"))
+    monkeypatch.setattr(
+        lounge_mod, "restart_lounge", lambda: called.append("restart"))
+    assert lounge_mod.refresh_lounge_fork(home) == "reinstalled-content"
+    assert called == ["ensure", "restart"]
