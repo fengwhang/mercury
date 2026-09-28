@@ -1796,11 +1796,9 @@ def register(ctx):
         allow_update_command=True,
         # LLM guidance
         platform_hint=(
-            "You are chatting via IRC. IRC does not support markdown formatting "
-            "— use plain text only. Messages are limited to ~450 characters per "
-            "line (long messages are automatically split). In channels, users "
-            "address you by prefixing your nick. Keep responses concise and "
-            "conversational."
+            "You are chatting via a fork of IRC called the observatory. "
+            "This platform fully supports multi-line markdown with "
+            "in-line LaTeX. In channels, users may address you by your nick."
         ),
     )
 
