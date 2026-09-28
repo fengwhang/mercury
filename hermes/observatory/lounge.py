@@ -363,7 +363,12 @@ def refresh_lounge_fork(mercury_home: str | Path | None = None) -> str:
     path (same version) touches nothing — no reinstall, no bounce.
     Never raises; restart/setup print the status. Returns ``"current"``,
     ``"reinstalled"``, ``"reinstalled-no-restart: ..."`` (new code on
-    disk, service bounce failed), or ``"skipped-..."``."""
+    disk, service bounce failed), or ``"skipped-..."``.
+
+    FORK AUTHORS: the version string in third_party/thelounge/package.json
+    is the ONLY reinstall signal — EVERY change under the fork's client/
+    or server/ MUST bump the ``-mercury.N`` suffix, or this returns
+    ``"current"`` for stale content forever (seen live in v0.1.29)."""
     prefix = lounge_prefix(mercury_home)
     final = prefix.parent / "pkg"
     try:
@@ -382,6 +387,24 @@ def refresh_lounge_fork(mercury_home: str | Path | None = None) -> str:
     except Exception as exc:  # noqa: BLE001 — code is vended; report the bounce
         return f"reinstalled-no-restart: {exc}"
     return "reinstalled"
+
+
+def fork_versions(mercury_home: str | Path | None = None) -> tuple[str | None, str | None]:
+    """(installed, shipped) fork versions for status surfaces. Never raises;
+    None means absent (no install) or unknown (no shipped tree)."""
+    try:
+        prefix = lounge_prefix(mercury_home)
+        have = _installed_fork_version(prefix.parent / "pkg")
+    except Exception:
+        have = None
+    try:
+        shipped = _fork_source_tree()
+        want = _fork_tree_version(shipped) if shipped is not None else None
+        if want == "":
+            want = None
+    except Exception:
+        want = None
+    return have, want
 
 def render_lounge_config(*, host: str, port: int) -> str:
     """Render config.js (pure string templating, no I/O).

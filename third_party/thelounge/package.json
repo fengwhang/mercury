@@ -1,7 +1,7 @@
 {
   "name": "thelounge",
   "description": "The self-hosted Web IRC client",
-  "version": "4.5.2-mercury.2",
+  "version": "4.5.2-mercury.3",
   "type": "commonjs",
   "preferGlobal": true,
   "bin": {

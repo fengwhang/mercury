@@ -599,3 +599,41 @@ def test_refresh_lounge_fork_reports_failed_bounce(
     monkeypatch.setattr(lounge_mod, "restart_lounge", _boom)
     out = lounge_mod.refresh_lounge_fork(tmp_path / "mercury")
     assert out.startswith("reinstalled-no-restart")
+
+
+def test_refresh_reinstalls_current_shipped_tree(tmp_path, monkeypatch) -> None:
+    """End-to-end with the REAL shipped version: an older install revends.
+
+    Regression guard for the forgotten-bump class of staleness — the
+    reinstall decision must track the actual tree content version."""
+    from observatory import lounge as lounge_mod
+    from pathlib import Path as _Path
+
+    shipped = _Path(lounge_mod.__file__).resolve().parents[2] / "third_party" / "thelounge"
+    want = lounge_mod._fork_tree_version(shipped)
+    assert "mercury" in want
+    monkeypatch.setattr(lounge_mod, "_fork_source_tree", lambda: shipped)
+    monkeypatch.setattr(
+        lounge_mod, "_installed_fork_version", lambda final: "4.5.2-mercury.0")
+    called = []
+    monkeypatch.setattr(
+        lounge_mod, "ensure_lounge_installed",
+        lambda *a, **k: called.append("ensure"))
+    monkeypatch.setattr(
+        lounge_mod, "restart_lounge", lambda: called.append("restart"))
+    assert lounge_mod.refresh_lounge_fork(tmp_path / "mercury") == "reinstalled"
+    assert called == ["ensure", "restart"]
+
+
+def test_fork_versions_reports_pair(tmp_path, monkeypatch) -> None:
+    import json as _json
+    from observatory import lounge as lounge_mod
+
+    fake = tmp_path / "shipped"
+    (fake).mkdir()
+    (fake / "package.json").write_text(_json.dumps({"version": "9.9"}))
+    monkeypatch.setattr(lounge_mod, "_fork_source_tree", lambda: fake)
+    home = tmp_path / "mercury"
+    have, want = lounge_mod.fork_versions(home)
+    assert want == "9.9"
+    assert have is None  # nothing installed under the fake home

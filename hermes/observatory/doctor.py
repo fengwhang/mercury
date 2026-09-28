@@ -570,16 +570,28 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
                             "running daemon predates the code on disk, "
                             "restart it"))
     try:
-        from observatory.lounge import lounge_prefix, lounge_unit_active
+        from observatory.lounge import fork_versions, lounge_prefix, lounge_unit_active
 
         lounge_on = lounge_unit_active()
         lounge_installed = Path(lounge_prefix(mercury_home)).exists()
+        fork_have, fork_want = fork_versions(mercury_home)
     except Exception:  # noqa: BLE001
         lounge_on = False
         lounge_installed = False
+        fork_have, fork_want = None, None
+    fork_detail = ""
+    if fork_have or fork_want:
+        fork_detail = f" (fork installed {fork_have or 'absent'}, shipped {fork_want or 'unknown'})"
     if lounge_on:
-        results.append((True, "chat frontend",
-                        "The Lounge uplink active (your browser chat)"))
+        if fork_have and fork_want and fork_have != fork_want:
+            results.append((False, "chat frontend",
+                            "The Lounge serves a STALE fork"
+                            f"{fork_detail} — run mercury observatory "
+                            "restart to vend the shipped bundle"))
+        else:
+            results.append((True, "chat frontend",
+                            "The Lounge uplink active (your browser chat)"
+                            f"{fork_detail}"))
     elif lounge_installed:
         results.append((False, "chat frontend",
                         "The Lounge is installed but NOT running — your "
