@@ -548,6 +548,29 @@ class TestIRCAdapterIdentityRouting:
         assert result.success is True
         assert sent == ["line one", "", "line two"]
 
+    @pytest.mark.asyncio
+    async def test_legacy_send_does_not_pace(self, adapter, monkeypatch):
+        """No sleeps on any send path: agent turns go out back-to-back."""
+        import asyncio as _asyncio
+
+        from observatory import identity as identity_mod
+
+        sleeps = []
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        class FakePool:
+            def get(self, channel):
+                return None
+
+        monkeypatch.setattr(identity_mod, "get_pool", lambda: FakePool())
+        monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
+        adapter._server_multiline = False
+        result = await adapter.send("#test", "one\ntwo\nthree")
+        assert result.success is True
+        assert sleeps == []
+
 
 class TestIRCSilenceWatchdog:
     def test_enable_keepalive_no_writer(self):
@@ -888,3 +911,52 @@ class TestIRCAdapterMultilineReconcile:
         adapter._server_caps = set()
         adapter._server_multiline = False
         await adapter._ensure_multiline()
+
+
+class TestIRCAdapterBatchPacing:
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from unittest.mock import AsyncMock, MagicMock
+
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server": "localhost", "port": 6667,
+                   "nickname": "testbot", "channel": "#test",
+                   "use_tls": False},
+        )
+        from plugins.platforms.irc.adapter import IRCAdapter
+        adapter = IRCAdapter(cfg)
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_batch_send_does_not_pace(self, adapter, monkeypatch):
+        """Local batches go full-speed: pacing each line delays first
+        paint by lines x 0.3s for no benefit (localhost daemon)."""
+        import asyncio as _asyncio
+
+        from observatory import identity as identity_mod
+
+        sleeps = []
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        class FakePool:
+            def get(self, channel):
+                return None
+
+        monkeypatch.setattr(identity_mod, "get_pool", lambda: FakePool())
+        monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
+        adapter._server_multiline = True
+        result = await adapter.send("#test", "one\ntwo\nthree")
+        assert result.success is True
+        assert sleeps == []
+

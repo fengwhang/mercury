@@ -494,7 +494,6 @@ class IRCAdapter(BasePlatformAdapter):
                     ok = True
                     for line in lines:
                         ok = await _identity.send_as_identity(target, line) and ok
-                        await asyncio.sleep(0.3)
                     if not ok:
                         raise RuntimeError("identity send failed")
                 return SendResult(
@@ -529,8 +528,9 @@ class IRCAdapter(BasePlatformAdapter):
                     await self._send_raw(f"@batch={batch_ref} PRIVMSG {target} :{line or ' '}")
                 else:
                     await self._send_raw(f"PRIVMSG {target} :{line}")
-                # Basic rate limiting to avoid excess flood
-                await asyncio.sleep(0.3)
+                # No pacing sleeps: every line of an agent turn goes out
+                # back-to-back. Flood pacing against our own localhost
+                # daemon only ever delayed first paint.
             except Exception as e:
                 return SendResult(success=False, error=str(e))
         if batch_ref:
