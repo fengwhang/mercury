@@ -17,11 +17,19 @@ the main bot always remains the fallback sender).
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import threading
 import time
 
 logger = logging.getLogger(__name__)
+
+# Fixed-width batch refs (``i<ms13>-<seq06>``): the adapter reserves the
+# tag overhead before splitting, so the ref length must be constant.
+# 7 ("@batch=") + 21 (ref) + 1 (space) = 29.
+BATCH_TAG_OVERHEAD = 29
+
+_batch_seq = itertools.count()
 
 
 class IdentityConn:
@@ -97,8 +105,8 @@ class IdentityConn:
             except Exception:
                 break
 
-    async def send(self, text: str) -> bool:
-        """Send one message, connecting (or reconnecting) as needed."""
+    async def _write_lines(self, payloads: list[str]) -> bool:
+        """Write raw lines with one reconnect retry. Caller holds no lock."""
         async with self._lock:
             for attempt in (0, 1):
                 if self._writer is None or self._writer.is_closing():
@@ -107,9 +115,9 @@ class IdentityConn:
                 try:
                     await self._drain()
                     assert self._writer is not None
-                    self._writer.write(
-                        f"PRIVMSG {self.channel} :{text}\r\n"
-                        .encode("utf-8", "replace"))
+                    for text in payloads:
+                        self._writer.write(
+                            f"{text}\r\n".encode("utf-8", "replace"))
                     await self._writer.drain()
                     self.last_ok = time.time()
                     return True
@@ -123,6 +131,24 @@ class IdentityConn:
                         pass
                     self._reader, self._writer = None, None
             return False
+
+    async def send(self, text: str) -> bool:
+        """Send one message, connecting (or reconnecting) as needed."""
+        return await self._write_lines([f"PRIVMSG {self.channel} :{text}"])
+
+    async def send_batch(self, lines: list[str]) -> bool:
+        """Send lines as one draft/multiline batch: open, tagged lines,
+        close. The daemon relays to capable peers (membership-gated, no
+        sender caps needed); legacy peers get the bare packed lines."""
+        if not lines:
+            return True
+        if len(lines) == 1:
+            return await self.send(lines[0])
+        ref = f"i{int(time.time() * 1000):013d}-{next(_batch_seq) % 1000000:06d}"
+        return await self._write_lines(
+            [f"BATCH +{ref} draft/multiline {self.channel}"] +
+            [f"@batch={ref} PRIVMSG {self.channel} :{ln}" for ln in lines] +
+            [f"BATCH -{ref}"])
 
     async def close(self) -> None:
         async with self._lock:
@@ -219,6 +245,20 @@ async def send_as_identity(channel: str, text: str) -> bool:
         return await conn.send(text)
     except Exception:
         logger.debug("identity: send_as failed for %s", channel, exc_info=True)
+        return False
+
+
+async def send_multiline(channel: str, lines: list[str]) -> bool:
+    """Send lines as one draft/multiline batch via the room's identity;
+    False when none exists (caller falls back to the main bot, which
+    batches the same way). Never raises."""
+    try:
+        conn = get_pool().get(channel)
+        if conn is None:
+            return False
+        return await conn.send_batch(lines)
+    except Exception:
+        logger.debug("identity: send_ml failed for %s", channel, exc_info=True)
         return False
 
 

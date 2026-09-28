@@ -489,6 +489,58 @@ class TestIRCAdapterIdentityRouting:
         assert b"PRIVMSG #test :hello main" in sent_data
 
 
+    @pytest.mark.asyncio
+    async def test_send_batches_multiline_via_identity(self, adapter, monkeypatch):
+        from observatory import identity as identity_mod
+
+        calls = []
+
+        class FakePool:
+            def get(self, channel):
+                return object() if channel == "#test" else None
+
+        async def fake_multiline(channel, lines):
+            calls.append((channel, list(lines)))
+            return True
+
+        async def boom(channel, text):
+            raise AssertionError("per-line send must not run when batching")
+
+        monkeypatch.setattr(identity_mod, "get_pool", lambda: FakePool())
+        monkeypatch.setattr(identity_mod, "send_multiline", fake_multiline)
+        monkeypatch.setattr(identity_mod, "send_as_identity", boom)
+        adapter._server_multiline = True
+        result = await adapter.send("#test", "line one\n\nline two")
+        assert result.success is True
+        assert calls == [("#test", ["line one", "line two"])]
+        adapter._writer.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_identity_per_line_without_caps(self, adapter, monkeypatch):
+        from observatory import identity as identity_mod
+
+        sent = []
+
+        class FakePool:
+            def get(self, channel):
+                return object() if channel == "#test" else None
+
+        async def fake_send_as(channel, text):
+            sent.append(text)
+            return True
+
+        async def boom(channel, lines):
+            raise AssertionError("batching needs server caps")
+
+        monkeypatch.setattr(identity_mod, "get_pool", lambda: FakePool())
+        monkeypatch.setattr(identity_mod, "send_as_identity", fake_send_as)
+        monkeypatch.setattr(identity_mod, "send_multiline", boom)
+        adapter._server_multiline = False
+        result = await adapter.send("#test", "line one\n\nline two")
+        assert result.success is True
+        assert sent == ["line one", "line two"]
+
+
 class TestIRCSilenceWatchdog:
     def test_enable_keepalive_no_writer(self):
         from plugins.platforms.irc.adapter import _enable_keepalive
@@ -779,3 +831,4 @@ class TestIRCReadHandleSplit:
         await adapter._line_queue.put(None)
         await adapter._handle_task()
         assert seen == [":a PRIVMSG #t :one", ":a PRIVMSG #t :two"]
+

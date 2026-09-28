@@ -465,14 +465,23 @@ class IRCAdapter(BasePlatformAdapter):
             from observatory import identity as _identity
 
             if _identity.get_pool().get(target) is not None:
-                lines = self._split_message(content, target)
-                ok = True
-                for line in lines:
-                    ok = await _identity.send_as_identity(target, line) and ok
-                    await asyncio.sleep(0.3)
-                if ok:
-                    return SendResult(
-                        success=True, message_id=str(int(time.time() * 1000)))
+                batched = False
+                if self._server_multiline:
+                    lines = self._split_message(
+                        content, target,
+                        extra_overhead=_identity.BATCH_TAG_OVERHEAD)
+                    if len(lines) > 1:
+                        batched = await _identity.send_multiline(target, lines)
+                if not batched:
+                    lines = self._split_message(content, target)
+                    ok = True
+                    for line in lines:
+                        ok = await _identity.send_as_identity(target, line) and ok
+                        await asyncio.sleep(0.3)
+                    if not ok:
+                        raise RuntimeError("identity send failed")
+                return SendResult(
+                    success=True, message_id=str(int(time.time() * 1000)))
         except Exception:
             logger.debug("IRC: identity send failed, using main bot",
                          exc_info=True)

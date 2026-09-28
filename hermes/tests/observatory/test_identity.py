@@ -165,3 +165,72 @@ def test_pool_nicks_lists_tracked_identities() -> None:
     assert pool.nicks() == {"vm_alpha", "vm_beta"}
     pool.drop("#vm_alpha")
     assert pool.nicks() == {"vm_beta"}
+
+
+@pytest.mark.asyncio
+async def test_send_batch_frames_one_batch() -> None:
+    """send_batch wraps lines in BATCH open/tagged-lines/close frames."""
+    conn = identity_mod.IdentityConn(
+        host="x", port=1, password="p", nick="n", channel="#vm_b")
+
+    class FakeWriter:
+        def __init__(self) -> None:
+            self.data = b""
+
+        def write(self, b: bytes) -> None:
+            self.data += b
+
+        async def drain(self) -> None:
+            pass
+
+        def is_closing(self) -> bool:
+            return False
+
+        def close(self) -> None:
+            pass
+
+    conn._writer = FakeWriter()  # type: ignore[assignment]
+    assert await conn.send_batch(["line one", "line two"]) is True
+    frames = [ln for ln in conn._writer.data.decode().split("\r\n") if ln]
+    assert len(frames) == 4
+    assert frames[0].startswith("BATCH +i")
+    assert "draft/multiline #vm_b" in frames[0]
+    assert frames[1].startswith("@batch=") and frames[1].endswith(":line one")
+    assert frames[2].startswith("@batch=") and frames[2].endswith(":line two")
+    assert frames[3].startswith("BATCH -i")
+    assert frames[0].split()[1][1:] == frames[3].split()[1][1:]
+
+
+@pytest.mark.asyncio
+async def test_identity_batch_relays_to_capable_peer(tmp_path) -> None:
+    """A capable watcher receives the identity batch as one batch."""
+    async with running_daemon(tmp_path, password="s3cret") as (d, port):
+        conn = identity_mod.IdentityConn(
+            host="127.0.0.1", port=port, password="s3cret",
+            nick="vm_b2", channel="#vm_b2")
+        c = RawClient()
+        await c.connect(port)
+        try:
+            await c.send("PASS s3cret")
+            await c.send("CAP REQ :draft/multiline")
+            await c.send("NICK watcher")
+            await c.send("USER watcher 0 * :t")
+            await c.next_match(" 001 ")
+            await c.send("JOIN #vm_b2")
+            assert await c.next_match("JOIN #vm_b2")
+            assert await conn.send_batch(["alpha", "beta"]) is True
+            assert await c.next_match("BATCH +")
+            assert "@batch=" in await c.next_match("alpha")
+            assert "@batch=" in await c.next_match("beta")
+            assert await c.next_match("BATCH -")
+        finally:
+            await c.close()
+            await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_send_multiline_missing_room_reports_false(monkeypatch) -> None:
+    """send_multiline with no identity returns False (caller falls back)."""
+    pool = identity_mod.IdentityPool()
+    monkeypatch.setattr(identity_mod, "_pool", pool)
+    assert await identity_mod.send_multiline("#vm_nope", ["a", "b"]) is False
