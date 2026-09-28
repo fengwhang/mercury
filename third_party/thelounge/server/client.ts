@@ -449,7 +449,18 @@ class Client {
 
 	input(data) {
 		const client = this;
-		data.text.split("\n").forEach((line) => {
+		// Mercury: plain multiline input goes out as ONE dispatch so the
+		// fork send path batches it into a single visual message (and the
+		// sender's history recalls the entire message, not one line).
+		// Any slash-leading line keeps the legacy per-line split, so
+		// commands and //-escapes behave exactly as before.
+		const lines = data.text.split("\n");
+		const hasSlash = lines.some((line) => line.charAt(0) === "/");
+		if (!hasSlash && lines.length > 1) {
+			client.inputLine(data);
+			return;
+		}
+		lines.forEach((line) => {
 			data.text = line;
 			client.inputLine(data);
 		});

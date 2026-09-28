@@ -473,6 +473,12 @@ class IRCAdapter(BasePlatformAdapter):
         if not self._writer or self._writer.is_closing():
             return SendResult(success=False, error="Not connected")
 
+        try:
+            from observatory.thinking import thinking_done
+
+            thinking_done(chat_id)
+        except Exception:
+            pass
         target = chat_id  # channel name or nick for DMs
         content = self._expand_media_tags(content)
         # Per-agent identity first: rooms with a live identity speak as
@@ -1311,6 +1317,12 @@ class IRCAdapter(BasePlatformAdapter):
                         str(get_profile_dir(_prof)))
             except Exception:
                 logger.debug("IRC: profile override lookup failed", exc_info=True)
+        try:
+            from observatory.thinking import thinking_started
+
+            thinking_started(chat_id)
+        except Exception:
+            pass
         try:
             await self.handle_message(event)
         finally:
