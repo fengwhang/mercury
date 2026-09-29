@@ -111,3 +111,55 @@ async def test_resync_rebuilds_live_omp_child(monkeypatch) -> None:
     assert pumped == [("orch-1", "#king")]
     assert "#king" in joined
     assert "orch-1" in report.get("resumed", [])
+
+
+@pytest.mark.asyncio
+async def test_resync_rejoins_hermes_rooms_and_invites_lounge(monkeypatch) -> None:
+    """Observatory restart must respawn hermes rooms too, not just the
+    gateway: every live channel is re-JOINed and the lounge is invited
+    to each (spawn parity — the lobby-only invite left spawned rooms
+    invisible)."""
+    import observatory.platform_hook as hook
+    import observatory.rooms as rooms_mod
+    import observatory.spawn as spawn_mod
+    from observatory import provision as provision_mod
+
+    joined = []
+    invited = []
+
+    class FakeBot:
+        async def join_channel(self, channel):
+            joined.append(channel)
+            return True
+
+        async def invite_user(self, nick, channel):
+            invited.append((nick, channel))
+            return True
+
+    class _LiveState:
+        def get_live(self):
+            return [
+                {"node_id": "gw", "engine": "hermes", "status": "live",
+                 "name": "gateway agent", "session_ref": "session:gateway",
+                 "room_id": "#vm_gateway", "mxid": "gwnick",
+                 "extra": {"kind": "gateway"}},
+                {"node_id": "orch-h", "engine": "hermes", "status": "live",
+                 "name": "king", "session_ref": "#king",
+                 "room_id": "#king", "mxid": "kingnick", "extra": {}},
+            ]
+
+    async def fake_replay(state):
+        return []
+
+    monkeypatch.setattr(rooms_mod, "get_bot_sink", lambda: FakeBot())
+    monkeypatch.setattr(spawn_mod, "replay_purge_journal", fake_replay)
+    monkeypatch.setattr(
+        provision_mod, "live_server_name", lambda home=None: "vm")
+    monkeypatch.setattr(
+        provision_mod, "get_lounge_nick", lambda home=None: "owner")
+    report = await hook.boot_resync(
+        manager=None, state=_LiveState(), registry=_FakeRegistry())
+    assert "#vm_gateway" in joined
+    assert "#king" in joined
+    assert ("owner", "#king") in invited
+    assert report.get("failed") == []

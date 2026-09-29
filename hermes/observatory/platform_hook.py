@@ -191,6 +191,23 @@ async def boot_resync(
             state = getattr(boot, "state", None)
         if registry is None and boot is not None:
             registry = getattr(boot, "registry", None)
+        if state is None:
+            # No-race law: the adapter schedules this once per connect
+            # while try_boot_sidecar still opens state on its thread. A
+            # fresh gateway that resyncs before LAST_BOOT lands must open
+            # the shared file itself — failing here leaves extra_channels
+            # gateway-only, so only the gateway room ever respawns.
+            try:
+                home = None
+                if boot is not None:
+                    home = getattr(boot, "mercury_home", None) or None
+                from observatory.state import default_state_db_path
+
+                db = default_state_db_path(home)
+                if db.is_file():
+                    state = open_state(home)
+            except Exception:
+                state = None
         if manager is None and state is not None:
             from observatory.rooms import RoomManager
 
@@ -202,10 +219,23 @@ async def boot_resync(
         if registry is None:
             registry = OrchestratorRegistry()
         try:
+            home_for_children = None
+            if boot is not None:
+                home_for_children = getattr(boot, "mercury_home", None) or None
+        except Exception:
+            home_for_children = None
+        try:
             live = list(state.get_live())
         except Exception:
             live = []
         bot = get_bot_sink()
+        lounge_nick = ""
+        try:
+            from observatory.provision import get_lounge_nick as _lounge_nick
+
+            lounge_nick = str(_lounge_nick(None) or "")
+        except Exception:
+            lounge_nick = ""
         for row in live:
             try:
                 channel = str((row or {}).get("room_id") or "")
@@ -223,6 +253,17 @@ async def boot_resync(
                                     await ensure_identity(nick, channel)
                             except Exception:
                                 pass
+                            try:
+                                # Spawn parity: the bot JOIN recreates the
+                                # channel server-side and the fanout pulls
+                                # in connected clients, but an explicit
+                                # INVITE is the nudge The Lounge needs —
+                                # without it a restart leaves the user
+                                # with just the lobby.
+                                if lounge_nick:
+                                    await bot.invite_user(lounge_nick, channel)
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 # Resume omp handles the registry lost (restart crash).
@@ -234,7 +275,26 @@ async def boot_resync(
                     try:
                         if registry.get(node_id) is None:
                             ref = str((row or {}).get("session_ref") or "")
-                            child = build_omp_child(resume_session=ref or None)
+                            extra = (row or {}).get("extra") or {}
+                            if not isinstance(extra, dict):
+                                extra = {}
+                            model = str(extra.get("model") or "").strip() or None
+                            profile_home = None
+                            profile = str(extra.get("profile") or "").strip()
+                            if profile:
+                                try:
+                                    from mercury_cli.profiles import get_profile_dir
+
+                                    profile_home = str(get_profile_dir(profile))
+                                except Exception as exc:
+                                    raise RuntimeError(
+                                        f"profile '{profile}' missing: {exc}")
+                            child = build_omp_child(
+                                model=model,
+                                mercury_home=home_for_children,
+                                resume_session=ref or None,
+                                profile_home=profile_home,
+                            )
                             from observatory.spawn import OrchestratorHandle
 
                             registry.register(
@@ -243,6 +303,7 @@ async def boot_resync(
                                     engine="omp",
                                     name=str((row or {}).get("name") or node_id),
                                     session_ref=ref,
+                                    model=model,
                                     rpc=child,
                                 )
                             )

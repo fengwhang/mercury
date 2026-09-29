@@ -78,6 +78,58 @@ def clean_nick(name: str, fallback: str = "agent") -> str:
     return slug or fallback
 
 
+def _live_room_ids_from_disk(state_dir: Path | str = "") -> list[str]:
+    """Live agent channels from state.db (ircd-process fallback).
+
+    The gateway owns the RoomManager in ITS process; this daemon never
+    sees it (separate memory), so a manager-only lookup leaves every
+    late-joining server client on just the gateway channel after an
+    ircd restart. state.db is the shared file both processes see —
+    read its live room_ids directly (stdlib sqlite3 only; never raises).
+    """
+    import os as _os
+    import sqlite3 as _sqlite3
+
+    cands: list[Path] = []
+    try:
+        if str(state_dir or "").strip():
+            cands.append(Path(str(state_dir)).expanduser() / "state.db")
+    except Exception:
+        pass
+    try:
+        home = (_os.environ.get("MERCURY_HOME") or "").strip()
+        if home:
+            cands.append(Path(home).expanduser() / "observatory" / "state.db")
+    except Exception:
+        pass
+    for db in cands:
+        try:
+            if not db.is_file():
+                continue
+            con = _sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            try:
+                rows = con.execute(
+                    "SELECT room_id FROM nodes WHERE status = 'live'"
+                    " ORDER BY depth, created_epoch, node_id"
+                ).fetchall()
+            finally:
+                try:
+                    con.close()
+                except Exception:
+                    pass
+            out: list[str] = []
+            for r in rows:
+                try:
+                    room = str((r[0] if r else "") or "").strip()
+                except Exception:
+                    continue
+                if room.startswith("#") and room not in out:
+                    out.append(room)
+            return out
+        except Exception:
+            continue
+    return []
+
 @dataclass
 class HistoryMessage:
     ts: float
@@ -627,6 +679,19 @@ class IrcDaemon:
                             targets.append(room)
             except Exception:
                 logger.debug("ircd: room list lookup failed", exc_info=True)
+            if len(targets) <= 1:
+                # Separate-process law: the manager lives in the gateway,
+                # never here — without this fallback every client that
+                # (re)connects after an ircd restart lands on just the
+                # gateway channel and never sees spawned rooms.
+                try:
+                    for room in _live_room_ids_from_disk(
+                        getattr(self.config, "state_dir", "")):
+                        if room not in targets:
+                            targets.append(room)
+                except Exception:
+                    logger.debug("ircd: state.db room fallback failed",
+                                 exc_info=True)
             for display in targets:
                 key = display.lower()
                 async with self._lock:

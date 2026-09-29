@@ -748,6 +748,40 @@ async def test_register_auto_joins_all_live_rooms(tmp_path) -> None:
     finally:
         rooms_mod.set_room_manager(None)
 
+
+@pytest.mark.asyncio
+async def test_register_falls_back_to_state_db_without_manager(tmp_path) -> None:
+    """Restart cover: the daemon never sees the gateway's RoomManager
+    (separate process), so a client that (re)connects after an ircd
+    restart must still land in every live room via state.db."""
+    from observatory import rooms as rooms_mod
+    from observatory.state import ObservatoryState
+
+    state = ObservatoryState(tmp_path / "state.db")
+    row = state.add_node(
+        "orch-9", engine="omp", name="queen", slug="queen",
+        mxid="queen", session_ref="s.jsonl",
+    )
+    state.set_room_id(row["node_id"], "#queen")
+    rooms_mod.set_room_manager(None)
+    try:
+        async with running_daemon(tmp_path, password="s3cret") as (_, __, server_port):
+            u = RawClient()
+            await u.connect(server_port)
+            try:
+                await u.register("remote", password="s3cret")
+                joins = []
+                for _ in range(2):
+                    joins.append(await u.next_match("JOIN #", timeout=5.0))
+                blob = "\n".join(joins)
+                assert "_gateway" in blob
+                assert "#queen" in blob
+            finally:
+                await u.close()
+    finally:
+        rooms_mod.set_room_manager(None)
+
+
 @pytest.mark.asyncio
 async def test_new_channel_auto_joins_server_clients(tmp_path) -> None:
     """Spawn visibility: a room created AFTER a remote Lounge connected joins it.
