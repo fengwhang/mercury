@@ -672,9 +672,45 @@ class RoomManager:
         node_id = str((row or {}).get("node_id") or "")
         with _omp_lock:
             entry = _omp_rooms.get(node_id)
+        rpc = entry.get("rpc") if entry else None
+        if entry is not None and rpc is not None and _omp_child_dead(rpc):
+            # The agent died mid-session (OOM, crash): drop the stale
+            # handle so the live row below rebuilds it transparently.
+            # Without this the room stays silent until the next gateway
+            # reconnect — nothing else ever rebuilds a dead child.
+            drop_omp_room(node_id)
+            entry = None
+            rpc = None
         if entry is None:
-            return "that omp agent is gone — /spawnomp a fresh one."
-        rpc = entry.get("rpc")
+            if (
+                row is not None
+                and str(row.get("engine") or "") == "omp"
+                and str(row.get("status") or "") == "live"
+            ):
+                try:
+                    import asyncio as _asyncio
+
+                    from observatory.spawn import resurrect_omp_handle
+
+                    rpc = await _asyncio.to_thread(
+                        resurrect_omp_handle,
+                        state=self.state,
+                        registry=_shared_registry(),
+                        node_id=node_id,
+                        channel=channel,
+                        mercury_home=_boot_mercury_home(),
+                    )
+                    with _omp_lock:
+                        entry = _omp_rooms.get(node_id)
+                        if entry is None and rpc is not None:
+                            entry = {"channel": channel, "rpc": rpc, "busy": False}
+                            _omp_rooms[node_id] = entry
+                except Exception as exc:
+                    logger.debug("rooms: omp resurrect %s failed: %s", node_id, exc)
+                    entry = None
+            if entry is None:
+                return "that omp agent is gone (automatic restart failed) — /spawnomp a fresh one."
+            rpc = entry.get("rpc")
         if rpc is None:
             return "omp agent not running."
         if entry.get("busy"):
@@ -697,7 +733,6 @@ class RoomManager:
         # Silent start: the trace itself is the feedback. (The steer
         # path below still answers "steered mid-run.")
         return ""
-
     async def _run_spawned_omp_task(
         self, channel: str, node_id: str, sender: str, text: str, rpc: Any
     ) -> None:
@@ -931,6 +966,62 @@ def _omp_room_skips_frame(payload: Any) -> bool:
     except Exception:
         return False
 
+def _omp_child_dead(rpc: Any) -> bool:
+    """True only when the child process provably exited (never raises).
+
+    Fail-open by design: an unstarted child (no proc yet) or a test
+    double (no/proc-without-int-poll) reads as alive, preserving today's
+    path. Only a real exited Popen (integer poll status) triggers a
+    rebuild — a MagicMock poll (non-int) never does.
+    """
+    try:
+        proc = getattr(rpc, "proc", None)
+    except Exception:
+        return False
+    if proc is None:
+        return False
+    try:
+        status = proc.poll()
+    except Exception:
+        return False
+    return isinstance(status, int)
+
+
+def _shared_registry() -> Any:
+    """The gateway's orchestrator registry (boot's, else a fallback)."""
+    try:
+        from observatory.platform_hook import LAST_BOOT
+
+        if LAST_BOOT is not None:
+            registry = getattr(LAST_BOOT, "registry", None)
+            if registry is not None:
+                return registry
+            from observatory.spawn import OrchestratorRegistry
+
+            registry = OrchestratorRegistry()
+            LAST_BOOT.registry = registry
+            return registry
+    except Exception:
+        pass
+    global _fallback_registry
+    if _fallback_registry is None:
+        from observatory.spawn import OrchestratorRegistry
+
+        _fallback_registry = OrchestratorRegistry()
+    return _fallback_registry
+
+
+def _boot_mercury_home() -> Any:
+    """Mercury home the gateway booted with (resurrection inherits it)."""
+    try:
+        from observatory.platform_hook import LAST_BOOT
+
+        if LAST_BOOT is not None:
+            return getattr(LAST_BOOT, "mercury_home", None) or None
+    except Exception:
+        pass
+    return None
+
 # --- child steer registry --------------------------------------------------
 _steer_lock = threading.Lock()
 _steer_fns: dict[str, Any] = {}
@@ -950,6 +1041,7 @@ def drop_child_steer(node_id: str) -> None:
 # --- spawned-omp room registry ----------------------------------------------
 _omp_lock = threading.Lock()
 _omp_rooms: dict[str, dict[str, Any]] = {}
+_fallback_registry: Any = None
 
 
 def register_omp_room(node_id: str, channel: str, rpc: Any) -> None:

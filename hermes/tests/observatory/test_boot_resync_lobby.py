@@ -86,12 +86,18 @@ async def test_resync_rebuilds_live_omp_child(monkeypatch) -> None:
             return True
 
     class _LiveState:
+        _row = {
+            "node_id": "orch-1", "engine": "omp", "status": "live",
+            "name": "king", "session_ref": "s.jsonl",
+            "room_id": "#king", "mxid": "",
+        }
+
         def get_live(self):
-            return [{
-                "node_id": "orch-1", "engine": "omp", "status": "live",
-                "name": "king", "session_ref": "s.jsonl",
-                "room_id": "#king", "mxid": "",
-            }]
+            return [dict(self._row)]
+
+        def get(self, node_id):
+            assert node_id == "orch-1"
+            return dict(self._row)
 
     monkeypatch.setattr(rooms_mod, "get_bot_sink", lambda: FakeBot())
     monkeypatch.setattr(spawn_mod, "replay_purge_journal", lambda state: [])

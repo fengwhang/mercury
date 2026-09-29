@@ -173,7 +173,6 @@ async def boot_resync(
     from observatory.rooms import get_bot_sink, get_room_manager, set_room_manager
     from observatory.spawn import (
         OrchestratorRegistry,
-        build_omp_child,
         replay_purge_journal,
     )
 
@@ -274,42 +273,15 @@ async def boot_resync(
                     node_id = str((row or {}).get("node_id") or "")
                     try:
                         if registry.get(node_id) is None:
-                            ref = str((row or {}).get("session_ref") or "")
-                            extra = (row or {}).get("extra") or {}
-                            if not isinstance(extra, dict):
-                                extra = {}
-                            model = str(extra.get("model") or "").strip() or None
-                            profile_home = None
-                            profile = str(extra.get("profile") or "").strip()
-                            if profile:
-                                try:
-                                    from mercury_cli.profiles import get_profile_dir
+                            from observatory.spawn import resurrect_omp_handle
 
-                                    profile_home = str(get_profile_dir(profile))
-                                except Exception as exc:
-                                    raise RuntimeError(
-                                        f"profile '{profile}' missing: {exc}")
-                            child = build_omp_child(
-                                model=model,
+                            resurrect_omp_handle(
+                                state=state,
+                                registry=registry,
+                                node_id=node_id,
+                                channel=channel,
                                 mercury_home=home_for_children,
-                                resume_session=ref or None,
-                                profile_home=profile_home,
                             )
-                            from observatory.spawn import OrchestratorHandle
-
-                            registry.register(
-                                OrchestratorHandle(
-                                    node_id=node_id,
-                                    engine="omp",
-                                    name=str((row or {}).get("name") or node_id),
-                                    session_ref=ref,
-                                    model=model,
-                                    rpc=child,
-                                )
-                            )
-                            from observatory.rooms import register_omp_room
-
-                            register_omp_room(node_id, channel, child)
                             report["resumed"].append(node_id)
                     except Exception as exc:
                         report["failed"].append(f"{node_id}: {exc}")

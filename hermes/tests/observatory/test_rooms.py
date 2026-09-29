@@ -252,7 +252,7 @@ async def test_handle_child_message_steers(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_omp_message_task_then_steer(tmp_path) -> None:
+async def test_handle_omp_message_task_then_steer(tmp_path, monkeypatch) -> None:
     class FakeRpc:
         def __init__(self):
             self.tasks: list[str] = []
@@ -290,4 +290,135 @@ async def test_handle_omp_message_task_then_steer(tmp_path) -> None:
         assert any("did it" in t for _, t in bot.said)
     finally:
         rooms.drop_omp_room("orch-2")
+    # A missing child of a live row rebuilds transparently; pin the
+    # rebuild to fail here so this asserts the historical "gone" reply.
+    import observatory.spawn as spawn_mod
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("no omp binary in tests")
+
+    monkeypatch.setattr(spawn_mod, "resurrect_omp_handle", _boom)
     assert "gone" in await mgr.handle_omp_message("#king", "op", "again")
+
+
+@pytest.mark.asyncio
+async def test_dead_child_resurrects_transparently(tmp_path, monkeypatch) -> None:
+    """A provably-exited child process rebuilds on the next room message
+    instead of leaving the room silent until gateway reconnect."""
+    import observatory.spawn as spawn_mod
+
+    class DeadRpc:
+        class _Proc:
+            def poll(self):
+                return 1
+
+        proc = _Proc()
+
+    built: dict = {}
+
+    class FreshRpc:
+        def __init__(self):
+            self.tasks: list[str] = []
+
+        def run_task(self, prompt: str) -> dict:
+            self.tasks.append(prompt)
+            return {"summary": "back", "turn_frames": []}
+
+        def steer(self, text: str) -> None:
+            raise AssertionError("no steer expected")
+
+    fresh = FreshRpc()
+
+    def _fake_resurrect(*, state, registry, node_id, channel, mercury_home=None):
+        built.update(node_id=node_id, channel=channel)
+        rooms.register_omp_room(node_id, channel, fresh)
+        return fresh
+
+    monkeypatch.setattr(spawn_mod, "resurrect_omp_handle", _fake_resurrect)
+    bot = FakeBot()
+    state = _real_state(tmp_path)
+    mgr = RoomManager(state, bot)
+    state.add_node(
+        "orch-9", engine="omp", name="zed", slug="zed", mxid="zed", session_ref="s"
+    )
+    state.set_room_id("orch-9", "#zed")
+    rooms.register_omp_room("orch-9", "#zed", DeadRpc())
+    try:
+        import asyncio as _asyncio
+
+        reply = await mgr.handle_omp_message("#zed", "op", "you back?")
+        assert reply == ""
+        assert built.get("node_id") == "orch-9"
+        async with _asyncio.timeout(5):
+            while rooms._omp_rooms["orch-9"]["busy"]:
+                await _asyncio.sleep(0.02)
+        assert fresh.tasks and "you back?" in fresh.tasks[0]
+        assert any("back" in t for _, t in bot.said)
+    finally:
+        rooms.drop_omp_room("orch-9")
+
+
+@pytest.mark.asyncio
+async def test_live_child_never_rebuilds(tmp_path, monkeypatch) -> None:
+    """A running child (None poll) and test doubles (no proc) take
+    today's path — no rebuild attempted."""
+    import observatory.spawn as spawn_mod
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("must not rebuild a live child")
+
+    monkeypatch.setattr(spawn_mod, "resurrect_omp_handle", _boom)
+
+    class LiveRpc:
+        class _Proc:
+            def poll(self):
+                return None
+
+        proc = _Proc()
+
+        def __init__(self):
+            self.tasks: list[str] = []
+
+        def run_task(self, prompt: str) -> dict:
+            self.tasks.append(prompt)
+            return {"summary": "ok", "turn_frames": []}
+
+        def steer(self, text: str) -> None:
+            pass
+
+    bot = FakeBot()
+    state = _real_state(tmp_path)
+    mgr = RoomManager(state, bot)
+    state.add_node(
+        "orch-7", engine="omp", name="live", slug="live", mxid="live", session_ref="s"
+    )
+    state.set_room_id("orch-7", "#live")
+    rpc = LiveRpc()
+    rooms.register_omp_room("orch-7", "#live", rpc)
+    try:
+        import asyncio as _asyncio
+
+        assert await mgr.handle_omp_message("#live", "op", "go") == ""
+        async with _asyncio.timeout(5):
+            while rooms._omp_rooms["orch-7"]["busy"]:
+                await _asyncio.sleep(0.02)
+        assert rpc.tasks
+    finally:
+        rooms.drop_omp_room("orch-7")
+
+
+def test_omp_child_kwargs_for_row() -> None:
+    from observatory.spawn import omp_child_kwargs_for_row
+
+    row = {
+        "session_ref": "s.jsonl",
+        "extra": {"model": "m", "profile": ""},
+    }
+    kwargs = omp_child_kwargs_for_row(row, mercury_home="/h")
+    assert kwargs == {
+        "model": "m",
+        "mercury_home": "/h",
+        "resume_session": "s.jsonl",
+        "profile_home": None,
+    }
+    assert omp_child_kwargs_for_row({})["resume_session"] is None

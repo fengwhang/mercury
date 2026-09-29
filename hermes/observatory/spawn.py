@@ -410,6 +410,71 @@ def build_omp_child(
     child.start()
     return child
 
+def omp_child_kwargs_for_row(
+    row: dict[str, Any] | Any, *, mercury_home: str | Path | None = None
+) -> dict[str, Any]:
+    """``build_omp_child`` kwargs resuming a LIVE omp row: stamped model,
+    gateway mercury home, session file, and profile home. Shared by boot
+    resync and mid-session resurrection so the two never drift. Raises on
+    a missing profile (fail loud, never resume under the wrong home)."""
+    extra = (row or {}).get("extra") or {}
+    if not isinstance(extra, dict):
+        extra = {}
+    model = str(extra.get("model") or "").strip() or None
+    profile_home = None
+    profile = str(extra.get("profile") or "").strip()
+    if profile:
+        try:
+            from mercury_cli.profiles import get_profile_dir
+
+            profile_home = str(get_profile_dir(profile))
+        except Exception as exc:
+            raise RuntimeError(f"profile '{profile}' missing: {exc}")
+    ref = str((row or {}).get("session_ref") or "")
+    return {
+        "model": model,
+        "mercury_home": mercury_home,
+        "resume_session": ref or None,
+        "profile_home": profile_home,
+    }
+
+
+def resurrect_omp_handle(
+    *,
+    state: Any,
+    registry: Any,
+    node_id: str,
+    channel: str,
+    mercury_home: str | Path | None = None,
+) -> Any:
+    """Rebuild one omp child for a LIVE row and register it (registry +
+    room). The mid-session answer to a dead child process and the boot
+    answer to a lost registry: same row shape, same resume handle.
+    Raises on a non-live/non-omp row or a failed rebuild (callers turn
+    that into the room-visible error). Blocks (process spawn + RPC
+    handshake) — callers MUST hop threads off the gateway loop."""
+    row = state.get(node_id)
+    if str((row or {}).get("engine") or "") != "omp" or str(
+        (row or {}).get("status") or ""
+    ) != "live":
+        raise RuntimeError(f"not a live omp node: {node_id}")
+    ref = str((row or {}).get("session_ref") or "")
+    kwargs = omp_child_kwargs_for_row(row, mercury_home=mercury_home)
+    child = build_omp_child(**kwargs)
+    handle = OrchestratorHandle(
+        node_id=node_id,
+        engine="omp",
+        name=str((row or {}).get("name") or node_id),
+        session_ref=ref,
+        model=kwargs["model"],
+        rpc=child,
+    )
+    registry.register(handle)
+    from observatory.rooms import register_omp_room as _register_room
+
+    _register_room(node_id, channel, child)
+    return child
+
 
 def omp_session_file(child: Any) -> str:
     """The child's live session JSONL path (RpcSessionState.sessionFile)."""
