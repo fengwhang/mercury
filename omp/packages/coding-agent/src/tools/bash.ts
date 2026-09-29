@@ -50,6 +50,7 @@ import {
 	stripRawOutputArtifactNotice,
 } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
+import { getShellCredentialReadBlockError } from "./read-deny";
 import {
 	capPreviewLines,
 	DEFAULT_TERMINAL_PREVIEW_LINES,
@@ -568,7 +569,19 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		if (command !== "" && CRITICAL_BASH_PATTERNS.some(pattern => pattern.test(command))) {
 			return { tier: "exec", override: true, reason: "Critical pattern detected" };
 		}
-		if (patternRule?.approval === "allow") return { tier: "write", policy: "allow" };
+		// Built-in Mercury credential-read guard (always on, not user
+		// policy): the read tool refuses these paths via read-deny, so the
+		// shell must not be the open door around it. Sits beside the
+		// critical patterns — user `allow` rules below never override it.
+		if (command !== "") {
+			const argsCwd = (args as Partial<BashToolInput>).cwd;
+			const credentialBlock = getShellCredentialReadBlockError(command, {
+				cwd: typeof argsCwd === "string" ? argsCwd : this.session.cwd,
+			});
+			if (credentialBlock !== undefined) {
+				return { tier: "exec", override: true, policy: "deny", reason: credentialBlock };
+			}
+		}
 		if (patternRule?.approval === "prompt") {
 			return {
 				tier: "exec",
@@ -915,6 +928,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		let command = rawCommand;
 		const env = normalizeBashEnv(rawEnv);
 
+		// Built-in Mercury credential-read guard (always on, fail-closed):
+		// mirrors the approval-gate check above for execution paths that
+		// skip approval (yolo fast paths, headless RPC). Both the raw and
+		// the cd-normalized command are checked with their effective cwd
+		// so `cd ~/.mercury && cat .env` cannot hide behind the wrapper.
+
 		// Extract a leading `cd <path> && ...` into cwd when the model ignores the
 		// cwd parameter. The scanner captures only a single path token and defers
 		// to the shell for anything else (redirects, extra args, shell expansion),
@@ -929,6 +948,16 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 		if (asyncRequested && !this.#asyncEnabled) {
 			throw new ToolError("Async bash execution is disabled. Enable async.enabled to use async mode.");
+		}
+		{
+			const effectiveCwd = cwd ?? this.session.cwd;
+			const commandsToCheck = rawCommand === command ? [command] : [rawCommand, command];
+			for (const commandToCheck of commandsToCheck) {
+				const credentialBlock = getShellCredentialReadBlockError(commandToCheck, { cwd: effectiveCwd });
+				if (credentialBlock !== undefined) {
+					throw new ToolError(credentialBlock);
+				}
+			}
 		}
 
 		// Check both the original command and the cwd-normalized command so
