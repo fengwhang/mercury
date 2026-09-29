@@ -125,6 +125,60 @@ export default defineComponent({
 			});
 		};
 
+		// Visual-row caret measurement. The textarea soft-wraps, so one logical
+		// line can span several visual rows; history must trigger on the
+		// first/last VISUAL row, not the first/last \n line — otherwise Up in
+		// a long wrapped line yanks history instead of moving the cursor.
+		// Returns null when measurement is impossible (caller falls back to
+		// logical \n lines, today's behavior).
+		let caretMirror: HTMLDivElement | null = null;
+		const getCaretVisualRow = (
+			el: HTMLTextAreaElement,
+		): {row: number; total: number} | null => {
+			try {
+				const style = window.getComputedStyle(el);
+				const lineHeight = parseFloat(style.lineHeight) || 0;
+				if (!lineHeight || !el.clientWidth) {
+					return null;
+				}
+				if (!caretMirror || !caretMirror.isConnected) {
+					caretMirror = document.createElement("div");
+					caretMirror.setAttribute("aria-hidden", "true");
+					caretMirror.style.cssText =
+						"position:absolute;top:-9999px;left:-9999px;visibility:hidden;pointer-events:none;white-space:pre-wrap;overflow-wrap:break-word;";
+					document.body.appendChild(caretMirror);
+				}
+				const mirror = caretMirror;
+				mirror.style.width = `${el.clientWidth}px`;
+				for (const prop of [
+					"font",
+					"letterSpacing",
+					"padding",
+					"border",
+					"boxSizing",
+					"textTransform",
+					"wordSpacing",
+					"textIndent",
+				] as const) {
+					mirror.style[prop] = style[prop];
+				}
+				const value = el.value;
+				const caret = el.selectionStart ?? value.length;
+				mirror.textContent = value.slice(0, caret);
+				const marker = document.createElement("span");
+				marker.textContent = "\u200b";
+				mirror.appendChild(marker);
+				const row = Math.max(0, Math.round(marker.offsetTop / lineHeight));
+				mirror.textContent = value;
+				const total = Math.max(1, Math.round(mirror.scrollHeight / lineHeight));
+				mirror.textContent = "";
+				return {row: Math.min(row, total - 1), total};
+			} catch {
+				return null;
+			}
+		};
+
+
 		const setPendingMessage = (e: Event) => {
 			props.channel.pendingMessage = (e.target as HTMLInputElement).value;
 			props.channel.inputHistoryPosition = 0;
@@ -293,6 +347,11 @@ export default defineComponent({
 					[]
 				).length;
 				const totalRows = (input.value.value.match(/\n/g) || []).length;
+				// Prefer visual rows (soft-wrap aware); fall back to logical
+				// \n lines when measurement is unavailable.
+				const caret = getCaretVisualRow(input.value);
+				const onFirstLine = caret ? caret.row === 0 : onRow === 0;
+				const onLastLine = caret ? caret.row === caret.total - 1 : onRow === totalRows;
 
 				const {channel} = props;
 
@@ -300,17 +359,13 @@ export default defineComponent({
 					channel.inputHistory[channel.inputHistoryPosition] = channel.pendingMessage;
 				}
 
-				if (key === "up" && onRow === 0) {
+				if (key === "up" && onFirstLine) {
 					if (channel.inputHistoryPosition < channel.inputHistory.length - 1) {
 						channel.inputHistoryPosition++;
 					} else {
 						return;
 					}
-				} else if (
-					key === "down" &&
-					channel.inputHistoryPosition > 0 &&
-					onRow === totalRows
-				) {
+				} else if (key === "down" && channel.inputHistoryPosition > 0 && onLastLine) {
 					channel.inputHistoryPosition--;
 				} else {
 					return;
@@ -338,6 +393,10 @@ export default defineComponent({
 
 			upload.unmounted();
 			upload.abort();
+			if (caretMirror) {
+				caretMirror.remove();
+				caretMirror = null;
+			}
 		});
 
 		return {

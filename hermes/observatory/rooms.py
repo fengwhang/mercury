@@ -27,6 +27,7 @@ No gateway imports at module level so this stays light under pytest.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from typing import Any, Protocol
 
@@ -250,6 +251,21 @@ def _truncate(text: str, limit: int = FRAME_TEXT_LIMIT) -> str:
     return text
 
 
+def _code_span(text: str) -> str:
+    """Wrap tool text as an inline code span for the Lounge renderer.
+
+    Tool I/O is code (underscores, asterisks, dollar signs) and the fork's
+    markdown+KaTeX pass would otherwise mangle it: `*` → emphasis, `$…$` →
+    math. Single backticks alone do NOT shield `$` (math splits before span
+    extraction in parse.ts), so `$` is backslash-escaped too — the renderer
+    restores `\\$` → `$` and never opens math on `\\$`. Inner backticks are
+    neutralized (the span regex cannot contain them). Prefixes stay outside
+    the span so room scans still read.
+    """
+    body = str(text or "").replace("`", "'")
+    body = re.sub(r"(?<!\\)\$", r"\\$", body)
+    return f"`{body}`" if body else ""
+
 def format_frame(feed: dict[str, Any] | Any) -> str | None:
     """One OmpFeed/datagram frame dict → one IRC line; None to skip.
 
@@ -270,7 +286,7 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
         tool = str(feed.get("tool") or "tool")
         args = _truncate(feed.get("args") or feed.get("text") or "")
         body = f"{tool} {args}".strip()
-        return f"{TOOL_PREFIX} {tag}{body}"
+        return f"{TOOL_PREFIX} {tag}{_code_span(body)}"
     if kind == "thought":
         text = _truncate(feed.get("text") or "")
         return f"{THINK_PREFIX} {tag}{text}" if text else None
