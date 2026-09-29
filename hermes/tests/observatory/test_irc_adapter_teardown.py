@@ -1,0 +1,98 @@
+"""IRC adapter drop teardown + bounded connect sends (reconnect hygiene)."""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+
+def _irc_adapter():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.irc.adapter import IRCAdapter
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"server": "localhost", "port": 6667,
+               "nickname": "testbot", "channel": "#test",
+               "use_tls": False},
+    )
+    adapter = IRCAdapter(cfg)
+    writer = MagicMock()
+    writer.is_closing = MagicMock(return_value=False)
+    writer.write = MagicMock()
+    writer.drain = AsyncMock()
+    adapter._writer = writer
+    return adapter
+
+
+def test_drop_teardown_cleans_stale_state(monkeypatch) -> None:
+    """A dropped connection leaves no CLOSE-WAIT writer, stale sink,
+    set registration, or held identity lock behind."""
+    import observatory.rooms as rooms_mod
+    from gateway import status as status_mod
+
+    adapter = _irc_adapter()
+    closed: list[bool] = []
+    adapter._writer.close = lambda: closed.append(True)  # type: ignore[method-assign]
+    adapter._registered = True
+    adapter._lock_key = "localhost:6669"
+    released: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        status_mod, "release_scoped_lock",
+        lambda scope, key: released.append((scope, key)))
+    prev_sink = rooms_mod.get_bot_sink()
+    rooms_mod.set_bot_sink(adapter)
+    try:
+        adapter._drop_teardown()
+        assert closed == [True]
+        assert adapter._writer is None
+        assert adapter._registered is False
+        assert rooms_mod.get_bot_sink() is None
+        assert released == [("irc", "localhost:6669")]
+    finally:
+        rooms_mod.set_bot_sink(prev_sink)
+
+
+def test_drop_teardown_never_raises() -> None:
+    """Empty adapter (no writer, sink, or lock) is a safe no-op."""
+    adapter = _irc_adapter()
+    adapter._writer = None
+    adapter._drop_teardown()
+
+
+@pytest.mark.asyncio
+async def test_send_raw_timeout_bounds_hung_drain() -> None:
+    """A half-open socket fails loud instead of stalling connect()."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    adapter = _irc_adapter()
+
+    async def _hang():
+        await asyncio.sleep(30)
+
+    hanging = MagicMock()
+    hanging.is_closing = MagicMock(return_value=False)
+    hanging.write = MagicMock()
+    hanging.drain = _hang
+    adapter._writer = hanging
+    with pytest.raises(asyncio.TimeoutError):
+        await adapter._send_raw("JOIN #test", timeout=0.05)
+
+
+@pytest.mark.asyncio
+async def test_send_raw_default_path_unchanged() -> None:
+    """Without a timeout the drain awaits normally (today's behavior)."""
+    from unittest.mock import AsyncMock
+
+    adapter = _irc_adapter()
+    drained: list[bool] = []
+
+    async def _ok():
+        drained.append(True)
+
+    adapter._writer.drain = _ok  # type: ignore[method-assign]
+    await adapter._send_raw("PING :x")
+    assert drained == [True]

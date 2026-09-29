@@ -273,9 +273,16 @@ async def boot_resync(
                     node_id = str((row or {}).get("node_id") or "")
                     try:
                         if registry.get(node_id) is None:
+                            import asyncio as _asyncio
+
                             from observatory.spawn import resurrect_omp_handle
 
-                            resurrect_omp_handle(
+                            # Off the gateway loop: process spawn + RPC
+                            # handshake block for tens of seconds (slow
+                            # hosts stall PINGs past the server's idle
+                            # drop while the loop is frozen).
+                            await _asyncio.to_thread(
+                                resurrect_omp_handle,
                                 state=state,
                                 registry=registry,
                                 node_id=node_id,

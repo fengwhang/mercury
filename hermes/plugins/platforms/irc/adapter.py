@@ -86,6 +86,9 @@ from gateway.config import Platform
 
 SILENCE_LIMIT = 210.0  # reconnect when the server says nothing this long
 WATCHDOG_POLL = 60.0  # silence-check cadence (server PINGs every 60s)
+#: Bound for one connect-phase drain: a half-open socket must fail loud
+#: (retryable reconnect) instead of stalling connect() forever silent.
+CONNECT_SEND_TIMEOUT = 10.0
 
 
 def _enable_keepalive(writer) -> None:
@@ -316,9 +319,9 @@ class IRCAdapter(BasePlatformAdapter):
         # (public IRC servers, back-compat setups with a single password).
         reg_password = self.agent_password or self.server_password
         if reg_password:
-            await self._send_raw(f"PASS {reg_password}")
-        await self._send_raw(f"NICK {self.nickname}")
-        await self._send_raw(f"USER {self.nickname} 0 * :Mercury")
+            await self._send_raw(f"PASS {reg_password}", timeout=CONNECT_SEND_TIMEOUT)
+        await self._send_raw(f"NICK {self.nickname}", timeout=CONNECT_SEND_TIMEOUT)
+        await self._send_raw(f"USER {self.nickname} 0 * :Mercury", timeout=CONNECT_SEND_TIMEOUT)
 
         # Start receive loop + ordered handler (PINGs bypass the queue)
         self._recv_task = asyncio.create_task(self._receive_loop())
@@ -339,29 +342,29 @@ class IRCAdapter(BasePlatformAdapter):
         self._server_multiline = False
         self._cap_event.clear()
         try:
-            await self._send_raw("CAP LS 302")
+            await self._send_raw("CAP LS 302", timeout=CONNECT_SEND_TIMEOUT)
             await asyncio.wait_for(self._cap_event.wait(), timeout=2.0)
         except (asyncio.TimeoutError, Exception):
             pass
         if "draft/multiline" in self._server_caps:
             self._cap_event.clear()
             try:
-                await self._send_raw("CAP REQ :draft/multiline")
+                await self._send_raw("CAP REQ :draft/multiline", timeout=CONNECT_SEND_TIMEOUT)
                 await asyncio.wait_for(self._cap_event.wait(), timeout=2.0)
             except (asyncio.TimeoutError, Exception):
                 pass
 
         # NickServ identification
         if self.nickserv_password:
-            await self._send_raw(f"PRIVMSG NickServ :IDENTIFY {self.nickserv_password}")
+            await self._send_raw(f"PRIVMSG NickServ :IDENTIFY {self.nickserv_password}", timeout=CONNECT_SEND_TIMEOUT)
             await asyncio.sleep(2)  # Give NickServ time to process
 
         # Join the gateway channel plus any managed agent rooms. IRC creates
         # a channel on first JOIN; the observatory resync pass re-adds live
         # rooms after a reconnect via join_channel().
-        await self._send_raw(f"JOIN {self.channel}")
+        await self._send_raw(f"JOIN {self.channel}", timeout=CONNECT_SEND_TIMEOUT)
         for extra in sorted(self.extra_channels):
-            await self._send_raw(f"JOIN {extra}")
+            await self._send_raw(f"JOIN {extra}", timeout=CONNECT_SEND_TIMEOUT)
         await self._ensure_multiline()
         logger.info("IRC: multiline %s (server caps: %s)",
                     "on" if self._server_multiline else "off",
@@ -370,7 +373,7 @@ class IRCAdapter(BasePlatformAdapter):
         # OPER for the observatory /exit room kill (no-op when unconfigured).
         if self.oper_password:
             try:
-                await self._send_raw(f"OPER {self.oper_password}")
+                await self._send_raw(f"OPER {self.oper_password}", timeout=CONNECT_SEND_TIMEOUT)
             except Exception:
                 logger.debug("IRC: OPER failed", exc_info=True)
 
@@ -463,6 +466,48 @@ class IRCAdapter(BasePlatformAdapter):
             pass
 
     # ── Sending ───────────────────────────────────────────────────────────
+
+    def _drop_teardown(self) -> None:
+        """Best-effort local teardown after connection loss (sync only).
+
+        Closes the dead writer (no waiting), clears a bot sink pointing
+        at this adapter, resets registration state, and releases the
+        scoped identity lock so a fresh connect starts clean. Called
+        from the receive loop's finally and the silence-watchdog drop
+        path — never awaits foreign tasks (self-deadlock proof: the
+        full disconnect() awaits this task). Never raises.
+        """
+        try:
+            writer = self._writer
+            self._writer = None
+            if writer is not None and not writer.is_closing():
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._registered = False
+        try:
+            self._registration_event.clear()
+        except Exception:
+            pass
+        self._server_caps = set()
+        self._server_multiline = False
+        try:
+            from observatory.rooms import get_bot_sink, set_bot_sink
+
+            if get_bot_sink() is self:
+                set_bot_sink(None)
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_lock_key", None):
+                from gateway.status import release_scoped_lock
+
+                release_scoped_lock("irc", self._lock_key)
+        except Exception:
+            pass
 
     async def send(
         self,
@@ -839,13 +884,22 @@ class IRCAdapter(BasePlatformAdapter):
 
     # ── Raw IRC I/O ──────────────────────────────────────────────────────
 
-    async def _send_raw(self, line: str) -> None:
-        """Send a raw IRC protocol line."""
+    async def _send_raw(self, line: str, *, timeout: float | None = None) -> None:
+        """Send a raw IRC protocol line.
+
+        ``timeout`` bounds the drain: connect-phase sends pass one so a
+        half-open socket fails loud (retryable reconnect) instead of
+        stalling ``connect()`` forever with no error and no rooms.
+        Steady-state sends keep timeout=None (today's behavior).
+        """
         if not self._writer or self._writer.is_closing():
             return
         encoded = (line + "\r\n").encode("utf-8")
         self._writer.write(encoded)
-        await self._writer.drain()
+        if timeout is None:
+            await self._writer.drain()
+        else:
+            await asyncio.wait_for(self._writer.drain(), timeout)
 
     async def _receive_loop(self) -> None:
         """Main receive loop — reads lines, PONGs fast, queues the rest.
@@ -876,9 +930,17 @@ class IRCAdapter(BasePlatformAdapter):
             raise
         except Exception as e:
             logger.error("IRC: receive loop error: %s", e)
-        finally:
             try:
                 self._line_queue.put_nowait(None)
+            except Exception:
+                pass
+            # Local teardown first: close the dead writer (kills the
+            # CLOSE-WAIT graveyard), clear a stale bot sink, reset
+            # registration, release the identity lock — so the
+            # reconnect below starts clean instead of inheriting stale
+            # state. Sync-only (never awaits our own tasks).
+            try:
+                self._drop_teardown()
             except Exception:
                 pass
             if self.is_connected:
@@ -958,7 +1020,13 @@ class IRCAdapter(BasePlatformAdapter):
                                 self._recv_task.cancel()
                         except Exception:
                             pass
-                        # Drive the rebuild directly: a receive loop stuck
+                        # Same local teardown as the receive-loop drop path:
+                        # the cancelled task may never unwind (stuck read),
+                        # so clean here too (idempotent if it does).
+                        try:
+                            self._drop_teardown()
+                        except Exception:
+                            pass
                         # in read() may never notice the closed writer,
                         # leaving the bot dead with no reconnect.
                         try:
