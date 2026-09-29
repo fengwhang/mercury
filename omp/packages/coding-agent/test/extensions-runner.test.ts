@@ -2508,6 +2508,63 @@ describe("ExtensionRunner", () => {
 			]);
 			delete globalState.__deniedApprovalEvents;
 		});
+
+		it("labels an unanswered approval honestly instead of user denial", async () => {
+			const events: Array<{ type: string; approved?: boolean; reason?: string }> = [];
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_approval_requested", async (event) => {
+						globalThis.__unansweredApprovalEvents.push({ type: event.type, reason: event.reason });
+					});
+					pi.on("tool_approval_resolved", async (event) => {
+						globalThis.__unansweredApprovalEvents.push({
+							type: event.type,
+							approved: event.approved,
+							reason: event.reason,
+						});
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "unanswered-approval-events.ts"), extCode);
+			const globalState = globalThis as typeof globalThis & { __unansweredApprovalEvents?: typeof events };
+			globalState.__unansweredApprovalEvents = events;
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			// Dead headless bridge / auto-deny UI: select resolves no answer.
+			initializeRunner(runner, async () => undefined);
+
+			const wrapper = new ExtensionToolWrapper(approvalTool, runner);
+			await expect(
+				(wrapper as ExtensionToolWrapper<any>).execute("call-unanswered", {}, undefined, undefined, {
+					sessionManager,
+					modelRegistry,
+					model: undefined,
+					isIdle: () => true,
+					hasQueuedMessages: () => false,
+					abort: () => {},
+					settings: { get: (key: string) => (key === "tools.approvalMode" ? "always-ask" : {}) } as never,
+				}),
+			).rejects.toThrow(
+				"Tool call not approved (approval unanswered (no human reachable)): dangerous_tool",
+			);
+
+			expect(events).toEqual([
+				{ type: "tool_approval_requested", reason: undefined },
+				{
+					type: "tool_approval_resolved",
+					approved: false,
+					reason: "approval unanswered (no human reachable)",
+				},
+			]);
+			delete globalState.__unansweredApprovalEvents;
+		});
 		it("emits resolved false when the approval prompt throws", async () => {
 			const events: Array<{ type: string; approved?: boolean; reason?: string }> = [];
 			const extCode = `

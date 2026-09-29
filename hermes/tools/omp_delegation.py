@@ -1273,6 +1273,10 @@ def _sync_run(tasks: List[Dict[str, Any]], env: Dict[str, str],
             env = dict(env)
             env["MERCURY_APPROVAL_SOCKET"] = _bridge.start()
         except Exception:
+            logger.exception(
+                "delegation: approval bridge failed to start — one-shot "
+                "children approvals will fail closed with no user prompt"
+            )
             _bridge = None
     try:
         base_env = _delegate_batch_base_env()
