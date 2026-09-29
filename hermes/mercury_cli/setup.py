@@ -2463,6 +2463,55 @@ def setup_agent_settings(config: dict):
 
     save_config(config)
 
+def setup_approvals(config: dict) -> None:
+    """Approval mode — the ONE knob for both engines (manual|smart|off).
+
+    Previously offered only by install.sh AFTER the wizard, so `mercury setup`
+    re-runs, --skip-setup installs, and migrations never saw it: a yolo choice
+    had nowhere to persist. Now a first-class section (`mercury setup
+    approvals`, plus a step in the full-setup flow). Persists through the
+    canonical setter (managed-scope/write-safety honored, effectiveness
+    verified); omp inherits at spawn via the bridge. Never raises for
+    save failures — degrades to the setter's message.
+    """
+    from mercury_cli.approval_mode import VALID_APPROVAL_MODES, run_approval_mode_command
+
+    labels = {
+        "manual": "safe — read-only auto-approved; writes & commands ask",
+        "smart": "reads + workspace writes auto-approved; commands ask",
+        "off": "yolo — never ask; full auto (deny rules still enforced)",
+    }
+    try:
+        current = run_approval_mode_command(None).mode
+    except Exception:
+        current = "smart"
+    if current not in VALID_APPROVAL_MODES:
+        current = "smart"
+    print_header("Approval Mode")
+    print_info(f"Current: {current} (one knob, both engines; omp inherits at spawn)")
+    idx = prompt_choice(
+        "How much may the agent do without asking you?",
+        [f"{mode} — {labels[mode]}" for mode in VALID_APPROVAL_MODES],
+        list(VALID_APPROVAL_MODES).index(current),
+    )
+    mode = VALID_APPROVAL_MODES[idx]
+    if mode == current:
+        print_info(f"Keeping approvals.mode = {current}")
+        return
+    result = run_approval_mode_command(mode)
+    if not result.ok:
+        print_warning(result.message)
+        return
+    config["approvals"] = {"mode": result.mode}
+    try:
+        from mercury_cli.omp_sync import sync_omp_from_setup
+
+        sync_omp_from_setup(quiet=True)
+    except Exception:
+        print_info("Run `mercury omp-sync` to push the mode to the omp engine.")
+        return
+    print_success(f"approvals.mode = {result.mode} (both engines; omp inherits at spawn)")
+
 
 # =============================================================================
 # Section 4: Messaging Platforms (Gateway)
@@ -5049,7 +5098,6 @@ def _offer_openclaw_migration(mercury_home: Path) -> bool:
             target_root=mercury_home.resolve(),
             execute=True,
             workspace_target=None,
-            overwrite=False,  # preserve existing Mercury config
             migrate_secrets=True,
             output_dir=None,
             selected_options=selected,
@@ -5099,6 +5147,7 @@ SETUP_SECTIONS = [
     ("tools", "Tools", setup_tools),
     ("telemetry", "Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
+    ("approvals", "Approval Mode", setup_approvals),
 ]
 
 
@@ -5681,6 +5730,7 @@ def _run_setup_wizard_impl(args):
             ("IRC Observatory", lambda: setup_observatory(config)),
             ("Messaging Platforms", _gateway_step),
             ("Tools", _tools_step),
+            ("Approval Mode", lambda: setup_approvals(config)),
         ]
     )
 
