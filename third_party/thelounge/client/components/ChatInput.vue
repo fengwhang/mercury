@@ -132,15 +132,18 @@ export default defineComponent({
 		// Returns null when measurement is impossible (caller falls back to
 		// logical \n lines, today's behavior).
 		let caretMirror: HTMLDivElement | null = null;
+
 		const getCaretVisualRow = (
-			el: HTMLTextAreaElement,
+			el: HTMLTextAreaElement
 		): {row: number; total: number} | null => {
 			try {
 				const style = window.getComputedStyle(el);
 				const lineHeight = parseFloat(style.lineHeight) || 0;
+
 				if (!lineHeight || !el.clientWidth) {
 					return null;
 				}
+
 				if (!caretMirror || !caretMirror.isConnected) {
 					caretMirror = document.createElement("div");
 					caretMirror.setAttribute("aria-hidden", "true");
@@ -148,8 +151,10 @@ export default defineComponent({
 						"position:absolute;top:-9999px;left:-9999px;visibility:hidden;pointer-events:none;white-space:pre-wrap;overflow-wrap:break-word;";
 					document.body.appendChild(caretMirror);
 				}
+
 				const mirror = caretMirror;
 				mirror.style.width = `${el.clientWidth}px`;
+
 				for (const prop of [
 					"font",
 					"letterSpacing",
@@ -162,6 +167,7 @@ export default defineComponent({
 				] as const) {
 					mirror.style[prop] = style[prop];
 				}
+
 				const value = el.value;
 				const caret = el.selectionStart ?? value.length;
 				mirror.textContent = value.slice(0, caret);
@@ -177,7 +183,6 @@ export default defineComponent({
 				return null;
 			}
 		};
-
 
 		const setPendingMessage = (e: Event) => {
 			props.channel.pendingMessage = (e.target as HTMLInputElement).value;
@@ -393,6 +398,7 @@ export default defineComponent({
 
 			upload.unmounted();
 			upload.abort();
+
 			if (caretMirror) {
 				caretMirror.remove();
 				caretMirror = null;
