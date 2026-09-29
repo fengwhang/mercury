@@ -22,6 +22,9 @@ def test_restart_wired_in_parser() -> None:
 
 
 def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys) -> None:
+    import json as _json
+    import time as _time
+
     calls: list[str] = []
     monkeypatch.setattr(
         "observatory.provision.ensure_observatory_unit",
@@ -41,6 +44,45 @@ def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys) 
         "mercury_cli.setup._verify_gateway_bot",
         lambda **kw: (True, "nick present"),
     )
+
+    class _FakeState:
+        def get_live(self):
+            return [{
+                "node_id": "gw", "engine": "hermes", "status": "live",
+                "name": "gateway agent", "session_ref": "session:gateway",
+                "room_id": "#vm_gateway", "mxid": "vm_gateway",
+            }]
+
+        def get_meta(self, key):
+            assert key == "last-resync"
+            return _json.dumps({"epoch": _time.time(), "joined": ["#vm_gateway"],
+                                "resumed": [], "failed": []})
+
+    monkeypatch.setattr(obs_mod, "_open_state", lambda home: _FakeState())
+
+    class _FakeProbe:
+        def __init__(self, *args):
+            pass
+
+        def connect(self):
+            return True
+
+        def names(self, channel):
+            assert channel == "#vm_gateway"
+            return ["owner", "vm_gateway"]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("observatory.doctor._Probe", _FakeProbe)
+    monkeypatch.setattr(
+        "observatory.provision.read_config",
+        lambda home=None: {"server_host": "127.0.0.1", "server_port": 6670},
+    )
+    monkeypatch.setattr(
+        "observatory.provision.read_irc_passwords",
+        lambda home=None: {"server": "pw"},
+    )
     rc = obs_mod.cmd_observatory(_args())
     assert rc == 0
     assert calls == ["unit", "lounge", "gateway"]  # unit re-render BEFORE anything else
@@ -48,6 +90,42 @@ def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys) 
     assert "daemon: restarted onto current code" in out
     assert "lounge: current" in out
     assert "bot: nick present" in out
+    assert "fleet: all 1 live agent(s) present" in out
+
+
+def test_restart_fails_when_fleet_never_resyncs(monkeypatch, capsys) -> None:
+    """A stale resync marker fails the restart loudly instead of
+    declaring victory on the gateway room alone."""
+    import json as _json
+
+    monkeypatch.setattr(
+        "observatory.provision.ensure_observatory_unit", lambda *a, **kw: "installed"
+    )
+    monkeypatch.setattr(
+        "observatory.lounge.status_lounge", lambda *a, **kw: {"configured": False}
+    )
+    monkeypatch.setattr(obs_mod, "_restart_gateway_now", lambda: 0)
+    monkeypatch.setattr(
+        "mercury_cli.setup._verify_gateway_bot", lambda **kw: (True, "nick present")
+    )
+
+    class _StaleState:
+        def get_live(self):
+            return [{
+                "node_id": "gw", "engine": "hermes", "status": "live",
+                "name": "gateway agent", "session_ref": "session:gateway",
+                "room_id": "#vm_gateway", "mxid": "vm_gateway",
+            }]
+
+        def get_meta(self, key):
+            return _json.dumps({"epoch": 1.0, "joined": [], "resumed": [],
+                                "failed": []})
+
+    monkeypatch.setattr(obs_mod, "_open_state", lambda home: _StaleState())
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    rc = obs_mod.cmd_observatory(_args())
+    assert rc == 1
+    assert "no resync completed" in capsys.readouterr().err
 
 
 def test_restart_stops_on_unit_failure(monkeypatch, capsys) -> None:

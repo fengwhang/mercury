@@ -8,6 +8,7 @@ onto the code on disk, then verifies the bot joined its room.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 
@@ -163,12 +164,112 @@ def _cmd_restart(args) -> int:
     except Exception as exc:
         print(f"bot check unavailable: {exc}", file=sys.stderr)
         return 0
-    if ok:
-        print(f"bot: {detail}")
-        return 0
-    print(f"bot: {detail}", file=sys.stderr)
-    _print_doctor()
-    return 1
+    if not ok:
+        print(f"bot: {detail}", file=sys.stderr)
+        _print_doctor()
+        return 1
+    print(f"bot: {detail}")
+    return _verify_fleet(args)
+
+
+def _verify_fleet(args) -> int:
+    """Prove every live agent respawned: fresh resync marker + per-room probe.
+
+    A gateway restart alone is not a fleet respawn — spawned agents only
+    come back via boot resync (channel JOINs, identity reconnects, omp
+    child rebuilds). This waits for a resync newer than the restart,
+    then JOINs every live room with a probe client and checks the
+    agent's nick is present. Per-agent ok/FAIL lines; nonzero exit on
+    any failure so callers (and users) never assume a healthy fleet.
+    """
+    import json as _json
+    import time as _time
+
+    start = _time.time()
+    home = getattr(args, "home", None)
+    state = _open_state(home)
+    if state is None:
+        print("fleet: observatory not provisioned (no state.db).", file=sys.stderr)
+        return 1
+    try:
+        live = list(state.get_live())
+    except Exception as exc:
+        print(f"fleet: cannot read live agents ({exc})", file=sys.stderr)
+        return 1
+    if not live:
+        print("fleet: no live agents (gateway row missing?)", file=sys.stderr)
+        return 1
+    marker: dict = {}
+    for _ in range(24):
+        try:
+            marker = _json.loads(state.get_meta("last-resync") or "{}")
+        except Exception:
+            marker = {}
+        if isinstance(marker, dict) and float(marker.get("epoch") or 0) >= start:
+            break
+        _time.sleep(5)
+    else:
+        marker = marker if isinstance(marker, dict) else {}
+    if float((marker or {}).get("epoch") or 0) < start:
+        print("fleet: FAIL — no resync completed since the restart "
+              "(bot never reconnected?)", file=sys.stderr)
+        return 1
+    for failure in (marker or {}).get("failed") or []:
+        print(f"fleet: resync reported: {failure}")
+    try:
+        from observatory.doctor import _Probe
+        from observatory.provision import read_config, read_irc_passwords
+    except Exception as exc:
+        print(f"fleet: probe unavailable ({exc})", file=sys.stderr)
+        return 1
+    try:
+        cfg = read_config(home) or {}
+        pw = read_irc_passwords(home) or {}
+        host = str(cfg.get("server_host") or "127.0.0.1")
+        port = int(cfg.get("server_port") or 6670)
+        secret = str(pw.get("server") or "")
+    except Exception as exc:
+        print(f"fleet: cannot read ircd config ({exc})", file=sys.stderr)
+        return 1
+    failures = 0
+    probe = _Probe(host, port, f"mercury-fleet-{os.getpid() % 10000}", secret)
+    try:
+        if not probe.connect():
+            print(f"fleet: FAIL — probe could not register on {host}:{port}",
+                  file=sys.stderr)
+            return 1
+        for row in live:
+            channel = str((row or {}).get("room_id") or "")
+            nick = str((row or {}).get("mxid") or "")
+            name = str((row or {}).get("name") or (row or {}).get("node_id"))
+            if not channel or not nick:
+                print(f"fleet: SKIP {name} (no channel/nick recorded)")
+                continue
+            try:
+                members = probe.names(channel)
+            except Exception as exc:
+                print(f"fleet: FAIL {name} ({channel}): probe error ({exc})")
+                failures += 1
+                continue
+            if members is None:
+                print(f"fleet: FAIL {name} ({channel}): could not JOIN")
+                failures += 1
+            elif nick.lower() in {str(m).lower() for m in members}:
+                print(f"fleet: ok {name} ({channel}) — {nick} present")
+            else:
+                print(f"fleet: FAIL {name} ({channel}): {nick} NOT present "
+                      f"(members: {', '.join(members) or 'none'})")
+                failures += 1
+    finally:
+        try:
+            probe.close()
+        except Exception:
+            pass
+    if failures:
+        print(f"fleet: {failures} agent(s) did not respawn", file=sys.stderr)
+        return 1
+    print(f"fleet: all {len(live)} live agent(s) present")
+    return 0
 
 
 def _cmd_doctor(args) -> int:

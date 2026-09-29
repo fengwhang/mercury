@@ -295,27 +295,29 @@ async def boot_resync(
             except Exception:
                 continue
         try:
-            # Lobby self-heal: restarts/upgrades must never leave the
-            # user without its gateway room (no setup run required).
-            # The Lounge learns it via INVITE (no server subscription).
-            from observatory.provision import get_lounge_nick, live_server_name
-            from observatory.rooms import gateway_channel
-
-            lobby = gateway_channel(live_server_name(None) or "mercury")
-            try:
-                if bot is not None and await bot.invite_user(
-                        get_lounge_nick(None), lobby):
-                    report["lobby"] = lobby
-                    report["lobby_invited"] = True
-            except Exception:
-                pass
-        except Exception:
-            pass
-        try:
             deferred = await replay_purge_journal(state)
             report["deferred_purges"] = deferred
         except Exception as exc:
             report["failed"].append(f"journal replay: {exc}")
     except Exception as exc:  # noqa: BLE001 — resync never breaks the gateway
         report["failed"].append(str(exc))
+    try:
+        # Resync completion marker: `mercury observatory restart`
+        # polls this to prove the fleet actually respawned (fresh
+        # timestamp + per-channel results) instead of assuming the
+        # gateway restart was sufficient. Written on every run that
+        # reaches state — including partial failures (failed list
+        # non-empty); a missing/stale marker means resync never ran.
+        import json as _json
+        import time as _time
+
+        if state is not None:
+            state.set_meta("last-resync", _json.dumps({
+                "epoch": _time.time(),
+                "joined": sorted(set(report.get("joined") or [])),
+                "resumed": sorted(set(report.get("resumed") or [])),
+                "failed": list(report.get("failed") or []),
+            }))
+    except Exception:
+        pass
     return report
