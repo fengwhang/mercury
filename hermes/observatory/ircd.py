@@ -639,7 +639,7 @@ class IrcDaemon:
         if not arg:
             await self._numeric(client, 461, "JOIN", "Not enough parameters")
             return
-        joined = []
+        joined: list[tuple[str, str, bool]] = []
         async with self._lock:
             for chan in arg.split(","):
                 chan = chan.split(" ", 1)[0].strip()
@@ -647,12 +647,53 @@ class IrcDaemon:
                     await self._numeric(client, 403, chan, "No such channel")
                     continue
                 key = chan.lower()
+                is_new = key not in self._channels
                 self._channels[key].add(client.nick.lower())
                 self._display.setdefault(key, chan)
                 client.channels.add(key)
-                joined.append((key, self._display[key]))
-        for key, display in joined:
+                joined.append((key, self._display[key], is_new))
+        for key, display, is_new in joined:
             await self._emit_join(client, key, display)
+            if is_new:
+                await self._auto_join_server_clients(client, key, display)
+
+    async def _auto_join_server_clients(
+        self, origin: _Client, key: str, display: str
+    ) -> None:
+        """Join every server-listener client to a newly created channel."""
+        async with self._lock:
+            members = self._channels.get(key)
+            if members is None:
+                return
+            targets: list[_Client] = []
+            for nick, peer in list(self._clients.items()):
+                if peer is origin:
+                    continue
+                try:
+                    if not peer.registered:
+                        continue
+                    if getattr(peer, "listener", "server") == "agent":
+                        continue
+                    if nick in members:
+                        continue
+                    members.add(nick)
+                    peer.channels.add(key)
+                    targets.append(peer)
+                except Exception:
+                    continue
+            display_now = self._display.get(key, display)
+        for peer in targets:
+            try:
+                for nick in sorted(self._channels.get(key, ())):
+                    other = self._clients.get(nick)
+                    if other is not None and other is not peer:
+                        await self._send(
+                            other,
+                            f":{peer.nick}!{peer.user}@{self.config.server_name} JOIN {display_now}",
+                        )
+                await self._emit_join(peer, key, display_now)
+            except Exception:
+                logger.debug("ircd: auto-join fanout failed", exc_info=True)
 
     async def _emit_join(self, peer: _Client, key: str, display: str) -> None:
         """JOIN + topic + names for a new member."""

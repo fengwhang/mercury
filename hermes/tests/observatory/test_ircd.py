@@ -748,6 +748,46 @@ async def test_register_auto_joins_all_live_rooms(tmp_path) -> None:
     finally:
         rooms_mod.set_room_manager(None)
 
+@pytest.mark.asyncio
+async def test_new_channel_auto_joins_server_clients(tmp_path) -> None:
+    """Spawn visibility: a room created AFTER a remote Lounge connected joins it.
+
+    Two ircds over tailscale share one Lounge: the Lounge holds a server-
+    listener connection to each. The single-nick INVITE only covers the
+    local lounge_nick, so a spawn on machine B stayed invisible on the
+    Lounge watching from machine A. New channels now server-join every
+    server-listener client (agent listeners stay scoped).
+    """
+    async with running_daemon(tmp_path) as (_, agent_port, server_port):
+        lounge_a, lounge_b, bot, other_bot = (
+            RawClient(), RawClient(), RawClient(), RawClient())
+        await lounge_a.connect(server_port)
+        await lounge_b.connect(server_port)
+        await bot.connect(agent_port)
+        await other_bot.connect(agent_port)
+        try:
+            await lounge_a.register("loungeA")
+            await lounge_b.register("phone")
+            await bot.register("vm_gateway")
+            await other_bot.register("other_bot")
+            await lounge_a.next_match("JOIN #", timeout=5.0)
+            await lounge_b.next_match("JOIN #", timeout=5.0)
+            await bot.send("JOIN #mercury_bravo")
+            assert await bot.next_match("JOIN #mercury_bravo", timeout=5.0)
+            own_a = await lounge_a.next_match(
+                "loungeA!u@mercury JOIN #mercury_bravo", timeout=5.0)
+            assert "#mercury_bravo" in own_a
+            own_b = await lounge_b.next_match(
+                "phone!u@mercury JOIN #mercury_bravo", timeout=5.0)
+            assert "#mercury_bravo" in own_b
+            with pytest.raises(AssertionError):
+                await other_bot.next_match("#mercury_bravo", timeout=0.5)
+        finally:
+            await lounge_a.close()
+            await lounge_b.close()
+            await bot.close()
+            await other_bot.close()
+
 
 @pytest.mark.asyncio
 async def test_failed_listener_rebinds_when_port_frees(tmp_path) -> None:
