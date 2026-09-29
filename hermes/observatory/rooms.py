@@ -251,21 +251,6 @@ def _truncate(text: str, limit: int = FRAME_TEXT_LIMIT) -> str:
     return text
 
 
-def _code_span(text: str) -> str:
-    """Wrap tool text as an inline code span for the Lounge renderer.
-
-    Tool I/O is code (underscores, asterisks, dollar signs) and the fork's
-    markdown+KaTeX pass would otherwise mangle it: `*` → emphasis, `$…$` →
-    math. Single backticks alone do NOT shield `$` (math splits before span
-    extraction in parse.ts), so `$` is backslash-escaped too — the renderer
-    restores `\\$` → `$` and never opens math on `\\$`. Inner backticks are
-    neutralized (the span regex cannot contain them). Prefixes stay outside
-    the span so room scans still read.
-    """
-    body = str(text or "").replace("`", "'")
-    body = re.sub(r"(?<!\\)\$", r"\\$", body)
-    return f"`{body}`" if body else ""
-
 def format_frame(feed: dict[str, Any] | Any) -> str | None:
     """One OmpFeed/datagram frame dict → one IRC line; None to skip.
 
@@ -273,6 +258,14 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
     {message, node, tool, thought} with ``text`` / ``tool`` / ``status``
     keys; ``subagent_id == ""`` is the child's own main session, a
     non-empty id tags a grandchild frame with ``[id]``.
+
+    Trace plaintext law: every non-reply line carries a leading trace
+    glyph so the Lounge fork renders it plaintext (markdown bypass).
+    Tool calls AND tool-role message frames (command outputs) are
+    traces; assistant/user message frames are the reply stream and stay
+    unmarked (markdown). No backticks/escapes anywhere here — the fork
+    no longer markdown-parses these lines, so code-span shielding would
+    print literally.
     """
     if not isinstance(feed, dict):
         return None
@@ -281,12 +274,16 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
     tag = f"[{sub}] " if sub else ""
     if kind == "message":
         text = _truncate(feed.get("text") or "", FRAME_TEXT_LIMIT * 2)
-        return f"{tag}{text}" if text else None
+        if not text:
+            return None
+        if str(feed.get("role") or "") in ("tool", "function"):
+            return f"{TOOL_PREFIX} {tag}{text}"
+        return f"{tag}{text}"
     if kind == "tool":
         tool = str(feed.get("tool") or "tool")
         args = _truncate(feed.get("args") or feed.get("text") or "")
         body = f"{tool} {args}".strip()
-        return f"{TOOL_PREFIX} {tag}{_code_span(body)}"
+        return f"{TOOL_PREFIX} {tag}{body}"
     if kind == "thought":
         text = _truncate(feed.get("text") or "")
         return f"{THINK_PREFIX} {tag}{text}" if text else None
@@ -533,7 +530,7 @@ class RoomManager:
         except Exception:
             logger.debug("rooms: child row for %s exists", node_id, exc_info=True)
         await self.ensure_room(
-            channel, greet=f"live trace for subagent '{name}' streams here"
+            channel, greet=f"ℹ️ live trace for subagent '{name}' streams here"
         )
         logger.info("observatory: room ensured %s for %s", channel, node_id)
         # No server subscription: The Lounge sees rooms via INVITE

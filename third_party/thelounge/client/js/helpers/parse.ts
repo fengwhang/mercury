@@ -18,6 +18,7 @@ import {
 	detectBlock,
 	extractBlocks,
 	inlineMdToIrcCodes,
+	isTraceLine,
 	MdBlock,
 	renderCodeBlock,
 	renderMathDisplay,
@@ -112,6 +113,16 @@ function createFragment(fragment: StyledFragment): VNode | string | undefined {
 // real line breaks. Split first so links/channels/emoji never match across
 // a line boundary, then join the per-line vnode lists with <br>.
 function parse(text: string, message?: ClientMessage, network?: ClientNetwork) {
+	const lines = text.split("\n");
+	// Trace fast path: agent execution traces render plaintext — straight
+	// to parseLine, skipping extractBlocks/detectBlock/inline-md/math. The
+	// multiline join below still applies (this gates markdown only, never
+	// line structure). Trace messages are single-line machine emissions;
+	// gating on the first line keeps mixed content on the markdown path.
+	if (lines.length > 0 && isTraceLine(lines[0])) {
+		return lines.flatMap((line, index) =>
+			index === 0 ? parseLine(line, message, network) : [createElement("br"), ...parseLine(line, message, network)]);
+	}
 	const {text: carved, blocks} = extractBlocks(text);
 	return carved.split("\n").flatMap((line, index) => {
 		const parts = parseRichLine(line, message, network, blocks);

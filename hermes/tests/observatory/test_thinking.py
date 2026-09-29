@@ -157,3 +157,75 @@ async def test_send_clears_thinking_face(monkeypatch) -> None:
     result = await adapter.send("#test", "hi")
     assert result.success is True
     assert "#test" not in thinking_mod._tasks
+
+
+def test_interim_notice_shapes() -> None:
+    assert thinking_mod.is_interim_notice("🌀 mnemosyne — recalled 4 memories")
+    assert thinking_mod.is_interim_notice("👁️ Hindsight — recalled 2 memories")
+    assert thinking_mod.is_interim_notice("👁️ Hindsight — saving to memory…")
+    assert thinking_mod.is_interim_notice("🧠 Notes — recalled 2 memories")
+    assert not thinking_mod.is_interim_notice("hello world")
+    assert not thinking_mod.is_interim_notice("🔧 read {\"path\": \"/a\"}")
+    assert not thinking_mod.is_interim_notice("")
+
+
+@pytest.mark.asyncio
+async def test_notice_rearms_pending_face(monkeypatch) -> None:
+    """An interim memory notice restarts the face delay instead of
+    killing it: spawned rooms with recall active still get faces."""
+    sent: list[tuple[str, str]] = []
+
+    class FakeBot:
+        async def send(self, room: str, text: str):
+            sent.append((room, text))
+
+    monkeypatch.setattr(thinking_mod, "THINKING_FACE_DELAY_S", 0.05)
+    monkeypatch.setattr(
+        "observatory.rooms.get_bot_sink", lambda: FakeBot())
+    thinking_mod.thinking_started("#room")
+    await asyncio.sleep(0.02)
+    thinking_mod.thinking_progress("#room")
+    await asyncio.sleep(0.03)
+    assert sent == []
+    await asyncio.sleep(0.05)
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_reply_after_notice_still_cancels(monkeypatch) -> None:
+    """A real reply following a notice cancels the re-armed face."""
+    sent: list[tuple[str, str]] = []
+
+    class FakeBot:
+        async def send(self, room: str, text: str):
+            sent.append((room, text))
+
+    monkeypatch.setattr(thinking_mod, "THINKING_FACE_DELAY_S", 0.05)
+    monkeypatch.setattr(
+        "observatory.rooms.get_bot_sink", lambda: FakeBot())
+    thinking_mod.thinking_started("#room")
+    await asyncio.sleep(0.02)
+    thinking_mod.thinking_progress("#room")
+    thinking_mod.thinking_done("#room")
+    await asyncio.sleep(0.08)
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_notice_send_rearms_but_reply_send_cancels(monkeypatch) -> None:
+    """Adapter.send routes memory notices to re-arm, other sends to cancel."""
+    from observatory import identity as identity_mod
+
+    adapter = _irc_adapter()
+
+    class FakePool:
+        def get(self, channel):
+            return None
+
+    monkeypatch.setattr(identity_mod, "get_pool", lambda: FakePool())
+    adapter._server_multiline = False
+    thinking_mod.thinking_started("#test")
+    await adapter.send("#test", "🌀 mnemosyne — recalled 4 memories")
+    assert "#test" in thinking_mod._tasks
+    await adapter.send("#test", "the actual reply")
+    assert "#test" not in thinking_mod._tasks

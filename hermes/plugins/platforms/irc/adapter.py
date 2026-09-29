@@ -474,9 +474,17 @@ class IRCAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            from observatory.thinking import thinking_done
+            from observatory.thinking import is_interim_notice, thinking_done, thinking_progress
 
-            thinking_done(chat_id)
+            if is_interim_notice(content):
+                # Provider memory progress (recall/retain line): the turn
+                # is alive, so restart the pending face's delay instead of
+                # killing it — otherwise every turn with recall active
+                # cancels its face ~1s in and only notice-free rooms (the
+                # gateway) ever show faces.
+                thinking_progress(chat_id)
+            else:
+                thinking_done(chat_id)
         except Exception:
             pass
         target = chat_id  # channel name or nick for DMs

@@ -177,6 +177,18 @@ function escapeHtml(s: string): string {
 		.replace(/"/g, "&quot;");
 }
 
+// Agent execution traces (tool calls, thinking, lifecycle, memory notices)
+// bypass the markdown pipeline: underscores, asterisks and $…$ in tool I/O
+// must never become emphasis or math. The multiline pipeline in parse.ts
+// still applies — this gates markdown only, never line structure. The set
+// mirrors the server's trace prefixes (hermes/observatory/rooms.py) plus
+// the memory-provider glyphs; agent replies and human messages (no leading
+// glyph) keep full markdown. Exported: stable cross-layer contract and the
+// unit-test seam for the trace set.
+export function isTraceLine(line: string): boolean {
+	return /^[🔧💭ℹ️🚀✅🌀👁️🧠]/u.test(line);
+}
+
 export function renderCodeBlock(block: MdBlock): VNode {
 	const lang = block.lang.toLowerCase();
 	const html =

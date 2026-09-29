@@ -55,6 +55,29 @@ def test_format_frame_shapes() -> None:
     assert format_frame("nope") is None
 
 
+def test_format_frame_traces_are_plaintext() -> None:
+    """Trace lines carry glyphs and no markdown: the fork renders them
+    plaintext (markdown bypass), so backticks/escapes must not ship."""
+    tool = format_frame({
+        "feed": "tool", "tool": "read",
+        "args": '{"path": "/my_dir/f_$x"}', "subagent_id": "",
+    })
+    assert tool is not None and tool.startswith("🔧 ")
+    assert "`" not in tool and "\\$" not in tool
+    assert "/my_dir/f_$x" in tool
+    out = format_frame({
+        "feed": "message", "role": "tool",
+        "text": "[f#1A2B] 1:def a_b($x):", "subagent_id": "",
+    })
+    assert out is not None and out.startswith("🔧 ")
+    assert "[f#1A2B]" in out
+    reply = format_frame({
+        "feed": "message", "role": "assistant",
+        "text": "hello **you**", "subagent_id": "",
+    })
+    assert reply == "hello **you**"
+
+
 def test_format_lifecycle() -> None:
     assert "started" in format_lifecycle("start", name="kid")
     assert "done" in format_lifecycle(

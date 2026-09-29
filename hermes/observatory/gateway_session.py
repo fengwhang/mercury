@@ -341,7 +341,7 @@ def push_approval_prompt(
         if channel:
             say_nowait(
                 channel,
-                f"approval requested: `{command}`"
+                f"ℹ️ approval requested: {command}"
                 f" — {description} "
                 f"(reply /approve or /deny in the parent room)",
             )

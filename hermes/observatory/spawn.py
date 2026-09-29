@@ -667,7 +667,7 @@ async def spawn_orchestrator(
             except Exception:  # noqa: BLE001 — cosmetic; main bot covers
                 logger.debug("spawn: identity ensure failed for %s", node_id)
             try:
-                await bot.say(channel, f"spawned {engine} agent '{clean}' — chat here, like CLI.")
+                await bot.say(channel, f"🚀 spawned {engine} agent '{clean}' — chat here, like CLI.")
             except Exception:  # noqa: BLE001 — cosmetic
                 logger.debug("spawn: greet failed for %s", node_id, exc_info=True)
     return state.get(node_id)
