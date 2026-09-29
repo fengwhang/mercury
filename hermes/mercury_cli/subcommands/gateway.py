@@ -248,6 +248,32 @@ def build_gateway_parser(
         help="Skip the confirmation prompt",
     )
 
+    # gateway migrate-duplicates
+    gateway_migrate_duplicates = gateway_subparsers.add_parser(
+        "migrate-duplicates",
+        help="Remove stale duplicate mercury-gateway units serving this install",
+        description=(
+            "Stop, disable, and remove mercury-gateway units that bake the "
+            "same HERMES_HOME as this install under a non-current name "
+            "(leftover renames/reinstalls that fight the live service over "
+            "bot identities). Other installs (stable vs nightly, profiles) "
+            "and unrelated services are never touched."
+        ),
+    )
+    gateway_migrate_duplicates.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="List what would be removed without doing it",
+    )
+    gateway_migrate_duplicates.add_argument(
+        "-y",
+        "--yes",
+        dest="yes",
+        action="store_true",
+        help="Skip the confirmation prompt",
+    )
+
     # gateway enroll — enroll a self-hosted gateway with a relay connector
     # (connector⇄gateway auth). Redeems a single-use enrollment token for the
     # per-gateway secret + per-tenant delivery key and writes them to .env.

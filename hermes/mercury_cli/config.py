@@ -4542,7 +4542,7 @@ def _parse_env_value(raw_value: str) -> str:
 
 
 def load_env() -> Dict[str, str]:
-    """Load environment variables from ~/.mercury/.env.
+    """Load environment variables from $MERCURY_HOME/.env (via get_env_path).
 
     Normalizes line endings before parsing while treating each assignment's
     value as opaque data for boundary discovery.
@@ -4779,7 +4779,7 @@ def _env_line_defines_key(
 
 
 def save_env_value(key: str, value: str):
-    """Save or update a value in ~/.mercury/.env."""
+    """Save or update a value in $MERCURY_HOME/.env (via get_env_path)."""
     if is_managed():
         managed_error(f"set {key}")
         return
@@ -4891,7 +4891,7 @@ def custom_endpoint_key_env(identity: str) -> str:
 
 
 def remove_env_value(key: str) -> bool:
-    """Remove a key from ~/.mercury/.env and os.environ.
+    """Remove a key from $MERCURY_HOME/.env and os.environ.
 
     Returns True if the key was found and removed, False otherwise.
     """
@@ -5023,7 +5023,7 @@ def reload_env() -> int:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ``os.environ`` or ``~/.mercury/.env``, scope-aware.
+    """Get a value from ``os.environ`` or ``$MERCURY_HOME/.env``, scope-aware.
 
     The ``os.environ`` read routes through ``agent.secret_scope.get_secret``
     so that, under an active profile scope (multiplexed gateway turn), this

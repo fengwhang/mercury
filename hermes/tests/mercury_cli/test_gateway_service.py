@@ -2108,6 +2108,7 @@ class TestRemoveLegacyHermesUnits:
 
 
 class TestMigrateLegacyCommand:
+
     """Tests for the `mercury gateway migrate-legacy` subcommand dispatch."""
 
     def test_migrate_legacy_subparser_accepts_dry_run_and_yes(self):
@@ -2725,3 +2726,129 @@ class TestTimeoutStopSecCoversCronFloor:
             env={"HERMES_CRON_DRAIN_TIMEOUT": "200"},
         )
         assert "TimeoutStopSec=240" in unit
+
+
+class TestDuplicateGatewayUnitDetection:
+    """Tests for _find_duplicate_gateway_units.
+
+    A stale unit under a non-current name but the SAME HERMES_HOME fights
+    the live service over bot identities. Different homes (stable vs
+    nightly, profiles) and unrelated services must never match.
+    """
+
+    @staticmethod
+    def _unit_text(home: str | None) -> str:
+        env = f'\nEnvironment="HERMES_HOME={home}"' if home else ""
+        return (
+            "[Unit]\nDescription=Mercury Gateway\n[Service]\n"
+            "ExecStart=/usr/bin/python -m mercury_cli.main gateway run\n"
+            f"{env}\n"
+        )
+
+    @staticmethod
+    def _setup(tmp_path, monkeypatch, home: str):
+        import mercury_constants
+
+        user_dir = tmp_path / "user"
+        system_dir = tmp_path / "system"
+        user_dir.mkdir()
+        system_dir.mkdir()
+        monkeypatch.setattr(
+            gateway_cli,
+            "_legacy_unit_search_paths",
+            lambda: [(False, user_dir), (True, system_dir)],
+        )
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "mercury-gateway")
+        monkeypatch.setattr(mercury_constants, "get_hermes_home", lambda: home)
+        return user_dir, system_dir
+
+    def test_detects_same_home_stale_name(self, tmp_path, monkeypatch):
+        home = str(tmp_path / "mercury" / "hermes")
+        user_dir, _ = self._setup(tmp_path, monkeypatch, home)
+        (user_dir / "mercury-gateway-16bcae1c.service").write_text(
+            self._unit_text(home), encoding="utf-8"
+        )
+        results = gateway_cli._find_duplicate_gateway_units()
+        assert [(name, is_system) for name, _, is_system in results] == [
+            ("mercury-gateway-16bcae1c.service", False)
+        ]
+
+    def test_skips_current_other_home_and_foreign_units(self, tmp_path, monkeypatch):
+        home = str(tmp_path / "mercury" / "hermes")
+        other = str(tmp_path / "mercury-nightly" / "hermes")
+        user_dir, _ = self._setup(tmp_path, monkeypatch, home)
+        (user_dir / "mercury-gateway.service").write_text(
+            self._unit_text(home), encoding="utf-8"
+        )
+        (user_dir / "mercury-gateway-coder.service").write_text(
+            self._unit_text(other), encoding="utf-8"
+        )
+        (user_dir / "mercury-gateway-helper.service").write_text(
+            "[Service]\nExecStart=/usr/bin/helper\n", encoding="utf-8"
+        )
+        (user_dir / "mercury-gateway-nohome.service").write_text(
+            "[Service]\nExecStart=/usr/bin/python -m mercury_cli.main gateway run\n",
+            encoding="utf-8",
+        )
+        assert gateway_cli._find_duplicate_gateway_units() == []
+
+
+class TestRemoveDuplicateGatewayUnits:
+    """Tests for remove_duplicate_gateway_units (the migration action)."""
+
+    def test_removes_same_home_duplicate(self, tmp_path, monkeypatch, capsys):
+        import mercury_constants
+
+        home = str(tmp_path / "mercury" / "hermes")
+        user_dir = tmp_path / "user"
+        system_dir = tmp_path / "system"
+        user_dir.mkdir()
+        system_dir.mkdir()
+        monkeypatch.setattr(
+            gateway_cli,
+            "_legacy_unit_search_paths",
+            lambda: [(False, user_dir), (True, system_dir)],
+        )
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "mercury-gateway")
+        monkeypatch.setattr(mercury_constants, "get_hermes_home", lambda: home)
+        stale = user_dir / "mercury-gateway-16bcae1c.service"
+        stale.write_text(
+            "[Service]\nExecStart=/usr/bin/python -m mercury_cli.main gateway run\n"
+            f'Environment="HERMES_HOME={home}"\n',
+            encoding="utf-8",
+        )
+        systemctl_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            systemctl_calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        removed, remaining = gateway_cli.remove_duplicate_gateway_units(
+            interactive=False
+        )
+        assert removed == 1
+        assert remaining == []
+        assert not stale.exists()
+        cmds_joined = [" ".join(c) for c in systemctl_calls]
+        assert any("stop mercury-gateway-16bcae1c.service" in c for c in cmds_joined)
+        assert any("disable mercury-gateway-16bcae1c.service" in c for c in cmds_joined)
+
+
+class TestMigrateDuplicatesCommand:
+    """Tests for the `mercury gateway migrate-duplicates` subcommand dispatch."""
+
+    def test_dispatch_calls_helper(self, tmp_path, monkeypatch):
+        """gateway_command(args) with subcmd='migrate-duplicates' calls the helper."""
+        called = {}
+
+        def fake_remove(interactive=True, dry_run=False):
+            called.update(interactive=interactive, dry_run=dry_run)
+            return 0, []
+
+        monkeypatch.setattr(gateway_cli, "remove_duplicate_gateway_units", fake_remove)
+        args = SimpleNamespace(
+            gateway_command="migrate-duplicates", dry_run=False, yes=True
+        )
+        gateway_cli.gateway_command(args)
+        assert called == {"interactive": False, "dry_run": False}

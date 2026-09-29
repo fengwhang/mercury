@@ -3313,6 +3313,148 @@ def remove_legacy_hermes_units(
 
     return removed, remaining
 
+def _read_unit_hermes_home(unit_text: str) -> Path | None:
+    """Baked ``HERMES_HOME=`` from unit text (None when absent/unparseable)."""
+    import re
+
+    match = re.search(r'HERMES_HOME=([^"\s]+)', unit_text)
+    if not match:
+        match = re.search(r'HERMES_HOME="([^"]+)"', unit_text)
+    if not match:
+        return None
+    try:
+        return Path(match.group(1).strip()).expanduser()
+    except (OSError, ValueError):
+        return None
+
+
+def _find_duplicate_gateway_units() -> list[tuple[str, Path, bool]]:
+    """Return ``[(unit_name, unit_path, is_system)]`` for stale duplicate units.
+
+    A duplicate is a ``mercury-gateway*.service`` file that is NOT the
+    current service name but bakes the SAME HERMES_HOME as this install —
+    i.e. a leftover unit from a rename/reinstall serving our own state.
+    Two such units fight over the same bot identities (the second
+    registration steals the nick; traffic races and rooms look randomly
+    dead with no rejoin thrash to explain it).
+
+    Safety guards (mirrors the legacy finder):
+
+    * Current service name never matched.
+    * ExecStart must invoke our gateway entrypoint (unrelated
+      ``mercury-gateway*`` services untouched).
+    * Baked home must parse AND equal the active home — profile units
+      (``mercury-gateway-coder`` → ``profiles/coder``) and other
+      installs (stable vs nightly) are different homes and are NEVER
+      matched. Cross-home identity collisions are arbitrated at runtime
+      by the scoped token locks, not by killing a stranger's service.
+    * Results are returned purely for caller inspection; this function
+      never mutates or removes anything.
+    """
+    try:
+        from mercury_constants import get_hermes_home
+
+        active_resolved = Path(str(get_hermes_home())).expanduser().resolve()
+    except (OSError, ValueError, RuntimeError):
+        return []
+    current = f"{get_service_name()}.service"
+    results: list[tuple[str, Path, bool]] = []
+    for is_system, base in _legacy_unit_search_paths():
+        try:
+            candidates = sorted(base.glob("mercury-gateway*.service"))
+        except OSError:
+            continue
+        for unit_path in candidates:
+            name = unit_path.name
+            if name == current:
+                continue
+            try:
+                text = unit_path.read_text(encoding="utf-8", errors="ignore")
+            except (OSError, PermissionError):
+                continue
+            if not any(
+                marker in text for marker in _LEGACY_UNIT_EXECSTART_MARKERS
+            ):
+                continue
+            baked = _read_unit_hermes_home(text)
+            if baked is None:
+                continue
+            try:
+                if baked.resolve() != active_resolved:
+                    continue
+            except (OSError, ValueError):
+                continue
+            results.append((name, unit_path, is_system))
+    return results
+
+
+def remove_duplicate_gateway_units(
+    interactive: bool = True,
+    dry_run: bool = False,
+) -> tuple[int, list[Path]]:
+    """Stop, disable, and remove stale duplicate gateway units.
+
+    Iterates over whatever ``_find_duplicate_gateway_units()`` returns:
+    same-home units under a non-current name. Different-home installs
+    (stable vs nightly, profiles) are never matched, so this cannot
+    kill a stranger's gateway.
+
+    Args:
+        interactive: When True, prompt before removing. When False,
+            remove without asking (update/install paths).
+        dry_run: When True, list what would be removed and return.
+
+    Returns ``(removed_count, remaining_paths)``.
+    """
+    duplicates = _find_duplicate_gateway_units()
+    if not duplicates:
+        return 0, []
+
+    print()
+    print("Duplicate gateway unit(s) for this install (same state, stale name):")
+    for name, path, is_system in duplicates:
+        scope = "system" if is_system else "user"
+        print(f"  {path}  ({scope} scope)")
+    print("  These fight the current service over the same bot identities.")
+    print()
+
+    if dry_run:
+        print("(dry-run — nothing removed)")
+        return 0, [p for _, p, _ in duplicates]
+
+    if interactive and not prompt_yes_no("Stop, disable, and remove these duplicate unit(s)?", True):
+        print("Skipped. Re-run with: mercury gateway migrate-duplicates")
+        return 0, [p for _, p, _ in duplicates]
+
+    removed = 0
+    remaining: list[Path] = []
+    for name, path, is_system in duplicates:
+        if is_system and os.geteuid() != 0:
+            print_warning(f"System-scope duplicate {path} requires root — skipping.")
+            print_info("  Re-run with: sudo mercury gateway migrate-duplicates")
+            remaining.append(path)
+            continue
+        try:
+            _run_systemctl(["stop", name], system=is_system, check=False, timeout=90)
+            _run_systemctl(["disable", name], system=is_system, check=False, timeout=30)
+            path.unlink(missing_ok=True)
+            print(f"  ✓ Removed {path}")
+            removed += 1
+        except (OSError, RuntimeError) as e:
+            print(f"  ⚠ Could not remove {path}: {e}")
+            remaining.append(path)
+    try:
+        _run_systemctl(["daemon-reload"], system=False, check=False, timeout=30)
+    except RuntimeError:
+        pass
+
+    print()
+    if remaining:
+        print_warning(f"{len(remaining)} duplicate unit(s) still present — see messages above.")
+    else:
+        print_success(f"Removed {removed} duplicate unit(s).")
+    return removed, remaining
+
 
 def print_systemd_scope_conflict_warning() -> None:
     scopes = get_installed_systemd_scopes()
@@ -4496,14 +4638,13 @@ def _print_system_scope_remediation(action: str) -> None:
     print_info(f"    1. {action.capitalize()} it this time:")
     if action == "start":
         print_info(f"         sudo systemctl start {svc}")
-    elif action == "stop":
-        print_info(f"         sudo systemctl stop {svc}")
-    elif action == "restart":
-        print_info(f"         sudo systemctl restart {svc}")
-    else:
-        print_info(f"         sudo systemctl {action} {svc}")
-    print_info("    2. Switch to a per-user service (recommended for personal use):")
-    print_info("         sudo mercury gateway uninstall --system")
+    if has_legacy_hermes_units():
+        print()
+        print_legacy_unit_warning()
+        print()
+        if non_interactive or prompt_yes_no("Remove the legacy unit(s) before installing?", True):
+            remove_legacy_hermes_units(interactive=False)
+            print()
     print_info("         mercury gateway install")
     print_info("         mercury gateway start")
 
@@ -4575,6 +4716,17 @@ def systemd_install(
         print()
         if non_interactive or prompt_yes_no("Remove the legacy unit(s) before installing?", True):
             remove_legacy_hermes_units(interactive=False)
+            print()
+
+    # Retire same-home duplicates (stale unit name from a rename/reinstall
+    # serving our own state): two such units fight over the same bot
+    # identities with no rejoin thrash to explain it. Different-home
+    # installs are never matched. Prompted here (install is interactive);
+    # the update path retires non-interactively.
+    if _find_duplicate_gateway_units():
+        print()
+        if non_interactive or prompt_yes_no("Remove the stale duplicate unit(s) before installing?", True):
+            remove_duplicate_gateway_units(interactive=False)
             print()
 
     unit_path = get_systemd_unit_path(system=system)
@@ -9116,3 +9268,14 @@ def _gateway_command_inner(args):
             print("Legacy unit migration only applies to systemd-based Linux hosts.")
             return
         remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)
+
+    elif subcmd == "migrate-duplicates":
+        # Stop, disable, and remove stale duplicate units serving this
+        # install (same HERMES_HOME, non-current name). Other installs
+        # and unrelated services are never touched.
+        dry_run = getattr(args, "dry_run", False)
+        yes = getattr(args, "yes", False)
+        if not supports_systemd_services() and not is_macos():
+            print("Duplicate unit migration only applies to systemd-based Linux hosts.")
+            return
+        remove_duplicate_gateway_units(interactive=not yes, dry_run=dry_run)

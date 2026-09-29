@@ -32,7 +32,7 @@ import functools
 import logging
 import os
 
-from mercury_cli.config import get_env_value
+from mercury_cli.config import get_env_path, get_env_value
 import re
 import ssl
 import time
@@ -288,7 +288,8 @@ class IRCAdapter(BasePlatformAdapter):
         try:
             from gateway.status import acquire_scoped_lock, release_scoped_lock
             lock_key = f"{self.server}:{self.nickname}"
-            if not acquire_scoped_lock("irc", lock_key):
+            acquired, _existing = acquire_scoped_lock("irc", lock_key)
+            if not acquired:
                 logger.error("IRC: %s@%s already in use by another profile", self.nickname, self.server)
                 self._set_fatal_error("lock_conflict", "IRC identity in use by another profile", retryable=False)
                 return False
@@ -1490,9 +1491,8 @@ def interactive_setup() -> None:
     else:
         save_env_value("IRC_ALLOWED_USERS", "")
         print_warning("No owner nick — the bot will ignore everyone until you set one.")
-
     print()
-    print_success("IRC configuration saved to ~/.mercury/.env")
+    print_success(f"IRC configuration saved to {get_env_path()}")
     print_info("Restart the gateway for changes to take effect: mercury gateway restart")
 
 

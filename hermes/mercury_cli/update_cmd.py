@@ -10197,6 +10197,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # No gateways were running — nothing to do
                 pass
 
+            # --- Stale duplicate unit retirement ---------------------------
+            # A same-home unit under a non-current name fights the restarted
+            # fleet over bot identities (silent nick steal, randomly dead
+            # rooms). Retire it now that the current generation is up.
+            # Best-effort and non-interactive: never fail the update.
+            try:
+                from mercury_cli.gateway import remove_duplicate_gateway_units
+
+                remove_duplicate_gateway_units(interactive=False)
+            except Exception as exc:
+                logger.debug("Duplicate unit retirement skipped: %s", exc)
+
             # --- Post-restart survivor sweep -----------------------------
             # Issue #17648: some gateways ignore SIGTERM (stuck drain,
             # blocked I/O, PID dead but zombie).  The detached profile
