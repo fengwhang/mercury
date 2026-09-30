@@ -7,7 +7,7 @@
 			<h1 class="title">Help</h1>
 
 			<h2 class="help-version-title">
-				<span>About The Lounge</span>
+				<span>About mLounge</span>
 				<small>
 					v{{ store.state.serverConfiguration?.version }} (<router-link
 						id="view-changelog"
@@ -19,11 +19,16 @@
 
 			<div class="about">
 				<VersionChecker />
+				<p>
+					mLounge is Mercury's fork of
+					<a href="https://thelounge.chat/" target="_blank" rel="noopener">The Lounge</a>.
+					It connects to MIRC, Mercury's modified IRC layer for agent rooms.
+				</p>
 
 				<template v-if="store.state.serverConfiguration?.gitCommit">
 					<p>
-						The Lounge is running from source (<a
-							:href="`https://github.com/thelounge/thelounge/tree/${store.state.serverConfiguration?.gitCommit}`"
+						mLounge is running from source (<a
+							:href="`https://github.com/fengwhang/mercury/tree/${store.state.serverConfiguration?.gitCommit}`"
 							target="_blank"
 							rel="noopener"
 							>commit <code>{{ store.state.serverConfiguration?.gitCommit }}</code></a
@@ -34,19 +39,19 @@
 						<li>
 							Compare
 							<a
-								:href="`https://github.com/thelounge/thelounge/compare/${store.state.serverConfiguration?.gitCommit}...master`"
+								:href="`https://github.com/fengwhang/mercury/compare/${store.state.serverConfiguration?.gitCommit}...main`"
 								target="_blank"
 								rel="noopener"
 								>between
 								<code>{{ store.state.serverConfiguration?.gitCommit }}</code> and
-								<code>master</code></a
+								<code>main</code></a
 							>
 							to see what you are missing
 						</li>
 						<li>
 							Compare
 							<a
-								:href="`https://github.com/thelounge/thelounge/compare/${store.state.serverConfiguration?.version}...${store.state.serverConfiguration?.gitCommit}`"
+								:href="`https://github.com/fengwhang/mercury/compare/${store.state.serverConfiguration?.version}...${store.state.serverConfiguration?.gitCommit}`"
 								target="_blank"
 								rel="noopener"
 								>between
@@ -60,7 +65,7 @@
 
 				<p>
 					<a
-						href="https://thelounge.chat/"
+						href="https://github.com/fengwhang/mercury"
 						target="_blank"
 						rel="noopener"
 						class="website-link"
@@ -69,7 +74,7 @@
 				</p>
 				<p>
 					<a
-						href="https://thelounge.chat/docs/"
+						href="https://github.com/fengwhang/mercury#observatory-on-your-phone-tablet-and-other-computers"
 						target="_blank"
 						rel="noopener"
 						class="documentation-link"
@@ -78,7 +83,7 @@
 				</p>
 				<p>
 					<a
-						href="https://github.com/thelounge/thelounge/issues/new"
+						href="https://github.com/fengwhang/mercury/issues/new"
 						target="_blank"
 						rel="noopener"
 						class="report-issue-link"
@@ -640,7 +645,7 @@
 				</div>
 				<div class="description">
 					<p>
-						Send an action message to the current channel. The Lounge will display it
+						Send an action message to the current channel. mLounge will display it
 						inline, as if the message was posted in the third person.
 					</p>
 				</div>

@@ -1,4 +1,4 @@
-"""Mercury observatory IRC daemon (replaces the Matrix/tuwunel stack).
+"""Mercury Observatory MIRC daemon (replaces the Matrix/tuwunel stack).
 
 One small stdlib-only asyncio server with two listeners on the same
 channel state:
@@ -1335,7 +1335,7 @@ def _resolve_daemon_config(args: Any) -> DaemonConfig:
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Mercury observatory IRC daemon")
+    parser = argparse.ArgumentParser(description="Mercury Observatory MIRC daemon")
     # Network flags default to None = "read ircd.json, else compiled
     # default" (see _resolve_daemon_config). The unit passes only
     # --state-dir so bind edits never go stale.

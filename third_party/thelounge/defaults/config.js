@@ -214,9 +214,9 @@ module.exports = {
 	// Set users' default `quit` and `part` messages if they are not providing
 	// one.
 	//
-	// This value is set to `"The Lounge - https://thelounge.chat"` by
+	// This value is set to `"mLounge - https://github.com/fengwhang/mercury"` by
 	// default.
-	leaveMessage: "The Lounge - https://thelounge.chat",
+	leaveMessage: "mLounge - https://github.com/fengwhang/mercury",
 
 	// ## Default network
 

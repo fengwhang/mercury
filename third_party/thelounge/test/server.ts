@@ -50,7 +50,7 @@ describe("Server", function () {
 		it("should run a web server on " + webURL, async () => {
 			const response = await got(webURL);
 			expect(response.statusCode).to.equal(200);
-			expect(response.body).to.include("<title>The Lounge</title>");
+			expect(response.body).to.include("<title>mLounge</title>");
 			expect(response.body).to.include('type="module"');
 		});
 
@@ -59,7 +59,7 @@ describe("Server", function () {
 			const body = JSON.parse(response.body);
 
 			expect(response.statusCode).to.equal(200);
-			expect(body.name).to.equal("The Lounge");
+			expect(body.name).to.equal("mLounge");
 			expect(response.headers["content-type"]).to.equal("application/manifest+json");
 		});
 	});

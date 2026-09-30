@@ -7,8 +7,10 @@ Mercury brings [Hermes](https://github.com/NousResearch/hermes-agent),
 [The Lounge](https://github.com/thelounge/thelounge) into one distribution.
 Hermes handles conversation, memory, skills, messaging, and scheduled work.
 OMP handles coding with its native tools, language servers, debuggers, and
-subagents. The **Observatory** gives those agents addressable IRC rooms;
-the Mercury Lounge is its browser interface.
+subagents. The **Observatory** gives those agents addressable MIRC rooms;
+**mLounge** is its browser interface, our fork of The Lounge.
+**MIRC** is our forked IRC layer: a custom server and Mercury extensions
+for agent rooms, traces, and steering.
 
 Ask your assistant to investigate a problem, let it hand the coding work
 to OMP, open a child's room to see its progress, and send a correction
@@ -40,7 +42,7 @@ Mercury's contribution is the wiring between the three engines and surfaces:
 - **Direct execution when you already know the task.** `mercury omp`
   opens OMP's TUI; `/omp` sends a task directly to OMP; `omp_direct` cron
   jobs run the coding engine without an intervening Hermes agent turn.
-- **A browser surface you host.** The Lounge, IRC daemon, agent state, and
+- **A browser surface you host.** mLounge, MMIRC server, agent state, and
   uploaded artifacts live on your machine. We recommend Tailscale to
   reach the Observatory across devices. Model requests still go to the
   provider you configure, including a local endpoint where supported.
@@ -49,10 +51,10 @@ Mercury's contribution is the wiring between the three engines and surfaces:
 
 | Tool | What it already offers | Why choose Mercury instead? |
 | --- | --- | --- |
-| [OpenClaw](https://docs.openclaw.ai/concepts/multi-agent) | A self-hosted assistant gateway with multiple agents and channel routing. | Choose the packaged Hermes → OMP handoff, shared memory and credentials, and agent rooms in Mercury's Lounge. |
+| [OpenClaw](https://docs.openclaw.ai/concepts/multi-agent) | A self-hosted assistant gateway with multiple agents and channel routing. | Choose the packaged Hermes → OMP handoff, shared memory and credentials, and agent rooms in mLounge. |
 | [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools/) | Persistent memory, skills, delegation, messaging, and scheduling. | Keep that assistant workflow while making OMP the delegation engine and adding the Observatory's live coding-agent rooms. |
 | [Claude Code](https://code.claude.com/docs/en/agent-teams) | A coding workflow with subagents and agent teams; [Remote Control](https://code.claude.com/docs/en/remote-control) connects local sessions to web and mobile. | Run Mercury's assistant, coding workers, and browser interface on your own server, with separately configured chat and coding providers. |
-| [Codex](https://learn.chatgpt.com/docs/agent-configuration/subagents) | Coding agents and subagents, [remote access](https://learn.chatgpt.com/docs/remote), and [scheduled tasks](https://learn.chatgpt.com/docs/automations). | Choose the Hermes/OMP runtime combination, its shared local knowledge, and a self-hosted IRC/browser control surface. |
+| [Codex](https://learn.chatgpt.com/docs/agent-configuration/subagents) | Coding agents and subagents, [remote access](https://learn.chatgpt.com/docs/remote), and [scheduled tasks](https://learn.chatgpt.com/docs/automations). | Choose the Hermes/OMP runtime combination, its shared local knowledge, and a self-hosted MIRC/browser control surface. |
 | [OMP](https://github.com/can1357/oh-my-pi) | A coding TUI with native tools, LSP, DAP, memory, and parallel subagents. | Put an ongoing Hermes assistant, messaging gateway, scheduler, and browser agent rooms around that coding engine. |
 
 These are workflow differences, not claims that Mercury invented memory,
@@ -72,8 +74,8 @@ curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh |
 
 The installer sets up Python dependencies, installs the prebuilt runtimes,
 and runs `mercury setup` for provider login, model selection, tools, and
-gateway configuration. End users do not compile OMP or the Lounge. The
-Lounge requires **Node.js 22 or newer and npm** for its runtime dependencies;
+gateway configuration. End users do not compile OMP or the mLounge. The
+mLounge requires **Node.js 22 or newer and npm** for its runtime dependencies;
 install those before configuring the browser surface if they are absent.
 
 ```bash
@@ -105,7 +107,7 @@ configuration limitations.
 
 **Recommended: one Linux host running Mercury, with all your devices on
 Tailscale.** The host keeps working while a browser disconnects. Each
-device opens the same Lounge and its agent rooms.
+device opens the same mLounge and its agent rooms.
 
 Tailscale connects devices through a private network called a tailnet.
 Install it on the Mercury host and each device you want to use, and sign
@@ -148,17 +150,17 @@ mercury setup observatory
 
 In the wizard:
 
-1. Enable the Observatory and choose an IRC network name.
+1. Enable the Observatory and choose an MIRC network name.
 2. Choose the Tailscale address when offered a bind for the client-facing
-   IRC server. The internal agent listener stays on localhost.
-3. Accept the offer to install the Mercury Lounge.
-4. For **“Pin The Lounge to Tailscale or localhost?”**, choose **Tailscale**.
-   The IRC bind and the Lounge web bind are separate choices.
-5. Choose a Lounge username and password, and save the printed login card.
-   This browser password is separate from the IRC server password.
+   MIRC server. The internal agent listener stays on localhost.
+3. Accept the offer to install the mLounge.
+4. For **“Pin mLounge to Tailscale or localhost?”**, choose **Tailscale**.
+   The MIRC bind and the mLounge web bind are separate choices.
+5. Choose a mLounge username and password, and save the printed login card.
+   This browser password is separate from the MIRC server password.
 6. Accept the service starts/restarts offered by setup.
 
-On a fresh setup, Mercury seeds the Lounge's connection to the IRC server
+On a fresh setup, Mercury seeds the mLounge's connection to the MIRC server
 and joins `#<network>_gateway`. The default web port is **9000**; use the
 actual URL from the login card if your configuration differs.
 
@@ -170,10 +172,11 @@ mercury observatory login
 mercury-nightly observatory login
 ```
 
-This shows the web address, Lounge username, and Tailscale guidance.
+This shows the web address, mLounge username, Tailscale guidance, and
+connection details for adding this machine to another mLounge.
 When the web UI is bound to Tailscale, the URL prefers its MagicDNS name
 and falls back to the Tailscale IP if no name is available.
-It does not reset your password; the Lounge password
+It does not reset your password; the mLounge password
 is only shown when created or reset.
 
 ### 4. Open the web UI from another device
@@ -185,7 +188,7 @@ In its browser, open the host address from the login card, for example:
 http://mercury-host.example-tailnet.ts.net:9000
 ```
 
-Log in with your **Lounge** credentials. Open `#<network>_gateway` and send
+Log in with your **mLounge** credentials. Open `#<network>_gateway` and send
 a message. You should see an agent response in that room. You can now
 watch work and send instructions from any connected device with access to
 the host. Access follows your tailnet policy and the host's firewall;
@@ -208,14 +211,14 @@ needs its Linux environment and systemd services running.
 
 If the page will not load, check that both devices are connected to the
 same tailnet, that its policy permits the host's web port, and that the
-Lounge is listening on the Tailscale address. On the host:
+mLounge is listening on the Tailscale address. On the host:
 
 ```bash
 systemctl --user status mercury-observatory.service mercury-lounge.service
 journalctl --user -u mercury-lounge.service -n 50
 ```
 
-If an existing Lounge was configured for localhost, setup keeps that
+If an existing mLounge was configured for localhost, setup keeps that
 installation and its bind. Change `host` in
 `~/.mercury/observatory/lounge/home/config.js` to the host's Tailscale IPv4
 address, then run `systemctl --user restart mercury-lounge.service`.
@@ -224,8 +227,47 @@ Use the corresponding home if you changed `MERCURY_HOME`.
 If the page loads but the agent does not answer, run
 `mercury observatory doctor`, check `mercury gateway status`, and use
 `mercury observatory restart` to restart and verify the chat path.
-Re-run `mercury setup observatory` if you need to reset a lost Lounge
+Re-run `mercury setup observatory` if you need to reset a lost mLounge
 password.
+
+### Connect mLounge to another machine's MIRC server
+
+One mLounge can stay connected to several Mercury machines. Suppose
+machine **A** runs the mLounge you use, and machine **B** runs the agents
+you want to reach. Connect both machines to the same Tailscale tailnet.
+
+1. On **B**, run `mercury setup observatory` and bind the client-facing
+   **MIRC server** to B's Tailscale address. Binding only the web UI does
+   not expose MIRC to A.
+2. On **B**, run `mercury observatory login`. The **“this box from another
+   mLounge”** section prints B's connection details. It prefers B's
+   MagicDNS name and falls back to its Tailscale IP.
+3. Open **A's mLounge** in your browser and choose **Connect / Add network**.
+   Fill in B's details:
+
+   | Field | Value |
+   | --- | --- |
+   | Network name | A label for B, such as `mercury-b`. |
+   | Server / host | B's MagicDNS hostname from the card, without `http://`. |
+   | Port | B's MIRC server port, normally **6670**, rather than web port 9000. |
+   | TLS | **Off** for the plaintext MIRC listener over Tailscale. |
+   | Server password | `IRC_CLIENT_PASSWORD` from **B's** Mercury home `.env`. |
+   | Nickname | A unique name for your connection, separate from agent nicks. |
+   | Channels | `#<B-network>_gateway`, as printed on B's card. |
+
+4. Connect and send a message in B's gateway room. Add another network
+   for each Mercury machine you want to monitor.
+
+Your mLounge web password logs you into A's browser interface; each MIRC
+network has its own server password. The login card points to the file
+holding that password without printing the secret. B needs its MIRC and
+gateway services running; it does not need its own mLounge web UI for A
+to connect. Allow A to reach B's MIRC port in the tailnet policy and B's
+firewall. Use `mercury-nightly` for the same commands on a nightly install.
+
+The fork names are mLounge and MIRC. Existing service names
+(`mercury-lounge.service`, `mercury-observatory.service`), `lounge/` paths,
+and `IRC_*` configuration keys keep their names for compatibility.
 
 ## Working in agent rooms
 
@@ -242,7 +284,7 @@ Agent replies support Markdown and LaTeX. Tool inputs, tool outputs,
 thinking traces, and status events render as plaintext. Inline and fenced
 code stay literal, so shell variables, underscores, and globs survive
 rendering. **Raw** toggles the original message text for manual selection.
-Agents can share local artifacts through the Lounge's upload links.
+Agents can share local artifacts through the mLounge's upload links.
 
 Room control depends on the running transport: RPC children accept
 steering; legacy one-shot children provide traces and stop control.
@@ -260,7 +302,7 @@ terminal-only interactive screen.
 ├── memories/            shared memory bank
 ├── hermes/              Hermes profile, authentication, and runtime state
 ├── omp/                 OMP runtime state
-├── observatory/         IRC state, Lounge configuration, and uploads
+├── observatory/         MIRC state, mLounge configuration, and uploads
 └── mercury-agent/       installed source and prebuilt runtime bundles
 ```
 
@@ -307,14 +349,14 @@ The integration lives in `bridge/`, `hermes/tools/omp_*`,
 `hermes/mercury_cli/`, `hermes/observatory/`, and `third_party/thelounge/`.
 
 Run Python checks through `hermes/scripts/run_tests.sh`, OMP checks through
-Bun, and Lounge checks through Vitest. The
+Bun, and mLounge checks through Vitest. The
 [September 2026 review](docs/code-review-2026-09-30.md) records the reviewed
 paths, reproducible findings, and current test results.
 
 Release builds must bump and commit the Mercury version **before**
 compiling OMP. Build both OMP architectures and the Hermes TUI, run
 `scripts/build-lounge-fork.sh`, then `scripts/make-dist.sh`. Packaging
-checks the baked OMP version, native-library version, and Lounge source
+checks the baked OMP version, native-library version, and mLounge source
 fingerprint. Published bundles include the prebuilt components.
 
 ## Credits and licenses

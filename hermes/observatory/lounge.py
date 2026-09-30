@@ -1,9 +1,9 @@
-"""The Lounge frontend for the IRC observatory (replaces soju).
+"""mLounge frontend for the IRC observatory (replaces soju).
 
-One Lounge instance per human user (``only one required per user``):
+One mLounge instance per human user (``only one required per user``):
 it stays connected to every mercury ircd on the tailnet as a regular
 IRC client (persistent, backlog included) and serves its web UI to the
-user's browser. Adding mercury networks happens in The Lounge UI —
+user's browser. Adding mercury networks happens in mLounge UI —
 this module only installs it, binds it, and keeps its unit running.
 """
 
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 LOUNGE_PORT_DEFAULT = 9000
 LOUNGE_UNIT_NAME = "mercury-lounge.service"
-LOUNGE_UNIT_DESCRIPTION = "Mercury The Lounge frontend (observatory UI)"
+LOUNGE_UNIT_DESCRIPTION = "Mercury mLounge frontend (observatory UI)"
 LOUNGE_DIRNAME = "lounge"
 FILE_LOUNGE_CONFIG = "config.js"
 NPM_PREFIX_DIRNAME = "npm"
@@ -206,7 +206,7 @@ def ensure_node() -> str:
     """Make sure Node.js + npm exist, installing via the system package
     manager when missing (needs sudo — the wizard offers first).
 
-    Fresh computers have no Node: without this the Lounge layer can
+    Fresh computers have no Node: without this the mLounge layer can
     never provision itself. Raises LoungeError with the manual command
     when every install path fails.
     """
@@ -412,7 +412,7 @@ def ensure_lounge_installed(mercury_home: str | Path | None = None) -> str:
 
 
 def refresh_lounge_fork(mercury_home: str | Path | None = None) -> str:
-    """Reinstall the Lounge when :func:`fork_staleness` says the installed
+    """Reinstall the mLounge when :func:`fork_staleness` says the installed
     fork lags the shipped tree, restarting the service so the new bundle
     actually serves. The fast path (current) touches nothing — no
     reinstall, no bounce. Never raises; restart/setup print the status.
@@ -463,7 +463,7 @@ def render_lounge_config(*, host: str, port: int) -> str:
     """Render config.js (pure string templating, no I/O).
 
     File uploads on (drag-and-drop or the upload dialog in the web UI,
-    stored under the Lounge home so reset wipes them). maxFileSize -1
+    stored under the mLounge home so reset wipes them). maxFileSize -1
     = unlimited per the official docs (code accepts <1; -1 is the
     documented value, so a future exact-check can't turn 0 into
     "0 KB allowed"). Uploads never expire server-side — prune by hand.
@@ -511,7 +511,7 @@ def ensure_lounge_config(paths: LoungePaths, *, host: str, port: int) -> dict:
 
 
 def lounge_users(paths: LoungePaths) -> list[str]:
-    """Usernames with a stored Lounge login."""
+    """Usernames with a stored mLounge login."""
     try:
         users_dir = paths.home / "users"
         if not users_dir.is_dir():
@@ -523,7 +523,7 @@ def lounge_users(paths: LoungePaths) -> list[str]:
 
 def ensure_lounge_user(paths: LoungePaths, username: str,
                        password: Optional[str]) -> dict:
-    """Create the Lounge login via ``add --password`` (non-interactive).
+    """Create the mLounge login via ``add --password`` (non-interactive).
 
     Piping answers to the interactive prompts does NOT work (the
     prompt sequence eats them and the user silently never sticks —
@@ -645,13 +645,13 @@ def ensure_lounge_network(
     nick: str,
     channel: str,
 ) -> dict:
-    """Pre-seed this mercury server as a Lounge network for ``username``.
+    """Pre-seed this mercury server as a mLounge network for ``username``.
 
     Single-install story: after setup the user opens :9000, logs in,
     and the gateway channel is already there — no manual "add network"
     step. Edits ``users/<username>.json`` (written by ``thelounge add``)
     in place, replacing any same-named network. The caller restarts the
-    unit afterwards so a running Lounge picks it up. Without a server
+    unit afterwards so a running mLounge picks it up. Without a server
     password the entry could never log in — skipped, never half-written.
     """
     import uuid as _uuid
@@ -713,7 +713,7 @@ def ensure_lounge_network(
 
 def reset_lounge_password(paths: LoungePaths, username: str,
                           password: str) -> dict:
-    """Reset a Lounge LOGIN password non-interactively.
+    """Reset a mLounge LOGIN password non-interactively.
 
     ``thelounge reset --password`` with THELOUNGE_HOME pointed at our
     home (verified against the real CLI). Raises LoungeError on
@@ -760,13 +760,13 @@ def provision_lounge(
     uplink_nick: str = "",
     uplink_channel: str = "",
 ) -> dict:
-    """Full Lounge layer: node → binary → config → unit → user → network.
+    """Full mLounge layer: node → binary → config → unit → user → network.
 
     ``host`` is the WEB UI bind (127.0.0.1 or the tailnet IP). The
-    ``uplink_*`` fields pre-seed this mercury server as a Lounge
+    ``uplink_*`` fields pre-seed this mercury server as a mLounge
     network (same-box localhost uplink): after one setup the gateway
     channel is already in the browser, no manual add-network step.
-    The unit restarts last so a running Lounge picks up the seed.
+    The unit restarts last so a running mLounge picks up the seed.
     """
     from observatory.provision import _mercury_home  # local import: no cycle
 
@@ -826,7 +826,7 @@ UPLOAD_DENIED_BASENAMES = (".env",)
 
 def stage_lounge_upload(mercury_home: str | Path | None,
                         src: str | Path) -> dict:
-    """Stage a local file as a Lounge upload; return link parts.
+    """Stage a local file as a mLounge upload; return link parts.
 
     Layout mirrors the server's own scheme (``uploads/<2hex>/<16hex>``,
     original name only in the URL), so the file is served verbatim
@@ -901,7 +901,7 @@ def check_upload_serves(url: str, timeout: float = 5.0) -> bool:
 
 
 def lounge_base_url(mercury_home: str | Path | None = None) -> str:
-    """Public base URL of this box's Lounge (for staged file links)."""
+    """Public base URL of this box's mLounge (for staged file links)."""
     st = status_lounge(mercury_home)
     host = str(st.get("host") or "127.0.0.1")
     try:
@@ -912,7 +912,7 @@ def lounge_base_url(mercury_home: str | Path | None = None) -> str:
 
 
 def lounge_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
-    """True when something answers on the Lounge web-UI port (never raises)."""
+    """True when something answers on the mLounge web-UI port (never raises)."""
     import socket as _socket
 
     try:
@@ -926,7 +926,7 @@ def lounge_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
 def _local_port_answers(port: int, timeout: float = 0.5) -> bool:
     """True when our own box answers on ``port`` (any local address).
 
-    Localhost alone misses tailnet-bound services (a Lounge listening
+    Localhost alone misses tailnet-bound services (a mLounge listening
     only on the tailnet IP). Probing every local address covers both
     without importing provisioning state. Never raises."""
     import socket as _socket
@@ -946,7 +946,7 @@ def _local_port_answers(port: int, timeout: float = 0.5) -> bool:
 
 
 def status_lounge(mercury_home: str | Path | None = None) -> dict:
-    """Best-effort Lounge status for setup/status surfaces (never raises)."""
+    """Best-effort mLounge status for setup/status surfaces (never raises)."""
     from observatory.provision import _mercury_home  # local import: no cycle
 
     try:
@@ -966,7 +966,7 @@ def status_lounge(mercury_home: str | Path | None = None) -> dict:
             "unit": "active" if lounge_unit_active() else "inactive",
             "host": host,
             "port": port,
-            # A Lounge the user runs themselves (container, another
+            # A mLounge the user runs themselves (container, another
             # box's install): our config is absent but the port answers
             # on some local address (localhost OR tailnet-bound).
             "external": (not configured) and _local_port_answers(

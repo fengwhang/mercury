@@ -62,6 +62,10 @@ def test_login_reprints_setup_card_from_selected_home(
     assert not captured.err
     assert setup_card in captured.out
     assert "http://test-host.tailnet.ts.net:9001" in captured.out
+    assert "this box from another mLounge" in captured.out
+    assert "MIRC host:            test-host.tailnet.ts.net" in captured.out
+    assert "MIRC port:            6671" in captured.out
+    assert str(home / ".env") in captured.out
     assert "100.101.102.103" not in captured.out
     assert "or connect any IRC client" not in captured.out
     assert "user 'tester'" in captured.out

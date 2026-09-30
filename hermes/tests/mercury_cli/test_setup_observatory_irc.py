@@ -225,7 +225,7 @@ def test_headless_setup_provisions():
     assert fake.provision_calls == [{}]
 
 
-def test_setup_card_only_advertises_web_access(capsys):
+def test_setup_card_requires_tailnet_mirc_bind_for_another_mlounge(capsys):
     status = _base_status(provisioned=True)
     setup_mod._print_observatory_setup_card(
         status, dict(available=False, up=False, ip=None, dns_name=None)
@@ -239,7 +239,10 @@ def test_setup_card_only_advertises_web_access(capsys):
     assert "TLS port:" not in out
     assert "or connect any IRC client" not in out
     assert "client address" not in out
-    assert "The Lounge" in out
+    assert "mLounge" in out
+    assert "this box from another mLounge" in out
+    assert "bind the MIRC server" in out
+    assert "setup observatory" in out
 
 
 @pytest.mark.parametrize("bind, up, dns, expected_host", [
@@ -311,14 +314,33 @@ def test_setup_card_lounge_external(monkeypatch, capsys, tailnet):
     assert "other-Lounge" not in out
 
 
-def test_setup_card_no_other_lounge_connection_block(capsys):
-    status = _base_status(provisioned=True)
+@pytest.mark.parametrize("bind,dns,expected_host", [
+    ("100.9.9.9", "host.tailnet.ts.net.", "host.tailnet.ts.net"),
+    ("100.9.9.9", None, "100.9.9.9"),
+    ("0.0.0.0", "host.tailnet.ts.net", "host.tailnet.ts.net"),
+    ("[::]", "host.tailnet.ts.net", "host.tailnet.ts.net"),
+])
+def test_setup_card_other_mlounge_uses_mirc_bind_not_web_bind(
+    monkeypatch, capsys, bind, dns, expected_host,
+):
+    import observatory.lounge as lounge_mod
+
+    monkeypatch.setattr(lounge_mod, "status_lounge", lambda *a, **k: {
+        "configured": True, "host": "127.0.0.1", "port": 9001, "users": ["owner"],
+    })
+    status = _base_status(provisioned=True, server=f"{bind}:6671")
     setup_mod._print_observatory_setup_card(
-        status, dict(available=False, up=False, ip=None, dns_name=None)
+        status, dict(available=True, up=True, ip="100.9.9.9", dns_name=dns)
     )
     out = capsys.readouterr().out
-    assert "another Lounge" not in out
+    assert "this box from another mLounge" in out
+    assert f"MIRC host:            {expected_host}" in out
+    assert "MIRC port:            6671 (TLS OFF over Tailscale)" in out
+    assert "http://127.0.0.1:9001" in out
+    assert "IRC_CLIENT_PASSWORD" in out
+    assert "/h/.env" in out
     assert "#mercury_gateway" in out
+    assert "or connect any IRC client" not in out
 
 
 def test_verify_daemon_listening_live_and_dead():

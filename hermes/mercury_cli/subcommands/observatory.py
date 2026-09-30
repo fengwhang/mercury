@@ -1,4 +1,4 @@
-"""``mercury observatory`` — IRC status, login, rooms, doctor, restart.
+"""``mercury observatory`` — MIRC status, login, rooms, doctor, restart.
 
 ``status`` prints the provisioned network (listeners, unit, gateway
 channel); ``login`` reprints setup's web login card;
@@ -346,7 +346,7 @@ def build_observatory_parser(subparsers) -> None:
     """Attach the ``observatory`` subcommand to ``subparsers``."""
     parser = subparsers.add_parser(
         "observatory",
-        help="IRC observatory status, login, and rooms",
+        help="MIRC observatory status, login, and rooms",
     )
     subs = parser.add_subparsers(dest="observatory_action")
     p_status = subs.add_parser("status", help="Show observatory status")

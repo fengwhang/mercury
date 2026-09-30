@@ -1,7 +1,7 @@
 {
-	"name": "Mercury",
-	"short_name": "Mercury",
-	"description": "Self-hosted web IRC client",
+	"name": "mLounge",
+	"short_name": "mLounge",
+	"description": "Mercury mLounge for MIRC agent rooms",
 	"start_url": ".",
 	"display": "standalone",
 	"theme_color": "#101014",

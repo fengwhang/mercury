@@ -1,6 +1,6 @@
 {
   "name": "thelounge",
-  "description": "The self-hosted Web IRC client",
+  "description": "mLounge, Mercury’s fork of The Lounge for MIRC agent rooms",
   "version": "0.2.22",
   "type": "commonjs",
   "preferGlobal": true,
@@ -9,9 +9,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thelounge/thelounge.git"
+    "url": "git+https://github.com/fengwhang/mercury.git"
   },
-  "homepage": "https://thelounge.chat/",
+  "homepage": "https://github.com/fengwhang/mercury",
   "scripts": {
     "build:client": "vite build",
     "build:server": "tsc -p server/tsconfig.json",

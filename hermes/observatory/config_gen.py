@@ -33,7 +33,7 @@ IRCD_TLS_PORT_DEFAULT = 6697
 OBSERVATORY_UNIT_NAME = "mercury-observatory.service"
 #: Back-compat alias (setup/setup-repair paths import this name).
 SIDECAR_UNIT_NAME = OBSERVATORY_UNIT_NAME
-OBSERVATORY_UNIT_DESCRIPTION = "Mercury Observatory IRC network (ircd)"
+OBSERVATORY_UNIT_DESCRIPTION = "Mercury Observatory MIRC server"
 
 #: Gateway agent nick base: ``<server>_gateway`` (rooms.agent_nick).
 GATEWAY_NICK_SUFFIX = "_gateway"

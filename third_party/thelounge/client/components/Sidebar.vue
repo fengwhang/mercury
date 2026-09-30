@@ -5,13 +5,13 @@
 				<img
 					src="img/mercury.svg"
 					class="mercury-logo"
-					alt="Mercury"
+					alt="mLounge"
 					width="45"
 					height="45"
 				/>
 				<span
 					v-if="isDevelopment"
-					title="The Lounge has been built in development mode"
+					title="mLounge has been built in development mode"
 					:style="{
 						backgroundColor: '#ff9e18',
 						color: '#000',
