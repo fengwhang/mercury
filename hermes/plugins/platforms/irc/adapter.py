@@ -945,25 +945,21 @@ class IRCAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("IRC: receive loop error: %s", e)
         finally:
-            try:
-                self._line_queue.put_nowait(None)
-            except Exception:
-                pass
-            # Local teardown first: close the dead writer (kills the
-            # CLOSE-WAIT graveyard), clear a stale bot sink, reset
-            # registration, release the identity lock — so the
-            # reconnect below starts clean instead of inheriting stale
-            # state. Sync-only (never awaits our own tasks). Guarded by
-            # this connection's generation: a stale task unwinding after
-            # a newer connect must not touch the new connection.
-            try:
-                self._drop_teardown(my_generation)
-            except Exception:
-                pass
-            if self.is_connected:
-                logger.warning("IRC: connection lost, marking disconnected")
-                self._set_fatal_error("connection_lost", "IRC connection closed unexpectedly", retryable=True)
-                await self._notify_fatal_error()
+            # Guard ALL drop effects, not just writer teardown: a stale
+            # receiver must not stop the new handler or reconnect it again.
+            if my_generation == getattr(self, "_conn_generation", 0):
+                try:
+                    self._line_queue.put_nowait(None)
+                except Exception:
+                    pass
+                try:
+                    self._drop_teardown(my_generation)
+                except Exception:
+                    pass
+                if self.is_connected:
+                    logger.warning("IRC: connection lost, marking disconnected")
+                    self._set_fatal_error("connection_lost", "IRC connection closed unexpectedly", retryable=True)
+                    await self._notify_fatal_error()
 
     @staticmethod
     def _is_ping(raw: str) -> bool:

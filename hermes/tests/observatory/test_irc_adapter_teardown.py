@@ -25,6 +25,7 @@ def _irc_adapter():
     writer.write = MagicMock()
     writer.drain = AsyncMock()
     adapter._writer = writer
+    adapter._line_queue = asyncio.Queue()
     return adapter
 
 
@@ -54,6 +55,50 @@ def test_drop_teardown_cleans_stale_state(monkeypatch) -> None:
         assert released == [("irc", "localhost:6669")]
     finally:
         rooms_mod.set_bot_sink(prev_sink)
+
+
+@pytest.mark.asyncio
+async def test_remote_eof_stops_handler_and_reports_retryable_drop(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    adapter = _irc_adapter()
+    adapter._reader = asyncio.StreamReader()
+    adapter._reader.feed_eof()
+    adapter._mark_connected()
+    notify = AsyncMock()
+    monkeypatch.setattr(adapter, "_notify_fatal_error", notify)
+    await adapter._receive_loop()
+    assert adapter._writer is None
+    assert await asyncio.wait_for(adapter._line_queue.get(), 0.1) is None
+    notify.assert_awaited_once()
+    assert not adapter.is_connected
+
+
+@pytest.mark.asyncio
+async def test_stale_receiver_cannot_stop_new_handler(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    adapter = _irc_adapter()
+    adapter._conn_generation = 1
+    adapter._mark_connected()
+    writer = adapter._writer
+
+    class OldReader:
+        def at_eof(self):
+            return False
+
+        async def read(self, size):
+            adapter._conn_generation = 2
+            return b""
+
+    adapter._reader = OldReader()
+    notify = AsyncMock()
+    monkeypatch.setattr(adapter, "_notify_fatal_error", notify)
+    await adapter._receive_loop()
+    assert adapter._line_queue.empty()
+    assert adapter._writer is writer
+    assert adapter.is_connected
+    notify.assert_not_awaited()
 
 
 def test_drop_teardown_never_raises() -> None:

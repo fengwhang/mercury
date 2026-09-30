@@ -8,7 +8,7 @@ connection under its own nick on the agent listener.
 Lazy + self-healing: connect on first send, reconnect once per send
 on failure, drop on ``/exit``, rebuild on gateway resync. Incoming
 traffic is ignored (the main bot owns room dispatch for every room);
-an opportunistic drain keeps kernel buffers from filling.
+a receive task answers PINGs and invalidates connections on EOF.
 
 Never raises out of the public functions (best-effort by design —
 the main bot always remains the fallback sender).
@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 BATCH_TAG_OVERHEAD = 29
 
 _batch_seq = itertools.count()
+SEND_TIMEOUT = 10.0
 
 
 class IdentityConn:
@@ -45,6 +46,7 @@ class IdentityConn:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
+        self._recv_task: asyncio.Task | None = None
         self.last_ok = 0.0
 
     async def _connect(self) -> bool:
@@ -67,7 +69,7 @@ class IdentityConn:
         async def send_raw(line: str) -> None:
             assert self._writer is not None
             self._writer.write((line + "\r\n").encode("utf-8", "replace"))
-            await self._writer.drain()
+            await asyncio.wait_for(self._writer.drain(), SEND_TIMEOUT)
 
         try:
             if self.password:
@@ -91,19 +93,35 @@ class IdentityConn:
                 pass
             self._reader, self._writer = None, None
             return False
+        self._recv_task = asyncio.create_task(self._receive(reader, writer))
         return True
 
-    async def _drain(self) -> None:
-        for _ in range(5):
-            try:
-                assert self._reader is not None
-                data = await asyncio.wait_for(self._reader.read(4096), 0.01)
-                if not data:
+    async def _receive(self, reader, writer) -> None:
+        """Keep an idle identity alive; never treat a peer's EOF as success."""
+        try:
+            while True:
+                raw = await reader.readline()
+                if not raw:
                     break
-            except (asyncio.TimeoutError, AssertionError):
-                break
-            except Exception:
-                break
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if line.startswith(":"):
+                    line = line.partition(" ")[2]
+                command, _, payload = line.partition(" ")
+                if command.upper() == "PING":
+                    async with self._lock:
+                        if self._writer is not writer:
+                            return
+                        writer.write(f"PONG {payload}\r\n".encode("utf-8"))
+                        await asyncio.wait_for(writer.drain(), SEND_TIMEOUT)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("identity: receive failed for %s", self.nick, exc_info=True)
+        finally:
+            writer.close()
+            # An old receiver must never clear a replacement connection.
+            if self._writer is writer:
+                self._reader, self._writer = None, None
 
     async def _write_lines(self, payloads: list[str]) -> bool:
         """Write raw lines with one reconnect retry. Caller holds no lock."""
@@ -113,12 +131,13 @@ class IdentityConn:
                     if not await self._connect():
                         return False
                 try:
-                    await self._drain()
+                    if self._reader is not None and self._reader.at_eof():
+                        raise ConnectionError("identity peer closed connection")
                     assert self._writer is not None
                     for text in payloads:
                         self._writer.write(
                             f"{text}\r\n".encode("utf-8", "replace"))
-                    await self._writer.drain()
+                    await asyncio.wait_for(self._writer.drain(), SEND_TIMEOUT)
                     self.last_ok = time.time()
                     return True
                 except Exception:
@@ -153,11 +172,18 @@ class IdentityConn:
             [f"BATCH -{ref}"])
 
     async def close(self) -> None:
+        task, self._recv_task = self._recv_task, None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         async with self._lock:
             try:
                 if self._writer is not None:
                     self._writer.write(b"QUIT :identity drop\r\n")
-                    await self._writer.drain()
+                    await asyncio.wait_for(self._writer.drain(), SEND_TIMEOUT)
                     self._writer.close()
             except Exception:
                 pass
