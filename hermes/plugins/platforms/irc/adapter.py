@@ -271,7 +271,7 @@ class IRCAdapter(BasePlatformAdapter):
             if self._server_multiline or "draft/multiline" not in self._server_caps:
                 return
             self._cap_event.clear()
-            await self._send_raw("CAP REQ :draft/multiline")
+            await self._send_raw("CAP REQ :draft/multiline", timeout=CONNECT_SEND_TIMEOUT)
             await asyncio.wait_for(self._cap_event.wait(), timeout=2.0)
         except (asyncio.TimeoutError, Exception):
             pass
@@ -966,7 +966,7 @@ class IRCAdapter(BasePlatformAdapter):
             msg = _parse_irc_message(raw)
             params = msg.get("params") or []
             payload = params[0] if params else ""
-            await self._send_raw(f"PONG :{payload}")
+            await self._send_raw(f"PONG :{payload}", timeout=CONNECT_SEND_TIMEOUT)
         except Exception as e:
             logger.warning("IRC: error answering ping: %s", e)
 
