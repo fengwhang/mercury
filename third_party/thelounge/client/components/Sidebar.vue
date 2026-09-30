@@ -3,16 +3,11 @@
 		<div class="scrollable-area">
 			<div class="logo-container">
 				<img
-					:src="`img/logo-${isPublic() ? 'horizontal-' : ''}transparent-bg.svg`"
-					class="logo"
-					alt="The Lounge"
-					role="presentation"
-				/>
-				<img
-					:src="`img/logo-${isPublic() ? 'horizontal-' : ''}transparent-bg-inverted.svg`"
-					class="logo-inverted"
-					alt="The Lounge"
-					role="presentation"
+					src="img/mercury.svg"
+					class="mercury-logo"
+					alt="Mercury"
+					width="45"
+					height="45"
 				/>
 				<span
 					v-if="isDevelopment"
@@ -251,8 +246,6 @@ export default defineComponent({
 			document.body.removeEventListener("touchstart", onTouchStart);
 		});
 
-		const isPublic = () => document.body.classList.contains("public");
-
 		return {
 			isDevelopment,
 			store,
@@ -262,7 +255,6 @@ export default defineComponent({
 			onTouchStart,
 			onTouchMove,
 			onTouchEnd,
-			isPublic,
 		};
 	},
 });

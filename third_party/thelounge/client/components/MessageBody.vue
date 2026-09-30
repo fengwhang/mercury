@@ -1,10 +1,7 @@
 <template>
 	<span class="message-body">
 		<span class="message-tools">
-			<button type="button" :aria-pressed="raw" @click="toggleRaw">
-				{{ raw ? "View formatted" : "View raw" }}
-			</button>
-			<CopyButton :text="message.text || ''" label="Copy raw" />
+			<button type="button" :aria-pressed="raw" @click="toggleRaw">Raw</button>
 		</span>
 		<pre v-if="raw" class="message-raw">{{ message.text }}</pre>
 		<ParsedMessage v-else :network="network" :message="message" />
@@ -15,11 +12,10 @@
 import {defineComponent, PropType, ref, nextTick} from "vue";
 import type {ClientMessage, ClientNetwork} from "../js/types";
 import ParsedMessage from "./ParsedMessage.vue";
-import CopyButton from "./CopyButton.vue";
 
 export default defineComponent({
 	name: "MessageBody",
-	components: {ParsedMessage, CopyButton},
+	components: {ParsedMessage},
 	props: {
 		message: {type: Object as PropType<ClientMessage>, required: true},
 		network: Object as PropType<ClientNetwork>,

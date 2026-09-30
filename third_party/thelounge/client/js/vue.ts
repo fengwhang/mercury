@@ -1,6 +1,7 @@
 import constants from "./constants";
 
 import "../css/style.css";
+import "../css/mercury.css";
 import "katex/dist/katex.min.css";
 import {createApp} from "vue";
 import {store, CallableGetters, key} from "./store";

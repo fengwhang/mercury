@@ -2,18 +2,11 @@
 	<div id="sign-in" class="window" role="tabpanel" aria-label="Sign-in">
 		<form class="container" method="post" action="" @submit="onSubmit">
 			<img
-				src="img/logo-vertical-transparent-bg.svg"
-				class="logo"
-				alt="The Lounge"
-				width="256"
-				height="170"
-			/>
-			<img
-				src="img/logo-vertical-transparent-bg-inverted.svg"
-				class="logo-inverted"
-				alt="The Lounge"
-				width="256"
-				height="170"
+				src="img/mercury.svg"
+				class="mercury-logo"
+				alt="Mercury"
+				width="112"
+				height="112"
 			/>
 
 			<label for="signin-username">Username</label>
