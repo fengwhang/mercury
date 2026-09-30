@@ -1,13 +1,115 @@
-"""``mercury observatory restart`` — the setup-free freshen path."""
+"""Observatory commands without rerunning the setup wizard."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import types
 
 import pytest
 
 from mercury_cli.subcommands import observatory as obs_mod
+
+
+def _login_args(*extra):
+    parser = argparse.ArgumentParser()
+    obs_mod.build_observatory_parser(parser.add_subparsers(dest="cmd"))
+    return parser.parse_args(["observatory", "login", *extra])
+
+
+@pytest.mark.parametrize("command, override", [
+    ("mercury", False), ("mercury-nightly", False), ("mercury", True),
+])
+def test_login_reprints_setup_card_from_selected_home(
+    monkeypatch, tmp_path, capsys, command, override,
+) -> None:
+    from observatory import lounge, provision
+    from mercury_cli import setup
+
+    active = tmp_path / (".mercury-nightly" if command.endswith("nightly") else ".mercury")
+    home = tmp_path / "custom" if override else active
+    monkeypatch.setenv("MERCURY_HOME", str(active))
+    monkeypatch.setenv("MERCURY_CMD", command)
+    config = home / "observatory" / "ircd.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({
+        "server_name": "testnet", "server_host": "100.101.102.103",
+        "server_port": 6671, "tls_port": 6698,
+    }))
+    paths = lounge.LoungePaths(home)
+    users = paths.home / "users"
+    users.mkdir(parents=True)
+    paths.conf.write_text('module.exports = {host: "100.101.102.103", port: 9001};')
+    (users / "tester.json").write_text('{"password": "synthetic-hash"}')
+    (home / ".env").write_text('IRC_CLIENT_PASSWORD="synthetic-secret"\n')
+    tailscale = {
+        "available": True, "up": True, "ip": "100.101.102.103",
+        "dns_name": "test-host.tailnet.ts.net",
+    }
+    monkeypatch.setattr(provision, "detect_tailscale", lambda: tailscale)
+    monkeypatch.setattr(lounge, "lounge_unit_active", lambda: False)
+    monkeypatch.setattr(lounge, "lounge_bin", lambda: tmp_path / "thelounge")
+
+    # Compare against the real setup renderer using the same disk state.
+    setup._print_observatory_setup_card(
+        provision.status_summary(home), tailscale, mercury_home=home,
+    )
+    setup_card = capsys.readouterr().out
+    before = {p.relative_to(home): p.read_bytes() for p in home.rglob("*") if p.is_file()}
+    args = _login_args(*(["--home", str(home)] if override else []))
+    assert args.func(args) == 0
+    captured = capsys.readouterr()
+    assert not captured.err
+    assert setup_card in captured.out
+    assert "http://100.101.102.103:9001" in captured.out
+    assert "user 'tester'" in captured.out
+    assert "#testnet_gateway" in captured.out
+    assert "test-host.tailnet.ts.net" in captured.out
+    assert f"{command} setup gateway" in captured.out
+    assert "synthetic-secret" not in captured.out
+    assert "synthetic-hash" not in captured.out
+    assert before == {p.relative_to(home): p.read_bytes() for p in home.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("command", ["mercury", "mercury-nightly"])
+def test_login_unprovisioned_prints_setup_hint(monkeypatch, tmp_path, capsys, command) -> None:
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path / "empty"))
+    monkeypatch.setenv("MERCURY_CMD", command)
+    assert obs_mod.cmd_observatory(_login_args()) == 1
+    captured = capsys.readouterr()
+    assert f"{command} setup observatory" in captured.err
+    assert not captured.out
+    assert not (tmp_path / "empty").exists()
+
+
+def test_login_without_lounge_or_tailscale(monkeypatch, tmp_path, capsys) -> None:
+    from observatory import lounge, provision
+
+    home = tmp_path / "mercury"
+    config = home / "observatory" / "ircd.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"server_name": "localnet"}')
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.setattr(provision, "detect_tailscale", lambda: {})
+    monkeypatch.setattr(lounge, "lounge_unit_active", lambda: False)
+    monkeypatch.setattr(lounge, "lounge_bin", lambda: tmp_path / "thelounge")
+    monkeypatch.setattr(lounge, "_local_port_answers", lambda *a: False)
+    assert obs_mod.cmd_observatory(_login_args()) == 0
+    out = capsys.readouterr().out
+    assert "not installed" in out
+    assert "Tailscale not detected" in out
+    assert "127.0.0.1:6670" in out
+    assert "#localnet_gateway" in out
+
+
+def test_login_reports_status_failure(monkeypatch, capsys) -> None:
+    def fail(*args):
+        raise OSError("cannot read status")
+
+    monkeypatch.setattr("observatory.provision.read_config", lambda *args: {})
+    monkeypatch.setattr("observatory.provision.status_summary", fail)
+    assert obs_mod.cmd_observatory(_login_args()) == 1
+    assert "observatory login unavailable" in capsys.readouterr().err
 
 
 def _args(**kw) -> types.SimpleNamespace:

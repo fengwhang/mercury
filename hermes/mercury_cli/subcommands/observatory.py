@@ -1,7 +1,8 @@
-"""``mercury observatory`` — IRC observatory status, rooms, doctor, restart.
+"""``mercury observatory`` — IRC status, login, rooms, doctor, restart.
 
 ``status`` prints the provisioned network (listeners, unit, gateway
-channel); ``rooms`` lists live agent rooms from state.db; ``restart``
+channel); ``login`` reprints setup's browser/IRC login card;
+``rooms`` lists live agent rooms from state.db; ``restart``
 freshens the chat surface without the setup wizard: daemon + gateway
 onto the code on disk, then verifies the bot joined its room.
 """
@@ -67,8 +68,42 @@ def _cmd_rooms(args) -> int:
     return 0
 
 
+def _cmd_login(args) -> int:
+    """Print the existing setup card without provisioning or changing state."""
+    from mercury_constants import mercury_command
+
+    try:
+        from observatory import provision
+        from mercury_cli.setup import (
+            _print_observatory_setup_card, _tailscale_status, print_header,
+        )
+
+        home = getattr(args, "home", None)
+        # Avoid bootstrapping config directories for an unconfigured install.
+        status = (
+            provision.status_summary(home)
+            if provision.read_config(home) is not None else {}
+        )
+        if not status.get("provisioned"):
+            print(
+                f"observatory not provisioned — run {mercury_command()} setup observatory.",
+                file=sys.stderr,
+            )
+            return 1
+        print_header("Save this — IRC login")
+        _print_observatory_setup_card(
+            status, _tailscale_status(provision), mercury_home=home,
+        )
+    except Exception as exc:
+        print(f"observatory login unavailable: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_observatory(args) -> int:
     action = getattr(args, "observatory_action", None) or "status"
+    if action == "login":
+        return _cmd_login(args)
     if action == "rooms":
         return _cmd_rooms(args)
     if action == "doctor":
@@ -311,11 +346,13 @@ def build_observatory_parser(subparsers) -> None:
     """Attach the ``observatory`` subcommand to ``subparsers``."""
     parser = subparsers.add_parser(
         "observatory",
-        help="IRC observatory status and rooms",
+        help="IRC observatory status, login, and rooms",
     )
     subs = parser.add_subparsers(dest="observatory_action")
     p_status = subs.add_parser("status", help="Show observatory status")
     p_status.add_argument("--home", default=None, help="Mercury home override")
+    p_login = subs.add_parser("login", help="Show the browser/IRC login card from setup")
+    p_login.add_argument("--home", default=None, help="Mercury home override")
     p_rooms = subs.add_parser("rooms", help="List live agent rooms")
     p_rooms.add_argument("--home", default=None, help="Mercury home override")
     p_doctor = subs.add_parser("doctor", help="Diagnose user-to-agent chat path")

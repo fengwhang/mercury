@@ -3244,12 +3244,13 @@ def _ensure_firewall_port(port: int | str) -> str:
     return "failed"
 
 
-def _lounge_card_lines(status: dict, tailscale: dict | None = None) -> list:
+def _lounge_card_lines(status: dict, tailscale: dict | None = None,
+                       *, mercury_home: str | Path | None = None) -> list:
     """The Lounge login block for the final setup card (never raises)."""
     try:
         from observatory import lounge as lounge_mod
 
-        lounge = lounge_mod.status_lounge()
+        lounge = lounge_mod.status_lounge(mercury_home)
     except Exception:  # noqa: BLE001 — card prints without Lounge info
         return ["The Lounge:           status unknown"]
     if lounge.get("external"):
@@ -3288,7 +3289,8 @@ def _lounge_card_lines(status: dict, tailscale: dict | None = None) -> list:
     ]
 
 
-def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -> None:
+def _print_observatory_setup_card(status: dict, tailscale: dict | None = None,
+                                *, mercury_home: str | Path | None = None) -> None:
     """Setup card — The Lounge first, direct IRC as fallback.
 
     Everything else (config, passwords, unit, gateway row) already ran
@@ -3296,6 +3298,9 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     server address, where the password lives (NEVER the password
     itself), the gateway channel, and the two spawn commands.
     """
+    from mercury_constants import mercury_command
+
+    command = mercury_command()
     try:
         from observatory.config_gen import SERVER_NAME_DEFAULT
     except Exception:
@@ -3321,7 +3326,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
     lines = [
         "Mercury chat — open The Lounge in a browser",
         "",
-        *_lounge_card_lines(status, tailscale),
+        *_lounge_card_lines(status, tailscale, mercury_home=mercury_home),
         f"gateway channel:      {gateway_channel} (the gateway agent lives here)",
         "spawn more agents:    /spawn <name> (hermes) or /spawnomp <name> (omp)",
         "                      each gets its own channel; /exit in its room kills it",
@@ -3359,7 +3364,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
             "                      nick anything — then join",
             f"                      {gateway_channel} (one network per mercury box)",
             "",
-            "gateway wiring:       mercury setup gateway → enable IRC so the",
+            f"gateway wiring:       {command} setup gateway → enable IRC so the",
             "                      gateway bot joins this network",
         ]
     )
@@ -3371,6 +3376,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None) -
         print(color(padded, Colors.CYAN))
     print(color("└" + "─" * width + "┘", Colors.CYAN))
     print()
+    print_info(f"Show this card again: {command} observatory login")
     print_info(_OBSERVATORY_GUIDE_LINE)
 
 

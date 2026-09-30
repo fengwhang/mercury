@@ -162,6 +162,18 @@ On a fresh setup, Mercury seeds the Lounge's connection to the IRC server
 and joins `#<network>_gateway`. The default web port is **9000**; use the
 actual URL from the login card if your configuration differs.
 
+Print that login card again whenever you need it:
+
+```bash
+mercury observatory login
+# Nightly installation:
+mercury-nightly observatory login
+```
+
+This shows the web address, Lounge username, Tailscale guidance, and IRC
+connection details. It does not reset your password; the Lounge password
+is only shown when created or reset.
+
 ### 4. Open the web UI from another device
 
 Install and connect the Tailscale app on your phone, tablet, or computer.
