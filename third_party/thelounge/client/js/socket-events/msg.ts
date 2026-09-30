@@ -175,8 +175,8 @@ function notifyMessage(
 					} else {
 						const notify = new Notification(title, {
 							tag: `chan-${targetId}`,
-							badge: "img/icon-alerted-black-transparent-bg-72x72px.png",
-							icon: "img/icon-alerted-grey-bg-192x192px.png",
+							badge: "img/mercury-badge-72.png",
+							icon: "img/mercury-icon-512.png",
 							body: body,
 							timestamp: timestamp,
 						});
