@@ -1,7 +1,7 @@
 {
   "name": "thelounge",
-  "description": "mLounge, Mercury’s fork of The Lounge for MIRC agent rooms",
-  "version": "0.2.22",
+  "description": "mLounge, Mercury\u2019s fork of The Lounge for MIRC agent rooms",
+  "version": "0.2.23",
   "type": "commonjs",
   "preferGlobal": true,
   "bin": {
