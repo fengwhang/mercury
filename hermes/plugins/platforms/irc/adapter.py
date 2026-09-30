@@ -246,6 +246,11 @@ class IRCAdapter(BasePlatformAdapter):
         self._watchdog_task: Optional[asyncio.Task] = None
         self._last_inbound = 0.0
         self._registered = False  # IRC registration complete
+        #: Connection generation: bumped on every connect() attempt so a
+        #: stale receive task unwinding late cannot tear down a newer
+        #: connection's writer/sink/registration (same-nick reconnects
+        #: would otherwise murder each other forever).
+        self._conn_generation = 0
         self._oper = False  # set by 381, cleared by 464/481
         self._registration_event = asyncio.Event()
         self._current_nick = self.nickname
@@ -299,7 +304,7 @@ class IRCAdapter(BasePlatformAdapter):
             self._lock_key = lock_key
         except ImportError:
             self._lock_key = None  # status module not available (e.g. tests)
-
+        self._conn_generation = getattr(self, "_conn_generation", 0) + 1
         try:
             ssl_ctx = None
             if self.use_tls:
@@ -464,10 +469,7 @@ class IRCAdapter(BasePlatformAdapter):
                 set_bot_sink(None)
         except Exception:
             pass
-
-    # ── Sending ───────────────────────────────────────────────────────────
-
-    def _drop_teardown(self) -> None:
+    def _drop_teardown(self, generation: int | None = None) -> None:
         """Best-effort local teardown after connection loss (sync only).
 
         Closes the dead writer (no waiting), clears a bot sink pointing
@@ -476,7 +478,18 @@ class IRCAdapter(BasePlatformAdapter):
         from the receive loop's finally and the silence-watchdog drop
         path — never awaits foreign tasks (self-deadlock proof: the
         full disconnect() awaits this task). Never raises.
+
+        ``generation`` is the connection generation the caller served;
+        a stale task unwinding after a newer connect bumped the counter
+        must NOT touch the new connection's writer/sink/registration.
+        ``None`` (tests, legacy callers) always acts.
         """
+        try:
+            if (generation is not None and generation != getattr(
+                    self, "_conn_generation", generation)):
+                return
+        except Exception:
+            pass
         try:
             writer = self._writer
             self._writer = None
@@ -909,6 +922,7 @@ class IRCAdapter(BasePlatformAdapter):
         work. Ordering is preserved (single consumer).
         """
         buffer = b""
+        my_generation = getattr(self, "_conn_generation", 0)
         try:
             while self._reader and not self._reader.at_eof():
                 data = await self._reader.read(4096)
@@ -930,6 +944,7 @@ class IRCAdapter(BasePlatformAdapter):
             raise
         except Exception as e:
             logger.error("IRC: receive loop error: %s", e)
+        finally:
             try:
                 self._line_queue.put_nowait(None)
             except Exception:
@@ -938,9 +953,11 @@ class IRCAdapter(BasePlatformAdapter):
             # CLOSE-WAIT graveyard), clear a stale bot sink, reset
             # registration, release the identity lock — so the
             # reconnect below starts clean instead of inheriting stale
-            # state. Sync-only (never awaits our own tasks).
+            # state. Sync-only (never awaits our own tasks). Guarded by
+            # this connection's generation: a stale task unwinding after
+            # a newer connect must not touch the new connection.
             try:
-                self._drop_teardown()
+                self._drop_teardown(my_generation)
             except Exception:
                 pass
             if self.is_connected:
@@ -1023,10 +1040,14 @@ class IRCAdapter(BasePlatformAdapter):
                         # Same local teardown as the receive-loop drop path:
                         # the cancelled task may never unwind (stuck read),
                         # so clean here too (idempotent if it does).
+                        # Generation-guarded: a newer connect in flight keeps
+                        # its state.
                         try:
-                            self._drop_teardown()
+                            self._drop_teardown(
+                                getattr(self, "_conn_generation", None))
                         except Exception:
                             pass
+                        # Drive the rebuild directly: a receive loop stuck
                         # in read() may never notice the closed writer,
                         # leaving the bot dead with no reconnect.
                         try:

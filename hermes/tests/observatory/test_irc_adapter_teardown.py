@@ -82,6 +82,41 @@ async def test_send_raw_timeout_bounds_hung_drain() -> None:
         await adapter._send_raw("JOIN #test", timeout=0.05)
 
 
+def test_stale_generation_leaves_newer_connection_alone() -> None:
+    """A receive task unwinding after a newer connect bumped the counter
+    must not close the new writer, clear the fresh sink, or drop
+    registration — same-nick reconnects would otherwise murder each
+    other forever."""
+    import observatory.rooms as rooms_mod
+
+    adapter = _irc_adapter()
+    closed: list[bool] = []
+    adapter._writer.close = lambda: closed.append(True)  # type: ignore[method-assign]
+    adapter._registered = True
+    adapter._conn_generation = 2
+    prev_sink = rooms_mod.get_bot_sink()
+    rooms_mod.set_bot_sink(adapter)
+    try:
+        adapter._drop_teardown(generation=1)
+        assert closed == []
+        assert adapter._writer is not None
+        assert adapter._registered is True
+        assert rooms_mod.get_bot_sink() is adapter
+    finally:
+        rooms_mod.set_bot_sink(prev_sink)
+
+
+def test_current_generation_acts() -> None:
+    """A matching generation performs the full teardown."""
+    adapter = _irc_adapter()
+    closed: list[bool] = []
+    adapter._writer.close = lambda: closed.append(True)  # type: ignore[method-assign]
+    adapter._conn_generation = 2
+    adapter._drop_teardown(generation=2)
+    assert closed == [True]
+    assert adapter._writer is None
+
+
 @pytest.mark.asyncio
 async def test_send_raw_default_path_unchanged() -> None:
     """Without a timeout the drain awaits normally (today's behavior)."""
