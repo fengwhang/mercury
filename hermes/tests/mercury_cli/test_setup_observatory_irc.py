@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 import mercury_cli.setup as setup_mod
 
 
@@ -223,37 +225,49 @@ def test_headless_setup_provisions():
     assert fake.provision_calls == [{}]
 
 
-def test_setup_card_mentions_server_not_password(capsys):
+def test_setup_card_only_advertises_web_access(capsys):
     status = _base_status(provisioned=True)
     setup_mod._print_observatory_setup_card(
         status, dict(available=False, up=False, ip=None, dns_name=None)
     )
     out = capsys.readouterr().out
-    assert "127.0.0.1:6670" in out
+    assert "127.0.0.1:6670" not in out
     assert "#mercury_gateway" in out
-    assert "IRC_CLIENT_PASSWORD" in out
-    assert "server address" in out
+    assert "IRC_CLIENT_PASSWORD" not in out
+    assert "server address" not in out
+    assert "server port:" not in out
+    assert "TLS port:" not in out
+    assert "or connect any IRC client" not in out
     assert "client address" not in out
     assert "The Lounge" in out
 
 
-def test_setup_card_lounge_login(monkeypatch, capsys):
+@pytest.mark.parametrize("bind, up, dns, expected_host", [
+    ("100.9.9.9", True, "host.tailnet.ts.net", "host.tailnet.ts.net"),
+    ("100.9.9.9", True, "host.tailnet.ts.net.", "host.tailnet.ts.net"),
+    ("100.9.9.9", True, None, "100.9.9.9"),
+    ("100.9.9.9", False, "host.tailnet.ts.net", "100.9.9.9"),
+    ("127.0.0.1", True, "host.tailnet.ts.net", "127.0.0.1"),
+    ("192.168.1.10", True, "host.tailnet.ts.net", "192.168.1.10"),
+    ("0.0.0.0", True, "host.tailnet.ts.net", "host.tailnet.ts.net"),
+])
+def test_setup_card_lounge_login(monkeypatch, capsys, bind, up, dns, expected_host):
     import observatory.lounge as lounge_mod
 
     monkeypatch.setattr(
         lounge_mod, "status_lounge",
         lambda *a, **k: {"configured": True, "users": ["owner"],
-                         "host": "100.9.9.9", "port": 9000,
+                         "host": bind, "port": 9000,
                          "unit": "active", "binary": "/b"})
     status = _base_status(provisioned=True)
     status["agent"] = "127.0.0.1:6669"
     status["server_name"] = "vm"
     setup_mod._print_observatory_setup_card(
-        status, dict(available=True, up=True, ip="100.9.9.9",
-                     dns_name=None)
+        status, dict(available=True, up=up, ip="100.9.9.9",
+                     dns_name=dns)
     )
     out = capsys.readouterr().out
-    assert "http://100.9.9.9:9000" in out
+    assert f"http://{expected_host}:9000" in out
     assert "user 'owner'" in out
     assert "pre-added" in out
     assert "#vm_gateway" in out
@@ -274,7 +288,8 @@ def test_setup_card_lounge_missing(monkeypatch, capsys):
     assert "not installed" in capsys.readouterr().out
 
 
-def test_setup_card_lounge_external(monkeypatch, capsys):
+@pytest.mark.parametrize("tailnet", [False, True])
+def test_setup_card_lounge_external(monkeypatch, capsys, tailnet):
     import observatory.lounge as lounge_mod
 
     monkeypatch.setattr(
@@ -284,21 +299,25 @@ def test_setup_card_lounge_external(monkeypatch, capsys):
                          "external": True, "unit": "unknown",
                          "binary": ""})
     status = _base_status(provisioned=True)
+    monkeypatch.setattr(lounge_mod, "lounge_port_open", lambda *args: True)
     setup_mod._print_observatory_setup_card(
-        status, dict(available=False, up=False, ip=None, dns_name=None)
+        status, dict(available=tailnet, up=tailnet, ip="100.9.9.9",
+                     dns_name="host.tailnet.ts.net")
     )
     out = capsys.readouterr().out
     assert "runs outside" in out
-    assert "http://127.0.0.1:9000" in out
+    expected_host = "host.tailnet.ts.net" if tailnet else "127.0.0.1"
+    assert f"http://{expected_host}:9000" in out
+    assert "other-Lounge" not in out
 
 
-def test_setup_card_existing_lounge_block(capsys):
+def test_setup_card_no_other_lounge_connection_block(capsys):
     status = _base_status(provisioned=True)
     setup_mod._print_observatory_setup_card(
         status, dict(available=False, up=False, ip=None, dns_name=None)
     )
     out = capsys.readouterr().out
-    assert "another Lounge" in out
+    assert "another Lounge" not in out
     assert "#mercury_gateway" in out
 
 
@@ -705,7 +724,7 @@ def test_setup_card_lounge_first(monkeypatch, capsys):
         status, dict(available=False, up=False, ip=None, dns_name=None)
     )
     out = capsys.readouterr().out
-    assert out.index("http://127.0.0.1:9000") < out.index("server address")
+    assert out.index("http://127.0.0.1:9000") < out.index("gateway channel")
     assert "pre-added" in out
 
 

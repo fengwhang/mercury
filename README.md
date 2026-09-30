@@ -170,8 +170,10 @@ mercury observatory login
 mercury-nightly observatory login
 ```
 
-This shows the web address, Lounge username, Tailscale guidance, and IRC
-connection details. It does not reset your password; the Lounge password
+This shows the web address, Lounge username, and Tailscale guidance.
+When the web UI is bound to Tailscale, the URL prefers its MagicDNS name
+and falls back to the Tailscale IP if no name is available.
+It does not reset your password; the Lounge password
 is only shown when created or reset.
 
 ### 4. Open the web UI from another device
@@ -180,7 +182,7 @@ Install and connect the Tailscale app on your phone, tablet, or computer.
 In its browser, open the host address from the login card, for example:
 
 ```text
-http://100.101.102.103:9000
+http://mercury-host.example-tailnet.ts.net:9000
 ```
 
 Log in with your **Lounge** credentials. Open `#<network>_gateway` and send

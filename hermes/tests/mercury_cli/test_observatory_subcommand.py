@@ -61,7 +61,9 @@ def test_login_reprints_setup_card_from_selected_home(
     captured = capsys.readouterr()
     assert not captured.err
     assert setup_card in captured.out
-    assert "http://100.101.102.103:9001" in captured.out
+    assert "http://test-host.tailnet.ts.net:9001" in captured.out
+    assert "100.101.102.103" not in captured.out
+    assert "or connect any IRC client" not in captured.out
     assert "user 'tester'" in captured.out
     assert "#testnet_gateway" in captured.out
     assert "test-host.tailnet.ts.net" in captured.out
@@ -98,7 +100,7 @@ def test_login_without_lounge_or_tailscale(monkeypatch, tmp_path, capsys) -> Non
     out = capsys.readouterr().out
     assert "not installed" in out
     assert "Tailscale not detected" in out
-    assert "127.0.0.1:6670" in out
+    assert "server port:" not in out
     assert "#localnet_gateway" in out
 
 

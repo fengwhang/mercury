@@ -1,7 +1,7 @@
 """``mercury observatory`` — IRC status, login, rooms, doctor, restart.
 
 ``status`` prints the provisioned network (listeners, unit, gateway
-channel); ``login`` reprints setup's browser/IRC login card;
+channel); ``login`` reprints setup's web login card;
 ``rooms`` lists live agent rooms from state.db; ``restart``
 freshens the chat surface without the setup wizard: daemon + gateway
 onto the code on disk, then verifies the bot joined its room.
@@ -90,7 +90,7 @@ def _cmd_login(args) -> int:
                 file=sys.stderr,
             )
             return 1
-        print_header("Save this — IRC login")
+        print_header("Save this — Observatory login")
         _print_observatory_setup_card(
             status, _tailscale_status(provision), mercury_home=home,
         )
@@ -351,7 +351,7 @@ def build_observatory_parser(subparsers) -> None:
     subs = parser.add_subparsers(dest="observatory_action")
     p_status = subs.add_parser("status", help="Show observatory status")
     p_status.add_argument("--home", default=None, help="Mercury home override")
-    p_login = subs.add_parser("login", help="Show the browser/IRC login card from setup")
+    p_login = subs.add_parser("login", help="Show the web login card from setup")
     p_login.add_argument("--home", default=None, help="Mercury home override")
     p_rooms = subs.add_parser("rooms", help="List live agent rooms")
     p_rooms.add_argument("--home", default=None, help="Mercury home override")

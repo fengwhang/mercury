@@ -855,10 +855,10 @@ def _print_setup_summary(config: dict, mercury_home):
 
 
 def _reprint_observatory_login_card() -> None:
-    """Re-print the IRC server card after the setup summary.
+    """Re-print the Observatory web login card after the setup summary.
 
-    The fullscreen pickers scroll the section card away; the homeserver URL
-    and credential locations are needed after setup, so they are repeated
+    The fullscreen pickers scroll the section card away; the web URL
+    and login instructions are needed after setup, so they are repeated
     here under a 'Save this' header. Guarded: provisioned-only, never
     raises — a missing package or unreadable state stays silent.
     """
@@ -873,7 +873,7 @@ def _reprint_observatory_login_card() -> None:
         if not isinstance(status, dict) or not status.get("provisioned"):
             return
         print()
-        print_header("Save this — IRC login")
+        print_header("Save this — Observatory login")
         try:
             tailscale = _tailscale_status(obs)
         except Exception:  # noqa: BLE001 — display probe, never blocks reprint
@@ -3052,7 +3052,7 @@ def _tailscale_phone_host(ts: dict | None) -> str | None:
         host = ts.get("dns_name") or ts.get("ip")
         if not host or not str(host).strip():
             return None
-        return str(host).strip()
+        return str(host).strip().rstrip(".")
     except Exception:  # noqa: BLE001
         return None
 
@@ -3260,19 +3260,21 @@ def _lounge_card_lines(status: dict, tailscale: dict | None = None,
             tip = str(ts.get("ip") or "").strip()
             if (ts.get("up") and tip and lounge_mod.lounge_port_open(
                     tip, lounge_mod.LOUNGE_PORT_DEFAULT)):
-                url_host = tip
+                url_host = _tailscale_phone_host(ts) or tip
         except Exception:  # noqa: BLE001 — localhost URL is fine
             pass
         port = lounge.get("port") or lounge_mod.LOUNGE_PORT_DEFAULT
         return [
             f"The Lounge web UI:    http://{url_host}:{port} (runs outside",
-            "                      setup — log in with your existing account,",
-            "                      then add this box with the other-Lounge",
-            "                      settings below)",
+            "                      setup — log in with your existing account)",
         ]
     if not lounge.get("configured"):
         return ["The Lounge:           not installed — re-run setup to add the web UI"]
-    host = str(lounge.get("host") or "127.0.0.1")
+    host = str(lounge.get("host") or "127.0.0.1").strip()
+    ts = tailscale or {}
+    tailnet_host = _tailscale_phone_host(ts)
+    if tailnet_host and host in {str(ts.get("ip") or "").strip(), "0.0.0.0", "::"}:
+        host = tailnet_host
     port = lounge.get("port") or lounge_mod.LOUNGE_PORT_DEFAULT
     users = lounge.get("users") or []
     user = str(users[0]) if users else "owner"
@@ -3283,7 +3285,6 @@ def _lounge_card_lines(status: dict, tailscale: dict | None = None,
         "                      change it any time in The Lounge settings)",
         "this server:          pre-added as a network — just open",
         f"                      #{server}_gateway and talk to the gateway",
-        "                      (no IRC client needed for anything below)",
         "uploads:              drag-and-drop works, no size cap — files",
         "                      never expire, prune them by hand if needed",
     ]
@@ -3291,13 +3292,7 @@ def _lounge_card_lines(status: dict, tailscale: dict | None = None,
 
 def _print_observatory_setup_card(status: dict, tailscale: dict | None = None,
                                 *, mercury_home: str | Path | None = None) -> None:
-    """Setup card — The Lounge first, direct IRC as fallback.
-
-    Everything else (config, passwords, unit, gateway row) already ran
-    automatically by the time this prints — so this card names just the
-    server address, where the password lives (NEVER the password
-    itself), the gateway channel, and the two spawn commands.
-    """
+    """Browser login, Tailscale access, and agent-room commands."""
     from mercury_constants import mercury_command
 
     command = mercury_command()
@@ -3306,23 +3301,10 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None,
     except Exception:
         SERVER_NAME_DEFAULT = "mercury"
     server = str(status.get("server_name") or SERVER_NAME_DEFAULT)
-    server_addr = str(status.get("server") or "127.0.0.1:6670")
     gateway_channel = f"#{server}_gateway"
 
     if tailscale is None:
         tailscale = _tailscale_status(_load_observatory_provision())
-    phone_host = _tailscale_phone_host(tailscale)
-    phone_line = None
-    if phone_host:
-        phone_line = f"on your phone:       host {phone_host}, port {_server_port(server_addr)}  (over Tailscale, TLS OFF)"
-    elif bool((tailscale or {}).get("available")):
-        phone_line = (
-            "on your phone:       Tailscale installed but not connected"
-            " — run `tailscale up`, then re-run setup"
-        )
-
-    server_host = str(server_addr or "").rsplit(":", 1)[0].strip() or "127.0.0.1"
-    server_port = _server_port(server_addr)
     lines = [
         "Mercury chat — open The Lounge in a browser",
         "",
@@ -3330,40 +3312,26 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None,
         f"gateway channel:      {gateway_channel} (the gateway agent lives here)",
         "spawn more agents:    /spawn <name> (hermes) or /spawnomp <name> (omp)",
         "                      each gets its own channel; /exit in its room kills it",
-        "                      (clients without slash support: use !spawn,",
-        "                      !spawnomp, !exit, !stop, !approve, !deny instead)",
         "subagent rooms:       #parent-child channels stream live tool/thinking traces",
         "",
-        "or connect any IRC client directly to this server:",
-        f"server address:       {server_addr}",
-        f"server host:          {server_host}  (bare hostname — no irc://, no :port)",
-        f"server port:          {server_port}  (own field in the client, TLS OFF)",
-        f"TLS port:             {status.get('tls_port', 6697)}  (same rooms, for TLS-only clients —",
-        "                      trust observatory/tls/ca.crt on the phone once)",
-        "                      (IRC ports — IRC apps only, never a browser)",
     ]
-    if phone_line:
-        lines.append(phone_line)
+    if (tailscale or {}).get("up"):
+        lines.extend([
+            "across devices:       connect each device to the same Tailscale network;",
+            "                      open the web URL above with the web UI bound to Tailscale",
+        ])
+    elif (tailscale or {}).get("available"):
+        lines.extend([
+            "remote access:        Tailscale installed but not connected — run `tailscale up`,",
+            f"                      then `{command} observatory login`",
+        ])
     else:
         lines.append(
-            "on your phone:       Tailscale not detected"
+            "remote access:        Tailscale not detected"
             " — install from https://tailscale.com for access without port forwarding"
         )
     lines.extend(
         [
-            "nickname:             pick any nick (no accounts — the password is the auth)",
-            "server password:      your .env file (IRC_CLIENT_PASSWORD,",
-            "                      mode 0600 — paste it when the client asks)",
-            "",
-            "this box from another Lounge:",
-            "                      add a network with host",
-            f"                      {server_host} port {server_port} (TLS OFF)",
-            f"                      or port {status.get('tls_port', 6697)} (TLS on —",
-            "                      trust observatory/tls/ca.crt once there),",
-            "                      server password = the password above,",
-            "                      nick anything — then join",
-            f"                      {gateway_channel} (one network per mercury box)",
-            "",
             f"gateway wiring:       {command} setup gateway → enable IRC so the",
             "                      gateway bot joins this network",
         ]
