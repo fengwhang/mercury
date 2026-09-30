@@ -3052,6 +3052,7 @@ part/quit messages where we don't load previews (adds a blank line otherwise) */
 }
 
 #chat .md-code {
+	position: relative;
 	background: rgb(127 127 127 / 12%);
 	border-radius: 6px;
 	padding: 8px 10px;
@@ -3065,6 +3066,46 @@ part/quit messages where we don't load previews (adds a blank line otherwise) */
 	white-space: pre;
 	background: none;
 	padding: 0;
+}
+
+#chat .message-plaintext,
+#chat .message-raw,
+#chat .md-inline-code {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+#chat .message-raw {
+	margin: 0;
+}
+
+#chat .message-tools {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+	font-size: 0.75em;
+}
+
+#chat .message-tools,
+#chat .message-copy {
+	user-select: none;
+}
+
+#chat .message-tools button,
+#chat .message-copy {
+	color: inherit;
+	background: transparent;
+	border: 1px solid currentcolor;
+	border-radius: 4px;
+	padding: 2px 6px;
+	cursor: pointer;
+}
+
+#chat .md-code > .message-copy {
+	display: block;
+	margin: 0 0 6px auto;
+	font-family: sans-serif;
+	font-size: 0.8em;
 }
 
 #chat .hljs-comment {

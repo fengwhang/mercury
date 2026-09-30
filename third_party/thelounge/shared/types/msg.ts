@@ -1,3 +1,5 @@
+import type {MercuryMessageKind} from "../message-format";
+
 export enum MessageType {
 	UNHANDLED = "unhandled",
 	ACTION = "action",
@@ -60,6 +62,7 @@ export type LinkPreview = {
 };
 
 export type SharedMsg = {
+	mercuryKind?: MercuryMessageKind;
 	from?: UserInMessage;
 	id: number;
 	msgid?: string;

@@ -470,7 +470,8 @@ class TestIRCAdapterIdentityRouting:
             def get(self, channel):
                 return object() if channel == "#test" else None
 
-        async def fake_send_as(channel, text):
+        async def fake_send_as(channel, text, *, kind):
+            assert kind == "assistant_reply"
             assert channel == "#test"
             sent.append(text)
             return True
@@ -507,7 +508,9 @@ class TestIRCAdapterIdentityRouting:
             def get(self, channel):
                 return object() if channel == "#test" else None
 
-        async def fake_multiline(channel, lines):
+        async def fake_multiline(channel, lines, *, kind, concat):
+            assert kind == "assistant_reply"
+            assert concat == [False, False, False]
             calls.append((channel, list(lines)))
             return True
 
@@ -533,7 +536,8 @@ class TestIRCAdapterIdentityRouting:
             def get(self, channel):
                 return object() if channel == "#test" else None
 
-        async def fake_send_as(channel, text):
+        async def fake_send_as(channel, text, *, kind):
+            assert kind == "assistant_reply"
             sent.append(text)
             return True
 
@@ -959,4 +963,3 @@ class TestIRCAdapterBatchPacing:
         result = await adapter.send("#test", "one\ntwo\nthree")
         assert result.success is True
         assert sleeps == []
-

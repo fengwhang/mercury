@@ -63,20 +63,10 @@ function textOf(nodes: unknown): string {
 	return out;
 }
 
-function hasBr(nodes: unknown): boolean {
-	let found = false;
-	eachNode(nodes, (node) => {
-		if (node && typeof node === "object" && (node as VNode).type === "br") {
-			found = true;
-		}
-	});
-	return found;
-}
-
 describe("Mercury trace plaintext rendering", () => {
 	it("detects the server trace prefixes", () => {
 		for (const line of [
-			"🔧 read {\"path\": \"/a_b\"}",
+			'🔧 read {"path": "/a_b"}',
 			"💭 thinking about *x*",
 			"ℹ️ subagent 'n': done",
 			"🚀 spawned omp agent 'm'",
@@ -94,7 +84,7 @@ describe("Mercury trace plaintext rendering", () => {
 	});
 
 	it("leaves underscores, asterisks and dollars literal in trace lines", () => {
-		const nodes = parse("🔧 read {\"path\": \"/my_dir/my_file_v2\"} cost $5 *fast*");
+		const nodes = parse('🔧 read {"path": "/my_dir/my_file_v2"} cost $5 *fast*');
 		const cls = classes(nodes);
 		expect(cls).not.toContain("irc-italic");
 		expect(cls).not.toContain("irc-bold");
@@ -124,8 +114,21 @@ describe("Mercury trace plaintext rendering", () => {
 
 	it("keeps the multiline pipeline for trace messages", () => {
 		const nodes = parse("🔧 first_line\nsecond_line");
-		expect(hasBr(nodes)).toBe(true);
-		expect(textOf(nodes)).toContain("first_line");
-		expect(textOf(nodes)).toContain("second_line");
+		expect(textOf(nodes)).toBe("🔧 first_line\nsecond_line");
+		expect(classes(nodes)).toContain("message-plaintext");
+	});
+
+	it("uses explicit provenance for unprefixed traces and emoji-leading replies", () => {
+		const text = '  echo "$A-$B" *_file\n\t**literal**  ';
+
+		for (const mercuryKind of ["tool_input", "tool_output", "thinking", "status"] as const) {
+			const nodes = parse(text, {mercuryKind} as any);
+			expect(textOf(nodes)).toBe(text);
+			expect(classes(nodes)).toEqual(["message-plaintext"]);
+		}
+
+		expect(classes(parse("✅ **Done**", {mercuryKind: "assistant_reply"} as any))).toContain(
+			"irc-bold"
+		);
 	});
 });

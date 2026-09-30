@@ -58,8 +58,7 @@ function hasType(nodes: unknown, type: string, cls?: string): boolean {
 		}
 
 		const c = node.props?.class;
-		const list =
-			typeof c === "string" ? c.split(" ") : Array.isArray(c) ? c : [];
+		const list = typeof c === "string" ? c.split(" ") : Array.isArray(c) ? c : [];
 
 		if ((list as string[]).includes(cls)) {
 			found = true;
@@ -76,8 +75,7 @@ function htmlOf(nodes: unknown, cls: string): string[] {
 		}
 
 		const c = node.props?.class;
-		const list =
-			typeof c === "string" ? c.split(" ") : Array.isArray(c) ? c : [];
+		const list = typeof c === "string" ? c.split(" ") : Array.isArray(c) ? c : [];
 
 		if ((list as string[]).includes(cls) && typeof node.props?.innerHTML === "string") {
 			out.push(node.props.innerHTML);
@@ -85,7 +83,6 @@ function htmlOf(nodes: unknown, cls: string): string[] {
 	});
 	return out;
 }
-
 
 function textOf(nodes: unknown): string {
 	let out = "";
@@ -103,6 +100,7 @@ function textOf(nodes: unknown): string {
 	});
 	return out;
 }
+
 describe("Mercury markdown inline rendering", () => {
 	it("bolds **text** with the irc-bold class", () => {
 		expect(classes(parse("a **bold** move"))).toContain("irc-bold");
@@ -117,6 +115,24 @@ describe("Mercury markdown inline rendering", () => {
 
 	it("renders `code` as monospace", () => {
 		expect(classes(parse("run `npm test` now"))).toContain("irc-monospace");
+	});
+
+	it("protects shell punctuation and display-math markers inside inline code", () => {
+		for (const command of ['echo "$A-$B" *_file', "echo $$ **literal**", 'printf "\\\\n"']) {
+			const nodes = parse(`Run \`${command}\` now; $x^2$ is math.`);
+			expect(textOf(nodes)).toContain(command);
+			expect(classes(nodes)).toContain("irc-monospace");
+			expect(htmlOf(nodes, "md-math")).toHaveLength(1);
+			expect(hasType(nodes, "div", "md-math-display")).toBe(false);
+		}
+	});
+
+	it("protects commands containing literal backticks with a longer delimiter", () => {
+		const command = 'echo `date` "$A-$B"';
+		const nodes = parse(`Use \`\`${command}\`\` here.`);
+		expect(textOf(nodes)).toContain(command);
+		expect(classes(nodes)).toContain("irc-monospace");
+		expect(htmlOf(nodes, "md-math")).toHaveLength(0);
 	});
 
 	it("leaves intra-word asterisks alone", () => {
@@ -164,6 +180,17 @@ describe("Mercury LaTeX rendering", () => {
 	it("renders $$…$$ as a display block", () => {
 		const nodes = parse("before\n$$\\frac{a}{b}$$\nafter");
 		expect(hasType(nodes, "div", "md-math-display")).toBe(true);
+	});
+
+	it("supports explicit TeX delimiters and protects both fence styles", () => {
+		expect(htmlOf(parse("Here \\(x^2\\) and \\[x^2\\]"), "md-math")).toHaveLength(2);
+
+		for (const fence of ["~~~", "````"]) {
+			const nodes = parse(`${fence}bash\necho $$ **literal** \\(x\\)\n${fence}`);
+			expect(hasType(nodes, "pre", "md-code")).toBe(true);
+			expect(htmlOf(nodes, "md-math")).toHaveLength(0);
+			expect(hasType(nodes, "div", "md-math-display")).toBe(false);
+		}
 	});
 
 	it("leaves currency ($5 and $10) alone", () => {

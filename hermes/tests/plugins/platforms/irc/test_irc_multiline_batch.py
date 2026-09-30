@@ -137,6 +137,55 @@ async def test_adapter_negotiates_multiline_cap(tmp_path) -> None:
         finally:
             await adapter.disconnect()
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_identity", [False, True])
+async def test_typed_long_commands_keep_original_text_over_real_wire(tmp_path, use_identity):
+    from plugins.platforms.irc.adapter import IRCAdapter
+    from observatory.identity import IdentityConn, get_pool
+
+    async with running_daemon(tmp_path) as (_, port):
+        listener = _Listener()
+        await listener.connect(port, "watcher")
+        adapter = IRCAdapter(_config(port))
+        assert await adapter.connect()
+        conn = None
+        try:
+            listener.send("JOIN #mercury_gateway")
+            await listener.expect("JOIN #mercury_gateway")
+            if use_identity:
+                conn = IdentityConn(host="127.0.0.1", port=port, password="",
+                                    nick="child", channel="#mercury_gateway")
+                get_pool().track(conn)
+            content = '\n```bash\n  echo "$A-$B" ' + "é_*" * 300 + '  \n\n```\n'
+            assert (await adapter.send("#mercury_gateway", content)).success
+            await listener.expect("BATCH +")
+            chunks = []
+            while True:
+                line = await asyncio.wait_for(listener.lines.get(), timeout=5)
+                if line.startswith("BATCH -"):
+                    break
+                if " PRIVMSG " not in line:
+                    continue
+                assert len((line + "\r\n").encode("utf-8")) <= 512
+                assert "+mercury/kind=assistant_reply" in line
+                tags, body = line.partition(" ")[::2]
+                text = body.split(" :", 1)[1]
+                if "+mercury/empty=1" in tags:
+                    text = ""
+                chunks.append(("" if not chunks or "draft/multiline-concat" in tags else "\n") + text)
+            assert "".join(chunks) == content
+            # A trace immediately after the batch must not inherit its framing.
+            assert await adapter.say("#mercury_gateway", 'echo "$X" *', kind="tool_input")
+            trace = await listener.expect('echo "$X" *')
+            assert "+mercury/kind=tool_input" in trace and "batch=" not in trace
+        finally:
+            if conn:
+                get_pool().drop("#mercury_gateway")
+                await conn.close()
+            await adapter.disconnect()
+            await listener.close()
+
 @pytest.mark.asyncio
 async def test_adapter_reassembles_inbound_batch(monkeypatch) -> None:
     """Tagged lines + close reassemble into ONE dispatch, no waiting."""

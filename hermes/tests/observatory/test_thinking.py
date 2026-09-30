@@ -26,7 +26,8 @@ async def test_face_posts_after_delay(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
+            assert metadata == {"mercury_kind": "thinking"}
             sent.append((room, text))
             return None
 
@@ -46,7 +47,7 @@ async def test_reply_cancels_pending_face(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
             sent.append((room, text))
             return None
 
@@ -64,7 +65,7 @@ async def test_overlapping_turns_post_once(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
             sent.append((room, text))
             return None
 
@@ -84,7 +85,7 @@ async def test_face_posting_does_not_cancel_itself(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
             thinking_mod.thinking_done(room)
             sent.append((room, text))
             return None
@@ -176,7 +177,7 @@ async def test_notice_rearms_pending_face(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
             sent.append((room, text))
 
     monkeypatch.setattr(thinking_mod, "THINKING_FACE_DELAY_S", 0.05)
@@ -197,7 +198,7 @@ async def test_reply_after_notice_still_cancels(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
             sent.append((room, text))
 
     monkeypatch.setattr(thinking_mod, "THINKING_FACE_DELAY_S", 0.05)

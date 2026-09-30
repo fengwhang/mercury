@@ -114,15 +114,16 @@ function createFragment(fragment: StyledFragment): VNode | string | undefined {
 // a line boundary, then join the per-line vnode lists with <br>.
 function parse(text: string, message?: ClientMessage, network?: ClientNetwork) {
 	const lines = text.split("\n");
-	// Trace fast path: agent execution traces render plaintext — straight
-	// to parseLine, skipping extractBlocks/detectBlock/inline-md/math. The
-	// multiline join below still applies (this gates markdown only, never
-	// line structure). Trace messages are single-line machine emissions;
-	// gating on the first line keeps mixed content on the markdown path.
-	if (lines.length > 0 && isTraceLine(lines[0])) {
-		return lines.flatMap((line, index) =>
-			index === 0 ? parseLine(line, message, network) : [createElement("br"), ...parseLine(line, message, network)]);
+	// Event provenance wins over visible punctuation and emoji. Older stored
+	// messages without provenance retain the legacy prefix fallback. Literal
+	// traces bypass every formatter, including IRC styles and link/emoji parsing.
+	const kind = message?.mercuryKind;
+	const plain = kind ? !["assistant_reply", "user"].includes(kind) : isTraceLine(lines[0] ?? "");
+
+	if (plain) {
+		return [createElement("span", {class: "message-plaintext"}, text)];
 	}
+
 	const {text: carved, blocks} = extractBlocks(text);
 	return carved.split("\n").flatMap((line, index) => {
 		const parts = parseRichLine(line, message, network, blocks);
@@ -150,7 +151,7 @@ function parseRichLine(
 				createElement(
 					"div",
 					{class: `md-h${desc.level}`},
-					parseProse(desc.inner, message, network)
+					parseProse(desc.inner, message, network, blocks)
 				),
 			];
 		case "quote":
@@ -158,7 +159,7 @@ function parseRichLine(
 				createElement(
 					"div",
 					{class: "md-quote"},
-					parseProse(desc.inner, message, network)
+					parseProse(desc.inner, message, network, blocks)
 				),
 			];
 		case "ul":
@@ -170,20 +171,38 @@ function parseRichLine(
 						class: desc.type === "ul" ? "md-ul" : "md-ol",
 						style: desc.indent > 0 ? {marginLeft: `${desc.indent}ch`} : undefined,
 					},
-					parseProse(desc.inner, message, network)
+					parseProse(desc.inner, message, network, blocks)
 				),
 			];
 		default:
-			return parseProse(line, message, network);
+			return parseProse(line, message, network, blocks);
 	}
 }
 
-function parseProse(text: string, message?: ClientMessage, network?: ClientNetwork) {
-	return splitInlineMath(text).flatMap((piece) =>
-		typeof piece === "string"
-			? parseLine(inlineMdToIrcCodes(piece), message, network)
-			: [renderMathSpan(piece.tex)]
-	);
+function parseProse(
+	text: string,
+	message?: ClientMessage,
+	network?: ClientNetwork,
+	blocks: MdBlock[] = []
+) {
+	return text.split(/(\uE000\d+\uE001)/g).flatMap((part) => {
+		const match = part.match(/^\uE000(\d+)\uE001$/);
+		const block = match && blocks[Number(match[1])];
+
+		if (block?.kind === "inline-code") {
+			return [createElement("code", {class: "irc-monospace md-inline-code"}, block.body)];
+		}
+
+		if (block?.kind === "math") {
+			return [renderMathSpan(block.body)];
+		}
+
+		return splitInlineMath(part).flatMap((piece) =>
+			typeof piece === "string"
+				? parseLine(inlineMdToIrcCodes(piece), message, network)
+				: [renderMathSpan(piece.tex)]
+		);
+	});
 }
 
 function parseLine(text: string, message?: ClientMessage, network?: ClientNetwork) {

@@ -138,6 +138,9 @@ class HistoryMessage:
     text: str
     kind: str = "privmsg"  # privmsg | notice | system
     msgid: str = ""  # stable id for client echo dedupe
+    mercury_kind: str = ""  # rendering provenance, independent of IRC command kind
+    multiline_concat: bool = False
+    mercury_empty: bool = False
 
 
 @dataclass
@@ -468,13 +471,25 @@ class IrcDaemon:
         self, client: _Client, line: str, listener: str, password: str
     ) -> None:
         # IRCv3 message-tags: strip the @tag block before dispatch.
-        # Only +batch is honored (fork-only single-message reassembly).
+        # Fixed Mercury rendering provenance and multiline framing only.
+        from observatory.message_format import KIND_TAG, MESSAGE_KINDS
+
+        mercury_kind = ""
+        concat = False
+        empty = False
+        client.pending_batch = None
         if line.startswith("@"):
             tagstr, _, line = line[1:].partition(" ")
             for part in tagstr.split(";"):
                 k, _, v = part.partition("=")
                 if k == "batch" and v:
                     client.pending_batch = v[:64]
+                elif k == KIND_TAG and v in MESSAGE_KINDS:
+                    mercury_kind = v
+                elif k == "draft/multiline-concat":
+                    concat = True
+                elif k == "+mercury/empty" and v == "1":
+                    empty = True
             if not line:
                 return
         client.last_in = time.monotonic()
@@ -530,9 +545,11 @@ class IrcDaemon:
         elif cmd == "PART":
             await self._cmd_part(client, rest.strip())
         elif cmd == "PRIVMSG":
-            await self._cmd_msg(client, rest, kind="privmsg")
+            await self._cmd_msg(client, rest, kind="privmsg", mercury_kind=mercury_kind,
+                                concat=concat, empty=empty)
         elif cmd == "NOTICE":
-            await self._cmd_msg(client, rest, kind="notice")
+            await self._cmd_msg(client, rest, kind="notice", mercury_kind=mercury_kind,
+                                concat=concat, empty=empty)
         elif cmd == "LIST":
             await self._cmd_list(client, rest.strip())
         elif cmd == "TOPIC":
@@ -965,7 +982,8 @@ class IrcDaemon:
             return None
         return target.strip(), text
 
-    async def _cmd_msg(self, client: _Client, rest: str, kind: str) -> None:
+    async def _cmd_msg(self, client: _Client, rest: str, kind: str, mercury_kind: str = "",
+                       concat: bool = False, empty: bool = False) -> None:
         split = self._split_msg_rest(rest)
         if split is None:
             await self._numeric(client, 411, "No recipient given", "No recipient")
@@ -976,6 +994,8 @@ class IrcDaemon:
             return
         sender = client.nick
         batch, client.pending_batch = client.pending_batch, None
+        if batch and client.batch_out.get(batch) != target:
+            batch = None
         if target.startswith("#"):
             key = target.lower()
             async with self._lock:
@@ -987,7 +1007,9 @@ class IrcDaemon:
                     await self._numeric(client, 404, target, "Cannot send to channel")
                     return
                 display = self._display.get(key, target)
-            msg = HistoryMessage(time.time(), sender, display, text, kind=kind)
+            msg = HistoryMessage(time.time(), sender, display, text, kind=kind,
+                                 mercury_kind=mercury_kind, multiline_concat=concat,
+                                 mercury_empty=empty)
             await self._fanout(msg, batch=batch)
         else:
             peer = self._clients.get(target.lower())
@@ -997,7 +1019,8 @@ class IrcDaemon:
             now = time.time()
             await self._send(
                 peer,
-                self._tags(peer, ts=now, batch=batch)
+                self._tags(peer, ts=now, batch=batch, mercury_kind=mercury_kind,
+                           concat=concat, empty=empty)
                 + f":{sender}!{client.user}@{self.config.server_name} {kind.upper()} "
                 f"{peer.nick} :{text}",
             )
@@ -1015,15 +1038,17 @@ class IrcDaemon:
         msgid: str = "",
         label: str | None = None,
         batch: str | None = None,
+        mercury_kind: str = "",
+        concat: bool = False,
+        empty: bool = False,
     ) -> str:
         """IRCv3 tag prefix. The batch tag rides unconditionally
         (fork-only: every client negotiates draft/multiline).
         ts/msgid/label are accepted for call-compat but never emitted —
         no remaining client negotiates those caps."""
-        parts: list[str] = []
-        if batch:
-            parts.append(f"batch={batch}")
-        return ("@" + ";".join(parts) + " ") if parts else ""
+        from observatory.message_format import message_tags
+
+        return message_tags(mercury_kind, batch=batch or "", concat=concat, empty=empty)
 
     async def _cmd_topic(self, client: _Client, arg: str) -> None:
         if not arg:
@@ -1074,7 +1099,9 @@ class IrcDaemon:
             if peer is not None:
                 await self._send(
                     peer,
-                    self._tags(peer, ts=msg.ts, msgid=msg.msgid, batch=batch) + body,
+                    self._tags(peer, ts=msg.ts, msgid=msg.msgid, batch=batch,
+                               mercury_kind=msg.mercury_kind, concat=msg.multiline_concat,
+                               empty=msg.mercury_empty) + body,
                 )
 
     def _batch_target_ok(self, client: _Client, target: str) -> bool:

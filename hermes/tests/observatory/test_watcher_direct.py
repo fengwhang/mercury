@@ -22,7 +22,7 @@ class FakeBot:
         self.joined.append(channel)
         return True
 
-    async def say(self, channel: str, text: str) -> bool:
+    async def say(self, channel: str, text: str, *, kind: str = "status") -> bool:
         self.said.append((channel, text))
         return True
 

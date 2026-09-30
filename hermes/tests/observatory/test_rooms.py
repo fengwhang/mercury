@@ -78,6 +78,14 @@ def test_format_frame_traces_are_plaintext() -> None:
     assert reply == "hello **you**"
 
 
+def test_reply_frames_keep_complete_markdown_and_trace_frames_keep_whitespace():
+    reply = 'Before\n```bash\n  echo "$A-$B" ' + "*.txt " * 200 + '\n\n```\nAfter $x^2$.'
+    assert format_frame({"feed": "message", "role": "assistant", "text": reply}) == reply
+    trace = '\n\t**literal** "$A-$B" *.txt  \n'
+    assert format_frame({"feed": "message", "role": "tool", "text": trace}) == "🔧 " + trace
+    assert format_frame({"feed": "thought", "text": trace}) == "💭 " + trace
+
+
 def test_format_lifecycle() -> None:
     assert "started" in format_lifecycle("start", name="kid")
     assert "done" in format_lifecycle(
@@ -103,6 +111,7 @@ class FakeBot:
     def __init__(self):
         self.joined: list[str] = []
         self.said: list[tuple[str, str]] = []
+        self.kinds: list[str] = []
         self.destroyed: list[str] = []
 
     async def join_channel(self, channel: str) -> bool:
@@ -112,8 +121,9 @@ class FakeBot:
     async def part_channel(self, channel: str) -> bool:
         return True
 
-    async def say(self, channel: str, text: str) -> bool:
+    async def say(self, channel: str, text: str, *, kind: str = "status") -> bool:
         self.said.append((channel, text))
+        self.kinds.append(kind)
         return True
 
     async def destroy_channel(self, channel: str) -> bool:
@@ -156,6 +166,21 @@ def _rows():
             "extra": {},
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_frame_kind_is_carried_separately_from_visible_text():
+    bot = FakeBot()
+    mgr = RoomManager(FakeState(_rows()), bot)
+    for feed in [
+        {"feed": "tool", "tool": "bash", "args": 'echo "$A-$B" *.txt'},
+        {"feed": "message", "role": "tool", "text": "**literal** $x$"},
+        {"feed": "thought", "text": "**literal** $x$"},
+        {"feed": "message", "role": "assistant", "text": "✅ **Done** $x^2$"},
+    ]:
+        assert await mgr.publish_frame("#ace", feed)
+    assert bot.kinds == ["tool_input", "tool_output", "thinking", "assistant_reply"]
+    assert bot.said[-1][1] == "✅ **Done** $x^2$"
 
 
 def test_inbound_route() -> None:

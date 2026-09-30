@@ -547,6 +547,12 @@ class IRCAdapter(BasePlatformAdapter):
         except Exception:
             pass
         target = chat_id  # channel name or nick for DMs
+        from observatory.message_format import MESSAGE_KINDS, message_tags
+
+        kind = (metadata or {}).get("mercury_kind")
+        if kind not in MESSAGE_KINDS:
+            kind = "status" if (metadata or {}).get("_interim_send") else "assistant_reply"
+        tag_overhead = len(message_tags(kind).encode("utf-8"))
         content = self._expand_media_tags(content)
         # Per-agent identity first: rooms with a live identity speak as
         # their own nick (vm_charlie, not vm_gateway). All-or-nothing
@@ -557,16 +563,18 @@ class IRCAdapter(BasePlatformAdapter):
             if _identity.get_pool().get(target) is not None:
                 batched = False
                 if self._server_multiline:
-                    lines = self._split_message(
+                    parts = self._message_parts(
                         content, target,
-                        extra_overhead=_identity.BATCH_TAG_OVERHEAD)
+                        extra_overhead=_identity.BATCH_TAG_OVERHEAD + tag_overhead + _identity.PART_TAG_OVERHEAD)
+                    lines = [part[0] for part in parts]
                     if len(lines) > 1:
-                        batched = await _identity.send_multiline(target, lines)
+                        batched = await _identity.send_multiline(target, lines, kind=kind,
+                                                               concat=[part[1] for part in parts])
                 if not batched:
-                    lines = self._split_message(content, target)
+                    lines = self._split_message(content, target, extra_overhead=tag_overhead)
                     ok = True
                     for line in lines:
-                        ok = await _identity.send_as_identity(target, line) and ok
+                        ok = await _identity.send_as_identity(target, line, kind=kind) and ok
                     if not ok:
                         raise RuntimeError("identity send failed")
                 return SendResult(
@@ -574,7 +582,8 @@ class IRCAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("IRC: identity send failed, using main bot",
                          exc_info=True)
-        lines = self._split_message(content, target)
+        parts = self._message_parts(content, target, extra_overhead=tag_overhead)
+        lines = [part[0] for part in parts]
         batch_ref = ""
         if self._server_multiline and len(lines) > 1:
             # One logical message: BATCH frames + tagged lines for capable
@@ -583,8 +592,9 @@ class IRCAdapter(BasePlatformAdapter):
             # tagged lines still fit the wire limit.
             batch_ref = f"m{int(time.time() * 1000)}-{self._batch_seq}"
             self._batch_seq += 1
-            lines = self._split_message(
-                content, target, extra_overhead=len(f"@batch={batch_ref} "))
+            parts = self._message_parts(content, target, extra_overhead=len(
+                message_tags(kind, batch=batch_ref, concat=True, empty=True)))
+            lines = [part[0] for part in parts]
             if len(lines) == 1:
                 batch_ref = ""
         if batch_ref:
@@ -593,14 +603,15 @@ class IRCAdapter(BasePlatformAdapter):
             except Exception as e:
                 return SendResult(success=False, error=str(e))
 
-        for line in lines:
+        for line, concat in parts:
             try:
                 if batch_ref:
                     # Blank chunks ride as one space: the daemon 412s
                     # empty text, and the reassembled row keeps the gap.
-                    await self._send_raw(f"@batch={batch_ref} PRIVMSG {target} :{line or ' '}")
+                    await self._send_raw(f"{message_tags(kind, batch=batch_ref, concat=concat, empty=line == '')}"
+                                         f"PRIVMSG {target} :{line or ' '}")
                 else:
-                    await self._send_raw(f"PRIVMSG {target} :{line}")
+                    await self._send_raw(f"{message_tags(kind)}PRIVMSG {target} :{line}")
                 # No pacing sleeps: every line of an agent turn goes out
                 # back-to-back. Flood pacing against our own localhost
                 # daemon only ever delayed first paint.
@@ -781,9 +792,9 @@ class IRCAdapter(BasePlatformAdapter):
             logger.debug("IRC: part %s failed", channel, exc_info=True)
             return False
 
-    async def say(self, channel: str, text: str) -> bool:
+    async def say(self, channel: str, text: str, *, kind: str = "status") -> bool:
         """PRIVMSG into a room (BotSink naming for observatory.rooms)."""
-        result = await self.send(channel, text)
+        result = await self.send(channel, text, metadata={"mercury_kind": kind})
         return bool(getattr(result, "success", False))
 
     async def destroy_channel(self, channel: str) -> bool:
@@ -823,6 +834,10 @@ class IRCAdapter(BasePlatformAdapter):
 
     def _split_message(self, content: str, target: str,
                        extra_overhead: int = 0) -> List[str]:
+        return [part[0] for part in self._message_parts(content, target, extra_overhead)]
+
+    def _message_parts(self, content: str, target: str,
+                       extra_overhead: int = 0) -> List[tuple[str, bool]]:
         """Split a message into IRC-safe chunks, preserving line breaks.
 
         IRC has a ~512 byte line limit.  After accounting for protocol
@@ -834,21 +849,24 @@ class IRCAdapter(BasePlatformAdapter):
         untouched (the client renders it).  ``extra_overhead`` reserves
         room for a tag prefix (batch sends).
         """
-        overhead = len(f"PRIVMSG {target} :".encode("utf-8")) + 2  # +2 for \r\n
+        # Leave room for the daemon's sender prefix as well as the client
+        # command. Continuation tags let us split without changing the text.
+        overhead = len(f"PRIVMSG {target} :".encode("utf-8")) + 2 + 64
         max_bytes = 510 - overhead - extra_overhead
         user_limit = self.max_message_length
 
-        chunks: List[str] = []
+        chunks: List[tuple[str, bool]] = []
         for line in content.split("\n"):
-            para = line.rstrip()
+            para = line
+            concat = False
             if not para:
-                chunks.append("")
+                chunks.append(("", False))
                 continue
             while True:
                 para_bytes = para.encode("utf-8")
                 limit = min(user_limit, max_bytes)
                 if len(para_bytes) <= limit:
-                    chunks.append(para)
+                    chunks.append((para, concat))
                     break
                 # Binary search for a safe character boundary <= limit
                 low, high = 1, len(para)
@@ -861,18 +879,10 @@ class IRCAdapter(BasePlatformAdapter):
                     else:
                         high = mid - 1
                 split_at = best
-                # Prefer a space boundary
-                space = para.rfind(" ", 0, split_at)
-                if space > split_at // 3:
-                    split_at = space
-                chunks.append(para[:split_at].rstrip())
-                para = para[split_at:].lstrip()
-
-        while chunks and not chunks[0]:
-            chunks.pop(0)
-        while chunks and not chunks[-1]:
-            chunks.pop()
-        return chunks if chunks else [""]
+                chunks.append((para[:split_at], concat))
+                para = para[split_at:]
+                concat = True
+        return chunks
 
     @staticmethod
     def _strip_markdown(text: str) -> str:
@@ -1914,7 +1924,10 @@ def register(ctx):
         platform_hint=(
             "You are chatting via a fork of IRC called the observatory. "
             "This platform fully supports multi-line markdown with "
-            "in-line LaTeX. In channels, users may address you by your nick."
+            "in-line LaTeX. Put commands, paths and literal snippets in backtick "
+            "code spans or fenced code blocks, so shell dollars, underscores and "
+            "asterisks remain literal. Only prose outside code is formatted. "
+            "In channels, users may address you by your nick."
         ),
     )
 

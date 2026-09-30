@@ -1,7 +1,9 @@
 import _ from "lodash";
 import {MessageType, LinkPreview, UserInMessage} from "../../shared/types/msg";
+import type {MercuryMessageKind} from "../../shared/message-format";
 
 class Msg {
+	mercuryKind?: MercuryMessageKind;
 	from!: UserInMessage;
 	id!: number;
 	msgid?: string;

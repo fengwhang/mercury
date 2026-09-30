@@ -54,7 +54,7 @@ class BotSink(Protocol):
 
     async def part_channel(self, channel: str) -> bool: ...
 
-    async def say(self, channel: str, text: str) -> bool: ...
+    async def say(self, channel: str, text: str, *, kind: str = "status") -> bool: ...
 
     async def destroy_channel(self, channel: str) -> bool: ...
 
@@ -86,7 +86,7 @@ def _loop_now():
         return _gateway_loop
 
 
-def say_nowait(channel: str, text: str) -> bool:
+def say_nowait(channel: str, text: str, *, kind: str = "status") -> bool:
     """Fire-and-forget one line into a room from any thread.
 
     True when handed to the gateway loop; False when no loop or sink
@@ -104,7 +104,7 @@ def say_nowait(channel: str, text: str) -> bool:
             return False
         import asyncio as _asyncio
 
-        _asyncio.run_coroutine_threadsafe(bot.say(channel, text), loop)
+        _asyncio.run_coroutine_threadsafe(bot.say(channel, text, kind=kind), loop)
         return True
     except Exception:
         return False
@@ -252,20 +252,19 @@ def _truncate(text: str, limit: int = FRAME_TEXT_LIMIT) -> str:
 
 
 def format_frame(feed: dict[str, Any] | Any) -> str | None:
-    """One OmpFeed/datagram frame dict → one IRC line; None to skip.
+    """One OmpFeed/datagram frame dict → one logical IRC message; None to skip.
 
     Shapes (see gateway_session._feed_event_to_dict): ``feed`` ∈
     {message, node, tool, thought} with ``text`` / ``tool`` / ``status``
     keys; ``subagent_id == ""`` is the child's own main session, a
     non-empty id tags a grandchild frame with ``[id]``.
 
-    Trace plaintext law: every non-reply line carries a leading trace
-    glyph so the Lounge fork renders it plaintext (markdown bypass).
+    Trace glyphs are readable labels; publish_frame carries explicit
+    rendering provenance separately so punctuation never selects a format.
     Tool calls AND tool-role message frames (command outputs) are
     traces; assistant/user message frames are the reply stream and stay
-    unmarked (markdown). No backticks/escapes anywhere here — the fork
-    no longer markdown-parses these lines, so code-span shielding would
-    print literally.
+    unmarked (markdown). Trace labels do not add backticks or escapes:
+    the fork renders the entire trace literally, preserving its source.
     """
     if not isinstance(feed, dict):
         return None
@@ -273,20 +272,28 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
     sub = str(feed.get("subagent_id") or "")
     tag = f"[{sub}] " if sub else ""
     if kind == "message":
-        text = _truncate(feed.get("text") or "", FRAME_TEXT_LIMIT * 2)
-        if not text:
+        text = str(feed.get("text") or "")
+        if not text.strip():
             return None
         if str(feed.get("role") or "") in ("tool", "function"):
+            if len(text) > FRAME_TEXT_LIMIT * 2:
+                text = text[:FRAME_TEXT_LIMIT * 2 - 1] + "…"
             return f"{TOOL_PREFIX} {tag}{text}"
+        # Replies must retain complete fences, math delimiters and line breaks.
+        # The transport byte-wraps them losslessly into a multiline batch.
         return f"{tag}{text}"
     if kind == "tool":
         tool = str(feed.get("tool") or "tool")
-        args = _truncate(feed.get("args") or feed.get("text") or "")
-        body = f"{tool} {args}".strip()
+        args = str(feed.get("args") or feed.get("text") or "")
+        if len(args) > FRAME_TEXT_LIMIT:
+            args = args[:FRAME_TEXT_LIMIT - 1] + "…"
+        body = f"{tool} {args}" if args else tool
         return f"{TOOL_PREFIX} {tag}{body}"
     if kind == "thought":
-        text = _truncate(feed.get("text") or "")
-        return f"{THINK_PREFIX} {tag}{text}" if text else None
+        text = str(feed.get("text") or "")
+        if len(text) > FRAME_TEXT_LIMIT:
+            text = text[:FRAME_TEXT_LIMIT - 1] + "…"
+        return f"{THINK_PREFIX} {tag}{text}" if text.strip() else None
     if kind == "node":
         status = str(feed.get("status") or "")
         label = str(feed.get("label") or feed.get("name") or "")
@@ -410,18 +417,18 @@ class RoomManager:
             return False
         if ok and greet:
             try:
-                await bot.say(channel, greet)
+                await bot.say(channel, greet, kind="status")
             except Exception:
                 logger.debug("rooms: greet %s failed", channel, exc_info=True)
         return ok
 
-    async def publish(self, channel: str, text: str) -> bool:
+    async def publish(self, channel: str, text: str, *, kind: str = "status") -> bool:
         """One (possibly multi-line) message into ``channel``."""
         bot = self.bot
         if bot is None or not text:
             return False
         try:
-            return bool(await bot.say(channel, text))
+            return bool(await bot.say(channel, text, kind=kind))
         except Exception:
             logger.debug("rooms: publish to %s failed", channel, exc_info=True)
             return False
@@ -430,7 +437,9 @@ class RoomManager:
         line = format_frame(feed)
         if not line:
             return False
-        return await self.publish(channel, line)
+        from observatory.message_format import frame_kind
+
+        return await self.publish(channel, line, kind=frame_kind(feed))
 
     async def publish_lifecycle(
         self, channel: str, lifecycle: str, **kwargs: Any
@@ -600,6 +609,7 @@ class RoomManager:
                 await self.publish(
                     parent_channel,
                     f"subagent '{row.get('name') or node_id}' finished: {summary}",
+                    kind="assistant_reply",
                 )
             except Exception:
                 pass
@@ -793,7 +803,7 @@ class RoomManager:
                 except Exception:
                     pass
                 await self.publish_frame(channel, frame)
-            await self.publish(channel, summary or "(no output)")
+            await self.publish(channel, summary or "(no output)", kind="assistant_reply")
         except Exception as exc:
             logger.debug("rooms: omp reply failed", exc_info=True)
             try:

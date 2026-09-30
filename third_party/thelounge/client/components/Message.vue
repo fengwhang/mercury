@@ -40,7 +40,11 @@
 					:network="network"
 					:channel="channel"
 					dir="auto"
-				/>&#32;<ParsedMessage :message="message" />
+				/>&#32;<MessageBody
+					:network="network"
+					:message="message"
+					:keep-scroll-position="keepScrollPosition"
+				/>
 				<LinkPreview
 					v-for="preview in message.previews"
 					:key="preview.link"
@@ -80,7 +84,11 @@
 					><span></span
 				></span>
 				<StatusmsgMarker :group="message.statusmsgGroup" />
-				<ParsedMessage :network="network" :message="message" />
+				<MessageBody
+					:network="network"
+					:message="message"
+					:keep-scroll-position="keepScrollPosition"
+				/>
 				<LinkPreview
 					v-for="preview in message.previews"
 					:key="preview.link"
@@ -102,6 +110,7 @@ import localetime from "../js/helpers/localetime";
 import Username from "./Username.vue";
 import LinkPreview from "./LinkPreview.vue";
 import ParsedMessage from "./ParsedMessage.vue";
+import MessageBody from "./MessageBody.vue";
 import MessageTypes from "./MessageTypes";
 import StatusmsgMarker from "./StatusmsgMarker.vue";
 
@@ -117,6 +126,7 @@ export default defineComponent({
 	components: {
 		...MessageTypes,
 		StatusmsgMarker,
+		MessageBody,
 	},
 	props: {
 		message: {type: Object as PropType<ClientMessage>, required: true},

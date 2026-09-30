@@ -707,7 +707,9 @@ def _non_conversational_metadata(
     *,
     platform: Any = None,
 ) -> Optional[Dict[str, Any]]:
-    """Mark Discord lifecycle/status sends without changing other platforms."""
+    """Mark lifecycle/status sends on platforms with typed rendering."""
+    if _gateway_platform_value(platform) == "irc":
+        return {**(metadata or {}), "mercury_kind": "status"}
     if _gateway_platform_value(platform) != "discord":
         return metadata
     merged = dict(metadata or {})

@@ -36,7 +36,7 @@ class FakeBot:
     async def part_channel(self, channel: str) -> bool:
         return True
 
-    async def say(self, channel: str, text: str) -> bool:
+    async def say(self, channel: str, text: str, *, kind: str = "status") -> bool:
         self.said.append((channel, text))
         return True
 

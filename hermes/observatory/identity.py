@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # tag overhead before splitting, so the ref length must be constant.
 # 7 ("@batch=") + 21 (ref) + 1 (space) = 29.
 BATCH_TAG_OVERHEAD = 29
+PART_TAG_OVERHEAD = len(";draft/multiline-concat;+mercury/empty=1")
 
 _batch_seq = itertools.count()
 SEND_TIMEOUT = 10.0
@@ -151,24 +152,30 @@ class IdentityConn:
                     self._reader, self._writer = None, None
             return False
 
-    async def send(self, text: str) -> bool:
+    async def send(self, text: str, *, kind: str = "status") -> bool:
         """Send one message, connecting (or reconnecting) as needed."""
-        return await self._write_lines([f"PRIVMSG {self.channel} :{text}"])
+        from observatory.message_format import message_tags
 
-    async def send_batch(self, lines: list[str]) -> bool:
+        return await self._write_lines([f"{message_tags(kind)}PRIVMSG {self.channel} :{text}"])
+
+    async def send_batch(self, lines: list[str], *, kind: str = "status",
+                         concat: list[bool] | None = None) -> bool:
         """Send lines as one draft/multiline batch: open, tagged lines,
         close. The daemon relays to capable peers (membership-gated, no
         sender caps needed); legacy peers get the bare packed lines."""
         if not lines:
             return True
         if len(lines) == 1:
-            return await self.send(lines[0])
+            return await self.send(lines[0], kind=kind)
         ref = f"i{int(time.time() * 1000):013d}-{next(_batch_seq) % 1000000:06d}"
         # Blank chunks ride as one space: the daemon 412s empty text,
         # and the reassembled row keeps the paragraph gap.
+        from observatory.message_format import message_tags
+
         return await self._write_lines(
             [f"BATCH +{ref} draft/multiline {self.channel}"] +
-            [f"@batch={ref} PRIVMSG {self.channel} :{ln or ' '}" for ln in lines] +
+            [f"{message_tags(kind, batch=ref, concat=bool(concat and concat[i]), empty=ln == '')}"
+             f"PRIVMSG {self.channel} :{ln or ' '}" for i, ln in enumerate(lines)] +
             [f"BATCH -{ref}"])
 
     async def close(self) -> None:
@@ -277,20 +284,21 @@ async def ensure_identity(nick: str, channel: str) -> bool:
     return ok
 
 
-async def send_as_identity(channel: str, text: str) -> bool:
+async def send_as_identity(channel: str, text: str, *, kind: str = "assistant_reply") -> bool:
     """Send via the room's identity; False when none exists (caller falls
     back to the main bot). Never raises."""
     try:
         conn = get_pool().get(channel)
         if conn is None:
             return False
-        return await conn.send(text)
+        return await conn.send(text, kind=kind)
     except Exception:
         logger.debug("identity: send_as failed for %s", channel, exc_info=True)
         return False
 
 
-async def send_multiline(channel: str, lines: list[str]) -> bool:
+async def send_multiline(channel: str, lines: list[str], *, kind: str = "assistant_reply",
+                         concat: list[bool] | None = None) -> bool:
     """Send lines as one draft/multiline batch via the room's identity;
     False when none exists (caller falls back to the main bot, which
     batches the same way). Never raises."""
@@ -298,7 +306,7 @@ async def send_multiline(channel: str, lines: list[str]) -> bool:
         conn = get_pool().get(channel)
         if conn is None:
             return False
-        ok = await conn.send_batch(lines)
+        ok = await conn.send_batch(lines, kind=kind, concat=concat)
         logger.debug("identity: batch %d lines -> %s (%s)",
                      len(lines), channel, "ok" if ok else "FAIL")
         return ok

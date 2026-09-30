@@ -7,10 +7,17 @@ import User from "../../models/user";
 import {MessageType} from "../../../shared/types/msg";
 import {ChanType} from "../../../shared/types/chan";
 import {MessageEventArgs} from "irc-framework";
+import {
+	mercuryKindTag,
+	mercuryMessageKind,
+	MercuryMessageKind,
+} from "../../../shared/message-format";
 
 const nickRegExp = /(?:\x03[0-9]{1,2}(?:,[0-9]{1,2})?)?([\w[\]\\`^{|}-]+)/g;
 
 type HandleInput = {
+	mercuryKind?: MercuryMessageKind;
+	multilineConcat?: boolean;
 	nick: string;
 	hostname: string;
 	ident: string;
@@ -25,8 +32,23 @@ type HandleInput = {
 };
 
 function convertForHandle(type: MessageType, data: MessageEventArgs): HandleInput {
-	return {...data, type: type, msgid: data.tags?.msgid};
+	const batch = (data as MessageEventArgs & {batch?: {id: string; type: string}}).batch;
+	return {
+		...data,
+		message:
+			data.tags?.["+mercury/empty"] === "1" && batch?.type === "draft/multiline"
+				? ""
+				: data.message,
+		multilineConcat: Object.prototype.hasOwnProperty.call(
+			data.tags ?? {},
+			"draft/multiline-concat"
+		),
+		type: type,
+		msgid: data.tags?.msgid,
+		mercuryKind: mercuryMessageKind(data.tags?.[mercuryKindTag]),
+	};
 }
+
 export default <IrcEventHandler>function (irc, network) {
 	const client = this;
 
@@ -38,17 +60,23 @@ export default <IrcEventHandler>function (irc, network) {
 
 	function flushBatch(batchId: string) {
 		const timer = batchTimers.get(batchId);
+
 		if (timer !== undefined) {
 			clearTimeout(timer);
 			batchTimers.delete(batchId);
 		}
+
 		const buffered = pendingBatches.get(batchId);
 		pendingBatches.delete(batchId);
+
 		if (!buffered || buffered.length === 0) {
 			return;
 		}
+
 		const first = buffered[0] as HandleInput & {batch?: unknown};
-		const joined = buffered.map((part) => part.message).join("\n");
+		const joined = buffered
+			.map((part, i) => (i === 0 || part.multilineConcat ? "" : "\n") + part.message)
+			.join("");
 		delete first.batch;
 		handleMessage({...first, message: joined});
 	}
@@ -77,11 +105,11 @@ export default <IrcEventHandler>function (irc, network) {
 		// Mercury: hold draft/multiline lines until the batch closes;
 		// the flush re-enters here with the joined text. Filtering
 		// (ignore lists, routing) applies once to the whole message.
-		const batchRef = (
-			data as HandleInput & {batch?: {id: string; type: string}}
-		).batch;
+		const batchRef = (data as HandleInput & {batch?: {id: string; type: string}}).batch;
+
 		if (batchRef && batchRef.type === "draft/multiline") {
 			let buffered = pendingBatches.get(batchRef.id);
+
 			if (!buffered) {
 				buffered = [];
 				pendingBatches.set(batchRef.id, buffered);
@@ -89,16 +117,20 @@ export default <IrcEventHandler>function (irc, network) {
 					batchRef.id,
 					setTimeout(() => flushBatch(batchRef.id), 5000)
 				);
+
 				if (pendingBatches.size > 32) {
 					const oldest = pendingBatches.keys().next();
+
 					if (!oldest.done) {
 						flushBatch(oldest.value);
 					}
 				}
 			}
+
 			buffered.push(data);
 			return;
 		}
+
 		let chan: Chan | undefined;
 		let from: User;
 		let highlight = false;
@@ -179,6 +211,7 @@ export default <IrcEventHandler>function (irc, network) {
 			highlight: highlight,
 			users: [],
 			msgid: data.msgid,
+			mercuryKind: data.mercuryKind,
 		});
 
 		if (showInActive) {

@@ -20,7 +20,7 @@ first tries the gateway slash dispatch (the same table
 unknown verbs.
 
 The gateway-session agent is built with ``platform="irc"`` so the
-system prompt picks the plain-text hint.
+system prompt picks the Lounge Markdown/LaTeX hint.
 """
 
 from __future__ import annotations
@@ -32,6 +32,8 @@ import os
 import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from observatory.message_format import frame_kind
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +301,7 @@ def _push_progress(node_id: str, seq: int, event: dict[str, Any], *, internal: b
         if channel:
             line = format_frame(feed)
             if line:
-                say_nowait(channel, line)
+                say_nowait(channel, line, kind=frame_kind(feed))
     except Exception:
         pass
 def gateway_approval_notify(node_id: str):
@@ -505,7 +507,7 @@ def replay_child_turn_frames(child_id: str, frames: Any) -> int:
                         continue
                     line = format_frame(wanted[i])
                     if line:
-                        say_nowait(channel, line)
+                        say_nowait(channel, line, kind=frame_kind(wanted[i]))
                 except Exception:
                     continue
             return len(surplus)
@@ -550,7 +552,7 @@ def _publish_live_payload(
             return
         line = format_frame(payload)
         if line:
-            say_nowait(channel, line)
+            say_nowait(channel, line, kind=frame_kind(payload))
     except Exception:
         pass
 
@@ -586,7 +588,7 @@ def _route_grandchild_frame(
                     flat["subagent_id"] = ""
                     line = format_frame(flat)
                     if line:
-                        say_nowait(channel, line)
+                        say_nowait(channel, line, kind=frame_kind(flat))
             else:
                 node_id = f"{owner_id}/sub-{sid}"
                 try:
@@ -598,7 +600,7 @@ def _route_grandchild_frame(
                     flat["subagent_id"] = ""
                     line = format_frame(flat)
                     if line:
-                        say_nowait(row_channel, line)
+                        say_nowait(row_channel, line, kind=frame_kind(flat))
                 cache.pop(sid, None)
                 _hop(manager._retire_child_room(node_id))
             return
@@ -627,7 +629,7 @@ def _route_grandchild_frame(
             flat["subagent_id"] = ""
             line = format_frame(flat)
             if line:
-                say_nowait(channel, line)
+                say_nowait(channel, line, kind=frame_kind(flat))
     except Exception:
         pass
 

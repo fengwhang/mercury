@@ -129,6 +129,16 @@ describe("SQLite unit tests", function () {
 		store._enable(":memory:");
 	});
 
+	it("restores the original rendering kind and literal source after history reload", () => {
+		const net = {uuid: "testnet"} as any;
+		const chan = {name: "#channel"} as any;
+		const text = '  echo "$A-$B" *.txt\n\n**literal**  ';
+		store.index(net, chan, new Msg({text, mercuryKind: "tool_output"}));
+		const saved = store.getMessages(net, chan, () => 1);
+		expect(saved[0].text).toBe(text);
+		expect(saved[0].mercuryKind).toBe("tool_output");
+	});
+
 	afterEach(function () {
 		store.close();
 	});

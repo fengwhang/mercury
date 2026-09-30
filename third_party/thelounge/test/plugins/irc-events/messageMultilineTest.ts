@@ -1,6 +1,7 @@
 import {expect, describe, it, vi} from "vitest";
 
 import handler from "../../../server/plugins/irc-events/message";
+import {Client as IrcClient} from "irc-framework";
 
 // Mercury: draft/multiline batches must surface as ONE message with the
 // lines joined — the single-visual-message contract. Untagged traffic
@@ -22,6 +23,7 @@ interface FakeLine {
 
 interface FakePushed {
 	text: string;
+	mercuryKind?: string;
 }
 
 interface FakeChan {
@@ -31,10 +33,10 @@ interface FakeChan {
 	pushMessage: (client: unknown, msg: FakePushed) => void;
 }
 
-function drive() {
+function drive(realClient?: IrcClient) {
 	const listeners = new Map<string, Array<(data: FakeLine) => void>>();
 	const irc = {
-		on: (event: string, fn: (data: FakeLine) => void) => {
+		on(event: string, fn: (data: FakeLine) => void) {
 			const existing = listeners.get(event) ?? [];
 			existing.push(fn);
 			listeners.set(event, existing);
@@ -46,7 +48,7 @@ function drive() {
 		type: "channel",
 		getUser: (nick: string) => ({nick}),
 		findUser: (_nick: string) => undefined,
-		pushMessage: (_client: unknown, msg: FakePushed) => {
+		pushMessage(_client: unknown, msg: FakePushed) {
 			pushed.push(msg);
 		},
 	};
@@ -56,12 +58,14 @@ function drive() {
 		getLobby: () => chan,
 		isIgnoredUser: () => false,
 	};
-	handler.call({}, irc, network);
+	handler.call({}, realClient ?? irc, network);
+
 	const emit = (event: string, data: FakeLine | {id: string}) => {
 		for (const fn of listeners.get(event) ?? []) {
 			fn(data as FakeLine);
 		}
 	};
+
 	return {emit, pushed};
 }
 
@@ -78,6 +82,50 @@ function line(nick: string, text: string, batch?: BatchRef): FakeLine {
 }
 
 describe("Mercury multiline inbound reassembly", () => {
+	it("retains kind and continuation tags through the real IRC parser", async () => {
+		const client = new IrcClient();
+		const {pushed} = drive(client);
+
+		for (const wire of [
+			"BATCH +real draft/multiline #test",
+			'@batch=real;+mercury/kind=assistant_reply :agent!u@h PRIVMSG #test :echo "$A-',
+			'@batch=real;+mercury/kind=assistant_reply;draft/multiline-concat :agent!u@h PRIVMSG #test :$B" *.txt',
+			"@batch=real;+mercury/kind=assistant_reply;+mercury/empty=1 :agent!u@h PRIVMSG #test : ",
+			"BATCH -real",
+		]) {
+			(client as any).connection.addReadBuffer(wire);
+		}
+
+		await vi.waitFor(() => expect(pushed).toHaveLength(1));
+		expect(pushed[0].text).toBe('echo "$A-$B" *.txt\n');
+		expect(pushed[0].mercuryKind).toBe("assistant_reply");
+	});
+	it("preserves rendering provenance, blank lines and byte-wrapped continuations", () => {
+		const {emit, pushed} = drive();
+		const ref: BatchRef = {id: "code", type: "draft/multiline"};
+
+		for (const [text, tags] of [
+			['  echo "$A-', {"+mercury/kind": "assistant_reply"}],
+			['$B" *.txt  ', {"+mercury/kind": "assistant_reply", "draft/multiline-concat": ""}],
+			[" ", {"+mercury/kind": "assistant_reply", "+mercury/empty": "1"}],
+			["next", {"+mercury/kind": "assistant_reply"}],
+		] as Array<[string, Record<string, string>]>) {
+			emit("privmsg", {...line("agent", text, ref), tags});
+		}
+
+		emit("batch end draft/multiline", {id: "code"});
+		expect(pushed).toHaveLength(1);
+		expect(pushed[0].text).toBe('  echo "$A-$B" *.txt  \n\nnext');
+		expect(pushed[0].mercuryKind).toBe("assistant_reply");
+	});
+
+	it("keeps unprefixed trace kinds and ignores unknown rendering kinds", () => {
+		const {emit, pushed} = drive();
+		emit("privmsg", {...line("agent", "echo $A-$B"), tags: {"+mercury/kind": "tool_input"}});
+		emit("privmsg", {...line("agent", "hello"), tags: {"+mercury/kind": "unknown"}});
+		expect(pushed[0].mercuryKind).toBe("tool_input");
+		expect(pushed[1].mercuryKind).toBeUndefined();
+	});
 	it("joins one batch into a single message", () => {
 		const {emit, pushed} = drive();
 		const ref: BatchRef = {id: "r1", type: "draft/multiline"};

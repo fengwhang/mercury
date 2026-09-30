@@ -148,7 +148,7 @@ async def _delayed_face(room: str) -> None:
         bot = get_bot_sink()
         if bot is None:
             return
-        await bot.send(room, face)
+        await bot.send(room, face, metadata={"mercury_kind": "thinking"})
     except Exception as exc:
         logger.debug("thinking face for %s failed: %s", room, exc)
     finally:

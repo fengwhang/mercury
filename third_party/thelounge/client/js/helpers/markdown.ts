@@ -14,6 +14,7 @@
 import {h as createElement, VNode} from "vue";
 import katex from "katex";
 import hljs from "highlight.js/lib/common";
+import CopyButton from "../../components/CopyButton.vue";
 
 // IRC control codes understood by parseStyle (ircmessageparser/parseStyle).
 const BOLD = "\u0002";
@@ -29,7 +30,7 @@ const PH_CLOSE = "\uE001";
 const ESC = "\uE002";
 
 export type MdBlock = {
-	kind: "code" | "math";
+	kind: "code" | "math" | "inline-code";
 	lang: string;
 	body: string;
 };
@@ -46,24 +47,101 @@ export function lookupBlock(line: string, blocks: MdBlock[]): MdBlock | null {
 	return blocks[Number(m[1])] || null;
 }
 
-// Carve fenced code blocks and display-math out of the message. Fences win
-// over math (code may contain $$); inline code spans are handled per line
-// later, after math is split, so `$` inside backticks never becomes TeX.
+function isEscaped(text: string, index: number): boolean {
+	let slashes = 0;
+
+	while (index > 0 && text[--index] === "\\") {
+		slashes++;
+	}
+
+	return slashes % 2 === 1;
+}
+
+// Matching backtick runs protect the entire literal before any math or
+// emphasis parser sees it. Longer runs allow backticks inside commands.
+export function splitInlineCode(text: string): Array<string | {code: string}> {
+	const pieces: Array<string | {code: string}> = [];
+	const runs = Array.from(text.matchAll(/`+/g));
+	let last = 0;
+
+	for (let i = 0; i < runs.length; i++) {
+		const open = runs[i];
+
+		if (isEscaped(text, open.index!)) {
+			continue;
+		}
+
+		let close = i + 1;
+
+		while (close < runs.length && runs[close][0].length !== open[0].length) {
+			close++;
+		}
+
+		if (close === runs.length) {
+			continue;
+		}
+
+		if (open.index! > last) {
+			pieces.push(text.slice(last, open.index));
+		}
+
+		pieces.push({code: text.slice(open.index! + open[0].length, runs[close].index)});
+		last = runs[close].index! + runs[close][0].length;
+		i = close;
+	}
+
+	if (last < text.length) {
+		pieces.push(text.slice(last));
+	}
+
+	return pieces;
+}
+
+// Fenced blocks, then inline code, then display math. Literal code is never
+// passed through the math, emphasis, IRC style, link or emoji parsers.
 export function extractBlocks(text: string): {text: string; blocks: MdBlock[]} {
 	const blocks: MdBlock[] = [];
+	const lines = text.split("\n");
+	const carved: string[] = [];
 
-	// Opening fence at line start; closes at a lone ``` or end of message
-	// (unclosed fence = code to the end, like Jupyter).
+	for (let i = 0; i < lines.length; i++) {
+		const open = lines[i].match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+
+		if (!open || (open[1][0] === "`" && open[2].includes("`"))) {
+			carved.push(lines[i]);
+			continue;
+		}
+
+		const end = new RegExp(`^ {0,3}${open[1][0]}{${open[1].length},}[ \\t]*$`);
+		let close = i + 1;
+
+		while (close < lines.length && !end.test(lines[close])) {
+			close++;
+		}
+
+		carved.push(
+			placeholder(
+				blocks.push({
+					kind: "code",
+					lang: open[2].trim().split(/\s+/)[0],
+					body: lines.slice(i + 1, close).join("\n"),
+				}) - 1
+			)
+		);
+		i = close;
+	}
+
+	text = splitInlineCode(carved.join("\n"))
+		.map((piece) =>
+			typeof piece === "string"
+				? piece
+				: placeholder(blocks.push({kind: "inline-code", lang: "", body: piece.code}) - 1)
+		)
+		.join("");
 	text = text.replace(
-		/(^|\n)```([^\n` ]*)[ \t]*\n([\s\S]*?)(?:\n```[ \t]*(?=\n|$)|$)/g,
-		(match, nl: string, lang: string, body: string) =>
-			`${nl === "\n" ? "\n" : ""}${placeholder(
-				blocks.push({kind: "code", lang, body: body.replace(/\n$/, "")}) - 1
-			)}\n`
-	);
-
-	text = text.replace(/\$\$([\s\S]+?)\$\$/g, (match, body: string) =>
-		placeholder(blocks.push({kind: "math", lang: "", body}) - 1)
+		/(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|\\\[([\s\S]+?)\\\]/g,
+		(_match, dollar: string, bracket: string) =>
+			placeholder(blocks.push({kind: "math", lang: "", body: dollar ?? bracket}) - 1)
 	);
 
 	return {text, blocks};
@@ -82,7 +160,7 @@ export type BlockDesc =
 export function detectBlock(line: string, blocks: MdBlock[]): BlockDesc {
 	const block = lookupBlock(line, blocks);
 
-	if (block) {
+	if (block && block.kind !== "inline-code") {
 		return {type: block.kind, block};
 	}
 
@@ -122,7 +200,7 @@ export function detectBlock(line: string, blocks: MdBlock[]): BlockDesc {
 // never opens. Returns alternating text/TeX pieces.
 export function splitInlineMath(line: string): Array<string | {tex: string}> {
 	const pieces: Array<string | {tex: string}> = [];
-	const re = /(?<!\\)\$(?!\s)([^$\n]+?)(?<!\s)\$/g;
+	const re = /\\\(([^\n]+?)\\\)|(?<!\\)\$(?!\s)([^$\n]+?)(?<!\s)\$/g;
 	let last = 0;
 	let m: RegExpExecArray | null;
 
@@ -131,7 +209,7 @@ export function splitInlineMath(line: string): Array<string | {tex: string}> {
 			pieces.push(line.slice(last, m.index));
 		}
 
-		pieces.push({tex: m[1]});
+		pieces.push({tex: m[1] ?? m[2]});
 		last = m.index + m[0].length;
 	}
 
@@ -186,7 +264,7 @@ function escapeHtml(s: string): string {
 // glyph) keep full markdown. Exported: stable cross-layer contract and the
 // unit-test seam for the trace set.
 export function isTraceLine(line: string): boolean {
-	return /^[🔧💭ℹ️🚀✅🌀👁️🧠]/u.test(line);
+	return ["🔧", "💭", "ℹ", "🚀", "✅", "🌀", "👁", "🧠"].some((prefix) => line.startsWith(prefix));
 }
 
 export function renderCodeBlock(block: MdBlock): VNode {
@@ -197,6 +275,7 @@ export function renderCodeBlock(block: MdBlock): VNode {
 			: escapeHtml(block.body);
 
 	return createElement("pre", {class: "md-code"}, [
+		createElement(CopyButton, {text: block.body, label: "Copy code"}),
 		createElement("code", {
 			class: lang ? `language-${lang}` : "",
 			innerHTML: html,
