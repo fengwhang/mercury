@@ -41,6 +41,18 @@ async def test_eof_cannot_report_success_without_reconnect(monkeypatch):
     assert not writer.writes
 
 
+@pytest.mark.asyncio
+async def test_gateway_identity_reuses_dispatch_connection(monkeypatch):
+    from types import SimpleNamespace
+    from observatory import identity, rooms
+
+    pool = identity.IdentityPool()
+    monkeypatch.setattr(identity, "_pool", pool)
+    monkeypatch.setattr(rooms, "_current_sink", SimpleNamespace(nickname="vm_gateway"))
+    assert await identity.ensure_identity("VM_GATEWAY", "#vm_gateway")
+    assert pool.get("#vm_gateway") is None
+
+
 async def eventually(predicate):
     async with asyncio.timeout(2):
         while not predicate():

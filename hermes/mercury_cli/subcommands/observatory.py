@@ -127,6 +127,9 @@ def _cmd_restart(args) -> int:
     it), so "restart" always means "restart onto the code now on disk".
     When the bot does not come back, the full diagnosis prints here.
     """
+    import time
+
+    args._observatory_restart_epoch = time.time()
     try:
         from observatory.provision import ensure_observatory_unit
 
@@ -163,7 +166,7 @@ def _cmd_restart(args) -> int:
         ok, detail = _verify_gateway_bot(tries=6, wait=10, stable_samples=3)
     except Exception as exc:
         print(f"bot check unavailable: {exc}", file=sys.stderr)
-        return 0
+        return 1
     if not ok:
         print(f"bot: {detail}", file=sys.stderr)
         _print_doctor()
@@ -173,19 +176,20 @@ def _cmd_restart(args) -> int:
 
 
 def _verify_fleet(args) -> int:
-    """Prove every live agent respawned: fresh resync marker + per-room probe.
+    """Check resync results, room presence, and gateway dispatch transport.
 
     A gateway restart alone is not a fleet respawn — spawned agents only
     come back via boot resync (channel JOINs, identity reconnects, omp
     child rebuilds). This waits for a resync newer than the restart,
     then JOINs every live room with a probe client and checks the
-    agent's nick is present. Per-agent ok/FAIL lines; nonzero exit on
-    any failure so callers (and users) never assume a healthy fleet.
+    agent's nick is present. A private transport challenge also proves the
+    gateway nick belongs to a receiver, not a send-only clone. This is NOT
+    provider health; no model turn is run. Nonzero on any failed check.
     """
     import json as _json
     import time as _time
 
-    start = _time.time()
+    start = getattr(args, "_observatory_restart_epoch", None) or _time.time()
     home = getattr(args, "home", None)
     state = _open_state(home)
     if state is None:
@@ -231,7 +235,7 @@ def _verify_fleet(args) -> int:
     except Exception as exc:
         print(f"fleet: cannot read ircd config ({exc})", file=sys.stderr)
         return 1
-    failures = 0
+    failures = len((marker or {}).get("failed") or [])
     probe = _Probe(host, port, f"mercury-fleet-{os.getpid() % 10000}", secret)
     try:
         if not probe.connect():
@@ -243,7 +247,8 @@ def _verify_fleet(args) -> int:
             nick = str((row or {}).get("mxid") or "")
             name = str((row or {}).get("name") or (row or {}).get("node_id"))
             if not channel or not nick:
-                print(f"fleet: SKIP {name} (no channel/nick recorded)")
+                print(f"fleet: FAIL {name} (no channel/nick recorded)")
+                failures += 1
                 continue
             try:
                 members = probe.names(channel)
@@ -255,20 +260,30 @@ def _verify_fleet(args) -> int:
                 print(f"fleet: FAIL {name} ({channel}): could not JOIN")
                 failures += 1
             elif nick.lower() in {str(m).lower() for m in members}:
-                print(f"fleet: ok {name} ({channel}) — {nick} present")
+                print(f"fleet: presence ok {name} ({channel}) — {nick} present")
             else:
                 print(f"fleet: FAIL {name} ({channel}): {nick} NOT present "
                       f"(members: {', '.join(members) or 'none'})")
                 failures += 1
+        gateway_nick = next((str(row.get("mxid") or "") for row in live
+                             if row.get("node_id") == "gw"
+                             or (row.get("extra") or {}).get("kind") == "gateway"), "")
+        if gateway_nick and probe.gateway_roundtrip(gateway_nick):
+            print("fleet: gateway dispatch transport round-trip ok (provider not tested)")
+        else:
+            print("fleet: FAIL — gateway nick does not answer dispatch probe; "
+                  "presence alone is not a working agent", file=sys.stderr)
+            failures += 1
     finally:
         try:
             probe.close()
         except Exception:
             pass
     if failures:
-        print(f"fleet: {failures} agent(s) did not respawn", file=sys.stderr)
+        print(f"fleet: {failures} check(s) failed", file=sys.stderr)
         return 1
-    print(f"fleet: all {len(live)} live agent(s) present")
+    print(f"fleet: all {len(live)} live agent(s) present; gateway transport verified "
+          "(provider replies not tested)")
     return 0
 
 

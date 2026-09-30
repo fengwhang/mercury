@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import types
 
+import pytest
+
 from mercury_cli.subcommands import observatory as obs_mod
 
 
@@ -21,7 +23,8 @@ def test_restart_wired_in_parser() -> None:
     assert args.func is obs_mod.cmd_observatory
 
 
-def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("duplex, resync_failures", [(True, []), (False, []), (True, ["omp startup failed"])])
+def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys, duplex, resync_failures) -> None:
     import json as _json
     import time as _time
 
@@ -56,7 +59,7 @@ def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys) 
         def get_meta(self, key):
             assert key == "last-resync"
             return _json.dumps({"epoch": _time.time(), "joined": ["#vm_gateway"],
-                                "resumed": [], "failed": []})
+                                "resumed": [], "failed": resync_failures})
 
     monkeypatch.setattr(obs_mod, "_open_state", lambda home: _FakeState())
 
@@ -71,6 +74,10 @@ def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys) 
             assert channel == "#vm_gateway"
             return ["owner", "vm_gateway"]
 
+        def gateway_roundtrip(self, nick):
+            assert nick == "vm_gateway"
+            return duplex
+
         def close(self):
             pass
 
@@ -84,13 +91,21 @@ def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys) 
         lambda home=None: {"server": "pw"},
     )
     rc = obs_mod.cmd_observatory(_args())
-    assert rc == 0
+    assert rc == (0 if duplex and not resync_failures else 1)
     assert calls == ["unit", "lounge", "gateway"]  # unit re-render BEFORE anything else
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
     assert "daemon: restarted onto current code" in out
     assert "lounge: current" in out
     assert "bot: nick present" in out
-    assert "fleet: all 1 live agent(s) present" in out
+    if duplex and not resync_failures:
+        assert "fleet: all 1 live agent(s) present" in out
+        assert "gateway transport verified" in out
+        assert "provider replies not tested" in out
+    else:
+        assert "fleet: all 1 live agent(s) present" not in out
+    if not duplex:
+        assert "presence alone is not a working agent" in captured.err
 
 
 def test_restart_fails_when_fleet_never_resyncs(monkeypatch, capsys) -> None:
@@ -187,5 +202,6 @@ def test_restart_skips_lounge_when_unmanaged(monkeypatch, capsys) -> None:
         "mercury_cli.setup._verify_gateway_bot",
         lambda **kw: (True, "nick present"),
     )
+    monkeypatch.setattr(obs_mod, "_verify_fleet", lambda args: 0)
     assert obs_mod.cmd_observatory(_args()) == 0
     assert "lounge: not installed, skipping" in capsys.readouterr().out

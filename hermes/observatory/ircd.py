@@ -614,7 +614,13 @@ class IrcDaemon:
             return
         key = nick.lower()
         if key in self._clients and self._clients[key] is not client:
-            # Server semantics: the newest connection wins (reclaim).
+            # Reclaim is only for authenticated peers. A wrong listener
+            # password must not evict the working gateway before USER/PASS
+            # registration has even been checked.
+            if password and not client.pass_ok:
+                await self._numeric(client, 464, "*", "Password incorrect")
+                return
+            # Server semantics: the newest authenticated connection wins.
             old = self._clients.pop(key)
             try:
                 await self._send(old, f"ERROR :nick {nick} reclaimed")
@@ -1129,13 +1135,16 @@ class IrcDaemon:
 
     async def _quit(self, client: _Client, reason: str) -> None:
         key = client.nick.lower() if client.nick else ""
+        # A reclaimed nick belongs to the replacement connection. Delayed
+        # cleanup of the old socket must not PART that new connection from
+        # its rooms, leaving a visible nick with a dead inbound path.
         if key and self._clients.get(key) is client:
             del self._clients[key]
-        async with self._lock:
-            for chan in list(client.channels):
-                members = self._channels.get(chan)
-                if members is not None:
-                    members.discard(key)
+            async with self._lock:
+                for chan in list(client.channels):
+                    members = self._channels.get(chan)
+                    if members is not None:
+                        members.discard(key)
         if client.registered and reason != "connection closed":
             try:
                 await self._send(client, f"ERROR :{reason}")

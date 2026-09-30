@@ -61,6 +61,8 @@ async def test_doctor_finds_present_bot(tmp_path, monkeypatch) -> None:
         assert by_label["adapter target"][0] is True
         ok, detail = by_label["bot in room"]
         assert ok is True, detail
+        # A present send-only dummy is not a working dispatch adapter.
+        assert by_label["gateway transport"][0] is False
     finally:
         await d.stop()
 

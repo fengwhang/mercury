@@ -239,7 +239,10 @@ def _endpoint() -> tuple[str, int, str] | None:
         port = int((get_env_value("IRC_PORT") or "").strip() or 6669)
     except ValueError:
         port = 6669
-    password = (get_env_value("IRC_SERVER_PASSWORD") or "").strip()
+    # This connection dials the agent listener, just like IRCAdapter.
+    # Using the server/client secret fails on split-password installs.
+    password = (get_env_value("IRC_AGENT_PASSWORD")
+                or get_env_value("IRC_SERVER_PASSWORD") or "").strip()
     if not password:
         return None
     return host, port, password
@@ -247,6 +250,17 @@ def _endpoint() -> tuple[str, int, str] | None:
 
 async def ensure_identity(nick: str, channel: str) -> bool:
     """Create (and connect) an identity; True when ready to send."""
+    # Defence in depth for other callers: the gateway's receive connection
+    # IS its identity. Mercury's newest-nick-wins server would evict it if
+    # we opened a send-only connection under the same name.
+    from observatory.rooms import get_bot_sink
+
+    bot = get_bot_sink()
+    if bot is not None and nick and nick.lower() in {
+        str(getattr(bot, "nickname", "") or "").lower(),
+        str(getattr(bot, "_current_nick", "") or "").lower(),
+    }:
+        return True
     ep = _endpoint()
     if not ep:
         return False

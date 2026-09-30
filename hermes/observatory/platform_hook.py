@@ -248,7 +248,15 @@ async def boot_resync(
                                 from observatory.identity import ensure_identity
 
                                 nick = str((row or {}).get("mxid") or "")
-                                if nick:
+                                extra = (row or {}).get("extra") or {}
+                                is_gateway = (
+                                    str((row or {}).get("node_id") or "") == "gw"
+                                    or (isinstance(extra, dict) and extra.get("kind") == "gateway")
+                                )
+                                # The gateway already owns the receive/dispatch
+                                # connection. A send-only clone reclaims its nick
+                                # and disconnects inbound for EVERY agent room.
+                                if nick and not is_gateway:
                                     await ensure_identity(nick, channel)
                             except Exception:
                                 pass

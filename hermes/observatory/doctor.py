@@ -3,7 +3,8 @@
 Answers "why is the bot missing / silent" locally, without guessing:
 provisioning, listener liveness, adapter target vs live bind, bot
 credential match (lengths only, never secrets), gateway process, and —
-decisively — whether the bot nick is actually in the gateway room.
+decisively — whether the bot nick is in the gateway room AND its receiver answers a
+transport-only challenge (no provider call).
 """
 from __future__ import annotations
 
@@ -74,7 +75,7 @@ class _Probe:
                 for line in self._drain():
                     if " 001 " in line:
                         return True
-                    if " 464 " in line.split():
+                    if "464" in line.split():
                         return False
         except OSError:
             return False
@@ -125,10 +126,10 @@ class _Probe:
             while time.monotonic() < deadline:
                 for line in self._drain():
                     parts = line.split()
-                    if len(parts) >= 7 and parts[1] == "353":
-                        # :srv 353 me = #chan :n1 n2 ...
+                    if len(parts) >= 6 and parts[1] == "353":
+                        # :srv 353 me = #chan :n1 n2 ... (names start at 5)
                         members.extend(
-                            n.lstrip(":").lstrip("@+%") for n in parts[6:])
+                            n.lstrip(":").lstrip("@+%") for n in parts[5:])
                     if len(parts) >= 4 and parts[1] == "366":
                         return members
                     if len(parts) >= 4 and parts[1] in ("403", "471", "474", "475"):
@@ -136,6 +137,25 @@ class _Probe:
         except OSError:
             return None
         return members
+
+    def gateway_roundtrip(self, nick: str, timeout: float = 5.0) -> bool:
+        """Challenge the actual dispatch connection, not just its NAMES entry."""
+        import uuid
+
+        nonce = uuid.uuid4().hex
+        expected = f"\x01MERCURY-PROBE {nonce}\x01"
+        try:
+            self.say(nick, expected)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                for line in self._drain():
+                    prefix, _, rest = line.partition(" ")
+                    if (prefix.lstrip(":").split("!", 1)[0].lower() == nick.lower()
+                            and rest == f"NOTICE {self.nick} :{expected}"):
+                        return True
+        except OSError:
+            pass
+        return False
 
     def close(self) -> None:
         try:
@@ -749,7 +769,13 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
                 elif bot_nick.lower() in {m.lower() for m in members}:
                     results.append((True, "bot in room",
                                     f"{bot_nick} present with "
-                                    f"{len(members)} member(s)"))
+                                    f"{len(members)} member(s) (presence only)"))
+                    duplex = probe.gateway_roundtrip(bot_nick)
+                    results.append((duplex, "gateway transport",
+                                    "dispatch connection answers round-trip probe (provider not tested)"
+                                    if duplex else
+                                    "nick is present but dispatch probe received no reply — "
+                                    "send-only nick takeover or stale/blocked gateway"))
                 else:
                     results.append((False, "bot in room",
                                     f"{bot_nick} NOT in {gateway_channel} "

@@ -1208,6 +1208,17 @@ class IRCAdapter(BasePlatformAdapter):
         if text.startswith("\x01ACTION ") and text.endswith("\x01"):
             text = f"* {sender_nick} {text[8:-1]}"
 
+        # A transport-only challenge proves that the nick is owned by the
+        # receive/dispatch adapter, not an idle send-only identity. Private,
+        # authenticated observatory traffic only; never invoke a model.
+        probe = re.fullmatch(r"\x01MERCURY-PROBE ([a-f0-9]{32})\x01", text)
+        if (probe and self._observatory_managed
+                and not target.startswith(("#", "&"))):
+            await self._send_raw(
+                f"NOTICE {sender_nick} :\x01MERCURY-PROBE {probe.group(1)}\x01",
+                timeout=CONNECT_SEND_TIMEOUT,
+            )
+            return
         # Ignore other CTCP
         if text.startswith("\x01"):
             return
