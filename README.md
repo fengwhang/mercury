@@ -1,378 +1,313 @@
 # Mercury 🌡️
 
-**Mercury is Hermes + OMP + The Lounge — one install, one config, one agent that orchestrates and executes, plus the chat surface where you watch it work.**
+**A persistent assistant, a dedicated coding engine, and a self-hosted place to watch and steer them.**
 
-Mercury glues three proven pieces into a single harness. The hermes half
-is the conversation agent — memory, skills, scheduling, messaging
-platforms, the CLI/TUI you chat in. The omp half is the coding engine —
-the same batteries-included agent that drives LSP, DAP debuggers, real
-browsers, and parallel subagents. In Mercury, hermes orchestrates and omp
-executes: every coding task — down to a hello world — fans out to omp
-subagents, and those subagents can spawn subagents of their own. **The
-Lounge** is the third piece: Mercury's own self-hosted IRC server (the
-observatory) where every one of those agents gets a room and you get the
-paperclip. CLI for focus, messaging apps for reach, the Lounge for
-oversight — same agent behind all three.
+Mercury brings [Hermes](https://github.com/NousResearch/hermes-agent),
+[Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi), and a fork of
+[The Lounge](https://github.com/thelounge/thelounge) into one distribution.
+Hermes handles conversation, memory, skills, messaging, and scheduled work.
+OMP handles coding with its native tools, language servers, debuggers, and
+subagents. The **Observatory** gives those agents addressable IRC rooms;
+the Mercury Lounge is its browser interface.
 
-## Quick install (Linux / macOS / WSL2)
+Ask your assistant to investigate a problem, let it hand the coding work
+to OMP, open a child's room to see its progress, and send a correction
+while it works. Use the terminal at your desk and the Observatory from
+your phone. Your host runs the agents; you choose their supported model
+providers.
+
+## Why Mercury?
+
+Mercury's contribution is the wiring between the three engines and surfaces:
+
+- **An assistant that can hand work to a real coding runtime.** Hermes'
+  `delegate_task` starts OMP children, collects their results, and brings
+  them back into the conversation. The shipped instructions tell Hermes
+  to delegate coding work. OMP children can delegate further.
+- **Individual agents you can reach.** The Observatory creates rooms for
+  spawned agents and delegated children. Follow tool activity, read a
+  reply, steer a running RPC child, or stop it without asking the parent
+  to relay every instruction.
+- **Shared knowledge across two runtimes.** Both engines read the shared
+  persona and instruction files and skills library. The bridge defaults
+  OMP's memory to the shared Mnemosyne/Mnemopi SQLite bank, with text
+  search enabled and embeddings optional. Children still have their own
+  conversations; shared memory does not give them the parent's transcript.
+- **One place to configure the handoff.** `config.yaml` contains the chat
+  and coding model slots, optional fallback chains, thinking levels, and
+  approval settings. Supported API-key credentials and compatible OAuth
+  logins are shared between Hermes and OMP within the active profile.
+- **Direct execution when you already know the task.** `mercury omp`
+  opens OMP's TUI; `/omp` sends a task directly to OMP; `omp_direct` cron
+  jobs run the coding engine without an intervening Hermes agent turn.
+- **A browser surface you host.** The Lounge, IRC daemon, agent state, and
+  uploaded artifacts live on your machine. We recommend Tailscale to
+  reach the Observatory across devices. Model requests still go to the
+  provider you configure, including a local endpoint where supported.
+
+### Compared with the tools you already use
+
+| Tool | What it already offers | Why choose Mercury instead? |
+| --- | --- | --- |
+| [OpenClaw](https://docs.openclaw.ai/concepts/multi-agent) | A self-hosted assistant gateway with multiple agents and channel routing. | Choose the packaged Hermes → OMP handoff, shared memory and credentials, and agent rooms in Mercury's Lounge. |
+| [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools/) | Persistent memory, skills, delegation, messaging, and scheduling. | Keep that assistant workflow while making OMP the delegation engine and adding the Observatory's live coding-agent rooms. |
+| [Claude Code](https://code.claude.com/docs/en/agent-teams) | A coding workflow with subagents and agent teams; [Remote Control](https://code.claude.com/docs/en/remote-control) connects local sessions to web and mobile. | Run Mercury's assistant, coding workers, and browser interface on your own server, with separately configured chat and coding providers. |
+| [Codex](https://learn.chatgpt.com/docs/agent-configuration/subagents) | Coding agents and subagents, [remote access](https://learn.chatgpt.com/docs/remote), and [scheduled tasks](https://learn.chatgpt.com/docs/automations). | Choose the Hermes/OMP runtime combination, its shared local knowledge, and a self-hosted IRC/browser control surface. |
+| [OMP](https://github.com/can1357/oh-my-pi) | A coding TUI with native tools, LSP, DAP, memory, and parallel subagents. | Put an ongoing Hermes assistant, messaging gateway, scheduler, and browser agent rooms around that coding engine. |
+
+These are workflow differences, not claims that Mercury invented memory,
+multi-agent work, scheduling, or remote control. The comparison was checked
+against the linked project documentation on September 30, 2026. Mercury
+vendors specific upstream versions; see [PINS.txt](PINS.txt).
+
+## Install
+
+The published bundles contain **Linux x64 and ARM64** OMP executables.
+Use a Linux host, or WSL2 with the required Linux services enabled. Native
+macOS and Windows release bundles are not currently published.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | bash
 ```
 
-Two tracks. Stable (above) installs the `mercury` command to
-`~/.mercury` and `mercury update` follows stable releases. Nightly
-installs a fully separate `mercury-nightly` to `~/.mercury-nightly`
-— own home, own command, own updates:
+The installer sets up Python dependencies, installs the prebuilt runtimes,
+and runs `mercury setup` for provider login, model selection, tools, and
+gateway configuration. End users do not compile OMP or the Lounge. The
+Lounge requires **Node.js 22 or newer and npm** for its runtime dependencies;
+install those before configuring the browser surface if they are absent.
+
+```bash
+mercury              # Hermes assistant
+mercury omp          # OMP coding TUI
+mercury setup        # reconfigure either side through the shared wizard
+mercury update       # update a release installation
+```
+
+The default home is `~/.mercury`; the command shim is installed under
+`~/.local/bin`. If your shell cannot find `mercury`, add that directory
+to your PATH or open a new shell. Installer options include `--skip-setup`,
+`--non-interactive`, `--skip-browser`, `--skip-observatory`, `--skip-gateway`,
+`--no-skills`, and `--dir PATH`.
+
+For a nightly installation:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install-nightly.sh | bash
 ```
 
-`mercury-nightly update` follows the nightly prereleases. The tracks
-never touch each other (separate homes, shims, and services).
+This uses `mercury-nightly` and `~/.mercury-nightly`. State directories are
+separate, but the Observatory service names and default ports currently
+overlap: use one Observatory installation per Linux user. See the
+[integration review](docs/code-review-2026-09-30.md) for current update and
+configuration limitations.
 
-The command installs to `~/.mercury/bin/mercury` — on PATH by default on
-modern Linux (and macOS) — so `mercury` works immediately after install,
-same terminal, no extra steps. **No arguments needed**: the installer
-detects your CPU (`uname -m`), picks the x64 or arm64 build from the latest
-release, and verifies the omp binary's ELF machine byte matches the host —
-a wrong-arch install is impossible (an emulated binary would burn 10-50x
-CPU; the installer refuses it instead).
+## Observatory on your phone, tablet, and other computers
 
-Pinned/manual installs still work: `… | bash -s -- <tarball-url>` (any arch
-link on any host — the URL is rewritten to match).
+**Recommended: one Linux host running Mercury, with all your devices on
+Tailscale.** The host keeps working while a browser disconnects. Each
+device opens the same Lounge and its agent rooms.
 
-One interactive session: preflight → uv + pinned venv → unpack the prebuilt
-engines (no bun, no rust needed) → **`mercury setup` — the full wizard:
-provider OAuth / Nous Portal login, model pickers, tools** (configures BOTH
-engines) → optional Browser Use CLI, cua-driver, gateway → done. Then run
-`mercury`.
+Tailscale connects devices through a private network called a tailnet.
+Install it on the Mercury host and each device you want to use, and sign
+them into the same tailnet. Follow the official
+[installation guide](https://tailscale.com/docs/install) for each platform.
 
-**Layout** — everything lives under one home:
+### 1. Connect the host to Tailscale
 
-```
-~/.mercury/                 the Mercury home (MERCURY_HOME)
-├── mercury-agent/          the code tree (bin/, config/, hermes/, omp/, …)
-├── bin/                    the `mercury` command + managed tools (uv, browser-use)
-├── config.yaml             the ONE unified config (both engines)
-├── .env                    the ONE env file (API keys, chmod 600, both engines)
-├── config/                 shared markdown state (SOUL/MEMORY/USER/AGENTS,
-│                           HERMES/OMP supplements) — both engines read these
-├── skills/                 the shared skills library
-├── memories/               the memory store (both engines, two-way)
-├── sessions/               session directory (sessions.json mapping + dumps)
-├── state.db                session history (sqlite message store)
-├── cron/                   cron jobs.json + scripts/ + output/
-└── hermes/  omp/           engine-private state (auth, caches, omp themes)
-```
-
-| | |
-|---|---|
-| **One command** | `mercury` starts the chat; `mercury omp` drops you into the omp engine directly |
-| **One config** | `~/.mercury/config.yaml` drives BOTH engines — four model slots, one approvals knob, per-engine subtrees |
-| **Optional fallbacks** | fallbacks at every order are a user choice — skip means skip; a configured chain is validated, never silently degraded |
-| **Unified approvals** | `manual` / `smart` / `off` — one mode governs both engines; deny rules and the hardline floor survive every mode |
-| **Shared state** | SOUL/MEMORY/USER and the skills library live at `~/.mercury/` and are read by both engines |
-| **One key per capability** | `ZAI_API_KEY` serves zai search on both engines; the tool-provider union exposes all 24 omp search providers to the hermes side |
-| **No model roles** | the role system (--smol/--slow/@task) is deleted, not stubbed — one model fans out everywhere |
-
-Mercury runs anywhere hermes runs (Linux, macOS, WSL2; containerized
-backends) with omp's native runtime **prebuilt**: the release binary
-embeds the Rust natives (ripgrep, shell, text/grep/image ops) and runs
-with only libc on the target — no bun, no rust toolchain, no node
-(verified: the binary executes under a stripped PATH with a live
-one-shot). Only optional embedding-model deps (fastembed,
-onnxruntime-node) resolve on-demand, per upstream design.
-
-**Updates are re-fetches, not compiles.** Each release rebuilds the
-modded omp once on the build host and publishes a fresh tarball
-(`scripts/make-dist.sh`); re-running the installer against the new
-tarball replaces the tree in place while `~/.mercury` state survives.
-End users never need a toolchain; contributors building from source see
-[Development](#development).
-
-**Feature-complete omp.** Mercury's patches touch omp's model
-resolution, theme defaults, memory/skills paths, and the bridge — the
-tool surface itself is unmodified: the DAP debugger (lldb/dlv/debugpy),
-LSP integration, eval's browser + desktop control, native ripgrep/shell,
-hashline edits, code review, subagents — all present, all upstream.
-
----
-
-## Install
-
-The quick-install command above is the whole story. Details:
-
-- **The wizard is `mercury setup`** — the full interactive setup (provider
-  OAuth / Nous Portal / API keys, model pickers, TTS, tools, gateway), run
-  automatically at the end of the install. It configures BOTH engines: the
-  omp side inherits your models, approval mode, and deny rules via the
-  config bridge. Re-run any time with `mercury setup`.
-- **Model slots**: default / fallback / delegate_model / delegate_fallback
-  (+ optional second-order chains) in `~/.mercury/config.yaml`. Fallbacks
-  are OPTIONAL — skipping one means "no mid-turn failover", exactly as
-  chosen; a configured chain is validated (ordered, head = primary,
-  no duplicates). `mercury omp-sync` re-syncs the omp engine after hand
-  edits.
-- **Keys** live in `~/.mercury/.env` (chmod 600, never in the repo) — the ONE env file both engines read.
-- **Approval mode** (`manual` / `smart` / `off`) is ONE knob for both
-  engines; `off` = permanent yolo with deny-rules + the hardline floor
-  still active.
-- Flags: `--skip-setup`, `--non-interactive`, `--skip-browser`,
-  `--skip-computer-use`, `--no-skills`, `--skip-gateway`, `--dir PATH`,
-  `--ensure browser,computer-use`.
-- Updates: `mercury update` pulls the latest release tarball from this
-  repo (tarball installs) or `git pull` (dev checkouts).
-
-Manual path: clone, `bash install.sh` with no URL (works against the
-existing tree), or see `scripts/make-dist.sh` to build the tarball
-yourself.
-
-## Migrating from a stock hermes install
-
-If `~/.hermes` exists, the setup wizard offers a one-shot import
-(`mercury migrate-hermes` to re-run — idempotent, nothing overwritten,
-automatic backups under `~/.mercury/migration-backup/`):
-
-- **SOUL / MEMORY / USER** — entry-level merge, including the `memories/`
-  store where stock hermes keeps MEMORY.md and USER.md
-- **config** — model/provider/approvals keys into the unified config
-- **API keys** — `.env` merged into `~/.mercury/.env` (the ONE env)
-- **skills** — copied into the shared library (new skills only)
-- **session history** — `sessions/` (directory mapping + dumps) AND
-  `state.db` (the sqlite message store)
-- **cron** — `jobs.json` id-preserving merge into `~/.mercury/cron/`
-  plus the `scripts/` and `output/` directories the jobs reference
-- **OAuth logins** — `auth.json` copied
-
-Dry-run preview first (`mercury migrate-hermes --dry-run`), explicit
-confirm before anything is written.
-
-Then:
+On a Linux distribution supported by Tailscale's installer:
 
 ```bash
-mercury          # the chat (hermes half, orangered skin, pink session label)
-mercury omp      # the omp engine as its own program (its own TUI, themes at ~/.mercury/omp/themes/)
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+tailscale status
+tailscale ip -4
 ```
 
-## The model story
+Open the authentication URL printed by `tailscale up`. Save the host's
+Tailscale IPv4 address, such as `100.101.102.103`. For NixOS or other
+distributions with their own package setup, use Tailscale's
+[Linux instructions](https://tailscale.com/docs/install/linux).
 
-Four slots plus two optional ordered chains at the top of the unified
-config — the entire model story for both engines:
+### 2. Install Mercury and configure its gateway
 
-```yaml
-models:
-  default: <provider/model>           # hermes sessions + omp main loop
-  fallback: <provider/model>          # optional — skip = no mid-turn failover (explicit user choice)
-  delegate_model: <provider/model>    # what omp subagents run under
-  delegate_fallback: <provider/model> # optional — subagent retry model; skip = none
-  fallback_chain: [<provider/model>, ...]          # optional ordered retry chain (head = fallback)
-  delegate_fallback_chain: [<provider/model>, ...] # optional ordered subagent retry chain
-```
-
-- Per-request failover on both engines: hermes fails over mid-turn and
-  re-arms the primary next turn; omp walks its chain per request.
-- Any provider either engine supports: zai, anthropic, openai, openrouter,
-  google, xai, deepseek, 60+ more, plus local OpenAI-compatible servers.
-- There are no model roles. No @smol, no --slow. One model per slot,
-  explicit, everywhere.
-
-## Approvals — one knob, both engines
-
-```yaml
-approvals:
-  mode: "smart"   # manual | smart | off
-```
-
-- `manual` — prompt for write/exec (hermes) / always-ask (omp)
-- `smart` — the default: read+workspace-write auto-approved, exec prompts
-- `off` — permanent yolo: no prompts anywhere (this is what the installer's
-  yolo option writes)
-
-In every mode: your `approvals.deny` globs are translated to omp
-`bash.patterns` deny rules at every spawn (denies fire before any
-bypass), and the hardline floor (disk-wipe-at-root, block-device
-overwrites, host shutdown) is unconditional. Yolo is an explicit choice,
-never a default.
-
-## What each piece gives you
-
-**hermes half (the orchestrator):** terminal TUI with slash commands ·
-memory that persists across sessions (MEMORY/USER/SOUL) · self-improving
-skills (agentskills.io format) · cron scheduling with delivery to any
-platform · the messaging gateway (Telegram, Discord, Slack, WhatsApp,
-Signal, ~20 platforms) · skins and theming · computer-use desktop control
-· voice.
-
-**omp half (the engine):** every omp capability under delegation —
-persistent Python/JS cells with tool re-entry · LSP wired into every
-write · real DAP debugger sessions (lldb, dlv, debugpy) · native
-ripgrep/shell in-process · hashline edits · code review with ranked
-verdicts · 23 ranked web-search providers · real browser + desktop
-control · first-class subagents (isolated worktrees, typed results).
-
-**The bridge between them:**
-- `delegate_task` — hermes' subagent tool; children run as omp one-shots
-  with your delegate slots, C2-translated deny rules, and full recursion.
-- `/omp` — deterministic command: your text travels to omp as a single
-  argv element, byte-for-byte, no LLM in between.
-- `omp_direct` cron — schedule a job that fires omp directly, no hermes
-  agent turn in the loop.
-- Tool-provider union — hermes can search/scrape through ANY of omp's 24
-  providers (`omp-bridge:<id>`), so one key lights up both engines.
-
-## The Lounge — Mercury's third surface (v0.0.136)
-
-The observatory is Mercury's own self-hosted IRC server plus a bouncer
-for your client — a multi-agent chat surface with full CLI parity. Same
-agent, same slash commands, same skills and plugins; what changes is
-that every agent gets a room and you can watch them all work.
+Run the Mercury installer above as your normal Linux user. Complete
+provider login and choose the chat and delegate models. Enable the
+gateway when offered. If you skipped that section, run:
 
 ```bash
-mercury setup observatory      # provision server + bouncer (tailscale offered)
-mercury observatory status     # server, bouncer, live rooms
-mercury observatory rooms      # list agent rooms
+mercury setup gateway
 ```
 
-- **Gateway agent** at `#<server>_gateway` — behaves exactly like Mercury
-  over chat or CLI: slash commands, skills, approvals, mid-turn queueing.
-- **`/spawn <name>`** (hermes) and **`/spawnomp <name>`** (omp) open
-  `#<name>` — a full agent in its own room. **`/exit`** stops the agent
-  and destroys the room.
-- **Subagent trace rooms** — when an agent delegates, the child streams
-  its thinking traces and tool calls into `#<parent>-<child>` (the parent
-  names the child). Message the room mid-run and you steer the live child,
-  interrupting exactly the way CLI steering interrupts a turn.
-- **The paperclip** — agents share local files as room-local Lounge links
-  (`lounge_share` on hermes, `share_file` on omp): staged, verified with
-  a GET check, then posted. Dead links are refused, never pasted.
+Keep Mercury running on the host that holds your projects and tools.
 
-> **Tailscale is highly recommended.** Pin the server and the bouncer to
-> your tailnet and the Lounge follows you everywhere — phone IRC client
-> on the couch, desktop at work — with no open ports and no public
-> internet in the path. Provisioning detects tailscale and offers to pin
-> both listeners; Lounge links then resolve on every tailed device.
+### 3. Enable the Observatory and its browser interface
 
-## Configuration
-
-ONE file: `~/.mercury/config.yaml`. Top level holds `models:` (four
-slots) and `approvals:` (one knob). Per-engine settings live under
-subtrees each engine owns:
-
-```yaml
-models:
-  default: anthropic/claude-sonnet-4-6
-  fallback: anthropic/claude-haiku-4
-  delegate_model: anthropic/claude-sonnet-4-6
-  delegate_fallback: anthropic/claude-haiku-4
-
-approvals:
-  mode: "smart"
-
-hermes:            # hermes-private settings (explicit keys WIN over slots)
-  display:
-    skin: default
-omp:               # bridge-rendered (approvalMode, deny patterns, retry chain)
-  tools:
-    approvalMode: "write"
+```bash
+mercury setup observatory
 ```
 
-State layout at `~/.mercury/`:
+In the wizard:
 
+1. Enable the Observatory and choose an IRC network name.
+2. Choose the Tailscale address when offered a bind for the client-facing
+   IRC server. The internal agent listener stays on localhost.
+3. Accept the offer to install the Mercury Lounge.
+4. For **“Pin The Lounge to Tailscale or localhost?”**, choose **Tailscale**.
+   The IRC bind and the Lounge web bind are separate choices.
+5. Choose a Lounge username and password, and save the printed login card.
+   This browser password is separate from the IRC server password.
+6. Accept the service starts/restarts offered by setup.
+
+On a fresh setup, Mercury seeds the Lounge's connection to the IRC server
+and joins `#<network>_gateway`. The default web port is **9000**; use the
+actual URL from the login card if your configuration differs.
+
+### 4. Open the web UI from another device
+
+Install and connect the Tailscale app on your phone, tablet, or computer.
+In its browser, open the host address from the login card, for example:
+
+```text
+http://100.101.102.103:9000
 ```
+
+Log in with your **Lounge** credentials. Open `#<network>_gateway` and send
+a message. You should see an agent response in that room. You can now
+watch work and send instructions from any connected device with access to
+the host. Access follows your tailnet policy and the host's firewall;
+no router port forwarding is needed for this setup.
+
+### 5. Keep it available and check the connection
+
+For a Linux host with systemd, allow your user services to keep running
+after logout:
+
+```bash
+sudo loginctl enable-linger "$USER"
+mercury observatory status
+mercury observatory doctor
+mercury observatory rooms
+```
+
+The host must stay awake, online, and connected to Tailscale. WSL2 also
+needs its Linux environment and systemd services running.
+
+If the page will not load, check that both devices are connected to the
+same tailnet, that its policy permits the host's web port, and that the
+Lounge is listening on the Tailscale address. On the host:
+
+```bash
+systemctl --user status mercury-observatory.service mercury-lounge.service
+journalctl --user -u mercury-lounge.service -n 50
+```
+
+If an existing Lounge was configured for localhost, setup keeps that
+installation and its bind. Change `host` in
+`~/.mercury/observatory/lounge/home/config.js` to the host's Tailscale IPv4
+address, then run `systemctl --user restart mercury-lounge.service`.
+Use the corresponding home if you changed `MERCURY_HOME`.
+
+If the page loads but the agent does not answer, run
+`mercury observatory doctor`, check `mercury gateway status`, and use
+`mercury observatory restart` to restart and verify the chat path.
+Re-run `mercury setup observatory` if you need to reset a lost Lounge
+password.
+
+## Working in agent rooms
+
+| Action | What happens |
+| --- | --- |
+| Chat in `#<network>_gateway` | Talk to the Hermes gateway assistant. |
+| `/spawn <name>` | Create another Hermes agent room. |
+| `/spawnomp <name>` | Create an OMP coding-agent room. |
+| Message a running RPC child room | Send guidance to that child. |
+| `/stop` | Interrupt work in the room. |
+| `/exit` in a spawned room | Stop the spawned agent and remove its room. |
+
+Agent replies support Markdown and LaTeX. Tool inputs, tool outputs,
+thinking traces, and status events render as plaintext. Inline and fenced
+code stay literal, so shell variables, underscores, and globs survive
+rendering. **Raw** toggles the original message text for manual selection.
+Agents can share local artifacts through the Lounge's upload links.
+
+Room control depends on the running transport: RPC children accept
+steering; legacy one-shot children provide traces and stop control.
+The browser supports the gateway and OMP room commands, rather than every
+terminal-only interactive screen.
+
+## Configuration and state
+
+```text
 ~/.mercury/
-  config.yaml     # the ONE config
-  .env            # the ONE env (API keys; both engines)
-  config/         # shared markdown: SOUL MEMORY USER AGENTS (both engines)
-                  #   + HERMES.md / OMP.md per-engine supplements (edit freely)
-  skills/         # shared skills library — both engines, two-way
-  memories/       # memory store
-  sessions/       # session directory mapping + request dumps
-  state.db        # session history (sqlite)
-  cron/           # cron store (jobs.json + scripts/ + output/)
-  hermes/         # hermes-private state (auth, plugins, caches)
-  omp/            # omp-private state (themes/, settings)
+├── config.yaml          shared model slots and engine settings
+├── .env                 shared environment credentials
+├── config/              SOUL, MEMORY, USER, AGENTS, HERMES, and OMP markdown
+├── skills/              shared skill library
+├── memories/            shared memory bank
+├── hermes/              Hermes profile, authentication, and runtime state
+├── omp/                 OMP runtime state
+├── observatory/         IRC state, Lounge configuration, and uploads
+└── mercury-agent/       installed source and prebuilt runtime bundles
 ```
 
-Skins: full hermes skin support — built-ins plus user YAML at
-`~/.mercury/hermes/skins/`, `display.skin` selects, `/skin` switches
-live. The Mercury default skin is orangered with a pink session label;
-every key is skin-overridable. omp themes: JSON at
-`~/.mercury/omp/themes/<name>.json`, `theme.dark`/`theme.light` select.
+The shared configuration has `models:`, `approvals:`, `hermes:`, and `omp:`
+sections. `models.default` selects the Hermes chat model;
+`models.delegate_model` selects the OMP model, including `mercury omp`.
+Both primary fallback slots and their ordered chains are optional.
+Use `mercury setup model` for provider-aware selection and
+`mercury omp-sync` after hand-editing shared settings.
+
+```yaml
+models:
+  default: your-provider/chat-model
+  delegate_model: your-provider/coding-model
+  orchestrator_thinking_level: high
+  delegate_thinking_level: xhigh
+
+approvals:
+  mode: smart # manual | smart | off
+```
+
+The bridge maps approval modes into each engine's approval system. These
+are tool policies, not an operating-system sandbox. For current policy
+translation and settings-preservation issues, see the
+[code review](docs/code-review-2026-09-30.md).
+
+Coming from an existing installation? Preview the import first:
+
+```bash
+mercury migrate-hermes --dry-run
+mercury migrate-omp --dry-run
+```
+
+Then run the appropriate command without `--dry-run` to choose what to
+import. Hermes migration covers persona, memory, settings, credentials,
+skills, history, and cron jobs. OMP migration covers sessions, custom
+models, selected settings, MCP/SSH definitions, and themes.
 
 ## Development
 
-The repo vendors both upstreams at pinned tags (`PINS.txt` records tag +
-commit). Every fork change is marked `HERMES-OMP PATCH` in-source for
-clean upstream re-pins. Engine directories carry engines only;
-`config/` holds every hand-editable default (SOUL.md, MEMORY.md,
-USER.md, AGENTS.md, HERMES.md, OMP.md, config.yaml schema) — seeded to
-`~/.mercury/` on first boot and never overwritten after you edit them.
+The engines are vendored and patched. [PINS.txt](PINS.txt) records their
+upstream bases; consult the applicable `AGENTS.md` before changing them.
+The integration lives in `bridge/`, `hermes/tools/omp_*`,
+`hermes/mercury_cli/`, `hermes/observatory/`, and `third_party/thelounge/`.
 
-### Layout
+Run Python checks through `hermes/scripts/run_tests.sh`, OMP checks through
+Bun, and Lounge checks through Vitest. The
+[September 2026 review](docs/code-review-2026-09-30.md) records the reviewed
+paths, reproducible findings, and current test results.
 
-```
-bin/mercury      the launcher (env composer — sets MERCURY_HOME/CONFIG,
-                 forces engine homes, self-locates its repo)
-install.sh       one-command installer (tarball URL or in-place)
-config/          shipped defaults for everything hand-editable
-bridge/          model-config renderer (optional fallbacks, validated chains)
-hermes/          the hermes engine (vendored, patched, renamed modules)
-omp/             the omp engine (vendored, patched; dist/omp = release
-                 binary with embedded Rust natives)
-scripts/         make-dist.sh (release tarball), vm-sim.sh (fresh-python
-                 verification), dev verify scripts
-```
+Release builds must bump and commit the Mercury version **before**
+compiling OMP. Build both OMP architectures and the Hermes TUI, run
+`scripts/build-lounge-fork.sh`, then `scripts/make-dist.sh`. Packaging
+checks the baked OMP version, native-library version, and Lounge source
+fingerprint. Published bundles include the prebuilt components.
 
-### Build & release
+## Credits and licenses
 
-```bash
-# one-time on the build host: bun, then
-# 1. bump the version FIRST (the omp binary bakes it at compile time):
-#    edit hermes/mercury_cli/__init__.py __version__ (+ commit)
-cd omp/packages/coding-agent && bun run build     # 2. compiles dist/omp (x64)
-CROSS_TARGET=linux-arm64 bun run build            #    also compiles dist/omp-linux-arm64
-cd ../../.. && cd hermes/ui-tui && bun run build  # compiles dist/entry.js
-cd ../../.. && scripts/make-dist.sh               # 3. -> dist/mercury-<v>-{x64,arm64}.tar.gz + sha256
-
-# install from a local tree (dev loop)
-bash install.sh
-
-# python side
-cd hermes && uv venv .venv --python '>=3.11,<3.14' && uv pip install -e .
-PYTHONPATH=hermes hermes/.venv/bin/python ...     # run against the repo
-```
-
-Release workflow: bump `__version__` (+ commit) → rebuild omp + ui-tui →
-`make-dist.sh` → publish the tarball → users re-run `install.sh
-<tarball-url>` (tree replaced in place; `~/.mercury` state survives).
-`scripts/vm-sim.sh` verifies the fresh-interpreter path (uv venv, no shared
-state) before shipping. Order matters: `compile-binary.ts`
-`resolveMercuryVersion` reads `hermes/mercury_cli/__init__.py` at BUILD
-time, so a binary built BEFORE the bump bakes the previous release
-(v0.0.19 shipped `omp/0.0.18` this way — build → bump → pack). Never
-build → bump → pack; `make-dist.sh` fail-hards (`strings` user-agent
-check: binary must contain `omp/<version>-mercury`) if the binary is stale.
-
-### Re-pinning upstream
-
-Check out the new tag inside `hermes/` / `omp/`, re-apply the patch
-series (grep `HERMES-OMP PATCH` — 17 omp files + the hermes-side
-markers), rebuild both engines, re-run the bridge + delegation + banner
-checks. omp ships frequent releases; re-pin deliberately, not eagerly.
-
-## Credits & licenses
-
-Mercury is a hybrid distribution of
-[Hermes](https://github.com/NousResearch/hermes-agent) by
-[Nous Research](https://nousresearch.com) (MIT) and
-[omp / oh-my-pi](https://github.com/can1357/oh-my-pi) by
-[can1357](https://github.com/can1357) (MIT; fork of
-[Pi](https://github.com/badlogic/pi-mono) by Mario Zechner).
-
-Each vendored half carries its upstream license and notices; see
-`hermes/LICENSE`, `omp/LICENSE`, and `omp/THIRD-PARTY-NOTICES.txt`.
-Upstream documentation remains the reference for each half:
-[hermes docs](https://hermes-agent.nousresearch.com/docs) ·
-[omp docs](https://omp.sh/docs).
+Mercury builds on [Hermes by Nous Research](https://github.com/NousResearch/hermes-agent),
+[OMP by can1357](https://github.com/can1357/oh-my-pi), and
+[The Lounge](https://github.com/thelounge/thelounge), each licensed under
+MIT. Their tools and capabilities belong to their respective upstream
+projects; Mercury maintains the distribution and its integration patches.
+See the license files in each vendored tree.
