@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { version as forkVersion } from "../package.json" with { type: "json" };
+import { version as mercuryRelease } from "../mercury-release.json" with { type: "json" };
 import { USER_AGENT, VERSION } from "@oh-my-pi/pi-utils/dirs";
 
 const dirsUrl = new URL("../src/dirs.ts", import.meta.url).href;
@@ -24,10 +24,10 @@ async function loadDirsWithEnv(
 }
 
 describe("Mercury version reporting (HERMES-OMP PATCH)", () => {
-	test("falls back to fork version without injected MERCURY_VERSION", () => {
+	test("source runs report Mercury without injected MERCURY_VERSION", () => {
 		expect(Bun.env.MERCURY_VERSION).toBeUndefined();
-		expect(VERSION).toBe(forkVersion);
-		expect(USER_AGENT).toBe(`omp/${forkVersion}`);
+		expect(VERSION).toBe(mercuryRelease);
+		expect(USER_AGENT).toBe(`omp/${mercuryRelease}-mercury`);
 	});
 
 	test("injected MERCURY_VERSION wins (compiled-binary path)", async () => {
@@ -36,9 +36,9 @@ describe("Mercury version reporting (HERMES-OMP PATCH)", () => {
 		expect(loaded.USER_AGENT).toBe("omp/0.0.99-test-mercury");
 	});
 
-	test("blank MERCURY_VERSION falls back to fork version", async () => {
+	test("blank MERCURY_VERSION retains Mercury source identity", async () => {
 		const loaded = await loadDirsWithEnv({ MERCURY_VERSION: "   " });
-		expect(loaded.VERSION).toBe(forkVersion);
-		expect(loaded.USER_AGENT).toBe(`omp/${forkVersion}`);
+		expect(loaded.VERSION).toBe(mercuryRelease);
+		expect(loaded.USER_AGENT).toBe(`omp/${mercuryRelease}-mercury`);
 	});
 });

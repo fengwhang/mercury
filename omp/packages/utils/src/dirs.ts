@@ -14,7 +14,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { engines, version } from "../package.json" with { type: "json" };
+import { engines } from "../package.json" with { type: "json" };
+import { version as mercuryRelease } from "../mercury-release.json" with { type: "json" };
 import { isEnoent, isEnotdir } from "./fs-error";
 
 /** App name (e.g. "omp") */
@@ -27,24 +28,20 @@ export const CONFIG_DIR_NAME: string = ".omp";
 export const MAIN_CONFIG_FILENAMES = ["config.yml", "config.yaml"] as const;
 
 /**
-HERMES-OMP PATCH (Mercury version): Mercury release builds inject
-`process.env.MERCURY_VERSION` via the Bun.build `define` block in
-`packages/coding-agent/scripts/compile-binary.ts` (same mechanism as
-`PI_COMPILED`), so the compiled binary reports the Mercury release
-(e.g. "0.0.15") instead of the forked omp version (e.g. "18.1.6").
-Unset in upstream dev/test, where the package.json version applies.
+Mercury release builds inject their version through Bun.build. Source runs
+use the release identity stamped by scripts/bump-version.sh, so every
+execution mode reports Mercury rather than an upstream dependency version.
  */
 const mercuryVersion = process.env.MERCURY_VERSION?.trim() || undefined;
 
-/** Version: Mercury release in Mercury builds, fork version in upstream dev (e.g. "0.0.15"). */
-export const VERSION: string = mercuryVersion ?? version;
+/** Mercury's product version in both source and compiled runs. */
+export const VERSION: string = mercuryVersion ?? mercuryRelease;
 
 /**
-Default User-Agent header string (e.g. "omp/0.0.15-mercury").
-Keeps the `omp/` prefix for server compat; the `-mercury` suffix marks
-Mercury builds. Upstream dev keeps the plain `omp/<version>` form.
+Mercury User-Agent. The OMP prefix is retained for provider compatibility;
+source runs and compiled releases share the same product identity.
  */
-export const USER_AGENT = mercuryVersion ? `omp/${mercuryVersion}-mercury` : `omp/${VERSION}`;
+export const USER_AGENT = `omp/${VERSION}-mercury`;
 
 /** Minimum Bun version */
 export const MIN_BUN_VERSION: string = engines.bun.replace(/[^0-9.]/g, "");

@@ -8,6 +8,7 @@
 #   hermes/mercury_cli/__init__.py  (__version__ — CLI, omp bake, ircd 004)
 #   third_party/thelounge/package.json (version + mercuryFork marker —
 #     the fork IS the release; refresh_lounge_fork keys reinstalls off it)
+#   omp/packages/utils/mercury-release.json (source-mode product identity)
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VER="${1:?usage: bump-version.sh <version, e.g. 0.1.33>}"
@@ -38,5 +39,7 @@ pkg["version"] = ver
 pkg["mercuryFork"] = True
 pkg_path.write_text(
     json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+release_path = repo / "omp" / "packages" / "utils" / "mercury-release.json"
+release_path.write_text(json.dumps({"version": ver}, indent="\t") + "\n", encoding="utf-8")
 print(f"stamped {ver}: mercury_cli/__init__.py + thelounge/package.json")
 EOF
