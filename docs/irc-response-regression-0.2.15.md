@@ -4,8 +4,8 @@ Code comparison: v0.2.4 → v0.2.13, with the existing v0.2.14 fixes retained.
 
 ## Confirmed regression
 
-In `hermes/plugins/platforms/irc/adapter.py`, commit `82e1c367`
-(v0.2.12) removed the receive loop's `finally:` and moved connection-loss
+In `hermes/plugins/platforms/irc/adapter.py`, commit `abadbddc`
+(v0.2.10) removed the receive loop's `finally:` and moved connection-loss
 handling into `except Exception`. Normal remote EOF is not an exception.
 Consequently, EOF leaves the handler queue running, the writer and bot sink
 stale, and no retryable failure notification. The gateway can look online
