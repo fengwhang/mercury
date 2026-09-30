@@ -4036,14 +4036,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         # a Mercury release). Falls back to the hardcoded catalog if no token
         # or the endpoint is unreachable.
         access_token = None
+        base_url = None
         try:
             from mercury_cli.auth import resolve_codex_runtime_credentials
 
             creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
             access_token = creds.get("api_key")
+            base_url = creds.get("base_url")
         except Exception:
             access_token = None
-        return get_codex_model_ids(access_token=access_token)
+        return get_codex_model_ids(access_token=access_token, base_url=base_url)
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())

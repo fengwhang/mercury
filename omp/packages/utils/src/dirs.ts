@@ -128,7 +128,19 @@ function getBaseConfigRoot(): string {
 	// the same machine owns. Without this, logs/plugins/caches/worktrees/
 	// browser profiles/auth snapshots are shared between the two products.
 	const mercury = process.env.MERCURY_HOME?.trim();
-	if (mercury) return path.join(mercury, "omp");
+	if (mercury) {
+		const hermesHome = process.env.HERMES_HOME?.trim();
+		// Spawned Mercury profiles must not write grants into the default
+		// profile's SQLite database. The explicitly selected Hermes home is
+		// also the credential authority for this engine instance.
+		if (
+			hermesHome &&
+			path.resolve(hermesHome) !== path.resolve(mercury, "hermes") &&
+			path.resolve(hermesHome) !== path.resolve(mercury)
+		)
+			return path.join(hermesHome, "omp");
+		return path.join(mercury, "omp");
+	}
 	return path.join(os.homedir(), getConfigDirName());
 }
 
@@ -446,6 +458,20 @@ let activeProfile = readProfileFromEnvSafe();
  * {@link refreshDirsFromEnv} so both apply identical logic.
  */
 function resolveActiveAgentDirOverride(): string | undefined {
+	const mercury = process.env.MERCURY_HOME?.trim();
+	const hermesHome = process.env.HERMES_HOME?.trim();
+	const inherited = process.env.PI_CODING_AGENT_DIR;
+	if (
+		!activeProfile &&
+		mercury &&
+		hermesHome &&
+		inherited &&
+		path.resolve(inherited) === path.resolve(mercury, "omp") &&
+		path.resolve(hermesHome) !== path.resolve(mercury, "hermes") &&
+		path.resolve(hermesHome) !== path.resolve(mercury)
+	) {
+		return path.join(hermesHome, "omp");
+	}
 	return activeProfile
 		? undefined
 		: resolvePreProfileAgentDir(undefined, process.env.PI_CODING_AGENT_DIR, readPiProfileFromEnvSafe());

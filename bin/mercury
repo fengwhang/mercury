@@ -137,6 +137,9 @@ else
     fi
 fi
 
+# The OMP credential bridge must use the same dependency-complete interpreter.
+export MERCURY_PYTHON="$PY"
+
 # The fork's tree must shadow any installed hermes package.
 export PYTHONPATH="$REPO/hermes${PYTHONPATH:+:$PYTHONPATH}"
 

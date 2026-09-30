@@ -48,6 +48,7 @@ export function openaiCodexModelManagerOptions(
 	const { resolveAccounts, clientVersion, fetch } = config;
 	return {
 		providerId: "openai-codex",
+		cacheProviderId: resolveModelCacheProviderId("openai-codex", { clientVersion }),
 		dynamicModelsAuthoritative: true,
 		...(resolveAccounts
 			? {

@@ -17,6 +17,7 @@ import {
 	serializeCredential,
 	USAGE_REPORT_TTL_MS,
 } from "./auth/sqlite-credential-store";
+import { mercuryCredentialContext, mercuryCredentialStore } from "./auth/mercury-store";
 import type { ApiKeyResolver } from "./auth-retry";
 import * as AIError from "./error";
 import { isUsageLimitOutcome } from "./error/rate-limit";
@@ -109,10 +110,14 @@ export type ApiKeyCredential = {
 	type: "api_key";
 	key: string;
 	source?: "login";
+	/** Canonical Mercury row ownership; prevents logout resurrection from a stale mirror. */
+	mercuryAuthId?: string;
 };
 
 export type OAuthCredential = {
 	type: "oauth";
+	/** Canonical Mercury row ownership; never a token or an account identifier. */
+	mercuryAuthId?: string;
 } & OAuthCredentials;
 
 export type AuthCredential = ApiKeyCredential | OAuthCredential;
@@ -391,6 +396,8 @@ export interface AuthCredentialStore {
 	acknowledgeLocalChanges?(): void;
 	/** Optional hook to notify the underlying store that usage report cache is stale. */
 	invalidateUsageCache?(signal?: AbortSignal): Promise<void>;
+	/** Import a local engine's canonical credential authority before reload. */
+	synchronizeCredentials?(): Promise<void>;
 	listAuthCredentials(provider?: string): StoredAuthCredential[];
 	/**
 	 * Optional store hook to re-hydrate the credential snapshot from its
@@ -1417,7 +1424,18 @@ export class AuthStorage {
 	 */
 	static async create(dbPath: string, options: AuthStorageOptions = {}): Promise<AuthStorage> {
 		const store = await SqliteAuthCredentialStore.open(dbPath);
-		return new AuthStorage(store, options);
+		const context = mercuryCredentialContext(dbPath);
+		const sharedStore: AuthCredentialStore = context ? mercuryCredentialStore(store, context) : store;
+		try {
+			await sharedStore.synchronizeCredentials?.();
+		} catch (error) {
+			store.close();
+			throw error;
+		}
+		return new AuthStorage(sharedStore, {
+			...options,
+			sourceLabel: options.sourceLabel ?? (context ? "Mercury shared profile credentials" : undefined),
+		});
 	}
 
 	/**
@@ -1586,6 +1604,7 @@ export class AuthStorage {
 	 * Reload credentials from storage.
 	 */
 	async reload(): Promise<void> {
+		await this.#store.synchronizeCredentials?.();
 		let records: StoredAuthCredential[];
 		try {
 			records = this.#store.listAuthCredentials();

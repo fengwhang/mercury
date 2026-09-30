@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Mercury Hermes profiles now keep OMP credentials in their own directories when inheriting the default launcher environment.
+
 ## [18.1.6] - 2026-09-03
 
 ### Added

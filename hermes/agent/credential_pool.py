@@ -994,7 +994,7 @@ class CredentialPool:
         every *pool-owned* Anthropic source - ``mercury_pkce`` and
         dashboard-issued ``manual:dashboard_pkce`` entries alike. Called
         while the shared cross-process auth-store lock is held, mirroring
-        ``_sync_xai_oauth_entry_from_pool_store``.
+        ``_sync_owned_oauth_entry_from_pool_store``.
 
         Borrowed sources (``claude_code``) are deliberately excluded: they
         are reference-only rows, so ``sanitize_borrowed_credential_payload``
@@ -1063,8 +1063,10 @@ class CredentialPool:
         device_code-sourced entries; env/API-key-sourced entries have no
         auth.json shadow to sync from.
         """
-        if self.provider != "openai-codex" or entry.source not in ("device_code", "manual:device_code"):
+        if self.provider != "openai-codex":
             return entry
+        if entry.source not in ("device_code", "manual:device_code"):
+            return self._sync_owned_oauth_entry_from_pool_store(entry)
         try:
             with _auth_store_lock():
                 auth_store = _load_auth_store()
@@ -1192,18 +1194,18 @@ class CredentialPool:
             logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", exc)
         return entry
 
-    def _sync_xai_oauth_entry_from_pool_store(
+    def _sync_owned_oauth_entry_from_pool_store(
         self, entry: PooledCredential
     ) -> PooledCredential:
         """Adopt a token pair rotated by another pool instance.
 
-        Direct xAI integrations load a fresh ``CredentialPool`` for each
-        request. Their in-memory locks therefore cannot protect xAI's
-        single-use refresh token across concurrent requests or processes.
+        Direct xAI integrations and manually added Codex accounts can load
+        separate ``CredentialPool`` instances for concurrent requests. Their
+        in-memory locks cannot protect single-use tokens across instances.
         This helper is called while the shared auth-store lock is held and
         re-reads the exact persisted row before a refresh POST is attempted.
         """
-        if self.provider != "xai-oauth":
+        if self.provider not in ("xai-oauth", "openai-codex"):
             return entry
         try:
             persisted = next(
@@ -1222,13 +1224,13 @@ class CredentialPool:
                 or stored.refresh_token != entry.refresh_token
             ):
                 logger.debug(
-                    "Pool entry %s: adopting xAI OAuth tokens rotated by another pool instance",
+                    "Pool entry %s: adopting OAuth tokens rotated by another pool instance",
                     entry.id,
                 )
                 self._replace_entry(entry, stored)
                 return stored
         except Exception as exc:
-            logger.debug("Failed to sync xAI OAuth entry from credential pool: %s", exc)
+            logger.debug("Failed to sync OAuth entry from credential pool: %s", exc)
         return entry
 
     def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -1474,7 +1476,7 @@ class CredentialPool:
             sync_entry = (
                 self._sync_codex_entry_from_auth_store
                 if self.provider == "openai-codex"
-                else self._sync_xai_oauth_entry_from_pool_store
+                else self._sync_owned_oauth_entry_from_pool_store
                 if self.provider == "xai-oauth"
                 else self._sync_anthropic_entry_from_pool_store
             )
@@ -1485,7 +1487,7 @@ class CredentialPool:
                 if self.provider == "openai-codex":
                     if synced is not entry:
                         entry = synced
-                        if not force and not self._entry_needs_refresh(entry):
+                        if not self._entry_needs_refresh(entry):
                             return entry
                     return self._refresh_entry_impl(entry, force=force)
                 # claude_code first: the shared credentials file - not the
@@ -2310,7 +2312,7 @@ class CredentialPool:
                     sync_fn = (
                         self._sync_codex_entry_from_auth_store
                         if self.provider == "openai-codex"
-                        else self._sync_xai_oauth_entry_from_pool_store
+                        else self._sync_owned_oauth_entry_from_pool_store
                     )
                     pending_refresh.append((entry, sync_fn))
                     continue
