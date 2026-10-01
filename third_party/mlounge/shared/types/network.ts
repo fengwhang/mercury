@@ -24,6 +24,7 @@ export type SharedServerOptions = {
 export type SharedNetworkStatus = {
 	connected: boolean;
 	secure: boolean;
+	warning?: string;
 };
 
 export type SharedNetwork = {

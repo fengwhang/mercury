@@ -12,6 +12,7 @@ import Client from "../client";
 import {MessageType} from "../../shared/types/msg";
 import {ChanType} from "../../shared/types/chan";
 import {SharedNetwork} from "../../shared/types/network";
+import {connectionProtection, refreshConnectionProtection} from "../connection-protection";
 
 type NetworkIrcOptions = {
 	host: string;
@@ -42,6 +43,7 @@ type NetworkIrcOptions = {
 type NetworkStatus = {
 	connected: boolean;
 	secure: boolean;
+	warning?: string;
 };
 
 export type IgnoreListItem = Hostmask & {
@@ -520,7 +522,7 @@ class Network {
 	}
 
 	getNetworkStatus() {
-		const status = {
+		const status: NetworkStatus = {
 			connected: false,
 			secure: false,
 		};
@@ -529,15 +531,25 @@ class Network {
 			const transport = this.irc.connection.transport;
 
 			if (transport.socket) {
-				const isLocalhost = ["127.0.0.1", "::1"].includes(transport.socket.remoteAddress);
-				const isAuthorized = transport.socket.encrypted && transport.socket.authorized;
-
 				status.connected = transport.isConnected();
-				status.secure = isAuthorized || isLocalhost;
+				const protection = connectionProtection(transport.socket, this.proxyEnabled);
+				status.secure = protection.secure;
+
+				if (status.connected && protection.warning) {
+					status.warning = protection.warning;
+				}
 			}
 		}
 
 		return status;
+	}
+
+	async refreshConnectionProtection() {
+		const socket = this.irc?.connection?.transport?.socket;
+
+		if (socket) {
+			await refreshConnectionProtection(socket, this.proxyEnabled);
+		}
 	}
 
 	addChannel(newChan: Chan) {

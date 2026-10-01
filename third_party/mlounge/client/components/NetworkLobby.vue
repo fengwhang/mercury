@@ -16,7 +16,10 @@
 			<span
 				v-if="network.status.connected && !network.status.secure"
 				class="not-secure-tooltip tooltipped tooltipped-w"
-				aria-label="Insecure connection"
+				:aria-label="
+					network.status.warning ||
+					'Connection is not protected by TLS, localhost, or verified Tailscale'
+				"
 			>
 				<span class="not-secure-icon" />
 			</span>

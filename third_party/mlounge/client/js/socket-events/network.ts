@@ -36,6 +36,7 @@ socket.on("network:status", function (data) {
 
 	network.status.connected = data.connected;
 	network.status.secure = data.secure;
+	network.status.warning = data.warning;
 
 	if (!data.connected) {
 		network.channels.forEach((channel) => {

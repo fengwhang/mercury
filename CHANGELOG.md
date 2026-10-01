@@ -5,6 +5,10 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Recognize local and verified Tailscale connections in mLounge's protection
+  indicator, preserving warnings for unprotected connections and invalid TLS
+  certificates and explaining the problem in the tooltip.
+
 ## [0.3.1] — nightly
 
 - Keep Observatory reconnects quiet: restore MIRC membership and initial topic

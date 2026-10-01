@@ -77,7 +77,7 @@ export default <IrcEventHandler>function (irc, network) {
 			true
 		);
 
-		sendStatus();
+		void sendStatus();
 	});
 
 	irc.on("close", function () {
@@ -137,7 +137,7 @@ export default <IrcEventHandler>function (irc, network) {
 			});
 		}
 
-		sendStatus();
+		void sendStatus();
 	});
 
 	if (Config.values.debug.ircFramework) {
@@ -211,7 +211,8 @@ export default <IrcEventHandler>function (irc, network) {
 		});
 	});
 
-	function sendStatus() {
+	async function sendStatus() {
+		await network.refreshConnectionProtection();
 		const status = network.getNetworkStatus();
 		const toSend = {
 			...status,
