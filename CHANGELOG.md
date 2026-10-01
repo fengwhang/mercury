@@ -5,6 +5,8 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.3] — nightly
+
 - Make OMP user steering interrupt model output and continue within the same
   RPC run. Keep launched programs running, background tracked shell commands
   on steering, and deliver their results later. Tools that cannot safely yield
