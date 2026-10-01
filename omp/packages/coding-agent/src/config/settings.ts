@@ -489,6 +489,11 @@ export class Settings {
 		return this;
 	}
 
+	/** The family root owns the shared profile used by Hermes command guards. */
+	get mercuryApprovalConfigPath(): string | undefined {
+		return this.#approvalPolicyParent?.mercuryApprovalConfigPath ?? this.#mercuryApprovalPolicy?.filePath;
+	}
+
 	#configPath: string | null;
 	#cwd: string;
 	#agentDir: string;

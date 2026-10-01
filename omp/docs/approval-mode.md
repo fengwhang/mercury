@@ -1,5 +1,12 @@
 # Tool approval mode
 
+Mercury's shared `approvals.mode` controls both engines and their descendants.
+`smart` uses the `write` tier for ordinary tools, but shell commands use Hermes's
+command guards and smart risk assessment: harmless commands run automatically,
+uncertain actions reach the owner's existing approval UI, and hard blocks remain
+blocked. Explicit prompt/deny policies and provider safety checks retain their
+gates. `safe`/`manual` maps to `always-ask`; `off`/`yolo` maps to `yolo`.
+
 Tool approval has three inputs:
 
 1. **Tool declaration** — every tool may declare an `approval` tier:

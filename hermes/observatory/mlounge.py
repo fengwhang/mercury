@@ -64,12 +64,13 @@ def patch_mlounge_frontend(paths: "MLoungePaths") -> dict:
         import json as _json
 
         try:
-            _ver = _json.loads(
+            _package = _json.loads(
                 (paths.dir / "pkg" / "package.json").read_text(
-                    encoding="utf-8")).get("version", "")
+                    encoding="utf-8"))
         except Exception:
-            _ver = ""
-        if "mercury" in str(_ver):
+            _package = {}
+        if (_package.get("mercuryFork") is True
+                or "mercury" in str(_package.get("version", ""))):
             return {"action": "skipped",
                     "reason": "fork bundle (no-focus fix lives in source)"}
         assets = paths.dir / "pkg" / "public" / "assets"
@@ -84,6 +85,7 @@ def patch_mlounge_frontend(paths: "MLoungePaths") -> dict:
             return {"action": "skipped", "reason": "no installed bundle yet"}
         changed_any = False
         saw_bundles = False
+        missing_pattern = False
         for bundle in sorted(assets.glob("index-*.js")):
             try:
                 st = bundle.stat()
@@ -98,6 +100,7 @@ def patch_mlounge_frontend(paths: "MLoungePaths") -> dict:
             except Exception:
                 continue
             if FRONTEND_JOIN_OPEN not in text:
+                missing_pattern = True
                 try:
                     state[key] = "pattern-missing"
                 except Exception:
@@ -121,7 +124,7 @@ def patch_mlounge_frontend(paths: "MLoungePaths") -> dict:
             return {"action": "skipped", "reason": "no bundle found"}
         if changed_any:
             return {"action": "patched"}
-        if any(v == "pattern-missing" for v in state.values()):
+        if missing_pattern:
             return {"action": "pattern-missing"}
         return {"action": "current"}
     except Exception as exc:

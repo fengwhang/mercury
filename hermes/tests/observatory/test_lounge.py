@@ -468,6 +468,27 @@ def test_frontend_patch_skips_fork_bundle(tmp_path) -> None:
     assert bundle.read_text() == "var a=1;"
 
 
+def test_frontend_patch_recognizes_product_version_and_ignores_old_bundle_failures(tmp_path) -> None:
+    import json
+
+    paths = mlounge_mod.MLoungePaths(tmp_path / "mercury")
+    pkg = paths.dir / "pkg"
+    assets = pkg / "public" / "assets"
+    assets.mkdir(parents=True)
+    (pkg / "package.json").write_text(json.dumps({"version": "0.3.4", "mercuryFork": True}))
+    bundle = assets / "index-current.js"
+    bundle.write_text("already fixed in fork source")
+    (paths.dir / "frontend-patch.json").write_text(json.dumps({"index-old.js:1:1": "pattern-missing"}))
+    assert mlounge_mod.patch_mlounge_frontend(paths)["action"] == "skipped"
+    assert bundle.read_text() == "already fixed in fork source"
+    # Legacy bundles still use patching, but an obsolete asset cannot keep
+    # a successfully patched current bundle in the drift-warning state.
+    (pkg / "package.json").write_text(json.dumps({"version": "4.5.2"}))
+    bundle.write_text(_SNIPPET)
+    assert mlounge_mod.patch_mlounge_frontend(paths)["action"] == "patched"
+    assert mlounge_mod.patch_mlounge_frontend(paths)["action"] == "current"
+
+
 def test_conf_lives_in_mlounge_home(tmp_path) -> None:
     """config.js must be $THELOUNGE_HOME/config.js — the only file read."""
     from observatory import mlounge as mlounge_mod

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -12,6 +12,7 @@ import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-in
 import { createSubagentSettings } from "@oh-my-pi/pi-coding-agent/task/executor";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import * as mercurySmartApproval from "../../src/tools/mercury-smart-approval";
 
 const BASE_SETTINGS = {
 	"async.enabled": false,
@@ -140,6 +141,84 @@ describe("tools.approvalMode setting", () => {
 				settings,
 			} as AgentToolContext),
 		).rejects.toThrow(/requires approval but no interactive UI available/);
+	});
+
+	it("Mercury smart runs harmless descendant commands and routes risk escalation to the orchestrator", async () => {
+		const profile = path.join(tempDir, "mercury-smart.yaml");
+		fs.writeFileSync(profile, "approvals: {mode: smart}\n");
+		const parent = approvalSettings({ "tools.approval": {} }).useMercuryApprovalPolicy(profile);
+		const family = createSubagentSettings(createSubagentSettings(parent));
+		const originalUI = session.extensionRunner!.getUIContext();
+		const titles: string[] = [];
+		const assess = spyOn(mercurySmartApproval, "assessMercuryCommand");
+		await initializeExtensions(session, {
+			uiContext: forwardApprovalUI(
+				forwardApprovalUI(
+					{
+						...originalUI,
+						select: async (title: string) => {
+							titles.push(title);
+							return "Deny";
+						},
+					},
+					"child",
+				),
+				"grandchild",
+			),
+			reportSendError: () => {},
+			reportRuntimeError: () => {},
+		});
+		try {
+			assess.mockResolvedValue({ policy: "allow" });
+			await bashTool().execute("smart-true", { command: "true" }, undefined, undefined, {
+				settings: family,
+			} as AgentToolContext);
+			expect(titles).toHaveLength(0);
+			expect(assess.mock.calls[0]?.slice(0, 3)).toEqual(["true", session.extensionRunner!.cwd, profile]);
+			await bashTool().execute(
+				"smart-safety-detector",
+				{ command: `rm -f ${path.join(tempDir, "absent")}` },
+				undefined,
+				undefined,
+				{ settings: family } as AgentToolContext,
+			);
+			expect(titles).toHaveLength(0);
+			expect(assess.mock.calls).toHaveLength(2);
+			assess.mockResolvedValue({ policy: "prompt", reason: "Risk requires owner review" });
+			await expect(
+				bashTool().execute("smart-risk", { command: "echo owner-review" }, undefined, undefined, {
+					settings: family,
+				} as AgentToolContext),
+			).rejects.toThrow(/denied by user/);
+			expect(titles).toHaveLength(1);
+			expect(titles[0]).toContain("[child] [grandchild]");
+			expect(titles[0]).toContain("Risk requires owner review");
+			assess.mockResolvedValue({ policy: "deny", reason: "Blocked by shared guards" });
+			await expect(
+				bashTool().execute("smart-block", { command: "echo must-not-run" }, undefined, undefined, {
+					settings: family,
+				} as AgentToolContext),
+			).rejects.toThrow(/Blocked by shared guards/);
+			expect(titles).toHaveLength(1);
+			// Explicit user prompts retain their gate even if a guardian would allow.
+			assess.mockResolvedValue({ policy: "allow" });
+			parent.override("tools.approval", { bash: "prompt" });
+			const assessments = assess.mock.calls.length;
+			await expect(
+				bashTool().execute("smart-explicit", { command: "true" }, undefined, undefined, {
+					settings: family,
+				} as AgentToolContext),
+			).rejects.toThrow(/denied by user/);
+			expect(assess.mock.calls).toHaveLength(assessments);
+			expect(titles).toHaveLength(2);
+		} finally {
+			assess.mockRestore();
+			await initializeExtensions(session, {
+				uiContext: originalUI,
+				reportSendError: () => {},
+				reportRuntimeError: () => {},
+			});
+		}
 	});
 
 	it("critical bash patterns do not prompt in yolo mode with bash allowed", async () => {

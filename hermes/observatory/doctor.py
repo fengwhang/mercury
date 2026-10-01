@@ -249,6 +249,9 @@ def _established_to(port: int) -> int:
                         count += 1
         except OSError:
             continue
+    return count
+
+
 def _gateway_log_snippets(home: Path) -> list[str]:
     """Recent gateway log lines mentioning mirc (any source, any case)."""
     import re as _re
@@ -613,21 +616,21 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
             why = ("a newer release" if stale == "stale-version"
                    else "different sources under the same version")
             results.append((False, "chat frontend",
-                            "The Lounge serves a STALE fork"
+                            "mLounge serves a STALE fork"
                             f"{fork_detail} ({why}) — run mercury "
                             "observatory restart to vend the shipped bundle"))
         else:
             results.append((True, "chat frontend",
-                            "The Lounge uplink active (your browser chat)"
+                            "mLounge uplink active (your browser chat)"
                             f"{fork_detail}"))
     elif mlounge_installed:
         results.append((False, "chat frontend",
-                        "The Lounge is installed but NOT running — your "
+                        "mLounge is installed but NOT running — your "
                         "browser chat is dead; mercury observatory restart "
                         "restarts it"))
     else:
         results.append((True, "chat frontend",
-                        "The Lounge not installed (raw IRC client users: fine)"))
+                        "mLounge not installed"))
     dotenv = _read_dotenv(mercury_home)
     wired_host = _env("IRC_SERVER", dotenv) or "127.0.0.1"
     wired_port = _env("IRC_PORT", dotenv) or "6669"
@@ -753,7 +756,7 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
                                 "gateway log shows no IRC adapter lines at all — "
                                 "the adapter never started"))
 
-    if agent_up and agent_pw:
+    if agent_up:
         probe = _Probe(agent_host, agent_port,
                        f"mercury-doctor-{os.getpid() % 10000}", agent_pw)
         try:

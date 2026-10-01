@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Use Mercury's shared Hermes smart command guards instead of prompting for every shell command; preserve explicit restrictions and ancestor approval routing.
+
 ## [18.1.6] - 2026-09-03
 
 ### Breaking Changes

@@ -3117,6 +3117,7 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> bool:
     if current == ip:
         print_info(f"Server port already on {ip}.")
         return False
+    print_info(f"Previous SERVER address: {current} (about to be rotated to {ip}).")
     try:
         obs.set_mirc_bind(ip)
     except AttributeError:

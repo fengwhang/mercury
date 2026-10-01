@@ -12,15 +12,19 @@ import type { ComputerSafetyCheck, ImageContent, Static, TextContent, TSchema } 
 import { sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../../config/settings";
 import type { Theme } from "../../modes/theme/theme";
+import { mercuryApprovalSocket } from "../../session/headless-approval";
 import {
 	type ApprovalMode,
 	denyError,
 	formatApprovalPrompt,
+	isBareSafetyOverride,
 	resolveApproval,
 	truncateForPrompt,
 } from "../../tools/approval";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { withFileMutationSession } from "../../tools/file-write-fallback";
+import { assessMercuryCommand } from "../../tools/mercury-smart-approval";
+import { resolveToCwd } from "../../tools/path-utils";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
 import { applyToolProxy } from "../tool-proxy";
 import type { ExtensionRunner } from "./runner";
@@ -267,6 +271,34 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			required: pendingSafetyChecks.length > 0 || (resolved.policy === "prompt" && (explicitPrompt || !xdevBypass)),
 			reason: resolved.reason,
 		};
+		const mercuryConfig = settings?.mercuryApprovalConfigPath;
+		// Explicit prompt/deny policies and provider checks retain their gates.
+		// Mercury smart's bash tier and risk detectors use Hermes assessment.
+		// Hermes-owned children already receive that assessment from their parent.
+		if (
+			approvalCheck.required &&
+			pendingSafetyChecks.length === 0 &&
+			approvalMode === "write" &&
+			mercuryConfig &&
+			!mercuryApprovalSocket() &&
+			this.tool.name === "bash" &&
+			(resolved.source === "mode" || isBareSafetyOverride(this.tool, resolvedArgs)) &&
+			!Object.hasOwn(userPolicies, resolved.policyKey ?? this.tool.name) &&
+			typeof (resolvedArgs as { command?: unknown }).command === "string"
+		) {
+			const assessment = await assessMercuryCommand(
+				(resolvedArgs as { command: string }).command,
+				typeof (resolvedArgs as { cwd?: unknown }).cwd === "string"
+					? resolveToCwd((resolvedArgs as { cwd: string }).cwd, this.runner.cwd)
+					: this.runner.cwd,
+				mercuryConfig,
+				context?.sessionManager?.getSessionId() ?? "",
+				signal,
+			);
+			if (assessment.policy === "deny") throw new Error(assessment.reason ?? "Blocked by Mercury command guards");
+			approvalCheck.required = assessment.policy !== "allow";
+			approvalCheck.reason = assessment.reason;
+		}
 
 		if (approvalCheck.required) {
 			const scheduledCall = context?.toolCall?.toolCalls[context.toolCall.index];
@@ -335,20 +367,19 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				await emitApprovalResolved(false, err instanceof Error ? err.message : "approval aborted");
 				throw err;
 			}
-		const approved = choice === "Approve";
-		// A non-answer (dead headless bridge, headless cancel, auto-deny UI)
-		// is NOT a user denial — label it so agents don't wait on a human
-		// who never saw the prompt.
-		const denyReason =
-			choice === "Deny" ? "denied by user" : "approval unanswered (no human reachable)";
-		await emitApprovalResolved(approved, approved ? undefined : denyReason);
-		if (!approved) {
-			throw new Error(
-				choice === "Deny"
-					? `Tool call denied by user: ${this.tool.name}`
-					: `Tool call not approved (${denyReason}): ${this.tool.name}`,
-			);
-		}
+			const approved = choice === "Approve";
+			// A non-answer (dead headless bridge, headless cancel, auto-deny UI)
+			// is NOT a user denial — label it so agents don't wait on a human
+			// who never saw the prompt.
+			const denyReason = choice === "Deny" ? "denied by user" : "approval unanswered (no human reachable)";
+			await emitApprovalResolved(approved, approved ? undefined : denyReason);
+			if (!approved) {
+				throw new Error(
+					choice === "Deny"
+						? `Tool call denied by user: ${this.tool.name}`
+						: `Tool call not approved (${denyReason}): ${this.tool.name}`,
+				);
+			}
 			if (pendingSafetyChecks.length > 0) {
 				if (!context) throw new Error("Provider safety approval context is unavailable");
 				context.providerSafetyApproved = true;

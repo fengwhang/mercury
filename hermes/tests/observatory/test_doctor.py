@@ -59,12 +59,53 @@ async def test_doctor_finds_present_bot(tmp_path, monkeypatch) -> None:
         assert by_label["server listener"][0] is True
         assert by_label["bot credential"][0] is True
         assert by_label["adapter target"][0] is True
+        assert by_label["bot connection"][0] is True
         ok, detail = by_label["bot in room"]
         assert ok is True, detail
         # A present send-only dummy is not a working dispatch adapter.
         assert by_label["gateway transport"][0] is False
     finally:
         await d.stop()
+
+
+@pytest.mark.asyncio
+async def test_missing_provisioned_password_does_not_hide_a_live_bot(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    from observatory.doctor import run_doctor
+    from observatory.mirc import DaemonConfig, MircDaemon
+
+    home = tmp_path / "mercury"
+    (home / "observatory").mkdir(parents=True)
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    for key in ("IRC_AGENT_PASSWORD", "IRC_CLIENT_PASSWORD", "IRC_SERVER_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    daemon = MircDaemon(DaemonConfig(
+        agent_port=0, server_host="127.0.0.1", server_port=0,
+        server_name="vm", state_dir=str(tmp_path),
+    ))
+    await daemon.start()
+    try:
+        agent_port = daemon._servers[0].sockets[0].getsockname()[1]
+        server_port = daemon._servers[1].sockets[0].getsockname()[1]
+        (home / "observatory" / "ircd.json").write_text(json.dumps({
+            "server_name": "vm", "agent_host": "127.0.0.1", "agent_port": agent_port,
+            "server_host": "127.0.0.1", "server_port": server_port,
+        }))
+        reader, writer = await asyncio.open_connection("127.0.0.1", agent_port)
+        writer.write(b"NICK vm_gateway\r\nUSER vm_gateway 0 * :test\r\nJOIN #vm_gateway\r\n")
+        await writer.drain()
+        try:
+            results = await asyncio.to_thread(run_doctor, home)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+        by_label = {label: (ok, detail) for ok, label, detail in results}
+        assert by_label["passwords"][0] is False
+        assert by_label["bot connection"][0] is True
+        assert by_label["bot in room"][0] is True
+    finally:
+        await daemon.stop()
 
 
 def test_doctor_flags_credential_drift(tmp_path, monkeypatch) -> None:

@@ -5,6 +5,12 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Recognize mLounge's fork marker when checking the frontend focus fix,
+  ignore obsolete bundle warnings, and label saved addresses before rotation.
+- Report live gateway connections correctly in Observatory diagnostics, even
+  when saved listener credentials are missing.
+- Use Hermes's risk assessment for OMP smart-mode shell commands, allowing
+  ordinary commands automatically and routing uncertain actions to the owner.
 - Render mLounge Markdown with proper bulleted and numbered lists, nested
   blocks, and aligned, horizontally scrollable tables; keep tool traces
   plaintext and code commands literal.
