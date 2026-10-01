@@ -763,6 +763,15 @@ function buildHelpMessage(ctx) {
 }
 
 /**
+ * @param {string} nativesDir
+ * @param {string} version
+ * @param {"glibc" | "musl" | undefined} libc
+ */
+export function nativeVersionDir(nativesDir, version, libc) {
+	return path.join(nativesDir, version, ...(libc === "musl" ? ["musl"] : []));
+}
+
+/**
  * Initialize the loader context: resolves every path, variant, and policy
  * decision once so the inner load loop stays a pure require/validate pipeline.
  * Called from `loadNative()` rather than at module scope so importing pure
@@ -778,7 +787,9 @@ export function initLoaderContext(overrides = {}) {
 	const nativeDir = overrides.nativeDir ?? path.join(import.meta.dir, "..", "native");
 	const execDir = path.dirname(process.execPath);
 	const nativesDir = getNativesDir();
-	const versionedDir = path.join(nativesDir, packageVersion);
+	// GNU and musl addons have identical filenames and package versions.
+	// Give musl its own cache so switching binaries cannot reuse a GNU addon.
+	const versionedDir = nativeVersionDir(nativesDir, packageVersion, embeddedAddon?.libc);
 	const userDataDir =
 		platform === "win32"
 			? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "omp")

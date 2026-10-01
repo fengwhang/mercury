@@ -27,10 +27,21 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+from mercury_cli.elf import check_elf, host_arch, host_libc, read_elf
+
 MERCURY_REPO_OWNER = "fengwhang"
 MERCURY_REPO_NAME = "mercury"
 RELEASES_API = f"https://api.github.com/repos/{MERCURY_REPO_OWNER}/{MERCURY_REPO_NAME}/releases/latest"
 RELEASES_LIST_API = f"https://api.github.com/repos/{MERCURY_REPO_OWNER}/{MERCURY_REPO_NAME}/releases?per_page=20"
+
+
+def _release_asset_candidates(version: str, arch: str, libc: str) -> list[str]:
+    suffix = f"musl-{arch}" if libc == "musl" else arch
+    names = [f"mercury-{version}-{suffix}.tar.gz", f"mercury-{suffix}.tar.gz"]
+    # Legacy undifferentiated archives were glibc only.
+    if libc == "glibc":
+        names.append(f"mercury-{version}.tar.gz")
+    return names
 
 
 def _install_channel() -> str:
@@ -195,6 +206,11 @@ def is_current() -> bool:
     rel = _latest_release()
     if not rel:
         return True  # cannot check -> don't nag
+    try:
+        _arch, _libc = host_arch(), host_libc()
+    except ValueError as exc:
+        print(f"✗ {exc}")
+        return 1
     latest = str(rel.get("tag_name", "")).lstrip("v")
     return _normalize(latest) <= _normalize(_installed_version())
 
@@ -438,6 +454,11 @@ def update_from_release(*, assume_yes: bool = False) -> int:
         print(f"  https://github.com/{MERCURY_REPO_OWNER}/{MERCURY_REPO_NAME}/releases")
         return 1
 
+    try:
+        _arch, _libc = host_arch(), host_libc()
+    except ValueError as exc:
+        print(f"✗ {exc}")
+        return 1
     latest = str(rel.get("tag_name", "")).lstrip("v")
     current = _installed_version()
     if _normalize(latest) < _normalize(current):
@@ -449,12 +470,7 @@ def update_from_release(*, assume_yes: bool = False) -> int:
         # fetch) against the recorded build id; a mismatch (or unknown id on
         # a fresh tree) forces the update even at the same version.
         _assets_probe = {a.get("name", ""): a for a in rel.get("assets", [])}
-        _m = __import__("platform").machine().lower()
-        _arch = "arm64" if _m in ("aarch64", "arm64") else "x64" if _m in ("x86_64", "amd64") else ""
-        _probe_names = []
-        if _arch:
-            _probe_names += [f"mercury-{latest}-{_arch}.tar.gz", f"mercury-{_arch}.tar.gz"]
-        _probe_names += [f"mercury-{latest}.tar.gz"]
+        _probe_names = _release_asset_candidates(latest, _arch, _libc)
         _probe_tar = next((n for n in _probe_names if n in _assets_probe), "")
         _rel_sha = _release_sha256(_assets_probe, _probe_tar) if _probe_tar else None
         _inst_sha = _installed_build_id()
@@ -470,21 +486,11 @@ def update_from_release(*, assume_yes: bool = False) -> int:
     # MERCURY-OMP PATCH: releases publish PER-ARCH tarballs — select the one
     # for THIS host (uname -m -> x64/arm64), with the version-less alias
     # and single-candidate fallbacks for older release layouts.
-    _m = __import__("platform").machine().lower()
-    _arch = "arm64" if _m in ("aarch64", "arm64") else "x64" if _m in ("x86_64", "amd64") else ""
-    candidates = []
-    if _arch:
-        candidates += [f"mercury-{latest}-{_arch}.tar.gz", f"mercury-{_arch}.tar.gz"]
-    candidates += [f"mercury-{latest}.tar.gz"]
+    candidates = _release_asset_candidates(latest, _arch, _libc)
     tar_name = next((n for n in candidates if n in assets), "")
     asset = assets.get(tar_name) if tar_name else None
     if not asset:
-        cands = [a for n, a in assets.items() if re.match(r"mercury-.*\.tar\.gz$", n)]
-        if len(cands) == 1:
-            asset = cands[0]
-            tar_name = next(n for n, a in assets.items() if a is asset)
-    if not asset:
-        print(f"✗ Release v{latest} has no tarball for this host ({_m or 'unknown arch'}).")
+        print(f"✗ Release v{latest} has no tarball for this host ({_arch}/{_libc}).")
         print(f"  Looked for: {', '.join(candidates)}")
         return 1
     url = asset.get("browser_download_url")
@@ -497,31 +503,6 @@ def update_from_release(*, assume_yes: bool = False) -> int:
         print("→ Downloading tarball...")
         tar_path = tmp / tar_name
         _download(url, tar_path)
-
-        # MERCURY-OMP PATCH (arch guard — same law as install.sh): verify the
-        # packed omp binary's ELF machine byte matches the host BEFORE
-        # unpacking over the live tree. Byte 18: 62=x86_64, 183=AArch64.
-        try:
-            import tarfile as _tf
-
-            with _tf.open(tar_path, "r:gz") as _tar:
-                _member = next(
-                    (m for m in _tar.getnames()
-                     if m.endswith("omp/packages/coding-agent/dist/omp")),
-                    None,
-                )
-                if _member is not None:
-                    _f = _tar.extractfile(_member)
-                    if _f is not None:
-                        _f.read(18)
-                        _magic = _f.read(1)[0]
-                        _want = 183 if _arch == "arm64" else 62 if _arch == "x64" else None
-                        if _want is not None and _magic != _want:
-                            print(f"✗ WRONG ARCH: tarball omp is {'AArch64' if _magic == 183 else f'ELF {_magic}'}"
-                                  f" but this host is {_m} — refusing to install an emulated binary.")
-                            return 1
-        except Exception as _exc:
-            print(f"⚠ arch pre-check skipped ({_exc}) — checksum still enforced")
 
         sha_asset = assets.get(f"{tar_name}.sha256")
         if sha_asset and sha_asset.get("browser_download_url"):
@@ -536,6 +517,24 @@ def update_from_release(*, assume_yes: bool = False) -> int:
                 print("  checksum verified")
             except Exception as exc:
                 print(f"  ⚠ checksum step failed ({exc}) — continuing without it")
+
+        # Inspect before touching the live tree. Missing PT_INTERP looks like
+        # a missing binary at exec time, despite the file being present.
+        import tarfile
+        try:
+            with tarfile.open(tar_path, "r:gz") as tf:
+                member = next((m for m in tf.getmembers()
+                               if m.name.endswith("omp/packages/coding-agent/dist/omp")), None)
+                if member is None:
+                    raise ValueError("Release has no prebuilt omp binary")
+                stream = tf.extractfile(member)
+                if stream is None:
+                    raise ValueError("Release omp binary is not a regular file")
+                with stream:
+                    check_elf(read_elf(stream), _arch, _libc, portable=True, host=True)
+        except (OSError, ValueError, tarfile.TarError) as exc:
+            print(f"✗ Release binary is incompatible: {exc}")
+            return 1
 
         print("→ Unpacking...")
         import tarfile

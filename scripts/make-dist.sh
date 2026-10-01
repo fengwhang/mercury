@@ -80,7 +80,7 @@ check_natives_sentinel() {
     PKGVER="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\(.*\)".*/\1/p' omp/packages/natives/package.json | head -1)"
     [ -n "$PKGVER" ] || { echo "FATAL: cannot read omp/packages/natives/package.json version" >&2; exit 1; }
     EXPECTED="__piNativesV$(printf '%s' "$PKGVER" | tr -c 'A-Za-z0-9' '_')"
-    for f in omp/packages/natives/native/*.node; do
+    for f in omp/packages/natives/native/*.node omp/packages/natives/native/musl/*.node; do
         [ -e "$f" ] || continue
         if command -v strings >/dev/null 2>&1; then
             GOT="$(strings "$f" | grep -o -m1 '__piNativesV[A-Za-z0-9_]*' || true)"
@@ -99,10 +99,12 @@ check_natives_sentinel() {
 check_natives_sentinel
 
 build_one() { # $1 = arch suffix (x64|arm64), $2 = source binary path, $3 = label
-    local ARCHSUF="$1" SRCBIN="$2" LABEL="$3"
+    local ARCHSUF="$1" SRCBIN="$2" LABEL="$3" LIBC="${4:-glibc}"
+    local SUFFIX="$ARCHSUF"
+    [ "$LIBC" = "musl" ] && SUFFIX="musl-$ARCHSUF"
     check_binary_version "$SRCBIN" "$LABEL" # re-gate per arch: no stale binary ships
-    local OUT="dist/mercury-${VERSION}-${ARCHSUF}.tar.gz"
-    local S="$STAGE/$ARCHSUF"
+    local OUT="dist/mercury-${VERSION}-${SUFFIX}.tar.gz"
+    local S="$STAGE/$SUFFIX"
     echo "== [$LABEL] staging repo source (git archive = exactly what's committed)"
     mkdir -p "$S/mercury"
     git archive HEAD | tar -x -C "$S/mercury"
@@ -115,10 +117,13 @@ build_one() { # $1 = arch suffix (x64|arm64), $2 = source binary path, $3 = labe
     # No soju triple: the stdlib MIRC daemon owns the client ports — nothing to inject.
     # natives if present (rust-built .so/.node; runtime fallback path — the
     # primary natives are EMBEDDED in the compiled binary)
-    if compgen -G "omp/packages/natives/native/*" >/dev/null; then
-        mkdir -p "$S/mercury/omp/packages/natives/native"
-        cp -r omp/packages/natives/native/. "$S/mercury/omp/packages/natives/native/"
-    fi
+    local NATIVE_DIR="omp/packages/natives/native" addon
+    [ "$LIBC" = "musl" ] && NATIVE_DIR="$NATIVE_DIR/musl"
+    mkdir -p "$S/mercury/omp/packages/natives/native"
+    for addon in "$NATIVE_DIR"/pi_natives.linux-"$ARCHSUF"*.node; do
+        [ -f "$addon" ] || continue
+        cp "$addon" "$S/mercury/omp/packages/natives/native/"
+    done
     # Mercury mLounge fork (prebuilt by scripts/build-mlounge-fork.sh on the
     # release host — user machines never compile). Fail hard on a missing
     # or stale payload instead of shipping last week's bundle.
@@ -137,6 +142,7 @@ build_one() { # $1 = arch suffix (x64|arm64), $2 = source binary path, $3 = labe
 Mercury distribution
 version:    ${VERSION}
 arch:       ${ARCHSUF}
+libc:       ${LIBC}
 built:      $(date -u +%Y-%m-%dT%H:%M:%SZ)
 built-on:   $(uname -srm)
 hermes pin: $(grep -m1 hermes PINS.txt || true)
@@ -152,23 +158,38 @@ EOF
     echo "    checksum: ${OUT}.sha256"
 }
 
-[ -x omp/packages/coding-agent/dist/omp ] \
-    || { echo "FATAL: x86 binary missing (build: bun run build in omp/packages/coding-agent)" >&2; exit 1; }
-build_one x64 omp/packages/coding-agent/dist/omp "x86-64"
-
-if [ -x omp/packages/coding-agent/dist/omp-linux-arm64 ]; then
-    build_one arm64 omp/packages/coding-agent/dist/omp-linux-arm64 "aarch64"
-else
-    echo "WARNING: no arm64 binary — skipping arm64 tarball (build with CROSS_TARGET=linux-arm64)" >&2
-fi
-
-# Stable version-less aliases (hardlinks) so the one-liner never needs the
-# version in its URL: releases/latest/download/mercury-<arch>.tar.gz always
-# resolves. The installer constructs this URL itself when no URL is given.
-ln -f "dist/mercury-${VERSION}-x64.tar.gz"     "dist/mercury-x64.tar.gz"
-ln -f "dist/mercury-${VERSION}-x64.tar.gz.sha256" "dist/mercury-x64.tar.gz.sha256"
-if [ -f "dist/mercury-${VERSION}-arm64.tar.gz" ]; then
-    ln -f "dist/mercury-${VERSION}-arm64.tar.gz"     "dist/mercury-arm64.tar.gz"
-    ln -f "dist/mercury-${VERSION}-arm64.tar.gz.sha256" "dist/mercury-arm64.tar.gz.sha256"
-fi
-echo "aliases: mercury-x64.tar.gz mercury-arm64.tar.gz (version-less, latest)"
+# Validate every selected artifact before writing any tarball. A build-host
+# smoke test cannot detect a missing loader on another distribution.
+SPECS=("x64:glibc:omp:x86-64")
+for spec in "arm64:glibc:omp-linux-arm64:aarch64" "x64:musl:omp-linux-musl-x64:musl-x86-64" "arm64:musl:omp-linux-musl-arm64:musl-aarch64"; do
+    IFS=: read -r arch libc binary label <<< "$spec"
+    if [ -x "omp/packages/coding-agent/dist/$binary" ]; then
+        SPECS+=("$spec")
+    else
+        echo "WARNING: no $label binary — skipping (build with the matching CROSS_TARGET)" >&2
+    fi
+done
+for spec in "${SPECS[@]}"; do
+    IFS=: read -r arch libc binary label <<< "$spec"
+    binary="omp/packages/coding-agent/dist/$binary"
+    [ -x "$binary" ] || { echo "FATAL: $label binary missing" >&2; exit 1; }
+    check_binary_version "$binary" "$label"
+    python3 hermes/mercury_cli/elf.py "$binary" --arch "$arch" --libc "$libc" --portable || exit 1
+    native_dir="omp/packages/natives/native"
+    [ "$libc" = musl ] && native_dir="$native_dir/musl"
+    count=0
+    for addon in "$native_dir"/pi_natives.linux-"$arch"*.node; do
+        [ -f "$addon" ] || continue
+        python3 hermes/mercury_cli/elf.py "$addon" --arch "$arch" --libc "$libc" --portable --addon || exit 1
+        count=$((count + 1))
+    done
+    [ "$count" -gt 0 ] || { echo "FATAL: no matching $arch/$libc native addon" >&2; exit 1; }
+done
+for spec in "${SPECS[@]}"; do
+    IFS=: read -r arch libc binary label <<< "$spec"
+    build_one "$arch" "omp/packages/coding-agent/dist/$binary" "$label" "$libc"
+    suffix="$arch"
+    [ "$libc" = musl ] && suffix="musl-$arch"
+    ln -f "dist/mercury-${VERSION}-${suffix}.tar.gz" "dist/mercury-${suffix}.tar.gz"
+    ln -f "dist/mercury-${VERSION}-${suffix}.tar.gz.sha256" "dist/mercury-${suffix}.tar.gz.sha256"
+done

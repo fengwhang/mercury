@@ -5,6 +5,17 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.7] — nightly
+
+- Build portable OMP runtimes for glibc and musl on Linux x64 and ARM64,
+  removing build-host Nix loader dependencies.
+- Select release downloads by CPU and libc, isolate musl native caches, and
+  package only the matching fallback addons.
+- Reject non-portable ELF loaders and native ABI mismatches before release;
+  diagnose incompatible binaries before installing Python dependencies or
+  swapping an existing installation.
+- Resolve the nightly installer from its selected release tag.
+
 ## [0.3.6] — nightly
 
 - Configure Hermes and OMP approval modes separately in setup; restore OMP's

@@ -145,3 +145,34 @@ else:
     assert output["args"] == ["--channel", "nightly", "v0.3.4-nightly", "--skip-setup"]
     assert output["command"] == "mercury-nightly"
     assert output["home"] == str(home / ".mercury-nightly")
+
+
+def test_installer_reports_nix_loader_before_venv_setup(tmp_path):
+    import struct
+    install = tmp_path / "install"
+    binary = install / "omp/packages/coding-agent/dist/omp"
+    binary.parent.mkdir(parents=True)
+    interpreter = b"/nix/store/absent/lib/ld-linux-x86-64.so.2\0"
+    header = bytearray(64)
+    header[:6] = b"\x7fELF\x02\x01"
+    struct.pack_into("<H", header, 18, 62)
+    struct.pack_into("<Q", header, 32, 64)
+    struct.pack_into("<HH", header, 54, 56, 1)
+    binary.write_bytes(header + struct.pack("<IIQQQQQQ", 3, 0, 120, 0, 0, len(interpreter), len(interpreter), 1) + interpreter)
+    binary.chmod(0o755)
+    checker = install / "hermes/mercury_cli/elf.py"
+    checker.parent.mkdir(parents=True)
+    shutil.copy2(ROOT / "hermes/mercury_cli/elf.py", checker)
+    script = f'''source "{ROOT / 'install.sh'}" --dir "{install}"
+uname() {{ echo x86_64; }}
+OS=linux
+LIBC=glibc
+select_omp_binary
+printf 'unexpectedly-reached-venv\\n'
+'''
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=15,
+                            env={"PATH":os.environ["PATH"], "HOME":str(tmp_path)})
+    assert result.returncode != 0
+    assert "/nix/store/absent" in result.stderr
+    assert "Wrong Linux loader" in result.stderr
+    assert "unexpectedly-reached-venv" not in result.stdout

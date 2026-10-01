@@ -101,9 +101,15 @@ For a nightly installation:
 curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install-nightly.sh | bash
 ```
 
-The current nightly is **[v0.3.4-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.4-nightly)**,
-with the same v0.3.4 packages as stable. The standard installer selects stable;
-nightly is selected explicitly by this wrapper or `--channel nightly`.
+The nightly installer selects the newest published prerelease. Stable remains
+on its own update channel; nightly is selected explicitly by this wrapper or
+`--channel nightly`.
+
+Nightly Linux bundles are provided for both **glibc and musl**, on x64 and
+ARM64. The installer and updater select the host's CPU and libc. Alpine needs
+`libstdc++` and `libgcc` (`apk add libstdc++ libgcc`). NixOS needs its standard
+Linux loader compatibility enabled (`programs.nix-ld.enable = true;`). The
+prebuilt OMP runtime does not depend on the release host's Nix store paths.
 
 This uses `mercury-nightly` and `~/.mercury-nightly`. State directories are
 separate, but the Observatory service names and default ports currently

@@ -21,6 +21,7 @@ subprocess, and observatory hooks mocked:
 from __future__ import annotations
 
 import platform
+import struct
 import subprocess
 import tarfile
 from pathlib import Path
@@ -44,7 +45,13 @@ def _fixture_tarball(dest: Path, *, wheels: list[str] | None) -> None:
     # ELF magic byte 18: 62 = x86_64, 183 = AArch64 (arch guard reads it)
     machine = platform.machine().lower()
     want = 183 if machine in ("aarch64", "arm64") else 62
-    (omp / "omp").write_bytes(b"\x7fELF" + b"\x00" * 14 + bytes([want]) + b"\x00" * 8)
+    interp = ("/lib/ld-linux-aarch64.so.1" if want == 183 else "/lib64/ld-linux-x86-64.so.2").encode() + b"\0"
+    header = bytearray(64)
+    header[:6] = b"\x7fELF\x02\x01"
+    struct.pack_into("<H", header, 18, want)
+    struct.pack_into("<Q", header, 32, 64)
+    struct.pack_into("<HH", header, 54, 56, 1)
+    (omp / "omp").write_bytes(header + struct.pack("<IIQQQQQQ", 3, 0, 120, 0, 0, len(interp), len(interp), 1) + interp)
     tools = staging / "hermes" / "tools"
     tools.mkdir(parents=True)
     (tools / "omp_delegation.py").write_text("# delegation\n", encoding="utf-8")
@@ -84,6 +91,7 @@ class _Harness:
                 "browser_download_url": "https://example.invalid/mercury-9.9.9-x64.tar.gz",
             }],
         }
+        monkeypatch.setattr(ur, "host_libc", lambda: "glibc")
         monkeypatch.setattr(ur, "_latest_release", lambda *a, **k: rel)
         monkeypatch.setattr(ur, "_installed_version", lambda: "0.0.1")
         monkeypatch.setattr(ur, "_project_root", lambda: self.root)
