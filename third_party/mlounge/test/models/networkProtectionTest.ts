@@ -133,6 +133,7 @@ describe("Network protection indicator", () => {
 
 	it("retains TLS warnings for unverified peers and proxy hops", async () => {
 		tailscale();
+
 		for (const [remote, local] of [
 			["100.100.1.3", self],
 			[peer, "192.168.1.10"],
@@ -142,6 +143,7 @@ describe("Network protection indicator", () => {
 			expect(result.getNetworkStatus().secure).toBe(false);
 			expect(result.getNetworkStatus().warning).toBe("TLS certificate validation failed");
 		}
+
 		const {result} = network("127.0.0.1", self, true, false);
 		result.proxyEnabled = true;
 		expect(result.getNetworkStatus().warning).toBe("TLS certificate validation failed");
