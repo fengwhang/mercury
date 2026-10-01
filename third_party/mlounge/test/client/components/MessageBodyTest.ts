@@ -8,7 +8,7 @@ import copyText from "../../../client/js/helpers/copyText";
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("Lounge message source and copy controls", () => {
+describe("mLounge message source and copy controls", () => {
 	it("copies literal code without fences, preserving shell symbols and whitespace", async () => {
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		vi.stubGlobal("navigator", {clipboard: {writeText}});

@@ -1,6 +1,6 @@
 {
   "name": "mlounge",
-  "description": "mLounge, Mercury\u2019s fork of The Lounge for MIRC agent rooms",
+  "description": "mLounge, Mercury’s fork of The Lounge for MIRC agent rooms",
   "version": "0.3.4",
   "type": "commonjs",
   "preferGlobal": true,
@@ -70,6 +70,7 @@
     "ldapjs": "2.3.3",
     "linkify-it": "3.0.3",
     "lodash": "4.17.21",
+    "markdown-it": "15.0.2",
     "mime-types": "2.1.35",
     "node-forge": "1.3.1",
     "package-json": "7.0.0",

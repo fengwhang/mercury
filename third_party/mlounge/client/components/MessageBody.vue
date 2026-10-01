@@ -1,11 +1,11 @@
 <template>
-	<span class="message-body">
+	<div class="message-body">
 		<span class="message-tools">
 			<button type="button" :aria-pressed="raw" @click="toggleRaw">Raw</button>
 		</span>
 		<pre v-if="raw" class="message-raw">{{ message.text }}</pre>
 		<ParsedMessage v-else :network="network" :message="message" />
-	</span>
+	</div>
 </template>
 
 <script lang="ts">

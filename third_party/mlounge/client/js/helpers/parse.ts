@@ -15,16 +15,14 @@ import InlineChannel from "../../components/InlineChannel.vue";
 import Username from "../../components/Username.vue";
 import {ClientMessage, ClientNetwork} from "../types";
 import {
-	detectBlock,
 	extractBlocks,
 	inlineMdToIrcCodes,
 	isTraceLine,
 	MdBlock,
-	renderCodeBlock,
-	renderMathDisplay,
 	renderMathSpan,
 	splitInlineMath,
 } from "./markdown";
+import renderMarkdownBlocks from "./markdownBlocks";
 
 const emojiModifiersRegex = /[\u{1f3fb}-\u{1f3ff}]|\u{fe0f}/gu;
 
@@ -109,9 +107,8 @@ function createFragment(fragment: StyledFragment): VNode | string | undefined {
 
 // Transform an IRC message potentially filled with styling control codes, URLs,
 // nicknames, and channels into a string of HTML elements to display on the client.
-// Mercury: a server-reassembled multiline message renders as ONE row with
-// real line breaks. Split first so links/channels/emoji never match across
-// a line boundary, then join the per-line vnode lists with <br>.
+// Markdown blocks share one message row. Inline text is parsed per line so
+// links, channels and emoji cannot match across line boundaries.
 function parse(text: string, message?: ClientMessage, network?: ClientNetwork) {
 	const lines = text.split("\n");
 	// Event provenance wins over visible punctuation and emoji. Older stored
@@ -124,59 +121,13 @@ function parse(text: string, message?: ClientMessage, network?: ClientNetwork) {
 		return [createElement("span", {class: "message-plaintext"}, text)];
 	}
 
-	const {text: carved, blocks} = extractBlocks(text);
-	return carved.split("\n").flatMap((line, index) => {
-		const parts = parseRichLine(line, message, network, blocks);
-		return index === 0 ? parts : [createElement("br"), ...parts];
+	return renderMarkdownBlocks(text, (content) => {
+		const {text: carved, blocks} = extractBlocks(content);
+		return carved.split("\n").flatMap((line, index) => {
+			const parts = parseProse(line, message, network, blocks);
+			return index === 0 ? parts : [createElement("br"), ...parts];
+		});
 	});
-}
-
-function parseRichLine(
-	line: string,
-	message?: ClientMessage,
-	network?: ClientNetwork,
-	blocks: MdBlock[]
-) {
-	const desc = detectBlock(line, blocks);
-
-	switch (desc.type) {
-		case "code":
-			return [renderCodeBlock(desc.block)];
-		case "math":
-			return [renderMathDisplay(desc.block)];
-		case "hr":
-			return [createElement("div", {class: "md-hr"})];
-		case "h":
-			return [
-				createElement(
-					"div",
-					{class: `md-h${desc.level}`},
-					parseProse(desc.inner, message, network, blocks)
-				),
-			];
-		case "quote":
-			return [
-				createElement(
-					"div",
-					{class: "md-quote"},
-					parseProse(desc.inner, message, network, blocks)
-				),
-			];
-		case "ul":
-		case "ol":
-			return [
-				createElement(
-					"div",
-					{
-						class: desc.type === "ul" ? "md-ul" : "md-ol",
-						style: desc.indent > 0 ? {marginLeft: `${desc.indent}ch`} : undefined,
-					},
-					parseProse(desc.inner, message, network, blocks)
-				),
-			];
-		default:
-			return parseProse(line, message, network, blocks);
-	}
 }
 
 function parseProse(

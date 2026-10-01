@@ -1,15 +1,7 @@
-// Mercury: Jupyter-style message rendering — markdown + LaTeX on top of the
-// existing IRC parse pipeline.
-//
-// Design: inline markdown maps to IRC control codes BEFORE parseStyle runs,
-// so links, channels, emoji, and nick popups keep working inside formatted
-// text. Fenced code blocks and display math are carved out first (single-line
-// placeholders), rendered as highlight.js / KaTeX islands, and spliced back
-// around parseLine output.
-//
-// Security: the only innerHTML sinks are KaTeX and highlight.js output, both
-// of which escape their input. Raw user HTML never reaches the DOM — angle
-// brackets in chat text become control codes or escaped text, never markup.
+// Mercury inline Markdown, literal code and KaTeX rendering. Block structure
+// is handled by markdownBlocks.ts; inline emphasis reuses IRC styles to retain
+// clickable room links and nicknames. Only highlight.js and KaTeX may supply
+// generated HTML. User text always enters the DOM as escaped Vue text.
 
 import {h as createElement, VNode} from "vue";
 import katex from "katex";
@@ -36,16 +28,6 @@ export type MdBlock = {
 };
 
 const placeholder = (i: number) => `${PH_OPEN}${i}${PH_CLOSE}`;
-
-export function lookupBlock(line: string, blocks: MdBlock[]): MdBlock | null {
-	const m = line.trim().match(/^\uE000(\d+)\uE001$/);
-
-	if (!m) {
-		return null;
-	}
-
-	return blocks[Number(m[1])] || null;
-}
 
 function isEscaped(text: string, index: number): boolean {
 	let slashes = 0;
@@ -97,41 +79,11 @@ export function splitInlineCode(text: string): Array<string | {code: string}> {
 	return pieces;
 }
 
-// Fenced blocks, then inline code, then display math. Literal code is never
-// passed through the math, emphasis, IRC style, link or emoji parsers.
+// Protect inline code before extracting display math embedded in prose.
+// Block fences are consumed by the block parser, including nested fences.
 export function extractBlocks(text: string): {text: string; blocks: MdBlock[]} {
 	const blocks: MdBlock[] = [];
-	const lines = text.split("\n");
-	const carved: string[] = [];
-
-	for (let i = 0; i < lines.length; i++) {
-		const open = lines[i].match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-
-		if (!open || (open[1][0] === "`" && open[2].includes("`"))) {
-			carved.push(lines[i]);
-			continue;
-		}
-
-		const end = new RegExp(`^ {0,3}${open[1][0]}{${open[1].length},}[ \\t]*$`);
-		let close = i + 1;
-
-		while (close < lines.length && !end.test(lines[close])) {
-			close++;
-		}
-
-		carved.push(
-			placeholder(
-				blocks.push({
-					kind: "code",
-					lang: open[2].trim().split(/\s+/)[0],
-					body: lines.slice(i + 1, close).join("\n"),
-				}) - 1
-			)
-		);
-		i = close;
-	}
-
-	text = splitInlineCode(carved.join("\n"))
+	text = splitInlineCode(text)
 		.map((piece) =>
 			typeof piece === "string"
 				? piece
@@ -145,54 +97,6 @@ export function extractBlocks(text: string): {text: string; blocks: MdBlock[]} {
 	);
 
 	return {text, blocks};
-}
-
-export type BlockDesc =
-	| {type: "prose"}
-	| {type: "code" | "math"; block: MdBlock}
-	| {type: "h"; level: number; inner: string}
-	| {type: "quote"; inner: string}
-	| {type: "ul" | "ol"; indent: number; inner: string}
-	| {type: "hr"};
-
-// Classify one carved line. `#channel` is safe: headings need `#` + space,
-// and IRC channels never contain spaces.
-export function detectBlock(line: string, blocks: MdBlock[]): BlockDesc {
-	const block = lookupBlock(line, blocks);
-
-	if (block && block.kind !== "inline-code") {
-		return {type: block.kind, block};
-	}
-
-	let m = line.match(/^(#{1,6})\s+(.*)$/);
-
-	if (m) {
-		return {type: "h", level: m[1].length, inner: m[2]};
-	}
-
-	if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
-		return {type: "hr"};
-	}
-
-	m = line.match(/^(?:>\s?)+(.*)$/);
-
-	if (m) {
-		return {type: "quote", inner: m[1]};
-	}
-
-	m = line.match(/^(\s*)[-*]\s+(.*)$/);
-
-	if (m) {
-		return {type: "ul", indent: m[1].length, inner: m[2]};
-	}
-
-	m = line.match(/^(\s*)(\d+)[.)]\s+(.*)$/);
-
-	if (m) {
-		return {type: "ol", indent: m[1].length, inner: m[3]};
-	}
-
-	return {type: "prose"};
 }
 
 // Split a prose line on inline `$…$`. Guards: no newlines, no flanking
@@ -257,8 +161,8 @@ function escapeHtml(s: string): string {
 
 // Agent execution traces (tool calls, thinking, lifecycle, memory notices)
 // bypass the markdown pipeline: underscores, asterisks and $…$ in tool I/O
-// must never become emphasis or math. The multiline pipeline in parse.ts
-// still applies — this gates markdown only, never line structure. The set
+// must never become emphasis or math. Trace rendering preserves the original
+// text and whitespace without running any formatter. The set
 // mirrors the server's trace prefixes (hermes/observatory/rooms.py) plus
 // the memory-provider glyphs; agent replies and human messages (no leading
 // glyph) keep full markdown. Exported: stable cross-layer contract and the

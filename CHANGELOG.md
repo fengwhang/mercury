@@ -5,6 +5,9 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Render mLounge Markdown with proper bulleted and numbered lists, nested
+  blocks, and aligned, horizontally scrollable tables; keep tool traces
+  plaintext and code commands literal.
 - Recognize self-signed TLS connections protected by verified Tailscale or
   localhost in mLounge's connection indicator.
 - Clarify that the Observatory login card's MIRC host is a bare hostname,

@@ -146,16 +146,16 @@ describe("Mercury markdown inline rendering", () => {
 
 describe("Mercury markdown block rendering", () => {
 	it("wraps `# ` lines in md-h1", () => {
-		expect(hasType(parse("# Title"), "div", "md-h1")).toBe(true);
+		expect(hasType(parse("# Title"), "h1", "md-h1")).toBe(true);
 	});
 
 	it("leaves #channel alone (no space, no heading)", () => {
-		expect(hasType(parse("#nixpi4b_gateway hi"), "div", "md-h1")).toBe(false);
+		expect(hasType(parse("#nixpi4b_gateway hi"), "h1", "md-h1")).toBe(false);
 	});
 
 	it("wraps `- ` lines in md-ul and `> ` in md-quote", () => {
-		expect(hasType(parse("- item"), "div", "md-ul")).toBe(true);
-		expect(hasType(parse("> quoted"), "div", "md-quote")).toBe(true);
+		expect(hasType(parse("- item"), "ul", "md-ul")).toBe(true);
+		expect(hasType(parse("> quoted"), "blockquote", "md-quote")).toBe(true);
 	});
 
 	it("renders fenced blocks as highlighted pre", () => {

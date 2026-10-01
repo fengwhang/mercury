@@ -2997,9 +2997,13 @@ part/quit messages where we don't load previews (adds a blank line otherwise) */
 	display: none;
 }
 
-/* Mercury: Jupyter-style markdown + LaTeX. Block wrappers emitted by
- * client/js/helpers/parse.ts for fenced code, math, headings, quotes,
- * and lists. Inline emphasis reuses the irc-* classes from control codes. */
+/* Mercury Markdown and LaTeX. Use native list markers and table layout;
+ * message whitespace rules must not create gaps inside these blocks. */
+#chat .md-paragraph {
+	margin: 6px 0;
+	white-space: normal;
+}
+
 #chat .md-h1,
 #chat .md-h2,
 #chat .md-h3,
@@ -3031,22 +3035,54 @@ part/quit messages where we don't load previews (adds a blank line otherwise) */
 	margin: 4px 0;
 }
 
-#chat .md-ul {
-	position: relative;
-	padding-left: 1.2em;
+#chat .md-ul,
+#chat .md-ol {
+	margin: 6px 0;
+	padding-left: 2em;
+	list-style-position: outside;
+	white-space: normal;
 }
 
-#chat .md-ul::before {
-	content: "•";
-	position: absolute;
-	left: 0.2em;
+#chat .md-ul {
+	list-style-type: disc;
 }
 
 #chat .md-ol {
-	padding-left: 1.5em;
+	list-style-type: decimal;
+}
+
+#chat .md-ul > li,
+#chat .md-ol > li {
+	display: list-item;
+	margin: 3px 0;
+}
+
+#chat .md-table-scroll {
+	max-width: 100%;
+	overflow-x: auto;
+	margin: 6px 0;
+}
+
+#chat .md-table {
+	border-collapse: collapse;
+	white-space: normal;
+}
+
+#chat .md-table th,
+#chat .md-table td {
+	border: 1px solid var(--body-color-muted, #ccc);
+	padding: 6px 10px;
+	text-align: left;
+	vertical-align: top;
+}
+
+#chat .md-table th {
+	font-weight: bold;
+	background: rgb(127 127 127 / 12%);
 }
 
 #chat .md-hr {
+	border: 0;
 	border-top: 1px solid var(--body-color-muted, #ccc);
 	margin: 8px 0;
 }
