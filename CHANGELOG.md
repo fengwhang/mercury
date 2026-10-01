@@ -5,7 +5,10 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
-## [0.3.4] — nightly
+## [0.3.4] — stable
+
+- Promote the tested v0.3.4 nightly packages to stable, including the
+  Observatory and shared approval improvements from v0.3.0–v0.3.3.
 
 - Show the same delayed thinking kaomoji in OMP rooms and their descendants,
   using Hermes' existing face store. Preserve the indicator through tool and

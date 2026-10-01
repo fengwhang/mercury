@@ -18,6 +18,10 @@ while it works. Use the terminal at your desk and the Observatory from
 your phone. Your host runs the agents; you choose their supported model
 providers.
 
+The current stable release is **[v0.3.4](https://github.com/fengwhang/mercury/releases/tag/v0.3.4)**.
+The standard installer below includes the same thinking kaomoji across Hermes
+and OMP rooms, program-preserving steering, and shared approval settings.
+
 ## Why Mercury?
 
 Mercury's contribution is the wiring between the three engines and surfaces:
