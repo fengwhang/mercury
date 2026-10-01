@@ -101,6 +101,10 @@ For a nightly installation:
 curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install-nightly.sh | bash
 ```
 
+The current nightly is **[v0.3.4-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.4-nightly)**,
+with the same v0.3.4 packages as stable. The standard installer selects stable;
+nightly is selected explicitly by this wrapper or `--channel nightly`.
+
 This uses `mercury-nightly` and `~/.mercury-nightly`. State directories are
 separate, but the Observatory service names and default ports currently
 overlap: use one Observatory installation per Linux user. See the
