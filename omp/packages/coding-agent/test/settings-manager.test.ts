@@ -89,7 +89,7 @@ describe("Settings", () => {
 		await tempDir?.remove();
 	});
 
-	it("Mercury approval changes persist to the shared profile and reload without a restart", async () => {
+	it("OMP approval changes preserve Hermes mode and reload independently without a restart", async () => {
 		const shared = path.join(agentDir, "mercury.yaml");
 		await Bun.write(
 			shared,
@@ -97,7 +97,7 @@ describe("Settings", () => {
 				{
 					models: { delegate_model: "openai/gpt-4o-mini" },
 					approvals: { mode: "safe", deny: ["*git push*"] },
-					omp: { tools: { approvalMode: "yolo" }, theme: { dark: "ember" } },
+					omp: { tools: { approvalMode: "write" }, theme: { dark: "ember" } },
 				},
 				null,
 				2,
@@ -105,21 +105,24 @@ describe("Settings", () => {
 		);
 		process.env.MERCURY_CONFIG = shared;
 		const settings = await Settings.init({ cwd: projectDir, agentDir });
-		expect(settings.get("tools.approvalMode")).toBe("always-ask");
+		expect(settings.get("tools.approvalMode")).toBe("write");
 		settings.set("tools.approvalMode", "yolo");
 		expect(settings.get("tools.approvalMode")).toBe("yolo");
 		await settings.flush();
 		const saved = YAML.parse(fs.readFileSync(shared, "utf8")) as {
 			approvals: { mode: string; deny: string[] };
 			models: { delegate_model: string };
-			omp: { theme: { dark: string } };
+			omp: { tools: { approvalMode: string }; theme: { dark: string } };
 		};
-		expect(saved.approvals).toEqual({ mode: "off", deny: ["*git push*"] });
+		expect(saved.approvals).toEqual({ mode: "safe", deny: ["*git push*"] });
 		expect(saved.models.delegate_model).toBe("openai/gpt-4o-mini");
 		expect(saved.omp.theme.dark).toBe("ember");
 		saved.approvals.mode = "smart";
 		fs.writeFileSync(shared, YAML.stringify(saved, null, 2));
-		expect(settings.get("tools.approvalMode")).toBe("write");
+		expect(settings.get("tools.approvalMode")).toBe("yolo");
+		saved.omp.tools.approvalMode = "always-ask";
+		fs.writeFileSync(shared, YAML.stringify(saved, null, 2));
+		expect(settings.get("tools.approvalMode")).toBe("always-ask");
 	});
 
 	describe("main config file selection", () => {

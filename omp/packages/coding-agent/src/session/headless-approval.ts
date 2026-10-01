@@ -2,8 +2,8 @@
 // bridge. When a hermes delegate spawns omp in ONE-SHOT/print mode, print mode
 // has no UI context — approval gates previously resolved as "denied by user"
 // and the child died silently. This module routes approval selects/confirms
-// to the hermes parent (MERCURY_APPROVAL_SOCKET), which runs its guard stack
-// and surfaces the prompt to the USER through the normal chat channel.
+// to the Hermes parent (MERCURY_APPROVAL_SOCKET), which surfaces the prompt
+// to the owner through the normal chat channel, preserving OMP's native gate.
 //
 // Wire shape (HTTP over the Unix socket, matching the repo's blob-broker
 // pattern):

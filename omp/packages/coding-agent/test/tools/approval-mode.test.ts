@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -12,7 +12,6 @@ import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-in
 import { createSubagentSettings } from "@oh-my-pi/pi-coding-agent/task/executor";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
-import * as mercurySmartApproval from "../../src/tools/mercury-smart-approval";
 
 const BASE_SETTINGS = {
 	"async.enabled": false,
@@ -61,7 +60,7 @@ describe("tools.approvalMode setting", () => {
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
-			toolNames: ["bash"],
+			toolNames: ["bash", "read", "write"],
 		});
 		session = created.session;
 	});
@@ -143,14 +142,13 @@ describe("tools.approvalMode setting", () => {
 		).rejects.toThrow(/requires approval but no interactive UI available/);
 	});
 
-	it("Mercury smart runs harmless descendant commands and routes risk escalation to the orchestrator", async () => {
-		const profile = path.join(tempDir, "mercury-smart.yaml");
-		fs.writeFileSync(profile, "approvals: {mode: smart}\n");
+	it("OMP write permits file operations but requires the owner for descendant shell execution", async () => {
+		const profile = path.join(tempDir, "engine-modes.yaml");
+		fs.writeFileSync(profile, "approvals: {mode: off}\nomp: {tools: {approvalMode: write}}\n");
 		const parent = approvalSettings({ "tools.approval": {} }).useMercuryApprovalPolicy(profile);
 		const family = createSubagentSettings(createSubagentSettings(parent));
 		const originalUI = session.extensionRunner!.getUIContext();
 		const titles: string[] = [];
-		const assess = spyOn(mercurySmartApproval, "assessMercuryCommand");
 		await initializeExtensions(session, {
 			uiContext: forwardApprovalUI(
 				forwardApprovalUI(
@@ -169,50 +167,33 @@ describe("tools.approvalMode setting", () => {
 			reportRuntimeError: () => {},
 		});
 		try {
-			assess.mockResolvedValue({ policy: "allow" });
-			await bashTool().execute("smart-true", { command: "true" }, undefined, undefined, {
-				settings: family,
-			} as AgentToolContext);
+			const context = { settings: family } as AgentToolContext;
+			const file = path.join(tempDir, "write-mode-probe.txt");
+			await session
+				.getToolByName("write")!
+				.execute("write-probe", { path: file, content: "native write allowed" }, undefined, undefined, context);
+			const read = await session
+				.getToolByName("read")!
+				.execute("read-probe", { path: file }, undefined, undefined, context);
+			expect(textOf(read)).toContain("native write allowed");
 			expect(titles).toHaveLength(0);
-			expect(assess.mock.calls[0]?.slice(0, 3)).toEqual(["true", session.extensionRunner!.cwd, profile]);
-			await bashTool().execute(
-				"smart-safety-detector",
-				{ command: `rm -f ${path.join(tempDir, "absent")}` },
-				undefined,
-				undefined,
-				{ settings: family } as AgentToolContext,
+			await expect(
+				bashTool().execute("write-exec", { command: "true" }, undefined, undefined, context),
+			).rejects.toThrow(/denied by user/);
+			expect(titles).toHaveLength(1);
+			expect(titles[0]).toContain("child");
+			expect(titles[0]).toContain("grandchild");
+			expect(titles[0]).toContain("Command: true");
+			// Hermes settings cannot change the native descendant gate.
+			fs.writeFileSync(
+				profile,
+				"approvals: {mode: smart, smart_policy: APPROVE}\nomp: {tools: {approvalMode: write}}\n",
 			);
-			expect(titles).toHaveLength(0);
-			expect(assess.mock.calls).toHaveLength(2);
-			assess.mockResolvedValue({ policy: "prompt", reason: "Risk requires owner review" });
 			await expect(
-				bashTool().execute("smart-risk", { command: "echo owner-review" }, undefined, undefined, {
-					settings: family,
-				} as AgentToolContext),
+				bashTool().execute("write-exec-again", { command: "true" }, undefined, undefined, context),
 			).rejects.toThrow(/denied by user/);
-			expect(titles).toHaveLength(1);
-			expect(titles[0]).toContain("[child] [grandchild]");
-			expect(titles[0]).toContain("Risk requires owner review");
-			assess.mockResolvedValue({ policy: "deny", reason: "Blocked by shared guards" });
-			await expect(
-				bashTool().execute("smart-block", { command: "echo must-not-run" }, undefined, undefined, {
-					settings: family,
-				} as AgentToolContext),
-			).rejects.toThrow(/Blocked by shared guards/);
-			expect(titles).toHaveLength(1);
-			// Explicit user prompts retain their gate even if a guardian would allow.
-			assess.mockResolvedValue({ policy: "allow" });
-			parent.override("tools.approval", { bash: "prompt" });
-			const assessments = assess.mock.calls.length;
-			await expect(
-				bashTool().execute("smart-explicit", { command: "true" }, undefined, undefined, {
-					settings: family,
-				} as AgentToolContext),
-			).rejects.toThrow(/denied by user/);
-			expect(assess.mock.calls).toHaveLength(assessments);
 			expect(titles).toHaveLength(2);
 		} finally {
-			assess.mockRestore();
 			await initializeExtensions(session, {
 				uiContext: originalUI,
 				reportSendError: () => {},
@@ -375,27 +356,23 @@ describe("tools.approvalMode setting", () => {
 			});
 		}
 	});
-	it("native descendants use the same public mode aliases and default as Hermes", () => {
-		const profile = path.join(tempDir, "mode-parity.yaml");
+	it("native descendants use OMP modes independently of Hermes modes", () => {
+		const profile = path.join(tempDir, "engine-mode-boundary.yaml");
 		fs.writeFileSync(profile, "{}\n");
-		const root = approvalSettings({ "tools.approvalMode": "yolo" }).useMercuryApprovalPolicy(profile);
+		const root = approvalSettings().useMercuryApprovalPolicy(profile);
 		const grandchild = createSubagentSettings(createSubagentSettings(root));
-		for (const [text, expected] of [
-			["approvals: {mode: yolo}\n", "yolo"],
-			["approvals: {mode: OFF}\n", "yolo"],
-			["approvals: {mode: false}\n", "yolo"],
-			["approvals: {mode: smart}\n", "write"],
-			["approvals: {mode: safe}\n", "always-ask"],
-			["approvals: {mode: manual}\n", "always-ask"],
-			["approvals: {mode: null}\n", "always-ask"],
-			["{}\n", "write"],
-			["hermes: {approvals: {mode: yolo}}\n", "yolo"],
-			["hermes: {approvals: {mode: safe}}\napprovals: {mode: yolo}\n", "yolo"],
+		for (const [hermesMode, ompMode] of [
+			["smart", "always-ask"],
+			["off", "write"],
+			["manual", "yolo"],
 		] as const) {
-			fs.writeFileSync(profile, text);
-			expect(grandchild.get("tools.approvalMode")).toBe(expected);
+			fs.writeFileSync(profile, `approvals: {mode: ${hermesMode}}\nomp: {tools: {approvalMode: ${ompMode}}}\n`);
+			expect(grandchild.get("tools.approvalMode")).toBe(ompMode);
 		}
+		fs.writeFileSync(profile, "omp: {tools: {approvalMode: smart}}\n");
+		expect(() => grandchild.get("tools.approvalMode")).toThrow(/omp.tools.approvalMode/);
 	});
+
 	it("a live Mercury policy controls grandchild commands without restarting the room", async () => {
 		const profile = path.join(tempDir, "mercury-live-policy.yaml");
 		const writePolicy = (text: string) => fs.writeFileSync(profile, text);
@@ -450,16 +427,16 @@ describe("tools.approvalMode setting", () => {
 		try {
 			expect(textOf(await execute("printf live-yolo"))).toContain("live-yolo");
 			expect(prompts).toBe(0);
-			writePolicy("approvals: {mode: safe}\n");
+			writePolicy("approvals: {mode: off}\nomp: {tools: {approvalMode: always-ask}}\n");
 			expect(textOf(await execute("printf live-safe"))).toContain("live-safe");
 			expect(prompts).toBe(1);
-			writePolicy("approvals: {mode: smart}\n");
+			writePolicy("approvals: {mode: smart}\nomp: {tools: {approvalMode: write}}\n");
 			await execute("printf live-smart");
 			expect(prompts).toBe(2);
-			writePolicy('approvals: {mode: yolo, deny: ["*ECHO DENIED*"]}\n');
+			writePolicy('approvals: {mode: manual, deny: ["*ECHO DENIED*"]}\nomp: {tools: {approvalMode: yolo}}\n');
 			await expect(execute("echo denied")).rejects.toThrow(/Blocked by bash pattern/);
 			expect(prompts).toBe(2);
-			writePolicy("approvals: {mode: yolo, deny: []}\n");
+			writePolicy("approvals: {mode: smart, deny: []}\nomp: {tools: {approvalMode: yolo}}\n");
 			expect(textOf(await execute("echo denied"))).toContain("denied");
 			writePolicy("approvals: {mode: yolo, deny: invalid}\n");
 			await expect(execute("printf invalid-policy-must-not-run")).rejects.toThrow(

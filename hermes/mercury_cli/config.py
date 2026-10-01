@@ -6028,6 +6028,13 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Warn after the write so the user gets immediate feedback plus a
     # "did you mean" hint, without blocking legitimate unknown keys.
     is_known, suggestion = _validate_config_key(key)
+    if key == "omp.tools.approvalMode":
+        from mercury_cli.approval_policy import OMP_APPROVAL_MODES
+
+        if value not in OMP_APPROVAL_MODES:
+            print("✗ OMP approval mode must be always-ask, write, or yolo.", file=sys.stderr)
+            sys.exit(1)
+        is_known = True
 
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
@@ -6242,6 +6249,14 @@ def get_config_value(key: str, *, as_json: bool = False):
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
+    elif os.environ.get("MERCURY_CONFIG", "").strip() and key.startswith("omp."):
+        whole = read_user_config_raw()
+        if key == "omp.tools.approvalMode":
+            from mercury_cli.approval_policy import omp_approval_mode
+
+            value = omp_approval_mode(whole)
+        else:
+            value = _get_nested(whole, key)
     else:
         value = _get_nested(load_config(), key)
 

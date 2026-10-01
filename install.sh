@@ -529,55 +529,9 @@ run_setup_wizard() {
         PYTHONPATH="$INSTALL_ROOT/hermes" \
         "$VENV/bin/python" -m mercury_cli.main setup </dev/tty ) || log_warn "setup wizard exited non-zero — run '$MERCURY_CMD setup' later"
 
-    # Approval mode (user directive): the installer ASKS. One knob, both
-    # engines — omp inherits the hermes agent's mode at spawn (bridge maps
-    # approvals.mode -> omp tools.approvalMode; deny rules always carry).
-    # The setup wizard now owns the approval question (`mercury setup approvals`
-    # + the full-flow step): when it already wrote a mode, keep it — never
-    # double-ask. Only prompt when nothing is set (older wizard runs,
-    # --skip-setup, non-interactive).
-    local EXISTING_MODE=""
-    EXISTING_MODE=$(MERCURY_CONFIG="$MERCURY_HOME/config.yaml" "$VENV/bin/python" - <<PYEOF
-import sys
-sys.path.insert(0, "$INSTALL_ROOT/hermes")
-try:
-    from mercury_cli.config import load_config
-    cfg = load_config() or {}
-    print((cfg.get("approvals") or {}).get("mode") or "")
-except Exception:
-    print("")
-PYEOF
-    ) || EXISTING_MODE=""
-    if [ -z "$EXISTING_MODE" ]; then
-    echo ""
-    log_info "Approval mode — how much the agent may do without asking you:"
-    echo "  1) safe   — read-only auto-approved; writes & commands ask (default)"
-    echo "  2) smart  — reads + workspace writes auto-approved; commands ask"
-    echo "  3) yolo   — never ask; full auto (deny rules still enforced)"
-    local APPROVAL_CHOICE=""
-    while [ -z "$APPROVAL_CHOICE" ]; do
-        printf 'Choose [1/2/3, default=1]: '
-        read -r APPROVAL_CHOICE </dev/tty || APPROVAL_CHOICE="1"
-        case "$APPROVAL_CHOICE" in
-            1|""|safe) APPROVAL_CHOICE="manual" ;;
-            2|smart)   APPROVAL_CHOICE="smart" ;;
-            3|yolo)    APPROVAL_CHOICE="off" ;;
-            *) APPROVAL_CHOICE="" ;;
-        esac
-    done
-    "$VENV/bin/python" - <<PYEOF
-import os, sys
-sys.path.insert(0, "$INSTALL_ROOT/hermes")
-from mercury_cli.config import load_config, save_config
-cfg = load_config() or {}
-cfg["approvals"] = {"mode": "$APPROVAL_CHOICE"}
-save_config(cfg)
-print("approvals.mode = $APPROVAL_CHOICE (both engines; omp inherits at spawn)")
-PYEOF
-    else
-        log_info "approvals.mode = $EXISTING_MODE (kept from the setup wizard)"
-    fi
-    # re-render the omp subtree so the child engine picks the mode up now
+    # The wizard offers Hermes and OMP approval choices separately. Keep
+    # those choices when rendering shared models and explicit deny rules.
+    # Refresh OMP shared settings without changing either engine's mode.
     ( cd "$INSTALL_ROOT/hermes" \
         && MERCURY_HOME="$MERCURY_HOME" MERCURY_CONFIG="$MERCURY_HOME/config.yaml" \
         HERMES_HOME="$MERCURY_HOME/hermes" PI_CODING_AGENT_DIR="$MERCURY_HOME/omp" \

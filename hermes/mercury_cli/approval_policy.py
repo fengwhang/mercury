@@ -1,8 +1,24 @@
-"""Shared Mercury approval configuration for both execution engines."""
+"""Engine-specific Mercury approval modes and shared explicit deny rules."""
+
+OMP_APPROVAL_MODES = ("always-ask", "write", "yolo")
+
+
+def omp_approval_mode(config: dict) -> str:
+    """Read OMP's native tier mode independently of Hermes's risk reviewer."""
+    omp = config.get("omp", {})
+    if not isinstance(omp, dict):
+        raise ValueError("omp settings must be a mapping")
+    tools = omp.get("tools", {})
+    if not isinstance(tools, dict):
+        raise ValueError("omp.tools must be a mapping")
+    mode = tools.get("approvalMode", "yolo")
+    if mode not in OMP_APPROVAL_MODES:
+        raise ValueError("omp.tools.approvalMode must be always-ask, write, or yolo")
+    return mode
 
 
 def normalize_approval_mode(mode) -> str:
-    """Return the Hermes mode for either engine's public permission names."""
+    """Normalize Hermes's public safe/smart/yolo names and legacy values."""
     if isinstance(mode, bool):
         return "off" if mode is False else "manual"
     if isinstance(mode, str):
@@ -14,7 +30,7 @@ def normalize_approval_mode(mode) -> str:
 
 
 def shared_approval_config(config: dict) -> dict:
-    """Top-level policy wins; explicit deny rules from either location are retained."""
+    """Resolve Hermes policy; top-level values win and deny rules are retained."""
     subtree = config.get("hermes") or {}
     legacy = (subtree.get("approvals") or {}) if isinstance(subtree, dict) else {}
     shared = config.get("approvals") or {}

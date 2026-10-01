@@ -2463,23 +2463,14 @@ def setup_agent_settings(config: dict):
 
     save_config(config)
 
-def setup_approvals(config: dict) -> None:
-    """Approval mode — the ONE knob for both engines (manual|smart|off).
-
-    Previously offered only by install.sh AFTER the wizard, so `mercury setup`
-    re-runs, --skip-setup installs, and migrations never saw it: a yolo choice
-    had nowhere to persist. Now a first-class section (`mercury setup
-    approvals`, plus a step in the full-setup flow). Persists through the
-    canonical setter (managed-scope/write-safety honored, effectiveness
-    verified); omp inherits at spawn via the bridge. Never raises for
-    save failures — degrades to the setter's message.
-    """
+def setup_hermes_approvals(config: dict) -> None:
+    """Configure Hermes command guards and its optional LLM risk reviewer."""
     from mercury_cli.approval_mode import VALID_APPROVAL_MODES, run_approval_mode_command
 
     labels = {
-        "manual": "safe — read-only auto-approved; writes & commands ask",
-        "smart": "reads + workspace writes auto-approved; commands ask",
-        "off": "yolo — never ask; full auto (deny rules still enforced)",
+        "manual": "safe — ask you before flagged shell commands",
+        "smart": "smart — LLM reviews flagged commands; uncertain actions ask you",
+        "off": "yolo — bypass recoverable prompts; explicit denials remain enforced",
     }
     try:
         current = run_approval_mode_command(None).mode
@@ -2487,10 +2478,10 @@ def setup_approvals(config: dict) -> None:
         current = "smart"
     if current not in VALID_APPROVAL_MODES:
         current = "smart"
-    print_header("Approval Mode")
-    print_info(f"Current: {current} (one knob, both engines; omp inherits at spawn)")
+    print_header("Hermes Approval Mode")
+    print_info(f"Current: {current}. This setting applies to Hermes agents.")
     idx = prompt_choice(
-        "How much may the agent do without asking you?",
+        "How should Hermes review flagged shell commands?",
         [f"{mode} — {labels[mode]}" for mode in VALID_APPROVAL_MODES],
         list(VALID_APPROVAL_MODES).index(current),
     )
@@ -2502,15 +2493,47 @@ def setup_approvals(config: dict) -> None:
     if not result.ok:
         print_warning(result.message)
         return
-    config["approvals"] = {"mode": result.mode}
-    try:
-        from mercury_cli.omp_sync import sync_omp_from_setup
+    config.setdefault("approvals", {})["mode"] = result.mode
+    print_success(f"Hermes approvals.mode = {result.mode}")
 
-        sync_omp_from_setup(quiet=True)
-    except Exception:
-        print_info("Run `mercury omp-sync` to push the mode to the omp engine.")
+
+def setup_omp_approvals(config: dict) -> None:
+    """Configure OMP's native tool tiers independently of Hermes review."""
+    from mercury_cli.approval_policy import OMP_APPROVAL_MODES, omp_approval_mode
+    from mercury_cli.config import read_user_config_raw, set_config_value
+
+    try:
+        current = omp_approval_mode(read_user_config_raw())
+    except Exception as exc:
+        print_warning(f"Cannot read OMP approval mode: {exc}")
         return
-    print_success(f"approvals.mode = {result.mode} (both engines; omp inherits at spawn)")
+    print_header("OMP Approval Mode")
+    print_info(f"Current: {current}. OMP uses tool tiers, without LLM approval review.")
+    labels = [
+        "always-ask — allow reads; ask before writes and execution",
+        "write — allow reads and workspace writes; ask before execution",
+        "yolo — bypass recoverable prompts; explicit denials remain enforced",
+    ]
+    idx = prompt_choice(
+        "How much may OMP do without asking you?", labels,
+        OMP_APPROVAL_MODES.index(current),
+    )
+    mode = OMP_APPROVAL_MODES[idx]
+    if mode == current:
+        print_info(f"Keeping omp.tools.approvalMode = {current}")
+        return
+    try:
+        set_config_value("omp.tools.approvalMode", mode)
+    except (Exception, SystemExit) as exc:
+        print_warning(f"Could not save OMP approval mode: {exc}")
+        return
+    print_success(f"OMP tools.approvalMode = {mode}")
+
+
+def setup_approvals(config: dict) -> None:
+    """Offer both engines' distinct approval options."""
+    setup_hermes_approvals(config)
+    setup_omp_approvals(config)
 
 
 # =============================================================================
@@ -5166,7 +5189,9 @@ SETUP_SECTIONS = [
     ("tools", "Tools", setup_tools),
     ("telemetry", "Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
-    ("approvals", "Approval Mode", setup_approvals),
+    ("approvals", "Engine Approval Modes", setup_approvals),
+    ("hermes-approvals", "Hermes Approval Mode", setup_hermes_approvals),
+    ("omp-approvals", "OMP Approval Mode", setup_omp_approvals),
 ]
 
 
@@ -5283,8 +5308,8 @@ def run_setup_wizard(args):
     # MERCURY-OMP PATCH: mercury setup configures BOTH engines. Whatever the
     # wizard wrote to the hermes view, mirror it into the shared four-slot
     # models: block and re-render the omp: subtree so the omp engine inherits
-    # the same models/approvals/deny rules. Non-fatal on failure (the engines
-    # still run hermes-configured; `mercury omp-sync` retries by hand).
+    # the shared models and deny rules, preserving each engine's mode.
+    # Non-fatal on failure (`mercury omp-sync` retries by hand).
     # Local mnemosyne default (no manual plugin step): fresh installs get
     # memory.provider=mnemosyne (in-tree wrapper, FTS-first) plus the
     # mnemosyne-hermes [embeddings] package re-verified; explicit user
@@ -5749,7 +5774,8 @@ def _run_setup_wizard_impl(args):
             ("IRC Observatory", lambda: setup_observatory(config)),
             ("Messaging Platforms", _gateway_step),
             ("Tools", _tools_step),
-            ("Approval Mode", lambda: setup_approvals(config)),
+            ("Hermes Approval Mode", lambda: setup_hermes_approvals(config)),
+            ("OMP Approval Mode", lambda: setup_omp_approvals(config)),
         ]
     )
 

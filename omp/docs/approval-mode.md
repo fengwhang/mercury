@@ -1,11 +1,11 @@
 # Tool approval mode
 
-Mercury's shared `approvals.mode` controls both engines and their descendants.
-`smart` uses the `write` tier for ordinary tools, but shell commands use Hermes's
-command guards and smart risk assessment: harmless commands run automatically,
-uncertain actions reach the owner's existing approval UI, and hard blocks remain
-blocked. Explicit prompt/deny policies and provider safety checks retain their
-gates. `safe`/`manual` maps to `always-ask`; `off`/`yolo` maps to `yolo`.
+Mercury configures OMP independently through `omp.tools.approvalMode`:
+`always-ask`, `write`, or `yolo`. Use `mercury setup omp-approvals` to choose.
+OMP uses native capability tiers; `write` permits reads and workspace writes but
+asks before execution, including a harmless shell command such as `true`.
+Hermes's `approvals.mode` and natural-language `approvals.smart_policy` do not
+control OMP's mode or review its commands. Explicit deny rules are inherited.
 
 Tool approval has three inputs:
 
@@ -68,7 +68,7 @@ A tool can force a prompt with object-form approval:
 approval: { tier: "exec", override: true, reason: "Critical pattern detected" }
 ```
 
-`bash` uses this for critical destructive patterns such as `rm -rf /`, fork bombs, remote-fetch-then-execute, writes to `/etc/passwd`, and host shutdown commands. It also supports configured `bash.patterns` rules: `deny` is absolute, `prompt` forces a prompt, and `allow` explicitly allows the matching call at the `write` tier. Reasons appear in the approval prompt. In `yolo`, a bare critical override is ignored, but an explicit tool/user `prompt` or `deny` policy is still enforced.
+`bash` uses this for critical destructive patterns such as `rm -rf /`, fork bombs, remote-fetch-then-execute, writes to `/etc/passwd`, and host shutdown commands. It also supports configured `bash.patterns` rules: `deny` is absolute, `prompt` forces a prompt, and `allow` explicitly allows the matching call at the `write` tier. Reasons appear in the approval prompt. In `yolo`, recoverable prompts are bypassed; explicit tool/user `deny` policies remain enforced.
 
 `bash.patterns` only feeds the `bash` tool's approval decision. The `eval` tool declares the `exec` tier and can spawn a shell via subprocess, so a `bash.patterns` `deny` rule does not apply to the same command run through `eval` — under `yolo`, that `exec` call resolves to `allow`. To gate the shell `eval` can reach, add a `tools.approval.eval` policy (`prompt` or `deny`) alongside `bash.patterns`.
 
@@ -160,4 +160,7 @@ When ACP approval is required, OMP routes it through the ACP client instead of t
 
 ## Subagents
 
-Subagents run headless with `tools.approvalMode: yolo` so ordinary tier-based prompts do not stall them. The parent `task` approval is the authorization boundary. User `tools.approval.<tool>` settings remain authoritative: `deny` blocks the tool, `allow` permits it, and `prompt` cannot be satisfied in a headless subagent and rejects the call.
+Mercury subagents inherit their OMP ancestor's live mode and tool policies.
+Approval requests travel through the family to the owner's TUI or mLounge
+room, including OMP children of Hermes parents. The parent engine's mode does
+not waive a child's native approval gate. Missing human routes fail closed.

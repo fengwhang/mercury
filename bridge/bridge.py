@@ -199,9 +199,11 @@ def _approval_config_from_yaml(text: str) -> dict:
     return shared_approval_config(config)
 
 
-def _unified_approvals_mode(text: str) -> str:
-    from mercury_cli.approval_policy import normalize_approval_mode
-    return normalize_approval_mode(_approval_config_from_yaml(text).get("mode", "manual"))
+def _omp_approvals_mode(text: str) -> str:
+    import yaml
+    from mercury_cli.approval_policy import omp_approval_mode
+
+    return omp_approval_mode(yaml.safe_load(text) or {})
 
 
 # HERMES-OMP PATCH (tool-call inheritance, user directive): map hermes'
@@ -338,13 +340,8 @@ def render_omp_subtree(slots, target=None):
     # read existing whole-file structure (minimal: split top-level blocks)
     text = open(target).read() if os.path.exists(target) else ""
     deny_globs = sorted({_widen_fnmatch_glob(g) for g in _hermes_deny_globs(text)})
-    # HERMES-OMP PATCH (unified approvals): ONE mode knob for both engines.
-    # Unified approvals.mode (top level, alongside models:) maps to omp's
-    # tools.approvalMode: manual->always-ask, smart->write, off->yolo.
-    # Safe default: write (read+workspace-write auto-approved, exec prompts).
-    mode_map = {"manual": "always-ask", "smart": "write", "off": "yolo"}
-    unified_mode = _unified_approvals_mode(text)
-    omp_mode = mode_map.get(unified_mode, "write")
+    # Preserve the native OMP mode. Hermes smart review is a separate option.
+    omp_mode = _omp_approvals_mode(text)
     omp_block = (
         "omp:\n"
         f"  # setupVersion {CURRENT_SETUP_VERSION}: stamped by the Mercury wizard/omp-sync —\n"

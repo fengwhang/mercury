@@ -477,7 +477,7 @@ export class Settings {
 	#mercuryApprovalPolicy?: MercuryApprovalPolicy;
 	#pendingMercuryMode?: SettingValue<"tools.approvalMode">;
 
-	/** Bind root settings to the same live profile policy as Hermes. */
+	/** Bind root settings to the live OMP policy in the Mercury profile. */
 	useMercuryApprovalPolicy(filePath: string): this {
 		this.#mercuryApprovalPolicy = new MercuryApprovalPolicy(filePath);
 		return this;
@@ -487,11 +487,6 @@ export class Settings {
 	inheritApprovalPolicy(parent: Settings): this {
 		this.#approvalPolicyParent = parent;
 		return this;
-	}
-
-	/** The family root owns the shared profile used by Hermes command guards. */
-	get mercuryApprovalConfigPath(): string | undefined {
-		return this.#approvalPolicyParent?.mercuryApprovalConfigPath ?? this.#mercuryApprovalPolicy?.filePath;
 	}
 
 	#configPath: string | null;
@@ -2745,14 +2740,6 @@ export class Settings {
 			const parsed = this.#unwrapYamlLoadResult(mercuryPath, raw);
 			if (parsed && typeof parsed === "object") existing = parsed as Record<string, unknown>;
 			existing["omp"] = settings;
-			if (approvalModeChanged) {
-				const mode = getByPath(settings, ["tools", "approvalMode"]);
-				const approvals = isRecord(existing.approvals) ? existing.approvals : {};
-				existing.approvals = {
-					...approvals,
-					mode: mode === "yolo" ? "off" : mode === "write" ? "smart" : "manual",
-				};
-			}
 			toWrite = existing as RawSettings;
 		}
 		const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;

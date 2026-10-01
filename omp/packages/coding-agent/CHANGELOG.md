@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Use Mercury's shared Hermes smart command guards instead of prompting for every shell command; preserve explicit restrictions and ancestor approval routing.
+- Restore native OMP approval modes independently of Hermes smart review; preserve ancestor approval routing and explicit deny rules.
 
 ## [18.1.6] - 2026-09-03
 

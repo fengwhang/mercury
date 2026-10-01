@@ -1,4 +1,4 @@
-"""Shared persistent approval-mode command logic.
+"""Persistent Hermes approval-mode command logic.
 
 Approval mode is profile-scoped configuration, not conversation state. Changing
 it affects subsequent terminal guard checks immediately because approval.py

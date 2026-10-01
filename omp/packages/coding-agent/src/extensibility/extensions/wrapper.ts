@@ -12,19 +12,15 @@ import type { ComputerSafetyCheck, ImageContent, Static, TextContent, TSchema } 
 import { sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../../config/settings";
 import type { Theme } from "../../modes/theme/theme";
-import { mercuryApprovalSocket } from "../../session/headless-approval";
 import {
 	type ApprovalMode,
 	denyError,
 	formatApprovalPrompt,
-	isBareSafetyOverride,
 	resolveApproval,
 	truncateForPrompt,
 } from "../../tools/approval";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { withFileMutationSession } from "../../tools/file-write-fallback";
-import { assessMercuryCommand } from "../../tools/mercury-smart-approval";
-import { resolveToCwd } from "../../tools/path-utils";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
 import { applyToolProxy } from "../tool-proxy";
 import type { ExtensionRunner } from "./runner";
@@ -271,35 +267,6 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			required: pendingSafetyChecks.length > 0 || (resolved.policy === "prompt" && (explicitPrompt || !xdevBypass)),
 			reason: resolved.reason,
 		};
-		const mercuryConfig = settings?.mercuryApprovalConfigPath;
-		// Explicit prompt/deny policies and provider checks retain their gates.
-		// Mercury smart's bash tier and risk detectors use Hermes assessment.
-		// Hermes-owned children already receive that assessment from their parent.
-		if (
-			approvalCheck.required &&
-			pendingSafetyChecks.length === 0 &&
-			approvalMode === "write" &&
-			mercuryConfig &&
-			!mercuryApprovalSocket() &&
-			this.tool.name === "bash" &&
-			(resolved.source === "mode" || isBareSafetyOverride(this.tool, resolvedArgs)) &&
-			!Object.hasOwn(userPolicies, resolved.policyKey ?? this.tool.name) &&
-			typeof (resolvedArgs as { command?: unknown }).command === "string"
-		) {
-			const assessment = await assessMercuryCommand(
-				(resolvedArgs as { command: string }).command,
-				typeof (resolvedArgs as { cwd?: unknown }).cwd === "string"
-					? resolveToCwd((resolvedArgs as { cwd: string }).cwd, this.runner.cwd)
-					: this.runner.cwd,
-				mercuryConfig,
-				context?.sessionManager?.getSessionId() ?? "",
-				signal,
-			);
-			if (assessment.policy === "deny") throw new Error(assessment.reason ?? "Blocked by Mercury command guards");
-			approvalCheck.required = assessment.policy !== "allow";
-			approvalCheck.reason = assessment.reason;
-		}
-
 		if (approvalCheck.required) {
 			const scheduledCall = context?.toolCall?.toolCalls[context.toolCall.index];
 			if (

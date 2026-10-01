@@ -1,10 +1,9 @@
 """MERCURY-OMP PATCH (C1): omp child transport — RPC mode with approval
 routing into the Mercury (hermes-side) approval pipeline.
 
-Problem this closes (TODO Track C): under unified approvals, omp children
-run at a real approval mode (manual->always-ask, smart->write — NOT yolo).
-When an omp child hits a prompt-tier decision (exec command under smart,
-everything under manual), the one-shot ``-p`` path has no interactive UI
+OMP children use their configured native approval mode (always-ask, write,
+or yolo). When a child hits a prompt-tier decision, the one-shot ``-p`` path
+has no interactive UI
 and FAILS CLOSED ("requires approval but no interactive UI available") —
 delegation bricks instead of prompting.
 
@@ -26,12 +25,10 @@ inline on the client's stdout reader thread, and a human approval can take
 minutes — that would stall every other frame. Instead a dedicated handler
 thread drains ``next_ui_request()`` and answers from the queue.
 
-Routing: a ``select`` with options [Approve, Deny] whose message carries
-``Command:`` goes to hermes' ``check_all_command_guards`` — the SAME
-hardline floor, deny rules, smart-approval guardian, and (via the
-registered callback) human prompt the user's own terminal commands face.
-Everything else (passive notify/status, login selects) is answered
-fail-closed deny so the child never wedges on an unattended dialog.
+Routing: approval selects reach the owner's human approval queue. OMP's
+native harness owns its mode and tool policies; this transport does not run
+Hermes's smart reviewer or bypass child prompts under the parent's YOLO mode.
+Other unattended dialogs fail closed.
 
 The one-shot ``-p`` path remains the default engine; this module is the
 approval-capable upgrade seam (dispatch_omp_delegation opts in per-task).
@@ -48,7 +45,6 @@ import threading
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
-_guard_outcome = contextvars.ContextVar("omp_guard_outcome", default=None)
 
 # Repositorio layout: this file is <repo>/hermes/tools/omp_rpc_transport.py
 # (repo root two levels up).
@@ -125,81 +121,30 @@ def looks_like_approval_select(options: Optional[tuple], method: str) -> bool:
     return tuple(options or ()) == ("Approve", "Deny")
 
 
-def hermes_approval_decision(
-    command: str,
-    session_key: Optional[str] = None,
-) -> bool:
-    """Run one command through hermes' full guard stack; True = approve.
-
-    This is the SAME stack the user's own terminal tool calls face:
-    hardline floor, sudo-stdin guard, user deny rules, dangerous-command
-    detection, tirith, smart-approval guardian, and the interactive
-    approval callback when one is registered on this thread (the
-    established pattern: delegate_tool/run_agent install it before
-    spawning children — see approval.py _prompt_dangerous_approval_inner).
-
-    ``session_key`` scopes approval persistence; when None the ambient
-    session key is used (delegation threads inherit the parent's).
-    """
-    try:
-        from tools.approval import (
-            check_all_command_guards,
-            get_current_session_key,
-            set_current_session_key,
-        )
-    except ImportError:
-        logger.exception("C1: tools.approval unavailable — failing closed")
-        return False
-
-    token = None
-    if session_key:
-        token = set_current_session_key(session_key)
-    try:
-        decision = check_all_command_guards(command, env_type="container")
-        _guard_outcome.set(decision)
-        return bool(decision.get("approved"))
-    except Exception:
-        logger.exception("C1: guard stack raised — failing closed: %r", command[:120])
-        return False
-    finally:
-        if token is not None:
-            from tools.approval import reset_current_session_key
-
-            reset_current_session_key(token)
-
-
 def _deny(client: Any, request_id: str) -> None:
     client.cancel_ui_request(request_id)
 
 
 def hermes_tool_approval_decision(prompt_text: str) -> bool:
-    """Apply command guards and route every other OMP tool gate to the same human queue."""
-    from tools.approval import _get_approval_mode, request_tool_approval
+    """Route an OMP harness approval to its owner without Hermes risk review.
 
-    _guard_outcome.set(None)
+    OMP already applied its native mode and explicit restrictions before
+    emitting this request. A Hermes parent in YOLO must not waive that gate.
+    """
+    from tools.approval import request_tool_approval
+
     match = re.search(r"Allow tool:\s*([^\n]+)", prompt_text)
     tool_name = match.group(1).strip() if match else "omp_tool"
-    command = extract_command_from_prompt(prompt_text) if tool_name == "bash" else None
-    if command is not None and not hermes_approval_decision(command):
-        return False
-    outcome = _guard_outcome.get() or {}
-    if (command is not None and "Provider safety checks:" not in prompt_text
-            and _get_approval_mode() == "manual" and outcome
-            and not outcome.get("user_approved")):
-        return bool(request_tool_approval("bash", prompt_text).get("approved"))
-    # Provider safety acknowledgements require a human answer. Recoverable
-    # tool prompts follow the same live Mercury mode as the Hermes engine.
-    if command is None or "Provider safety checks:" in prompt_text:
-        decision = request_tool_approval(
-            tool_name, prompt_text,
-            require_human="Provider safety checks:" in prompt_text,
-        )
+    try:
+        decision = request_tool_approval(tool_name, prompt_text, require_human=True)
         return bool(decision.get("approved"))
-    return True
+    except Exception:
+        logger.exception("OMP human approval routing failed")
+        return False
 
 
 def _approve_command_select(client: Any, request: Any) -> bool:
-    """Answer a tool approval select through the parent's policy and human UI."""
+    """Answer a tool approval select through the owner's human UI."""
     prompt_text = (getattr(request, "title", None)
                    or getattr(request, "message", None) or "")
     approved = hermes_tool_approval_decision(prompt_text)
@@ -209,7 +154,7 @@ def _approve_command_select(client: Any, request: Any) -> bool:
 
 # M4b (matrix observatory §5/D10): optional approval-frame observer. The
 # observatory sidecar registers ONE process-global callback to mirror omp
-# RPC approval gates into the child's Matrix room while the guard stack
+# RPC approval gates into the child's Matrix room while the owner
 # below still owns the decision. Purely additive: with no callback
 # registered (the default) this module behaves exactly as before.
 ApprovalFrameHook = Callable[[str, str, str, tuple], None]
@@ -221,12 +166,10 @@ def set_approval_frame_hook(cb: Optional[ApprovalFrameHook]) -> Optional[Approva
 
     The hook is called with ``(request_id, method, title, options)``
     whenever the responder thread sees a UI request that
-    ``looks_like_approval_select`` matches, BEFORE the guard stack is
-    consulted — unless the guard would auto-decide without a human (see
-    :func:`tools.approval.guard_requires_human_approval`), in which case
-    the mirror is skipped so the room never carries a prompt no /approve
-    could resolve. Observational only: return values are ignored,
-    exceptions are swallowed, and the guard decision below is unchanged.
+    ``looks_like_approval_select`` matches, BEFORE the owner is prompted.
+    Native OMP policy has already determined that the call needs approval.
+    Observational only: return values are ignored, exceptions are swallowed,
+    and the owner's decision below is unchanged.
     Returns the previously registered hook (for restore-on-unregister).
     """
     global _approval_frame_hook
@@ -238,40 +181,15 @@ def set_approval_frame_hook(cb: Optional[ApprovalFrameHook]) -> Optional[Approva
 def set_approval_settle_hook(cb: Optional[ApprovalSettleHook]) -> Optional[ApprovalSettleHook]:
     """Register/replace (``None`` unregisters) the approval-settle observer.
 
-    Called with ``(request_id, approved)`` AFTER the guard stack answers an
+    Called with ``(request_id, approved)`` AFTER the owner answers an
     approval select, so an observational mirror can settle the Matrix
-    pending it created to the guard outcome instead of leaving it stale
+    pending it created to the owner's decision instead of leaving it stale
     for a later /approve to hit the late path. Observational only.
     """
     global _approval_settle_hook
     previous = _approval_settle_hook
     _approval_settle_hook = cb
     return previous
-
-
-def _mirror_wanted(request: Any) -> bool:
-    """True when an approval select deserves a Matrix mirror (M4b).
-
-    False when the guard would auto-decide without a human — mirroring
-    then only creates a stale pending. Errors fail OPEN (mirror) so a
-    real prompt is never skipped by a broken pre-check.
-    """
-    try:
-        from tools.approval import guard_requires_human_approval, is_approval_bypass_active
-    except Exception:
-        return True
-    try:
-        text = str(getattr(request, "title", None) or getattr(request, "message", None) or "")
-        if "Provider safety checks:" in text:
-            return True
-        if is_approval_bypass_active():
-            return False
-        command = extract_command_from_prompt(text)
-        if command is None:
-            return True
-        return bool(guard_requires_human_approval(command))
-    except Exception:
-        return True
 
 
 def _notify_approval_frame(request: Any) -> None:
@@ -308,16 +226,15 @@ def serve_approvals(client: Any, stop: threading.Event,
     Drains ``next_ui_request`` off the client's queue (listeners stay
     untouched — they run inline on the reader thread and must not block on
     a human) and answers each request:
-      - approval selects (Approve/Deny + Command:) -> hermes guard stack
+      - approval selects (Approve/Deny) -> owner human approval queue
       - everything else                          -> fail-closed cancel
 
     ``approval_callback``: the PARENT turn's thread-local callback (e.g.
     the gateway's chat prompt), re-registered on THIS thread so
-    check_all_command_guards can surface a human prompt in the user's
+    request_tool_approval can surface a human prompt in the user's
     chat. Hermes stores it per-thread (_callback_tls), so without this
     copy a gateway-registered callback would be invisible here and
-    dangerous-but-approvable commands would silently take the
-    unattended-default path instead of asking the user.
+    native OMP prompts would fail closed instead of reaching the user.
     """
     if approval_callback is not None:
         try:
@@ -334,16 +251,12 @@ def serve_approvals(client: Any, stop: threading.Event,
             continue  # queue timeout — loop and re-check stop
         try:
             if looks_like_approval_select(request.options, request.method):
-                # M4b mirror only when a human could answer it; auto-decided
-                # guards resolve in ms and a mirrored prompt would go stale.
-                mirrored = False
-                if _mirror_wanted(request):
-                    _notify_approval_frame(request)
-                    mirrored = True
+                # Every emitted OMP gate needs a human answer, independently
+                # of the Hermes parent's approval mode.
+                _notify_approval_frame(request)
                 context = context_provider() if context_provider else contextvars.copy_context()
                 approved = context.run(_approve_command_select, client, request)
-                if mirrored:
-                    _notify_approval_settled(str(getattr(request, "id", "") or ""), approved)
+                _notify_approval_settled(str(getattr(request, "id", "") or ""), approved)
             elif request.method in ("cancel",) or request.is_passive():
                 continue  # passive frames are not answered
             else:

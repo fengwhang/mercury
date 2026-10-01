@@ -10,10 +10,10 @@ from tools import approval
 
 
 @pytest.mark.parametrize("mode,expected,omp_mode", [
-    ("safe", "manual", "always-ask"), ("smart", "smart", "write"),
-    ("yolo", "off", "yolo"), (False, "off", "yolo"),
+    ("safe", "manual", "yolo"), ("smart", "smart", "always-ask"),
+    ("yolo", "off", "write"), (False, "off", "yolo"),
 ])
-def test_both_engines_read_same_policy_and_keep_user_settings(tmp_path, monkeypatch, mode, expected, omp_mode):
+def test_engine_modes_stay_independent_and_keep_shared_deny_rules(tmp_path, monkeypatch, mode, expected, omp_mode):
     home = tmp_path / "home"
     home.mkdir()
     config_path = home / "config.yaml"
@@ -21,7 +21,7 @@ def test_both_engines_read_same_policy_and_keep_user_settings(tmp_path, monkeypa
         "models": {"default": "prov/model", "delegate_model": "prov/model"},
         "approvals": {"mode": mode, "deny": ["*git push*", "echo '#keep' *"]},
         "hermes": {"approvals": {"mode": "smart", "deny": ["shutdown*"]}},
-        "omp": {"theme": {"dark": "mercury"}, "tools": {"approval": {"write": "deny"}},
+        "omp": {"theme": {"dark": "mercury"}, "tools": {"approvalMode": omp_mode, "approval": {"write": "deny"}},
                 "bash": {"patterns": [{"match": "custom*", "approval": "deny"}]}},
     }
     config_path.write_text(yaml.safe_dump(config, default_flow_style=True))

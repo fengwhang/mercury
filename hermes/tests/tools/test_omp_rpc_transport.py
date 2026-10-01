@@ -167,41 +167,6 @@ class TestPromptParsing(unittest.TestCase):
             None, "select"))
 
 
-class TestHermesApprovalDecision(unittest.TestCase):
-    def test_guard_stack_approved_routes_true(self):
-        recorded = {}
-
-        def fake_guards(command, env_type=None, **kw):
-            recorded["command"] = command
-            recorded["env_type"] = env_type
-            return {"approved": True, "message": None}
-
-        orig = getattr(omp_rpc_transport, "check_all_command_guards", None)
-        import tools.approval as approval_mod
-        real = approval_mod.check_all_command_guards
-        approval_mod.check_all_command_guards = fake_guards
-        try:
-            self.assertTrue(
-                omp_rpc_transport.hermes_approval_decision("ls -la"))
-        finally:
-            approval_mod.check_all_command_guards = real
-        self.assertEqual(recorded["command"], "ls -la")
-
-    def test_guard_exception_fails_closed(self):
-        import tools.approval as approval_mod
-        real = approval_mod.check_all_command_guards
-
-        def boom(*a, **kw):
-            raise RuntimeError("guard stack down")
-
-        approval_mod.check_all_command_guards = boom
-        try:
-            self.assertFalse(
-                omp_rpc_transport.hermes_approval_decision("ls"))
-        finally:
-            approval_mod.check_all_command_guards = real
-
-
 class TestRpcChildFlow(unittest.TestCase):
     """End-to-end against the fake server through the REAL client."""
 
@@ -209,12 +174,12 @@ class TestRpcChildFlow(unittest.TestCase):
         fake = _FakeOmpServer()
         results = {}
 
-        def fake_decision(command, session_key=None):
-            results["command"] = command
+        def fake_decision(prompt_text):
+            results["command"] = omp_rpc_transport.extract_command_from_prompt(prompt_text)
             return decision
 
-        real_decision = omp_rpc_transport.hermes_approval_decision
-        omp_rpc_transport.hermes_approval_decision = fake_decision
+        real_decision = omp_rpc_transport.hermes_tool_approval_decision
+        omp_rpc_transport.hermes_tool_approval_decision = fake_decision
         try:
             entry = omp_rpc_transport.run_omp_task_rpc(
                 omp_path=sys.executable,
@@ -226,7 +191,7 @@ class TestRpcChildFlow(unittest.TestCase):
                 command_override=fake.command(),
             )
         finally:
-            omp_rpc_transport.hermes_approval_decision = real_decision
+            omp_rpc_transport.hermes_tool_approval_decision = real_decision
         results["entry"] = entry
         return results
 
@@ -589,7 +554,7 @@ if __name__ == "__main__":
 
 
 class TestInheritedHumanApprovals(unittest.TestCase):
-    def test_live_parent_mode_controls_non_shell_child_prompts(self):
+    def test_hermes_parent_mode_cannot_bypass_omp_child_prompts(self):
         from tools import approval
         from unittest.mock import patch
         fake = _FakeOmpServer(persistent=True)
@@ -607,7 +572,7 @@ class TestInheritedHumanApprovals(unittest.TestCase):
         approval.register_gateway_notify(key, notify)
         try:
             with patch.object(approval, "_YOLO_MODE_FROZEN", False):
-                for mode, count in [("manual", 1), ("off", 1), ("smart", 2), ("off", 2)]:
+                for count, mode in enumerate(("manual", "off", "smart", "off"), 1):
                     with patch.object(approval, "_get_approval_mode", return_value=mode):
                         result = child.run_task("RUN_APPROVAL_GATE NON_SHELL", timeout=10)
                     self.assertEqual(result["summary"], "GATE=Approve")

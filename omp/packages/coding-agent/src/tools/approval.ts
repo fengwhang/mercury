@@ -97,12 +97,6 @@ export function resolveToolTier(tool: ApprovalSubject, args: unknown): ToolTier 
 	return getToolDecision(tool, args).tier;
 }
 
-/** Distinguish a risk detector from a tool's explicit human-prompt policy. */
-export function isBareSafetyOverride(tool: ApprovalSubject, args: unknown): boolean {
-	const decision = getToolDecision(tool, args);
-	return decision.override && decision.policy === undefined;
-}
-
 function modeApprovesTier(mode: ApprovalMode, tier: ToolTier): boolean {
 	return TIER_RANK[tier] <= TIER_RANK[APPROVAL_MODE_MAX_TIER[mode]];
 }

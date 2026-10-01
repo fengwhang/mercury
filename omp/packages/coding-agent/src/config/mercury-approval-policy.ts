@@ -1,4 +1,4 @@
-/** Live profile-wide permission policy shared with Mercury's Hermes engine. */
+/** Live OMP permission mode and inherited explicit denials in a Mercury profile. */
 import * as fs from "node:fs";
 import { YAML } from "bun";
 import type { ApprovalMode } from "../tools/approval";
@@ -20,17 +20,11 @@ function mapping(value: unknown, label: string): Record<string, unknown> {
 }
 
 function nativeMode(value: unknown): ApprovalMode {
-	if (value === false) return "yolo";
-	if (typeof value !== "string") return "always-ask";
-	switch (value.trim().toLowerCase()) {
-		case "off":
-		case "yolo":
-			return "yolo";
-		case "smart":
-			return "write";
-		default:
-			return "always-ask";
+	if (value === undefined) return "yolo";
+	if (value === "always-ask" || value === "write" || value === "yolo") {
+		return value;
 	}
+	throw new Error("omp.tools.approvalMode must be always-ask, write, or yolo");
 }
 
 // Unsupported fnmatch wildcards broaden denial, matching the Python bridge.
@@ -52,6 +46,8 @@ export class MercuryApprovalPolicy {
 			if (stamp === this.#stamp && this.#cached) return this.#cached;
 			const text = fs.readFileSync(this.filePath, "utf8");
 			const config = mapping(YAML.parse(text), "Mercury config");
+			const omp = mapping(config.omp, "omp");
+			const tools = mapping(omp.tools, "omp.tools");
 			const hermes = mapping(config.hermes, "hermes");
 			const legacy = mapping(hermes.approvals, "hermes.approvals");
 			const shared = mapping(config.approvals, "approvals");
@@ -77,9 +73,7 @@ export class MercuryApprovalPolicy {
 				}
 			}
 			this.#cached = {
-				mode: nativeMode(
-					Object.hasOwn(shared, "mode") ? shared.mode : Object.hasOwn(legacy, "mode") ? legacy.mode : "smart",
-				),
+				mode: nativeMode(tools.approvalMode),
 				deny: [...patterns].map(match => ({ match, approval: "deny" })),
 			};
 			this.#stamp = stamp;
