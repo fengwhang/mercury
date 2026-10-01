@@ -6617,7 +6617,7 @@ class GatewaySlashCommandsMixin:
         return await self._handle_observatory_spawn(event, engine="omp", verb="spawnomp")
 
     async def _handle_exit_command(self, event: MessageEvent) -> str:
-        """Handle /exit — end the caller's spawned 0-agent (kill + room destroy)."""
+        """Handle /exit — end the caller's agent subtree and destroy its rooms."""
         from observatory.spawn import exit_orchestrator
         handles, reason = self._observatory_handles()
         if handles is None:

@@ -9,7 +9,7 @@ import pytest
 from observatory import mirc as mirc_mod
 from observatory.mirc import DaemonConfig, MircDaemon
 
-from .test_mirc import RawClient, running_daemon
+from .test_ircd import RawClient, running_daemon
 
 
 async def _wait_line(client: RawClient, prefix: str, timeout: float = 5.0) -> str:

@@ -9,7 +9,7 @@ state.db rows — and drives the MIRC side (one channel per agent):
   message in the room starts the session; omp rooms get a headless RPC
   child with its session JSONL pinned under the observatory dir via
   ``--session-dir``), register the depth-0 node, and JOIN the channel.
-- **exit**: depth-0 cascade — the WHOLE subtree's channels are destroyed
+- **exit**: explicit cascade — the WHOLE subtree's channels are destroyed
   server-side and every row deleted. Crash-atomicity: the dead-marks and
   the write-ahead channel journal land in ONE sqlite transaction
   (``begin_exit``); the journal replays on startup
@@ -208,6 +208,12 @@ class OrchestratorRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._handles: dict[str, OrchestratorHandle] = {}
+        self._recovery_locks: dict[str, threading.Lock] = {}
+
+    def recovery_lock(self, node_id: str):
+        """Serialize boot and message-triggered recovery of the same process."""
+        with self._lock:
+            return self._recovery_locks.setdefault(node_id, threading.Lock())
 
     def register(self, handle: OrchestratorHandle) -> None:
         with self._lock:
@@ -453,27 +459,34 @@ def resurrect_omp_handle(
     Raises on a non-live/non-omp row or a failed rebuild (callers turn
     that into the room-visible error). Blocks (process spawn + RPC
     handshake) — callers MUST hop threads off the gateway loop."""
-    row = state.get(node_id)
-    if str((row or {}).get("engine") or "") != "omp" or str(
-        (row or {}).get("status") or ""
-    ) != "live":
-        raise RuntimeError(f"not a live omp node: {node_id}")
-    ref = str((row or {}).get("session_ref") or "")
-    kwargs = omp_child_kwargs_for_row(row, mercury_home=mercury_home)
-    child = build_omp_child(**kwargs)
-    handle = OrchestratorHandle(
-        node_id=node_id,
-        engine="omp",
-        name=str((row or {}).get("name") or node_id),
-        session_ref=ref,
-        model=kwargs["model"],
-        rpc=child,
-    )
-    registry.register(handle)
-    from observatory.rooms import register_omp_room as _register_room
+    from observatory.rooms import _omp_child_dead, register_omp_room
 
-    _register_room(node_id, channel, child)
-    return child
+    with registry.recovery_lock(node_id):
+        row = state.get(node_id)
+        if row.get("engine") != "omp" or row.get("status") != "live":
+            raise RuntimeError(f"not a live omp node: {node_id}")
+        existing = registry.get(node_id)
+        if existing is not None and existing.rpc is not None and not _omp_child_dead(existing.rpc):
+            register_omp_room(node_id, channel, existing.rpc)
+            return existing.rpc
+        ref = str(row.get("session_ref") or "")
+        kwargs = omp_child_kwargs_for_row(row, mercury_home=mercury_home)
+        child = build_omp_child(**kwargs)
+        try:
+            # !exit can arrive while startup is blocked in its worker thread.
+            # Atomically check the durable row before exposing the new handle.
+            with state.locked():
+                if state.get(node_id).get("status") != "live":
+                    raise RuntimeError(f"omp node exited during recovery: {node_id}")
+                registry.register(OrchestratorHandle(
+                    node_id=node_id, engine="omp", name=str(row.get("name") or node_id),
+                    session_ref=ref, model=kwargs["model"], rpc=child,
+                ))
+                register_omp_room(node_id, channel, child)
+        except BaseException:
+            child.stop()
+            raise
+        return child
 
 
 def omp_session_file(child: Any) -> str:
@@ -641,13 +654,18 @@ async def spawn_orchestrator(
             # materializes in the gateway store on the first message.
             session_ref = ""
     else:
-        handle_rpc = (omp_child_factory or (lambda: build_omp_child(
-            model=model,
-            mercury_home=mercury_home,
-            workdir=workdir,
-            profile_home=profile_home,
-        )))()
-        session_ref = omp_session_file(handle_rpc)
+        # Process startup and the RPC handshake can take many seconds.
+        # They must never freeze the gateway loop that owns MIRC heartbeats.
+        factory = omp_child_factory or (lambda: build_omp_child(
+            model=model, mercury_home=mercury_home,
+            workdir=workdir, profile_home=profile_home,
+        ))
+        handle_rpc = await asyncio.to_thread(factory)
+        try:
+            session_ref = await asyncio.to_thread(omp_session_file, handle_rpc)
+        except Exception:
+            await asyncio.to_thread(handle_rpc.stop)
+            raise
     _handle = handle_agent if engine == "hermes" else handle_rpc
     stamped_model = (str(getattr(_handle, "model", "") or "").strip()
                      or (model or "").strip() or None)
@@ -676,7 +694,7 @@ async def spawn_orchestrator(
         engine=engine,
         name=clean,
         slug=slug,
-        mxid=agent_nick(clean, server_name),
+        mxid=agent_nick(channel.lstrip("#"), ""),
         session_ref=session_ref,
         parent_node_id=None,  # depth 0 by next_depth()
         extra={
@@ -719,16 +737,7 @@ async def spawn_orchestrator(
                 logger.debug("spawn: lounge invite failed for %s", node_id)
             try:
                 from observatory.identity import ensure_identity
-                from observatory.rooms import agent_nick as _agent_nick
-
-                live = None
-                try:
-                    from observatory.provision import live_server_name
-
-                    live = live_server_name(None)
-                except Exception:
-                    live = None
-                await ensure_identity(_agent_nick(clean, live), channel)
+                await ensure_identity(str(row["mxid"]), channel)
             except Exception:  # noqa: BLE001 — cosmetic; main bot covers
                 logger.debug("spawn: identity ensure failed for %s", node_id)
             try:
@@ -817,11 +826,8 @@ def begin_exit(
     not depend on state rows still existing.
     """
     row = state.get(node_id)  # StateError on unknown — fail hard
-    if row["depth"] != 0:
-        raise ValueError(
-            f"exit: {node_id!r} is depth {row['depth']}, not a 0-agent "
-            "(only /exit on spawned orchestrators)"
-        )
+    if (row.get("extra") or {}).get("kind") == GATEWAY_KIND or node_id == "gw":
+        raise ValueError("exit: use /restart for the gateway agent")
     subtree = state.get_subtree(node_id)  # BFS top-down (parents first)
     channels = [str(r.get("room_id") or "") for r in subtree]
     channels = [c for c in channels if c]
@@ -957,7 +963,7 @@ async def replay_purge_journal(
 
 
 # ============================================================================
-# exit_orchestrator (/exit → depth-0 cascade)
+# exit_orchestrator (/exit → explicit subtree cascade)
 # ============================================================================
 
 
@@ -970,7 +976,7 @@ async def exit_orchestrator(
     status: str = "exit",
     summary: Optional[str] = None,
 ) -> dict[str, Any]:
-    """``/exit`` on a spawned 0-agent.
+    """``/exit`` on a spawned agent or a retained subagent room.
 
     Sequence (each step crash-safe on its own):
     1. ``begin_exit`` — atomic dead-mark + channel journal.

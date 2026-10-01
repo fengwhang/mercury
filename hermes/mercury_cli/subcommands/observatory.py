@@ -125,8 +125,9 @@ def _restart_gateway_now() -> int:
         if bin_ is None:
             print("gateway: command not found on PATH", file=sys.stderr)
             return 1
+        print("gateway: restarting (active sessions will resume)", flush=True)
         proc = subprocess.run(
-            [bin_, "gateway", "restart"],
+            [bin_, "gateway", "restart", "--quick"],
             capture_output=True, text=True, timeout=120,
         )
     except Exception as exc:
@@ -198,7 +199,7 @@ def _cmd_restart(args) -> int:
     try:
         from mercury_cli.setup import _verify_gateway_bot
 
-        ok, detail = _verify_gateway_bot(tries=6, wait=10, stable_samples=3)
+        ok, detail = _verify_gateway_bot(tries=20, wait=1, stable_samples=2)
     except Exception as exc:
         print(f"bot check unavailable: {exc}", file=sys.stderr)
         return 1

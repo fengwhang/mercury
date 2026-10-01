@@ -316,14 +316,16 @@ async def test_handle_omp_message_task_then_steer(tmp_path, monkeypatch) -> None
     finally:
         rooms.drop_omp_room("orch-2")
     # A missing child of a live row rebuilds transparently; pin the
-    # rebuild to fail here so this asserts the historical "gone" reply.
+    # rebuild to fail here so this asserts the session-preserving error.
     import observatory.spawn as spawn_mod
 
     def _boom(*args, **kwargs):
         raise RuntimeError("no omp binary in tests")
 
     monkeypatch.setattr(spawn_mod, "resurrect_omp_handle", _boom)
-    assert "gone" in await mgr.handle_omp_message("#king", "op", "again")
+    reply = await mgr.handle_omp_message("#king", "op", "again")
+    assert "temporarily unavailable" in reply
+    assert "history are preserved" in reply
 
 
 @pytest.mark.asyncio

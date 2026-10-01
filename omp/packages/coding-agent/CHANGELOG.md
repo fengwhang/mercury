@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Align settings reload and runtime override regressions with Mercury's sole task model role.
 - Restore native OMP approval modes independently of Hermes smart review; preserve ancestor approval routing and explicit deny rules.
 
 ## [18.1.6] - 2026-09-03

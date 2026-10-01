@@ -104,3 +104,25 @@ async def test_first_reply_after_remote_eof_is_delivered(tmp_path):
         finally:
             await watcher.close()
             await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_idle_identity_recovers_without_new_output_and_exit_stays_closed(tmp_path):
+    async with running_daemon(tmp_path, password="test") as (daemon, port):
+        conn = IdentityConn(host="127.0.0.1", port=port, password="test",
+                            nick="agent", channel="#agent")
+        try:
+            assert await conn.send("online")
+            await eventually(lambda: "agent" in daemon._clients)
+            old_peer = daemon._clients["agent"]
+            old_peer.writer.close()
+            await eventually(lambda: "agent" in daemon._clients and daemon._clients["agent"] is not old_peer)
+            assert "#agent" in daemon._clients["agent"].channels
+            # Explicit exit is durable even if a reconnect is already queued.
+            daemon._clients["agent"].writer.close()
+            await conn.close()
+            await eventually(lambda: "agent" not in daemon._clients)
+            assert not await conn.send("must not resurrect after exit")
+            assert conn._reconnect_task is None
+        finally:
+            await conn.close()

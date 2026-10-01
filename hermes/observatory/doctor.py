@@ -119,20 +119,35 @@ class _Probe:
 
     def names(self, channel: str, timeout: float = 5.0) -> list[str] | None:
         """Members of *channel*, or None when the join fails."""
+        import uuid
+
         try:
             self._send(f"JOIN {channel}")
             deadline = time.monotonic() + timeout
+            # Registration can auto-join several rooms. Their outstanding
+            # NAMES replies must not complete this new membership query.
+            barrier = f"mercury-names-{uuid.uuid4().hex}"
+            self._send(f"PING :{barrier}")
+            synchronized = False
+            while time.monotonic() < deadline and not synchronized:
+                synchronized = any(
+                    " PONG " in line and line.endswith(f":{barrier}")
+                    for line in self._drain())
+            if not synchronized:
+                return None
+            self._send(f"NAMES {channel}")
             members: list[str] = []
             while time.monotonic() < deadline:
                 for line in self._drain():
                     parts = line.split()
-                    if len(parts) >= 6 and parts[1] == "353":
+                    if len(parts) >= 6 and parts[1] == "353" and parts[4].lower() == channel.lower():
                         # :srv 353 me = #chan :n1 n2 ... (names start at 5)
                         members.extend(
                             n.lstrip(":").lstrip("@+%") for n in parts[5:])
-                    if len(parts) >= 4 and parts[1] == "366":
+                    if len(parts) >= 4 and parts[1] == "366" and parts[3].lower() == channel.lower():
                         return members
-                    if len(parts) >= 4 and parts[1] in ("403", "471", "474", "475"):
+                    if (len(parts) >= 4 and parts[3].lower() == channel.lower()
+                            and parts[1] in ("403", "471", "474", "475")):
                         return None
         except OSError:
             return None

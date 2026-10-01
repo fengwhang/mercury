@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from uuid import uuid4
 
 # Let the gateway send its acknowledgement before the MIRC socket closes.
@@ -13,6 +14,29 @@ _RESTART_HELPER = (
     "os.environ.pop('_HERMES_GATEWAY', None); "
     "os.execvpe(sys.argv[1], sys.argv[1:], os.environ)"
 )
+
+
+def quick_restart_handler(runner, loop):
+    """Control-socket handler; marshal a session-preserving restart to the loop."""
+    def request():
+        done = threading.Event()
+        accepted = []
+
+        def on_loop():
+            try:
+                accepted.append(runner.request_restart(
+                    detached=False, via_service=True, after_turn_timeout=0.0))
+            finally:
+                done.set()
+
+        loop.call_soon_threadsafe(on_loop)
+        done.wait(timeout=5)
+        return {
+            "pid": os.getpid(), "restarting": bool(accepted and accepted[0]),
+            "already_stopping": bool(accepted and not accepted[0]),
+        }
+
+    return request
 
 
 def launch_observatory_restart(command: list[str]) -> None:

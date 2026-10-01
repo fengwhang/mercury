@@ -5,12 +5,27 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.6] — nightly
+
 - Configure Hermes and OMP approval modes separately in setup; restore OMP's
   native tool tiers and remove Hermes smart risk review from OMP commands.
 - Forward OMP child approval requests to the owner even when the Hermes
   parent uses YOLO; preserve live descendant policy and explicit deny rules.
 - Make `!restart` in the managed MIRC gateway room restart the full
   Observatory, skipping mLounge when it is not installed.
+- Probe quiet MIRC connections before declaring failure, preventing healthy
+  progress output from triggering a false disconnect. Mark successful
+  registration connected so real transport failures reach the recovery loop.
+- Move `!spawnomp` startup and session RPC calls off the connection's event
+  loop; keep heartbeats responsive and give repeated spawn names unique nicks.
+- Reconnect idle agent identities automatically and serialize concurrent OMP
+  recovery, preserving busy turns and honoring `!exit` during recovery.
+- Retain spawned sessions and completed subagent rooms until explicit `!exit`,
+  including descendants and history across transport reconnects.
+- Checkpoint gateway sessions promptly during Observatory restart instead of
+  waiting up to 30 minutes for active turns; shorten healthy bot verification.
+- Synchronize membership probes after auto-join replies and filter by room,
+  preventing false empty-room reports during restart verification.
 
 ## [0.3.5] — nightly
 

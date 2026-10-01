@@ -238,6 +238,13 @@ def agent_nick(name: str, server: str | None = None) -> str:
     """Agent nick: ``<server>_<name>`` (gateway: ``<server>_gateway``)."""
     prefix = _server_prefix(server)
     base = f"{prefix}_{name}" if prefix else str(name)
+    if len(base) > 32:
+        import hashlib
+
+        # Truncation alone loses the unique suffix of long room names and
+        # lets a new identity evict another agent under newest-nick-wins.
+        suffix = hashlib.sha256(base.lower().encode()).hexdigest()[:12]
+        return f"{clean_nick(base)[:19]}-{suffix}".lower()
     return clean_nick(base).lower()
 
 
@@ -509,6 +516,7 @@ class RoomManager:
         """Channel for a delegate child: existing row, else create from the frame."""
         channel = self.channel_for_node(node_id)
         if channel:
+            self.state.update_extra(node_id, task_state="running")
             return channel
         try:
             from observatory.provision import live_server_name
@@ -590,38 +598,16 @@ class RoomManager:
         return channel
 
     async def _retire_child_room(self, node_id: str, *, summary: str = "") -> None:
-        """Death/purge for a finished delegate child (D8 timing).
-
-        Every stop dead-marks the row. Depth 1 (child of a 0-agent) purges
-        immediately: summary to the parent room, channel destroyed,
-        row deleted, identity dropped — plus any delegate descendants
-        (their parent just died). Depth >= 2 keeps row + room as reading
-        grace until the parent dies. Never raises.
-        """
+        """Record task completion while retaining the session until explicit exit."""
         try:
             row = self.state.get(node_id)
         except Exception:
             return
         from observatory.thinking import thinking_done
 
-        thinking_done(str(row.get("room_id") or ""))
-        depth = row.get("depth", 1)
-        try:
-            depth = int(depth)
-        except Exception:
-            depth = 1
-        try:
-            self.state.mark_dead(node_id)
-        except Exception:
-            pass
-        try:
-            from observatory.state import purge_on_death
-
-            purge = purge_on_death(depth)
-        except Exception:
-            purge = depth == 1
-        if not purge:
-            return
+        for completed in self.state.get_subtree(node_id):
+            thinking_done(str(completed.get("room_id") or ""))
+            self.state.update_extra(completed["node_id"], task_state="completed")
         parent_channel = ""
         try:
             parent_id = str(row.get("parent_node_id") or "")
@@ -640,47 +626,6 @@ class RoomManager:
                 )
             except Exception:
                 pass
-        await self._purge_child_subtree(node_id)
-
-    async def _purge_child_subtree(self, node_id: str) -> None:
-        """Destroy + delete a dead node and its delegate descendants."""
-        try:
-            row = self.state.get(node_id)
-        except Exception:
-            return
-        channel = str(row.get("room_id") or "")
-        children: list[str] = []
-        try:
-            for r in self.state.get_subtree(node_id):
-                cid = str(r.get("node_id") or "")
-                if cid and cid != node_id:
-                    children.append(cid)
-        except Exception:
-            pass
-        for cid in children:
-            try:
-                await self._purge_child_subtree(cid)
-            except Exception:
-                continue
-        if channel:
-            try:
-                await self.destroy_room(channel)
-            except Exception:
-                pass
-            # No unsubscribe step: without a lingering subscription there is no
-            # phone-side subscription — The Lounge prunes the destroyed
-            # room itself.
-            try:
-                from observatory.identity import drop_identity
-
-                await drop_identity(channel)
-            except Exception:
-                pass
-        try:
-            self.state.mark_deleted_and_purge(node_id)
-            logger.info("observatory: room purged %s", channel)
-        except Exception:
-            pass
 
     async def handle_child_message(self, channel: str, sender: str, text: str) -> str:
         """User message in a delegate-child room → steer the live child."""
@@ -747,7 +692,7 @@ class RoomManager:
                     logger.debug("rooms: omp resurrect %s failed: %s", node_id, exc)
                     entry = None
             if entry is None:
-                return "that omp agent is gone (automatic restart failed) — /spawnomp a fresh one."
+                return "OMP is temporarily unavailable. Its session and history are preserved; retry in this room."
             rpc = entry.get("rpc")
         if rpc is None:
             return "omp agent not running."
@@ -1104,6 +1049,10 @@ _fallback_registry: Any = None
 
 def register_omp_room(node_id: str, channel: str, rpc: Any) -> None:
     with _omp_lock:
+        existing = _omp_rooms.get(node_id)
+        if existing is not None and existing.get("rpc") is rpc:
+            existing["channel"] = channel
+            return
         _omp_rooms[node_id] = {"channel": channel, "rpc": rpc, "busy": False}
 
 

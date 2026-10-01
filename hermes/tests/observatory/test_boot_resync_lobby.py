@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 
 import pytest
+
+from observatory.spawn import OrchestratorRegistry
 
 
 class _FakeManager:
@@ -51,15 +53,8 @@ async def test_resync_subscribes_lobby(monkeypatch) -> None:
     assert report.get("failed") == []
 
 
-class _FakeRegistry:
-    def __init__(self):
-        self.handles = {}
-
-    def get(self, node_id):
-        return self.handles.get(node_id)
-
-    def register(self, handle):
-        self.handles[handle.node_id] = handle
+class _FakeRegistry(OrchestratorRegistry):
+    pass
 
 
 @pytest.mark.asyncio
@@ -92,6 +87,8 @@ async def test_resync_rebuilds_live_omp_child(monkeypatch) -> None:
             return True
 
     class _LiveState:
+        locked = staticmethod(nullcontext)
+
         _row = {
             "node_id": "orch-1", "engine": "omp", "status": "live",
             "name": "king", "session_ref": "s.jsonl",
@@ -152,6 +149,8 @@ async def test_resync_rejoins_hermes_rooms_and_invites_mlounge(monkeypatch) -> N
             return True
 
     class _LiveState:
+        locked = staticmethod(nullcontext)
+
         def get_live(self):
             return [
                 {"node_id": "gw", "engine": "hermes", "status": "live",

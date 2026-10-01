@@ -277,6 +277,7 @@ async def boot_resync(
                 if (
                     str((row or {}).get("engine") or "") == "omp"
                     and str((row or {}).get("status") or "") == "live"
+                    and int((row or {}).get("depth") or 0) == 0
                 ):
                     node_id = str((row or {}).get("node_id") or "")
                     try:

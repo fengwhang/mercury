@@ -132,6 +132,10 @@ def build_gateway_parser(
         "restart", help="Restart gateway service"
     )
     gateway_restart.add_argument(
+        "--quick", action="store_true",
+        help="Checkpoint active sessions and restart without waiting for the turn to finish",
+    )
+    gateway_restart.add_argument(
         "--system",
         action="store_true",
         help="Target the Linux system-level gateway service",

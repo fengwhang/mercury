@@ -11,7 +11,6 @@ import {
 	__physicalTargetSegmentsForTesting,
 	onAppendOnlyModeChanged,
 	onCodeModeChanged,
-	onModelRolesChanged,
 	onStatusLineSessionAccentChanged,
 	resetSettingsForTest,
 	type SettingPath,
@@ -975,15 +974,12 @@ describe("Settings", () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await writeSettings({
 				setupVersion: 1,
-				modelRoles: { global_role: "openai/global" },
+				delegateModel: "openai/global",
 			});
-			await Bun.write(
-				projectConfigPath,
-				YAML.stringify({ modelRoles: { project_role: "openai/project" } }, null, 2),
-			);
+			await Bun.write(projectConfigPath, YAML.stringify({ delegateModel: "openai/project" }, null, 2));
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			const malformedGlobal = 'setupVersion: 2\nmodelRoles:\n  global_role: "unterminated\n';
-			const malformedProject = 'modelRoles:\n  project_role: "unterminated\n';
+			const malformedGlobal = 'setupVersion: 2\ndelegateModel: "unterminated\n';
+			const malformedProject = 'delegateModel: "unterminated\n';
 			await Promise.all([
 				Bun.write(getConfigPath(), malformedGlobal),
 				Bun.write(projectConfigPath, malformedProject),
@@ -998,8 +994,7 @@ describe("Settings", () => {
 				fs.readdirSync(path.dirname(projectConfigPath)).some(name => name.startsWith("config.yml.broken-")),
 			).toBe(false);
 			expect(settings.get("setupVersion")).toBe(1);
-			expect(settings.getModelRole("global_role")).toBe("openai/global");
-			expect(settings.getModelRole("project_role")).toBe("openai/project");
+			expect(settings.getModelRole("task")).toBe("openai/project");
 		});
 		it("retries when a persisted setting changes while files are being read", async () => {
 			await writeSettings({ setupVersion: 1 });
@@ -1028,29 +1023,17 @@ describe("Settings", () => {
 			expect((await readSettings()).setupVersion).toBe(2);
 		});
 
-		it("preserves runtime overrides and only signals semantic model-role changes", async () => {
-			await writeSettings({ modelRoles: { default: "openai/original" } });
+		it("preserves a runtime task model while reloading the persisted delegate model", async () => {
+			await writeSettings({ delegateModel: "openai/original" });
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			settings.overrideModelRoles({ runtime: "openai/runtime" });
-			let signalCount = 0;
-			const unsubscribe = onModelRolesChanged(() => {
-				signalCount++;
-			});
-
-			try {
-				await settings.reloadFromDisk();
-				expect(signalCount).toBe(0);
-				expect(settings.getModelRole("runtime")).toBe("openai/runtime");
-
-				await writeSettings({ modelRoles: { default: "openai/updated" } });
-				await settings.reloadFromDisk();
-
-				expect(signalCount).toBe(1);
-				expect(settings.getModelRole("default")).toBe("openai/updated");
-				expect(settings.getModelRole("runtime")).toBe("openai/runtime");
-			} finally {
-				unsubscribe();
-			}
+			settings.override("delegateModel", "openai/runtime");
+			await settings.reloadFromDisk();
+			expect(settings.getModelRole("task")).toBe("openai/runtime");
+			await writeSettings({ delegateModel: "openai/updated" });
+			await settings.reloadFromDisk();
+			expect(settings.getModelRole("task")).toBe("openai/runtime");
+			settings.clearOverride("delegateModel");
+			expect(settings.getModelRole("task")).toBe("openai/updated");
 		});
 
 		it("signals Code Mode partition inputs picked up from disk", async () => {
@@ -1421,26 +1404,17 @@ describe("Settings", () => {
 	});
 
 	describe("model role overrides", () => {
-		it("does not persist temporary default model overrides when another role is saved", async () => {
-			await writeSettings({
-				modelRoles: { default: "anthropic/claude-sonnet-4-5" },
-			});
-
+		it("does not persist a temporary task model when another setting is saved", async () => {
+			await writeSettings({ delegateModel: "anthropic/claude-sonnet-4-5" });
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-
-			settings.overrideModelRoles({ default: "openai/gpt-5.2-codex" });
-			expect(settings.getModelRole("default")).toBe("openai/gpt-5.2-codex");
-
-			settings.setModelRole("smol", "anthropic/claude-haiku-4-5");
+			settings.override("delegateModel", "openai/gpt-5.2-codex");
+			expect(settings.getModelRole("task")).toBe("openai/gpt-5.2-codex");
+			settings.set("tools.approvalMode", "yolo");
 			await settings.flush();
-
 			const savedSettings = await readSettings();
-			expect(savedSettings.modelRoles).toEqual({
-				default: "anthropic/claude-sonnet-4-5",
-				smol: "anthropic/claude-haiku-4-5",
-			});
-			expect(settings.getModelRole("default")).toBe("openai/gpt-5.2-codex");
-			expect(settings.getModelRole("smol")).toBe("anthropic/claude-haiku-4-5");
+			expect(savedSettings.delegateModel).toBe("anthropic/claude-sonnet-4-5");
+			expect(savedSettings.tools).toEqual({ approvalMode: "yolo" });
+			expect(settings.getModelRole("task")).toBe("openai/gpt-5.2-codex");
 		});
 
 		it("preserves a same-role external edit made after a local save was queued", async () => {
@@ -1568,30 +1542,24 @@ describe("Settings", () => {
 
 			expect(settings.getModelRole("default")).toBe("anthropic/claude-opus-4-5");
 		});
-		it("clears a role when setModelRole receives undefined", () => {
+		it("clears the configured task model without creating legacy role routing", () => {
 			const settings = Settings.isolated();
-
-			settings.setModelRole("smol", "x/y");
-			expect(settings.getModelRole("smol")).toBe("x/y");
-
-			settings.setModelRole("smol", undefined);
-
-			expect(settings.getModelRole("smol")).toBeUndefined();
-			expect(Object.hasOwn(settings.getModelRoles(), "smol")).toBe(false);
+			settings.set("delegateModel", "x/y");
+			expect(settings.getModelRole("task")).toBe("x/y");
+			settings.set("delegateModel", "");
+			expect(settings.getModelRole("task")).toBeUndefined();
+			expect(settings.getModelRoles()).toEqual({});
 		});
 
-		it("clears a role from the runtime override layer so the effective view updates immediately", () => {
-			const settings = Settings.isolated({
-				modelRoles: { smol: "anthropic/claude-haiku-4-5" },
-			});
-
-			settings.overrideModelRoles({ smol: "openai/gpt-5.2-codex" });
-			expect(settings.getModelRole("smol")).toBe("openai/gpt-5.2-codex");
-
-			settings.setModelRole("smol", undefined);
-
+		it("clears a runtime task override to expose the persisted task model", () => {
+			const settings = Settings.isolated();
+			settings.set("delegateModel", "anthropic/claude-haiku-4-5");
+			settings.override("delegateModel", "openai/gpt-5.2-codex");
+			expect(settings.getModelRole("task")).toBe("openai/gpt-5.2-codex");
+			settings.clearOverride("delegateModel");
+			expect(settings.getModelRole("task")).toBe("anthropic/claude-haiku-4-5");
 			expect(settings.getModelRole("smol")).toBeUndefined();
-			expect(Object.hasOwn(settings.getModelRoles(), "smol")).toBe(false);
+			expect(settings.getModelRoles()).toEqual({});
 		});
 	});
 

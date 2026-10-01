@@ -7,11 +7,9 @@ the ONLY writer; readers are the room manager and boot resync.
 unused (kept for schema stability).
 
 Design laws tested here:
-- **Depth is stored at insert** and never recomputed (D8: the depth class
-  fixes an agent's deletion timing for its whole life — a parent's row may
-  later change, but a child's semantics were frozen at spawn).
-- **0-agents are never auto-deleted** (D8: their history survives until
-  /exit or session reset; restart is not death — D18). ``mark_dead`` only
+- **Depth is stored at insert** and never recomputed.
+- **Sessions are never auto-deleted**: rooms and history survive task
+  completion, transport loss, and restarts until /exit. ``mark_dead`` only
   tombstones; deletion is always an explicit ``mark_deleted_and_purge``.
 - **Slug collisions count LIVE agents only**: dead/purged rows are
   invisible to ``find_live_by_slug``, so a new agent reuses an inert

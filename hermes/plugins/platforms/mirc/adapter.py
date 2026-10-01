@@ -84,8 +84,9 @@ from gateway.config import Platform
 # MIRC protocol helpers
 # ---------------------------------------------------------------------------
 
-SILENCE_LIMIT = 210.0  # reconnect when the server says nothing this long
-WATCHDOG_POLL = 60.0  # silence-check cadence (server PINGs every 60s)
+SILENCE_LIMIT = 210.0  # probe when the server says nothing this long
+WATCHDOG_POLL = 60.0  # silence-check cadence
+WATCHDOG_PROBE_TIMEOUT = 15.0  # bounded wait for inbound proof of liveness
 #: Bound for one connect-phase drain: a half-open socket must fail loud
 #: (retryable reconnect) instead of stalling connect() forever silent.
 CONNECT_SEND_TIMEOUT = 10.0
@@ -245,6 +246,7 @@ class MIRCAdapter(BasePlatformAdapter):
         self._line_queue: Optional[asyncio.Queue] = None
         self._watchdog_task: Optional[asyncio.Task] = None
         self._last_inbound = 0.0
+        self._inbound_event = asyncio.Event()
         self._registered = False  # MIRC registration complete
         #: Connection generation: bumped on every connect() attempt so a
         #: stale receive task unwinding late cannot tear down a newer
@@ -307,6 +309,7 @@ class MIRCAdapter(BasePlatformAdapter):
         except ImportError:
             self._lock_key = None  # status module not available (e.g. tests)
         self._conn_generation = getattr(self, "_conn_generation", 0) + 1
+        self._inbound_event = asyncio.Event()
         self._observatory_online_channels = set()
         try:
             ssl_ctx = None
@@ -344,6 +347,9 @@ class MIRCAdapter(BasePlatformAdapter):
             await self.disconnect()
             self._set_fatal_error("registration_timeout", "IRC server did not send RPL_WELCOME", retryable=True)
             return False
+        # The recovery paths consult this flag, independently of the
+        # gateway's status snapshot. Registration establishes a live adapter.
+        self._mark_connected()
         # IRCv3 multiline: learn server caps (best-effort, short timeouts —
         # a server without CAP support just means packed PRIVMSGs as before).
         self._server_caps = set()
@@ -409,9 +415,10 @@ class MIRCAdapter(BasePlatformAdapter):
         self._wire_plugin_handlers(None)
         _enable_keepalive(self._writer)
         self._last_inbound = time.monotonic()
-        if self._watchdog_task is None or self._watchdog_task.done():
-            self._watchdog_task = asyncio.create_task(self._silence_watchdog())
-        return True
+        if self._watchdog_task is not None and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+        self._watchdog_task = asyncio.create_task(self._silence_watchdog())
+        return self.is_connected
 
     async def _resync_observatory(self, generation: int) -> None:
         """Restore rooms, then post one readiness status per connected room."""
@@ -953,7 +960,7 @@ class MIRCAdapter(BasePlatformAdapter):
         Steady-state sends keep timeout=None (today's behavior).
         """
         if not self._writer or self._writer.is_closing():
-            return
+            raise ConnectionError("MIRC connection is unavailable")
         encoded = (line + "\r\n").encode("utf-8")
         self._writer.write(encoded)
         if timeout is None:
@@ -981,6 +988,7 @@ class MIRCAdapter(BasePlatformAdapter):
                     try:
                         decoded = line.decode("utf-8", errors="replace")
                         self._last_inbound = time.monotonic()
+                        self._inbound_event.set()
                         if self._is_ping(decoded):
                             await self._answer_ping(decoded)
                         else:
@@ -1053,58 +1061,43 @@ class MIRCAdapter(BasePlatformAdapter):
 
 
     async def _silence_watchdog(self) -> None:
-        """Reconnect when the server goes quiet past SILENCE_LIMIT.
+        """Probe a quiet server before reporting a retryable connection loss.
 
-        A live server PINGs idle clients every minute, so sustained
-        silence means the connection is half-open (e.g. the daemon
-        restarted underneath us). Closing the writer drives the normal
-        connection_lost path, which the reconnect watcher rebuilds.
+        Frequent client output suppresses the server's idle-client PINGs.
+        Quiet inbound traffic alone cannot prove that a connection is dead.
+        Responses are observed in the receive loop, ahead of slow agent work.
         """
+        generation = self._conn_generation
+        inbound = self._inbound_event
         try:
             while True:
                 await asyncio.sleep(WATCHDOG_POLL)
+                if (generation != self._conn_generation or not self.is_connected
+                        or self._writer is None or self._writer.is_closing()):
+                    return
+                if time.monotonic() - self._last_inbound <= SILENCE_LIMIT:
+                    continue
+                inbound.clear()
                 try:
-                    if self._writer is None or self._writer.is_closing():
-                        return
-                    if time.monotonic() - self._last_inbound > SILENCE_LIMIT:
-                        logger.warning(
-                            "MIRC: server silent %.0fs — assuming half-open, reconnecting",
-                            time.monotonic() - self._last_inbound,
-                        )
-                        try:
-                            self._writer.close()
-                        except Exception:
-                            pass
-                        try:
-                            if self._recv_task and not self._recv_task.done():
-                                self._recv_task.cancel()
-                        except Exception:
-                            pass
-                        # Same local teardown as the receive-loop drop path:
-                        # the cancelled task may never unwind (stuck read),
-                        # so clean here too (idempotent if it does).
-                        # Generation-guarded: a newer connect in flight keeps
-                        # its state.
-                        try:
-                            self._drop_teardown(
-                                getattr(self, "_conn_generation", None))
-                        except Exception:
-                            pass
-                        # Drive the rebuild directly: a receive loop stuck
-                        # in read() may never notice the closed writer,
-                        # leaving the bot dead with no reconnect.
-                        try:
-                            if self.is_connected:
-                                self._set_fatal_error(
-                                    "connection_lost",
-                                    "IRC server went silent (watchdog)",
-                                    retryable=True)
-                                await self._notify_fatal_error()
-                        except Exception:
-                            pass
-                        return
-                except Exception:
+                    await self._send_raw(
+                        f"PING :mercury-liveness-{generation}", timeout=CONNECT_SEND_TIMEOUT)
+                    await asyncio.wait_for(inbound.wait(), timeout=WATCHDOG_PROBE_TIMEOUT)
+                    continue
+                except (OSError, asyncio.TimeoutError):
                     pass
+                # EOF recovery or a new connection can win while the probe
+                # waits. A stale watchdog must never close that new socket.
+                if generation != self._conn_generation or not self.is_connected:
+                    return
+                logger.warning("MIRC: liveness probe unanswered — reconnecting")
+                if self._recv_task and not self._recv_task.done():
+                    self._recv_task.cancel()
+                self._drop_teardown(generation)
+                self._set_fatal_error(
+                    "connection_lost", "MIRC server did not answer liveness probe",
+                    retryable=True)
+                await self._notify_fatal_error()
+                return
         except asyncio.CancelledError:
             pass
     async def _handle_line(self, raw: str) -> None:

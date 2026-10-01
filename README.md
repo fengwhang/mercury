@@ -237,6 +237,14 @@ If the page loads but the agent does not answer, run
 `mercury observatory restart` to restart and verify the chat path.
 Sending `!restart` in the managed MIRC gateway room also restarts the full
 Observatory. It restarts MIRC and the gateway, and refreshes mLounge when installed.
+Observatory restarts checkpoint active gateway sessions and resume them,
+without waiting for a long model turn to finish. mLounge is optional for
+this command.
+
+Spawned agent sessions and completed subagent rooms stay in the Observatory
+until you send `!exit` in their room. Closing a parent also closes its
+descendant rooms. A transport reconnect retains the sessions and restores
+room membership; idle agent identities reconnect automatically.
 Re-run `mercury setup observatory` if you need to reset a lost mLounge
 password.
 

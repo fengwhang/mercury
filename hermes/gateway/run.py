@@ -12584,6 +12584,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         deadline = loop.time() + timeout
         last_status_at = 0.0
         while self._awaitable_work_count() > 0:
+            if self._restart_after_turn_timeout <= 0:
+                logger.info("Observatory restart requested — checkpointing active sessions now")
+                return False
             now = loop.time()
             if now >= deadline:
                 logger.warning(
@@ -12623,7 +12626,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         )
         return True
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+    def request_restart(
+        self, *, detached: bool = False, via_service: bool = False,
+        after_turn_timeout: float | None = None,
+    ) -> bool:
+        if after_turn_timeout is not None:
+            # Operator-requested Observatory restarts checkpoint sessions
+            # through the existing stop path, without waiting a whole turn.
+            self._restart_after_turn_timeout = max(0.0, after_turn_timeout)
         if self._restart_task_started:
             return False
         self._restart_requested = True
@@ -33324,6 +33334,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler}
+        )
+        from observatory.restart import quick_restart_handler
+
+        _control_server.register_handler(
+            "restart-observatory", quick_restart_handler(runner, _main_loop)
         )
         # observatory prompt delivery (irc-observatory): room text arrives
         # as `inject` with {text, kind, node_id, room_id}; the handler runs

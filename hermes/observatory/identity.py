@@ -5,8 +5,8 @@ another nick, so every message in an agent room arrives stamped with
 the wrong identity. Each spawned agent gets a lightweight SEND-ONLY
 connection under its own nick on the agent listener.
 
-Lazy + self-healing: connect on first send, reconnect once per send
-on failure, drop on ``/exit``, rebuild on gateway resync. Incoming
+Self-healing: connect on first send, retry transport failures while idle,
+drop on ``/exit``, rebuild on gateway resync. Incoming
 traffic is ignored (the main bot owns room dispatch for every room);
 a receive task answers PINGs and invalidates connections on EOF.
 
@@ -48,6 +48,8 @@ class IdentityConn:
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
         self._recv_task: asyncio.Task | None = None
+        self._reconnect_task: asyncio.Task | None = None
+        self._closed = False
         self.last_ok = 0.0
 
     async def _connect(self) -> bool:
@@ -123,13 +125,36 @@ class IdentityConn:
             # An old receiver must never clear a replacement connection.
             if self._writer is writer:
                 self._reader, self._writer = None, None
+                self._schedule_reconnect()
+
+    def _schedule_reconnect(self) -> None:
+        if self._closed or (self._reconnect_task is not None and not self._reconnect_task.done()):
+            return
+        self._reconnect_task = asyncio.create_task(self._recover_connection())
+
+    async def _recover_connection(self) -> None:
+        """Keep the same identity/session present without requiring new output."""
+        delay = 0.5
+        while not self._closed:
+            await asyncio.sleep(delay)
+            async with self._lock:
+                if self._closed:
+                    return
+                if self._writer is not None and not self._writer.is_closing():
+                    return
+                if await self._connect():
+                    return
+            delay = min(delay * 2, 10)
 
     async def _write_lines(self, payloads: list[str]) -> bool:
         """Write raw lines with one reconnect retry. Caller holds no lock."""
         async with self._lock:
+            if self._closed:
+                return False
             for attempt in (0, 1):
                 if self._writer is None or self._writer.is_closing():
                     if not await self._connect():
+                        self._schedule_reconnect()
                         return False
                 try:
                     if self._reader is not None and self._reader.at_eof():
@@ -150,6 +175,7 @@ class IdentityConn:
                     except Exception:
                         pass
                     self._reader, self._writer = None, None
+            self._schedule_reconnect()
             return False
 
     async def send(self, text: str, *, kind: str = "status") -> bool:
@@ -179,6 +205,11 @@ class IdentityConn:
             [f"BATCH -{ref}"])
 
     async def close(self) -> None:
+        self._closed = True
+        reconnect, self._reconnect_task = self._reconnect_task, None
+        if reconnect is not None:
+            reconnect.cancel()
+            await asyncio.gather(reconnect, return_exceptions=True)
         task, self._recv_task = self._recv_task, None
         if task is not None:
             task.cancel()
@@ -273,14 +304,16 @@ async def ensure_identity(nick: str, channel: str) -> bool:
         return False
     host, port, password = ep
     pool = get_pool()
-    if pool.get(channel) is not None:
+    conn = pool.get(channel)
+    if conn is not None:
+        if conn._writer is None or conn._writer.is_closing():
+            conn._schedule_reconnect()
+            return False
         return True
     conn = IdentityConn(host=host, port=port, password=password,
                         nick=nick, channel=channel)
     pool.track(conn)
     ok = await conn.send(f"{nick} online.")
-    if not ok:
-        pool.drop(channel)
     return ok
 
 
