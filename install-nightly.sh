@@ -44,6 +44,6 @@ _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 if [ -f "$_SELF_DIR/install.sh" ]; then
     exec bash "$_SELF_DIR/install.sh" --channel nightly "$TAG" "${ARGS[@]}"
 else
-    exec bash -c 'curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | MERCURY_HOME="$0" MERCURY_CMD="$1" bash -s -- --channel nightly "$2" "${@:3}"' \
+    exec bash -c 'curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/"$2"/install.sh | MERCURY_HOME="$0" MERCURY_CMD="$1" bash -s -- --channel nightly "$2" "${@:3}"' \
         "$MERCURY_HOME" "$MERCURY_CMD" "$TAG" "${ARGS[@]}"
 fi
