@@ -1,13 +1,5 @@
 # AGENTS.md — Mercury repo working rules (all agents read this)
 
-## Source changes first (2026-10-01)
-
-Make product fixes in this repository (`~/Documents/mercury`) and deliver
-them through the requested release workflow. Do not patch local installed
-Mercury trees or deployed mLounge bundles unless the user explicitly asks
-for that installation change. Read-only inspection of installed code,
-configuration, and live connections remains appropriate for diagnosis.
-
 ## Standing rule: subagents get their own git worktrees + branches (2026-09-08)
 
 On 2026-09-08 a subagent's git cleanup wiped hours of uncommitted sibling
