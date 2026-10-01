@@ -5,6 +5,8 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.1] — nightly
+
 - Keep Observatory reconnects quiet: restore MIRC membership and initial topic
   metadata without repeated mLounge join/invite/topic notices, and post one
   "Observatory online - Mercury is back and ready" status per restored room.
