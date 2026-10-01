@@ -17,6 +17,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, type MockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -144,6 +145,58 @@ describe("AgentSession queued steer delivery", () => {
 		expect(streamingAtInject).toBe(true);
 		expect(await entryAppended).toBe("guest steer at yield");
 		expect(mock.calls.length).toBe(2);
+		expect(session.agent.hasQueuedMessages()).toBe(false);
+	});
+
+	it("a TUI or RPC prompt interrupts active model output and completes the same run", async () => {
+		const { session, mock, sessionManager } = await createSession([{ content: ["changed direction"] }]);
+		const started = Promise.withResolvers<void>();
+		const originalStream = session.agent.streamFn;
+		let calls = 0;
+		let requestSignal: AbortSignal | undefined;
+		let ends = 0;
+		session.agent.streamFn = (model, context, options) => {
+			if (++calls > 1) return originalStream(model, context, options);
+			requestSignal = options?.signal;
+			const stream = new AssistantMessageEventStream();
+			stream.push({
+				type: "start",
+				partial: {
+					role: "assistant",
+					content: [{ type: "text", text: "unfinished" }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				},
+			});
+			return stream;
+		};
+		session.subscribe(event => {
+			if (event.type === "message_start" && event.message.role === "assistant") started.resolve();
+			if (event.type === "agent_end") ends++;
+		});
+		const run = session.prompt("original direction");
+		await started.promise;
+		await session.prompt("change direction now", { streamingBehavior: "steer" });
+		await run;
+		expect(requestSignal?.aborted).toBe(true);
+		expect(calls).toBe(2);
+		expect(mock.calls).toHaveLength(1);
+		expect(ends).toBe(1);
+		const userEntries = sessionManager
+			.getBranch()
+			.filter(entry => entry.type === "message" && entry.message.role === "user");
+		expect(userEntries).toHaveLength(2);
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 	});
 

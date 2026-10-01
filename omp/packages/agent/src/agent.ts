@@ -990,7 +990,7 @@ export class Agent {
 
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
-	 * Delivered after current tool execution, skips remaining tools.
+	 * User steering cancels active work in immediate mode and resumes the run.
 	 */
 	steer(m: AgentMessage) {
 		this.#steeringQueue.push(m);
@@ -1513,6 +1513,23 @@ export class Agent {
 				return { queued: true, source: hasAgentSteering ? "agent" : "system" };
 			},
 			waitForSteeringMessages: signal => this.#waitForSteeringMessages(signal),
+			subscribeToUserSteering: listener => {
+				const check = () => {
+					if (
+						this.#steeringQueue.some(
+							message =>
+								("attribution" in message && message.attribution === "user") ||
+								(message.role === "user" && message.attribution !== "agent"),
+						)
+					)
+						listener();
+				};
+				this.#steeringWaiters.add(check);
+				check();
+				return () => {
+					this.#steeringWaiters.delete(check);
+				};
+			},
 			hasMircInterrupts: this.hasMircInterrupts,
 			getFollowUpMessages: signal => this.#dequeueFollowUpMessagesAfterHooks(signal),
 			getAsideMessages: async () => (await this.#asideMessageProvider?.()) ?? [],

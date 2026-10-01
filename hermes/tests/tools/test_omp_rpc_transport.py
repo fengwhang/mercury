@@ -123,12 +123,17 @@ if __name__ == "__main__":
 class _FakeOmpServer:
     """Spawn the fake RPC server; expose its transcript via a file."""
 
-    def __init__(self):
+    def __init__(self, persistent=False):
         self._dir = tempfile.mkdtemp(prefix="mercury-c1-")
         self.script = os.path.join(self._dir, "fake_omp_rpc.py")
         self.log = os.path.join(self._dir, "frames.jsonl")
         with open(self.script, "w") as f:
-            f.write(_FAKE_SERVER)
+            source = _FAKE_SERVER
+            if persistent:
+                source = source.replace("return None, None", "return False")
+                source = source.replace("    read_requests(sys.stdout, emit)",
+                                        "    while read_requests(sys.stdout, emit) is not False:\n        pass")
+            f.write(source)
 
     def command(self):
         return [sys.executable, self.script]
@@ -584,6 +589,34 @@ if __name__ == "__main__":
 
 
 class TestInheritedHumanApprovals(unittest.TestCase):
+    def test_live_parent_mode_controls_non_shell_child_prompts(self):
+        from tools import approval
+        from unittest.mock import patch
+        fake = _FakeOmpServer(persistent=True)
+        key = "test:live-family-policy:orchestrator"
+        notifications = []
+        child = omp_rpc_transport.OmpRpcChild(
+            omp_path=sys.executable, model="prov/m-1", command_override=fake.command(),
+            workdir=fake._dir, env={"MERCURY_FAKE": "1"},
+        )
+        child.start()
+        token = approval.set_current_session_key(key)
+        def notify(data):
+            notifications.append(data)
+            approval.resolve_gateway_approval(key, "once", request_id=data["request_id"])
+        approval.register_gateway_notify(key, notify)
+        try:
+            with patch.object(approval, "_YOLO_MODE_FROZEN", False):
+                for mode, count in [("manual", 1), ("off", 1), ("smart", 2), ("off", 2)]:
+                    with patch.object(approval, "_get_approval_mode", return_value=mode):
+                        result = child.run_task("RUN_APPROVAL_GATE NON_SHELL", timeout=10)
+                    self.assertEqual(result["summary"], "GATE=Approve")
+                    self.assertEqual(len(notifications), count)
+        finally:
+            child.stop()
+            approval.unregister_gateway_notify(key)
+            approval.reset_current_session_key(token)
+
     def test_non_shell_rpc_gate_reaches_parent_session_after_child_start(self):
         from tools import approval
         fake = _FakeOmpServer()

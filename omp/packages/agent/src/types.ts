@@ -271,6 +271,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 */
 	waitForSteeringMessages?: (signal?: AbortSignal) => Promise<void>;
 
+	/** Subscribe to real user steering without consuming the queue. */
+	subscribeToUserSteering?: (listener: () => void) => () => void;
+
 	/**
 	 * Peeks whether MIRC messages should interrupt an interruptible waiting tool.
 	 *
@@ -815,9 +818,9 @@ export interface AgentTool<
 	 *
 	 * Enable only for calls that purely *wait* and observe their abort signal
 	 * cleanly (e.g. `job` poll), so the abort surfaces the tool's current
-	 * snapshot rather than corrupting a side effect. Every other call runs to
-	 * completion even when steering is queued; the message lands at the next
-	 * batch boundary. Honored only when `interruptMode` is "immediate".
+	 * snapshot rather than corrupting a side effect. Other calls finish before
+	 * parent/system notices are injected. Real user steering cancels all tools
+	 * in immediate mode, regardless of this flag.
 	 */
 	interruptible?: boolean | ((args: Partial<Static<TParameters>>) => boolean);
 	/**

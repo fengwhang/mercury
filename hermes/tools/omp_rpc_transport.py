@@ -187,10 +187,13 @@ def hermes_tool_approval_decision(prompt_text: str) -> bool:
             and _get_approval_mode() == "manual" and outcome
             and not outcome.get("user_approved")):
         return bool(request_tool_approval("bash", prompt_text).get("approved"))
-    # Provider safety checks always require an explicit acknowledgement, even
-    # in YOLO. Other non-shell gates also represent an explicit tool policy.
+    # Provider safety acknowledgements require a human answer. Recoverable
+    # tool prompts follow the same live Mercury mode as the Hermes engine.
     if command is None or "Provider safety checks:" in prompt_text:
-        decision = request_tool_approval(tool_name, prompt_text, require_human=True)
+        decision = request_tool_approval(
+            tool_name, prompt_text,
+            require_human="Provider safety checks:" in prompt_text,
+        )
         return bool(decision.get("approved"))
     return True
 
@@ -254,11 +257,15 @@ def _mirror_wanted(request: Any) -> bool:
     real prompt is never skipped by a broken pre-check.
     """
     try:
-        from tools.approval import guard_requires_human_approval
+        from tools.approval import guard_requires_human_approval, is_approval_bypass_active
     except Exception:
         return True
     try:
         text = str(getattr(request, "title", None) or getattr(request, "message", None) or "")
+        if "Provider safety checks:" in text:
+            return True
+        if is_approval_bypass_active():
+            return False
         command = extract_command_from_prompt(text)
         if command is None:
             return True
@@ -527,10 +534,10 @@ class OmpRpcChild:
         return client
 
     def steer(self, text: str) -> None:
-        """Queue steering text into the child's MAIN session mid-run.
+        """Interrupt the child's MAIN session with user steering.
 
-        omp's steer semantics: the text is injected as a steering prompt at
-        the next safe boundary — the in-flight tool call is never cut.
+        Immediate mode cancels the current model request and active tools,
+        then injects the text and resumes within the same RPC run.
         """
         self._require_client().steer(text)
 

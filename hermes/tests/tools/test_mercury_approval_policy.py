@@ -76,7 +76,8 @@ def test_background_child_keeps_parent_prompt_route_until_completion():
     assert key not in approval._gateway_notify_cbs
 
 
-def test_one_shot_descendant_approval_preserves_parent_context():
+def test_one_shot_descendant_approval_preserves_parent_context(monkeypatch):
+    monkeypatch.setattr(approval, "_get_approval_mode", lambda: "manual")
     import http.client
     import json
     import socket

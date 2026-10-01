@@ -77,7 +77,9 @@ export class MercuryApprovalPolicy {
 				}
 			}
 			this.#cached = {
-				mode: nativeMode(Object.hasOwn(shared, "mode") ? shared.mode : legacy.mode),
+				mode: nativeMode(
+					Object.hasOwn(shared, "mode") ? shared.mode : Object.hasOwn(legacy, "mode") ? legacy.mode : "smart",
+				),
 				deny: [...patterns].map(match => ({ match, approval: "deny" })),
 			};
 			this.#stamp = stamp;

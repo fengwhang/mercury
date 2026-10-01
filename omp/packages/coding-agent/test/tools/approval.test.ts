@@ -90,9 +90,18 @@ describe("resolveApproval override and user policy", () => {
 		expect(result.reason).toBeUndefined();
 	});
 
-	it("user policy still controls execution in yolo mode", () => {
+	it("yolo bypasses explicit tool prompts at every capability tier", () => {
+		for (const tier of ["read", "write", "exec"] as const) {
+			const subject = tool("custom", { tier, policy: "prompt", override: true });
+			expect(requiresApproval(subject, {}, "yolo", { custom: "prompt" }).required).toBe(false);
+			expect(requiresApproval(subject, {}, "always-ask").required).toBe(true);
+			expect(requiresApproval(subject, {}, "write").required).toBe(true);
+		}
+	});
+
+	it("yolo bypasses prompt rules while retaining explicit user denials", () => {
 		expect(resolveApproval(dangerous, {}, "yolo", { bash: "allow" }).policy).toBe("allow");
-		expect(resolveApproval(dangerous, {}, "yolo", { bash: "prompt" }).policy).toBe("prompt");
+		expect(resolveApproval(dangerous, {}, "yolo", { bash: "prompt" }).policy).toBe("allow");
 		expect(resolveApproval(dangerous, {}, "yolo", { bash: "deny" }).policy).toBe("deny");
 		expect(() => requiresApproval(dangerous, {}, "yolo", { bash: "deny" })).toThrow(
 			'Tool "bash" is blocked by user policy',
@@ -142,7 +151,7 @@ describe("resolveApproval override and user policy", () => {
 	it("valid user policy overrides mode and tier when no tool override is active", () => {
 		const writeTool = tool("write", "write");
 		expect(resolveApproval(writeTool, {}, "always-ask", { write: "allow" }).policy).toBe("allow");
-		expect(resolveApproval(writeTool, {}, "yolo", { write: "prompt" }).policy).toBe("prompt");
+		expect(resolveApproval(writeTool, {}, "yolo", { write: "prompt" }).policy).toBe("allow");
 		expect(resolveApproval(writeTool, {}, "yolo", { write: "deny" }).policy).toBe("deny");
 	});
 
@@ -516,7 +525,7 @@ describe("tool-owned dynamic approval declarations", () => {
 		expect(bashApproval(command, settingsOverrides)).toBe("exec");
 	});
 
-	it("honors bash pattern rules in yolo mode", () => {
+	it("yolo bypasses recoverable bash pattern prompts", () => {
 		const tool = createBashTool({
 			"bash.patterns": [
 				{ match: "echo *", approval: "prompt" },
@@ -525,8 +534,8 @@ describe("tool-owned dynamic approval declarations", () => {
 		});
 
 		expect(resolveApproval(tool, { command: "echo hello" }, "yolo", {})).toMatchObject({
-			policy: "prompt",
-			source: "tool",
+			policy: "allow",
+			source: "mode",
 		});
 		expect(resolveApproval(tool, { command: "git status" }, "yolo", {})).toMatchObject({
 			policy: "allow",

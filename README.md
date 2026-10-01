@@ -334,6 +334,13 @@ or its mLounge room. Reply `!approve` / `!deny` in mLounge, or `/approve` /
 available after the parent finishes its turn. Explicit deny rules and
 provider safety confirmations still apply under YOLO.
 
+YOLO bypasses recoverable approval prompts, including legacy OMP per-tool
+prompt rules. Mode changes apply to running descendants across both engines.
+In immediate steering mode, a message to a working OMP agent cancels its
+active model request and foreground tools, then continues the same run with
+your correction. Completed work stays in context; cancelled calls record
+their interruption so the agent can account for partial work.
+
 The bridge preserves independent OMP settings when it updates the shared
 policy. See the [code review](docs/code-review-2026-09-30.md) for remaining
 integration limitations.

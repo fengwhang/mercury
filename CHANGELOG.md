@@ -5,6 +5,14 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Make OMP user steering interrupt the active model request and foreground
+  tools, inject the correction, and continue within the same RPC run. Preserve
+  completed tool results and pair cancelled calls with interruption results.
+- Honor configured YOLO for recoverable tool and per-tool prompts in both
+  engines and their descendants. Apply live policy changes across engine
+  boundaries, avoid orphan approval mirrors, and align the default shared
+  mode with Hermes. Explicit denials and provider confirmations remain enforced.
+
 ## [0.3.2] — nightly
 
 - Recognize local and verified Tailscale connections in mLounge's protection

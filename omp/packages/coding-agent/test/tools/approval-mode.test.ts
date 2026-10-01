@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
@@ -119,16 +120,54 @@ describe("tools.approvalMode setting", () => {
 		expect(textOf(result)).toContain("allowed");
 	});
 
-	it("per-tool prompt overrides can tighten yolo mode", async () => {
+	it("configured yolo bypasses per-tool prompt rules", async () => {
 		const settings = approvalSettings({
 			"tools.approvalMode": "yolo",
 			"tools.approval": { bash: "prompt" },
 		});
-		await expect(
-			bashTool().execute("yolo-prompt", { command: "echo blocked" }, undefined, undefined, {
-				settings,
-			} as AgentToolContext),
-		).rejects.toThrow(/requires approval but no interactive UI available/);
+		const result = await bashTool().execute("yolo-prompt", { command: "echo approved" }, undefined, undefined, {
+			settings,
+		} as AgentToolContext);
+		expect(textOf(result)).toContain("approved");
+	});
+	it("user steering cancels a real foreground shell before its remaining command runs", async () => {
+		const ready = Promise.withResolvers<void>();
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{
+							type: "toolCall",
+							id: "steer-shell",
+							name: "bash",
+							arguments: {
+								command: "printf steering-ready; sleep 30; printf should-never-run",
+							},
+						},
+					],
+					stopReason: "toolUse",
+				},
+				{ content: ["changed direction"] },
+			],
+		});
+		const settings = approvalSettings({ "tools.approvalMode": "yolo" });
+		const agent = new Agent({
+			initialState: { model: mock.model, tools: [bashTool()] },
+			streamFn: mock.stream,
+			getToolContext: () => ({ settings }) as AgentToolContext,
+		});
+		agent.subscribe(event => {
+			if (event.type === "tool_execution_update" && textOf(event.partialResult).includes("steering-ready"))
+				ready.resolve();
+		});
+		const run = agent.prompt("start shell work");
+		await ready.promise;
+		agent.steer({ role: "user", content: "change direction", attribution: "user", timestamp: Date.now() });
+		await run;
+		expect(mock.calls).toHaveLength(2);
+		const results = agent.state.messages.filter(message => message.role === "toolResult");
+		expect(results).toHaveLength(1);
+		expect(JSON.stringify(results)).not.toContain("should-never-run");
 	});
 
 	it("write mode still prompts exec-tier tools", async () => {
@@ -297,6 +336,27 @@ describe("tools.approvalMode setting", () => {
 			});
 		}
 	});
+	it("native descendants use the same public mode aliases and default as Hermes", () => {
+		const profile = path.join(tempDir, "mode-parity.yaml");
+		fs.writeFileSync(profile, "{}\n");
+		const root = approvalSettings({ "tools.approvalMode": "yolo" }).useMercuryApprovalPolicy(profile);
+		const grandchild = createSubagentSettings(createSubagentSettings(root));
+		for (const [text, expected] of [
+			["approvals: {mode: yolo}\n", "yolo"],
+			["approvals: {mode: OFF}\n", "yolo"],
+			["approvals: {mode: false}\n", "yolo"],
+			["approvals: {mode: smart}\n", "write"],
+			["approvals: {mode: safe}\n", "always-ask"],
+			["approvals: {mode: manual}\n", "always-ask"],
+			["approvals: {mode: null}\n", "always-ask"],
+			["{}\n", "write"],
+			["hermes: {approvals: {mode: yolo}}\n", "yolo"],
+			["hermes: {approvals: {mode: safe}}\napprovals: {mode: yolo}\n", "yolo"],
+		] as const) {
+			fs.writeFileSync(profile, text);
+			expect(grandchild.get("tools.approvalMode")).toBe(expected);
+		}
+	});
 	it("a live Mercury policy controls grandchild commands without restarting the room", async () => {
 		const profile = path.join(tempDir, "mercury-live-policy.yaml");
 		const writePolicy = (text: string) => fs.writeFileSync(profile, text);
@@ -306,6 +366,7 @@ describe("tools.approvalMode setting", () => {
 		const root = Settings.isolated({
 			...BASE_SETTINGS,
 			"tools.approvalMode": "yolo",
+			"tools.approval": { bash: "prompt" },
 			"bash.patterns": [
 				{ match: "echo *", approval: "allow" },
 				{ match: "*ECHO DENIED*", approval: "deny" },

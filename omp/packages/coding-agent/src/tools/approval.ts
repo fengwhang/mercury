@@ -114,8 +114,8 @@ function modeApprovesTier(mode: ApprovalMode, tier: ToolTier): boolean {
  *  2. User per-tool override, if set and valid.
  *  3. Active mode tier comparison.
  *
- * In yolo mode, override-based tool prompts are ignored; user `tools.approval`
- * settings remain authoritative.
+ * Yolo bypasses recoverable prompts, including tool and per-tool prompt rules.
+ * Explicit deny rules remain authoritative in every mode.
  */
 export function resolveApproval(
 	tool: ApprovalSubject,
@@ -154,22 +154,11 @@ export function resolveApproval(
 	}
 
 	if (mode === "yolo") {
-		if (decision.policy) {
-			return {
-				policy: decision.policy,
-				tier: decision.tier,
-				override: false,
-				source: "tool",
-				...(decision.policyKey ? { policyKey: decision.policyKey } : {}),
-				...(decision.reason ? { reason: decision.reason } : {}),
-			};
-		}
 		return {
-			policy: effectiveUserPolicy ?? "allow",
+			policy: "allow",
 			tier: decision.tier,
 			override: false,
-			source: effectiveUserPolicy ? "user" : "mode",
-			...(effectiveUserPolicy ? { policyKey: userPolicyKey } : {}),
+			source: "mode",
 		};
 	}
 

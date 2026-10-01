@@ -3933,7 +3933,7 @@ def _run_approval_gate(
     # --yolo bypasses all approval prompts (session- or process-scoped).
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
     # here only skips the recoverable approval layer.
-    if not require_human and (_YOLO_MODE_FROZEN or is_current_session_yolo_enabled()):
+    if not require_human and is_approval_bypass_active():
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()

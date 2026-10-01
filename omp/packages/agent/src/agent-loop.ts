@@ -94,6 +94,9 @@ export const STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL = "stream_interrupted_
 /** Sentinel returned by the abort race in `streamAssistantResponse`. */
 const ABORTED: unique symbol = Symbol("agent-loop-aborted");
 
+// These aborted response boundaries resume the same run with queued user input.
+const userSteeringResponses = new WeakSet<AssistantMessage>();
+
 /**
  * Cap on consecutive re-samples triggered by a non-terminal stop
  * (`stopDetails.type === "pause_turn"`) without an intervening tool call. Each
@@ -1351,8 +1354,18 @@ async function runLoopBody(
 							status: message.stopReason === "aborted" ? "aborted" : "error",
 						});
 					}
-					await emitTurnEnd(stream, currentContext, message, toolResults, config, signal, { willContinue: false });
+					const resumeSteering = !signal?.aborted && userSteeringResponses.has(message);
+					await emitTurnEnd(stream, currentContext, message, toolResults, config, signal, {
+						willContinue: resumeSteering,
+					});
 					turnOpen = false;
+					if (resumeSteering) {
+						pendingMessages = (await config.getSteeringMessages?.(signal)) || [];
+						if (pendingMessages.length > 0) {
+							hasMoreToolCalls = false;
+							continue;
+						}
+					}
 
 					stream.push(buildAgentEndEvent(newMessages, telemetry, stepCounter.count));
 					stream.end(newMessages);
@@ -1670,11 +1683,11 @@ async function streamAssistantResponse(
 	const effectiveServiceTier = config.getServiceTier ? config.getServiceTier(model) : config.serviceTier;
 	const harmonyMitigationEnabled = isHarmonyLeakMitigationTarget(model);
 	const harmonyAbortController = harmonyMitigationEnabled ? new AbortController() : undefined;
-	const requestSignal = harmonyAbortController
-		? signal
-			? AbortSignal.any([signal, harmonyAbortController.signal])
-			: harmonyAbortController.signal
-		: signal;
+	const userSteeringController = new AbortController();
+	const requestSignals = [userSteeringController.signal];
+	if (signal) requestSignals.push(signal);
+	if (harmonyAbortController) requestSignals.push(harmonyAbortController.signal);
+	const requestSignal = AbortSignal.any(requestSignals);
 	// Owned tool calling: aborted by the stream wrapper when the model starts
 	// fabricating a `<tool_response>`, so the provider stops generating the rest of
 	// the hallucinated turn. Merged into the provider signal ONLY (not
@@ -1746,6 +1759,13 @@ async function streamAssistantResponse(
 		});
 	};
 
+	let partialMessage: AssistantMessage | null = null;
+	let addedPartial = false;
+	const completedToolCallIds = new Set<string>();
+	const unsubscribeSteering =
+		config.interruptMode !== "wait"
+			? config.subscribeToUserSteering?.(() => userSteeringController.abort("Interrupted by user"))
+			: undefined;
 	try {
 		return await runInActiveSpan(chatSpan, async () => {
 			let response = await streamFunction(model, llmContext, {
@@ -1776,9 +1796,6 @@ async function streamAssistantResponse(
 				);
 			}
 
-			let partialMessage: AssistantMessage | null = null;
-			let addedPartial = false;
-			const completedToolCallIds = new Set<string>();
 			const argStreams = new Map<number, { id: string; stream: AgentToolArgStream }>();
 			const cancelArgStreams = (): void => {
 				for (const { id, stream: argStream } of argStreams.values()) {
@@ -1808,6 +1825,7 @@ async function streamAssistantResponse(
 					stream,
 					requestSignal,
 				);
+				if (userSteeringController.signal.aborted && !signal?.aborted) userSteeringResponses.add(aborted);
 				await finishChat(aborted);
 				return aborted;
 			};
@@ -1843,6 +1861,10 @@ async function streamAssistantResponse(
 					if (next.done) break;
 
 					const event = next.value;
+					// A provider's abort handler may enqueue its terminal error before
+					// our abort race resolves. Preserve the user interruption in either
+					// ordering, so this response cannot prematurely end the RPC run.
+					if (requestSignal?.aborted) return await finishAbortedStream();
 					if (event.type === "done" || event.type === "error") {
 						let finalMessage = recoverTransientErrorToolTurn(
 							retainCompletedToolCalls(await response.result(), completedToolCallIds),
@@ -1894,9 +1916,6 @@ async function streamAssistantResponse(
 						stream.push({ type: "message_end", message: snapshotAssistantMessage(finalMessage) });
 						await finishChat(finalMessage);
 						return finalMessage;
-					}
-					if (requestSignal?.aborted) {
-						return await finishAbortedStream();
 					}
 
 					// Yield to the event loop periodically to prevent busy-wait
@@ -2035,12 +2054,28 @@ async function streamAssistantResponse(
 			return trailing;
 		});
 	} catch (err) {
+		if (userSteeringController.signal.aborted && !signal?.aborted) {
+			const aborted = emitAbortedAssistantMessage(
+				partialMessage,
+				addedPartial,
+				completedToolCallIds,
+				context,
+				config,
+				stream,
+				requestSignal,
+			);
+			userSteeringResponses.add(aborted);
+			await finishChat(aborted);
+			return aborted;
+		}
 		failChatSpan(telemetry, chatSpan, {
 			errorObject: err,
 			responseHeaders: capturedHeaders,
 			baseUrl: model.baseUrl,
 		});
 		throw err;
+	} finally {
+		unsubscribeSteering?.();
 	}
 }
 
@@ -2397,21 +2432,24 @@ async function executeToolCalls(
 	const shouldInterruptImmediately = interruptMode !== "wait";
 	const steeringAbortController = new AbortController();
 	const mircAbortController = new AbortController();
+	const userSteeringController = new AbortController();
 	// Cooperative channel: aborted when queued steering (or an interrupting
 	// peer MIRC) is detected mid-batch. Tools receive it via tool context
 	// (`ctx.steeringSignal`) and MAY react — e.g. an auto-backgroundable bash
 	// backgrounds itself so the message injects promptly — but it never kills
 	// anything; ignoring it is always safe.
 	const steeringSoftController = new AbortController();
-	// Interruptible tools (pure waits: hub wait, vibe) observe steering +
-	// external + MIRC aborts. Every other tool sees ONLY the external signal:
-	// neither queued steering nor a peer MIRC ever hard-kills a partially
-	// side-effecting foreground tool (e.g. `bash`) — those get the cooperative
-	// `steeringSignal` above, and the message injects at the next boundary.
-	const nonInterruptibleSignal: AbortSignal = signal ?? new AbortController().signal;
-	const interruptibleSignal: AbortSignal = signal
-		? AbortSignal.any([signal, steeringAbortController.signal, mircAbortController.signal])
-		: AbortSignal.any([steeringAbortController.signal, mircAbortController.signal]);
+	// Real user steering cancels every active tool in immediate mode. Parent
+	// notices and peer MIRC messages retain cooperative interruption for tools
+	// with side effects; only interruptible waits observe those hard aborts.
+	const nonInterruptibleSignal = signal
+		? AbortSignal.any([signal, userSteeringController.signal])
+		: userSteeringController.signal;
+	const interruptibleSignal = AbortSignal.any([
+		nonInterruptibleSignal,
+		steeringAbortController.signal,
+		mircAbortController.signal,
+	]);
 	const interruptState: { triggered: boolean; source?: SteeringInterruptSource | "irc" } = { triggered: false };
 
 	// Streamed messages were prepared (validation + `beforeToolCall`) before
@@ -2781,6 +2819,14 @@ async function executeToolCalls(
 	let lastExclusive: Promise<void> = Promise.resolve();
 	let sharedTasks: Promise<void>[] = [];
 	const tasks: Promise<void>[] = [];
+	const unsubscribeUserSteering = shouldInterruptImmediately
+		? config.subscribeToUserSteering?.(() => {
+				interruptState.triggered = true;
+				interruptState.source = "user";
+				userSteeringController.abort("Interrupted by user");
+				steeringSoftController.abort();
+			})
+		: undefined;
 
 	// While tool calls are in flight, queued steering or interrupting MIRC would
 	// otherwise wait out the tools' own window. Poll only non-consuming queues:
@@ -2868,6 +2914,7 @@ async function executeToolCalls(
 	try {
 		await Promise.allSettled(tasks);
 	} finally {
+		unsubscribeUserSteering?.();
 		steeringWatchAbortController.abort();
 		await steeringWatchPromise?.catch(() => undefined);
 		clearInterval(steeringWatchTimer);
