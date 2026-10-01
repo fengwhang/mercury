@@ -1,6 +1,6 @@
 import {SharedMention} from "./mention";
 import {ChanState, SharedChan} from "./chan";
-import {SharedNetwork, SharedServerOptions} from "./network";
+import {SharedNetwork, SharedNetworkStatus, SharedServerOptions} from "./network";
 import {SharedMsg, LinkPreview} from "./msg";
 import {SharedUser} from "./user";
 import {SharedChangelogData} from "./changelog";
@@ -55,7 +55,7 @@ interface ServerToClientEvents {
 
 	network: EventHandler<{network: SharedNetwork}>;
 	"network:options": EventHandler<{network: string; serverOptions: SharedServerOptions}>;
-	"network:status": EventHandler<{network: string; connected: boolean; secure: boolean}>;
+	"network:status": EventHandler<{network: string} & SharedNetworkStatus>;
 	"network:info": EventHandler<{uuid: string}>;
 	"network:name": EventHandler<{uuid: string; name: string}>;
 
