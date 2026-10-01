@@ -1,3 +1,4 @@
+import {isMircNetwork} from "../../mirc";
 import {IrcEventHandler} from "../../client";
 
 import Msg from "../../models/msg";
@@ -26,7 +27,10 @@ export default <IrcEventHandler>function (irc, network) {
 			from: user,
 			self: data.nick === irc.user.nick,
 		});
-		chan.pushMessage(client, msg);
+
+		if (!isMircNetwork(irc)) {
+			chan.pushMessage(client, msg);
+		}
 
 		if (data.nick === irc.user.nick) {
 			client.part(network, chan);

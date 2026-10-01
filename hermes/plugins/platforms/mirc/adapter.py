@@ -251,6 +251,8 @@ class MIRCAdapter(BasePlatformAdapter):
         #: connection's writer/sink/registration (same-nick reconnects
         #: would otherwise murder each other forever).
         self._conn_generation = 0
+        self._observatory_resync_task: Optional[asyncio.Task] = None
+        self._observatory_online_channels: set[str] = set()
         self._oper = False  # set by 381, cleared by 464/481
         self._registration_event = asyncio.Event()
         self._current_nick = self.nickname
@@ -305,6 +307,7 @@ class MIRCAdapter(BasePlatformAdapter):
         except ImportError:
             self._lock_key = None  # status module not available (e.g. tests)
         self._conn_generation = getattr(self, "_conn_generation", 0) + 1
+        self._observatory_online_channels = set()
         try:
             ssl_ctx = None
             if self.use_tls:
@@ -395,8 +398,8 @@ class MIRCAdapter(BasePlatformAdapter):
             # frame queue, replay the exit journal, resume omp handles.
             # Fire-and-forget (idempotent, never breaks connect).
             try:
-                from observatory.platform_hook import boot_resync as _resync
-                asyncio.create_task(_resync())
+                self._observatory_resync_task = asyncio.create_task(
+                    self._resync_observatory(self._conn_generation))
             except Exception:
                 logger.warning("MIRC: resync schedule skipped", exc_info=True)
         except Exception:
@@ -409,6 +412,35 @@ class MIRCAdapter(BasePlatformAdapter):
         if self._watchdog_task is None or self._watchdog_task.done():
             self._watchdog_task = asyncio.create_task(self._silence_watchdog())
         return True
+
+    async def _resync_observatory(self, generation: int) -> None:
+        """Restore rooms, then post one readiness status per connected room."""
+        from observatory.platform_hook import boot_resync
+
+        try:
+            report = await boot_resync()
+            if (not self._observatory_managed or not self.config.gateway_restart_notification
+                    or not report.get("joined")
+                    or report.get("failed") or generation != self._conn_generation):
+                return
+            channels = {str(channel).lower() for channel in report["joined"]}
+            channels.add(self.channel.lower())
+            for channel in sorted(channels):
+                if generation != self._conn_generation:
+                    return
+                if channel in self._observatory_online_channels:
+                    continue
+                if await self.say(channel, "Observatory online - Mercury is back and ready", kind="status"):
+                    self._observatory_online_channels.add(channel)
+        except Exception:
+            logger.warning("MIRC: Observatory startup notification failed", exc_info=True)
+
+    async def observatory_startup_channels(self) -> set[str]:
+        """Let gateway startup avoid adding another online notice after resync."""
+        task = self._observatory_resync_task
+        if task is not None:
+            await asyncio.shield(task)
+        return set(self._observatory_online_channels)
 
     async def disconnect(self) -> None:
         """Quit and close the connection."""

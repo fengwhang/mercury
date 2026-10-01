@@ -1,4 +1,4 @@
-"""boot_resync invites the mlounge client to the lobby without a setup run."""
+"""boot_resync restores the gateway and invites mLounge without a setup run."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ class _FakeManager:
 
 class _FakeState:
     def get_live(self):
-        return []
+        return [{"node_id": "gw", "engine": "hermes", "room_id": "#vm_gateway",
+                 "extra": {"kind": "gateway"}}]
 
 
 @pytest.mark.asyncio
@@ -27,22 +28,27 @@ async def test_resync_subscribes_lobby(monkeypatch) -> None:
     invited = []
 
     class FakeBot:
+        async def join_channel(self, channel):
+            return True
+
         async def invite_user(self, nick, channel):
             invited.append((nick, channel))
             return True
 
     monkeypatch.setattr(rooms_mod, "get_bot_sink", lambda: FakeBot())
-    monkeypatch.setattr(
-        spawn_mod, "replay_purge_journal", lambda state: [])
+    async def replay(state):
+        return []
+
+    monkeypatch.setattr(spawn_mod, "replay_purge_journal", replay)
     monkeypatch.setattr(
         provision_mod, "live_server_name", lambda home=None: "vm")
     monkeypatch.setattr(
         provision_mod, "get_mlounge_nick", lambda home=None: "owner")
     report = await hook.boot_resync(
         manager=_FakeManager(), state=_FakeState())
-    assert report.get("lobby") == "#vm_gateway"
+    assert report.get("joined") == ["#vm_gateway"]
     assert invited == [("owner", "#vm_gateway")]
-    assert report.get("lobby_invited") is True
+    assert report.get("failed") == []
 
 
 class _FakeRegistry:
@@ -100,7 +106,10 @@ async def test_resync_rebuilds_live_omp_child(monkeypatch) -> None:
             return dict(self._row)
 
     monkeypatch.setattr(rooms_mod, "get_bot_sink", lambda: FakeBot())
-    monkeypatch.setattr(spawn_mod, "replay_purge_journal", lambda state: [])
+    async def replay(state):
+        return []
+
+    monkeypatch.setattr(spawn_mod, "replay_purge_journal", replay)
     monkeypatch.setattr(spawn_mod, "build_omp_child", fake_build)
     monkeypatch.setattr(
         rooms_mod, "register_omp_room",

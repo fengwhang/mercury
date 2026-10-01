@@ -1,3 +1,4 @@
+import {isMircNetwork} from "../../mirc";
 import {IrcEventHandler} from "../../client";
 
 import Msg from "../../models/msg";
@@ -20,7 +21,10 @@ export default <IrcEventHandler>function (irc, network) {
 			text: data.topic,
 			self: data.nick === irc.user.nick,
 		});
-		chan.pushMessage(client, msg);
+
+		if (!isMircNetwork(irc) || data.nick) {
+			chan.pushMessage(client, msg);
+		}
 
 		chan.topic = data.topic;
 		client.emit("topic", {
@@ -30,6 +34,10 @@ export default <IrcEventHandler>function (irc, network) {
 	});
 
 	irc.on("topicsetby", function (data) {
+		if (isMircNetwork(irc)) {
+			return;
+		}
+
 		const chan = network.getChannel(data.channel);
 
 		if (typeof chan === "undefined") {

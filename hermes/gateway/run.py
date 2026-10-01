@@ -26540,6 +26540,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 continue
 
             try:
+                if (platform == Platform.MIRC
+                        and getattr(transport.adapter, "_observatory_managed", False) is True):
+                    notified = await transport.adapter.observatory_startup_channels()
+                    if str(home.chat_id).lower() in notified:
+                        delivered.add(target)
+                        continue
                 metadata = self._thread_metadata_for_target(
                     platform,
                     home.chat_id,

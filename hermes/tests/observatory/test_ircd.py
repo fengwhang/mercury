@@ -121,6 +121,64 @@ async def test_join_and_privmsg_fanout(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_restored_membership_does_not_repeat_join_topic_or_invite(tmp_path) -> None:
+    """Reconnect JOINs and boot invites keep membership without history noise."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        client = RawClient()
+        await client.connect(agent_port)
+        try:
+            await client.register("owner")
+            await client.send("JOIN #restored")
+            await client.next_match(" 366 ")
+            await client.send("TOPIC #restored :Agent work")
+            await client.send("TOPIC #restored")
+            await client.next_match(" 332 ")
+            for _ in range(6):
+                await client.send("JOIN #restored")
+                await client.send("INVITE owner :#restored")
+            # Requesting the current topic must still work and keep the
+            # connection alive; repeated JOINs must not resend it.
+            await client.send("TOPIC #restored")
+            await client.send("PING :restored")
+            lines = []
+            while True:
+                line = await asyncio.wait_for(client.lines.get(), 5)
+                if "PONG" in line:
+                    break
+                lines.append(line)
+            assert not any(" JOIN " in line or " INVITE " in line for line in lines)
+            assert sum(" 332 " in line for line in lines) == 1
+            assert sum(" 366 " in line for line in lines) == 6
+            assert sum(" 341 " in line for line in lines) == 6
+            assert any(" 332 owner #restored :Agent work" in line for line in lines)
+        finally:
+            await client.close()
+
+
+@pytest.mark.asyncio
+async def test_join_with_existing_topic_sends_metadata_without_disconnect(tmp_path) -> None:
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        first, second = RawClient(), RawClient()
+        try:
+            for client, nick in ((first, "setter"), (second, "viewer")):
+                await client.connect(agent_port)
+                await client.register(nick)
+            await first.send("JOIN #topic-room")
+            await first.next_match(" 366 ")
+            await first.send("TOPIC #topic-room :Work in progress")
+            await first.send("TOPIC #topic-room")
+            await first.next_match(" 332 ")
+            await second.send("JOIN #topic-room")
+            assert "Work in progress" in await second.next_match(" 332 ")
+            assert await second.next_match(" 366 ")
+            await second.send("PING :alive")
+            assert await second.next_match("PONG")
+        finally:
+            await first.close()
+            await second.close()
+
+
+@pytest.mark.asyncio
 async def test_join_never_replays_history(tmp_path) -> None:
     """History replay is GONE: a late joiner sees no old lines (ever)."""
     async with running_daemon(tmp_path) as (_, agent_port, server_port):
@@ -792,7 +850,7 @@ async def test_new_channel_auto_joins_server_clients(tmp_path) -> None:
     mLounge watching from machine A. New channels now server-join every
     server-listener client (agent listeners stay scoped).
     """
-    async with running_daemon(tmp_path) as (_, agent_port, server_port):
+    async with running_daemon(tmp_path) as (daemon, agent_port, server_port):
         mlounge_a, mlounge_b, bot, other_bot = (
             RawClient(), RawClient(), RawClient(), RawClient())
         await mlounge_a.connect(server_port)
@@ -809,13 +867,12 @@ async def test_new_channel_auto_joins_server_clients(tmp_path) -> None:
             await bot.send("JOIN #mercury_bravo")
             assert await bot.next_match("JOIN #mercury_bravo", timeout=5.0)
             own_a = await mlounge_a.next_match(
-                "loungeA!u@mercury JOIN #mercury_bravo", timeout=5.0)
+                "loungeA!loungeA@mercury JOIN #mercury_bravo", timeout=5.0)
             assert "#mercury_bravo" in own_a
             own_b = await mlounge_b.next_match(
-                "phone!u@mercury JOIN #mercury_bravo", timeout=5.0)
+                "phone!phone@mercury JOIN #mercury_bravo", timeout=5.0)
             assert "#mercury_bravo" in own_b
-            with pytest.raises(AssertionError):
-                await other_bot.next_match("#mercury_bravo", timeout=0.5)
+            assert "#mercury_bravo" not in daemon._clients["other_bot"].channels
         finally:
             await mlounge_a.close()
             await mlounge_b.close()

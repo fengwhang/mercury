@@ -1,3 +1,4 @@
+import {isMircNetwork} from "../../mirc";
 import {IrcEventHandler} from "../../client";
 
 import Msg from "../../models/msg";
@@ -7,6 +8,11 @@ export default <IrcEventHandler>function (irc, network) {
 	const client = this;
 
 	irc.on("invite", function (data) {
+		// MIRC auto-joins invited users; the channel still arrives through JOIN.
+		if (isMircNetwork(irc)) {
+			return;
+		}
+
 		let chan = network.getChannel(data.channel);
 
 		if (typeof chan === "undefined") {

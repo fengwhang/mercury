@@ -187,6 +187,24 @@ async def test_resync_preserves_gateway_and_all_room_roundtrips(tmp_path, monkey
             assert received == before_probe  # No model turn for health checks.
         finally:
             probe.close()
+        # Real resync -> real adapter -> real daemon: one plaintext readiness
+        # status per restored room, without becoming a new agent turn.
+        monkeypatch.setattr(platform_hook, "boot_resync", real_resync)
+        before_announce = list(received)
+        await adapter._resync_observatory(adapter._conn_generation)
+        announcements = [await watcher.next_match(
+            "Observatory online - Mercury is back and ready", timeout=3) for _ in range(3)]
+        for channel in ("#vm_gateway", "#vm_hermes-room", "#vm_omp-room"):
+            assert sum(f"PRIVMSG {channel} :" in line for line in announcements) == 1
+        assert all("+mercury/kind=status" in line for line in announcements)
+        await adapter._resync_observatory(adapter._conn_generation)
+        await watcher.send("PING :ready-barrier")
+        while True:
+            line = await asyncio.wait_for(watcher.lines.get(), 3)
+            assert "Observatory online" not in line
+            if "PONG" in line:
+                break
+        assert received == before_announce
     finally:
         for channel in ("#vm_gateway", "#vm_hermes-room", "#vm_omp-room"):
             await identity.drop_identity(channel)

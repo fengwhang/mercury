@@ -1,3 +1,4 @@
+import {isMircNetwork} from "../../mirc";
 import Msg from "../../models/msg";
 import User from "../../models/user";
 import type {IrcEventHandler} from "../../client";
@@ -47,7 +48,11 @@ export default <IrcEventHandler>function (irc, network) {
 			type: MessageType.JOIN,
 			self: data.nick === irc.user.nick,
 		});
-		chan.pushMessage(client, msg);
+
+		// MIRC restores membership automatically; keep it out of the transcript.
+		if (!isMircNetwork(irc)) {
+			chan.pushMessage(client, msg);
+		}
 
 		chan.setUser(new User({nick: data.nick}));
 		client.emit("users", {

@@ -1,3 +1,4 @@
+import {isMircNetwork} from "../../mirc";
 import {IrcEventHandler} from "../../client";
 
 import Msg from "../../models/msg";
@@ -21,7 +22,10 @@ export default <IrcEventHandler>function (irc, network) {
 				hostmask: data.ident + "@" + data.hostname,
 				from: user,
 			});
-			chan.pushMessage(client, msg);
+
+			if (!isMircNetwork(irc)) {
+				chan.pushMessage(client, msg);
+			}
 
 			chan.removeUser(user);
 		});

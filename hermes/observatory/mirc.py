@@ -679,7 +679,7 @@ class MircDaemon:
         await self._send(
             client,
             f":{name} 005 {nick} CHANTYPES=# NICKLEN=32 "
-            f"TOPICLEN=256 :are supported by this server",
+            f"TOPICLEN=256 MERCURY=1 :are supported by this server",
         )
         # Clients consider login complete at end-of-MOTD; without 376
         await self._numeric(client, 422, nick, "MOTD File is missing")
@@ -728,6 +728,7 @@ class MircDaemon:
             await self._numeric(client, 461, "JOIN", "Not enough parameters")
             return
         joined: list[tuple[str, str, bool]] = []
+        already_joined: list[tuple[str, str]] = []
         async with self._lock:
             for chan in arg.split(","):
                 chan = chan.split(" ", 1)[0].strip()
@@ -735,6 +736,9 @@ class MircDaemon:
                     await self._numeric(client, 403, chan, "No such channel")
                     continue
                 key = chan.lower()
+                if key in client.channels and client.nick.lower() in self._channels.get(key, ()):
+                    already_joined.append((key, self._display.get(key, chan)))
+                    continue
                 is_new = key not in self._channels
                 self._channels[key].add(client.nick.lower())
                 self._display.setdefault(key, chan)
@@ -744,6 +748,10 @@ class MircDaemon:
             await self._emit_join(client, key, display)
             if is_new:
                 await self._auto_join_server_clients(client, key, display)
+        # Reconnect restoration and doctor probes can JOIN rooms that the
+        # server already restored. Refresh NAMES without replaying JOIN/topic.
+        for key, display in already_joined:
+            await self._send_names(client, key, display)
 
     async def _auto_join_server_clients(
         self, origin: _Client, key: str, display: str
@@ -791,7 +799,7 @@ class MircDaemon:
         topic = self._topics.get(key)
         if topic is not None:
             text, setter, _ts = topic
-            await self._numeric(peer, 332, f"{peer.nick} {display} :{text}")
+            await self._numeric(peer, 332, f"{peer.nick} {display}", text)
         else:
             await self._numeric(
                 peer, 331, f"{peer.nick} {display}", "No topic is set"
@@ -884,6 +892,8 @@ class MircDaemon:
         display = self._display.get(key, chan)
         await self._numeric(
             client, 341, f"{client.nick} {peer.nick}", display)
+        if key in peer.channels and peer.nick.lower() in self._channels.get(key, ()):
+            return
         await self._send(
             peer,
             f":{client.nick}!{client.user}@{self.config.server_name} INVITE {peer.nick} :{display}",
@@ -1070,7 +1080,7 @@ class MircDaemon:
                     client, 331, f"{client.nick} {display}", "No topic is set"
                 )
             else:
-                await self._numeric(client, 332, f"{client.nick} {display} :{topic[0]}")
+                await self._numeric(client, 332, f"{client.nick} {display}", topic[0])
             return
         if client.nick.lower() not in members:
             await self._numeric(client, 442, display, "You're not on that channel")
