@@ -18,7 +18,7 @@ while it works. Use the terminal at your desk and the Observatory from
 your phone. Your host runs the agents; you choose their supported model
 providers.
 
-This README describes **[v0.3.0 nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.0)**.
+This README describes **[v0.3.1 nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.1)**.
 Use the nightly installer below for the shared family approval changes.
 
 ## Why Mercury?
@@ -288,6 +288,11 @@ thinking traces, and status events render as plaintext. Inline and fenced
 code stay literal, so shell variables, underscores, and globs survive
 rendering. **Raw** toggles the original message text for manual selection.
 Agents can share local artifacts through the mLounge's upload links.
+
+Restarts restore rooms quietly and show one plaintext
+**“Observatory online - Mercury is back and ready”** status per restored
+room once resync succeeds. Repeated membership and initial topic notices
+stay out of the transcript; room membership and topic headers still update.
 
 Room control depends on the running transport: RPC children accept
 steering; legacy one-shot children provide traces and stop control.
