@@ -3323,7 +3323,7 @@ def _remote_mlounge_card_lines(status: dict, tailscale: dict | None, *,
     lines.extend([
         "                      on the other box, open mLounge → Connect / Add network",
         "                      both Mercury machines must be on the same tailnet",
-        f"MIRC host:            {tailnet_host}",
+        f"MIRC host:            {tailnet_host} (no http://)",
         f"MIRC port:            {port or '6670'} (TLS OFF over Tailscale)",
         "server password:      IRC_CLIENT_PASSWORD from this box's",
         f"                      {env_path} (different from the mLounge login)",

@@ -5,6 +5,8 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Clarify that the Observatory login card's MIRC host is a bare hostname,
+  with no `http://` prefix.
 - Default the standard installer to stable regardless of inherited channel
   variables; explicitly select nightly in its wrapper and save the channel
   when creating the launcher, before optional setup steps.
