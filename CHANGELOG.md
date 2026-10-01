@@ -5,6 +5,8 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Recognize self-signed TLS connections protected by verified Tailscale or
+  localhost in mLounge's connection indicator.
 - Clarify that the Observatory login card's MIRC host is a bare hostname,
   with no `http://` prefix.
 - Default the standard installer to stable regardless of inherited channel

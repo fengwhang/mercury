@@ -80,7 +80,7 @@ export async function refreshConnectionProtection(
 	proxied: boolean
 ): Promise<void> {
 	if (
-		socket.encrypted ||
+		(socket.encrypted && socket.authorized === true) ||
 		proxied ||
 		isLocal(socket) ||
 		!isTailnetAddress(socket.remoteAddress) ||
@@ -156,14 +156,17 @@ export function connectionProtection(
 	socket: ConnectionSocket,
 	proxied: boolean
 ): {secure: boolean; warning?: string} {
-	if (socket.encrypted) {
-		return socket.authorized === true
-			? {secure: true}
-			: {secure: false, warning: "TLS certificate validation failed"};
+	if (socket.encrypted && socket.authorized === true) {
+		return {secure: true};
 	}
 
 	if (proxied) {
-		return {secure: false, warning: "Unencrypted connection through a proxy"};
+		return {
+			secure: false,
+			warning: socket.encrypted
+				? "TLS certificate validation failed"
+				: "Unencrypted connection through a proxy",
+		};
 	}
 
 	if (isLocal(socket)) {
@@ -179,6 +182,8 @@ export function connectionProtection(
 
 	return {
 		secure: false,
-		warning: "Connection is not protected by TLS, localhost, or verified Tailscale",
+		warning: socket.encrypted
+			? "TLS certificate validation failed"
+			: "Connection is not protected by TLS, localhost, or verified Tailscale",
 	};
 }

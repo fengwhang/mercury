@@ -4,7 +4,6 @@ import net from "net";
 import os from "os";
 import {Client as MircClient} from "irc-framework";
 import Network from "../../server/models/network";
-import {refreshConnectionProtection} from "../../server/connection-protection";
 
 let clock = 0;
 const self = "100.100.1.1";
@@ -111,19 +110,42 @@ describe("Network protection indicator", () => {
 		}
 	});
 
-	it("retains certificate warnings even on localhost and verified tailnet peers", async () => {
-		tailscale();
-		await refreshConnectionProtection(network(peer).socket, false);
-
-		for (const remote of ["127.0.0.1", self, peer]) {
-			const {result} = network(remote, self, true, false);
-			expect(result.getNetworkStatus().warning).toBe("TLS certificate validation failed");
-			expect(result.getNetworkStatus().secure).toBe(false);
-		}
-
+	it("accepts valid TLS certificates without needing Tailscale", () => {
 		expect(network("203.0.113.1", self, true, true).result.getNetworkStatus().secure).toBe(
 			true
 		);
+	});
+
+	it("recognizes self-signed TLS over a verified tailnet without a plaintext warmup", async () => {
+		const execute = tailscale();
+		const {result} = network(peer, self, true, false);
+		await result.refreshConnectionProtection();
+		expect(execute).toHaveBeenCalled();
+		expect(result.getNetworkStatus()).toEqual({connected: true, secure: true});
+	});
+
+	it("accepts self-signed TLS to this machine", () => {
+		expect(network("127.0.0.1", self, true, false).result.getNetworkStatus()).toEqual({
+			connected: true,
+			secure: true,
+		});
+	});
+
+	it("retains TLS warnings for unverified peers and proxy hops", async () => {
+		tailscale();
+		for (const [remote, local] of [
+			["100.100.1.3", self],
+			[peer, "192.168.1.10"],
+		]) {
+			const {result} = network(remote, local, true, false);
+			await result.refreshConnectionProtection();
+			expect(result.getNetworkStatus().secure).toBe(false);
+			expect(result.getNetworkStatus().warning).toBe("TLS certificate validation failed");
+		}
+		const {result} = network("127.0.0.1", self, true, false);
+		result.proxyEnabled = true;
+		expect(result.getNetworkStatus().warning).toBe("TLS certificate validation failed");
+		expect(result.getNetworkStatus().secure).toBe(false);
 	});
 
 	it("does not mistake a local SOCKS proxy for a protected remote server", () => {
