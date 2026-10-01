@@ -38,6 +38,8 @@ import type { LocalProtocolOptions } from "../internal-urls";
 import { IrcBus } from "../irc/bus";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
+import { forwardApprovalUI } from "../extensibility/extensions/runner";
+import type { ExtensionUIContext } from "../extensibility/extensions/types";
 import { initializeExtensions } from "../modes/runtime-init";
 import subagentAsyncPendingTemplate from "../prompts/system/subagent-async-pending.md" with { type: "text" };
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
@@ -383,6 +385,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Options for subagent execution */
 export interface ExecutorOptions {
+	/** Human approval requests follow this UI recursively to the orchestrator. */
+	parentApprovalUI?: ExtensionUIContext;
 	cwd: string;
 	/** Additional workspace directories to seed on the subagent session (multi-root). */
 	additionalDirectories?: string[];
@@ -960,17 +964,16 @@ export function createSubagentSettings(
 			// owner job outlives the run, so worktree capture/cleanup stays
 			// race-free (previously both were force-disabled here).
 
-			// Subagents run headless — there is no UI to confirm prompts against, so
-			// the parent task approval is the authorization boundary. Use yolo mode
-			// to preserve unattended subagent execution. User `tools.approval` policies still apply.
-			"tools.approvalMode": "yolo",
 			// Subagents run unadvised by default; runSubprocess opts a spawn back in
 			// per agent (frontmatter `advisor` / `task.agentAdvisor`) via overrides.
 			"advisor.enabled": false,
 			...overrides,
+			// A child cannot weaken the permission boundary inherited from its parent.
+			"tools.approvalMode": baseSettings.get("tools.approvalMode"),
+			"tools.approval": baseSettings.get("tools.approval"),
 		},
 		{ storage: baseSettings.getStorage() },
-	);
+	).inheritApprovalPolicy(baseSettings);
 }
 
 export type AbortReason = "signal" | "shutdown" | "terminate" | "timeout" | "budget";
@@ -3400,6 +3403,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					// touching a runtime action trips the fail-closed gate and blocks
 					// every tool (including `yield`) in the revived agent (issue #8824).
 					await initializeExtensions(revived, {
+						uiContext: options.parentApprovalUI ? forwardApprovalUI(options.parentApprovalUI, id) : undefined,
 						reportSendError: (action, err) =>
 							logger.error("Extension send failed", { action, error: err.message }),
 						reportRuntimeError: err =>
@@ -3526,6 +3530,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						getSystemPrompt: () => session.systemPrompt,
 						compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
 					},
+					undefined,
+					options.parentApprovalUI ? forwardApprovalUI(options.parentApprovalUI, id) : undefined,
 				);
 				extensionRunner.onError(err => {
 					logger.error("Extension error", { path: err.extensionPath, error: err.error });

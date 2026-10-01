@@ -38,6 +38,7 @@ approval-capable upgrade seam (dispatch_omp_delegation opts in per-task).
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import re
@@ -47,6 +48,7 @@ import threading
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+_guard_outcome = contextvars.ContextVar("omp_guard_outcome", default=None)
 
 # Repositorio layout: this file is <repo>/hermes/tools/omp_rpc_transport.py
 # (repo root two levels up).
@@ -154,6 +156,7 @@ def hermes_approval_decision(
         token = set_current_session_key(session_key)
     try:
         decision = check_all_command_guards(command, env_type="container")
+        _guard_outcome.set(decision)
         return bool(decision.get("approved"))
     except Exception:
         logger.exception("C1: guard stack raised — failing closed: %r", command[:120])
@@ -169,27 +172,36 @@ def _deny(client: Any, request_id: str) -> None:
     client.cancel_ui_request(request_id)
 
 
+def hermes_tool_approval_decision(prompt_text: str) -> bool:
+    """Apply command guards and route every other OMP tool gate to the same human queue."""
+    from tools.approval import _get_approval_mode, request_tool_approval
+
+    _guard_outcome.set(None)
+    match = re.search(r"Allow tool:\s*([^\n]+)", prompt_text)
+    tool_name = match.group(1).strip() if match else "omp_tool"
+    command = extract_command_from_prompt(prompt_text) if tool_name == "bash" else None
+    if command is not None and not hermes_approval_decision(command):
+        return False
+    outcome = _guard_outcome.get() or {}
+    if (command is not None and "Provider safety checks:" not in prompt_text
+            and _get_approval_mode() == "manual" and outcome
+            and not outcome.get("user_approved")):
+        return bool(request_tool_approval("bash", prompt_text).get("approved"))
+    # Provider safety checks always require an explicit acknowledgement, even
+    # in YOLO. Other non-shell gates also represent an explicit tool policy.
+    if command is None or "Provider safety checks:" in prompt_text:
+        decision = request_tool_approval(tool_name, prompt_text, require_human=True)
+        return bool(decision.get("approved"))
+    return True
+
+
 def _approve_command_select(client: Any, request: Any) -> bool:
-    """Answer an Approve/Deny select via the hermes guard stack (True=approve)."""
-    # requestRpcSelect (rpc-mode.ts) serializes the prompt as the TITLE:
-    # the wrapper calls select(safetyPrompt, ["Approve","Deny"]) and only
-    # {method, title, options} go on the wire — there is no message field
-    # for selects. Check both defensively.
+    """Answer a tool approval select through the parent's policy and human UI."""
     prompt_text = (getattr(request, "title", None)
                    or getattr(request, "message", None) or "")
-    command = extract_command_from_prompt(prompt_text)
-    if command is None:
-        logger.warning(
-            "C1: approval select without a parsable Command: line — denying "
-            "(message head: %r)",
-            (request.message or "")[:120],
-        )
-        _deny(client, request.id)
-        return False
-    approved = hermes_approval_decision(command)
-    logger.info("C1: omp approval %s: %r", "APPROVED" if approved else "DENIED", command[:120])
+    approved = hermes_tool_approval_decision(prompt_text)
     client.send_ui_value(request.id, "Approve" if approved else "Deny")
-    return bool(approved)
+    return approved
 
 
 # M4b (matrix observatory §5/D10): optional approval-frame observer. The
@@ -283,7 +295,7 @@ def _notify_approval_settled(request_id: str, approved: bool) -> None:
 
 
 def serve_approvals(client: Any, stop: threading.Event,
-                    approval_callback: Optional[Callable] = None) -> None:
+                    approval_callback: Optional[Callable] = None, context_provider=None) -> None:
     """Dedicated approval-responder thread body.
 
     Drains ``next_ui_request`` off the client's queue (listeners stay
@@ -321,7 +333,8 @@ def serve_approvals(client: Any, stop: threading.Event,
                 if _mirror_wanted(request):
                     _notify_approval_frame(request)
                     mirrored = True
-                approved = _approve_command_select(client, request)
+                context = context_provider() if context_provider else contextvars.copy_context()
+                approved = context.run(_approve_command_select, client, request)
                 if mirrored:
                     _notify_approval_settled(str(getattr(request, "id", "") or ""), approved)
             elif request.method in ("cancel",) or request.is_passive():
@@ -382,6 +395,7 @@ class OmpRpcChild:
         self._approval_timeout = approval_timeout
         self._command_override = command_override
         self._approval_callback = approval_callback
+        self._approval_context = contextvars.copy_context()
         self._startup_timeout = startup_timeout
         self._client: Any = None
         self._ui_thread: Optional[threading.Thread] = None
@@ -444,7 +458,8 @@ class OmpRpcChild:
         self._client.start()
         self._ui_thread = threading.Thread(
             target=serve_approvals,
-            args=(self._client, self._stop, self._approval_callback),
+            args=(self._client, self._stop, self._approval_callback,
+                  lambda: self._approval_context.copy()),
             name="omp-c1-approvals", daemon=True,
         )
         self._ui_thread.start()
@@ -465,6 +480,7 @@ class OmpRpcChild:
             }
         import time as _time
 
+        self._approval_context = contextvars.copy_context()
         started = _time.time()
         try:
             turn = self._client.prompt_and_wait(prompt, timeout=timeout)

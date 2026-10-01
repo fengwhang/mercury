@@ -321,13 +321,19 @@ models:
   delegate_thinking_level: xhigh
 
 approvals:
-  mode: smart # manual | smart | off
+  mode: smart # safe | smart | yolo (manual/off remain accepted)
 ```
 
-The bridge maps approval modes into each engine's approval system. These
-are tool policies, not an operating-system sandbox. For current policy
-translation and settings-preservation issues, see the
-[code review](docs/code-review-2026-09-30.md).
+Both engines read the shared approval policy. Children inherit their parent's
+mode and deny rules; nested approval requests reach the orchestrator's TUI
+or its mLounge room. Reply `!approve` / `!deny` in mLounge, or `/approve` /
+`/deny` on slash-command surfaces. Background children keep that route
+available after the parent finishes its turn. Explicit deny rules and
+provider safety confirmations still apply under YOLO.
+
+The bridge preserves independent OMP settings when it updates the shared
+policy. See the [code review](docs/code-review-2026-09-30.md) for remaining
+integration limitations.
 
 Coming from an existing installation? Preview the import first:
 

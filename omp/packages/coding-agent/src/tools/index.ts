@@ -12,7 +12,7 @@ import { checkJuliaKernelAvailability } from "../eval/jl/kernel";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import { checkRubyKernelAvailability } from "../eval/rb/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
-import type { PreparedExtension } from "../extensibility/extensions/types";
+import type { ExtensionUIContext, PreparedExtension } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
@@ -290,6 +290,8 @@ export interface ToolSession {
 	getToolForEvalBridge?: (name: string) => AgentTool | undefined;
 	/** Current session context for eval-bridged tool execution. */
 	getToolContext?: () => AgentToolContext | undefined;
+	/** Resolve the live ancestor UI for delegated approval requests. */
+	getApprovalUI?: () => ExtensionUIContext | undefined;
 	/** Names currently authorized for invocation through the eval bridge. */
 	getEvalBridgeToolNames?: () => readonly string[];
 	/** Direct partition of the active Code Mode surface; undefined when Code Mode is inactive. */

@@ -472,6 +472,14 @@ function physicalTargetSegments(target: string, pathApi: typeof path = path): st
 // ═══════════════════════════════════════════════════════════════════════════
 
 export class Settings {
+	#approvalPolicyParent?: Settings;
+
+	/** Keep the family permission boundary live across mode and deny-rule changes. */
+	inheritApprovalPolicy(parent: Settings): this {
+		this.#approvalPolicyParent = parent;
+		return this;
+	}
+
 	#configPath: string | null;
 	#cwd: string;
 	#agentDir: string;
@@ -635,6 +643,13 @@ export class Settings {
 	 * Returns the merged value from global + project + overrides, or the default.
 	 */
 	get<P extends SettingPath>(path: P): SettingValue<P> {
+		if (
+			this.#approvalPolicyParent &&
+			(path === "tools.approvalMode" || path === "tools.approval" || path === "bash.patterns")
+		) {
+			return this.#approvalPolicyParent.get(path);
+		}
+
 		if (this.#resolvedCache.has(path)) {
 			return this.#resolvedCache.get(path) as SettingValue<P>;
 		}
@@ -1243,14 +1258,12 @@ export class Settings {
 	 * Get a model role (helper for modelRoles record).
 	 */
 	getModelRole(role: ModelRole | string): string | undefined {
-		// HERMES-OMP PATCH (no model roles): stale user configs may still
-		// carry a modelRoles record from the pre-strip era. Only "default"
-		// is ever honored; every historical role key reads as unset so the
-		// session model (delegate model + fallback chain) wins.
-		if (role !== "default") return undefined;
-		const roles: unknown = this.get("modelRoles");
-		if (!isRecord(roles)) return undefined;
-		return modelRoleValueFromUnknown(roles[role]);
+		// "default" is only a compatibility key for the old remembered session model.
+		if (role !== "task" && role !== "default") return undefined;
+		const taskModel = this.get("delegateModel");
+		if (taskModel) return taskModel;
+		const legacy: unknown = this.get("modelRoles");
+		return isRecord(legacy) ? modelRoleValueFromUnknown(legacy.default) : undefined;
 	}
 	/**
 	 * Get a model role from only the global settings layer.
@@ -1300,18 +1313,7 @@ export class Settings {
 	 * Get all model roles (helper for modelRoles record).
 	 */
 	getModelRoles(): ReadOnlyDict<string> {
-		const roles: unknown = this.get("modelRoles");
-		if (!isRecord(roles)) return {};
-
-		const normalized: Record<string, string> = {};
-		for (const role in roles) {
-			if (!Object.hasOwn(roles, role)) continue;
-			const modelId = modelRoleValueFromUnknown(roles[role]);
-			if (modelId !== undefined) {
-				normalized[role] = modelId;
-			}
-		}
-		return normalized;
+		return {}; // Legacy assignment maps never restore role routing.
 	}
 
 	/*

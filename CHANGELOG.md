@@ -7,6 +7,12 @@ their original projects and are not Mercury release announcements.
 
 ### Fixed
 - Source OMP runs use Mercury's version and changelog, matching compiled releases.
+- OMP exposes only the task model identity; legacy role selectors cannot reroute workers.
+- Nested OMP approvals reach the orchestrator UI and inherit its live permission policy.
+- Hermes-to-OMP delegation retains approval context and background prompt routes.
+- Observatory OMP rooms ask for non-shell approvals instead of rejecting them automatically.
+- Both engines read shared safe/smart/yolo modes and YAML deny lists without deleting user OMP settings.
+- Gateway lifecycle guards recognize Mercury service names and shell quote splicing.
 
 ## [0.2.23]
 

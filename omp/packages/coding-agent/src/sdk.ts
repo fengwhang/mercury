@@ -2801,6 +2801,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		});
 		const toolContextStore = new ToolContextStore(getSessionContext);
 		toolSession.getToolContext = () => toolContextStore.getContext();
+		toolSession.getApprovalUI = () => (extensionRunner.hasUI() ? extensionRunner.getUIContext() : undefined);
 		const setSessionActiveToolNames = (names: Iterable<string>): void => {
 			const snapshot = Array.from(names);
 			setActiveToolNames(snapshot);

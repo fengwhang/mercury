@@ -397,7 +397,7 @@ def build_omp_child(
         workdir=workdir,
         env=child_env,
         startup_timeout=startup_timeout,
-        approval_callback=None,  # yolo per unified approvals; M4 revisits
+        approval_callback=None,  # The active room turn supplies its inherited approval context.
         thinking_level=thinking_level or _delegate_thinking_level(),
         command_override=omp_spawn_argv(
             omp_path=binary,

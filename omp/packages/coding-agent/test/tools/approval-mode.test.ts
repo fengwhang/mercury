@@ -7,6 +7,9 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { forwardApprovalUI } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
+import { createSubagentSettings } from "@oh-my-pi/pi-coding-agent/task/executor";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -88,8 +91,8 @@ describe("tools.approvalMode setting", () => {
 		return bash;
 	}
 
-	it("yolo mode (default) bypasses approval for non-overriding tool calls", async () => {
-		const settings = approvalSettings();
+	it("yolo mode bypasses approval for non-overriding tool calls", async () => {
+		const settings = approvalSettings({ "tools.approvalMode": "yolo" });
 		const result = await bashTool().execute("yolo", { command: "echo ok" }, undefined, undefined, {
 			settings,
 		} as AgentToolContext);
@@ -237,5 +240,61 @@ describe("tools.approvalMode setting", () => {
 		// fix is to construct the runner unconditionally; this test makes that contract explicit so
 		// a future change to make the runner optional again cannot silently re-open the hole.
 		expect(session.extensionRunner).toBeDefined();
+	});
+	it("grandchild approval reaches the orchestrator and follows live family policy", async () => {
+		const parentSettings = approvalSettings({ "tools.approvalMode": "always-ask" });
+		const childSettings = createSubagentSettings(parentSettings, { "tools.approvalMode": "yolo" });
+		const grandchildSettings = createSubagentSettings(childSettings);
+		const originalUI = session.extensionRunner!.getUIContext();
+		const titles: string[] = [];
+		let answer = "Approve";
+		const parentUI = {
+			...originalUI,
+			select: async (title: string) => {
+				titles.push(title);
+				return answer;
+			},
+		};
+		await initializeExtensions(session, {
+			uiContext: forwardApprovalUI(forwardApprovalUI(parentUI, "child"), "grandchild"),
+			reportSendError: () => {},
+			reportRuntimeError: () => {},
+		});
+		try {
+			const result = await bashTool().execute(
+				"grandchild-approved",
+				{ command: "echo approved-by-parent" },
+				undefined,
+				undefined,
+				{ settings: grandchildSettings } as AgentToolContext,
+			);
+			expect(textOf(result)).toContain("approved-by-parent");
+			expect(titles).toHaveLength(1);
+			expect(titles[0]).toContain("[child] [grandchild]");
+			answer = "Deny";
+			await expect(
+				bashTool().execute("grandchild-denied", { command: "echo denied" }, undefined, undefined, {
+					settings: grandchildSettings,
+				} as AgentToolContext),
+			).rejects.toThrow(/denied/);
+			parentSettings.override("tools.approvalMode", "yolo");
+			await bashTool().execute("grandchild-yolo", { command: "echo inherited-yolo" }, undefined, undefined, {
+				settings: grandchildSettings,
+			} as AgentToolContext);
+			expect(titles).toHaveLength(2);
+			parentSettings.override("tools.approval", { bash: "deny" });
+			await expect(
+				bashTool().execute("grandchild-policy-deny", { command: "echo denied-in-yolo" }, undefined, undefined, {
+					settings: grandchildSettings,
+				} as AgentToolContext),
+			).rejects.toThrow(/blocked/);
+			expect(titles).toHaveLength(2);
+		} finally {
+			await initializeExtensions(session, {
+				uiContext: originalUI,
+				reportSendError: () => {},
+				reportRuntimeError: () => {},
+			});
+		}
 	});
 });

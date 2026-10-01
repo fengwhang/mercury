@@ -43,6 +43,7 @@ function session(
 	return {
 		cwd: "/tmp",
 		hasUI: false,
+		getActiveModelString: () => "prov/session",
 		outputSchema: options.outputSchema,
 		settings: Settings.isolated({
 			"task.maxRecursionDepth": options.maxDepth ?? 2,
@@ -168,7 +169,7 @@ describe("structured subagent primitive", () => {
 		).rejects.toThrow("isolation, apply, and merge controls are unavailable in plan mode");
 		expect(discover).not.toHaveBeenCalled();
 	});
-	it("reloads model roles before resolving an agent added during the session", async () => {
+	it("ignores legacy role assignments on an agent added during the session", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-task-hot-reload-"));
 		const projectDir = path.join(root, "project");
 		const agentDir = path.join(root, "agent");
@@ -189,15 +190,15 @@ describe("structured subagent primitive", () => {
 
 			const policy = await resolveEffectiveSubagentPolicy(request({ session: liveSession, agent: "hot-worker" }));
 
-			expect(policy.modelRole).toBe("hot_worker");
-			expect(policy.modelOverride).toEqual(["kimi-code/k3:max"]);
+			expect(policy.modelRole).toBe("task");
+			expect(policy.modelOverride).toEqual(["prov/session"]);
 		} finally {
 			liveSettings.cancelPendingSaves();
 			await fs.rm(root, { recursive: true, force: true });
 		}
 	});
 
-	it("propagates a custom thinking-suffixed role alias through policy, dispatch, and settlement", async () => {
+	it("keeps the session model through policy, dispatch, and settlement despite a legacy role alias", async () => {
 		const customAgent = { ...AGENT, model: ["@reviewer:high"] };
 		mockDiscovery(customAgent);
 		const childSession = session({ modelRoles: { reviewer: "openai/gpt-4o" } });
@@ -211,9 +212,11 @@ describe("structured subagent primitive", () => {
 			request({ session: childSession, agent: "worker", retainArtifacts: true }),
 		);
 
-		expect(settled.policy.modelRole).toBe("reviewer");
-		expect(dispatched[0]?.modelRole).toBe("reviewer");
-		expect(settled.result.modelRole).toBe("reviewer");
+		expect(settled.policy.modelRole).toBe("task");
+		expect(settled.policy.modelOverride).toEqual(["prov/session"]);
+		expect(dispatched[0]?.modelOverride).toEqual(["prov/session"]);
+		expect(dispatched[0]?.modelRole).toBe("task");
+		expect(settled.result.modelRole).toBe("task");
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
 	it("does not treat a spawn handle as the HUD description", async () => {
@@ -243,7 +246,7 @@ describe("structured subagent primitive", () => {
 		await fs.rm(evalLabeled.artifactsDir, { recursive: true, force: true });
 	});
 
-	it("derives modelRole from the raw selector source in request, override, definition order", async () => {
+	it("ignores legacy role selectors in requests, overrides, and agent definitions", async () => {
 		const customAgent = { ...AGENT, model: ["@definition"] };
 		mockDiscovery(customAgent);
 		const roleSession = session({
@@ -256,10 +259,10 @@ describe("structured subagent primitive", () => {
 		roleSession.settings.override("task.agentModelOverrides", { worker: "@override" });
 
 		const requestPolicy = await resolveEffectiveSubagentPolicy(request({ session: roleSession, model: "@request" }));
-		expect(requestPolicy.modelRole).toBe("request");
+		expect(requestPolicy.modelRole).toBe("task");
 
 		const overridePolicy = await resolveEffectiveSubagentPolicy(request({ session: roleSession }));
-		expect(overridePolicy.modelRole).toBe("override");
+		expect(overridePolicy.modelRole).toBe("task");
 
 		const concreteOverrideSession = session({
 			modelRoles: {
@@ -271,25 +274,25 @@ describe("structured subagent primitive", () => {
 		const concreteOverridePolicy = await resolveEffectiveSubagentPolicy(
 			request({ session: concreteOverrideSession }),
 		);
-		expect(concreteOverridePolicy.modelRole).toBeUndefined();
+		expect(concreteOverridePolicy.modelRole).toBe("task");
 
 		const definitionPolicy = await resolveEffectiveSubagentPolicy(
 			request({ session: session({ modelRoles: { definition: "openai/gpt-4o" } }) }),
 		);
-		expect(definitionPolicy.modelRole).toBe("definition");
+		expect(definitionPolicy.modelRole).toBe("task");
 	});
-	it("falls through an empty request selector to the agent definition role", async () => {
+	it("inherits the session model when a request selector is empty", async () => {
 		const customAgent = { ...AGENT, model: ["@definition"] };
 		mockDiscovery(customAgent);
 		const childSession = session({ modelRoles: { definition: "openai/gpt-4o" } });
 
 		const policy = await resolveEffectiveSubagentPolicy(request({ session: childSession, model: "" }));
 
-		expect(policy.modelRole).toBe("definition");
-		expect(policy.modelOverride).toEqual(["openai/gpt-4o"]);
+		expect(policy.modelRole).toBe("task");
+		expect(policy.modelOverride).toEqual(["prov/session"]);
 	});
 
-	it("falls through an empty configured override to the agent definition role", async () => {
+	it("inherits the session model when a legacy configured override is empty", async () => {
 		const customAgent = { ...AGENT, model: ["@definition"] };
 		mockDiscovery(customAgent);
 		const childSession = session({ modelRoles: { definition: "openai/gpt-4o" } });
@@ -297,10 +300,10 @@ describe("structured subagent primitive", () => {
 
 		const policy = await resolveEffectiveSubagentPolicy(request({ session: childSession }));
 
-		expect(policy.modelRole).toBe("definition");
-		expect(policy.modelOverride).toEqual(["openai/gpt-4o"]);
+		expect(policy.modelRole).toBe("task");
+		expect(policy.modelOverride).toEqual(["prov/session"]);
 	});
-	it("falls through a configured alias that expands to no patterns", async () => {
+	it("inherits the session model when a legacy alias is unconfigured", async () => {
 		const customAgent = { ...AGENT, model: ["@definition"] };
 		mockDiscovery(customAgent);
 		const childSession = session({ modelRoles: { empty: "", definition: "openai/gpt-4o" } });
@@ -308,11 +311,11 @@ describe("structured subagent primitive", () => {
 
 		const policy = await resolveEffectiveSubagentPolicy(request({ session: childSession }));
 
-		expect(policy.modelRole).toBe("definition");
-		expect(policy.modelOverride).toEqual(["openai/gpt-4o"]);
+		expect(policy.modelRole).toBe("task");
+		expect(policy.modelOverride).toEqual(["prov/session"]);
 	});
 
-	it("does not assign a role when a child uses an explicit model selector", async () => {
+	it("keeps the task model when a child requests an explicit model selector", async () => {
 		mockDiscovery();
 		const childSession = session({ modelRoles: { reviewer: "openai/gpt-4o" } });
 		const dispatched: executorModule.ExecutorOptions[] = [];
@@ -325,8 +328,10 @@ describe("structured subagent primitive", () => {
 			request({ session: childSession, model: "openai/gpt-4o", retainArtifacts: true }),
 		);
 
-		expect(settled.policy.modelRole).toBeUndefined();
-		expect(dispatched[0]?.modelRole).toBeUndefined();
+		expect(settled.policy.modelRole).toBe("task");
+		expect(settled.policy.modelOverride).toEqual(["prov/session"]);
+		expect(dispatched[0]?.modelOverride).toEqual(["prov/session"]);
+		expect(dispatched[0]?.modelRole).toBe("task");
 		expect(settled.result.modelRole).toBeUndefined();
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});

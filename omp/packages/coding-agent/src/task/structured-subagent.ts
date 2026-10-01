@@ -389,6 +389,7 @@ function buildExecutorOptions(
 		cwd: session.cwd,
 		additionalDirectories: session.additionalDirectories,
 		getApiKey: session.getApiKey,
+		parentApprovalUI: session.getApprovalUI?.(),
 		agent: policy.effectiveAgent,
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),

@@ -71,7 +71,7 @@ def read_requests(out, emit):
             "type": "extension_ui_request",
             "id": "ui_1",
             "method": "select",
-            "title": "Allow tool: bash\nReason: exec-tier command requires approval\nCommand: rm -rf /tmp/mercury-c1-probe",
+            "title": ("Allow tool: write\nPath: /tmp/probe.txt\nCommand: echo this-is-a-path-not-a-shell-request" if "NON_SHELL" in prompt_cmd.get("message", "") else "Allow tool: bash\nReason: exec-tier command requires approval\nCommand: rm -rf /tmp/mercury-c1-probe"),
             "options": ["Approve", "Deny"],
         })
         deadline = time.time() + 20
@@ -581,3 +581,53 @@ class TestTurnFramesPreserved(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInheritedHumanApprovals(unittest.TestCase):
+    def test_non_shell_rpc_gate_reaches_parent_session_after_child_start(self):
+        from tools import approval
+        fake = _FakeOmpServer()
+        notifications = []
+        parent_key = "test:hermes:orchestrator"
+        child = omp_rpc_transport.OmpRpcChild(
+            omp_path=sys.executable, model="prov/m-1", command_override=fake.command(),
+            workdir=fake._dir, env={"MERCURY_FAKE": "1"},
+        )
+        # Room RPC clients start before the user turn establishes its context.
+        child.start()
+        def notify(data):
+            notifications.append(data)
+            self.assertEqual(approval.get_current_session_key(), parent_key)
+            self.assertEqual(approval.resolve_gateway_approval("unrelated-room", "once"), 0)
+            approval.resolve_gateway_approval(parent_key, "once", request_id=data["request_id"])
+        token = approval.set_current_session_key(parent_key)
+        approval.register_gateway_notify(parent_key, notify)
+        try:
+            result = child.run_task("RUN_APPROVAL_GATE NON_SHELL", timeout=10)
+            self.assertEqual(result["summary"], "GATE=Approve")
+            self.assertEqual(len(notifications), 1)
+            self.assertIn("Allow tool: write", notifications[0]["description"])
+        finally:
+            child.stop()
+            approval.unregister_gateway_notify(parent_key)
+            approval.reset_current_session_key(token)
+
+    def test_provider_gate_requires_human_even_with_yolo(self):
+        from tools import approval
+        from unittest.mock import patch
+        key = "test:provider:root"
+        prompts = []
+        token = approval.set_current_session_key(key)
+        def notify(data):
+            prompts.append(data)
+            approval.resolve_gateway_approval(key, "deny", request_id=data["request_id"])
+        approval.register_gateway_notify(key, notify)
+        try:
+            with patch.object(approval, "_YOLO_MODE_FROZEN", True):
+                result = omp_rpc_transport.hermes_tool_approval_decision(
+                    "Allow tool: bash\nCommand: echo harmless\nProvider safety checks:\nUser confirmation required")
+            self.assertFalse(result)
+            self.assertEqual(len(prompts), 1)
+        finally:
+            approval.unregister_gateway_notify(key)
+            approval.reset_current_session_key(token)

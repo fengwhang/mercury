@@ -14,6 +14,7 @@ import re
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "hermes"))
 MERCURY_HOME = os.environ.get("MERCURY_HOME", os.path.expanduser("~/.mercury"))
 DEFAULT_CONFIG = os.path.join(MERCURY_HOME, "config.yaml")
 CONFIG = os.environ.get("HERMES_OMP_CONFIG", os.environ.get("MERCURY_CONFIG", DEFAULT_CONFIG))
@@ -35,97 +36,23 @@ CURRENT_SETUP_VERSION = 2
 
 
 def parse_config(path=None):
-    """Return {slot: value} from the models: block of the unified file."""
+    """Read model slots with the same YAML parser used by both engines."""
+    import yaml
     path = path or CONFIG
-    slots = {s: "" for s in SLOTS}
-    in_models = False
     try:
-        raw = open(path).read()
+        with open(path) as source:
+            config = yaml.safe_load(source) or {}
     except FileNotFoundError:
         sys.exit(f"FATAL: {path} not found")
-    chain: list[str] | None = None  # None until the key appears (block-seq guard)
-    fchain: list[str] = []
-    # HERMES-OMP PATCH (fix #2, active-pointer routing — Mercury-instance
-    # diagnosis 2026-09-06): '- item' continuations must append to the list
-    # of the chain key they sit under. The old continuation routed to the
-    # DELEGATE chain unconditionally, and an empty 'fallback_chain:' value
-    # never initialized a capture target (that happened only inside the
-    # flow-syntax branch) — so a config with BOTH chains in block-sequence
-    # syntax doubled the delegate chain and emptied the ordinary one:
-    # duplicate check -> FATAL at dispatch.
-    active: list[str] | None = None
-    for line in raw.splitlines():
-        s = line.split("#", 1)[0].strip()
-        if not s:
-            continue
-        if s == "models:":
-            in_models = True
-            continue
-        if in_models:
-            # HERMES-OMP PATCH (bridge block-exit — user-confirmed diagnosis
-            # 2026-09-06): test the RAW line for block membership, not the
-            # stripped s. Every top-level key (e.g. `omp:`) contains a colon,
-            # so the key branch below always fired first and the block-exit
-            # elif was dead code — in_models stayed True forever and the
-            # delegate-fallback chain kept absorbing EVERY later '- item'
-            # line in the file (omp.retry.fallbackChains, omp.providers.
-            # webSearchOrder): chain became [glm-5.3-flash, firecrawl,
-            # firecrawl] -> duplicate check -> FATAL at dispatch.
-            # Column-0 key = the models: block is over.
-            if ":" in s and not s.startswith("-") and line[:1] not in (" ", "\t"):
-                in_models = False
-                active = None
-                continue
-            if ":" in s and not s.startswith("-"):
-                k, _, v = s.partition(":")
-                k = k.strip()
-                if k in slots or k in THINKING_SLOTS:
-                    slots[k] = v.strip().strip("'\"")
-                    active = None  # scalar slot key ends chain capture
-                elif k == "fallback_chain":
-                    raw_list = v.strip()
-                    fchain = []
-                    active = fchain
-                    if raw_list.startswith("["):
-                        inner = raw_list[1:-1] if raw_list.endswith("]") else raw_list[1:]
-                        for item in inner.split(","):
-                            item = item.strip().strip("'\"")
-                            if item:
-                                fchain.append(item)
-                elif k == "delegate_fallback_chain":
-                    # ordered fallback list — JSON array or YAML flow
-                    # sequence (single OR double quoted items both legal)
-                    raw_list = v.strip()
-                    chain = []
-                    active = chain
-                    if raw_list.startswith("["):
-                        inner = raw_list[1:-1] if raw_list.endswith("]") else raw_list[1:]
-                        for item in inner.split(","):
-                            item = item.strip().strip("'\"")
-                            if item:
-                                chain.append(item)
-            elif s.startswith("-") and active is not None and line[:1] in (" ", "\t"):
-                # block-sequence continuation — routes to whichever chain
-                # key the items sit under (active pointer).
-                item = s[1:].strip().strip("'\"")
-                if item:
-                    active.append(item)
-            elif s.startswith("[") and active is not None and line[:1] in (" ", "\t"):
-                # Standalone flow list on its own line (e.g. `[]` under an
-                # empty chain key): fold its items into the active chain and
-                # keep the models: block open — otherwise the generic
-                # column-0 guard below fires and every key after the chains
-                # (thinking levels) is silently dropped.
-                inner = s[1:-1] if s.endswith("]") else s[1:]
-                for item in inner.split(","):
-                    item = item.strip().strip("'\"")
-                    if item:
-                        active.append(item)
-            elif not s.startswith((" ", "\t")):
-                in_models = False
-                active = None
-    slots["delegate_fallback_chain"] = [m for m in (chain or []) if m]
-    slots["fallback_chain"] = fchain
+    models = config.get("models") or {}
+    if not isinstance(models, dict):
+        raise ValueError("models must be a mapping")
+    slots = {key: str(models.get(key) or "").strip() for key in (*SLOTS, *THINKING_SLOTS)}
+    for key in ("fallback_chain", "delegate_fallback_chain"):
+        chain = models.get(key) or []
+        if not isinstance(chain, list) or any(not isinstance(item, str) for item in chain):
+            raise ValueError(f"models.{key} must be a list of model names")
+        slots[key] = [item for item in chain if item]
     return slots
 
 
@@ -264,47 +191,19 @@ def _widen_fnmatch_glob(pattern: str) -> str:
     return re.sub(r"\*{2,}", "*", "".join(out))
 
 
+def _approval_config_from_yaml(text: str) -> dict:
+    import yaml
+    from mercury_cli.approval_policy import shared_approval_config
+
+    config = yaml.safe_load(text) or {}
+    if not isinstance(config, dict):
+        raise ValueError("Mercury config must be a mapping")
+    return shared_approval_config(config)
+
+
 def _unified_approvals_mode(text: str) -> str:
-    """HERMES-OMP PATCH (unified approvals): the ONE mode knob.
-
-    Read top-level ``approvals:`` → ``mode:`` from the unified file (the
-    same block shape hermes reads). Falls back to the hermes: subtree's
-    approvals.mode, then to "smart" (safe default — read+write approved,
-    exec prompts). Values: manual | smart | off (off = yolo).
-    """
-    lines = [l.split("#", 1)[0].rstrip() for l in text.splitlines()]
-
-    def _mode_under(header: str) -> str | None:
-        # header may BE the approvals: block (top-level knob) or a parent
-        # (hermes:) containing an approvals: child. Handle both: track the
-        # indent of the approvals: key itself, then read mode: one level in.
-        try:
-            h = next(i for i, l in enumerate(lines) if l.strip() == header)
-        except StopIteration:
-            return None
-        base_indent = len(lines[h]) - len(lines[h].lstrip())
-        ap_indent = base_indent if lines[h].strip() == "approvals:" else None
-        for l in lines[h + 1:]:
-            if l.strip() and (len(l) - len(l.lstrip())) <= base_indent:
-                break
-            if not l.strip():
-                continue
-            stripped = l.strip()
-            indent = len(l) - len(l.lstrip())
-            if ap_indent is None:
-                if stripped == "approvals:":
-                    ap_indent = indent
-                    continue
-                continue
-            if indent == ap_indent + 2 and stripped.startswith("mode:"):
-                v = stripped.split(":", 1)[1].strip().strip("'\"")
-                if v == "False":
-                    return "off"
-                if v in ("manual", "smart", "off"):
-                    return v
-        return None
-
-    return _mode_under("approvals:") or _mode_under("hermes:") or "smart"
+    from mercury_cli.approval_policy import normalize_approval_mode
+    return normalize_approval_mode(_approval_config_from_yaml(text).get("mode", "smart"))
 
 
 # HERMES-OMP PATCH (tool-call inheritance, user directive): map hermes'
@@ -360,44 +259,8 @@ def _hermes_web_omp_provider(text: str) -> str:
 
 
 def _hermes_deny_globs(text: str) -> list:
-    """HERMES-OMP PATCH (C2): approvals.deny globs from the hermes: subtree.
-
-    The unified file's hermes: subtree IS hermes' live config (via
-    MERCURY_CONFIG), so this reads the same source of truth hermes'
-    approval gate enforces — no second policy list can drift. Allowlist
-    is deliberately NOT translated: an omp-side allow can only loosen.
-    """
-    lines = [l.split("#", 1)[0].rstrip() for l in text.splitlines()]
-    try:
-        h = next(i for i, l in enumerate(lines) if l == "hermes:")
-    except StopIteration:
-        return []
-    globs = []
-    ap_indent = None
-    deny_indent = None
-    for l in lines[h + 1:]:
-        if l.strip() and not l[0].isspace():
-            break  # left the hermes: block
-        if not l.strip():
-            continue
-        stripped = l.strip()
-        indent = len(l) - len(l.lstrip())
-        if deny_indent is not None:
-            if stripped.startswith("- ") and indent > deny_indent:
-                item = stripped[2:].strip().strip("'\"")
-                if item:
-                    globs.append(item)
-                continue
-            deny_indent = None  # list ended; fall through to key scan
-        if stripped == "approvals:":
-            ap_indent = indent
-        elif stripped.endswith(":") and ap_indent is not None and indent <= ap_indent:
-            ap_indent = None  # sibling key: approvals: block closed
-            if stripped == "deny:":
-                pass  # not under approvals; ignore
-        elif stripped == "deny:" and ap_indent is not None and indent > ap_indent:
-            deny_indent = indent
-    return globs
+    """Read the same effective deny list as the Hermes approval gate."""
+    return _approval_config_from_yaml(text).get("deny", [])
 
 
 # Shared mnemosyne/mnemopi bank (Mercury default memory system).
@@ -564,6 +427,40 @@ def render_omp_subtree(slots, target=None):
         omp_block += "  bash:\n    patterns:\n"
         for g in deny_globs:
             omp_block += f"    - {{match: {_yaml_sq(g)}, approval: deny}}\n"
+    # Preserve independent OMP settings instead of replacing the entire subtree.
+    import yaml
+    whole_config = yaml.safe_load(text) or {}
+    original = whole_config.get("omp") or {}
+    if text.lstrip().startswith("{"):
+        text = yaml.safe_dump({key: value for key, value in whole_config.items() if key != "omp"}, sort_keys=False)
+    generated = yaml.safe_load(omp_block)["omp"]
+    if (original.get("memory") or {}).get("backend") is False:
+        original["memory"]["backend"] = "off"
+    if (generated.get("memory") or {}).get("backend") is False:
+        generated["memory"]["backend"] = "off"
+
+    def merge_settings(old, new):
+        merged = dict(old)
+        for key, value in new.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = merge_settings(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+
+    if not isinstance(original, dict):
+        raise ValueError("omp settings must be a mapping")
+    existing_patterns = (original.get("bash") or {}).get("patterns") or []
+    inherited_marker = re.search(r"^  # Mercury inherited deny patterns: (.*)$", text, re.M)
+    inherited_before = json.loads(inherited_marker.group(1)) if inherited_marker else []
+    user_patterns = [pattern for pattern in existing_patterns if pattern not in inherited_before]
+    inherited_now = [{"match": glob, "approval": "deny"} for glob in deny_globs]
+    merged = merge_settings(original, generated)
+    if user_patterns or inherited_now or existing_patterns:
+        merged.setdefault("bash", {})["patterns"] = user_patterns + inherited_now
+    omp_block = "omp:\n" + yaml.safe_dump(merged, sort_keys=False, allow_unicode=True)
+    omp_block = "omp:\n" + "".join("  " + line + "\n" for line in omp_block.splitlines()[1:])
+    omp_block = omp_block.replace("omp:\n", "omp:\n  # Mercury inherited deny patterns: " + json.dumps(inherited_now) + "\n", 1)
     if re.search(r"^omp:", text, re.M):
         text = re.sub(r"^omp:(.*?)(?=^\S|\Z)", omp_block, text, count=1, flags=re.M | re.S)
     else:

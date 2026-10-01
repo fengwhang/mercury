@@ -447,3 +447,35 @@ def test_omp_child_kwargs_for_row() -> None:
         "profile_home": None,
     }
     assert omp_child_kwargs_for_row({})["resume_session"] is None
+
+
+@pytest.mark.asyncio
+async def test_omp_room_approval_reaches_its_owner_and_returns_to_waiting_child(monkeypatch):
+    import importlib
+    approval = importlib.import_module("tools.approval")
+    monkeypatch.setattr(approval, "_get_approval_timeout", lambda: 1)
+    key = "test:irc:group:#task-room:owner"
+    prompts = []
+    decisions = []
+    manager = RoomManager(FakeState([]), FakeBot())
+    async def no_feed(*args):
+        return None
+    monkeypatch.setattr(manager, "_start_live_omp_feed", no_feed)
+    def notify(channel, text, **kwargs):
+        prompts.append((channel, text))
+        assert approval.resolve_gateway_approval("unrelated", "once") == 0
+        assert approval.resolve_gateway_approval(key, "once") == 1
+        return True
+    monkeypatch.setattr(rooms, "say_nowait", notify)
+    class RpcTurn:
+        def run_task(self, prompt):
+            decisions.append(approval.request_tool_approval("write", "child asks to write", require_human=True)["approved"])
+            return {"summary": "approved write", "turn_frames": []}
+    before = approval.get_current_session_key()
+    await manager._run_spawned_omp_task("#task-room", "node-task", "owner", "write", RpcTurn(), approval_session_key=key)
+    assert decisions == [True]
+    assert prompts[0][0] == "#task-room"
+    assert "!approve" in prompts[0][1]
+    assert manager.bot.said == [("#task-room", "approved write")]
+    assert approval.get_current_session_key() == before
+    assert key not in approval._gateway_notify_cbs

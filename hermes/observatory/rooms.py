@@ -676,7 +676,8 @@ class RoomManager:
             return "subagent is no longer accepting input."
         return f"steered (as {sender})."
 
-    async def handle_omp_message(self, channel: str, sender: str, text: str) -> str:
+    async def handle_omp_message(self, channel: str, sender: str, text: str,
+                                 *, approval_session_key: str | None = None) -> str:
         """User message in a spawned-omp room: idle → task, busy → steer."""
         row = self.node_for_channel(channel)
         node_id = str((row or {}).get("node_id") or "")
@@ -734,7 +735,7 @@ class RoomManager:
             import asyncio as _asyncio
 
             _asyncio.get_running_loop().create_task(
-                self._run_spawned_omp_task(channel, node_id, sender, text, rpc),
+                self._run_spawned_omp_task(channel, node_id, sender, text, rpc, approval_session_key=approval_session_key),
                 name=f"observatory-omp-room-{node_id}",
             )
         except Exception:
@@ -744,7 +745,8 @@ class RoomManager:
         # path below still answers "steered mid-run.")
         return ""
     async def _run_spawned_omp_task(
-        self, channel: str, node_id: str, sender: str, text: str, rpc: Any
+        self, channel: str, node_id: str, sender: str, text: str, rpc: Any,
+        *, approval_session_key: str | None = None,
     ) -> None:
         """Background body of one spawned-omp turn: live trace, then answer.
 
@@ -756,6 +758,16 @@ class RoomManager:
         seen: set[str] = set()
         feed: Any = None
         pump_task: Any = None
+        approval_token = None
+        if approval_session_key:
+            from tools.approval import register_gateway_notify, set_current_session_key
+
+            def notify_approval(data):
+                say_nowait(channel, f"⚠️ Approval requested: {data.get('command', '')}\n"
+                           f"{data.get('description', '')}\nReply !approve or !deny in this room.")
+
+            approval_token = set_current_session_key(approval_session_key)
+            register_gateway_notify(approval_session_key, notify_approval)
         try:
             import asyncio as _asyncio
 
@@ -779,6 +791,10 @@ class RoomManager:
                 pass
             return
         finally:
+            if approval_token is not None:
+                from tools.approval import reset_current_session_key, unregister_gateway_notify
+                unregister_gateway_notify(approval_session_key)
+                reset_current_session_key(approval_token)
             if feed is not None:
                 try:
                     await feed.stop()

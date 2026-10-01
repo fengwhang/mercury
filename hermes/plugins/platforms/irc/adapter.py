@@ -1341,6 +1341,11 @@ class IRCAdapter(BasePlatformAdapter):
         pumps the omp task and the ack goes straight back to the room.
         """
         text = bang_to_slash(text)
+        source = self.build_source(
+            chat_id=chat_id, chat_name=chat_id, chat_type=chat_type,
+            user_id=user_id, user_name=user_name,
+        )
+
         # Inbound milestone (routing only, never content): proves room
         # messages reach the engine when lower levels are hidden.
         try:
@@ -1379,7 +1384,11 @@ class IRCAdapter(BasePlatformAdapter):
                             # below owns the reply.
                             pass
                         else:
-                            reply = await manager.handle_omp_message(chat_id, user_name, text)
+                            store = getattr(self, "_session_store", None)
+                            approval_session_key = store._generate_session_key(source) if store else None
+                            reply = await manager.handle_omp_message(
+                                chat_id, user_name, text, approval_session_key=approval_session_key,
+                            )
                             if reply:
                                 await self.send(chat_id, reply)
                             if kind == "omp":

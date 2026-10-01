@@ -4199,13 +4199,13 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                                         if _fprov
                                         else {"model": _fmid or _m_fb}
                                     ]
-                        # MERCURY-OMP PATCH (unified approvals): top-level
-                        # approvals: is the ONE mode knob for BOTH engines;
-                        # mercury reads it here (explicit mercury-subtree
-                        # approvals still win as the escape hatch).
-                        _ap = _whole.get("approvals")
-                        if isinstance(_ap, dict) and _ap.get("mode") and "approvals" not in user_config:
-                            user_config["approvals"] = dict(_ap)
+                        # Both engines consume the same top-level policy, including
+                        # deny-only and YAML boolean mode values.
+                        from mercury_cli.approval_policy import shared_approval_config
+                        _ap = shared_approval_config(_whole)
+                        if _ap:
+                            user_config["approvals"] = _ap
+
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})

@@ -1,17 +1,7 @@
 /**
- * Model roles — KILLED (HERMES-OMP PATCH, user decision 2026-09-04).
- *
- * Mercury has NO model role system. There is no role routing, no
- * per-role model selection, no role auto-selection. The only two model
- * settings at the omp layer are:
- *
- *   delegateModel    — the model delegated from hermes to omp
- *   delegateFallback — its required fallback
- *
- * Every historical role name resolves to the session model. The exports
- * below are kept as compile-compatible stubs so the ~30 peripheral files
- * that reference role *names* (UI listings, help text) keep building;
- * they are inert. Sweep them at leisure (tracked in TODO A1-sweep).
+ * Mercury exposes one model identity: task (the session model and its fallback chain).
+ * Per-role routing, custom assignments, and automatic role selection remain removed.
+ * The remaining exports keep older callers compatible without adding other roles.
  */
 import type { ThemeColor } from "../modes/theme/schema";
 import type { Settings } from "./settings";
@@ -24,13 +14,8 @@ export function formatModelRoleAlias(role: string): string {
 	return `${MODEL_ROLE_ALIAS_PREFIX}${role}`;
 }
 
-/**
- * HERMES-OMP PATCH (no model roles): "default" is the ONLY role — the
- * session model (Mercury: delegate model + fallback chain). Historical
- * names are accepted as INPUT aliases (see isSessionInheritedAgentPattern)
- * but the type no longer admits them.
- */
-export type ModelRole = "default";
+/** Mercury uses one task model and its fallback chain; role routing stays removed. */
+export type ModelRole = "task";
 
 export interface ModelRoleInfo {
 	id: string;
@@ -41,23 +26,23 @@ export interface ModelRoleInfo {
 	hidden?: boolean;
 }
 
-/** The single role that exists: default. Lookups of any id return this. */
+/** The single task model label. Legacy ids display this same label. */
 export const MODEL_ROLES: Record<string, ModelRoleInfo> = {
-	default: { id: "default", tag: "DEF", name: "Session", color: "accent" },
+	task: { id: "task", tag: "TASK", name: "Task", color: "accent" },
 };
 
-export const MODEL_ROLE_IDS: string[] = ["default"];
+export const MODEL_ROLE_IDS: string[] = ["task"];
 
 export type RoleInfo = ModelRoleInfo;
 
-/** Only "default" is known; every other id is unknown (no role machinery). */
+/** Only "task" is known; role routing remains disabled. */
 export function getKnownRoleIds(_settings: Settings): string[] {
-	return ["default"];
+	return ["task"];
 }
 
 export function getRoleInfo(role: string, _settings: Settings): RoleInfo {
 	// Every role name maps to the one role: the session model.
-	return MODEL_ROLES.default;
+	return MODEL_ROLES.task;
 }
 
 /**

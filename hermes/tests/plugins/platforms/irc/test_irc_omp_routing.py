@@ -34,7 +34,7 @@ class _FakeManager:
     def __init__(self):
         self.pumped: list[str] = []
 
-    async def handle_omp_message(self, channel, sender, text):
+    async def handle_omp_message(self, channel, sender, text, *, approval_session_key=None):
         self.pumped.append(text)
         return ""
 

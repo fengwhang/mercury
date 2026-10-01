@@ -28,7 +28,6 @@ import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models
 import { fuzzyMatch } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
-import MODEL_PRIO from "../priority.json" with { type: "json" };
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -1059,7 +1058,7 @@ export function parseModelPattern(
 	);
 }
 
-const DEFAULT_MODEL_ROLE = "default";
+const DEFAULT_MODEL_ROLE = "task";
 const MODEL_ROLE_ALIAS_PREFIXES = [MODEL_ROLE_ALIAS_PREFIX, LEGACY_MODEL_ROLE_ALIAS_PREFIX];
 
 export interface ModelRoleLookup {
@@ -1143,8 +1142,8 @@ function shouldInheritDefaultBeforePriority(_role: ModelRole): boolean {
 // HERMES-OMP PATCH: role priority aliasing removed — one role, one chain.
 
 /** Built-in priority patterns for a role, following {@link ROLE_PRIORITY_ALIAS}. */
-function rolePriorityDefaults(role: ModelRole): string[] {
-	return normalizeModelPatternList(MODEL_PRIO[role as keyof typeof MODEL_PRIO]);
+function rolePriorityDefaults(_role: ModelRole): string[] {
+	return []; // Mercury never selects models through upstream role priority lists.
 }
 
 function resolveDefaultInheritedPatterns(
@@ -1264,29 +1263,15 @@ interface EffectiveAgentModelSelection {
 function resolveEffectiveAgentModelSelection(
 	options: AgentModelPatternResolutionOptions,
 ): EffectiveAgentModelSelection {
-	// HERMES-OMP PATCH (no model roles): subagents run the SESSION model —
-	// the delegate model with its fallback chain — and NOTHING else. The
-	// historical per-spawn `model` argument and the task.agentModelOverrides
-	// settings record no longer reroute anything: the agent definition
-	// ("subagent", model "*") inherits the session model, full stop.
-	const { agentModel, settings, activeModelPattern, fallbackModelPattern } = options;
-
-	const normalizedAgentPatterns = normalizeModelPatternList(agentModel);
-	const singleAgentPattern = normalizedAgentPatterns.length === 1 ? normalizedAgentPatterns[0] : undefined;
-	const agentInheritsSessionModel = singleAgentPattern ? isSessionInheritedAgentPattern(singleAgentPattern) : false;
-	if (!agentInheritsSessionModel) {
-		const configuredAgentPatterns = resolveConfiguredModelPatterns(agentModel, settings);
-		if (configuredAgentPatterns.length > 0) {
-			return { source: agentModel, patterns: configuredAgentPatterns };
-		}
-	}
-
-	const fallback =
-		activeModelPattern?.trim() || fallbackModelPattern?.trim() || settings?.getModelRole("default")?.trim() || "";
-	return { patterns: resolveConfiguredModelPatterns(fallback, settings) };
+	// Mercury workers use the parent's task model and fallback chain.
+	// Agent definitions, spawn arguments, and legacy role maps cannot reroute it.
+	const { settings, activeModelPattern, fallbackModelPattern } = options;
+	const selected =
+		activeModelPattern?.trim() || fallbackModelPattern?.trim() || settings?.get("delegateModel")?.trim() || "";
+	return { patterns: resolveConfiguredModelPatterns(selected, settings) };
 }
 
-/** Effective agent model patterns paired with the pre-expansion role alias behind them. */
+/** The shared task model selector, paired with its sole display identity. */
 export interface AgentModelSelection {
 	/** Expanded model patterns to spawn with. */
 	patterns: string[];
@@ -1294,15 +1279,10 @@ export interface AgentModelSelection {
 	role: string | undefined;
 }
 
-/**
- * Resolve an agent's model patterns together with the role identity they were
- * expanded from. Spawn paths MUST take both from this single call: the child's
- * inherited retry-fallback chain is keyed off the role, which the expansion
- * discards, and deriving the two halves separately is how they drift apart.
- */
+/** Resolve the inherited task model; legacy role selectors do not route workers. */
 export function resolveAgentModelSelection(options: AgentModelPatternResolutionOptions): AgentModelSelection {
-	const { source, patterns } = resolveEffectiveAgentModelSelection(options);
-	return { patterns, role: resolveExplicitModelRole(source, options.settings) };
+	const { patterns } = resolveEffectiveAgentModelSelection(options);
+	return { patterns, role: "task" };
 }
 
 /** Effective agent model patterns alone, for callers with no interest in role identity. */
