@@ -8,7 +8,7 @@
 #   bash install-nightly.sh [tag] [--skip-setup ...]          # from a checkout
 #
 # Resolves the latest nightly (newest non-draft prerelease) via the GitHub
-# API, then execs install.sh with the nightly env. Extra args pass through.
+# API, then execs install.sh with --channel nightly. Extra args pass through.
 # A pinned tag skips discovery (no API call). Separate home, command, and
 # update track from stable — the two installs never touch each other.
 # ============================================================================
@@ -42,8 +42,8 @@ export MERCURY_CHANNEL="nightly"
 
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 if [ -f "$_SELF_DIR/install.sh" ]; then
-    exec bash "$_SELF_DIR/install.sh" "$TAG" "${ARGS[@]}"
+    exec bash "$_SELF_DIR/install.sh" --channel nightly "$TAG" "${ARGS[@]}"
 else
-    exec bash -c 'curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | MERCURY_HOME="$0" MERCURY_CMD="$1" MERCURY_CHANNEL=nightly bash -s -- "$2" "${@:3}"' \
+    exec bash -c 'curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install.sh | MERCURY_HOME="$0" MERCURY_CMD="$1" bash -s -- --channel nightly "$2" "${@:3}"' \
         "$MERCURY_HOME" "$MERCURY_CMD" "$TAG" "${ARGS[@]}"
 fi

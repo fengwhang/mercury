@@ -36,10 +36,14 @@ RELEASES_LIST_API = f"https://api.github.com/repos/{MERCURY_REPO_OWNER}/{MERCURY
 def _install_channel() -> str:
     """This install's release track: ``stable`` or ``nightly``.
 
+    The launcher's explicit channel wins over a stale saved marker.
     Written by install.sh (``$MERCURY_HOME/channel``). Pre-channel installs
     default by version shape: the entire v0.0.x history IS the nightly
     track, so a 0.0.* install without a channel file stays nightly.
     """
+    selected = os.environ.get("MERCURY_CHANNEL", "").strip().lower()
+    if selected in ("stable", "nightly"):
+        return selected
     try:
         home = os.environ.get("MERCURY_HOME", "").strip()
         if home:
@@ -436,7 +440,10 @@ def update_from_release(*, assume_yes: bool = False) -> int:
 
     latest = str(rel.get("tag_name", "")).lstrip("v")
     current = _installed_version()
-    if _normalize(latest) <= _normalize(current):
+    if _normalize(latest) < _normalize(current):
+        print(f"✓ Keeping v{current}; latest {_channel} release v{latest} is older.")
+        return 0
+    if _normalize(latest) == _normalize(current):
         # MERCURY-OMP PATCH (bug #5 follow-up): tag equality is NOT proof of
         # content equality. Compare the release tarball's sha256 (tiny text
         # fetch) against the recorded build id; a mismatch (or unknown id on
