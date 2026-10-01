@@ -5,6 +5,13 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Configure Hermes and OMP approval modes separately in setup; restore OMP's
+  native tool tiers and remove Hermes smart risk review from OMP commands.
+- Forward OMP child approval requests to the owner even when the Hermes
+  parent uses YOLO; preserve live descendant policy and explicit deny rules.
+- Make `!restart` in the managed MIRC gateway room restart the full
+  Observatory, skipping mLounge when it is not installed.
+
 ## [0.3.5] — nightly
 
 - Recognize mLounge's fork marker when checking the frontend focus fix,

@@ -1525,7 +1525,7 @@ class GatewaySlashCommandsMixin:
         )
 
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /restart command - drain active work, then restart the gateway."""
+        """Restart the gateway, or the full Observatory from its gateway room."""
         from gateway.run import _hermes_home
         # Defensive idempotency check: if the previous gateway process
         # recorded this same /restart (same platform + update_id) and the new
@@ -1552,6 +1552,35 @@ class GatewaySlashCommandsMixin:
             if count:
                 return t("gateway.draining", count=count)
             return EphemeralReply(t("gateway.restart.in_progress"))
+
+        # In the Observatory's gateway room, !restart (normalized to /restart)
+        # refreshes the whole chat stack. Other platforms keep gateway restart.
+        platform_cfg = self.config.platforms.get(event.source.platform)
+        home = platform_cfg.home_channel if platform_cfg else None
+        adapter = self.adapters.get(event.source.platform)
+        if (
+            event.source.platform.value == "irc"
+            and event.source.chat_type == "group"
+            and getattr(adapter, "_observatory_managed", False)
+            and home is not None
+            and str(home.chat_id).casefold() == str(event.source.chat_id).casefold()
+        ):
+            if getattr(self, "_observatory_restart_started", False):
+                return EphemeralReply("Observatory restart is already in progress.")
+            from gateway.run import _resolve_hermes_bin
+            from observatory.restart import launch_observatory_restart
+
+            command = _resolve_hermes_bin()
+            if not command:
+                return EphemeralReply("Could not locate Mercury to restart the Observatory.")
+            self._observatory_restart_started = True
+            try:
+                await asyncio.to_thread(launch_observatory_restart, command)
+            except Exception as exc:
+                self._observatory_restart_started = False
+                logger.warning("Observatory restart could not be launched: %s", exc)
+                return EphemeralReply(f"Observatory restart could not be launched: {exc}")
+            return EphemeralReply("Restarting Observatory — MIRC, optional mLounge, and gateway.")
 
         # Save the requester's routing info so the new gateway process can
         # notify them once it comes back online.

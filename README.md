@@ -235,6 +235,8 @@ Use the corresponding home if you changed `MERCURY_HOME`.
 If the page loads but the agent does not answer, run
 `mercury observatory doctor`, check `mercury gateway status`, and use
 `mercury observatory restart` to restart and verify the chat path.
+Sending `!restart` in the managed MIRC gateway room also restarts the full
+Observatory. It restarts MIRC and the gateway, and refreshes mLounge when installed.
 Re-run `mercury setup observatory` if you need to reset a lost mLounge
 password.
 
@@ -329,21 +331,32 @@ models:
   delegate_thinking_level: xhigh
 
 approvals:
-  mode: smart # safe | smart | yolo (manual/off remain accepted)
+  mode: smart # Hermes: safe | smart | yolo (manual/off remain accepted)
+omp:
+  tools:
+    approvalMode: write # OMP: always-ask | write | yolo
 ```
 
 OMP has one model role, **task**. Workers use that task model and fallback
 chain; legacy role assignments cannot reroute them.
 
-Both engines read the shared approval policy. Children inherit their parent's
-mode and deny rules, including live profile policy changes; nested approval requests reach the orchestrator's TUI
-or its mLounge room. Reply `!approve` / `!deny` in mLounge, or `/approve` /
+Configure approval options separately with `mercury setup approvals`, or use
+`mercury setup hermes-approvals` and `mercury setup omp-approvals` for one engine.
+Hermes safe mode asks before flagged shell commands; smart mode uses its LLM
+risk reviewer to approve, deny, or escalate those commands. OMP uses native tool
+tiers: always-ask allows reads, write also allows workspace writes, and both
+ask before execution. OMP does not use Hermes's smart reviewer.
+
+Each engine reads its own mode. OMP descendants inherit the live OMP policy;
+explicit deny rules remain shared. Nested approval requests reach the orchestrator's TUI
+or its mLounge room, even when a Hermes parent uses YOLO and an OMP child uses write.
+Reply `!approve` / `!deny` in mLounge, or `/approve` /
 `/deny` on slash-command surfaces. Background children keep that route
 available after the parent finishes its turn. Explicit deny rules and
 provider safety confirmations still apply under YOLO.
 
-YOLO bypasses recoverable approval prompts, including legacy OMP per-tool
-prompt rules. Mode changes apply to running descendants across both engines.
+YOLO bypasses recoverable approval prompts within the engine configured for it,
+including OMP per-tool prompt rules. Changing one engine's mode leaves the other unchanged.
 In immediate steering mode, a message to a working OMP agent interrupts its
 model output and continues the same run with your correction. Tracked shell
 commands yield as background jobs and deliver their results later;
