@@ -18,9 +18,9 @@ while it works. Use the terminal at your desk and the Observatory from
 your phone. Your host runs the agents; you choose their supported model
 providers.
 
-This README describes **[v0.3.2 nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.2)**.
-Use the nightly installer below for quiet Observatory restarts and accurate
-connection warnings, alongside the shared family approval changes.
+This README describes **[v0.3.3 nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.3)**.
+Use the nightly installer below for OMP steering that keeps programs running
+and configured YOLO behavior shared across both engines and their descendants.
 
 ## Why Mercury?
 
@@ -290,11 +290,6 @@ code stay literal, so shell variables, underscores, and globs survive
 rendering. **Raw** toggles the original message text for manual selection.
 Agents can share local artifacts through the mLounge's upload links.
 
-Restarts restore rooms quietly and show one plaintext
-**“Observatory online - Mercury is back and ready”** status per restored
-room once resync succeeds. Repeated membership and initial topic notices
-stay out of the transcript; room membership and topic headers still update.
-
 Room control depends on the running transport: RPC children accept
 steering; legacy one-shot children provide traces and stop control.
 The browser supports the gateway and OMP room commands, rather than every
@@ -342,6 +337,14 @@ or its mLounge room. Reply `!approve` / `!deny` in mLounge, or `/approve` /
 `/deny` on slash-command surfaces. Background children keep that route
 available after the parent finishes its turn. Explicit deny rules and
 provider safety confirmations still apply under YOLO.
+
+YOLO bypasses recoverable approval prompts, including legacy OMP per-tool
+prompt rules. Mode changes apply to running descendants across both engines.
+In immediate steering mode, a message to a working OMP agent interrupts its
+model output and continues the same run with your correction. Tracked shell
+commands yield as background jobs and deliver their results later;
+steering never kills them. Tools that cannot safely yield finish before the
+correction is injected. Explicit stop and cancel actions remain separate.
 
 The bridge preserves independent OMP settings when it updates the shared
 policy. See the [code review](docs/code-review-2026-09-30.md) for remaining
