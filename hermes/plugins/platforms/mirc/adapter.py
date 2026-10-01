@@ -564,6 +564,11 @@ class MIRCAdapter(BasePlatformAdapter):
         if not self._writer or self._writer.is_closing():
             return SendResult(success=False, error="Not connected")
 
+        from observatory.message_format import MESSAGE_KINDS, message_tags
+
+        kind = (metadata or {}).get("mercury_kind")
+        if kind not in MESSAGE_KINDS:
+            kind = "status" if (metadata or {}).get("_interim_send") else "assistant_reply"
         try:
             from observatory.thinking import is_interim_notice, thinking_done, thinking_progress
 
@@ -574,16 +579,16 @@ class MIRCAdapter(BasePlatformAdapter):
                 # cancels its face ~1s in and only notice-free rooms (the
                 # gateway) ever show faces.
                 thinking_progress(chat_id)
-            else:
+            elif (
+                kind not in ("tool_input", "tool_output", "thinking", "user")
+                and not (metadata or {}).get("_interim_send")
+            ):
+                # Traces show work in progress, not the turn's final reply.
+                # Preserve the shared face timer while either engine works.
                 thinking_done(chat_id)
         except Exception:
             pass
         target = chat_id  # channel name or nick for DMs
-        from observatory.message_format import MESSAGE_KINDS, message_tags
-
-        kind = (metadata or {}).get("mercury_kind")
-        if kind not in MESSAGE_KINDS:
-            kind = "status" if (metadata or {}).get("_interim_send") else "assistant_reply"
         tag_overhead = len(message_tags(kind).encode("utf-8"))
         content = self._expand_media_tags(content)
         # Per-agent identity first: rooms with a live identity speak as
@@ -1399,7 +1404,9 @@ class MIRCAdapter(BasePlatformAdapter):
                     if route == "child":
                         reply = await manager.handle_child_message(chat_id, user_name, text)
                         if reply:
-                            await self.send(chat_id, reply)
+                            await self.send(chat_id, reply, metadata={
+                                "mercury_kind": "status", "_interim_send": True,
+                            })
                         # The room owned this text: a gateway turn here would
                         # answer a second time in someone else's room. Slash
                         # commands still fall through (exit/status/...).
@@ -1422,7 +1429,9 @@ class MIRCAdapter(BasePlatformAdapter):
                                 chat_id, user_name, text, approval_session_key=approval_session_key,
                             )
                             if reply:
-                                await self.send(chat_id, reply)
+                                await self.send(chat_id, reply, metadata={
+                                    "mercury_kind": "status", "_interim_send": True,
+                                })
                             if kind == "omp":
                                 # OMP owns it: answered (or silently started)
                                 # above — gateway stays out, no hermes-flavored

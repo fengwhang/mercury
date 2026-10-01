@@ -5,6 +5,10 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Show the same delayed thinking kaomoji in OMP rooms and their descendants,
+  using Hermes' existing face store. Preserve the indicator through tool and
+  reasoning traces, and clear pending faces when a run ends or its room closes.
+
 ## [0.3.3] — nightly
 
 - Make OMP user steering interrupt model output and continue within the same

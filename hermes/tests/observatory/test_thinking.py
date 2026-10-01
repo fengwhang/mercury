@@ -160,6 +160,36 @@ async def test_send_clears_thinking_face(monkeypatch) -> None:
     assert "#test" not in thinking_mod._tasks
 
 
+@pytest.mark.asyncio
+async def test_trace_sequence_preserves_face_until_reply(monkeypatch) -> None:
+    """OMP tool/thought frames must not suppress the pending face."""
+    from observatory import identity as identity_mod
+
+    class FakePool:
+        def get(self, channel):
+            return None
+
+    monkeypatch.setattr(identity_mod, "get_pool", lambda: FakePool())
+    monkeypatch.setattr(thinking_mod, "THINKING_FACE_DELAY_S", 30.0)
+    adapter = _mirc_adapter()
+    thinking_mod.thinking_started("#test")
+    pending = thinking_mod._tasks["#test"]
+    try:
+        for kind in ("tool_input", "tool_output", "thinking", "user"):
+            await adapter.send("#test", "plain $x_* text", metadata={"mercury_kind": kind})
+            assert thinking_mod._tasks["#test"] is pending
+            assert not pending.cancelling()
+        await adapter.send("#test", "steered mid-run.", metadata={
+            "mercury_kind": "status", "_interim_send": True,
+        })
+        assert thinking_mod._tasks["#test"] is pending
+        await adapter.send("#test", "done", metadata={"mercury_kind": "assistant_reply"})
+        assert "#test" not in thinking_mod._tasks
+        assert pending.cancelling()
+    finally:
+        thinking_mod.thinking_done("#test")
+
+
 def test_interim_notice_shapes() -> None:
     assert thinking_mod.is_interim_notice("🌀 mnemosyne — recalled 4 memories")
     assert thinking_mod.is_interim_notice("👁️ Hindsight — recalled 2 memories")

@@ -434,20 +434,44 @@ class RoomManager:
             return False
 
     async def publish_frame(self, channel: str, feed: dict[str, Any] | Any) -> bool:
+        from observatory.thinking import thinking_done, thinking_started
+
+        if isinstance(feed, dict) and feed.get("feed") == "activity":
+            if feed.get("active") is True:
+                thinking_started(channel)
+            elif feed.get("active") is False:
+                thinking_done(channel)
+            return True
         line = format_frame(feed)
         if not line:
             return False
         from observatory.message_format import frame_kind
 
-        return await self.publish(channel, line, kind=frame_kind(feed))
+        if feed.get("feed") == "node" and feed.get("kind") == "death":
+            thinking_done(channel)
+        sent = await self.publish(channel, line, kind=frame_kind(feed))
+        if feed.get("feed") == "node" and feed.get("kind") == "add":
+            thinking_started(channel)
+        return sent
 
     async def publish_lifecycle(
         self, channel: str, lifecycle: str, **kwargs: Any
     ) -> bool:
-        return await self.publish(channel, format_lifecycle(lifecycle, **kwargs))
+        from observatory.thinking import thinking_done, thinking_started
+
+        if lifecycle == "stop":
+            thinking_done(channel)
+        sent = await self.publish(channel, format_lifecycle(lifecycle, **kwargs))
+        row = self.node_for_channel(channel)
+        if lifecycle == "start" and row and row.get("engine") == "omp":
+            thinking_started(channel)
+        return sent
 
     async def destroy_room(self, channel: str) -> bool:
         """Server-side destroy (OPER DESTROY): members PARTed, history dropped."""
+        from observatory.thinking import thinking_done
+
+        thinking_done(channel)
         bot = self.bot
         if bot is None:
             return False
@@ -578,6 +602,9 @@ class RoomManager:
             row = self.state.get(node_id)
         except Exception:
             return
+        from observatory.thinking import thinking_done
+
+        thinking_done(str(row.get("room_id") or ""))
         depth = row.get("depth", 1)
         try:
             depth = int(depth)
@@ -759,6 +786,9 @@ class RoomManager:
         feed: Any = None
         pump_task: Any = None
         approval_token = None
+        from observatory.thinking import thinking_done, thinking_started
+
+        thinking_started(channel)
         if approval_session_key:
             from tools.approval import register_gateway_notify, set_current_session_key
 
@@ -791,6 +821,7 @@ class RoomManager:
                 pass
             return
         finally:
+            thinking_done(channel)
             if approval_token is not None:
                 from tools.approval import reset_current_session_key, unregister_gateway_notify
                 unregister_gateway_notify(approval_session_key)
@@ -805,6 +836,9 @@ class RoomManager:
                     await pump_task
                 except Exception:
                     pass
+            # Draining buffered live frames may include a late agent_start.
+            # It must not leave a face scheduled after the task has ended.
+            thinking_done(channel)
         try:
             summary = str((result or {}).get("summary") or "")
             frames = (result or {}).get("turn_frames") or []
@@ -902,6 +936,8 @@ class RoomManager:
                 except Exception:
                     target = ""
             if not target:
+                if feed.get("feed") == "activity" and feed.get("active") is False:
+                    return  # A late end must not recreate a retired room.
                 node_id = f"{owner_id}/sub-{sub}"
                 name = (str(feed.get("agent") or "").strip()
                         or str(feed.get("task") or "").strip()
@@ -951,9 +987,7 @@ class RoomManager:
                     if target:
                         grands[sid] = target
                 if target:
-                    line = format_frame(flat)
-                    if line:
-                        await self.publish(target, line)
+                    await self.publish_frame(target, flat)
             elif kind == "death":
                 node_id = f"{owner_id}/sub-{sid}"
                 channel = ""
@@ -962,9 +996,7 @@ class RoomManager:
                 except Exception:
                     pass
                 if channel:
-                    line = format_frame(flat)
-                    if line:
-                        await self.publish(channel, line)
+                    await self.publish_frame(channel, flat)
                 grands.pop(sid, None)
                 await self._retire_child_room(node_id)
         except Exception:

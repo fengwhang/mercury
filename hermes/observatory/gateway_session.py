@@ -374,6 +374,11 @@ def _feed_event_to_dict(event: Any) -> dict[str, Any] | None:
     except Exception:
         return None
     try:
+        if shape == "ActivityEvent" or (
+            shape == "activity" and isinstance(data.get("active"), bool)
+        ):
+            data["feed"] = "activity"
+            return data
         # Message frames (role-bearing) forward as feed="message": they
         # share subagent_id/text keys with thought frames, so probe them
         # first. Blank text is filtered consumer-side.
@@ -538,17 +543,20 @@ def _publish_live_payload(
         if str(payload.get("feed") or "") == "node":
             if sub:
                 _route_grandchild_frame(
-                    manager, child_id, payload, grands or {})
+                    manager, child_id, payload, grands if grands is not None else {})
             return
         if sub:
             _route_grandchild_frame(
-                manager, child_id, payload, grands or {})
+                manager, child_id, payload, grands if grands is not None else {})
             return
         try:
             channel = manager.channel_for_node(child_id)
         except Exception:
             channel = ""
         if not channel:
+            return
+        if payload.get("feed") == "activity":
+            _hop(manager.publish_frame(channel, payload))
             return
         line = format_frame(payload)
         if line:
@@ -586,9 +594,7 @@ def _route_grandchild_frame(
                 if channel:
                     flat = dict(feed)
                     flat["subagent_id"] = ""
-                    line = format_frame(flat)
-                    if line:
-                        say_nowait(channel, line, kind=frame_kind(flat))
+                    _hop(manager.publish_frame(channel, flat))
             else:
                 node_id = f"{owner_id}/sub-{sid}"
                 try:
@@ -598,9 +604,7 @@ def _route_grandchild_frame(
                 if row_channel:
                     flat = dict(feed)
                     flat["subagent_id"] = ""
-                    line = format_frame(flat)
-                    if line:
-                        say_nowait(row_channel, line, kind=frame_kind(flat))
+                    _hop(manager.publish_frame(row_channel, flat))
                 cache.pop(sid, None)
                 _hop(manager._retire_child_room(node_id))
             return
@@ -615,6 +619,8 @@ def _route_grandchild_frame(
                 channel = row_channel
                 cache[sid] = channel
             else:
+                if feed.get("feed") == "activity" and feed.get("active") is False:
+                    return  # A late end must not recreate a retired room.
                 channel = _hop(manager._ensure_child_room_for(node_id, {
                     "name": _grandchild_name(feed, sid),
                     "parent_name": owner_id,
@@ -627,6 +633,9 @@ def _route_grandchild_frame(
         if channel:
             flat = dict(feed)
             flat["subagent_id"] = ""
+            if flat.get("feed") == "activity":
+                _hop(manager.publish_frame(channel, flat))
+                return
             line = format_frame(flat)
             if line:
                 say_nowait(channel, line, kind=frame_kind(flat))
@@ -726,8 +735,6 @@ def _ensure_watcher_room(child_id: str, meta: dict[str, Any]) -> str:
     Never raises.
     """
     try:
-        from observatory.rooms import format_lifecycle, say_nowait
-
         manager = _watcher_manager()
         if manager is None:
             return ""
@@ -740,8 +747,8 @@ def _ensure_watcher_room(child_id: str, meta: dict[str, Any]) -> str:
         channel = _hop(manager._ensure_child_room_for(child_id, item)) or ""
         if channel:
             logger.info("observatory: room ensured %s for %s", channel, child_id)
-            say_nowait(channel, format_lifecycle(
-                "start", name=str(meta.get("name") or child_id)))
+            _hop(manager.publish_lifecycle(
+                channel, "start", name=str(meta.get("name") or child_id)))
         return channel
     except Exception:
         return ""
