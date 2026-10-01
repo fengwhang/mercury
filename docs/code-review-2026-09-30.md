@@ -1,7 +1,7 @@
 # Mercury integration code review — September 30, 2026
 
 Initial reviewed revision: `37248f1d` (v0.2.20). Follow-up review covers
-Mercury release identity, the sole OMP task model, mLounge/MIRC naming,
+v0.3.0 nightly: Mercury release identity, the sole OMP task model, mLounge/MIRC naming,
 shared permissions, and approval routing through cross-engine families.
 **Findings 2, 4, and 7 are now resolved.** Findings 1, 3, 5, 6, and 8 remain
 open; their reproductions and suggested fixes are retained below.

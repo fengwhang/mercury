@@ -165,9 +165,7 @@ def _widen_fnmatch_glob(pattern: str) -> str:
     bashApprovalPatternToRegExp). fnmatch '?' (single char) and '[seq]'
     character classes have no omp equivalent; both widen to '*', which
     matches MORE commands — omp can never end up LOOSER than hermes.
-    Known delta (documented): omp pattern matching is case-sensitive;
-    hermes lowercases both sides. omp's own CRITICAL_BASH_PATTERNS are
-    case-insensitive, so the catastrophic floor stays covered either way.
+    Deny matching is case-insensitive in both engines.
     """
     out = []
     i, n = 0, len(pattern)
@@ -203,7 +201,7 @@ def _approval_config_from_yaml(text: str) -> dict:
 
 def _unified_approvals_mode(text: str) -> str:
     from mercury_cli.approval_policy import normalize_approval_mode
-    return normalize_approval_mode(_approval_config_from_yaml(text).get("mode", "smart"))
+    return normalize_approval_mode(_approval_config_from_yaml(text).get("mode", "manual"))
 
 
 # HERMES-OMP PATCH (tool-call inheritance, user directive): map hermes'

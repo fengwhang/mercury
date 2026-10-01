@@ -5,6 +5,8 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.0] — nightly
+
 ### Changed
 - Use mLounge and MIRC implementation names while preserving installed configuration and extension aliases.
 
