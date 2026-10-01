@@ -42,7 +42,7 @@ Mercury's contribution is the wiring between the three engines and surfaces:
 - **Direct execution when you already know the task.** `mercury omp`
   opens OMP's TUI; `/omp` sends a task directly to OMP; `omp_direct` cron
   jobs run the coding engine without an intervening Hermes agent turn.
-- **A browser surface you host.** mLounge, MMIRC server, agent state, and
+- **A browser surface you host.** mLounge, MIRC server, agent state, and
   uploaded artifacts live on your machine. We recommend Tailscale to
   reach the Observatory across devices. Model requests still go to the
   provider you configure, including a local endpoint where supported.

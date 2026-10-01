@@ -119,7 +119,7 @@ build_one() { # $1 = arch suffix (x64|arm64), $2 = source binary path, $3 = labe
         mkdir -p "$S/mercury/omp/packages/natives/native"
         cp -r omp/packages/natives/native/. "$S/mercury/omp/packages/natives/native/"
     fi
-    # Mercury mmLounge fork (prebuilt by scripts/build-mlounge-fork.sh on the
+    # Mercury mLounge fork (prebuilt by scripts/build-mlounge-fork.sh on the
     # release host — user machines never compile). Fail hard on a missing
     # or stale payload instead of shipping last week's bundle.
     echo "== [$LABEL] injecting mLounge fork payload"
@@ -141,7 +141,7 @@ built:      $(date -u +%Y-%m-%dT%H:%M:%SZ)
 built-on:   $(uname -srm)
 hermes pin: $(grep -m1 hermes PINS.txt || true)
 omp pin:    $(grep -m1 '^omp' PINS.txt || true)
-components: source (git archive $(git rev-parse --short HEAD)) + omp binary (${ARCHSUF}) + ui-tui bundle + natives + lounge fork (prebuilt)
+components: source (git archive $(git rev-parse --short HEAD)) + omp binary (${ARCHSUF}) + ui-tui bundle + natives + mLounge fork (prebuilt)
 EOF
 
     echo "== [$LABEL] tarball"

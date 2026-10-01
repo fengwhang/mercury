@@ -109,7 +109,11 @@ describe("Settings", () => {
 		settings.set("tools.approvalMode", "yolo");
 		expect(settings.get("tools.approvalMode")).toBe("yolo");
 		await settings.flush();
-		const saved = YAML.parse(fs.readFileSync(shared, "utf8"));
+		const saved = YAML.parse(fs.readFileSync(shared, "utf8")) as {
+			approvals: { mode: string; deny: string[] };
+			models: { delegate_model: string };
+			omp: { theme: { dark: string } };
+		};
 		expect(saved.approvals).toEqual({ mode: "off", deny: ["*git push*"] });
 		expect(saved.models.delegate_model).toBe("openai/gpt-4o-mini");
 		expect(saved.omp.theme.dark).toBe("ember");
