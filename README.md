@@ -336,10 +336,11 @@ provider safety confirmations still apply under YOLO.
 
 YOLO bypasses recoverable approval prompts, including legacy OMP per-tool
 prompt rules. Mode changes apply to running descendants across both engines.
-In immediate steering mode, a message to a working OMP agent cancels its
-active model request and foreground tools, then continues the same run with
-your correction. Completed work stays in context; cancelled calls record
-their interruption so the agent can account for partial work.
+In immediate steering mode, a message to a working OMP agent interrupts its
+model output and continues the same run with your correction. Tracked shell
+commands yield as background jobs and deliver their results later;
+steering never kills them. Tools that cannot safely yield finish before the
+correction is injected. Explicit stop and cancel actions remain separate.
 
 The bridge preserves independent OMP settings when it updates the shared
 policy. See the [code review](docs/code-review-2026-09-30.md) for remaining

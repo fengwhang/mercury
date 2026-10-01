@@ -2432,19 +2432,16 @@ async function executeToolCalls(
 	const shouldInterruptImmediately = interruptMode !== "wait";
 	const steeringAbortController = new AbortController();
 	const mircAbortController = new AbortController();
-	const userSteeringController = new AbortController();
 	// Cooperative channel: aborted when queued steering (or an interrupting
 	// peer MIRC) is detected mid-batch. Tools receive it via tool context
 	// (`ctx.steeringSignal`) and MAY react — e.g. an auto-backgroundable bash
 	// backgrounds itself so the message injects promptly — but it never kills
 	// anything; ignoring it is always safe.
 	const steeringSoftController = new AbortController();
-	// Real user steering cancels every active tool in immediate mode. Parent
-	// notices and peer MIRC messages retain cooperative interruption for tools
-	// with side effects; only interruptible waits observe those hard aborts.
-	const nonInterruptibleSignal = signal
-		? AbortSignal.any([signal, userSteeringController.signal])
-		: userSteeringController.signal;
+	// Steering must never kill launched programs or interrupt side effects.
+	// Only an explicit run abort cancels non-interruptible tools; steering
+	// cancels pure waits and asks cooperative tools to yield safely.
+	const nonInterruptibleSignal = signal ?? new AbortController().signal;
 	const interruptibleSignal = AbortSignal.any([
 		nonInterruptibleSignal,
 		steeringAbortController.signal,
@@ -2823,7 +2820,7 @@ async function executeToolCalls(
 		? config.subscribeToUserSteering?.(() => {
 				interruptState.triggered = true;
 				interruptState.source = "user";
-				userSteeringController.abort("Interrupted by user");
+				steeringAbortController.abort();
 				steeringSoftController.abort();
 			})
 		: undefined;

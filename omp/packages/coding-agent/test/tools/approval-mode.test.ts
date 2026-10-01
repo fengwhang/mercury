@@ -2,8 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Agent, type AgentToolContext } from "@oh-my-pi/pi-agent-core";
-import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { type AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
@@ -129,45 +128,6 @@ describe("tools.approvalMode setting", () => {
 			settings,
 		} as AgentToolContext);
 		expect(textOf(result)).toContain("approved");
-	});
-	it("user steering cancels a real foreground shell before its remaining command runs", async () => {
-		const ready = Promise.withResolvers<void>();
-		const mock = createMockModel({
-			responses: [
-				{
-					content: [
-						{
-							type: "toolCall",
-							id: "steer-shell",
-							name: "bash",
-							arguments: {
-								command: "printf steering-ready; sleep 30; printf should-never-run",
-							},
-						},
-					],
-					stopReason: "toolUse",
-				},
-				{ content: ["changed direction"] },
-			],
-		});
-		const settings = approvalSettings({ "tools.approvalMode": "yolo" });
-		const agent = new Agent({
-			initialState: { model: mock.model, tools: [bashTool()] },
-			streamFn: mock.stream,
-			getToolContext: () => ({ settings }) as AgentToolContext,
-		});
-		agent.subscribe(event => {
-			if (event.type === "tool_execution_update" && textOf(event.partialResult).includes("steering-ready"))
-				ready.resolve();
-		});
-		const run = agent.prompt("start shell work");
-		await ready.promise;
-		agent.steer({ role: "user", content: "change direction", attribution: "user", timestamp: Date.now() });
-		await run;
-		expect(mock.calls).toHaveLength(2);
-		const results = agent.state.messages.filter(message => message.role === "toolResult");
-		expect(results).toHaveLength(1);
-		expect(JSON.stringify(results)).not.toContain("should-never-run");
 	});
 
 	it("write mode still prompts exec-tier tools", async () => {

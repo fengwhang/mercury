@@ -102,8 +102,12 @@ describe("immediate user steering", () => {
 		expect(agent.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "stop" });
 	});
 
-	for (const mode of ["immediate", "wait"] as const) {
-		it(`${mode} mode controls cancellation of an active foreground tool`, async () => {
+	for (const { mode, interruptible } of [
+		{ mode: "immediate", interruptible: true },
+		{ mode: "immediate", interruptible: false },
+		{ mode: "wait", interruptible: true },
+	] as const) {
+		it(`${mode} steering ${interruptible && mode === "immediate" ? "interrupts pure waits" : "preserves running work"}`, async () => {
 			const started = Promise.withResolvers<void>();
 			const finish = Promise.withResolvers<void>();
 			const schema = type({ value: "string" });
@@ -115,6 +119,7 @@ describe("immediate user steering", () => {
 				description: "Foreground work",
 				parameters: schema,
 				concurrency: "exclusive",
+				interruptible,
 				async execute(_id, args, signal) {
 					executed.push(args.value);
 					toolSignal = signal;
@@ -147,13 +152,13 @@ describe("immediate user steering", () => {
 			});
 			const run = agent.prompt("start");
 			await started.promise;
-			agent.steer(createUserMessage("stop that work and change direction"));
-			if (mode === "wait") {
+			agent.steer(createUserMessage("change direction"));
+			if (mode === "wait" || !interruptible) {
 				expect(toolSignal?.aborted).toBe(false);
 				finish.resolve();
 			}
 			await run;
-			expect(executed).toEqual(mode === "immediate" ? ["first"] : ["first", "second"]);
+			expect(executed).toEqual(mode === "immediate" && interruptible ? ["first"] : ["first", "second"]);
 			expect(mock.calls[1].context.messages.filter(message => message.role === "toolResult")).toHaveLength(2);
 			expect(agent.hasQueuedMessages()).toBe(false);
 		});

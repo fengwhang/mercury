@@ -818,9 +818,9 @@ export interface AgentTool<
 	 *
 	 * Enable only for calls that purely *wait* and observe their abort signal
 	 * cleanly (e.g. `job` poll), so the abort surfaces the tool's current
-	 * snapshot rather than corrupting a side effect. Other calls finish before
-	 * parent/system notices are injected. Real user steering cancels all tools
-	 * in immediate mode, regardless of this flag.
+	 * snapshot rather than corrupting a side effect. Other calls finish or
+	 * yield cooperatively before steering is injected; steering never aborts
+	 * their execution signal. Explicit run cancellation still aborts them.
 	 */
 	interruptible?: boolean | ((args: Partial<Static<TParameters>>) => boolean);
 	/**

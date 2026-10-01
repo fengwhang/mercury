@@ -990,7 +990,7 @@ export class Agent {
 
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
-	 * User steering cancels active work in immediate mode and resumes the run.
+	 * Immediate mode cancels model output; running tools yield cooperatively.
 	 */
 	steer(m: AgentMessage) {
 		this.#steeringQueue.push(m);

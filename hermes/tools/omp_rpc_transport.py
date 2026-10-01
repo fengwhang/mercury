@@ -536,8 +536,9 @@ class OmpRpcChild:
     def steer(self, text: str) -> None:
         """Interrupt the child's MAIN session with user steering.
 
-        Immediate mode cancels the current model request and active tools,
-        then injects the text and resumes within the same RPC run.
+        Immediate mode cancels the current model request. Running tools yield
+        cooperatively or finish safely before injection; programs keep running.
+        The child resumes within the same RPC run.
         """
         self._require_client().steer(text)
 

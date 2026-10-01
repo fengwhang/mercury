@@ -5,9 +5,10 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
-- Make OMP user steering interrupt the active model request and foreground
-  tools, inject the correction, and continue within the same RPC run. Preserve
-  completed tool results and pair cancelled calls with interruption results.
+- Make OMP user steering interrupt model output and continue within the same
+  RPC run. Keep launched programs running, background tracked shell commands
+  on steering, and deliver their results later. Tools that cannot safely yield
+  finish before the correction is injected.
 - Honor configured YOLO for recoverable tool and per-tool prompts in both
   engines and their descendants. Apply live policy changes across engine
   boundaries, avoid orphan approval mirrors, and align the default shared

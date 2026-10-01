@@ -830,6 +830,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		resolvedEnv?: Record<string, string>;
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
 		forwardUpdates: boolean;
+		preserveShellSession?: boolean;
 	}): ManagedBashJobHandle {
 		const manager = this.session.asyncJobManager;
 		if (!manager) {
@@ -851,7 +852,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				try {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
-						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
+						// Tracking alone must not discard foreground shell state.
+						// The executor isolates overlapping calls on a busy session.
+						sessionKey: options.preserveShellSession
+							? (this.session.getSessionId?.() ?? undefined)
+							: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
 						env: options.resolvedEnv,
@@ -1080,16 +1085,19 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		);
 
 		const autoBgManager = this.session.asyncJobManager;
-		// At the running-job cap, fall through to direct foreground execution
-		// instead of failing every bash call until a slot frees up.
+		// Track foreground commands so steering can yield without killing them,
+		// even when automatic backgrounding is disabled. At the running-job cap,
+		// fall through to direct execution and preserve the running command.
 		if (
-			this.#autoBackgroundEnabled &&
+			(this.#autoBackgroundEnabled || ctx?.toolCall?.steeringSignal) &&
 			!pty &&
 			!bridgeTerminalAvailable &&
 			autoBgManager &&
 			!autoBgManager.atCapacity
 		) {
-			const autoBackgroundWaitMs = resolveAutoBackgroundWaitMs(this.#autoBackgroundThresholdMs, timeoutMs);
+			const autoBackgroundWaitMs = this.#autoBackgroundEnabled
+				? resolveAutoBackgroundWaitMs(this.#autoBackgroundThresholdMs, timeoutMs)
+				: undefined;
 			const startBackgrounded = autoBackgroundWaitMs === 0;
 			const job = this.#startManagedBashJob({
 				command,
@@ -1102,6 +1110,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				resolvedEnv,
 				onUpdate,
 				forwardUpdates: !startBackgrounded,
+				preserveShellSession: !this.#autoBackgroundEnabled,
 			});
 			if (startBackgrounded) {
 				return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
