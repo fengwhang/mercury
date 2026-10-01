@@ -5,6 +5,8 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.2] — nightly
+
 - Recognize local and verified Tailscale connections in mLounge's protection
   indicator, preserving warnings for unprotected connections and invalid TLS
   certificates and explaining the problem in the tooltip.
