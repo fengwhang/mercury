@@ -18,6 +18,9 @@ while it works. Use the terminal at your desk and the Observatory from
 your phone. Your host runs the agents; you choose their supported model
 providers.
 
+This README describes **[v0.3.0 nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.0)**.
+Use the nightly installer below for the shared family approval changes.
+
 ## Why Mercury?
 
 Mercury's contribution is the wiring between the three engines and surfaces:
@@ -42,7 +45,7 @@ Mercury's contribution is the wiring between the three engines and surfaces:
 - **Direct execution when you already know the task.** `mercury omp`
   opens OMP's TUI; `/omp` sends a task directly to OMP; `omp_direct` cron
   jobs run the coding engine without an intervening Hermes agent turn.
-- **A browser surface you host.** mLounge, MMIRC server, agent state, and
+- **A browser surface you host.** mLounge, MIRC server, agent state, and
   uploaded artifacts live on your machine. We recommend Tailscale to
   reach the Observatory across devices. Model requests still go to the
   provider you configure, including a local endpoint where supported.
@@ -321,13 +324,22 @@ models:
   delegate_thinking_level: xhigh
 
 approvals:
-  mode: smart # manual | smart | off
+  mode: smart # safe | smart | yolo (manual/off remain accepted)
 ```
 
-The bridge maps approval modes into each engine's approval system. These
-are tool policies, not an operating-system sandbox. For current policy
-translation and settings-preservation issues, see the
-[code review](docs/code-review-2026-09-30.md).
+OMP has one model role, **task**. Workers use that task model and fallback
+chain; legacy role assignments cannot reroute them.
+
+Both engines read the shared approval policy. Children inherit their parent's
+mode and deny rules, including live profile policy changes; nested approval requests reach the orchestrator's TUI
+or its mLounge room. Reply `!approve` / `!deny` in mLounge, or `/approve` /
+`/deny` on slash-command surfaces. Background children keep that route
+available after the parent finishes its turn. Explicit deny rules and
+provider safety confirmations still apply under YOLO.
+
+The bridge preserves independent OMP settings when it updates the shared
+policy. See the [code review](docs/code-review-2026-09-30.md) for remaining
+integration limitations.
 
 Coming from an existing installation? Preview the import first:
 
@@ -346,7 +358,12 @@ models, selected settings, MCP/SSH definitions, and themes.
 The engines are vendored and patched. [PINS.txt](PINS.txt) records their
 upstream bases; consult the applicable `AGENTS.md` before changing them.
 The integration lives in `bridge/`, `hermes/tools/omp_*`,
-`hermes/mercury_cli/`, `hermes/observatory/`, and `third_party/thelounge/`.
+`hermes/mercury_cli/`, `hermes/observatory/`, and `third_party/mlounge/`.
+
+Implementation names use **mLounge** and **MIRC**. Historical `IRC_*` keys,
+transport IDs, state directories, and installed service names remain compatibility
+interfaces so upgrades preserve existing accounts and rooms. Upstream credits
+and actual IRC protocol/dependency names retain their original names.
 
 Run Python checks through `hermes/scripts/run_tests.sh`, OMP checks through
 Bun, and mLounge checks through Vitest. The
@@ -355,7 +372,7 @@ paths, reproducible findings, and current test results.
 
 Release builds must bump and commit the Mercury version **before**
 compiling OMP. Build both OMP architectures and the Hermes TUI, run
-`scripts/build-lounge-fork.sh`, then `scripts/make-dist.sh`. Packaging
+`scripts/build-mlounge-fork.sh`, then `scripts/make-dist.sh`. Packaging
 checks the baked OMP version, native-library version, and mLounge source
 fingerprint. Published bundles include the prebuilt components.
 
