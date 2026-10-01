@@ -4,7 +4,7 @@
  *
  *  T1. An advisor concern in plan mode is recorded as a visible card but never
  *      wakes an autonomous primary turn.
- *  T2. An idle IRC message in plan mode is folded into context ("injected"),
+ *  T2. An idle MIRC message in plan mode is folded into context ("injected"),
  *      not woken.
  *  T3. A plan-mode turn that stops without a decision tool call is reminded at the
  *      terminal settle, bounded by PLAN_MODE_REMINDER_MAX (then yields to the
@@ -26,7 +26,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
-import { IrcBus, type IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { MircBus, type MircMessage } from "@oh-my-pi/pi-coding-agent/mirc/bus";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -266,32 +266,38 @@ describe("AgentSession plan-mode convergence", () => {
 		expect(harness.advisorMock?.calls.length ?? 0).toBeGreaterThanOrEqual(1);
 	});
 
-	it("T2: an idle IRC message does not wake an autonomous turn in plan mode", async () => {
+	it("T2: an idle MIRC message does not wake an autonomous turn in plan mode", async () => {
 		const harness = await createPlanSession([]);
-		const msg: IrcMessage = { id: "m1", from: "peer", to: "me", body: "ping", ts: Date.now() };
+		const msg: MircMessage = { id: "m1", from: "peer", to: "me", body: "ping", ts: Date.now() };
 
-		const outcome = await harness.session.deliverIrcMessage(msg);
+		const outcome = await harness.session.deliverMircMessage(msg);
 
 		expect(outcome).toBe("injected");
-		const sawIrc = harness.session.agent.state.messages.some(
+		const sawMirc = harness.session.agent.state.messages.some(
 			m => m.role === "custom" && m.customType === "irc:incoming",
 		);
-		expect(sawIrc).toBe(true);
+		expect(sawMirc).toBe(true);
 		expect(harness.mock.calls.length).toBe(0);
 	});
 
-	it("T2b: an awaited idle IRC message gets a side-channel auto-reply without waking a turn", async () => {
+	it("T2b: an awaited idle MIRC message gets a side-channel auto-reply without waking a turn", async () => {
 		const harness = await createPlanSession([], {
 			sideResponses: [{ content: ["still planning — full reply once the plan settles"] }],
 		});
 		const registry = AgentRegistry.global();
 		registry.register({ id: "peer", displayName: "peer", kind: "sub", session: null, status: "running" });
 		try {
-			const bus = IrcBus.global();
+			const bus = MircBus.global();
 			const replyPromise = bus.wait("peer", { from: "me" }, 0);
-			const msg: IrcMessage = { id: "m2", from: "peer", to: "me", body: "blocked on you — status?", ts: Date.now() };
+			const msg: MircMessage = {
+				id: "m2",
+				from: "peer",
+				to: "me",
+				body: "blocked on you — status?",
+				ts: Date.now(),
+			};
 
-			const outcome = await harness.session.deliverIrcMessage(msg, { expectsReply: true });
+			const outcome = await harness.session.deliverMircMessage(msg, { expectsReply: true });
 			expect(outcome).toBe("injected");
 
 			const reply = await replyPromise;

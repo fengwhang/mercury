@@ -2059,13 +2059,13 @@ describe("agentLoop with AgentMessage", () => {
 		).toBe(true);
 	});
 
-	it("drains queued IRC interrupts by aborting an interruptible tool mid-wait", async () => {
+	it("drains queued MIRC interrupts by aborting an interruptible tool mid-wait", async () => {
 		const toolSchema = type({});
-		let ircReady = false;
-		let ircDrained = false;
+		let mircReady = false;
+		let mircDrained = false;
 		let observedAbort = false;
 		let resolvedByTimeout = false;
-		const ircMessage = createUserMessage("irc interrupt");
+		const mircMessage = createUserMessage("irc interrupt");
 
 		const tool: AgentTool<typeof toolSchema, Record<string, never>> = {
 			name: "wait",
@@ -2074,7 +2074,7 @@ describe("agentLoop with AgentMessage", () => {
 			parameters: toolSchema,
 			interruptible: true,
 			async execute(_toolCallId, _params, signal) {
-				ircReady = true;
+				mircReady = true;
 				const { promise, resolve } = Promise.withResolvers<void>();
 				if (signal?.aborted) {
 					resolve();
@@ -2109,11 +2109,11 @@ describe("agentLoop with AgentMessage", () => {
 			model: mock.model,
 			convertToLlm: identityConverter,
 			interruptMode: "immediate",
-			hasIrcInterrupts: () => ircReady && !ircDrained,
+			hasMircInterrupts: () => mircReady && !mircDrained,
 			getAsideMessages: async () => {
-				if (ircReady && !ircDrained) {
-					ircDrained = true;
-					return [() => ircMessage];
+				if (mircReady && !mircDrained) {
+					mircDrained = true;
+					return [() => mircMessage];
 				}
 				return [];
 			},
@@ -2126,7 +2126,7 @@ describe("agentLoop with AgentMessage", () => {
 
 		expect(observedAbort).toBe(true);
 		expect(resolvedByTimeout).toBe(false);
-		expect(ircDrained).toBe(true);
+		expect(mircDrained).toBe(true);
 		expect(
 			events.some(
 				e => e.type === "message_start" && e.message.role === "user" && e.message.content === "irc interrupt",
@@ -2203,16 +2203,16 @@ describe("agentLoop with AgentMessage", () => {
 		).toBe(true);
 	});
 
-	it("does not abort a non-interruptible foreground tool when only IRC is queued", async () => {
+	it("does not abort a non-interruptible foreground tool when only MIRC is queued", async () => {
 		const toolSchema = type({});
-		let ircReady = false;
-		let ircDrained = false;
+		let mircReady = false;
+		let mircDrained = false;
 		let bgSignalAborted = true;
 		let bgCompleted = false;
 		let waitObservedAbort = false;
 		const bgStarted = Promise.withResolvers<void>();
 		const waitFinished = Promise.withResolvers<void>();
-		const ircMessage = createUserMessage("peer irc");
+		const mircMessage = createUserMessage("peer irc");
 
 		const bg: AgentTool<typeof toolSchema, Record<string, never>> = {
 			name: "bg",
@@ -2221,9 +2221,9 @@ describe("agentLoop with AgentMessage", () => {
 			parameters: toolSchema,
 			async execute(_toolCallId, _params, signal) {
 				bgStarted.resolve();
-				// Hold until the interruptible wait sibling has observed the IRC abort,
+				// Hold until the interruptible wait sibling has observed the MIRC abort,
 				// then finish normally. Reads `signal.aborted` at completion so the
-				// assertion sees whether an IRC-only interrupt clobbered this signal.
+				// assertion sees whether an MIRC-only interrupt clobbered this signal.
 				await waitFinished.promise;
 				bgSignalAborted = signal?.aborted === true;
 				bgCompleted = true;
@@ -2239,7 +2239,7 @@ describe("agentLoop with AgentMessage", () => {
 			interruptible: true,
 			async execute(_toolCallId, _params, signal) {
 				await bgStarted.promise;
-				ircReady = true;
+				mircReady = true;
 				const { promise, resolve } = Promise.withResolvers<void>();
 				const timer = setTimeout(resolve, 2000);
 				signal?.addEventListener(
@@ -2273,11 +2273,11 @@ describe("agentLoop with AgentMessage", () => {
 			model: mock.model,
 			convertToLlm: identityConverter,
 			interruptMode: "immediate",
-			hasIrcInterrupts: () => ircReady && !ircDrained,
+			hasMircInterrupts: () => mircReady && !mircDrained,
 			getAsideMessages: async () => {
-				if (ircReady && !ircDrained) {
-					ircDrained = true;
-					return [() => ircMessage];
+				if (mircReady && !mircDrained) {
+					mircDrained = true;
+					return [() => mircMessage];
 				}
 				return [];
 			},
@@ -2291,7 +2291,7 @@ describe("agentLoop with AgentMessage", () => {
 		expect(waitObservedAbort).toBe(true);
 		expect(bgCompleted).toBe(true);
 		expect(bgSignalAborted).toBe(false);
-		expect(ircDrained).toBe(true);
+		expect(mircDrained).toBe(true);
 		const bgEnd = events.find(
 			(e): e is Extract<AgentEvent, { type: "tool_execution_end" }> =>
 				e.type === "tool_execution_end" && e.toolCallId === "call-bg",
@@ -2302,20 +2302,20 @@ describe("agentLoop with AgentMessage", () => {
 		}
 	});
 
-	it("runs a queued non-interruptible tool after an IRC interrupt aborts an earlier wait (#7493)", async () => {
+	it("runs a queued non-interruptible tool after an MIRC interrupt aborts an earlier wait (#7493)", async () => {
 		// Reproduces the reporter's orchestration flow: a batch pairs an
 		// interruptible `hub wait` with a non-interruptible `todo` update queued
 		// behind it (todo is `concurrency: "exclusive"`). A peer subagent message
-		// (IRC) lands mid-wait, aborting the wait. The queued todo had not started
+		// (MIRC) lands mid-wait, aborting the wait. The queued todo had not started
 		// yet, so the `interruptState.triggered` early-return in `runTool` skipped
-		// it — surfacing as "Skipped due to pending peer interrupt". IRC must leave
+		// it — surfacing as "Skipped due to pending peer interrupt". MIRC must leave
 		// non-interruptible foreground work alone whether it is already running or
 		// still queued, so the todo update must actually execute.
 		const toolSchema = type({});
-		let ircReady = false;
-		let ircDrained = false;
+		let mircReady = false;
+		let mircDrained = false;
 		let todoExecuted = false;
-		const ircMessage = createUserMessage("peer irc");
+		const mircMessage = createUserMessage("peer irc");
 
 		const wait: AgentTool<typeof toolSchema, Record<string, never>> = {
 			name: "wait",
@@ -2324,8 +2324,8 @@ describe("agentLoop with AgentMessage", () => {
 			parameters: toolSchema,
 			interruptible: true,
 			async execute(_toolCallId, _params, signal) {
-				ircReady = true;
-				// Resolve strictly on the IRC abort under test — no wall-clock timer.
+				mircReady = true;
+				// Resolve strictly on the MIRC abort under test — no wall-clock timer.
 				// If the interrupt never fired the loop would hang, which is itself
 				// the failure signal (ts-no-test-timers: await the real event).
 				const { promise, resolve } = Promise.withResolvers<void>();
@@ -2364,11 +2364,11 @@ describe("agentLoop with AgentMessage", () => {
 			model: mock.model,
 			convertToLlm: identityConverter,
 			interruptMode: "immediate",
-			hasIrcInterrupts: () => ircReady && !ircDrained,
+			hasMircInterrupts: () => mircReady && !mircDrained,
 			getAsideMessages: async () => {
-				if (ircReady && !ircDrained) {
-					ircDrained = true;
-					return [() => ircMessage];
+				if (mircReady && !mircDrained) {
+					mircDrained = true;
+					return [() => mircMessage];
 				}
 				return [];
 			},
@@ -2379,7 +2379,7 @@ describe("agentLoop with AgentMessage", () => {
 			events.push(event);
 		}
 
-		expect(ircDrained).toBe(true);
+		expect(mircDrained).toBe(true);
 		expect(todoExecuted).toBe(true);
 		const todoEnd = events.find(
 			(e): e is Extract<AgentEvent, { type: "tool_execution_end" }> =>
@@ -3274,11 +3274,11 @@ describe("agentLoop event-driven steering watch", () => {
 		expect(executed).toEqual(["only"]);
 	});
 
-	it("uses the IRC timer without polling the steering queue", async () => {
-		const secondIrcCheck = Promise.withResolvers<void>();
+	it("uses the MIRC timer without polling the steering queue", async () => {
+		const secondMircCheck = Promise.withResolvers<void>();
 		let steeringChecks = 0;
-		let ircChecks = 0;
-		let steeringChecksAtIrcTimer: number | undefined;
+		let mircChecks = 0;
+		let steeringChecksAtMircTimer: number | undefined;
 		const toolSchema = type({ value: "string" });
 		const tool: AgentTool<typeof toolSchema> = {
 			name: "echo",
@@ -3287,7 +3287,7 @@ describe("agentLoop event-driven steering watch", () => {
 			parameters: toolSchema,
 			concurrency: "exclusive",
 			async execute(_toolCallId, params) {
-				await secondIrcCheck.promise;
+				await secondMircCheck.promise;
 				return { content: [{ type: "text", text: `ok:${params.value}` }], details: { value: params.value } };
 			},
 		};
@@ -3307,11 +3307,11 @@ describe("agentLoop event-driven steering watch", () => {
 				return false;
 			},
 			waitForSteeringMessages: () => Promise.withResolvers<void>().promise,
-			hasIrcInterrupts: () => {
-				ircChecks++;
-				if (ircChecks === 2) {
-					steeringChecksAtIrcTimer = steeringChecks;
-					secondIrcCheck.resolve();
+			hasMircInterrupts: () => {
+				mircChecks++;
+				if (mircChecks === 2) {
+					steeringChecksAtMircTimer = steeringChecks;
+					secondMircCheck.resolve();
 				}
 				return false;
 			},
@@ -3323,8 +3323,8 @@ describe("agentLoop event-driven steering watch", () => {
 			// drain
 		}
 
-		expect(steeringChecksAtIrcTimer).toBe(1);
-		expect(ircChecks).toBeGreaterThanOrEqual(2);
+		expect(steeringChecksAtMircTimer).toBe(1);
+		expect(mircChecks).toBeGreaterThanOrEqual(2);
 	});
 
 	it("does not hang teardown when the steering check ignores cancellation", async () => {

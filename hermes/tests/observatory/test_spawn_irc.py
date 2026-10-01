@@ -1,4 +1,4 @@
-"""Spawn/exit tests over IRC channels (no matrix)."""
+"""Spawn/exit tests over MIRC channels (no matrix)."""
 
 from __future__ import annotations
 
@@ -232,17 +232,17 @@ async def test_spawn_same_name_gets_distinct_channels(tmp_path, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_spawn_invites_lounge_user(tmp_path, monkeypatch) -> None:
+async def test_spawn_invites_mlounge_user(tmp_path, monkeypatch) -> None:
     """Fresh spawns nudge The Lounge with an INVITE (tap, no typing)."""
     from observatory import provision as provision_mod
 
-    monkeypatch.setattr(provision_mod, "get_lounge_nick", lambda home=None: "lounge")
+    monkeypatch.setattr(provision_mod, "get_mlounge_nick", lambda home=None: "mlounge")
     bot = FakeBot()
     monkeypatch.setattr(spawn, "get_bot_sink", lambda: bot)
     state = _real_state(tmp_path)
     registry = OrchestratorRegistry()
     row = await spawn_orchestrator("Ace", "hermes", state=state, registry=registry)
-    assert ("lounge", row["room_id"]) in bot.invited
+    assert ("mlounge", row["room_id"]) in bot.invited
 
 
 @pytest.mark.asyncio

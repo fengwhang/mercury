@@ -1,10 +1,10 @@
-"""Observatory IRC is the PRIMARY agent surface — upstream-authorized.
+"""Observatory MIRC is the PRIMARY agent surface — upstream-authorized.
 
 The observatory perimeter (PASS-authed agent listener on
 localhost/tailnet, design D7) IS this surface's authorization, exactly
 like the relay's trusted upstream. Pairing/allowlist policies exist for
 SECONDARY messaging platforms and must never gate the agent interface.
-Public (non-observatory) IRC keeps the ordinary allowlist policy —
+Public (non-observatory) MIRC keeps the ordinary allowlist policy —
 that one is genuinely network-exposed.
 """
 
@@ -46,13 +46,13 @@ def _source():
     )
 
 
-def test_observatory_irc_is_upstream_authorized(monkeypatch) -> None:
+def test_observatory_mirc_is_upstream_authorized(monkeypatch) -> None:
     _clear_auth_env(monkeypatch)
     assert _runner(authorization_is_upstream=True)._is_user_authorized(
         _source()) is True
 
 
-def test_public_irc_still_default_denies(monkeypatch) -> None:
+def test_public_mirc_still_default_denies(monkeypatch) -> None:
     _clear_auth_env(monkeypatch)
     assert _runner(authorization_is_upstream=False)._is_user_authorized(
         _source()) is False

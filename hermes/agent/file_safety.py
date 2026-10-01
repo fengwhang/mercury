@@ -255,7 +255,7 @@ def get_read_block_error(path: str) -> Optional[str]:
       * Credential / secret stores under HERMES_HOME and the global Mercury
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
         ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
-        ``cache/bws_cache.json``, the IRC Observatory listener passwords
+        ``cache/bws_cache.json``, the MIRC Observatory listener passwords
         (``IRC_CLIENT_PASSWORD`` / ``IRC_AGENT_PASSWORD`` in
         ``$MERCURY_HOME/.env`` — covered by the ``.env`` entry below),
         and anything under ``mcp-tokens/``. These hold plaintext provider keys,

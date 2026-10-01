@@ -15,7 +15,7 @@ Lives here rather than in ``web_server`` so the CLI wizard can share it without
 importing the dashboard's FastAPI surface.
 """
 
-# Suffix match, so plugin adapters nobody enumerated (IRC, SimpleX, LINE, ntfy)
+# Suffix match, so plugin adapters nobody enumerated (MIRC, SimpleX, LINE, ntfy)
 # get the same treatment without a code change here.
 #
 #   *_HOME_CHANNEL*        the bot offers /sethome on the first chat

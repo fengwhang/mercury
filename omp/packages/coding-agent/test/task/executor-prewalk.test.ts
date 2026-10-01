@@ -81,7 +81,7 @@ function yieldEmittingSession(
 		getLastAssistantMessage: () => undefined,
 		abort: async () => {},
 		dispose: async () => {},
-		setIrcWakeTurnObserver: () => {},
+		setMircWakeTurnObserver: () => {},
 		subscribeRunState: () => () => {},
 	};
 	return session as unknown as AgentSession;

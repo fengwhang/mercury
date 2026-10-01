@@ -231,7 +231,7 @@ def _core_tool_names() -> frozenset[str]:
 
 # Session-gated surface toolsets. Off ``_HERMES_CORE_TOOLS`` so other
 # surfaces never pay their schema; once a session enables them they stay
-# direct. ``irc`` holds the Lounge paperclip (lounge_share) — the IRC
+# direct. ``irc`` holds the mLounge paperclip (mlounge_share) — the MIRC
 # surface's primary handoff affordance, always one call away.
 _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project", "irc"})
 

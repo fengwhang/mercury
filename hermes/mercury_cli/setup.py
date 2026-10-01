@@ -6,7 +6,7 @@ Modular wizard with independently-runnable sections:
   2. Terminal Backend — where your agent runs commands
   3. Agent Settings — iterations, compression, session reset
   4. Messaging Platforms — connect Telegram, Discord, etc.
-  4b. IRC Observatory — bundled network: status, install, server login
+  4b. MIRC Observatory — bundled network: status, install, server login
   5. Tools — configure TTS, web search, image generation, etc.
 
 Config files are stored in ~/.mercury/ for easy access.
@@ -2836,7 +2836,7 @@ def setup_gateway(config: dict):
 
     # ── Gateway Service Setup ──
     # Count any platform (built-in or plugin) the user configured during this
-    # setup pass — reuses ``_platform_status`` so plugin platforms like IRC
+    # setup pass — reuses ``_platform_status`` so plugin platforms like MIRC
     # are picked up without another hard-coded env-var list.
     def _is_progress(status: str) -> bool:
         s = status.lower()
@@ -2947,12 +2947,12 @@ def setup_gateway(config: dict):
     print_info("━" * 50)
 
 # =============================================================================
-# Section 4b: IRC Observatory (bundled network)
+# Section 4b: MIRC Observatory (bundled network)
 # =============================================================================
 
 # The irc-observatory docs page is not published on the docs site yet —
 # never print a URL that 404s. Point at the in-repo copies instead.
-# The IRC-observatory docs page ships with the repo.
+# The MIRC-observatory docs page ships with the repo.
 _OBSERVATORY_GUIDE_LINE = (
     "Guide: docs/design/irc-observatory.md "
     "(ships with the repo)"
@@ -3118,10 +3118,10 @@ def _offer_tailscale_bind(obs, ts: dict | None) -> bool:
         print_info(f"Server port already on {ip}.")
         return False
     try:
-        obs.set_ircd_bind(ip)
+        obs.set_mirc_bind(ip)
     except AttributeError:
         try:
-            from observatory.provision import set_ircd_bind as _bind
+            from observatory.provision import set_mirc_bind as _bind
 
             _bind(ip)
         except Exception as exc:  # noqa: BLE001
@@ -3244,39 +3244,39 @@ def _ensure_firewall_port(port: int | str) -> str:
     return "failed"
 
 
-def _lounge_card_lines(status: dict, tailscale: dict | None = None,
+def _mlounge_card_lines(status: dict, tailscale: dict | None = None,
                        *, mercury_home: str | Path | None = None) -> list:
     """mLounge login block for the final setup card (never raises)."""
     try:
-        from observatory import lounge as lounge_mod
+        from observatory import mlounge as mlounge_mod
 
-        lounge = lounge_mod.status_lounge(mercury_home)
+        mlounge = mlounge_mod.status_mlounge(mercury_home)
     except Exception:  # noqa: BLE001 — card prints without mLounge info
         return ["mLounge:               status unknown"]
-    if lounge.get("external"):
+    if mlounge.get("external"):
         url_host = "127.0.0.1"
         try:
             ts = tailscale or {}
             tip = str(ts.get("ip") or "").strip()
-            if (ts.get("up") and tip and lounge_mod.lounge_port_open(
-                    tip, lounge_mod.LOUNGE_PORT_DEFAULT)):
+            if (ts.get("up") and tip and mlounge_mod.mlounge_port_open(
+                    tip, mlounge_mod.MLOUNGE_PORT_DEFAULT)):
                 url_host = _tailscale_phone_host(ts) or tip
         except Exception:  # noqa: BLE001 — localhost URL is fine
             pass
-        port = lounge.get("port") or lounge_mod.LOUNGE_PORT_DEFAULT
+        port = mlounge.get("port") or mlounge_mod.MLOUNGE_PORT_DEFAULT
         return [
             f"mLounge web UI:       http://{url_host}:{port} (runs outside",
             "                      setup — log in with your existing account)",
         ]
-    if not lounge.get("configured"):
+    if not mlounge.get("configured"):
         return ["mLounge:               not installed — re-run setup to add the web UI"]
-    host = str(lounge.get("host") or "127.0.0.1").strip()
+    host = str(mlounge.get("host") or "127.0.0.1").strip()
     ts = tailscale or {}
     tailnet_host = _tailscale_phone_host(ts)
     if tailnet_host and host in {str(ts.get("ip") or "").strip(), "0.0.0.0", "::"}:
         host = tailnet_host
-    port = lounge.get("port") or lounge_mod.LOUNGE_PORT_DEFAULT
-    users = lounge.get("users") or []
+    port = mlounge.get("port") or mlounge_mod.MLOUNGE_PORT_DEFAULT
+    users = mlounge.get("users") or []
     user = str(users[0]) if users else "owner"
     server = str(status.get("server_name") or "mercury")
     return [
@@ -3351,7 +3351,7 @@ def _print_observatory_setup_card(status: dict, tailscale: dict | None = None,
     lines = [
         "Mercury chat — open mLounge in a browser",
         "",
-        *_lounge_card_lines(status, tailscale, mercury_home=mercury_home),
+        *_mlounge_card_lines(status, tailscale, mercury_home=mercury_home),
         f"gateway channel:      {gateway_channel} (the gateway agent lives here)",
         "spawn more agents:    /spawn <name> (hermes) or /spawnomp <name> (omp)",
         "                      each gets its own channel; /exit in its room kills it",
@@ -3477,7 +3477,7 @@ def _ensure_sqlite3_cli() -> str:
 
 
 def _auto_ensure_unit(obs, *, loud: bool = False) -> str:
-    """Auto unit step: install/enable/restart the ircd unit (the old
+    """Auto unit step: install/enable/restart the MIRC daemon unit (the old
     ``--install-sidecar`` flag path, now automatic). Never prompts, never
     raises — failures degrade to a manual hint.
 
@@ -3515,7 +3515,7 @@ def _auto_ensure_unit(obs, *, loud: bool = False) -> str:
         return "skipped-error"
     if result == "skipped":
         print_info("Observatory unit skipped (no systemd) — start the daemon manually "
-                   "outside containers (`python -m observatory.ircd`).")
+                   "outside containers (`python -m observatory.mirc`).")
         return result
     if result != "installed":
         # Partial states ("installed (start failed: …)") previously
@@ -3814,8 +3814,8 @@ def _offer_server_password_rotate(obs) -> bool:
         from observatory.provision import (
             _mercury_home,
             generate_password,
-            mirror_irc_env,
-            read_irc_passwords,
+            mirror_mirc_env,
+            read_mirc_passwords,
             set_server_password,
         )
 
@@ -3829,14 +3829,14 @@ def _offer_server_password_rotate(obs) -> bool:
             )
             set_server_password(home, chosen)
         else:
-            have = read_irc_passwords(home)
+            have = read_mirc_passwords(home)
             agent = have.get("agent") or generate_password()
-            mirror_irc_env(home, generate_password(), agent)
+            mirror_mirc_env(home, generate_password(), agent)
         print_success("Server password updated (mirrored to .env — update your IRC client).")
         # mLounge uplink holds the OLD secret: reseed it now (it
         # reconnects onto the new password after the final restart).
         try:
-            _converge_lounge_uplink()
+            _converge_mlounge_uplink()
         except Exception as exc:  # noqa: BLE001 — loud, never fatal
             print_warning(f"mLounge uplink not re-pointed: {exc} — "
                           "re-run setup to heal it.")
@@ -3902,7 +3902,7 @@ def _restart_observatory_daemon() -> dict:
 def _restart_gateway(reason: str) -> bool:
     """Offer + perform a gateway restart (it reads .env only at boot).
 
-    A wired-but-unrestarted gateway never joins its IRC channel — the
+    A wired-but-unrestarted gateway never joins its MIRC channel — the
     "no gateway room" failure. Returns True when restarted.
     """
     try:
@@ -3943,7 +3943,7 @@ def _restart_gateway(reason: str) -> bool:
     return True
 
 
-def _print_lounge_card(host: str, port: int, username: str,
+def _print_mlounge_card(host: str, port: int, username: str,
                        password: str | None) -> None:
     """One-time login card (password printed only when just created)."""
     scheme = "http"
@@ -3954,10 +3954,10 @@ def _print_lounge_card(host: str, port: int, username: str,
         print_warning(f"Fresh password (shown once): {password}")
 
 
-_JUST_CREATED_LOUNGE_USER: str | None = None
+_JUST_CREATED_MLOUNGE_USER: str | None = None
 
 
-def _offer_lounge_password_reset(obs) -> None:
+def _offer_mlounge_password_reset(obs) -> None:
     """Offer resetting mLounge LOGIN password (re-run path only).
 
     This is the password typed into the :9000 web UI — NOT the server
@@ -3965,22 +3965,22 @@ def _offer_lounge_password_reset(obs) -> None:
     mLounge hashes it, so a lost password can only be replaced.
     """
     try:
-        from observatory import lounge as lounge_mod
+        from observatory import mlounge as mlounge_mod
         from observatory.provision import (
             _mercury_home as _mh2, read_config as _read_cfg2,
         )
 
-        global _JUST_CREATED_LOUNGE_USER
-        if _JUST_CREATED_LOUNGE_USER:
-            _JUST_CREATED_LOUNGE_USER = None
+        global _JUST_CREATED_MLOUNGE_USER
+        if _JUST_CREATED_MLOUNGE_USER:
+            _JUST_CREATED_MLOUNGE_USER = None
             return
         home = _mh2(None)
-        lounge = lounge_mod.status_lounge(home)
-        if not lounge.get("configured"):
+        mlounge = mlounge_mod.status_mlounge(home)
+        if not mlounge.get("configured"):
             return
         cfg = _read_cfg2(home) or {}
         stored = str(cfg.get("lounge_user") or "").strip()
-        users = lounge.get("users") or []
+        users = mlounge.get("users") or []
         username = stored if stored in users else (users[0] if users else "")
         if not username:
             return
@@ -3997,18 +3997,18 @@ def _offer_lounge_password_reset(obs) -> None:
     try:
         import secrets as _secrets
 
-        from observatory.lounge import LoungePaths
+        from observatory.mlounge import MLoungePaths
 
         password = _secrets.token_urlsafe(16)
-        lounge_mod.reset_lounge_password(
-            LoungePaths(home), username, password)
+        mlounge_mod.reset_mlounge_password(
+            MLoungePaths(home), username, password)
         try:
-            lounge_mod.restart_lounge()
+            mlounge_mod.restart_mlounge()
         except Exception:  # noqa: BLE001 — file is already reset
             pass
-        _print_lounge_card(
-            str(lounge.get("host") or "127.0.0.1"),
-            int(lounge.get("port") or lounge_mod.LOUNGE_PORT_DEFAULT),
+        _print_mlounge_card(
+            str(mlounge.get("host") or "127.0.0.1"),
+            int(mlounge.get("port") or mlounge_mod.MLOUNGE_PORT_DEFAULT),
             username, password)
     except KeyboardInterrupt:
         raise
@@ -4016,7 +4016,7 @@ def _offer_lounge_password_reset(obs) -> None:
         print_error(f"mLounge password reset failed: {exc}")
 
 
-def _converge_lounge_uplink() -> None:
+def _converge_mlounge_uplink() -> None:
     """Re-seed the pre-seeded network when the live bind drifted.
 
     Binds change after provisioning (localhost → tailnet pin); the
@@ -4025,10 +4025,10 @@ def _converge_lounge_uplink() -> None:
     restarts the mLounge only when the seed actually changed.
     """
     try:
-        from observatory import lounge as lounge_mod
+        from observatory import mlounge as mlounge_mod
         from observatory.provision import (
             _mercury_home as _mh, read_config as _read_cfg,
-            read_irc_passwords as _read_pw,
+            read_mirc_passwords as _read_pw,
             server_key as provision_server_key,
         )
 
@@ -4036,11 +4036,11 @@ def _converge_lounge_uplink() -> None:
         cfg = _read_cfg(home) or {}
         server = str(cfg.get("server_name") or "mercury")
         pw = _read_pw(home)
-        users = lounge_mod.lounge_users(lounge_mod.LoungePaths(home))
+        users = mlounge_mod.mlounge_users(mlounge_mod.MLoungePaths(home))
         if not users:
             return
-        out = lounge_mod.ensure_lounge_network(
-            lounge_mod.LoungePaths(home), users[0],
+        out = mlounge_mod.ensure_mlounge_network(
+            mlounge_mod.MLoungePaths(home), users[0],
             net_name=server,
             host=str(provision_server_key(cfg, "server_host") or "127.0.0.1"),
             port=int(provision_server_key(cfg, "server_port") or 6670),
@@ -4052,17 +4052,17 @@ def _converge_lounge_uplink() -> None:
         # changes without reinstalling. The skip path otherwise freezes
         # the config at first-install time forever.
         try:
-            li = lounge_mod.status_lounge(home)
-            conf = lounge_mod.ensure_lounge_config(
-                lounge_mod.LoungePaths(home),
+            li = mlounge_mod.status_mlounge(home)
+            conf = mlounge_mod.ensure_mlounge_config(
+                mlounge_mod.MLoungePaths(home),
                 host=str(li.get("host") or "127.0.0.1"),
-                port=int(li.get("port") or lounge_mod.LOUNGE_PORT_DEFAULT))
+                port=int(li.get("port") or mlounge_mod.MLOUNGE_PORT_DEFAULT))
             if conf.get("action") not in ("current",):
                 need_restart = True
         except Exception as exc:  # noqa: BLE001 — network seed stands alone
             print_warning(f"mLounge config converge failed: {exc}")
-        if need_restart and lounge_mod.lounge_unit_active():
-            lounge_mod.restart_lounge()
+        if need_restart and mlounge_mod.mlounge_unit_active():
+            mlounge_mod.restart_mlounge()
             print_info("mLounge re-pointed at the live chat port.")
     except Exception as exc:  # noqa: BLE001 — converge never kills
         try:
@@ -4086,16 +4086,16 @@ def _converge_gateway_credential() -> None:
         from mercury_cli.config import get_env_value
         from observatory.provision import (
             _mercury_home as _mh, read_config as _read_cfg,
-            read_irc_passwords as _read_pw,
+            read_mirc_passwords as _read_pw,
         )
         from observatory.config_gen import (
-            IRCD_ADDRESS, IRCD_AGENT_PORT_DEFAULT,
+            MIRC_ADDRESS, MIRC_AGENT_PORT_DEFAULT,
         )
 
         home = _mh(None)
         cfg = _read_cfg(home) or {}
-        agent_host = str(cfg.get("agent_host") or IRCD_ADDRESS)
-        agent_port = int(cfg.get("agent_port") or IRCD_AGENT_PORT_DEFAULT)
+        agent_host = str(cfg.get("agent_host") or MIRC_ADDRESS)
+        agent_port = int(cfg.get("agent_port") or MIRC_AGENT_PORT_DEFAULT)
         wired_host = (get_env_value("IRC_SERVER") or "").strip()
         wired_port = (get_env_value("IRC_PORT") or "").strip()
         if wired_host and wired_host != agent_host:
@@ -4110,7 +4110,7 @@ def _converge_gateway_credential() -> None:
         if saved == agent_pw:
             return
         server = str(cfg.get("server_name") or "mercury")
-        if _wire_gateway_irc_env(server):
+        if _wire_gateway_mirc_env(server):
             print_info("Gateway bot credential re-pointed at the current agent password.")
     except Exception as exc:  # noqa: BLE001 — converge never kills setup
         try:
@@ -4119,26 +4119,26 @@ def _converge_gateway_credential() -> None:
             pass
 
 
-def _offer_lounge(obs, ts: dict | None) -> None:
+def _offer_mlounge(obs, ts: dict | None) -> None:
     """Offer installing mLounge (only one required per user)."""
     try:
-        from observatory import lounge as _lounge_mod
+        from observatory import mlounge as _mlounge_mod
 
-        _st = _lounge_mod.status_lounge()
+        _st = _mlounge_mod.status_mlounge()
         if (_st.get("users")):
             try:
-                _fork = _lounge_mod.refresh_lounge_fork()
+                _fork = _mlounge_mod.refresh_mlounge_fork()
             except Exception as exc:  # noqa: BLE001 — refresh never kills setup
                 _fork = f"skipped-error: {exc}"
             if _fork == "current":
                 print_info("mLounge already answers on :9000 — keeping it, no install offered.")
             else:
                 print_info(f"mLounge fork refreshed ({_fork}) — keeping it, no install offered.")
-            _converge_lounge_uplink()
+            _converge_mlounge_uplink()
             return
         if not _st.get("configured") and (
-                _lounge_mod._local_port_answers(
-                    _lounge_mod.LOUNGE_PORT_DEFAULT)):
+                _mlounge_mod._local_port_answers(
+                    _mlounge_mod.MLOUNGE_PORT_DEFAULT)):
             print_info("mLounge already answers on :9000 — keeping it, no install offered.")
             return
         if _st.get("configured"):
@@ -4162,7 +4162,7 @@ def _offer_lounge(obs, ts: dict | None) -> None:
         print_info("Skipped — connect another mLounge to this MIRC server instead.")
         return
     try:
-        from observatory import lounge as lounge_mod
+        from observatory import mlounge as mlounge_mod
 
         ip = (ts or {}).get("ip") if isinstance(ts, dict) else None
         tail_ok = bool(isinstance(ts, dict) and ts.get("up") and ip)
@@ -4210,7 +4210,7 @@ def _offer_lounge(obs, ts: dict | None) -> None:
         try:
             from observatory.provision import (
                 _mercury_home as _mh, read_config as _read_cfg,
-                read_irc_passwords as _read_pw,
+                read_mirc_passwords as _read_pw,
                 server_key as provision_server_key,
             )
             _cfg = _read_cfg(_mh(None)) or {}
@@ -4220,7 +4220,7 @@ def _offer_lounge(obs, ts: dict | None) -> None:
             # a tailnet-pinned chat port refuses 127.0.0.1 and the
             # pre-seeded network dies with ECONNREFUSED (verified live).
             _uplink_host = str(provision_server_key(_cfg, "server_host") or "127.0.0.1")
-            summary = lounge_mod.provision_lounge(
+            summary = mlounge_mod.provision_mlounge(
                 host=host, username=username, password=password,
                 uplink_host=_uplink_host,
                 uplink_port=int(provision_server_key(_cfg, "server_port") or 6670),
@@ -4240,8 +4240,8 @@ def _offer_lounge(obs, ts: dict | None) -> None:
         created = (summary.get("user") or {}).get("action") in (
             "created", "reset")
         if created:
-            global _JUST_CREATED_LOUNGE_USER
-            _JUST_CREATED_LOUNGE_USER = username
+            global _JUST_CREATED_MLOUNGE_USER
+            _JUST_CREATED_MLOUNGE_USER = username
         try:
             from observatory.provision import _mercury_home, read_config
             from observatory.config_gen import ObservatoryPaths
@@ -4255,12 +4255,12 @@ def _offer_lounge(obs, ts: dict | None) -> None:
         except Exception:  # noqa: BLE001 — invites fall back to "owner"
             pass
         try:
-            _ensure_firewall_port(lounge_mod.LOUNGE_PORT_DEFAULT)
+            _ensure_firewall_port(mlounge_mod.MLOUNGE_PORT_DEFAULT)
         except Exception:  # noqa: BLE001 — firewall never kills setup
             pass
         # Fresh passwords cannot be recovered — show once on creation
         # (change it later in mLounge settings UI).
-        _print_lounge_card(host, lounge_mod.LOUNGE_PORT_DEFAULT, username,
+        _print_mlounge_card(host, mlounge_mod.MLOUNGE_PORT_DEFAULT, username,
                            password if created else None)
         try:
             status = obs.status_summary()
@@ -4272,27 +4272,27 @@ def _offer_lounge(obs, ts: dict | None) -> None:
         print_error(f"mLounge offer failed: {exc}")
 
 
-def _wire_gateway_irc_env(home_label: str) -> bool:
-    """Point the gateway's IRC platform at this network (no prompt).
+def _wire_gateway_mirc_env(home_label: str) -> bool:
+    """Point the gateway's MIRC platform at this network (no prompt).
 
     Writes the IRC_* env keys (.env) so the gateway bot joins the local
-    ircd as ``<server>_gateway`` in ``#<server>_gateway``. Always runs —
+    MIRC daemon as ``<server>_gateway`` in ``#<server>_gateway``. Always runs —
     the bot cannot join without it; the bind choice lives in
     ``_offer_agent_bind``. The gateway restarts once at the end of setup.
     """
     try:
-        from observatory.provision import _mercury_home, read_config, read_irc_passwords
+        from observatory.provision import _mercury_home, read_config, read_mirc_passwords
         from observatory.config_gen import (
-            IRCD_ADDRESS,
-            IRCD_AGENT_PORT_DEFAULT,
+            MIRC_ADDRESS,
+            MIRC_AGENT_PORT_DEFAULT,
         )
 
         home = _mercury_home(None)
         cfg = read_config(home) or {}
-        host = str(cfg.get("agent_host") or IRCD_ADDRESS)
-        port = int(cfg.get("agent_port") or IRCD_AGENT_PORT_DEFAULT)
+        host = str(cfg.get("agent_host") or MIRC_ADDRESS)
+        port = int(cfg.get("agent_port") or MIRC_AGENT_PORT_DEFAULT)
         server = str(cfg.get("server_name") or home_label)
-        passwords = read_irc_passwords(home)
+        passwords = read_mirc_passwords(home)
         save_env_value("IRC_SERVER", host)
         save_env_value("IRC_PORT", str(port))
         save_env_value("IRC_USE_TLS", "false")
@@ -4340,7 +4340,7 @@ def _offer_agent_bind(obs, label: str, ts: dict | None) -> bool:
         raw = cfg.get("agent_host")
         if raw is not None:
             print_info(f"Bot port stays on {raw}.")
-            _wire_gateway_irc_env(label)
+            _wire_gateway_mirc_env(label)
             return False
         cfg["agent_host"] = "127.0.0.1"
         paths = ObservatoryPaths(home)
@@ -4351,17 +4351,17 @@ def _offer_agent_bind(obs, label: str, ts: dict | None) -> bool:
         print_warning(f"Could not write the bot bind: {exc}")
         print_info("Edit `agent_host` in observatory/ircd.json by hand instead.")
         return False
-    _wire_gateway_irc_env(label)
+    _wire_gateway_mirc_env(label)
     return True
 
 
 def setup_observatory(config: dict, *, quick: bool = False):
-    """Wizard section: the bundled IRC observatory (ircd daemon).
+    """Wizard section: the bundled MIRC observatory (MIRC daemon daemon).
 
     Shows current state, offers idempotent install/repair (config +
     passwords + unit + gateway row, all automatic) or skip, offers the
     ``observatory.enabled`` toggle, the Tailscale server pin, the
-    gateway IRC wiring, and prints the server login card when
+    gateway MIRC wiring, and prints the server login card when
     provisioned. Never gates the rest of the wizard: every failure
     degrades to a printed hint and the section returns.
     """
@@ -4505,12 +4505,12 @@ def setup_observatory(config: dict, *, quick: bool = False):
         # when the saved copy no longer matches the agent password.
         _converge_gateway_credential()
         try:
-            from observatory import lounge as lounge_mod
+            from observatory import mlounge as mlounge_mod
 
-            _JUST_CREATED_LOUNGE_USER = None
-            _offer_lounge(obs, ts)
-            _offer_lounge_password_reset(obs)
-        except Exception as exc:  # noqa: BLE001 — direct IRC still works
+            _JUST_CREATED_MLOUNGE_USER = None
+            _offer_mlounge(obs, ts)
+            _offer_mlounge_password_reset(obs)
+        except Exception as exc:  # noqa: BLE001 — direct MIRC still works
             print_error(f"mLounge layer failed: {exc}")
             print_info("Connect any IRC client straight to this server instead.")
         try:
@@ -5406,7 +5406,7 @@ def _run_setup_wizard_impl(args):
       mercury setup tts       — just text-to-speech
       mercury setup terminal  — just terminal backend
       mercury setup gateway   — just messaging platforms
-      mercury setup observatory — just the IRC observatory (bundled)
+      mercury setup observatory — just the MIRC observatory (bundled)
       mercury setup tools     — just tool configuration
       mercury setup telemetry — just local shared metrics
       mercury setup agent     — just agent settings

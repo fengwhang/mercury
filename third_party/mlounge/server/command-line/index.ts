@@ -8,7 +8,7 @@ import Helper from "../helper";
 import Config from "../config";
 import Utils from "./utils";
 
-const program = new Command("thelounge");
+const program = new Command("mlounge");
 program
 	.version(Helper.getVersion(), "-v, --version")
 	.option(
@@ -21,7 +21,8 @@ program
 // Parse options from `argv` returning `argv` void of these options.
 const argvWithoutOptions = program.parseOptions(process.argv);
 
-Config.setHome(process.env.THELOUNGE_HOME || Utils.defaultHome());
+// THELOUNGE_HOME remains an alias for existing deployments.
+Config.setHome(process.env.MLOUNGE_HOME || process.env.THELOUNGE_HOME || Utils.defaultHome());
 
 // Check config file owner and warn if we're running under a different user
 try {
@@ -75,7 +76,7 @@ function createPackagesFolder() {
 				{
 					private: true,
 					description:
-						"Packages for mLounge. Use `thelounge install <package>` command to add a package.",
+						"Packages for mLounge. Use `mlounge install <package>` command to add a package.",
 					dependencies: {},
 				},
 				null,

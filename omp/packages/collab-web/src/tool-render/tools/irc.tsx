@@ -5,19 +5,19 @@ import { Badge, Badges, Note, ResultText, Row } from "../parts";
 import type { ToolRenderer, ToolRenderProps } from "../types";
 import { detailsRecord, isRecord, normalizeWs, str, truncate } from "../util";
 
-interface IrcReceipt {
+interface MircReceipt {
 	to: string;
 	outcome: string;
 	error?: string;
 }
 
-interface IrcMsg {
+interface MircMsg {
 	from: string;
 	body: string;
 	replyTo?: string;
 }
 
-interface IrcPeer {
+interface MircPeer {
 	id: string;
 	kind: string;
 	status: string;
@@ -25,9 +25,9 @@ interface IrcPeer {
 	unread: number;
 }
 
-function parseReceipts(value: unknown): IrcReceipt[] {
+function parseReceipts(value: unknown): MircReceipt[] {
 	if (!Array.isArray(value)) return [];
-	const out: IrcReceipt[] = [];
+	const out: MircReceipt[] = [];
 	for (const item of value) {
 		if (!isRecord(item)) continue;
 		const to = str(item.to);
@@ -38,7 +38,7 @@ function parseReceipts(value: unknown): IrcReceipt[] {
 	return out;
 }
 
-function parseMsg(value: unknown): IrcMsg | null {
+function parseMsg(value: unknown): MircMsg | null {
 	if (!isRecord(value)) return null;
 	const from = str(value.from);
 	const body = str(value.body);
@@ -46,9 +46,9 @@ function parseMsg(value: unknown): IrcMsg | null {
 	return { from, body, replyTo: str(value.replyTo) ?? undefined };
 }
 
-function parseInbox(value: unknown): IrcMsg[] {
+function parseInbox(value: unknown): MircMsg[] {
 	if (!Array.isArray(value)) return [];
-	const out: IrcMsg[] = [];
+	const out: MircMsg[] = [];
 	for (const item of value) {
 		const msg = parseMsg(item);
 		if (msg) out.push(msg);
@@ -58,9 +58,9 @@ function parseInbox(value: unknown): IrcMsg[] {
 
 const PEER_STATUS_ORDER: Record<string, number> = { running: 0, idle: 1, parked: 2 };
 
-function parsePeers(value: unknown): IrcPeer[] {
+function parsePeers(value: unknown): MircPeer[] {
 	if (!Array.isArray(value)) return [];
-	const out: IrcPeer[] = [];
+	const out: MircPeer[] = [];
 	for (const item of value) {
 		if (!isRecord(item)) continue;
 		const id = str(item.id);
@@ -262,4 +262,4 @@ function Body({ args, result }: ToolRenderProps): ReactNode {
 	);
 }
 
-export const ircRenderer: ToolRenderer = { Summary, Body };
+export const mircRenderer: ToolRenderer = { Summary, Body };

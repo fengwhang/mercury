@@ -211,7 +211,7 @@ export class AgentLifecycleManager {
 	/**
 	 * True when this manager owns `registry` — i.e. its adopt/park/revive state
 	 * describes that registry's refs. Lets a caller holding a specific registry
-	 * (e.g. a custom-registry {@link IrcBus} that fell back to the global
+	 * (e.g. a custom-registry {@link MircBus} that fell back to the global
 	 * manager) skip lifecycle gating that would consult unrelated park state.
 	 */
 	manages(registry: AgentRegistry): boolean {

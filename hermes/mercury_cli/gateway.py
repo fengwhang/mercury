@@ -7118,7 +7118,7 @@ def _all_platforms() -> list[dict]:
 
     Combines the built-in ``_PLATFORMS`` with plugin platforms registered via
     ``platform_registry``. Plugins are discovered on first call so bundled
-    platforms (like IRC, which auto-load via ``kind: platform``) appear in
+    platforms (like MIRC, which auto-load via ``kind: platform``) appear in
     ``mercury setup gateway`` without needing the gateway to be running.
     Built-ins keep their dict shape; plugin entries are adapted to the same
     shape with ``_registry_entry`` holding the source.
@@ -7165,7 +7165,7 @@ def _all_platforms() -> list[dict]:
         # a built-in or, post-#41112, a registry-discovered plugin.
         if sys.platform == "win32" and entry.name == "matrix":
             continue
-        # IRC is owned by the observatory (bot transport, wired by
+        # MIRC is owned by the observatory (bot transport, wired by
         # `mercury setup observatory`): offering it here lets users
         # silently clobber the bot wiring with a "second" connection
         # the single-identity adapter cannot serve. Not offered, ever.
@@ -8079,7 +8079,7 @@ def _configure_platform(platform: dict) -> None:
       3. ``_setup_standard_platform`` when the entry has a ``vars`` schema.
       4. Env-var hint fallback for plugins that offer no setup helper.
 
-    Bundled platform plugins (e.g. IRC) auto-load, so no plugin enable step
+    Bundled platform plugins (e.g. MIRC) auto-load, so no plugin enable step
     is needed here. User-installed platform plugins under ~/.mercury/plugins/
     must already be in ``plugins.enabled`` before they appear in this menu.
     """

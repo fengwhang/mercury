@@ -28,7 +28,7 @@ from agent import secret_scope as ss
 
 # (module path, representative credential env var owned by that adapter)
 MIGRATED_ADAPTER_MODULES = [
-    ("plugins.platforms.irc.adapter", "IRC_SERVER_PASSWORD"),
+    ("plugins.platforms.mirc.adapter", "IRC_SERVER_PASSWORD"),
     ("plugins.platforms.line.adapter", "LINE_CHANNEL_ACCESS_TOKEN"),
     ("plugins.platforms.teams.adapter", "TEAMS_CLIENT_SECRET"),
     ("plugins.platforms.mattermost.adapter", "MATTERMOST_TOKEN"),

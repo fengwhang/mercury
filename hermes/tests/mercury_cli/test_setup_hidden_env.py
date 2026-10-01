@@ -28,7 +28,7 @@ class TestIsSetupHiddenEnv:
 
 
     def test_applies_to_plugin_platforms_nobody_enumerated(self):
-        """Suffix matching is the point — IRC/SimpleX/ntfy get this for free."""
+        """Suffix matching is the point — MIRC/SimpleX/ntfy get this for free."""
         for key in (
             "IRC_ALLOW_ALL_USERS",
             "SIMPLEX_HOME_CHANNEL",

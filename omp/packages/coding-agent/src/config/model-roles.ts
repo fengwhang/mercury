@@ -40,7 +40,7 @@ export function getKnownRoleIds(_settings: Settings): string[] {
 	return ["task"];
 }
 
-export function getRoleInfo(role: string, _settings: Settings): RoleInfo {
+export function getRoleInfo(_role: string, _settings: Settings): RoleInfo {
 	// Every role name maps to the one role: the session model.
 	return MODEL_ROLES.task;
 }

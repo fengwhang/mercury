@@ -1622,7 +1622,7 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
 
     Lets ``mercury status`` reflect a LINE configuration that lives entirely
     in ``.env`` without a ``platforms.line`` block in ``config.yaml``.
-    Mirrors the IRC plugin's pattern.
+    Mirrors the MIRC plugin's pattern.
     """
     if not (_get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") and _get_scoped_secret("LINE_CHANNEL_SECRET")):
         return None
@@ -1689,7 +1689,7 @@ async def _standalone_send(
 def interactive_setup() -> None:
     """Minimal stdin wizard for ``mercury setup line``.
 
-    Mirrors the irc/teams style: prompts for the two required vars, plus
+    Mirrors the mirc/teams style: prompts for the two required vars, plus
     one optional public URL. Writes to ``~/.mercury/.env`` via ``mercury_cli.config``.
     """
     print()

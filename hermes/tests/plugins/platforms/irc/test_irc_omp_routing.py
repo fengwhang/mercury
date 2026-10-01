@@ -41,7 +41,7 @@ class _FakeManager:
 
 def _adapter(monkeypatch):
     from gateway.config import PlatformConfig
-    from plugins.platforms.irc import adapter as adapter_mod
+    from plugins.platforms.mirc import adapter as adapter_mod
 
     for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
                 "IRC_USE_TLS"):
@@ -51,13 +51,13 @@ def _adapter(monkeypatch):
         extra={"server": "127.0.0.1", "port": 6669,
                "nickname": "bot", "channel": "#bot"},
     )
-    return adapter_mod.IRCAdapter(cfg)
+    return adapter_mod.MIRCAdapter(cfg)
 
 
 @pytest.mark.asyncio
 async def test_omp_room_routing(monkeypatch) -> None:
     import observatory.rooms as rooms_mod
-    from plugins.platforms.irc import adapter as adapter_mod
+    from plugins.platforms.mirc import adapter as adapter_mod
 
     ad = _adapter(monkeypatch)
     mgr = _FakeManager()

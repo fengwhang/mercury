@@ -1508,7 +1508,7 @@ class TestWebServerEndpoints:
 
         Regression: Platform("<plugin id>") caches a pseudo-member in the enum;
         the catalog iterated the enum FIRST and claimed the id with no plugin
-        metadata, so bundled plugin platforms (irc, ntfy, photon, …) rendered
+        metadata, so bundled plugin platforms (mirc, ntfy, photon, …) rendered
         as nameless "Irc"/"Ntfy" cards with empty descriptions.
         """
         from gateway.config import Platform

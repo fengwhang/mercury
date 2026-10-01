@@ -1,7 +1,7 @@
-"""IRC room manager for the observatory (in-gateway-process).
+"""MIRC room manager for the observatory (in-gateway-process).
 
 Replaces the Matrix sidecar/tree/renderer stack with the boring
-equivalent: one IRC channel per live agent.
+equivalent: one MIRC channel per live agent.
 
 - Gateway agent → ``#<server>_gateway`` (``server_name`` from provision).
 - ``/spawn`` / ``/spawnomp <name>`` → ``#<name>``.
@@ -19,7 +19,7 @@ the actual turns run on existing machinery with CLI parity:
   feed watcher (omp ``transport.steer``; one-shot children are
   read-only traces).
 
-The IRC transport is a :class:`BotSink` — the gateway IRC adapter
+The MIRC transport is a :class:`BotSink` — the gateway MIRC adapter
 registers itself on connect (:func:`set_bot_sink`); tests inject fakes.
 No gateway imports at module level so this stays light under pytest.
 """
@@ -31,11 +31,11 @@ import re
 import threading
 from typing import Any, Protocol
 
-from observatory.ircd import clean_channel, clean_nick
+from observatory.mirc import clean_channel, clean_nick
 
 logger = logging.getLogger(__name__)
 
-#: Prefixes for streamed child frames (IRC has no markdown/quoting).
+#: Prefixes for streamed child frames (MIRC has no markdown/quoting).
 TOOL_PREFIX = "\U0001f527"
 THINK_PREFIX = "\U0001f4ad"
 MSG_PREFIX = ""
@@ -43,12 +43,12 @@ LIFECYCLE_START = "\U0001f680"
 LIFECYCLE_STOP = "✅"
 NOTICE_PREFIX = "ℹ️ "
 
-#: Frame text cap per IRC line burst (adapter splits long sends anyway).
+#: Frame text cap per MIRC line burst (adapter splits long sends anyway).
 FRAME_TEXT_LIMIT = 400
 
 
 class BotSink(Protocol):
-    """What the room manager needs from the IRC transport."""
+    """What the room manager needs from the MIRC transport."""
 
     async def join_channel(self, channel: str) -> bool: ...
 
@@ -129,7 +129,7 @@ def call_soon(coro):
 
 
 def set_bot_sink(sink: BotSink | None) -> None:
-    """Register the live IRC transport (adapter on connect; None on drop)."""
+    """Register the live MIRC transport (adapter on connect; None on drop)."""
     global _current_sink
     with _sink_lock:
         _current_sink = sink
@@ -205,7 +205,7 @@ def gateway_channel(server_name: str) -> str:
 def _server_prefix(server: str | None = None) -> str:
     """Live network label (best-effort, never raises).
 
-    ``None`` resolves from the live ircd.json; pass ``""`` for the bare
+    ``None`` resolves from the live MIRC daemon.json; pass ``""`` for the bare
     legacy form (already-qualified names like the gateway nick).
     """
     if server is not None:
@@ -252,7 +252,7 @@ def _truncate(text: str, limit: int = FRAME_TEXT_LIMIT) -> str:
 
 
 def format_frame(feed: dict[str, Any] | Any) -> str | None:
-    """One OmpFeed/datagram frame dict → one logical IRC message; None to skip.
+    """One OmpFeed/datagram frame dict → one logical MIRC message; None to skip.
 
     Shapes (see gateway_session._feed_event_to_dict): ``feed`` ∈
     {message, node, tool, thought} with ``text`` / ``tool`` / ``status``
@@ -321,7 +321,7 @@ def format_lifecycle(
 def _channel_in_ref(channel: str, ref: str) -> bool:
     """True when gateway session key ``ref`` embeds ``#channel``.
 
-    Group session keys join parts with ``:`` (``ns:irc:group:#ace:…``),
+    Group session keys join parts with ``:`` (``ns:mirc:group:#ace:…``),
     so a boundary-aware substring match maps a delegating turn back to
     the room (and node) that spawned it.
     """
@@ -340,7 +340,7 @@ class RoomManager:
 
     ``state`` is an ``ObservatoryState`` (rows carry ``room_id``=channel,
     ``mxid``=nick, ``space_id``=""). ``bot`` defaults to the global sink.
-    All methods are best-effort except where noted; never raise on IRC
+    All methods are best-effort except where noted; never raise on MIRC
     transport failure (the engine turn is the source of truth, the room
     is the mirror).
     """
@@ -405,7 +405,7 @@ class RoomManager:
     async def ensure_room(
         self, channel: str, *, topic: str = "", greet: str = ""
     ) -> bool:
-        """Bot JOINs ``channel`` (IRC creates on first join); greeting optional."""
+        """Bot JOINs ``channel`` (MIRC creates on first join); greeting optional."""
         bot = self.bot
         if bot is None:
             logger.debug("rooms: no bot sink — room %s deferred", channel)
@@ -545,11 +545,11 @@ class RoomManager:
         # No server subscription: The Lounge sees rooms via INVITE
         # and prunes them itself on destroy.
         try:
-            from observatory.provision import get_lounge_nick
+            from observatory.provision import get_mlounge_nick
 
             bot = self.bot
             if bot is not None:
-                await bot.invite_user(get_lounge_nick(None), channel)
+                await bot.invite_user(get_mlounge_nick(None), channel)
         except Exception:
             logger.debug("rooms: lounge invite failed for %s", channel)
         try:

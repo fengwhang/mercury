@@ -1,5 +1,5 @@
 /**
- * Repro for #1227 — `/btw` (and IRC background replies) fail with a
+ * Repro for #1227 — `/btw` (and MIRC background replies) fail with a
  * `BedrockException` once the session has tool-call history when the model is
  * served via LiteLLM → Bedrock.
  *
@@ -84,7 +84,7 @@ const echoTool: Tool = {
 describe("issue #1227 — /btw fails on LiteLLM→Bedrock with tool history", () => {
 	it("omits both tools and tool_choice when /btw passes empty tools + toolChoice none", async () => {
 		// Mirrors AgentSession.runEphemeralTurn: context.tools = [] is explicit
-		// (prevents tool-catalog leakage in IRC replies) and toolChoice = "none".
+		// (prevents tool-catalog leakage in MIRC replies) and toolChoice = "none".
 		// `[]` is truthy, so buildParams used to land in the `if (context.tools)`
 		// branch and emit `"tools": []` on the wire — LiteLLM → Bedrock then
 		// translated that into an empty `toolConfig` block and Bedrock rejected

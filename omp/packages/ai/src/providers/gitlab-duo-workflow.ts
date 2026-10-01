@@ -2648,7 +2648,7 @@ function renderGitLabDuoWorkflowChatMlToolCall(toolCall: GitLabDuoWorkflowReplay
 // The whole session as a flat, equal-weight transcript. Every turn — including the
 // latest user message — is one entry; nothing is elevated to a privileged
 // `<current_request>`. DWS' goal blob has no native turn priority, so elevating the
-// last turn (the old template) caused mid-task reminders / IRC wakes to outrank the
+// last turn (the old template) caused mid-task reminders / MIRC wakes to outrank the
 // actual task. A flat transcript ending naturally on the last turn removes that skew.
 function buildGitLabDuoWorkflowConversationHistory(messages: readonly Message[]): GitLabDuoWorkflowReplayMessage[] {
 	const history: GitLabDuoWorkflowReplayMessage[] = [];

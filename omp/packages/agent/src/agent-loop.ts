@@ -2376,7 +2376,7 @@ async function executeToolCalls(
 	const tools = currentContext.tools;
 	const {
 		hasSteeringMessages,
-		hasIrcInterrupts,
+		hasMircInterrupts,
 		interruptMode = "immediate",
 		getToolContext,
 		transformToolCallArguments,
@@ -2396,22 +2396,22 @@ async function executeToolCalls(
 	const batchId = `${assistantMessage.timestamp ?? Date.now()}_${toolCalls[0]?.id ?? "batch"}`;
 	const shouldInterruptImmediately = interruptMode !== "wait";
 	const steeringAbortController = new AbortController();
-	const ircAbortController = new AbortController();
+	const mircAbortController = new AbortController();
 	// Cooperative channel: aborted when queued steering (or an interrupting
-	// peer IRC) is detected mid-batch. Tools receive it via tool context
+	// peer MIRC) is detected mid-batch. Tools receive it via tool context
 	// (`ctx.steeringSignal`) and MAY react — e.g. an auto-backgroundable bash
 	// backgrounds itself so the message injects promptly — but it never kills
 	// anything; ignoring it is always safe.
 	const steeringSoftController = new AbortController();
 	// Interruptible tools (pure waits: hub wait, vibe) observe steering +
-	// external + IRC aborts. Every other tool sees ONLY the external signal:
-	// neither queued steering nor a peer IRC ever hard-kills a partially
+	// external + MIRC aborts. Every other tool sees ONLY the external signal:
+	// neither queued steering nor a peer MIRC ever hard-kills a partially
 	// side-effecting foreground tool (e.g. `bash`) — those get the cooperative
 	// `steeringSignal` above, and the message injects at the next boundary.
 	const nonInterruptibleSignal: AbortSignal = signal ?? new AbortController().signal;
 	const interruptibleSignal: AbortSignal = signal
-		? AbortSignal.any([signal, steeringAbortController.signal, ircAbortController.signal])
-		: AbortSignal.any([steeringAbortController.signal, ircAbortController.signal]);
+		? AbortSignal.any([signal, steeringAbortController.signal, mircAbortController.signal])
+		: AbortSignal.any([steeringAbortController.signal, mircAbortController.signal]);
 	const interruptState: { triggered: boolean; source?: SteeringInterruptSource | "irc" } = { triggered: false };
 
 	// Streamed messages were prepared (validation + `beforeToolCall`) before
@@ -2460,17 +2460,17 @@ async function executeToolCalls(
 		};
 	});
 
-	const checkIrcInterrupts = async (): Promise<void> => {
-		// IRC only fires once: a peer interrupt already recorded on interruptState
+	const checkMircInterrupts = async (): Promise<void> => {
+		// MIRC only fires once: a peer interrupt already recorded on interruptState
 		// must not re-abort, and (unlike steering) never re-consumes a queue.
 		if (!shouldInterruptImmediately || signal?.aborted || interruptState.triggered) return;
-		if (hasIrcInterrupts && (await hasIrcInterrupts())) {
-			// Peer IRC hard-aborts interruptible waits only; foreground tools keep
+		if (hasMircInterrupts && (await hasMircInterrupts())) {
+			// Peer MIRC hard-aborts interruptible waits only; foreground tools keep
 			// running (no partial side effects) but get the cooperative soft
 			// signal so backgroundable work can step aside for the peer message.
 			interruptState.triggered = true;
 			interruptState.source = "irc";
-			ircAbortController.abort();
+			mircAbortController.abort();
 			steeringSoftController.abort();
 		}
 	};
@@ -2513,7 +2513,7 @@ async function executeToolCalls(
 			}
 			return;
 		}
-		await checkIrcInterrupts();
+		await checkMircInterrupts();
 	};
 
 	const emitToolResult = (record: (typeof records)[number], result: AgentToolResult<any>, isError: boolean): void => {
@@ -2749,7 +2749,7 @@ async function executeToolCalls(
 			// (`completedToolExecution`) — even if the signal aborted around completion. Keep
 			// its real result: a completed tool already ran its side effects, so the model must
 			// see what actually happened (a genuine non-zero exit / error result) rather than a
-			// false "skipped" that discards work the tool performed (#4752). A peer-IRC interrupt
+			// false "skipped" that discards work the tool performed (#4752). A peer-MIRC interrupt
 			// on the batch leaves non-interruptible tools' signals untouched — their genuine
 			// errors survive here too.
 			emitToolResult(record, result, isError);
@@ -2782,14 +2782,14 @@ async function executeToolCalls(
 	let sharedTasks: Promise<void>[] = [];
 	const tasks: Promise<void>[] = [];
 
-	// While tool calls are in flight, queued steering or interrupting IRC would
+	// While tool calls are in flight, queued steering or interrupting MIRC would
 	// otherwise wait out the tools' own window. Poll only non-consuming queues:
 	// detection hard-aborts interruptible waits (running or not yet started)
 	// and soft-signals cooperative tools (auto-background bash), so the boundary
 	// dequeue below injects the message promptly. Gated on immediate-interrupt
 	// mode; checkSteering is idempotent (no-op once triggered).
 	const watchSteeringWhileRunning =
-		shouldInterruptImmediately && (hasSteeringMessages !== undefined || hasIrcInterrupts !== undefined);
+		shouldInterruptImmediately && (hasSteeringMessages !== undefined || hasMircInterrupts !== undefined);
 	const eventDrivenSteeringWatch =
 		watchSteeringWhileRunning && config.waitForSteeringMessages !== undefined && hasSteeringMessages !== undefined;
 	const steeringWatchAbortController = new AbortController();
@@ -2828,13 +2828,13 @@ async function executeToolCalls(
 				}
 			})()
 		: undefined;
-	// IRC interrupt records have a separate session-owned queue and no wake
+	// MIRC interrupt records have a separate session-owned queue and no wake
 	// callback. Keep its established timer fallback when that queue is present;
 	// system steering uses the event-driven path above and does not poll.
 	const steeringWatchTimer =
-		watchSteeringWhileRunning && (!eventDrivenSteeringWatch || hasIrcInterrupts !== undefined)
+		watchSteeringWhileRunning && (!eventDrivenSteeringWatch || hasMircInterrupts !== undefined)
 			? setInterval(
-					() => void (eventDrivenSteeringWatch ? checkIrcInterrupts() : checkSteering()),
+					() => void (eventDrivenSteeringWatch ? checkMircInterrupts() : checkSteering()),
 					STEERING_INTERRUPT_POLL_MS,
 				)
 			: undefined;

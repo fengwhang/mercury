@@ -99,11 +99,11 @@ async def test_face_posting_does_not_cancel_itself(monkeypatch) -> None:
     assert sent[0][1] in thinking_mod.thinking_faces()
 
 
-def _irc_adapter():
+def _mirc_adapter():
     from unittest.mock import AsyncMock, MagicMock
 
     from gateway.config import PlatformConfig
-    from plugins.platforms.irc.adapter import IRCAdapter
+    from plugins.platforms.mirc.adapter import MIRCAdapter
 
     cfg = PlatformConfig(
         enabled=True,
@@ -111,7 +111,7 @@ def _irc_adapter():
                "nickname": "testbot", "channel": "#test",
                "use_tls": False},
     )
-    adapter = IRCAdapter(cfg)
+    adapter = MIRCAdapter(cfg)
     writer = MagicMock()
     writer.is_closing = MagicMock(return_value=False)
     writer.write = MagicMock()
@@ -123,7 +123,7 @@ def _irc_adapter():
 @pytest.mark.asyncio
 async def test_dispatch_starts_thinking_face(monkeypatch) -> None:
     """Inbound gateway dispatch schedules a face for the room."""
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
     started: list[str] = []
     monkeypatch.setattr(
         thinking_mod, "thinking_started", lambda room: started.append(room))
@@ -145,7 +145,7 @@ async def test_send_clears_thinking_face(monkeypatch) -> None:
     """The room's reply send cancels its pending face."""
     from observatory import identity as identity_mod
 
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
 
     class FakePool:
         def get(self, channel):
@@ -217,7 +217,7 @@ async def test_notice_send_rearms_but_reply_send_cancels(monkeypatch) -> None:
     """Adapter.send routes memory notices to re-arm, other sends to cancel."""
     from observatory import identity as identity_mod
 
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
 
     class FakePool:
         def get(self, channel):

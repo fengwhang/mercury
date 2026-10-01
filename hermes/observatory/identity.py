@@ -1,4 +1,4 @@
-"""Per-agent IRC identities: ``vm_charlie`` speaks as ``vm_charlie``.
+"""Per-agent MIRC identities: ``vm_charlie`` speaks as ``vm_charlie``.
 
 The gateway bot connection (``<server>_gateway``) cannot speak as
 another nick, so every message in an agent room arrives stamped with
@@ -246,7 +246,7 @@ def _endpoint() -> tuple[str, int, str] | None:
         port = int((get_env_value("IRC_PORT") or "").strip() or 6669)
     except ValueError:
         port = 6669
-    # This connection dials the agent listener, just like IRCAdapter.
+    # This connection dials the agent listener, just like MIRCAdapter.
     # Using the server/client secret fails on split-password installs.
     password = (get_env_value("IRC_AGENT_PASSWORD")
                 or get_env_value("IRC_SERVER_PASSWORD") or "").strip()

@@ -6,10 +6,10 @@ import asyncio
 
 import pytest
 
-from observatory import ircd as ircd_mod
-from observatory.ircd import DaemonConfig, IrcDaemon
+from observatory import mirc as mirc_mod
+from observatory.mirc import DaemonConfig, MircDaemon
 
-from .test_ircd import RawClient, running_daemon
+from .test_mirc import RawClient, running_daemon
 
 
 async def _wait_line(client: RawClient, prefix: str, timeout: float = 5.0) -> str:
@@ -24,8 +24,8 @@ async def _wait_line(client: RawClient, prefix: str, timeout: float = 5.0) -> st
 async def test_idle_client_gets_ping_and_survives_pong(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(ircd_mod, "PING_INTERVAL", 0.05)
-    monkeypatch.setattr(ircd_mod, "PING_TIMEOUT", 0.4)
+    monkeypatch.setattr(mirc_mod, "PING_INTERVAL", 0.05)
+    monkeypatch.setattr(mirc_mod, "PING_TIMEOUT", 0.4)
     async with running_daemon(tmp_path) as (d, agent_port, _):
         c = RawClient()
         await c.connect(agent_port)
@@ -39,8 +39,8 @@ async def test_idle_client_gets_ping_and_survives_pong(
 
 @pytest.mark.asyncio
 async def test_silent_client_is_dropped(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(ircd_mod, "PING_INTERVAL", 0.05)
-    monkeypatch.setattr(ircd_mod, "PING_TIMEOUT", 0.15)
+    monkeypatch.setattr(mirc_mod, "PING_INTERVAL", 0.05)
+    monkeypatch.setattr(mirc_mod, "PING_TIMEOUT", 0.15)
     async with running_daemon(tmp_path) as (d, agent_port, _):
         c = RawClient()
         await c.connect(agent_port)

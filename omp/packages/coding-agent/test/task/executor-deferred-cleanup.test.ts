@@ -91,7 +91,7 @@ function mockSession(opts: {
 		settleAsyncWork: async () => {},
 		abort: opts.abort ?? (async () => {}),
 		dispose: opts.dispose ?? (async () => {}),
-		setIrcWakeTurnObserver: () => {},
+		setMircWakeTurnObserver: () => {},
 		subscribeRunState: () => () => {},
 	} as unknown as AgentSession;
 }

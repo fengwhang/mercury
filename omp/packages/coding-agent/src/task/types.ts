@@ -139,7 +139,7 @@ const taskItemSchemaIsolated = type({
 
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
-	/** Stable agent name; becomes the registry/IRC id. Required by the wire schema (HERMES-OMP PATCH); the TS type stays optional defensively — internal callers and lenient-arg fallback keep the generated AdjectiveNoun default. */
+	/** Stable agent name; becomes the registry/MIRC id. Required by the wire schema (HERMES-OMP PATCH); the TS type stays optional defensively — internal callers and lenient-arg fallback keep the generated AdjectiveNoun default. */
 	name?: string;
 	/** Agent type to run this item. "subagent" is the only bundled type. */
 	agent?: string;

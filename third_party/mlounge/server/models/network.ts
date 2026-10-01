@@ -210,7 +210,7 @@ class Network {
 			this.username = this.nick.replace(/[^a-zA-Z0-9]/g, "");
 		}
 
-		this.username = cleanString(this.username) || "thelounge";
+		this.username = cleanString(this.username) || "mlounge";
 		this.realname = cleanString(this.realname) || this.nick;
 		this.leaveMessage = cleanString(this.leaveMessage);
 		this.password = cleanString(this.password);
@@ -368,7 +368,7 @@ class Network {
 
 		const webircObject = {
 			password: Config.values.webirc[this.host],
-			username: "thelounge",
+			username: "mlounge",
 			address: client.config.browser?.ip,
 			hostname: client.config.browser?.hostname,
 			options: {},

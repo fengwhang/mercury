@@ -324,8 +324,11 @@ approvals:
   mode: smart # safe | smart | yolo (manual/off remain accepted)
 ```
 
+OMP has one model role, **task**. Workers use that task model and fallback
+chain; legacy role assignments cannot reroute them.
+
 Both engines read the shared approval policy. Children inherit their parent's
-mode and deny rules; nested approval requests reach the orchestrator's TUI
+mode and deny rules, including live profile policy changes; nested approval requests reach the orchestrator's TUI
 or its mLounge room. Reply `!approve` / `!deny` in mLounge, or `/approve` /
 `/deny` on slash-command surfaces. Background children keep that route
 available after the parent finishes its turn. Explicit deny rules and
@@ -352,7 +355,12 @@ models, selected settings, MCP/SSH definitions, and themes.
 The engines are vendored and patched. [PINS.txt](PINS.txt) records their
 upstream bases; consult the applicable `AGENTS.md` before changing them.
 The integration lives in `bridge/`, `hermes/tools/omp_*`,
-`hermes/mercury_cli/`, `hermes/observatory/`, and `third_party/thelounge/`.
+`hermes/mercury_cli/`, `hermes/observatory/`, and `third_party/mlounge/`.
+
+Implementation names use **mLounge** and **MIRC**. Historical `IRC_*` keys,
+transport IDs, state directories, and installed service names remain compatibility
+interfaces so upgrades preserve existing accounts and rooms. Upstream credits
+and actual IRC protocol/dependency names retain their original names.
 
 Run Python checks through `hermes/scripts/run_tests.sh`, OMP checks through
 Bun, and mLounge checks through Vitest. The
@@ -361,7 +369,7 @@ paths, reproducible findings, and current test results.
 
 Release builds must bump and commit the Mercury version **before**
 compiling OMP. Build both OMP architectures and the Hermes TUI, run
-`scripts/build-lounge-fork.sh`, then `scripts/make-dist.sh`. Packaging
+`scripts/build-mlounge-fork.sh`, then `scripts/make-dist.sh`. Packaging
 checks the baked OMP version, native-library version, and mLounge source
 fingerprint. Published bundles include the prebuilt components.
 

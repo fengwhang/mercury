@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { expandPromptTemplate, type PromptTemplate } from "@oh-my-pi/pi-coding-agent/config/prompt-templates";
 import { expandSlashCommand, type FileSlashCommand } from "@oh-my-pi/pi-coding-agent/extensibility/slash-commands";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { collectIrcPeerRoster } from "@oh-my-pi/pi-coding-agent/task/executor";
+import { collectMircPeerRoster } from "@oh-my-pi/pi-coding-agent/task/executor";
 import { parseCommandArgs, substituteArgs } from "@oh-my-pi/pi-coding-agent/utils/command-args";
 import { prompt } from "@oh-my-pi/pi-utils";
 
@@ -431,14 +431,14 @@ describe("subagent peer roster prompt", () => {
 		});
 
 		const templateSource = await fs.readFile(templatePath, "utf-8");
-		const roster = collectIrcPeerRoster(registry, "Child");
+		const roster = collectMircPeerRoster(registry, "Child");
 		expect(roster.parkedCount).toBe(1);
 		const rendered = prompt.render(templateSource, {
 			agent: "test-agent",
-			ircSelfId: "Child",
-			ircPeers: roster.peers,
-			ircParkedCount: roster.parkedCount,
-			ircOmittedCount: roster.omittedCount,
+			mircSelfId: "Child",
+			mircPeers: roster.peers,
+			mircParkedCount: roster.parkedCount,
+			mircOmittedCount: roster.omittedCount,
 		});
 		expect(rendered).toContain("LiveWorker");
 		expect(rendered).toContain("editing auth.ts");

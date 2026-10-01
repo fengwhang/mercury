@@ -48,7 +48,7 @@ def _tcp_ok(host: str, port: int, timeout: float = 2.0) -> bool:
 
 
 class _Probe:
-    """Minimal sync IRC client: register, JOIN, NAMES, quit."""
+    """Minimal sync MIRC client: register, JOIN, NAMES, quit."""
 
     def __init__(self, host: str, port: int, nick: str, password: str):
         self.host = host
@@ -250,7 +250,7 @@ def _established_to(port: int) -> int:
         except OSError:
             continue
 def _gateway_log_snippets(home: Path) -> list[str]:
-    """Recent gateway log lines mentioning irc (any source, any case)."""
+    """Recent gateway log lines mentioning mirc (any source, any case)."""
     import re as _re
 
     want = _re.compile(r"\birc\b", _re.IGNORECASE)
@@ -479,7 +479,7 @@ def verify_message_path(home=None, *, wait: float = 25.0) -> tuple[bool, str]:
     """
     mercury_home = _home(home)
     cfg = read_config(mercury_home) or {}
-    pw = read_irc_passwords(mercury_home) or {}
+    pw = read_mirc_passwords(mercury_home) or {}
     server_name = str(cfg.get("server_name") or "mercury")
     server_host = str(cfg.get("server_host") or "127.0.0.1")
     server_port = int(cfg.get("server_port") or 6670)
@@ -534,7 +534,7 @@ def verify_message_path(home=None, *, wait: float = 25.0) -> tuple[bool, str]:
 
 def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     """Run every check. Returns [(ok, label, detail)]. Secrets never leave."""
-    from observatory.provision import read_config, read_irc_passwords
+    from observatory.provision import read_config, read_mirc_passwords
 
     results: list[tuple[bool, str, str]] = []
     mercury_home = _home(home)
@@ -547,7 +547,7 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     gateway_channel = f"#{server_name}_gateway"
     bot_nick = f"{server_name}_gateway"
 
-    pw = read_irc_passwords(mercury_home) or {}
+    pw = read_mirc_passwords(mercury_home) or {}
     agent_pw = str(pw.get("agent") or "")
     server_pw = str(pw.get("server") or "")
     if not agent_pw:
@@ -590,21 +590,21 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
                             "running daemon predates the code on disk, "
                             "restart it"))
     try:
-        from observatory.lounge import fork_versions, lounge_prefix, lounge_unit_active
+        from observatory.mlounge import fork_versions, mlounge_prefix, mlounge_unit_active
 
-        lounge_on = lounge_unit_active()
-        lounge_installed = Path(lounge_prefix(mercury_home)).exists()
+        mlounge_on = mlounge_unit_active()
+        mlounge_installed = Path(mlounge_prefix(mercury_home)).exists()
         fork_have, fork_want = fork_versions(mercury_home)
     except Exception:  # noqa: BLE001
-        lounge_on = False
-        lounge_installed = False
+        mlounge_on = False
+        mlounge_installed = False
         fork_have, fork_want = None, None
     fork_detail = ""
     if fork_have or fork_want:
         fork_detail = f" (fork installed {fork_have or 'absent'}, shipped {fork_want or 'unknown'})"
-    if lounge_on:
+    if mlounge_on:
         try:
-            from observatory.lounge import fork_staleness as _stale
+            from observatory.mlounge import fork_staleness as _stale
 
             stale = _stale(mercury_home)
         except Exception:  # noqa: BLE001 — versions detail is enough
@@ -620,7 +620,7 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
             results.append((True, "chat frontend",
                             "The Lounge uplink active (your browser chat)"
                             f"{fork_detail}"))
-    elif lounge_installed:
+    elif mlounge_installed:
         results.append((False, "chat frontend",
                         "The Lounge is installed but NOT running — your "
                         "browser chat is dead; mercury observatory restart "

@@ -452,9 +452,9 @@ export class Agent {
 	 */
 	transformAssistantMessage?: AgentLoopConfig["transformAssistantMessage"];
 	/**
-	 * Hook that peeks whether interrupting IRC asides are queued for the next boundary.
+	 * Hook that peeks whether interrupting MIRC asides are queued for the next boundary.
 	 */
-	hasIrcInterrupts?: AgentLoopConfig["hasIrcInterrupts"];
+	hasMircInterrupts?: AgentLoopConfig["hasMircInterrupts"];
 
 	constructor(opts: AgentOptions = {}) {
 		this.#state = { ...this.#state, ...opts.initialState };
@@ -1513,7 +1513,7 @@ export class Agent {
 				return { queued: true, source: hasAgentSteering ? "agent" : "system" };
 			},
 			waitForSteeringMessages: signal => this.#waitForSteeringMessages(signal),
-			hasIrcInterrupts: this.hasIrcInterrupts,
+			hasMircInterrupts: this.hasMircInterrupts,
 			getFollowUpMessages: signal => this.#dequeueFollowUpMessagesAfterHooks(signal),
 			getAsideMessages: async () => (await this.#asideMessageProvider?.()) ?? [],
 			onBeforeYield: () => this.#onBeforeYield?.(),

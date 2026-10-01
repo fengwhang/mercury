@@ -195,7 +195,7 @@ function createScriptedSession(
 		},
 		isAborted: () => aborted,
 		dispose: async () => {},
-		setIrcWakeTurnObserver: () => {},
+		setMircWakeTurnObserver: () => {},
 		subscribeRunState: () => () => {},
 	};
 	// AgentSession is a concrete class; the executor consumes only this

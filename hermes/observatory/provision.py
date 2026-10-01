@@ -1,6 +1,6 @@
-"""Idempotent IRC observatory provisioner (replaces the tuwunel stack).
+"""Idempotent MIRC observatory provisioner (replaces the tuwunel stack).
 
-Provisions, in order: ``ircd.json`` config → server/agent passwords
+Provisions, in order: ``MIRC daemon.json`` config → server/agent passwords
 (mirrored in ``$MERCURY_HOME/.env``) → gateway state row → systemd
 user unit. Fail-hard like every other provision step; never touches
 the network (no downloads — the daemon is stdlib-only).
@@ -19,10 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from observatory.config_gen import (
-    IRCD_ADDRESS,
-    IRCD_AGENT_PORT_DEFAULT,
-    IRCD_SERVER_PORT_DEFAULT,
-    IRCD_TLS_PORT_DEFAULT,
+    MIRC_ADDRESS,
+    MIRC_AGENT_PORT_DEFAULT,
+    MIRC_SERVER_PORT_DEFAULT,
+    MIRC_TLS_PORT_DEFAULT,
     OBSERVATORY_UNIT_NAME,
     SERVER_NAME_DEFAULT,
     ObservatoryPaths,
@@ -45,7 +45,7 @@ GATEWAY_NODE_NAME = "gateway agent"
 #: state.db meta key projecting the live server name into shared state.
 SERVER_NAME_META_KEY = "server_name"
 
-#: $MERCURY_HOME/.env keys for the IRC listeners (0600; the setup card
+#: $MERCURY_HOME/.env keys for the MIRC listeners (0600; the setup card
 #: points here — NEVER printed to the terminal).
 ENV_CLIENT_PASSWORD = "IRC_CLIENT_PASSWORD"
 #: Pre-rename key, read-only fallback (old installs).
@@ -84,7 +84,7 @@ def _mercury_home(mercury_home: str | Path | None = None) -> Path:
 
 
 def validate_server_name(value: str) -> str:
-    """IRC network label: lowercase letters/digits/_/-, normalized."""
+    """MIRC network label: lowercase letters/digits/_/-, normalized."""
     clean = str(value or "").strip().lower()
     if not clean or not re.fullmatch(_SERVER_NAME_RE, clean):
         raise ValueError(
@@ -155,7 +155,7 @@ def _upsert_env_key(env_path: Path, key: str, value: str) -> None:
         pass
 
 
-def mirror_irc_env(
+def mirror_mirc_env(
     mercury_home: str | Path | None, server_password: str, agent_password: str
 ) -> Path:
     """Mirror both listener passwords into $MERCURY_HOME/.env (0600).
@@ -172,7 +172,7 @@ def mirror_irc_env(
     is left alone.
     """
     env_path = _mercury_home(mercury_home) / ".env"
-    previous = read_irc_passwords(mercury_home)
+    previous = read_mirc_passwords(mercury_home)
     _upsert_env_key(env_path, ENV_CLIENT_PASSWORD, server_password)
     _remove_env_key(env_path, ENV_BOUNCER_PASSWORD)
     _upsert_env_key(env_path, ENV_AGENT_PASSWORD, agent_password)
@@ -197,7 +197,7 @@ def mirror_irc_env(
     return env_path
 
 
-def read_irc_passwords(mercury_home: str | Path | None = None) -> dict[str, str]:
+def read_mirc_passwords(mercury_home: str | Path | None = None) -> dict[str, str]:
     """Passwords from .env first, os.environ only as fallback.
 
     The daemons consume the FILE (systemd EnvironmentFile), so the file
@@ -233,15 +233,15 @@ def read_irc_passwords(mercury_home: str | Path | None = None) -> dict[str, str]
 def default_config(*, server_name: str = SERVER_NAME_DEFAULT) -> dict[str, Any]:
     return {
         "server_name": server_name,
-        "agent_host": IRCD_ADDRESS,
-        "agent_port": IRCD_AGENT_PORT_DEFAULT,
-        "server_host": IRCD_ADDRESS,
-        "server_port": IRCD_SERVER_PORT_DEFAULT,
-        "tls_port": IRCD_TLS_PORT_DEFAULT,
+        "agent_host": MIRC_ADDRESS,
+        "agent_port": MIRC_AGENT_PORT_DEFAULT,
+        "server_host": MIRC_ADDRESS,
+        "server_port": MIRC_SERVER_PORT_DEFAULT,
+        "tls_port": MIRC_TLS_PORT_DEFAULT,
     }
 
 
-#: ircd.json rename (old client-listener keys -> server_*): readers take the new key
+#: MIRC daemon.json rename (old client-listener keys -> server_*): readers take the new key
 #: with the old as fallback so pre-rename installs keep working; writers
 #: emit new keys only (old keys are popped on the next provision write).
 SERVER_KEY_FALLBACKS = {"server_host": "bouncer_host",
@@ -249,7 +249,7 @@ SERVER_KEY_FALLBACKS = {"server_host": "bouncer_host",
 
 
 def server_key(cfg: dict | None, key: str, default: Any = None) -> Any:
-    """Read a renamed ircd.json key (new preferred, old accepted)."""
+    """Read a renamed MIRC daemon.json key (new preferred, old accepted)."""
     cfg = cfg or {}
     val = cfg.get(key)
     if val in (None, ""):
@@ -277,7 +277,7 @@ def ensure_config(
     server_port: int | None = None,
     tls_port: int | None = None,
 ) -> dict[str, Any]:
-    """Idempotent ircd.json: stored values win unless explicitly passed
+    """Idempotent MIRC daemon.json: stored values win unless explicitly passed
     (explicit disagreement with a STORED value fails hard — never
     silently re-pin a live network under running agents). Fresh installs
     (no readable config yet — missing, empty, or corrupt file) accept
@@ -325,7 +325,7 @@ def ensure_config(
 
 def ensure_passwords(mercury_home: str | Path | None = None) -> dict[str, Any]:
     """Generate missing listener passwords and mirror them into .env."""
-    have = read_irc_passwords(mercury_home)
+    have = read_mirc_passwords(mercury_home)
     made: list[str] = []
     if not have["server"]:
         have["server"] = generate_password()
@@ -334,7 +334,7 @@ def ensure_passwords(mercury_home: str | Path | None = None) -> dict[str, Any]:
         have["agent"] = generate_password()
         made.append("agent")
     if made:
-        mirror_irc_env(mercury_home, have["server"], have["agent"])
+        mirror_mirc_env(mercury_home, have["server"], have["agent"])
     return {"action": "generated" if made else "current", "made": made}
 
 
@@ -355,9 +355,9 @@ def set_server_password(
     exactly the ".env says X, daemon rejects X" desync.
     """
     clean = validate_server_password(password)
-    have = read_irc_passwords(mercury_home)
+    have = read_mirc_passwords(mercury_home)
     agent = have.get("agent") or generate_password()
-    mirror_irc_env(mercury_home, clean, agent)
+    mirror_mirc_env(mercury_home, clean, agent)
     return {"action": "set", "agent": "kept" if have.get("agent") else "generated"}
 
 # --- TLS certificate -----------------------------------------------------------
@@ -535,15 +535,15 @@ def ensure_gateway_node_in_state(state: Any, *, server_name: str) -> str:
         return nick
 
 
-def get_lounge_nick(mercury_home: str | Path | None = None) -> str:
-    """Nick The Lounge uses on this network (invite target).
+def get_mlounge_nick(mercury_home: str | Path | None = None) -> str:
+    """Nick mLounge uses on this network (invite target).
 
-    Explicit ``lounge_nick`` wins, else the Lounge username, else
+    Explicit ``mlounge_nick`` wins, else the mLounge username, else
     ``"owner"``. Never raises.
     """
     try:
         cfg = read_config(mercury_home) or {}
-        nick = str(cfg.get("lounge_nick") or "").strip()
+        nick = str(cfg.get("mlounge_nick") or "").strip()
         if nick:
             return nick
         user = str(cfg.get("lounge_user") or "").strip()
@@ -555,7 +555,7 @@ def get_lounge_nick(mercury_home: str | Path | None = None) -> str:
 
 
 def live_server_name(mercury_home: str | Path | None = None) -> str | None:
-    """Live network label from ircd.json, or None when unprovisioned."""
+    """Live network label from MIRC daemon.json, or None when unprovisioned."""
     cfg = read_config(mercury_home)
     if not isinstance(cfg, dict):
         return None
@@ -605,7 +605,7 @@ def ensure_observatory_unit(
     python_bin: str | None = None,
     hermes_root: str | None = None,
 ) -> str:
-    """Install/enable/start the ircd unit. Never raises for missing
+    """Install/enable/start the MIRC daemon unit. Never raises for missing
     systemd (containers/CI) — returns "skipped"."""
     if not _systemctl_available():
         return "skipped"
@@ -721,8 +721,8 @@ def current_listen_addresses(mercury_home: str | Path | None = None) -> list[str
     """Configured [agent_host, server_host] (deduped, for the bind trap check)."""
     cfg = read_config(mercury_home) or {}
     addrs = [
-        str(cfg.get("agent_host") or IRCD_ADDRESS),
-        str(server_key(cfg, "server_host", IRCD_ADDRESS)),
+        str(cfg.get("agent_host") or MIRC_ADDRESS),
+        str(server_key(cfg, "server_host", MIRC_ADDRESS)),
     ]
     out: list[str] = []
     for addr in addrs:
@@ -731,7 +731,7 @@ def current_listen_addresses(mercury_home: str | Path | None = None) -> list[str
     return out
 
 
-def set_ircd_bind(
+def set_mirc_bind(
     ip: str, mercury_home: str | Path | None = None, *, listener: str = "server"
 ) -> str:
     """Pin one listener to the tailnet IP (localhost retained on the
@@ -739,7 +739,7 @@ def set_ircd_bind(
     side instead, or "both"). Never starts/stops the daemon: restart
     the unit for the new bind to take effect. Refuses loopback."""
     if not isinstance(ip, str) or not ip.strip():
-        raise ProvisionError("set_ircd_bind needs a non-empty tailnet IP")
+        raise ProvisionError("set_mirc_bind needs a non-empty tailnet IP")
     target = ip.strip()
     try:
         import ipaddress as _ipaddress
@@ -833,7 +833,7 @@ def provision(
     summary["unit"] = (
         ensure_observatory_unit(home) if systemd else "skipped (--no-systemd)"
     )
-    summary["daemon"] = _restart_ircd_if_changed(
+    summary["daemon"] = _restart_mirc_if_changed(
         config_action=str(summary.get("config", {}).get("action") or ""),
         passwords_made=list(summary.get("passwords", {}).get("made") or []),
         tls_action=str(summary.get("tls", {}).get("action") or ""),
@@ -841,8 +841,8 @@ def provision(
     return summary
 
 
-def _ircd_unit_active() -> bool:
-    """True when the ircd unit is running (never raises)."""
+def _mirc_unit_active() -> bool:
+    """True when the MIRC daemon unit is running (never raises)."""
     try:
         from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
     except Exception:  # noqa: BLE001
@@ -857,11 +857,11 @@ def _ircd_unit_active() -> bool:
         return False
 
 
-def _restart_ircd_if_changed(*, config_action: str, passwords_made: list,
+def _restart_mirc_if_changed(*, config_action: str, passwords_made: list,
                              tls_action: str, force: bool = False) -> dict[str, Any]:
-    """Restart a live ircd whose files just changed (never raises).
+    """Restart a live MIRC daemon whose files just changed (never raises).
 
-    Provision rewrites ircd.json, .env secrets, and TLS certs, but a
+    Provision rewrites MIRC daemon.json, .env secrets, and TLS certs, but a
     running daemon keeps the OLD ones in memory — the file-says-X /
     daemon-rejects-X desync (including silently passwordless operation
     after a secret regen). Fresh units were just started by the ensure
@@ -874,7 +874,7 @@ def _restart_ircd_if_changed(*, config_action: str, passwords_made: list,
     )
     if not changed and not force:
         return {"action": "current"}
-    if not force and not _ircd_unit_active():
+    if not force and not _mirc_unit_active():
         return {"action": "started-fresh" if changed else "not-running"}
     try:
         from observatory.config_gen import OBSERVATORY_UNIT_NAME as _unit
@@ -902,7 +902,7 @@ def restart_daemon(*, force: bool = False) -> dict[str, Any]:
     a stopped unit (systemd starts it), so post-update runs and
     ``mercury observatory restart`` both end on current code.
     """
-    return _restart_ircd_if_changed(
+    return _restart_mirc_if_changed(
         config_action="", passwords_made=[], tls_action="", force=force)
 
 
@@ -919,11 +919,11 @@ LEGACY_SOJU_FILES = (
 
 
 def remove_legacy_soju(mercury_home: str | Path | None = None) -> list[str]:
-    """Stop/disable/remove the pre-Lounge soju relay (never raises).
+    """Stop/disable/remove the pre-mLounge soju relay (never raises).
 
     Pre-pivot installs left ``mercury-soju.service`` active+enabled with
     an upstream-less config: it squats 6670/6697 and relays nothing,
-    which degrades our ircd's client listeners to EADDRINUSE. Every
+    which degrades our MIRC daemon's client listeners to EADDRINUSE. Every
     provision converges it away: unit stopped+disabled, unit file
     removed, stray binaries killed, data files deleted. Returns what
     was removed."""
@@ -1015,7 +1015,7 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
     """Machine-readable observatory status for setup/status surfaces."""
     home = _mercury_home(mercury_home)
     cfg = read_config(home)
-    passwords = read_irc_passwords(home)
+    passwords = read_mirc_passwords(home)
     enabled = True
     try:
         from mercury_cli.config import cfg_get, load_config
@@ -1030,9 +1030,9 @@ def status_summary(mercury_home: str | Path | None = None) -> dict:
         # "mercury" default (status used to omit this and every card
         # printed #mercury_gateway regardless of the chosen name).
         "server_name": live_server_name(home),
-        "server": f"{server_key(cfg, 'server_host', IRCD_ADDRESS)}:"
-        f"{server_key(cfg, 'server_port', IRCD_SERVER_PORT_DEFAULT)}",
-        "tls_port": _safe_port((cfg or {}).get("tls_port"), IRCD_TLS_PORT_DEFAULT),
+        "server": f"{server_key(cfg, 'server_host', MIRC_ADDRESS)}:"
+        f"{server_key(cfg, 'server_port', MIRC_SERVER_PORT_DEFAULT)}",
+        "tls_port": _safe_port((cfg or {}).get("tls_port"), MIRC_TLS_PORT_DEFAULT),
         "tls_ready": bool(
             (ObservatoryPaths(home).tls_cert.is_file())
             and (ObservatoryPaths(home).tls_key.is_file())),
@@ -1062,12 +1062,12 @@ def _remove_env_key(env_path: Path, key: str) -> bool:
 
 
 def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
-    """Delete IRC observatory data — the full slate, nothing kept.
+    """Delete MIRC observatory data — the full slate, nothing kept.
 
-    Reset means reset: ircd config, history, agent tree, TLS, the whole
-    Lounge home (config + accounts + message history), and BOTH
+    Reset means reset: MIRC daemon config, history, agent tree, TLS, the whole
+    mLounge home (config + accounts + message history), and BOTH
     listener passwords. The next setup re-asks everything (server
-    name, binds, Lounge username + password) and generates fresh
+    name, binds, mLounge username + password) and generates fresh
     secrets — no resume, no fallback to wiped data. Surviving: unit
     files, the npm prefix (a reinstallable binary, not data), and
     externally-run Lounges (containers, other boxes — never touched).
@@ -1083,11 +1083,11 @@ def reset_observatory_data(mercury_home: str | Path | None = None) -> list[str]:
         # npm/ is a sibling of home/ (binary, not data) — untouched.
         # npm-cache/ IS wiped: rm -rf ~/.mercury must leave no lounge
         # trace anywhere.
-        from observatory.lounge import LoungePaths, lounge_npm_cache
-        from observatory.lounge import FILE_LOUNGE_CONFIG as _conf_name
-        lpaths = LoungePaths(home)
+        from observatory.mlounge import MLoungePaths, mlounge_npm_cache
+        from observatory.mlounge import FILE_MLOUNGE_CONFIG as _conf_name
+        lpaths = MLoungePaths(home)
         for target in (lpaths.conf, lpaths.home, lpaths.dir / _conf_name,
-                       lounge_npm_cache(home)):
+                       mlounge_npm_cache(home)):
             try:
                 if target.is_dir() and not target.is_symlink():
                     shutil.rmtree(target)
@@ -1192,7 +1192,7 @@ def main(argv: list[str] | None = None) -> int:
     """``python -m observatory.provision`` (install.sh entry point)."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Provision the IRC observatory")
+    parser = argparse.ArgumentParser(description="Provision the MIRC observatory")
     parser.add_argument("--server-name", default=None)
     parser.add_argument("--agent-host", default=None)
     parser.add_argument("--agent-port", type=int, default=None)
@@ -1220,14 +1220,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def observatory_data_present(mercury_home: str | Path | None = None) -> bool:
-    """True when any IRC observatory data exists under the home."""
-    from observatory.lounge import LOUNGE_DIRNAME
+    """True when any MIRC observatory data exists under the home."""
+    from observatory.mlounge import MLOUNGE_DIRNAME
 
     home = _mercury_home(mercury_home)
     paths = ObservatoryPaths(home)
     candidates = (paths.config_file, paths.history_db,
                   paths.root / "state.db", paths.root / "omp-sessions",
-                  paths.root / LOUNGE_DIRNAME)
+                  paths.root / MLOUNGE_DIRNAME)
     try:
         return any(p.exists() for p in candidates)
     except Exception:
@@ -1277,12 +1277,12 @@ def wipe_observatory_data(mercury_home: str | Path | None = None,
 
 def _stop_and_remove_units() -> list[str]:
     """Stop + disable + delete the observatory unit files. Never raises."""
-    from observatory.lounge import LOUNGE_UNIT_NAME
+    from observatory.mlounge import MLOUNGE_UNIT_NAME
 
     removed: list[str] = []
     if not _systemctl_available():
         return removed
-    for unit in (OBSERVATORY_UNIT_NAME, LOUNGE_UNIT_NAME):
+    for unit in (OBSERVATORY_UNIT_NAME, MLOUNGE_UNIT_NAME):
         try:
             _run_systemctl(["stop", unit], check=False)
             _run_systemctl(["disable", unit], check=False)
@@ -1302,12 +1302,12 @@ def _stop_and_remove_units() -> list[str]:
     return removed
 
 
-def _kill_stray_ircd() -> list[int]:
-    """SIGTERM stray ircd processes (daemon started outside the unit).
+def _kill_stray_mirc() -> list[int]:
+    """SIGTERM stray MIRC daemon processes (daemon started outside the unit).
     Never raises; returns killed PIDs."""
     killed: list[int] = []
     try:
-        proc = subprocess.run(["pgrep", "-f", "observatory.ircd"],
+        proc = subprocess.run(["pgrep", "-f", r"observatory\.(mirc|ircd)"],
                               capture_output=True, text=True, timeout=10)
     except Exception:
         return killed
@@ -1330,12 +1330,12 @@ def _kill_stray_ircd() -> list[int]:
     return killed
 
 
-def _kill_stray_lounge() -> list[int]:
+def _kill_stray_mlounge() -> list[int]:
     """SIGTERM stray thelounge processes (started outside the unit, or
     survivors of the unit stop). Never raises; returns killed PIDs."""
     killed: list[int] = []
     try:
-        proc = subprocess.run(["pgrep", "-f", "thelounge"],
+        proc = subprocess.run(["pgrep", "-f", "(mlounge|thelounge)"],
                               capture_output=True, text=True, timeout=10)
     except Exception:
         return killed
@@ -1359,8 +1359,14 @@ def _kill_stray_lounge() -> list[int]:
 
 
 #: Back-compat alias (uninstall paths importing the old tuwunel-era name).
-_kill_stray_tuwunel = _kill_stray_ircd
+_kill_stray_tuwunel = _kill_stray_mirc
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# Compatibility names for existing extensions; internal calls use MIRC/mLounge.
+mirror_irc_env = mirror_mirc_env
+read_irc_passwords = read_mirc_passwords
+get_lounge_nick = get_mlounge_nick
+set_ircd_bind = set_mirc_bind

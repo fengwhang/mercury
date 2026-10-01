@@ -266,7 +266,7 @@ export interface AgentSessionConfig {
 	ownedAsyncJobManager?: AsyncJobManager;
 	/** Async job manager visible to this session. */
 	asyncJobManager?: AsyncJobManager;
-	/** Registry identity used for IRC routing. */
+	/** Registry identity used for MIRC routing. */
 	agentId?: string;
 	/** Whether this is a top-level or subagent session. */
 	agentKind?: "main" | "sub";

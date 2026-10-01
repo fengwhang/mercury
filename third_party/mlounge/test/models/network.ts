@@ -143,9 +143,9 @@ describe("Network", function () {
 			});
 
 			expect(network.validate({} as any)).to.be.true;
-			expect(network.nick).to.equal("thelounge");
-			expect(network.username).to.equal("thelounge");
-			expect(network.realname).to.equal("thelounge");
+			expect(network.nick).to.equal("mlounge");
+			expect(network.username).to.equal("mlounge");
+			expect(network.realname).to.equal("mlounge");
 			expect(network.port).to.equal(6667);
 
 			const network2 = new Network({

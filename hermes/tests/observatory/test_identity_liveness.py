@@ -1,4 +1,4 @@
-"""Exercise identity liveness against Mercury's real IRC daemon."""
+"""Exercise identity liveness against Mercury's real MIRC daemon."""
 import asyncio
 import time
 

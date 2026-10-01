@@ -8,14 +8,14 @@ from contextlib import asynccontextmanager
 import pytest
 
 from observatory import identity as identity_mod
-from observatory.ircd import DaemonConfig, IrcDaemon
+from observatory.mirc import DaemonConfig, MircDaemon
 
 
 @asynccontextmanager
 async def running_daemon(tmp_path, **kwargs):
     config = DaemonConfig(
         agent_port=0, server_port=0, state_dir=str(tmp_path), **kwargs)
-    d = IrcDaemon(config)
+    d = MircDaemon(config)
     await d.start()
     try:
         yield d, d._servers[0].sockets[0].getsockname()[1]

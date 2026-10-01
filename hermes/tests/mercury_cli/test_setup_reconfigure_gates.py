@@ -354,7 +354,7 @@ class TestObservatoryGate:
         stack.enter_context(patch.object(setup_mod, "_offer_observatory_reset", return_value=False))
         stack.enter_context(patch.object(setup_mod, "_offer_server_password_rotate"))
         stack.enter_context(patch.object(setup_mod, "_prompt_server_label", return_value="mercury"))
-        stack.enter_context(patch.object(setup_mod, "_wire_gateway_irc_env"))
+        stack.enter_context(patch.object(setup_mod, "_wire_gateway_mirc_env"))
         stack.enter_context(patch.object(setup_mod, "_run_observatory_auto_steps"))
         return choose
 

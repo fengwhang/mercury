@@ -91,7 +91,7 @@ function renderDumpHeader(options: FormatSessionDumpTextOptions, inventoryTools:
 
 const CUSTOM_TYPE_ACRONYMS: Readonly<Record<string, string>> = {
 	acp: "ACP",
-	irc: "IRC",
+	irc: "MIRC",
 	lsp: "LSP",
 	mcp: "MCP",
 	rpc: "RPC",

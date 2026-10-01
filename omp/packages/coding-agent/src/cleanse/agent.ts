@@ -2,7 +2,7 @@ import { getProjectDir, isRecord, prompt } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
 import { formatModelString, resolveCliModel } from "../config/model-resolver";
 import { Settings } from "../config/settings";
-import { IrcBus } from "../irc/bus";
+import { MircBus } from "../mirc/bus";
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import { discoverAuthStorage } from "../sdk";
 import { SessionManager } from "../session/session-manager";
@@ -102,7 +102,7 @@ export async function createCleanseAgentRuntime(options: {
 		hasUI: false,
 		suppressSpawnAdvisory: true,
 		enableLsp: true,
-		enableIrc: true,
+		enableMirc: true,
 		enableMCP: false,
 		eventBus,
 		getSessionFile: () => sessionFile,
@@ -136,7 +136,7 @@ export async function createCleanseAgentRuntime(options: {
 				outputSchema: DISCOVERY_SCHEMA,
 				identity: { label: "CleanseDiscovery" },
 				enableLsp: true,
-				enableIrc: false,
+				enableMirc: false,
 				signal,
 			});
 			if (result.result.error) throw new Error(`Checker discovery failed: ${result.result.error}`);
@@ -169,7 +169,7 @@ export async function createCleanseAgentRuntime(options: {
 					identity: { id: agentId, label: name },
 					index: assignment.index,
 					enableLsp: true,
-					enableIrc: true,
+					enableMirc: true,
 					signal,
 					onProgress: progress => options.hooks?.onProgress?.(name, assignment, progress),
 				});
@@ -198,7 +198,7 @@ export async function createCleanseAgentRuntime(options: {
 		async followUp(worker: number, diagnostics: readonly CleanseDiagnostic[]): Promise<boolean> {
 			const agentId = workerAgentIds.get(worker);
 			if (!agentId) return false;
-			const receipt = await IrcBus.global().send({
+			const receipt = await MircBus.global().send({
 				from: MAIN_AGENT_ID,
 				to: agentId,
 				body: prompt.render(followUpPrompt, { diagnostics: formatDiagnostics(diagnostics) }),

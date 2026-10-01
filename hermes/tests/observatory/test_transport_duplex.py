@@ -6,11 +6,11 @@ import pytest
 
 from gateway.config import PlatformConfig
 from observatory import identity, platform_hook, rooms, spawn
-from observatory.ircd import DaemonConfig, IrcDaemon
+from observatory.mirc import DaemonConfig, MircDaemon
 from observatory.doctor import _Probe
 from observatory.provision import ensure_gateway_node_in_state
 from observatory.state import ObservatoryState
-from plugins.platforms.irc.adapter import IRCAdapter
+from plugins.platforms.mirc.adapter import MIRCAdapter
 from tests.observatory.test_identity import RawClient, running_daemon
 
 
@@ -109,7 +109,7 @@ async def test_resync_preserves_gateway_and_all_room_roundtrips(tmp_path, monkey
         return {}
 
     monkeypatch.setattr(platform_hook, "boot_resync", no_auto_resync)
-    daemon = IrcDaemon(DaemonConfig(agent_port=0, server_port=0, tls_port=0,
+    daemon = MircDaemon(DaemonConfig(agent_port=0, server_port=0, tls_port=0,
                                     server_name="vm", password="test",
                                     agent_password=agent_password, state_dir=str(home / "observatory")))
     await daemon.start()
@@ -120,7 +120,7 @@ async def test_resync_preserves_gateway_and_all_room_roundtrips(tmp_path, monkey
                        "IRC_USE_TLS": "false", "IRC_MANAGED_BY": "observatory",
                        "IRC_SERVER_PASSWORD": "test", "IRC_AGENT_PASSWORD": agent_password}.items():
         monkeypatch.setenv(key, value)
-    adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"text_batch_delay_seconds": 0.01}))
+    adapter = MIRCAdapter(PlatformConfig(enabled=True, extra={"text_batch_delay_seconds": 0.01}))
     received = []
 
     async def handler(event):

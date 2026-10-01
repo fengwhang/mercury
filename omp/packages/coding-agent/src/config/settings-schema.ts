@@ -4722,7 +4722,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			group: "Execution",
-			label: "IRC Timeout",
+			label: "MIRC Timeout",
 			description:
 				"Default timeout for hub message waits (and send await:true) in milliseconds; 0 disables the timeout",
 			options: [

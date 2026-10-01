@@ -36,7 +36,7 @@ import {
 import type { KeyId } from "../../config/keybindings";
 import type { Settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
-import { IrcBus } from "../../irc/bus";
+import { MircBus } from "../../mirc/bus";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, type AgentStatus, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
@@ -158,7 +158,7 @@ export interface AgentHubDeps {
 	/** Injectable for tests; defaults to the process-global lifecycle manager. */
 	lifecycle?: AgentLifecycleManager;
 	/** Injectable for tests; defaults to the process-global bus. */
-	irc?: IrcBus;
+	mirc?: MircBus;
 	/** TUI handle for transcript components; tests omit it and get a render-only stub. */
 	ui?: TUI;
 	/** Tool lookup for transcript renderers (labels, custom render functions). */
@@ -191,7 +191,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 	#registry: AgentRegistry;
 	#observers: SessionObserverRegistry;
 	#settings: Settings | undefined;
-	#irc: IrcBus;
+	#mirc: MircBus;
 	#lifecycle: () => AgentLifecycleManager;
 	#onDone: () => void;
 	#requestRender: () => void;
@@ -290,7 +290,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		this.#registry = deps.registry ?? AgentRegistry.global();
 		this.#observers = deps.observers;
 		this.#settings = deps.settings;
-		this.#irc = deps.irc ?? IrcBus.global();
+		this.#mirc = deps.mirc ?? MircBus.global();
 		// Lazy: the lifecycle global self-constructs against the global
 		// registry, so only touch it when revive/kill actually needs it.
 		this.#lifecycle = () => deps.lifecycle ?? AgentLifecycleManager.global();
@@ -1154,7 +1154,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		if (ref.kind === "advisor") {
 			fields.push(theme.fg("warning", "read-only"));
 		}
-		const unread = this.#irc.unreadCount(ref.id);
+		const unread = this.#mirc.unreadCount(ref.id);
 		if (unread > 0) {
 			fields.push(theme.fg("warning", `⧉ ${unread}`));
 		}

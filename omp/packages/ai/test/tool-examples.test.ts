@@ -33,7 +33,7 @@ describe("renderToolExamples", () => {
 	it("renders Python literals for booleans, null, numbers, and nested objects", () => {
 		const tool: InbandTool = {
 			name: "irc",
-			description: "IRC.",
+			description: "MIRC.",
 			parameters: {
 				type: "object",
 				properties: {

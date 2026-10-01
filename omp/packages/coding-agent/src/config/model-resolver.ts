@@ -1120,19 +1120,6 @@ export function resolveExplicitModelRole(
 	return undefined;
 }
 
-function isSessionInheritedAgentPattern(value: string): boolean {
-	// HERMES-OMP PATCH (no model roles): only the no-op aliases mean
-	// "inherit the session model". Historical role names are NOT accepted
-	// here — they match no pattern and resolve to the session model via the
-	// empty-pattern path instead.
-	return (
-		value === DEFAULT_MODEL_ROLE ||
-		value === formatModelRoleAlias(DEFAULT_MODEL_ROLE) ||
-		value === DEFAULT_MODEL_ROLE_ALIAS ||
-		value === `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}${DEFAULT_MODEL_ROLE}`
-	);
-}
-
 function shouldInheritDefaultBeforePriority(_role: ModelRole): boolean {
 	// HERMES-OMP PATCH: only "default" exists; nothing inherits before
 	// priority resolution — the session model IS the resolution.

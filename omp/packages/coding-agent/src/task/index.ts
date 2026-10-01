@@ -25,7 +25,7 @@ import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "tex
 import taskAsyncContractTemplate from "../prompts/tools/task-async-contract.md" with { type: "text" };
 import { TASK_EFFORTS, type TaskEffort } from "../thinking";
 import { truncateForPrompt } from "../tools/approval";
-import { isIrcEnabled } from "../tools/hub";
+import { isMircEnabled } from "../tools/hub";
 import { formatTaskResultSummary } from "./result-summary";
 import { resolveSpawnPolicy } from "./spawn-policy";
 import {
@@ -128,7 +128,7 @@ interface TaskDescriptionOptions {
 	batchEnabled: boolean;
 	effortEnabled: boolean;
 	asyncEnabled: boolean;
-	ircEnabled: boolean;
+	mircEnabled: boolean;
 	parentSpawns: string;
 }
 
@@ -162,7 +162,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 		effortEnabled: options.effortEnabled,
 		asyncEnabled: options.asyncEnabled,
 		hasBlockingAgents: renderedAgents.some(agent => agent.blocking),
-		ircEnabled: options.ircEnabled,
+		mircEnabled: options.mircEnabled,
 	});
 }
 
@@ -367,9 +367,9 @@ const GENERIC_SPAWN_AGENTS: ReadonlySet<string> = new Set(["subagent"]);
 export function buildCoordinationAdvisory(
 	items: TaskItem[],
 	depthCapacity: boolean,
-	ircEnabled: boolean,
+	mircEnabled: boolean,
 ): string | undefined {
-	if (!depthCapacity || !ircEnabled || items.length < 2) return undefined;
+	if (!depthCapacity || !mircEnabled || items.length < 2) return undefined;
 	return (
 		`Coordinate: ${items.length} siblings are running together. If their work overlaps, have them ` +
 		`message each other via \`hub\` (by id, or "all" to broadcast) before editing shared files — ` +
@@ -390,11 +390,11 @@ export function composeSpawnAdvisory(args: {
 	agents: string[];
 	items: TaskItem[];
 	depthCapacity: boolean;
-	ircEnabled: boolean;
+	mircEnabled: boolean;
 	willRunAsync: boolean;
 }): string | undefined {
 	return (
-		[args.willRunAsync ? buildCoordinationAdvisory(args.items, args.depthCapacity, args.ircEnabled) : undefined]
+		[args.willRunAsync ? buildCoordinationAdvisory(args.items, args.depthCapacity, args.mircEnabled) : undefined]
 			.filter(Boolean)
 			.join("\n\n") || undefined
 	);
@@ -579,7 +579,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			batchEnabled: this.#isBatchEnabled(),
 			effortEnabled: this.session.settings.get("task.enableEffort"),
 			asyncEnabled: this.session.settings.get("async.enabled"),
-			ircEnabled: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
+			mircEnabled: isMircEnabled(this.session.settings, this.session.taskDepth ?? 0),
 			parentSpawns: this.session.getSessionSpawns() ?? "*",
 		});
 	}
@@ -628,7 +628,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
 			blockedAgent: this.#blockedAgent,
 			enableLsp: (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp"),
-			enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
+			enableMirc: isMircEnabled(this.session.settings, this.session.taskDepth ?? 0),
 			maxRuntimeMs: this.session.settings.get("task.maxRuntimeMs"),
 		});
 	}
@@ -702,7 +702,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			this.session.settings.get("task.maxRecursionDepth") ?? 2,
 			this.session.taskDepth ?? 0,
 		);
-		const ircEnabled = isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0);
+		const mircEnabled = isMircEnabled(this.session.settings, this.session.taskDepth ?? 0);
 
 		if (!manager || asyncItems.length === 0) {
 			// Sync fallback: async execution disabled, orphaned host that never
@@ -717,7 +717,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						agents: resolvedAgents,
 						items: asyncItems,
 						depthCapacity,
-						ircEnabled,
+						mircEnabled,
 						willRunAsync: false,
 					});
 			const result = await this.#executeSyncFanout(
@@ -750,7 +750,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					agents: resolvedAgents,
 					items: asyncItems,
 					depthCapacity,
-					ircEnabled,
+					mircEnabled,
 					willRunAsync: asyncItems.length > 0,
 				});
 		// Returns a fresh result (copied content array, copied text part) rather
@@ -869,7 +869,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					spawnParams: spawnParamsFor(params, spawn.item, defaultAgent),
 					agentId: spawn.agentId,
 					progress: spawn.progress,
-					ircEnabled,
+					mircEnabled,
 					buildDetails: buildAsyncDetails,
 					onUpdate,
 					onSettled: failed => {
@@ -906,10 +906,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				: "";
 		const coordinationHint = [
 			started.length === 1
-				? ircEnabled
+				? mircEnabled
 					? `DM \`${started[0].agentId}\` via \`hub\` send to coordinate while it runs; use \`hub\` only to inspect (\`jobs\`), wait, or cancel a stuck task.`
 					: `Use \`hub\` to inspect (\`jobs\`), wait, or cancel a stuck task.`
-				: ircEnabled
+				: mircEnabled
 					? `DM these ids via \`hub\` send to coordinate while they run; use \`hub\` only to inspect (\`jobs\`), wait, or cancel a stuck task.`
 					: `Use \`hub\` to inspect (\`jobs\`), wait, or cancel a stuck task by id.`,
 			taskAsyncContractTemplate.trim(),
@@ -1028,12 +1028,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		spawnParams: TaskParams;
 		agentId: string;
 		progress: AgentProgress;
-		ircEnabled: boolean;
+		mircEnabled: boolean;
 		buildDetails: () => TaskToolDetails;
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>;
 		onSettled?: (failed: boolean) => void;
 	}): string {
-		const { manager, toolCallId, spawnParams, agentId, progress, ircEnabled, buildDetails, onUpdate, onSettled } =
+		const { manager, toolCallId, spawnParams, agentId, progress, mircEnabled, buildDetails, onUpdate, onSettled } =
 			options;
 		const buildFollowUpHint = async (aborted: boolean): Promise<string> => {
 			if (aborted) {
@@ -1042,12 +1042,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					? `transcript at history://${agentId}`
 					: "transcript unavailable";
 				if (ref?.status === "idle" || ref?.status === "parked") {
-					const followUp = ircEnabled ? "message it via `hub` to resume; " : "";
+					const followUp = mircEnabled ? "message it via `hub` to resume; " : "";
 					return `\n\n${agentId} was stopped but is still resumable — ${followUp}${transcript}`;
 				}
 				return `\n\n${agentId} was aborted — ${transcript}`;
 			}
-			const followUp = ircEnabled ? "message it via `hub` to follow up; " : "";
+			const followUp = mircEnabled ? "message it via `hub` to follow up; " : "";
 			return `\n\n${agentId} is now idle — ${followUp}transcript at history://${agentId}`;
 		};
 		return manager.register(
@@ -1399,7 +1399,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
 				blockedAgent: this.#blockedAgent,
 				enableLsp: (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp"),
-				enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
+				enableMirc: isMircEnabled(this.session.settings, this.session.taskDepth ?? 0),
 				maxRuntimeMs: this.session.settings.get("task.maxRuntimeMs"),
 				signal,
 				onProgress: progress => {

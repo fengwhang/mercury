@@ -371,7 +371,7 @@ def _split_bundled_wheels(whls: list[Path]) -> tuple[list[Path], list[Path]]:
     make-dist stages BOTH arch python-olm wheels; pip fails when handed two
     conflicting python-olm URLs, so only this host's arch wheel — plus every
     non-olm wheel — is installed. Unknown arch: every olm wheel is foreign.
-    (Legacy helper for pre-IRC tarballs that still carry wheels/.)"""
+    (Legacy helper for pre-MIRC tarballs that still carry wheels/.)"""
     import platform as _platform
 
     machine = _platform.machine().lower()
@@ -640,9 +640,9 @@ def update_from_release(*, assume_yes: bool = False) -> int:
                 print(f"    manual fix: cd {root}/hermes && "
                       f"uv pip install --python .venv/bin/python -e .")
 
-            # Tarball-bundled wheels (legacy pre-IRC tarballs) install
+            # Tarball-bundled wheels (legacy pre-MIRC tarballs) install
             # AFTER the venv refresh; best-effort, never blocks the update.
-            # (The Matrix E2EE stack is retired — the IRC daemon is
+            # (The Matrix E2EE stack is retired — the MIRC daemon is
             # stdlib-only and installs nothing.)
             _install_bundled_wheels(root, venv)
 
@@ -660,7 +660,7 @@ def update_from_release(*, assume_yes: bool = False) -> int:
 
         # Observability tail (update-completeness): BEFORE the refresh,
         # first-time provision — an existing install that predates the
-        # observatory has no ircd.json, and would otherwise have no
+        # observatory has no MIRC daemon.json, and would otherwise have no
         # config/passwords/unit. Same contract as the /update hook:
         # silent no-op when the observatory is disabled in config;
         # a failure warns but never blocks the update. Runs at the

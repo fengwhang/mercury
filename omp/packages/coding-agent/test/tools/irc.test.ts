@@ -5,7 +5,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { SettingPath } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
-import { IrcBus, type IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { MircBus, type MircMessage } from "@oh-my-pi/pi-coding-agent/mirc/bus";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -13,21 +13,21 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { type CoordinationDetails, HubTool, isIrcEnabled } from "@oh-my-pi/pi-coding-agent/tools/hub";
+import { type CoordinationDetails, HubTool, isMircEnabled } from "@oh-my-pi/pi-coding-agent/tools/hub";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 interface FakeSession {
 	session: AgentSession;
-	/** Messages delivered into this session via deliverIrcMessage. */
-	delivered: IrcMessage[];
+	/** Messages delivered into this session via deliverMircMessage. */
+	delivered: MircMessage[];
 	/** Display-only relay observations emitted on this session. */
 	relayed: CustomMessage[];
 	/** Outcome the fake reports (busy vs idle recipient). */
 	setOutcome: (outcome: "injected" | "woken") => void;
-	/** Cause the next deliverIrcMessage call to throw. */
+	/** Cause the next deliverMircMessage call to throw. */
 	setError: (error: Error) => void;
 	/** Side effect run on delivery (e.g. reply via the bus). */
-	onDeliver: (fn: (msg: IrcMessage) => void) => void;
+	onDeliver: (fn: (msg: MircMessage) => void) => void;
 	/** Emit a terminal `agent_end` to the session's subscribers. */
 	endTurn: (options?: { isTerminal?: boolean }) => void;
 }
@@ -35,9 +35,9 @@ interface FakeSession {
 function makeFakeSession(): FakeSession {
 	let outcome: "injected" | "woken" = "injected";
 	let nextError: Error | null = null;
-	let deliverHook: ((msg: IrcMessage) => void) | undefined;
+	let deliverHook: ((msg: MircMessage) => void) | undefined;
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
-	const delivered: IrcMessage[] = [];
+	const delivered: MircMessage[] = [];
 	const relayed: CustomMessage[] = [];
 	const session = {
 		isStreaming: true,
@@ -45,8 +45,8 @@ function makeFakeSession(): FakeSession {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		waitForIrcReplies: async () => {},
-		deliverIrcMessage: async (msg: IrcMessage) => {
+		waitForMircReplies: async () => {},
+		deliverMircMessage: async (msg: MircMessage) => {
 			if (nextError) {
 				const err = nextError;
 				nextError = null;
@@ -56,7 +56,7 @@ function makeFakeSession(): FakeSession {
 			deliverHook?.(msg);
 			return outcome;
 		},
-		emitIrcRelayObservation: (record: CustomMessage) => {
+		emitMircRelayObservation: (record: CustomMessage) => {
 			relayed.push(record);
 		},
 	};
@@ -144,9 +144,9 @@ function createStreamingSession(
 	return { session };
 }
 
-describe("IRC", () => {
+describe("MIRC", () => {
 	let registry: AgentRegistry;
-	let bus: IrcBus;
+	let bus: MircBus;
 
 	const sessions: AgentSession[] = [];
 	let authDir: TempDir;
@@ -165,9 +165,9 @@ describe("IRC", () => {
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
-		IrcBus.resetGlobalForTests();
+		MircBus.resetGlobalForTests();
 		registry = AgentRegistry.global();
-		bus = IrcBus.global();
+		bus = MircBus.global();
 	});
 	afterEach(async () => {
 		vi.restoreAllMocks();
@@ -275,7 +275,7 @@ describe("IRC", () => {
 			expect(AgentLifecycleManager.global().has("0-Sub")).toBe(true);
 
 			const customRegistry = new AgentRegistry();
-			const customBus = new IrcBus(customRegistry);
+			const customBus = new MircBus(customRegistry);
 			const live = makeFakeSession();
 			live.setOutcome("injected");
 			customRegistry.register({ id: "0-Sub", displayName: "task", kind: "sub", session: live.session });
@@ -290,13 +290,13 @@ describe("IRC", () => {
 		it("send during pre-detach park keeps the live session and does not revive", async () => {
 			const { promise: disposeGate, resolve: resolveDispose } = Promise.withResolvers<void>();
 			let disposeCalls = 0;
-			const delivered: IrcMessage[] = [];
+			const delivered: MircMessage[] = [];
 			const session = {
-				deliverIrcMessage: async (msg: IrcMessage) => {
+				deliverMircMessage: async (msg: MircMessage) => {
 					delivered.push(msg);
 					return "injected" as const;
 				},
-				emitIrcRelayObservation: () => {},
+				emitMircRelayObservation: () => {},
 				dispose: async () => {
 					disposeCalls++;
 					await disposeGate;
@@ -338,10 +338,10 @@ describe("IRC", () => {
 			const { promise: disposeGate, resolve: resolveDispose } = Promise.withResolvers<void>();
 			let disposeCalls = 0;
 			const oldSession = {
-				deliverIrcMessage: async () => {
+				deliverMircMessage: async () => {
 					throw new Error("dying session must not receive mail");
 				},
-				emitIrcRelayObservation: () => {},
+				emitMircRelayObservation: () => {},
 				dispose: async () => {
 					disposeCalls++;
 					await disposeGate;
@@ -400,10 +400,10 @@ describe("IRC", () => {
 		it("multiple concurrent sends during park coalesce revive and all deliver", async () => {
 			const { promise: disposeGate, resolve: resolveDispose } = Promise.withResolvers<void>();
 			const oldSession = {
-				deliverIrcMessage: async () => {
+				deliverMircMessage: async () => {
 					throw new Error("dying session must not receive mail");
 				},
-				emitIrcRelayObservation: () => {},
+				emitMircRelayObservation: () => {},
 				dispose: async () => {
 					await disposeGate;
 				},
@@ -632,21 +632,21 @@ describe("IRC", () => {
 			const settings = Settings.isolated();
 			// Depth 0 with spawning gated off: no peers exist or can be created.
 			settings.set("task.maxRecursionDepth", 0);
-			expect(isIrcEnabled(settings, 0)).toBe(false);
+			expect(isMircEnabled(settings, 0)).toBe(false);
 		});
 
 		it("isIrcEnabled returns true while the task tool is available", () => {
 			const settings = Settings.isolated();
 			// Default task.maxRecursionDepth (2) at depth 0: task can spawn, and a
 			// finished subagent must stay reachable.
-			expect(isIrcEnabled(settings, 0)).toBe(true);
+			expect(isMircEnabled(settings, 0)).toBe(true);
 		});
 
 		it("isIrcEnabled returns true for a subagent even at the recursion-depth cap", () => {
 			const settings = Settings.isolated();
 			// A leaf subagent cannot spawn, but its parent (and siblings) exist.
 			settings.set("task.maxRecursionDepth", 2);
-			expect(isIrcEnabled(settings, 2)).toBe(true);
+			expect(isMircEnabled(settings, 2)).toBe(true);
 		});
 
 		it("returns an error result for messaging ops on a session without registry/agentId", async () => {
@@ -849,7 +849,7 @@ describe("IRC", () => {
 		});
 
 		it("op=send await=true preserves the delivery receipt when the wait is interrupted", async () => {
-			// Regression: the tool is marked interruptible so `job poll` / `irc wait` return
+			// Regression: the tool is marked interruptible so `job poll` / `mirc wait` return
 			// early on incoming messages, but `send await:true` also runs the reply wait under
 			// the same signal. If the abort lands after the message was delivered, the tool
 			// must surface a successful receipt so the agent loop keeps the tool as "sent"
@@ -859,7 +859,7 @@ describe("IRC", () => {
 
 			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const controller = new AbortController();
-			// Abort once delivery reaches the peer, mimicking a steering / IRC interrupt
+			// Abort once delivery reaches the peer, mimicking a steering / MIRC interrupt
 			// landing between the send resolving and the reply arriving.
 			sub.onDeliver(() => controller.abort(new Error("mock interrupt")));
 
@@ -1003,7 +1003,7 @@ describe("IRC", () => {
 				// Model the main turn consuming the incoming aside before it ends:
 				// no bridge queue or wake turn remains to keep agent_end
 				// non-terminal; only the separate side request is still alive.
-				expect(subSession.drainPendingIrcInboxMessages("0-Sub")).toHaveLength(1);
+				expect(subSession.drainPendingMircInboxMessages("0-Sub")).toHaveLength(1);
 				await running;
 				await subSession.waitForIdle();
 				await Promise.resolve();
@@ -1019,7 +1019,7 @@ describe("IRC", () => {
 			}
 		});
 
-		it("await target waits through an IRC wake scheduled after terminal settle", async () => {
+		it("await target waits through an MIRC wake scheduled after terminal settle", async () => {
 			const subHub = new HubTool(makeToolSession(registry, "0-Sub"));
 			const { session: subSession } = createStreamingSession(
 				modelRegistry,
@@ -1031,7 +1031,7 @@ describe("IRC", () => {
 								type: "toolCall",
 								id: "tail-reply",
 								name: "hub",
-								arguments: { op: "send", to: "0-Main", message: "reply from the IRC wake" },
+								arguments: { op: "send", to: "0-Main", message: "reply from the MIRC wake" },
 							},
 						],
 					},
@@ -1050,7 +1050,7 @@ describe("IRC", () => {
 				// Session listeners receive the final assistant message after the
 				// loop's last aside poll but before the deferred terminal
 				// `agent_end`. Delivering here strands the record until the settle
-				// drain schedules its IRC wake turn.
+				// drain schedules its MIRC wake turn.
 				void bus.send(
 					{ from: "0-Main", to: "0-Sub", body: "reply after your current turn" },
 					{ expectsReply: true },
@@ -1065,7 +1065,7 @@ describe("IRC", () => {
 				const reply = await waitP;
 
 				expect(sentAtTail).toBe(true);
-				expect(reply?.body).toBe("reply from the IRC wake");
+				expect(reply?.body).toBe("reply from the MIRC wake");
 			} finally {
 				unsubscribe();
 				unsync();
@@ -1119,13 +1119,13 @@ describe("IRC", () => {
 			expect(text).toContain('agent "0-Sub" is not running');
 		});
 
-		it("op=wait consumes a pending IRC aside before honoring a queued interrupt abort", async () => {
+		it("op=wait consumes a pending MIRC aside before honoring a queued interrupt abort", async () => {
 			const { session } = createRealSession();
 			sessions.push(session);
 			Object.defineProperty(session, "isStreaming", { value: true, configurable: true });
 			registry.register({ id: "0-Running", displayName: "task", kind: "sub", session });
 
-			const delivery = await session.deliverIrcMessage({
+			const delivery = await session.deliverMircMessage({
 				id: "msg-wait-pending",
 				from: "0-Main",
 				to: "0-Running",
@@ -1136,7 +1136,7 @@ describe("IRC", () => {
 
 			const tool = new HubTool(makeToolSession(registry, "0-Running"));
 			const controller = new AbortController();
-			controller.abort(new Error("queued IRC interrupt"));
+			controller.abort(new Error("queued MIRC interrupt"));
 			const result = await tool.execute("call-1", { op: "wait", timeoutMs: 30_000 }, controller.signal);
 
 			expect(result.isError).toBeFalsy();
@@ -1155,13 +1155,13 @@ describe("IRC", () => {
 			expect(emptyDetails?.inbox).toEqual([]);
 		});
 
-		it("op=inbox drains IRC asides that arrived while the caller was running", async () => {
+		it("op=inbox drains MIRC asides that arrived while the caller was running", async () => {
 			const { session } = createRealSession();
 			sessions.push(session);
 			Object.defineProperty(session, "isStreaming", { value: true, configurable: true });
 			registry.register({ id: "0-Running", displayName: "task", kind: "sub", session });
 
-			const delivery = await session.deliverIrcMessage({
+			const delivery = await session.deliverMircMessage({
 				id: "msg-running",
 				from: "0-Main",
 				to: "0-Running",
@@ -1173,18 +1173,18 @@ describe("IRC", () => {
 			const tool = new HubTool(makeToolSession(registry, "0-Running"));
 			const result = await tool.execute("call-1", { op: "inbox" });
 			const details = result.details as CoordinationDetails | undefined;
-			expect(details?.inbox?.map((msg: IrcMessage) => msg.body)).toEqual(["parallel note"]);
+			expect(details?.inbox?.map((msg: MircMessage) => msg.body)).toEqual(["parallel note"]);
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 			expect(text).toContain("parallel note");
 		});
 
-		it("op=inbox peek surfaces a pending IRC aside and prevents it auto-injecting", async () => {
+		it("op=inbox peek surfaces a pending MIRC aside and prevents it auto-injecting", async () => {
 			const { session } = createRealSession();
 			sessions.push(session);
 			Object.defineProperty(session, "isStreaming", { value: true, configurable: true });
 			registry.register({ id: "0-Running", displayName: "task", kind: "sub", session });
 
-			await session.deliverIrcMessage({
+			await session.deliverMircMessage({
 				id: "msg-peek",
 				from: "0-Main",
 				to: "0-Running",
@@ -1195,7 +1195,7 @@ describe("IRC", () => {
 			const tool = new HubTool(makeToolSession(registry, "0-Running"));
 			const peeked = await tool.execute("call-1", { op: "inbox", peek: true });
 			const peekedDetails = peeked.details as CoordinationDetails | undefined;
-			expect(peekedDetails?.inbox?.map((msg: IrcMessage) => msg.body)).toEqual(["peeked note"]);
+			expect(peekedDetails?.inbox?.map((msg: MircMessage) => msg.body)).toEqual(["peeked note"]);
 
 			// The peek surfaced the body via the tool result, so the aside-channel
 			// copy must NOT also be auto-injected at the next step: a second drain
@@ -1216,10 +1216,10 @@ describe("IRC", () => {
 			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const peeked = await tool.execute("call-1", { op: "inbox", peek: true });
 			const peekedDetails = peeked.details as CoordinationDetails | undefined;
-			expect(peekedDetails?.inbox?.map((msg: IrcMessage) => msg.body)).toEqual(["fyi"]);
+			expect(peekedDetails?.inbox?.map((msg: MircMessage) => msg.body)).toEqual(["fyi"]);
 			const drained = await tool.execute("call-2", { op: "inbox" });
 			const drainedDetails = drained.details as CoordinationDetails | undefined;
-			expect(drainedDetails?.inbox?.map((msg: IrcMessage) => msg.body)).toEqual(["fyi"]);
+			expect(drainedDetails?.inbox?.map((msg: MircMessage) => msg.body)).toEqual(["fyi"]);
 			const empty = await tool.execute("call-3", { op: "inbox" });
 			const emptyDetails = empty.details as CoordinationDetails | undefined;
 			expect(emptyDetails?.inbox).toEqual([]);
@@ -1231,13 +1231,13 @@ describe("IRC", () => {
 			const { session } = createRealSession();
 			sessions.push(session);
 			const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
-			const ircEvent = new Promise<AgentSessionEvent>(resolve => {
+			const mircEvent = new Promise<AgentSessionEvent>(resolve => {
 				session.subscribe(event => {
 					if (event.type === "irc_message") resolve(event);
 				});
 			});
 
-			const outcome = await session.deliverIrcMessage({
+			const outcome = await session.deliverMircMessage({
 				id: "msg-1",
 				from: "0-Peer",
 				to: "0-Me",
@@ -1252,17 +1252,17 @@ describe("IRC", () => {
 			expect(prompted).toMatchObject({ role: "custom", customType: "irc:incoming" });
 			expect(prompted.details).toMatchObject({ id: "msg-1", from: "0-Peer", message: "wake up" });
 
-			const event = await ircEvent;
+			const event = await mircEvent;
 			expect(event.type).toBe("irc_message");
 		});
 
-		it("queues peer IRC as an interrupt while a turn is streaming", async () => {
+		it("queues peer MIRC as an interrupt while a turn is streaming", async () => {
 			const { session } = createRealSession();
 			sessions.push(session);
 			const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 			Object.defineProperty(session, "isStreaming", { value: true, configurable: true });
 
-			const outcome = await session.deliverIrcMessage({
+			const outcome = await session.deliverMircMessage({
 				id: "msg-2",
 				from: "0-Peer",
 				to: "0-Me",
@@ -1271,17 +1271,17 @@ describe("IRC", () => {
 			});
 			expect(outcome).toBe("injected");
 			expect(promptSpy).not.toHaveBeenCalled();
-			expect(await session.agent.hasIrcInterrupts?.()).toBe(true);
+			expect(await session.agent.hasMircInterrupts?.()).toBe(true);
 		});
 
-		it("queues parent IRC as steering while a subagent turn is streaming", async () => {
+		it("queues parent MIRC as steering while a subagent turn is streaming", async () => {
 			const { session } = createRealSession();
 			sessions.push(session);
 			const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 			Object.defineProperty(session, "isStreaming", { value: true, configurable: true });
 			registry.register({ id: "0-Child", displayName: "task", kind: "sub", parentId: "Main", session });
 
-			const outcome = await session.deliverIrcMessage({
+			const outcome = await session.deliverMircMessage({
 				id: "msg-parent",
 				from: "Main",
 				to: "0-Child",
@@ -1291,11 +1291,11 @@ describe("IRC", () => {
 			const queued = session.agent.peekSteeringQueue();
 			expect(outcome).toBe("injected");
 			expect(promptSpy).not.toHaveBeenCalled();
-			expect(session.agent.hasIrcInterrupts?.()).toBe(false);
+			expect(session.agent.hasMircInterrupts?.()).toBe(false);
 			expect(queued).toHaveLength(1);
 			const parentSteer = queued[0];
 			expect(parentSteer?.role).toBe("user");
-			if (parentSteer?.role !== "user") throw new Error("expected queued parent IRC steer");
+			if (parentSteer?.role !== "user") throw new Error("expected queued parent MIRC steer");
 			expect(parentSteer.content).toContain("change approach");
 		});
 

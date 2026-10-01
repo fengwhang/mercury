@@ -1021,7 +1021,7 @@ class PluginManifest:
     #              Selection via ``<category>.provider`` config key; the
     #              category's own discovery system handles loading and the
     #              general scanner skips these.
-    # ``platform``: gateway messaging platform adapter (e.g. IRC). Bundled
+    # ``platform``: gateway messaging platform adapter (e.g. MIRC). Bundled
     #              platform plugins auto-load so every shipped platform is
     #              available out of the box; user-installed platform plugins
     #              in ~/.mercury/plugins/ still gated by ``plugins.enabled``
@@ -2846,9 +2846,9 @@ class PluginContext:
         Example::
 
             ctx.register_platform(
-                name="irc",
-                label="IRC",
-                adapter_factory=lambda cfg: IRCAdapter(cfg),
+                name="mirc",
+                label="MIRC",
+                adapter_factory=lambda cfg: MIRCAdapter(cfg),
                 check_fn=lambda: True,
                 emoji="💬",
                 setup_fn=irc_interactive_setup,

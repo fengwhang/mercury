@@ -5,13 +5,13 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/agent-protocol";
 import { HistoryProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/history-protocol";
 import { parseInternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls/parse";
-import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { MircBus } from "@oh-my-pi/pi-coding-agent/mirc/bus";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, getAgentTombstonePath, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { ensurePersistedRoster, registerPersistedSubagents } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { collectIrcPeerRoster } from "@oh-my-pi/pi-coding-agent/task/executor";
+import { collectMircPeerRoster } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { HubTool } from "@oh-my-pi/pi-coding-agent/tools/hub";
 import {
@@ -80,14 +80,14 @@ const subagentSystemPromptTemplatePath = path.resolve(
  * the live peer data — the same template and render engine the executor uses
  * when spawning a child session — so these tests pin the real prompt output.
  */
-async function renderIrcPeerRoster(
+async function renderMircPeerRoster(
 	selfId: string,
 	registry: AgentRegistry = AgentRegistry.global(),
 	sessionFileHint?: string | null,
 ): Promise<string> {
 	const hint = sessionFileHint ?? registry.get(selfId)?.sessionFile ?? registry.get(MAIN_AGENT_ID)?.sessionFile;
 	const root = await ensurePersistedRoster(registry, hint);
-	const roster = collectIrcPeerRoster(registry, selfId, root);
+	const roster = collectMircPeerRoster(registry, selfId, root);
 	return prompt.render(await fs.promises.readFile(subagentSystemPromptTemplatePath, "utf-8"), {
 		agent: "",
 		context: "",
@@ -96,10 +96,10 @@ async function renderIrcPeerRoster(
 		worktree: "",
 		outputSchema: undefined,
 		outputSchemaOverridesAgent: false,
-		ircPeers: roster.peers,
-		ircParkedCount: roster.parkedCount,
-		ircOmittedCount: roster.omittedCount,
-		ircSelfId: selfId,
+		mircPeers: roster.peers,
+		mircParkedCount: roster.parkedCount,
+		mircOmittedCount: roster.omittedCount,
+		mircSelfId: selfId,
 	});
 }
 
@@ -831,7 +831,7 @@ describe("hub list", () => {
 		if (!first.details) throw new Error("Expected coordination details");
 		expect(first.details.peers?.map(peer => peer.id)).toEqual(["FirstWorker"]);
 
-		const hintedRoster = await renderIrcPeerRoster("HintedChild", registry, secondSession);
+		const hintedRoster = await renderMircPeerRoster("HintedChild", registry, secondSession);
 		expect(hintedRoster).toContain("1 parked peer(s) omitted");
 		expect(registry.get("SecondWorker")).toBeDefined();
 		expect(hintedRoster).not.toContain("FirstWorker");
@@ -851,7 +851,7 @@ describe("hub list", () => {
 		expect(second.details.counts?.parked).toBe(1);
 		expect(registry.get("FirstWorker")).toBeDefined();
 
-		const promptRoster = await renderIrcPeerRoster(MAIN_AGENT_ID, registry, secondSession);
+		const promptRoster = await renderMircPeerRoster(MAIN_AGENT_ID, registry, secondSession);
 		expect(promptRoster).toContain("1 parked peer(s) omitted");
 		expect(promptRoster).not.toContain("FirstWorker");
 		expect(promptRoster).not.toContain("SecondWorker");
@@ -898,7 +898,7 @@ describe("hub list", () => {
 		expect(listText(listed)).not.toContain("ParkedScout");
 		expect(registry.get("ParkedScout")?.status).toBe("parked");
 
-		const roster = await renderIrcPeerRoster("DeepChild", registry, deepSessionFile);
+		const roster = await renderMircPeerRoster("DeepChild", registry, deepSessionFile);
 		expect(roster).toContain("1 parked peer(s) omitted");
 		expect(roster).toContain("`Main`");
 		expect(roster).not.toContain("ParkedScout");
@@ -926,7 +926,7 @@ describe("hub list", () => {
 	it("send still revives a known parked id omitted from the default list", async () => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
-		IrcBus.resetGlobalForTests();
+		MircBus.resetGlobalForTests();
 		try {
 			const registry = AgentRegistry.global();
 			registry.register({
@@ -940,7 +940,7 @@ describe("hub list", () => {
 			const delivered: string[] = [];
 			const revived = {
 				isStreaming: false,
-				deliverIrcMessage: async (msg: { body: string }) => {
+				deliverMircMessage: async (msg: { body: string }) => {
 					delivered.push(msg.body);
 					return "woken";
 				},
@@ -964,7 +964,7 @@ describe("hub list", () => {
 		} finally {
 			AgentRegistry.resetGlobalForTests();
 			AgentLifecycleManager.resetGlobalForTests();
-			IrcBus.resetGlobalForTests();
+			MircBus.resetGlobalForTests();
 		}
 	});
 });
@@ -999,7 +999,7 @@ describe("hub list session authority", () => {
 	it("replaces a detached old-root parked sub so send and history target the current file", async () => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
-		IrcBus.resetGlobalForTests();
+		MircBus.resetGlobalForTests();
 		try {
 			using tempDir = TempDir.createSync("@omp-hub-replace-current-");
 			const firstSession = path.join(tempDir.path(), "first.jsonl");
@@ -1086,7 +1086,7 @@ describe("hub list session authority", () => {
 			const delivered: string[] = [];
 			const revived = {
 				isStreaming: false,
-				deliverIrcMessage: async (msg: { body: string }) => {
+				deliverMircMessage: async (msg: { body: string }) => {
 					delivered.push(msg.body);
 					return "woken";
 				},
@@ -1105,7 +1105,7 @@ describe("hub list session authority", () => {
 		} finally {
 			AgentRegistry.resetGlobalForTests();
 			AgentLifecycleManager.resetGlobalForTests();
-			IrcBus.resetGlobalForTests();
+			MircBus.resetGlobalForTests();
 		}
 	});
 
@@ -1385,7 +1385,7 @@ describe("child system prompt roster", () => {
 			activity: "advisor-only gist",
 		});
 
-		const text = await renderIrcPeerRoster("Child");
+		const text = await renderMircPeerRoster("Child");
 		expect(text).toContain("LiveWorker");
 		expect(text).toContain("editing auth.ts");
 		expect(text).toContain("IdleReviewer");
@@ -1427,7 +1427,7 @@ describe("child system prompt roster", () => {
 			status: "idle",
 		});
 
-		const text = await renderIrcPeerRoster("LiveWorker", registry);
+		const text = await renderMircPeerRoster("LiveWorker", registry);
 		expect(text).toContain("1 parked peer(s) omitted");
 		expect(text).toContain("`Main`");
 		expect(text).not.toContain("ParkedScout");
@@ -1458,7 +1458,7 @@ describe("child system prompt roster", () => {
 			lastActivity: 0,
 		});
 
-		const text = await renderIrcPeerRoster("Child", registry);
+		const text = await renderMircPeerRoster("Child", registry);
 		// Newest idle activity sorts first, so the cap keeps Idle36..Idle6 and
 		// omits the six oldest idle rows (Idle5..Idle0). Row tokens carry the
 		// backtick boundary so e.g. Idle1 never matches the retained Idle10..Idle19.
@@ -1477,12 +1477,12 @@ describe("hub direct addressing refreshes the caller root without a prior list",
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
-		IrcBus.resetGlobalForTests();
+		MircBus.resetGlobalForTests();
 	});
 	afterEach(() => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
-		IrcBus.resetGlobalForTests();
+		MircBus.resetGlobalForTests();
 	});
 
 	/** Transcript with a distinguishable user line: header + session_init + message. */
@@ -1533,7 +1533,7 @@ describe("hub direct addressing refreshes the caller root without a prior list",
 		return {
 			isStreaming: false,
 			messages: [],
-			deliverIrcMessage: async (msg: { body: string }) => {
+			deliverMircMessage: async (msg: { body: string }) => {
 				delivered.push(msg.body);
 				return "woken";
 			},
@@ -1683,7 +1683,7 @@ describe("hub direct addressing refreshes the caller root without a prior list",
 		const liveSession = {
 			isStreaming: false,
 			messages: [{ role: "user", content: "live-worker-line", timestamp: 1 }],
-			deliverIrcMessage: async (msg: { body: string }) => {
+			deliverMircMessage: async (msg: { body: string }) => {
 				delivered.push(msg.body);
 				return "woken";
 			},

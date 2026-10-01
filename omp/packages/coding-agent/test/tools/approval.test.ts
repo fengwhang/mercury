@@ -353,7 +353,7 @@ describe("tool-owned dynamic approval declarations", () => {
 		};
 
 		for (const command of ["git diff packages/coding-agent/src/tools/bash.ts", "git status", "git log --oneline"]) {
-			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
+			expect(bashApproval(command, settingsOverrides)).toBe("exec");
 		}
 
 		expect(bashApproval("rm -rf build", settingsOverrides)).toEqual({
@@ -388,14 +388,11 @@ describe("tool-owned dynamic approval declarations", () => {
 			override: true,
 			reason: "Critical pattern detected",
 		});
-		expect(bashApproval("echo hello", settingsOverrides)).toEqual({
-			tier: "write",
-			policy: "allow",
-		});
+		expect(bashApproval("echo hello", settingsOverrides)).toBe("exec");
 		expect(bashApproval("echo hello && rm file.txt", settingsOverrides)).toBe("exec");
 	});
 
-	it("applies the first matching bash approval pattern", () => {
+	it("explicit bash denials outrank an earlier allow pattern", () => {
 		const settingsOverrides = {
 			"bash.patterns": [
 				{ match: "*", approval: "allow" },
@@ -404,8 +401,10 @@ describe("tool-owned dynamic approval declarations", () => {
 		};
 
 		expect(bashApproval("git status", settingsOverrides)).toEqual({
-			tier: "write",
-			policy: "allow",
+			tier: "exec",
+			override: true,
+			policy: "deny",
+			reason: "Blocked by bash pattern: git *",
 		});
 	});
 
@@ -494,18 +493,18 @@ describe("tool-owned dynamic approval declarations", () => {
 		}
 
 		for (const command of ["git status", "git status --short", "git  status", "git\tstatus"]) {
-			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
+			expect(bashApproval(command, settingsOverrides)).toBe("exec");
 		}
 	});
 
-	it("allows literal shell metacharacters in quoted arguments", () => {
+	it("quoted metacharacters do not let legacy allow patterns bypass exec approval", () => {
 		const settingsOverrides = {
 			"bash.patterns": [{ match: "cargo *", approval: "allow" }],
 		};
 		const command =
 			"cargo bench --manifest-path layers/layer3/Cargo.toml --bench standardized_criterion -- --full '^layer3/write/file-wal/batch-(10|1000|10000)$'";
 
-		expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
+		expect(bashApproval(command, settingsOverrides)).toBe("exec");
 	});
 
 	it("honors bash pattern rules in yolo mode", () => {
@@ -522,7 +521,7 @@ describe("tool-owned dynamic approval declarations", () => {
 		});
 		expect(resolveApproval(tool, { command: "git status" }, "yolo", {})).toMatchObject({
 			policy: "allow",
-			source: "tool",
+			source: "mode",
 		});
 		expect(resolveApproval(tool, { command: "true" }, "yolo", {})).toMatchObject({
 			policy: "allow",

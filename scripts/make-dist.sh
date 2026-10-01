@@ -8,8 +8,8 @@
 # binary + ui-tui bundle so a clean VM needs neither bun nor rust
 # nor esbuild. The release host cross-compiles the arm64 omp binary via
 # CROSS_TARGET and stages both prebuilt sets (gitignored) into each
-# tarball. No soju: the stdlib ircd owns the client ports.
-# No wheels: the IRC observatory daemon is stdlib-only, so virgin
+# tarball. No soju: the stdlib MIRC daemon owns the client ports.
+# No wheels: the MIRC observatory daemon is stdlib-only, so virgin
 # installs provision with zero network.
 #
 # RELEASE ORDER (build-after-bump — v0.0.19 lesson): the omp binary bakes
@@ -112,27 +112,27 @@ build_one() { # $1 = arch suffix (x64|arm64), $2 = source binary path, $3 = labe
     cp "$SRCBIN" "$S/mercury/omp/packages/coding-agent/dist/omp"
     mkdir -p "$S/mercury/hermes/ui-tui/dist"
     cp hermes/ui-tui/dist/entry.js "$S/mercury/hermes/ui-tui/dist/entry.js"
-    # No soju triple: the stdlib ircd owns the client ports — nothing to inject.
+    # No soju triple: the stdlib MIRC daemon owns the client ports — nothing to inject.
     # natives if present (rust-built .so/.node; runtime fallback path — the
     # primary natives are EMBEDDED in the compiled binary)
     if compgen -G "omp/packages/natives/native/*" >/dev/null; then
         mkdir -p "$S/mercury/omp/packages/natives/native"
         cp -r omp/packages/natives/native/. "$S/mercury/omp/packages/natives/native/"
     fi
-    # Mercury Lounge fork (prebuilt by scripts/build-lounge-fork.sh on the
+    # Mercury mmLounge fork (prebuilt by scripts/build-mlounge-fork.sh on the
     # release host — user machines never compile). Fail hard on a missing
     # or stale payload instead of shipping last week's bundle.
-    echo "== [$LABEL] injecting lounge fork payload"
-    _fork_src="third_party/thelounge"
-    _fork_payload="dist/lounge-fork/tree"
-    [ -d "$_fork_payload" ] || { echo "FATAL: lounge fork payload missing (run bash scripts/build-lounge-fork.sh)" >&2; exit 1; }
+    echo "== [$LABEL] injecting mLounge fork payload"
+    _fork_src="third_party/mlounge"
+    _fork_payload="dist/mlounge-fork/tree"
+    [ -d "$_fork_payload" ] || { echo "FATAL: mLounge fork payload missing (run bash scripts/build-mlounge-fork.sh)" >&2; exit 1; }
     _want_ver="$(python3 -c "import json; print(json.load(open('$_fork_src/package.json'))['version'])")"
     _have_ver="$(python3 -c "import json; print(json.load(open('$_fork_payload/package.json'))['version'])")"
-    [ "$_want_ver" = "$_have_ver" ] || { echo "FATAL: lounge payload stale (payload $_have_ver != source $_want_ver) — rebuild" >&2; exit 1; }
+    [ "$_want_ver" = "$_have_ver" ] || { echo "FATAL: mLounge payload stale (payload $_have_ver != source $_want_ver) — rebuild" >&2; exit 1; }
     _want_sha="$(cd "$_fork_src" && find . -type f -not -path './node_modules/*' -not -path './.git/*' | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)"
     _have_sha="$(python3 -c "import json; print(json.load(open('$_fork_payload/.mercury-fork-build.json'))['source_sha'])")"
-    [ "$_want_sha" = "$_have_sha" ] || { echo "FATAL: lounge payload source drift — rebuild" >&2; exit 1; }
-    cp -r "$_fork_payload/." "$S/mercury/third_party/thelounge/"
+    [ "$_want_sha" = "$_have_sha" ] || { echo "FATAL: mLounge payload source drift — rebuild" >&2; exit 1; }
+    cp -r "$_fork_payload/." "$S/mercury/third_party/mlounge/"
     cat > "$S/mercury/DIST_INFO.txt" <<EOF
 Mercury distribution
 version:    ${VERSION}

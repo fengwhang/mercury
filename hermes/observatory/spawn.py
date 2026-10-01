@@ -2,7 +2,7 @@
 ``/spawn <name>`` (hermes engine) and ``/spawnomp <name>`` (omp engine)
 create top-level 0-agents; ``/exit`` annihilates one. This module owns the
 ENGINE side of that lifecycle — the session/process handles and the
-state.db rows — and drives the IRC side (one channel per agent):
+state.db rows — and drives the MIRC side (one channel per agent):
 
 - **spawn**: build the engine handle (hermes rooms are plain gateway
   sessions keyed by channel, so no handle is built here — the first
@@ -26,7 +26,7 @@ restart — that would be resurrection.
 Subagent stop at parent death: depth>=1 children of a 0-agent are
 delegate_task children owned by the delegation machinery's live-child
 registries (``tools/omp_delegation`` / ``delegate_tool``); their process
-stop rides that existing path. This module's cascade covers their IRC
+stop rides that existing path. This module's cascade covers their MIRC
 channels and state rows.
 """
 from __future__ import annotations
@@ -111,7 +111,7 @@ def parse_spawn_args(args: str) -> tuple[str, str | None]:
     """Split ``/spawn`` args into ``(name, profile)``.
 
     ``bravo -p alpha`` / ``-p alpha bravo`` / ``--profile=alpha bravo`` all
-    yield ``("bravo", "alpha")`` — the IRC twin of ``mercury -p alpha``.
+    yield ``("bravo", "alpha")`` — the MIRC twin of ``mercury -p alpha``.
     No ``-p`` → ``(name, None)``. Raises ``ValueError`` on missing name,
     extra positionals, or a dangling ``-p``.
     """
@@ -602,7 +602,7 @@ async def spawn_orchestrator(
     validate_session_ref: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Create one 0-agent orchestrator: engine handle + depth-0 state node
-    + IRC channel (the bot JOINs; the channel IS the room).
+    + MIRC channel (the bot JOINs; the channel IS the room).
 
     hermes rooms are plain gateway sessions keyed by channel — no engine
     handle is built here (the first message in the room starts the
@@ -712,9 +712,9 @@ async def spawn_orchestrator(
             logger.exception("spawn: channel join failed for %s", node_id)
         else:
             try:
-                from observatory.provision import get_lounge_nick
+                from observatory.provision import get_mlounge_nick
 
-                await bot.invite_user(get_lounge_nick(None), channel)
+                await bot.invite_user(get_mlounge_nick(None), channel)
             except Exception:  # noqa: BLE001 — cosmetic; invite is a nudge
                 logger.debug("spawn: lounge invite failed for %s", node_id)
             try:

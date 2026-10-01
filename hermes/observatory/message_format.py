@@ -1,4 +1,4 @@
-"""Rendering provenance for the Lounge fork, carried separately from text."""
+"""Rendering provenance for the mLounge fork, carried separately from text."""
 
 KIND_TAG = "+mercury/kind"
 MESSAGE_KINDS = frozenset({

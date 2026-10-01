@@ -13,7 +13,7 @@
 		</p>
 		<p v-if="store.state.versionStatus === 'new-packages'">
 			mLounge is up to date, but there are out of date packages Run
-			<code>thelounge upgrade</code> on the server to upgrade packages.
+			<code>mlounge upgrade</code> on the server to upgrade packages.
 		</p>
 		<template v-if="store.state.versionStatus === 'up-to-date'">
 			<p>mLounge is up to date!</p>

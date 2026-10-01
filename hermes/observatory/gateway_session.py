@@ -1,4 +1,4 @@
-"""Gateway-process side of IRC observatory prompt delivery.
+"""Gateway-process side of MIRC observatory prompt delivery.
 
 The gateway agent's hermes session lives in (and is resumed by) the
 gateway process itself — boot resync deliberately never builds a
@@ -10,7 +10,7 @@ here.
 Execution is a headless AIAgent turn on a STABLE session id
 (``GATEWAY_SESSION_ID``) — the same machinery ``mercury -z`` uses
 (``mercury_cli.oneshot``: config-resolved runtime + ``run_conversation``),
-except the agent is cached per session so consecutive IRC messages share
+except the agent is cached per session so consecutive MIRC messages share
 one transcript. Turns are serialized per session: a headless session is
 always idle between turns, so steer-vs-prompt (a busy-session distinction)
 collapses — every injection starts a turn, and ``kind`` selects the entry
@@ -19,8 +19,8 @@ first tries the gateway slash dispatch (the same table
 ``GatewayRunner._handle_message`` uses) and falls back to a turn for
 unknown verbs.
 
-The gateway-session agent is built with ``platform="irc"`` so the
-system prompt picks the Lounge Markdown/LaTeX hint.
+The gateway-session agent is built with ``platform="mirc"`` so the
+system prompt picks the mLounge Markdown/LaTeX hint.
 """
 
 from __future__ import annotations
@@ -81,8 +81,8 @@ def _default_agent(session_id: str) -> Any:
     compression-lineage tip and loads prior history, so a stored
     session resumes and a missing one starts fresh.
 
-    The gateway session renders into an IRC channel, so it is built with
-    ``platform="irc"`` (plain-text hint, no markdown).
+    The gateway session renders into an MIRC channel, so it is built with
+    ``platform="mirc"`` (plain-text hint, no markdown).
     """
     from observatory.spawn import build_hermes_agent
 

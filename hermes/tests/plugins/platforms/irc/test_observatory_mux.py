@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from observatory.ircd import DaemonConfig, IrcDaemon
+from observatory.mirc import DaemonConfig, MircDaemon
 
 
 @asynccontextmanager
@@ -15,7 +15,7 @@ async def running_daemon(tmp_path, **kwargs):
     config = DaemonConfig(
         agent_port=0, server_port=0, state_dir=str(tmp_path), **kwargs
     )
-    d = IrcDaemon(config)
+    d = MircDaemon(config)
     await d.start()
     try:
         yield d, d._servers[0].sockets[0].getsockname()[1]
@@ -37,10 +37,10 @@ def _config(port, **kw):
 
 @pytest.mark.asyncio
 async def test_adapter_joins_says_and_tracks_managed(tmp_path) -> None:
-    from plugins.platforms.irc.adapter import IRCAdapter
+    from plugins.platforms.mirc.adapter import MIRCAdapter
 
     async with running_daemon(tmp_path) as (d, port):
-        adapter = IRCAdapter(_config(port))
+        adapter = MIRCAdapter(_config(port))
         assert await adapter.connect()
         try:
             assert not adapter.is_managed("#ace")
@@ -77,10 +77,10 @@ async def test_adapter_joins_says_and_tracks_managed(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_managed_rooms_skip_addressing(tmp_path) -> None:
-    from plugins.platforms.irc.adapter import IRCAdapter
+    from plugins.platforms.mirc.adapter import MIRCAdapter
 
     async with running_daemon(tmp_path) as (_, port):
-        adapter = IRCAdapter(_config(port))
+        adapter = MIRCAdapter(_config(port))
         assert await adapter.connect()
         try:
             events = []
@@ -119,7 +119,7 @@ async def test_managed_rooms_skip_addressing(tmp_path) -> None:
 async def test_child_room_routes_to_steer_not_dispatch(tmp_path) -> None:
     from observatory import rooms
     from observatory.state import ObservatoryState
-    from plugins.platforms.irc.adapter import IRCAdapter
+    from plugins.platforms.mirc.adapter import MIRCAdapter
 
     state = ObservatoryState(tmp_path / "state.db")
     state.add_node(
@@ -136,7 +136,7 @@ async def test_child_room_routes_to_steer_not_dispatch(tmp_path) -> None:
     rooms.set_room_manager(manager)
     try:
         async with running_daemon(tmp_path) as (_, port):
-            adapter = IRCAdapter(_config(port))
+            adapter = MIRCAdapter(_config(port))
             assert await adapter.connect()
             try:
                 # the bot joins every room it manages (production does this
@@ -146,7 +146,7 @@ async def test_child_room_routes_to_steer_not_dispatch(tmp_path) -> None:
                 replies: list[tuple[str, str]] = []
                 async def _send(chat_id: str, content: str, **kw):  # type: ignore[no-untyped-def]
                     replies.append((chat_id, content))
-                    from plugins.platforms.irc.adapter import SendResult
+                    from plugins.platforms.mirc.adapter import SendResult
 
                     return SendResult(success=True)
 
@@ -155,7 +155,7 @@ async def test_child_room_routes_to_steer_not_dispatch(tmp_path) -> None:
                 rooms.register_child_steer("deleg-1", seen.append)
                 try:
                     await adapter._handle_line(":op!u@h PRIVMSG #gateway-cow :stop that")
-                    await adapter._flush_irc_batch_now(("#gateway-cow", "op"))
+                    await adapter._flush_mirc_batch_now(("#gateway-cow", "op"))
                 finally:
                     rooms.drop_child_steer("deleg-1")
                 assert seen == ["stop that"]
@@ -168,7 +168,7 @@ async def test_child_room_routes_to_steer_not_dispatch(tmp_path) -> None:
 
 
 def test_derive_channel() -> None:
-    from plugins.platforms.irc.adapter import _derive_channel
+    from plugins.platforms.mirc.adapter import _derive_channel
 
     assert _derive_channel("ace") == "#ace"
     assert _derive_channel("#ace") == "#ace"
@@ -176,7 +176,7 @@ def test_derive_channel() -> None:
 
 
 def test_tls_defaults() -> None:
-    from plugins.platforms.irc.adapter import _tls_default_for_host
+    from plugins.platforms.mirc.adapter import _tls_default_for_host
 
     assert _tls_default_for_host("127.0.0.1") is False
     assert _tls_default_for_host("localhost") is False
@@ -189,21 +189,21 @@ def test_tls_defaults() -> None:
 def test_channel_derivation_order(monkeypatch) -> None:
     import types
 
-    from plugins.platforms.irc.adapter import IRCAdapter
+    from plugins.platforms.mirc.adapter import MIRCAdapter
 
     for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
         monkeypatch.delenv(key, raising=False)
     # explicit channel wins over nick derivation
-    a = IRCAdapter(types.SimpleNamespace(extra={"server": "x", "nickname": "bot", "channel": "#kept"}))
+    a = MIRCAdapter(types.SimpleNamespace(extra={"server": "x", "nickname": "bot", "channel": "#kept"}))
     assert a.channel == "#kept"
     # nick derives the room
-    b = IRCAdapter(types.SimpleNamespace(extra={"server": "x", "nickname": "ace"}))
+    b = MIRCAdapter(types.SimpleNamespace(extra={"server": "x", "nickname": "ace"}))
     assert b.channel == "#ace"
 
 
 def test_interactive_setup_four_prompts(monkeypatch) -> None:
     import mercury_cli.setup as setup_mod
-    from plugins.platforms.irc import adapter as adapter_mod
+    from plugins.platforms.mirc import adapter as adapter_mod
 
     answers = iter(["127.0.0.1", "ace", "s3cret", "op"])
     saved: dict[str, str] = {}
@@ -235,7 +235,7 @@ def test_interactive_setup_four_prompts(monkeypatch) -> None:
 
 def test_managed_setup_keeps_hands_off(monkeypatch) -> None:
     import mercury_cli.setup as setup_mod
-    from plugins.platforms.irc import adapter as adapter_mod
+    from plugins.platforms.mirc import adapter as adapter_mod
 
     monkeypatch.setattr(setup_mod, "get_env_value",
                         lambda k, default="": {
@@ -256,7 +256,7 @@ def test_managed_setup_keeps_hands_off(monkeypatch) -> None:
 
 def test_managed_takeover_clears_marker(monkeypatch) -> None:
     import mercury_cli.setup as setup_mod
-    from plugins.platforms.irc import adapter as adapter_mod
+    from plugins.platforms.mirc import adapter as adapter_mod
 
     saved: dict[str, str] = {}
     answers = iter(["irc.example.com", "mybot", "", "me"])

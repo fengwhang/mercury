@@ -48,7 +48,7 @@ function createYieldingSession(fallback: "served" | "unproven" = "served"): Agen
 		getActiveToolNames: () => ["yield"],
 		getEnabledToolNames: () => ["yield"],
 		setActiveToolsByName: async () => {},
-		setIrcWakeTurnObserver: () => {},
+		setMircWakeTurnObserver: () => {},
 		subscribeRunState: () => () => {},
 		subscribe: (listener: (event: { type: string; [key: string]: unknown }) => void) => {
 			listeners.push(listener);

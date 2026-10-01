@@ -4833,7 +4833,7 @@ class TurnRunner:
 
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
-        # Observatory mirror (IRC rooms show their agent's tool calls
+        # Observatory mirror (MIRC rooms show their agent's tool calls
         # live, like CLI verbose): depth-0 rooms have no feed producer of
         # their own, so tool/thinking lines are formatted here and handed
         # to the gateway loop for a direct send — the pump queue is not
@@ -13830,7 +13830,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         )
         # Also pick up plugin-registered platforms — each entry can declare
         # its own allowed_users_env / allow_all_env, so the warning stays
-        # accurate as plugins like IRC come online.
+        # accurate as plugins like MIRC come online.
         _plugin_allowed_vars: tuple = ()
         _plugin_allow_all_vars: tuple = ()
         try:
@@ -14488,7 +14488,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # confirmed-delivered has its answer in the ledger — redelivering it
         # is strictly cheaper and more correct than re-running the whole turn.
         self._schedule_resume_pending_sessions()
-        # IRC observatory seam: fire-and-forget observatory boot on a
+        # MIRC observatory seam: fire-and-forget observatory boot on a
         # daemon thread; never raises, never blocks.
         try:
             from observatory.platform_hook import try_boot_sidecar

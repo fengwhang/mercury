@@ -35,7 +35,7 @@ import type { PreparedExtension } from "../extensibility/extensions/types";
 import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
-import { IrcBus } from "../irc/bus";
+import { MircBus } from "../mirc/bus";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import { forwardApprovalUI } from "../extensibility/extensions/runner";
@@ -58,7 +58,7 @@ import { truncateTail } from "../session/streaming-output";
 import { type ConfiguredThinkingLevel, prewalkWouldBeNoop, resolveTaskEffortLevel, type TaskEffort } from "../thinking";
 import type { ContextFileEntry, ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
-import { isIrcEnabled } from "../tools/hub";
+import { isMircEnabled } from "../tools/hub";
 import { LIST_STATUS_ORDER } from "../tools/hub/messaging";
 import { DEFAULT_HUB_LIST_LIMIT } from "../tools/hub/types";
 import { normalizeSchema } from "../tools/jtd-to-json-schema";
@@ -285,7 +285,7 @@ function installSubagentRetryFallbackChain(args: {
 	return role;
 }
 
-export interface IrcPeerRosterRow {
+export interface MircPeerRosterRow {
 	id: string;
 	displayName: string;
 	kind: string;
@@ -293,20 +293,20 @@ export interface IrcPeerRosterRow {
 	activity?: string;
 }
 
-export interface IrcPeerRosterData {
+export interface MircPeerRosterData {
 	/** Live (running+idle) peer rows, bounded at DEFAULT_HUB_LIST_LIMIT. */
-	peers: IrcPeerRosterRow[];
+	peers: MircPeerRosterRow[];
 	/** Current-root parked refs, counted but never named. */
 	parkedCount: number;
 	/** Live rows dropped by the bound; the prompt reports them truthfully. */
 	omittedCount: number;
 }
 
-export function collectIrcPeerRoster(
+export function collectMircPeerRoster(
 	registry: AgentRegistry,
 	selfId: string,
 	rootSessionFile?: string,
-): IrcPeerRosterData {
+): MircPeerRosterData {
 	// Same ordering as `hub list`: running before idle, then newest activity
 	// first — so the cap keeps the newest relevant siblings, not an
 	// insertion-order prefix.
@@ -447,8 +447,8 @@ export interface ExecutorOptions {
 	 * watchdog is already suspended for the call's duration.
 	 */
 	maxRuntimeMs?: number;
-	/** Include IRC only when the invocation policy permits collaboration. */
-	enableIrc?: boolean;
+	/** Include MIRC only when the invocation policy permits collaboration. */
+	enableMirc?: boolean;
 	enableLsp?: boolean;
 	/**
 	 * Enable MCP capabilities for this child. `false` suppresses both inherited
@@ -544,7 +544,7 @@ export interface ExecutorOptions {
 	 */
 	parentAgentId?: string;
 	/**
-	 * Keep the finished subagent addressable in the registry for IRC/revival.
+	 * Keep the finished subagent addressable in the registry for MIRC/revival.
 	 * Defaults to true. Eval bridge agents are programmatic one-shot helpers and
 	 * set this false so disposal unregisters them instead of leaving idle peers.
 	 */
@@ -2371,8 +2371,8 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 }
 
 /** Inputs for {@link attachIrcWakeTurnMonitor}. */
-export interface IrcWakeTurnMonitorOptions {
-	/** Registry id of the kept-alive subagent whose autonomous IRC wake turns are monitored. */
+export interface MircWakeTurnMonitorOptions {
+	/** Registry id of the kept-alive subagent whose autonomous MIRC wake turns are monitored. */
 	id: string;
 	index?: number;
 	agent: AgentDefinition;
@@ -2392,7 +2392,7 @@ export interface IrcWakeTurnMonitorOptions {
 	artifactsDir?: string;
 }
 
-/** Sender + message id of one `irc:incoming` record that woke a turn. */
+/** Sender + message id of one `mirc:incoming` record that woke a turn. */
 interface WakeSource {
 	from: string;
 	messageId?: string;
@@ -2428,7 +2428,7 @@ async function relayWakeTurnOutput(args: {
 	result: SingleResult;
 	turnText: string;
 }): Promise<void> {
-	const bus = IrcBus.global();
+	const bus = MircBus.global();
 	const pending = wakeSources(args.records, args.id).filter(
 		source => !bus.sentSince(args.id, source.from, args.turnStartTime),
 	);
@@ -2441,27 +2441,27 @@ async function relayWakeTurnOutput(args: {
 	for (const source of pending) {
 		const receipt = await bus.send({ from: args.id, to: source.from, body, replyTo: source.messageId });
 		if (receipt.outcome === "failed") {
-			logger.warn("IRC wake-turn relay failed", { from: args.id, to: source.from, error: receipt.error });
+			logger.warn("MIRC wake-turn relay failed", { from: args.id, to: source.from, error: receipt.error });
 		}
 	}
 }
 
 /**
- * Bracket a kept-alive subagent's autonomous IRC wake turns with a task run
+ * Bracket a kept-alive subagent's autonomous MIRC wake turns with a task run
  * monitor so RPC/collab subscribers see the same `subagent_lifecycle` /
  * `subagent_progress` frames a first run emits. Shared by the live executor
  * reviver and the persisted cold-revive path so a resumed process's parked
  * subagents are not blind spots. The observer runs after the session has
- * flushed its post-prompt settle (see {@link AgentSession.setIrcWakeTurnObserver}).
+ * flushed its post-prompt settle (see {@link AgentSession.setMircWakeTurnObserver}).
  *
  * The turn's output is relayed to the waking peers via
  * {@link relayWakeTurnOutput}; the relay is registered as a pending reply on
  * the session up front so a `send await:true` waiter holds its "stopped
  * without replying" verdict until the relay has been delivered.
  */
-/** Extracts display text from an IRC/aside record's content, shared by the custom-role and
+/** Extracts display text from an MIRC/aside record's content, shared by the custom-role and
  *  user-role branches below (both fields share the same string | text-part-array shape). */
-function extractIrcRecordText(content: string | ReadonlyArray<{ type: string; text?: string }>): string {
+function extractMircRecordText(content: string | ReadonlyArray<{ type: string; text?: string }>): string {
 	if (typeof content === "string") return content;
 	return content
 		.filter(part => part.type === "text")
@@ -2469,12 +2469,12 @@ function extractIrcRecordText(content: string | ReadonlyArray<{ type: string; te
 		.join("\n");
 }
 
-export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWakeTurnMonitorOptions): void {
+export function attachMircWakeTurnMonitor(session: AgentSession, options: MircWakeTurnMonitorOptions): void {
 	const { id, agent } = options;
 	const index = options.index ?? 0;
 	const maxRuntimeMs = options.maxRuntimeMs ?? 0;
-	session.setIrcWakeTurnObserver(records => {
-		const ircTask =
+	session.setMircWakeTurnObserver(records => {
+		const mircTask =
 			records
 				.map(record => {
 					if (record.role === "custom") {
@@ -2483,22 +2483,22 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 								? Reflect.get(record.details, "message")
 								: undefined;
 						if (typeof body === "string") return body;
-						return extractIrcRecordText(record.content);
+						return extractMircRecordText(record.content);
 					}
-					if (record.role === "user") return extractIrcRecordText(record.content);
+					if (record.role === "user") return extractMircRecordText(record.content);
 					return "";
 				})
 				.filter(Boolean)
-				.join("\n\n") || "IRC follow-up";
+				.join("\n\n") || "MIRC follow-up";
 		const turnStartTime = Date.now();
 		const relay = Promise.withResolvers<void>();
-		session.trackIrcReply(relay.promise);
+		session.trackMircReply(relay.promise);
 		const sessionFile = AgentRegistry.global().get(id)?.sessionFile ?? options.sessionFile ?? undefined;
 		const turnMonitor = createSubagentRunMonitor({
 			index,
 			id,
 			agent,
-			task: ircTask,
+			task: mircTask,
 			description: options.description,
 			modelOverride: options.modelOverride,
 			modelRole: options.modelRole,
@@ -2560,7 +2560,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					index,
 					id,
 					agent,
-					task: ircTask,
+					task: mircTask,
 					modelOverride: options.modelOverride,
 					modelRole: options.modelRole,
 					outputSchema: options.outputSchema,
@@ -2579,7 +2579,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					await relayWakeTurnOutput({ id, records, turnStartTime, yielded, result, turnText });
 				}
 			} catch (finalizeError) {
-				logger.warn("IRC subagent turn finalization failed", {
+				logger.warn("MIRC subagent turn finalization failed", {
 					id,
 					error: finalizeError instanceof Error ? finalizeError.message : String(finalizeError),
 				});
@@ -2679,7 +2679,7 @@ export async function finalizeSubagentLifecycle(args: {
 	}
 
 	if (!args.keepAlive) {
-		// One-shot helper: dispose and unregister. No IRC, no revival.
+		// One-shot helper: dispose and unregister. No MIRC, no revival.
 		await disposeSession();
 		if (ref && ownsRef) registry.unregister(args.id, ref);
 		return;
@@ -2933,7 +2933,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const parentDepth = options.taskDepth ?? 0;
 	const childDepth = parentDepth + 1;
 	const atMaxDepth = maxRecursionDepth >= 0 && childDepth >= maxRecursionDepth;
-	const ircEnabled = options.enableIrc !== false && isIrcEnabled(subagentSettings, childDepth);
+	const mircEnabled = options.enableMirc !== false && isMircEnabled(subagentSettings, childDepth);
 
 	// Add tools if specified
 	let toolNames: string[] | undefined;
@@ -2999,8 +2999,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const progress = monitor.progress;
 	let unsubscribe: (() => void) | null = null;
 	let reviveSession: AgentReviver | null = null;
-	const installIrcWakeTurnMonitor = (target: AgentSession): void => {
-		attachIrcWakeTurnMonitor(target, {
+	const installMircWakeTurnMonitor = (target: AgentSession): void => {
+		attachMircWakeTurnMonitor(target, {
 			id,
 			index,
 			agent,
@@ -3250,7 +3250,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			const { normalized: normalizedOutputSchema } = normalizeSchema(outputSchema);
 			// Root resolved by the latest roster ensure; the prompt callback renders
 			// live peer rows scoped to it, so a session switch hides stale parked trees.
-			let ircRootSessionFile: string | undefined;
+			let mircRootSessionFile: string | undefined;
 
 			// Captured by the lifecycle reviver: rebuilding an equivalent session from
 			// the same JSONL file re-invokes createAgentSession with the exact options
@@ -3291,8 +3291,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				preloadedPreparedExtensions: restrictToolNames ? [] : options.preloadedPreparedExtensions,
 				preloadedCustomToolPaths: restrictToolNames ? [] : options.preloadedCustomToolPaths,
 				systemPrompt: defaultPrompt => {
-					const ircRoster = ircEnabled
-						? collectIrcPeerRoster(AgentRegistry.global(), id, ircRootSessionFile)
+					const mircRoster = mircEnabled
+						? collectMircPeerRoster(AgentRegistry.global(), id, mircRootSessionFile)
 						: undefined;
 					const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
 						agent: agent.systemPrompt,
@@ -3302,10 +3302,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						worktree: worktree ?? "",
 						outputSchema: normalizedOutputSchema,
 						outputSchemaOverridesAgent: options.outputSchemaOverridesAgent === true,
-						ircPeers: ircRoster?.peers ?? [],
-						ircParkedCount: ircRoster?.parkedCount ?? 0,
-						ircOmittedCount: ircRoster?.omittedCount ?? 0,
-						ircSelfId: ircEnabled ? id : "",
+						mircPeers: mircRoster?.peers ?? [],
+						mircParkedCount: mircRoster?.parkedCount ?? 0,
+						mircOmittedCount: mircRoster?.omittedCount ?? 0,
+						mircSelfId: mircEnabled ? id : "",
 					});
 					return defaultPrompt.length === 0
 						? [subagentPrompt]
@@ -3329,7 +3329,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				agentName: agent.name,
 				expectedAgentRef,
 				enableLsp: lspEnabled,
-				enableIrc: options.enableIrc,
+				enableMirc: options.enableMirc,
 				skipPythonPreflight,
 				enableMCP,
 				mcpManager,
@@ -3347,8 +3347,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				sessionManager.adoptArtifactManager(options.parentArtifactManager);
 			}
 			sessionOpenedAt = performance.now();
-			if (ircEnabled) {
-				ircRootSessionFile = await ensurePersistedRoster(
+			if (mircEnabled) {
+				mircRootSessionFile = await ensurePersistedRoster(
 					AgentRegistry.global(),
 					sessionManager.getSessionFile() ??
 						sessionFile ??
@@ -3386,8 +3386,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					if (options.parentArtifactManager) {
 						reopened.adoptArtifactManager(options.parentArtifactManager);
 					}
-					if (ircEnabled) {
-						ircRootSessionFile = await ensurePersistedRoster(
+					if (mircEnabled) {
+						mircRootSessionFile = await ensurePersistedRoster(
 							AgentRegistry.global(),
 							reopened.getSessionFile() ??
 								sessionFile ??
@@ -3410,7 +3410,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 							logger.error("Extension error", { path: err.extensionPath, error: err.error }),
 					});
 					AgentRegistry.global().syncSessionStatus(id, revived);
-					installIrcWakeTurnMonitor(revived);
+					installMircWakeTurnMonitor(revived);
 					return revived;
 				};
 			}
@@ -3642,7 +3642,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (session) {
 				monitor.captureSalvage(session);
 				if (options.keepAlive !== false && worktree === undefined) {
-					installIrcWakeTurnMonitor(session);
+					installMircWakeTurnMonitor(session);
 				}
 				await finalizeSubagentLifecycle({
 					id,

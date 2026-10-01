@@ -1,7 +1,7 @@
-"""Gateway boot seam for the IRC observatory.
+"""Gateway boot seam for the MIRC observatory.
 
 The gateway owns the whole feature in-process: state.db rows, the
-OrchestratorRegistry, the RoomManager, and the IRC adapter (bot sink).
+OrchestratorRegistry, the RoomManager, and the MIRC adapter (bot sink).
 ``try_boot_sidecar`` (name kept for the run.py call site) does the sync
 boot on a daemon thread; ``boot_resync`` runs after adapters connect
 (join live channels, drain the frame queue, replay the exit journal,
@@ -228,13 +228,13 @@ async def boot_resync(
         except Exception:
             live = []
         bot = get_bot_sink()
-        lounge_nick = ""
+        mlounge_nick = ""
         try:
-            from observatory.provision import get_lounge_nick as _lounge_nick
+            from observatory.provision import get_mlounge_nick as _mlounge_nick
 
-            lounge_nick = str(_lounge_nick(None) or "")
+            mlounge_nick = str(_mlounge_nick(None) or "")
         except Exception:
-            lounge_nick = ""
+            mlounge_nick = ""
         for row in live:
             try:
                 channel = str((row or {}).get("room_id") or "")
@@ -267,8 +267,8 @@ async def boot_resync(
                                 # INVITE is the nudge The Lounge needs —
                                 # without it a restart leaves the user
                                 # with just the lobby.
-                                if lounge_nick:
-                                    await bot.invite_user(lounge_nick, channel)
+                                if mlounge_nick:
+                                    await bot.invite_user(mlounge_nick, channel)
                             except Exception:
                                 pass
                     except Exception:

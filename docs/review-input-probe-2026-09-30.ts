@@ -1,8 +1,8 @@
 import {createRequire} from "node:module";
-import input from "../third_party/thelounge/server/plugins/inputs/msg";
+import input from "../third_party/mlounge/server/plugins/inputs/msg";
 
 // Exercise the real input handler and IRC framework splitter without a connection.
-const require = createRequire(new URL("../third_party/thelounge/package.json", import.meta.url));
+const require = createRequire(new URL("../third_party/mlounge/package.json", import.meta.url));
 const {Client} = require("irc-framework");
 const client = new Client({message_max_length: 40});
 client.network.cap.isEnabled = () => true;

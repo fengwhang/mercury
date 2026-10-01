@@ -1,8 +1,8 @@
-"""Uninstall must remove the custom chat surface: lounge unit + strays.
+"""Uninstall must remove the custom chat surface: mlounge unit + strays.
 
-The Lounge fork install (unit file, prefix tree, npm cache, lounge home)
+The Lounge fork install (unit file, prefix tree, npm cache, mlounge home)
 lives partly outside $MERCURY_HOME, so the home rmtree cannot reach it.
-Full uninstall must stop/disable/delete mercury-lounge.service and kill
+Full uninstall must stop/disable/delete mercury-mlounge.service and kill
 stray thelounge processes — otherwise `mercury-nightly uninstall`
 leaves a zombie chat server behind.
 """
@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 
-def test_stop_and_remove_units_removes_lounge_unit(tmp_path, monkeypatch) -> None:
+def test_stop_and_remove_units_removes_mlounge_unit(tmp_path, monkeypatch) -> None:
     from observatory import provision as provision_mod
 
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -33,7 +33,7 @@ def test_stop_and_remove_units_removes_lounge_unit(tmp_path, monkeypatch) -> Non
     assert ["stop", "mercury-lounge.service"] in stops
 
 
-def test_kill_stray_lounge_kills_thelounge(tmp_path, monkeypatch) -> None:
+def test_kill_stray_mlounge_kills_thelounge(tmp_path, monkeypatch) -> None:
     import os as _os
     import types as _types
     from observatory import provision as provision_mod
@@ -45,12 +45,12 @@ def test_kill_stray_lounge_kills_thelounge(tmp_path, monkeypatch) -> None:
     killed: list[int] = []
     monkeypatch.setattr(
         _os, "kill", lambda pid, sig: killed.append(pid) or None)
-    out = provision_mod._kill_stray_lounge()
+    out = provision_mod._kill_stray_mlounge()
     assert out == [4242, 9999]
     assert killed == [4242, 9999]
 
 
-def test_observatory_data_present_sees_lounge_only(tmp_path, monkeypatch) -> None:
+def test_observatory_data_present_sees_mlounge_only(tmp_path, monkeypatch) -> None:
     from observatory import provision as provision_mod
 
     home = tmp_path / "mercury"
@@ -59,7 +59,7 @@ def test_observatory_data_present_sees_lounge_only(tmp_path, monkeypatch) -> Non
     assert provision_mod.observatory_data_present(home) is True
 
 
-def test_remove_units_calls_stray_lounge_killer(monkeypatch) -> None:
+def test_remove_units_calls_stray_mlounge_killer(monkeypatch) -> None:
     from mercury_cli import uninstall as uninstall_mod
 
     calls: list[str] = []
@@ -70,7 +70,7 @@ def test_remove_units_calls_stray_lounge_killer(monkeypatch) -> None:
         "observatory.provision._kill_stray_tuwunel",
         lambda: calls.append("tuwunel") or [])
     monkeypatch.setattr(
-        "observatory.provision._kill_stray_lounge",
-        lambda: calls.append("lounge") or [])
+        "observatory.provision._kill_stray_mlounge",
+        lambda: calls.append("mlounge") or [])
     uninstall_mod._remove_observatory_units_only()
-    assert "lounge" in calls
+    assert "mlounge" in calls

@@ -1,4 +1,4 @@
-"""IRC adapter drop teardown + bounded connect sends (reconnect hygiene)."""
+"""MIRC adapter drop teardown + bounded connect sends (reconnect hygiene)."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ import asyncio
 import pytest
 
 
-def _irc_adapter():
+def _mirc_adapter():
     from unittest.mock import AsyncMock, MagicMock
 
     from gateway.config import PlatformConfig
-    from plugins.platforms.irc.adapter import IRCAdapter
+    from plugins.platforms.mirc.adapter import MIRCAdapter
 
     cfg = PlatformConfig(
         enabled=True,
@@ -19,7 +19,7 @@ def _irc_adapter():
                "nickname": "testbot", "channel": "#test",
                "use_tls": False},
     )
-    adapter = IRCAdapter(cfg)
+    adapter = MIRCAdapter(cfg)
     writer = MagicMock()
     writer.is_closing = MagicMock(return_value=False)
     writer.write = MagicMock()
@@ -35,7 +35,7 @@ def test_drop_teardown_cleans_stale_state(monkeypatch) -> None:
     import observatory.rooms as rooms_mod
     from gateway import status as status_mod
 
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
     closed: list[bool] = []
     adapter._writer.close = lambda: closed.append(True)  # type: ignore[method-assign]
     adapter._registered = True
@@ -61,7 +61,7 @@ def test_drop_teardown_cleans_stale_state(monkeypatch) -> None:
 async def test_remote_eof_stops_handler_and_reports_retryable_drop(monkeypatch):
     from unittest.mock import AsyncMock
 
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
     adapter._reader = asyncio.StreamReader()
     adapter._reader.feed_eof()
     adapter._mark_connected()
@@ -78,7 +78,7 @@ async def test_remote_eof_stops_handler_and_reports_retryable_drop(monkeypatch):
 async def test_stale_receiver_cannot_stop_new_handler(monkeypatch):
     from unittest.mock import AsyncMock
 
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
     adapter._conn_generation = 1
     adapter._mark_connected()
     writer = adapter._writer
@@ -103,7 +103,7 @@ async def test_stale_receiver_cannot_stop_new_handler(monkeypatch):
 
 def test_drop_teardown_never_raises() -> None:
     """Empty adapter (no writer, sink, or lock) is a safe no-op."""
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
     adapter._writer = None
     adapter._drop_teardown()
 
@@ -113,7 +113,7 @@ async def test_send_raw_timeout_bounds_hung_drain() -> None:
     """A half-open socket fails loud instead of stalling connect()."""
     from unittest.mock import AsyncMock, MagicMock
 
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
 
     async def _hang():
         await asyncio.sleep(30)
@@ -134,7 +134,7 @@ def test_stale_generation_leaves_newer_connection_alone() -> None:
     other forever."""
     import observatory.rooms as rooms_mod
 
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
     closed: list[bool] = []
     adapter._writer.close = lambda: closed.append(True)  # type: ignore[method-assign]
     adapter._registered = True
@@ -153,7 +153,7 @@ def test_stale_generation_leaves_newer_connection_alone() -> None:
 
 def test_current_generation_acts() -> None:
     """A matching generation performs the full teardown."""
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
     closed: list[bool] = []
     adapter._writer.close = lambda: closed.append(True)  # type: ignore[method-assign]
     adapter._conn_generation = 2
@@ -167,7 +167,7 @@ async def test_send_raw_default_path_unchanged() -> None:
     """Without a timeout the drain awaits normally (today's behavior)."""
     from unittest.mock import AsyncMock
 
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
     drained: list[bool] = []
 
     async def _ok():

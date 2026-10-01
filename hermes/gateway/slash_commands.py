@@ -6443,8 +6443,8 @@ class GatewaySlashCommandsMixin:
 
         self._schedule_update_notification_watch()
         return t("gateway.update.starting")
-    # --- IRC observatory spawned-orchestrator lifecycle --------------------
-    # /spawn + /spawnomp create 0-agents (one IRC channel each, bot JOINs);
+    # --- MIRC observatory spawned-orchestrator lifecycle --------------------
+    # /spawn + /spawnomp create 0-agents (one MIRC channel each, bot JOINs);
     # /exit ends them from their own rooms (engine stop + server-side
     # channel destroy). Handles come from platform_hook.LAST_BOOT — the
     # gateway owns the whole feature in-process (no sidecar, no registry
@@ -6497,7 +6497,7 @@ class GatewaySlashCommandsMixin:
             return ""
 
     def _observatory_caller_channel(self, event):
-        """IRC channel the command came from ('' when unknown)."""
+        """MIRC channel the command came from ('' when unknown)."""
         try:
             source = getattr(event, "source", None)
             return str(getattr(source, "chat_id", "") or "")
@@ -6505,7 +6505,7 @@ class GatewaySlashCommandsMixin:
             return ""
 
     def _observatory_live_channels(self):
-        """Lowered channels the live IRC adapter has joined (never raises)."""
+        """Lowered channels the live MIRC adapter has joined (never raises)."""
         try:
             from gateway.config import Platform
 

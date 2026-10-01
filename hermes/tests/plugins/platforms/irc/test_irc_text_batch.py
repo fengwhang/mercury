@@ -17,7 +17,7 @@ import pytest
 
 def _adapter(monkeypatch, delay: float = 0.05):
     from gateway.config import PlatformConfig
-    from plugins.platforms.irc import adapter as adapter_mod
+    from plugins.platforms.mirc import adapter as adapter_mod
 
     for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
                 "IRC_USE_TLS", "IRC_MANAGED_BY", "IRC_TEXT_BATCH_DELAY_SECONDS"):
@@ -28,7 +28,7 @@ def _adapter(monkeypatch, delay: float = 0.05):
                "nickname": "nixpi4b_gateway", "channel": "#nixpi4b_gateway",
                "text_batch_delay_seconds": delay},
     )
-    return adapter_mod.IRCAdapter(cfg)
+    return adapter_mod.MIRCAdapter(cfg)
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,7 @@ def test_default_batch_window_is_subperceptual(monkeypatch) -> None:
     """No end-of-paste marker exists on the wire, so a short hold is
     inherent — but it must stay below human perception, not a full second."""
     from gateway.config import PlatformConfig
-    from plugins.platforms.irc import adapter as adapter_mod
+    from plugins.platforms.mirc import adapter as adapter_mod
 
     for key in ("IRC_SERVER", "IRC_TEXT_BATCH_DELAY_SECONDS"):
         monkeypatch.delenv(key, raising=False)
@@ -101,4 +101,4 @@ def test_default_batch_window_is_subperceptual(monkeypatch) -> None:
         extra={"server": "127.0.0.1", "port": 6669,
                "nickname": "nixpi4b_gateway", "channel": "#nixpi4b_gateway"},
     )
-    assert adapter_mod.IRCAdapter(cfg)._irc_batch_delay == 0.25
+    assert adapter_mod.MIRCAdapter(cfg)._mirc_batch_delay == 0.25

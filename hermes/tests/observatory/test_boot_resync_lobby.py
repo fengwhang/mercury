@@ -1,4 +1,4 @@
-"""boot_resync invites the lounge client to the lobby without a setup run."""
+"""boot_resync invites the mlounge client to the lobby without a setup run."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ async def test_resync_subscribes_lobby(monkeypatch) -> None:
     monkeypatch.setattr(
         provision_mod, "live_server_name", lambda home=None: "vm")
     monkeypatch.setattr(
-        provision_mod, "get_lounge_nick", lambda home=None: "owner")
+        provision_mod, "get_mlounge_nick", lambda home=None: "owner")
     report = await hook.boot_resync(
         manager=_FakeManager(), state=_FakeState())
     assert report.get("lobby") == "#vm_gateway"
@@ -108,7 +108,7 @@ async def test_resync_rebuilds_live_omp_child(monkeypatch) -> None:
     monkeypatch.setattr(
         provision_mod, "live_server_name", lambda home=None: "vm")
     monkeypatch.setattr(
-        provision_mod, "get_lounge_nick", lambda home=None: "owner")
+        provision_mod, "get_mlounge_nick", lambda home=None: "owner")
     registry = _FakeRegistry()
     report = await hook.boot_resync(
         manager=None, state=_LiveState(), registry=registry)
@@ -120,9 +120,9 @@ async def test_resync_rebuilds_live_omp_child(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resync_rejoins_hermes_rooms_and_invites_lounge(monkeypatch) -> None:
+async def test_resync_rejoins_hermes_rooms_and_invites_mlounge(monkeypatch) -> None:
     """Observatory restart must respawn hermes rooms too, not just the
-    gateway: every live channel is re-JOINed and the lounge is invited
+    gateway: every live channel is re-JOINed and the mlounge is invited
     to each (spawn parity — the lobby-only invite left spawned rooms
     invisible)."""
     import observatory.platform_hook as hook
@@ -162,7 +162,7 @@ async def test_resync_rejoins_hermes_rooms_and_invites_lounge(monkeypatch) -> No
     monkeypatch.setattr(
         provision_mod, "live_server_name", lambda home=None: "vm")
     monkeypatch.setattr(
-        provision_mod, "get_lounge_nick", lambda home=None: "owner")
+        provision_mod, "get_mlounge_nick", lambda home=None: "owner")
     report = await hook.boot_resync(
         manager=None, state=_LiveState(), registry=_FakeRegistry())
     assert "#vm_gateway" in joined

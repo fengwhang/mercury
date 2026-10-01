@@ -13,8 +13,8 @@ class Utils {
 	static extraHelp(this: void) {
 		[
 			"",
-			"Environment variable:",
-			`  THELOUNGE_HOME            Path for all configuration files and folders. Defaults to ${colors.green(
+			"Environment variables (THELOUNGE_HOME is a legacy alias):",
+			`  MLOUNGE_HOME              Path for all configuration files and folders. Defaults to ${colors.green(
 				Helper.expandHome(Utils.defaultHome())
 			)}`,
 			"",

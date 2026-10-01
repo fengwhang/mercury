@@ -18,7 +18,7 @@ import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.m
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { TaskEffort } from "../thinking";
 import type { ToolSession } from "../tools";
-import { isIrcEnabled } from "../tools/hub";
+import { isMircEnabled } from "../tools/hub";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
@@ -108,8 +108,8 @@ export interface StructuredSubagentRequest {
 	shareEvalSession?: boolean;
 	/** Task frontends may inherit LSP; eval frontends normally set this false. */
 	enableLsp?: boolean;
-	/** Explicitly pass false for plan mode or invocation kinds that must not use IRC. */
-	enableIrc?: boolean;
+	/** Explicitly pass false for plan mode or invocation kinds that must not use MIRC. */
+	enableMirc?: boolean;
 	/** `0` disables executor wall-clock timeout. Undefined inherits settings. */
 	maxRuntimeMs?: number;
 	signal?: AbortSignal;
@@ -132,7 +132,7 @@ export interface EffectiveSubagentPolicy {
 	mergeMode: "patch" | "branch";
 	applyChanges: boolean;
 	enableLsp: boolean;
-	enableIrc: boolean;
+	enableMirc: boolean;
 }
 
 /** Settled child execution plus data needed by the frontends' own rendering. */
@@ -319,11 +319,11 @@ export async function resolveEffectiveSubagentPolicy(
 		enableLsp:
 			!planMode &&
 			(request.enableLsp ?? ((request.session.enableLsp ?? true) && request.session.settings.get("task.enableLsp"))),
-		enableIrc:
+		enableMirc:
 			!planMode &&
-			(request.enableIrc ??
-				(request.session.enableIrc !== false &&
-					isIrcEnabled(request.session.settings, request.session.taskDepth ?? 0))),
+			(request.enableMirc ??
+				(request.session.enableMirc !== false &&
+					isMircEnabled(request.session.settings, request.session.taskDepth ?? 0))),
 	};
 }
 
@@ -422,7 +422,7 @@ function buildExecutorOptions(
 		persistArtifacts: !lease.temporary,
 		artifactsDir: lease.artifactsDir,
 		enableLsp: policy.enableLsp,
-		enableIrc: policy.enableIrc,
+		enableMirc: policy.enableMirc,
 		maxRuntimeMs: request.maxRuntimeMs,
 		restrictToolNames,
 		keepAlive: request.keepAlive,

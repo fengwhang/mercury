@@ -297,4 +297,76 @@ describe("tools.approvalMode setting", () => {
 			});
 		}
 	});
+	it("a live Mercury policy controls grandchild commands without restarting the room", async () => {
+		const profile = path.join(tempDir, "mercury-live-policy.yaml");
+		const writePolicy = (text: string) => fs.writeFileSync(profile, text);
+		writePolicy(
+			'approvals: {mode: yolo}\nomp:\n  # Mercury inherited deny patterns: [{"match":"*ECHO DENIED*","approval":"deny"}]\n  tools: {approvalMode: yolo}\n',
+		);
+		const root = Settings.isolated({
+			...BASE_SETTINGS,
+			"tools.approvalMode": "yolo",
+			"bash.patterns": [
+				{ match: "echo *", approval: "allow" },
+				{ match: "*ECHO DENIED*", approval: "deny" },
+			],
+		}).useMercuryApprovalPolicy(profile);
+		const family = createSubagentSettings(createSubagentSettings(root));
+		const created = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			settings: family,
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			workspaceTree: emptyWorkspaceTree(tempDir),
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			enableMirc: false,
+			toolNames: ["bash"],
+		});
+		let prompts = 0;
+		const originalUI = created.session.extensionRunner!.getUIContext();
+		await initializeExtensions(created.session, {
+			uiContext: forwardApprovalUI(
+				{
+					...originalUI,
+					select: async () => {
+						prompts++;
+						return "Approve";
+					},
+				},
+				"grandchild",
+			),
+			reportSendError: () => {},
+			reportRuntimeError: () => {},
+		});
+		const tool = created.session.getToolByName("bash")!;
+		const execute = (command: string) =>
+			tool.execute("live-policy", { command }, undefined, undefined, { settings: family } as AgentToolContext);
+		try {
+			expect(textOf(await execute("printf live-yolo"))).toContain("live-yolo");
+			expect(prompts).toBe(0);
+			writePolicy("approvals: {mode: safe}\n");
+			expect(textOf(await execute("printf live-safe"))).toContain("live-safe");
+			expect(prompts).toBe(1);
+			writePolicy("approvals: {mode: smart}\n");
+			await execute("printf live-smart");
+			expect(prompts).toBe(2);
+			writePolicy('approvals: {mode: yolo, deny: ["*ECHO DENIED*"]}\n');
+			await expect(execute("echo denied")).rejects.toThrow(/Blocked by bash pattern/);
+			expect(prompts).toBe(2);
+			writePolicy("approvals: {mode: yolo, deny: []}\n");
+			expect(textOf(await execute("echo denied"))).toContain("denied");
+			writePolicy("approvals: {mode: yolo, deny: invalid}\n");
+			await expect(execute("printf invalid-policy-must-not-run")).rejects.toThrow(
+				/Cannot enforce Mercury approval policy/,
+			);
+		} finally {
+			await created.session.dispose();
+		}
+	});
 });

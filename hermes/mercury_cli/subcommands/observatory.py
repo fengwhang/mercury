@@ -153,7 +153,7 @@ def _print_doctor() -> None:
 
 
 def _cmd_restart(args) -> int:
-    """Freshen the chat surface: daemon + lounge fork + gateway, then verify.
+    """Freshen the chat surface: daemon + mlounge fork + gateway, then verify.
 
     A service unit bakes an interpreter path at render time, so a plain
     restart re-runs whatever tree was current when the unit was last
@@ -180,19 +180,19 @@ def _cmd_restart(args) -> int:
         print(f"daemon: FAILED ({unit_result})", file=sys.stderr)
         return 1
     try:
-        from observatory import lounge as lounge_mod
+        from observatory import mlounge as mlounge_mod
 
-        configured = bool(lounge_mod.status_lounge().get("configured"))
+        configured = bool(mlounge_mod.status_mlounge().get("configured"))
     except Exception:  # noqa: BLE001 — a broken status read skips, never kills
         configured = False
     if configured:
         try:
-            lounge_result = lounge_mod.refresh_lounge_fork()
+            mlounge_result = mlounge_mod.refresh_mlounge_fork()
         except Exception as exc:  # noqa: BLE001 — refresh never kills restart
-            lounge_result = f"skipped-error: {exc}"
-        print(f"lounge: {lounge_result}")
+            mlounge_result = f"skipped-error: {exc}"
+        print(f"mLounge: {mlounge_result}")
     else:
-        print("lounge: not installed, skipping")
+        print("mLounge: not installed, skipping")
     if _restart_gateway_now() != 0:
         return 1
     try:
@@ -257,13 +257,13 @@ def _verify_fleet(args) -> int:
         print(f"fleet: resync reported: {failure}")
     try:
         from observatory.doctor import _Probe
-        from observatory.provision import read_config, read_irc_passwords
+        from observatory.provision import read_config, read_mirc_passwords
     except Exception as exc:
         print(f"fleet: probe unavailable ({exc})", file=sys.stderr)
         return 1
     try:
         cfg = read_config(home) or {}
-        pw = read_irc_passwords(home) or {}
+        pw = read_mirc_passwords(home) or {}
         host = str(cfg.get("server_host") or "127.0.0.1")
         port = int(cfg.get("server_port") or 6670)
         secret = str(pw.get("server") or "")

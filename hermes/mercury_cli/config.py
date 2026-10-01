@@ -6534,7 +6534,7 @@ _inject_profile_env_vars()
 # Bundled platform plugins under ``plugins/platforms/*/plugin.yaml`` declare
 # their required env vars via ``requires_env``.  This mirror of
 # ``_inject_profile_env_vars`` surfaces them in ``mercury config`` UI so users
-# can configure Teams / IRC / Google Chat without the core repo ever needing
+# can configure Teams / MIRC / Google Chat without the core repo ever needing
 # to know they exist.
 #
 # Each ``requires_env`` entry may be a bare string (name only) or a dict:

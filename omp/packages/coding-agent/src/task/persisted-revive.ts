@@ -13,7 +13,7 @@ import type { AgentSession } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
 import { SessionManager } from "../session/session-manager";
 import type { EventBus } from "../utils/event-bus";
-import { attachIrcWakeTurnMonitor, createMCPProxyTools, createSubagentSettings } from "./executor";
+import { attachMircWakeTurnMonitor, createMCPProxyTools, createSubagentSettings } from "./executor";
 import type { AgentDefinition } from "./types";
 
 /**
@@ -31,7 +31,7 @@ export interface PersistedSubagentReviveContext {
 	enableLsp: boolean;
 	/**
 	 * Shared event bus feeding RPC/collab subagent subscriptions. Passed through
-	 * to the wake-turn monitor so an IRC send to a cold-revived subagent emits
+	 * to the wake-turn monitor so an MIRC send to a cold-revived subagent emits
 	 * the same lifecycle/progress frames a live run does.
 	 */
 	eventBus?: EventBus;
@@ -44,7 +44,7 @@ export interface PersistedSubagentReviveContext {
  * `parked` subagent ref restored from disk (Agent Hub scan, collab mirror, or a
  * resumed process). Such a ref carries a sessionFile but no in-memory adoption —
  * the executor's live reviver closure died with the process/turn that spawned
- * it — so `ensureLive` (IRC sends, hub focus) would otherwise refuse it.
+ * it — so `ensureLive` (MIRC sends, hub focus) would otherwise refuse it.
  *
  * This rebuilds the subagent the same way `--resume` rebuilds a session: reopen
  * the JSONL and replay it through {@link createAgentSession}. The catch is that
@@ -171,7 +171,7 @@ export function createPersistedSubagentReviverFactory(
 				enableLsp: restrictToolNames ? false : ctx.enableLsp,
 				...(restrictToolNames
 					? {
-							enableIrc: false,
+							enableMirc: false,
 							enableMCP: false,
 							preloadedExtensionPaths: [],
 							preloadedPreparedExtensions: [],
@@ -211,7 +211,7 @@ export function createPersistedSubagentReviverFactory(
 				systemPrompt: init.systemPrompt,
 				source: "user",
 			};
-			attachIrcWakeTurnMonitor(session, {
+			attachMircWakeTurnMonitor(session, {
 				id: ref.id,
 				agent: wakeAgent,
 				eventBus: ctx.eventBus,

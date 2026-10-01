@@ -1,6 +1,6 @@
-"""Thinking faces for IRC rooms: a random kaomoji while hermes thinks.
+"""Thinking faces for MIRC rooms: a random kaomoji while hermes thinks.
 
-The CLI shows KawaiiSpinner faces during reasoning; IRC has no typing
+The CLI shows KawaiiSpinner faces during reasoning; MIRC has no typing
 indicator, so gateway-dispatch turns post one face message when a turn
 runs long. Delayed (THINKING_FACE_DELAY_S) so instant answers stay
 silent; at most one outstanding face per room; cleared the moment the

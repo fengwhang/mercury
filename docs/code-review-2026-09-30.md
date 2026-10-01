@@ -1,19 +1,26 @@
 # Mercury integration code review — September 30, 2026
 
-Reviewed revision: `37248f1d` (v0.2.20). This review found **eight actionable
-issues**, including two high-priority integrity/policy failures. The README
-was rewritten against the implementation and current primary project docs.
-The findings below are open; this documentation change does not fix them.
+Initial reviewed revision: `37248f1d` (v0.2.20). Follow-up review covers
+Mercury release identity, the sole OMP task model, mLounge/MIRC naming,
+shared permissions, and approval routing through cross-engine families.
+**Findings 2, 4, and 7 are now resolved.** Findings 1, 3, 5, 6, and 8 remain
+open; their reproductions and suggested fixes are retained below.
+
+The current changes also fix lost descendant approval context, forced child
+YOLO, rejected non-shell OMP prompts, background approval-route teardown,
+case-sensitive deny matching, allow-before-deny bypasses, and stale OMP policy
+in running rooms. They do not restore multiple OMP model roles: **task is the
+only model role**, and legacy role assignments remain inert.
 
 ## Coverage and method
 
 The review covered Mercury's install/release scripts and launcher, the
 configuration bridge, provider credential sharing, profile/state boundaries,
 OMP delegation and RPC approvals, scheduled OMP execution, Observatory
-provisioning/identity/room routing, IRC message transport, Lounge rendering,
+provisioning/identity/room routing, MIRC message transport, mLounge rendering,
 uploads, and the web setup path. It combined source inspection with the
 existing suites and synthetic reproductions, including a local TCP peer for
-the standalone IRC sender and the real Lounge input handler/framework splitter.
+the standalone MIRC sender and the real mLounge input handler/framework splitter.
 
 This is a repository-wide integration review with deeper inspection of
 Mercury's own changes and their call sites. It is not a line-by-line audit of
@@ -48,7 +55,7 @@ verify it before parsing/extracting the archive, and leave the installed tree
 untouched on any sidecar failure. Apply the same required-sidecar rule to
 [install.sh](../install.sh#L373), which currently treats the sidecar as optional.
 
-### 2. [P1] Valid YAML deny lists can disappear in OMP's policy
+### 2. [Resolved; originally P1] Valid YAML deny lists can disappear in OMP's policy
 
 Location: [bridge.py](../bridge/bridge.py#L398).
 
@@ -98,7 +105,7 @@ the digest repair only to equal versions. Decide explicitly whether the nightly
 selector should include promoted releases or simply report the installed newer
 version as current.
 
-### 4. [P2] Rendering the bridge deletes unrelated OMP settings
+### 4. [Resolved; originally P2] Rendering the bridge deletes unrelated OMP settings
 
 Location: [bridge.py](../bridge/bridge.py#L568).
 
@@ -118,9 +125,9 @@ rule for any managed leaves the bridge deliberately overrides.
 
 ### 5. [P2] Pasted source is changed on the Lounge → agent path
 
-Locations: [Lounge msg.ts](../third_party/thelounge/server/plugins/inputs/msg.ts#L119),
-[adapter.py tag parsing](../hermes/plugins/platforms/irc/adapter.py#L1077), and
-[batch closing](../hermes/plugins/platforms/irc/adapter.py#L1183).
+Locations: [Lounge msg.ts](../third_party/mlounge/server/plugins/inputs/msg.ts#L119),
+[adapter.py tag parsing](../hermes/plugins/platforms/mirc/adapter.py#L1077), and
+[batch closing](../hermes/plugins/platforms/mirc/adapter.py#L1183).
 
 The Lounge drops empty lines before opening a multiline batch. Its use of
 `irc-framework.say()` also wraps long logical lines into several physical
@@ -141,7 +148,7 @@ adapter dispatch, including source with indentation and long lines.
 
 ### 6. [P2] Scheduled IRC replies still corrupt Markdown and shell commands
 
-Location: [adapter.py](../hermes/plugins/platforms/irc/adapter.py#L1740).
+Location: [adapter.py](../hermes/plugins/platforms/mirc/adapter.py#L1740).
 
 `_standalone_send`, used by cron/out-of-process delivery, still calls the old
 regex Markdown stripper, sends ordinary untyped `PRIVMSG`s, removes blank lines,
@@ -159,9 +166,9 @@ replies. Negotiate capabilities, preserve code and whitespace, and explicitly
 mark assistant replies. Define a lossless plaintext fallback for peers without
 multiline support.
 
-### 7. [P2] Upload denial checks lose protected paths through symlinks
+### 7. [Resolved; originally P2] Upload denial checks lose protected paths through symlinks
 
-Location: [lounge.py](../hermes/observatory/lounge.py#L846).
+Location: [mlounge.py](../hermes/observatory/mlounge.py).
 
 `stage_lounge_upload` resolves a source before checking its path. If an
 operator's `.ssh` directory is a symlink to an external directory, an input
@@ -184,7 +191,7 @@ intended as a security boundary.
 
 Locations: [provision.py](../hermes/observatory/provision.py#L622),
 [config_gen.py](../hermes/observatory/config_gen.py#L33), and
-[lounge.py](../hermes/observatory/lounge.py#L601).
+[lounge.py](../hermes/observatory/mlounge.py#L601).
 
 Stable and nightly have separate state homes, but both provision the same
 `~/.config/systemd/user/mercury-observatory.service` and
@@ -200,7 +207,48 @@ Recommended fix: namespace service identities and ports by installation/channel,
 or explicitly support a single shared Observatory with a defined owner. The
 README now recommends one Observatory installation per Linux user.
 
-## Validation results
+## Follow-up validation and remaining design work
+
+- Python approval/guard coverage: 135 passing checks before the branding rename.
+- Native OMP task/advisor/approval/MIRC coverage: 340 passing checks across
+  seven files, including 14 approval-mode checks. A separate persistence
+  test verifies native UI changes update the shared Hermes policy.
+- mLounge: all 329 Vitest tests pass, and the offline release-host build creates
+  the renamed `dist/mlounge-fork/tree` payload.
+- Bridge: all 41 standalone checks pass, including valid YAML deny lists,
+  preserving independent OMP settings, and managed deny-rule replacement.
+- Coding-agent type checking passes. The full OMP check still stops on nine
+  pre-existing formatting issues in unchanged files; lint reports warnings.
+
+Approval tests drive real tool wrappers and fake RPC processes/local sockets.
+They prove child/grandchild decisions reach the ancestor UI, explicit denials
+survive YOLO and earlier allows, background routes stay registered, and live
+profile changes affect running descendants. Browser-facing room tests exercise
+approval posting and replies. They do not constitute a paid-provider or real
+cross-device deployment test.
+
+Two follow-up improvements deserve separate changes:
+
+1. **Structured approval frames.** The OMP RPC bridge currently recognizes
+   Approve/Deny UI requests and reads the tool name and command from prompt
+   text. Non-shell paths containing a `Command:` line no longer masquerade as
+   Bash approvals, but the protocol should carry typed tool arguments,
+   ancestry, request ID, and cancellation semantics instead of parsing prose.
+   Keep this independent of model routing: no new model roles are needed.
+2. **One configuration write lock.** OMP saves under a file lock and merges
+   its subtree, while the Python bridge still rewrites the shared file without
+   that same lock. Concurrent bridge rendering and a user/OMP save can lose a
+   change. Use one cross-process lock and atomic replacement across all
+   writers, then test a concurrent update preserving both mutations. Also
+   persist managed deny ownership as structured metadata: YAML comments can
+   disappear during another writer's serialization.
+
+Upload checks now reject both the requested protected path and its resolved
+physical boundary, including symlinked `.ssh` roots. Race-resistant descriptor
+opening/copying remains a useful hardening follow-up if untrusted local
+processes can replace the source concurrently.
+
+## Original v0.2.20 validation results
 
 | Check | Result |
 | --- | --- |
@@ -256,7 +304,7 @@ handler with a disconnected IRC client. From the Lounge tree, with its
 development dependencies installed:
 
 ```bash
-cd third_party/thelounge
+cd third_party/mlounge
 npx tsx ../../docs/review-input-probe-2026-09-30.ts
 ```
 

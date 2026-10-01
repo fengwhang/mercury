@@ -368,7 +368,7 @@ describe("runEvalAgent", () => {
 		]);
 	});
 
-	it("keeps bridge kernels independent while inheriting non-plan LSP and IRC policy", async () => {
+	it("keeps bridge kernels independent while inheriting non-plan LSP and MIRC policy", async () => {
 		mockAgents();
 		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => singleResult(options));
 		// makeSession() defaults to enableLsp: true and task.enableLsp: true.
@@ -379,7 +379,7 @@ describe("runEvalAgent", () => {
 		const options = runSpy.mock.calls[0]?.[0];
 		if (!options) throw new Error("runSubprocess was not called");
 		expect(options.enableLsp).toBe(true);
-		expect(options.enableIrc).toBe(true);
+		expect(options.enableMirc).toBe(true);
 		expect(options.keepAlive).toBe(false);
 		expect(options.parentEvalSessionId).toBeUndefined();
 	});

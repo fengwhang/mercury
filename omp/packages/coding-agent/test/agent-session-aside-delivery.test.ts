@@ -9,7 +9,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { IrcBridge, type IrcBridgeHost } from "@oh-my-pi/pi-coding-agent/session/irc-bridge";
+import { MircBridge, type MircBridgeHost } from "@oh-my-pi/pi-coding-agent/session/mirc-bridge";
 import { convertToLlm, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionAdvisors } from "@oh-my-pi/pi-coding-agent/session/session-advisors";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -263,7 +263,7 @@ describe("AgentSession aside delivery", () => {
 		});
 
 		let observedRecords: unknown[] | undefined;
-		session.setIrcWakeTurnObserver(records => {
+		session.setMircWakeTurnObserver(records => {
 			observedRecords = records;
 			return undefined;
 		});
@@ -378,7 +378,7 @@ describe("AgentSession aside delivery", () => {
 		await session.sendUserMessage("LEAK_CANDIDATE_ASIDE", { deliverAs: "aside" });
 
 		// newSession() aborts the run first; the abort skips the loop's final aside poll, so
-		// without a clear the queued aside would still be sitting in IrcBridge and would flush
+		// without a clear the queued aside would still be sitting in MircBridge and would flush
 		// into the new session's transcript at the first ordinary prompt below.
 		expect(await session.newSession()).toBe(true);
 		await run.catch(() => {});
@@ -557,7 +557,7 @@ describe("AgentSession aside delivery", () => {
 
 	it("#queueCustomMessage resumes a stranded aside instead of leaving it queued with no loop to drain it", async () => {
 		// Regression for the race Codex flagged in #queueCustomMessage: it awaits image
-		// normalization before calling IrcBridge.queueAside, so the active run can settle to
+		// normalization before calling MircBridge.queueAside, so the active run can settle to
 		// idle during that await. If the queueAside call doesn't also resume stranded asides
 		// (as #queueUserMessage's aside branch already does), the record sits in the queue with
 		// no loop left to drain it until an unrelated prompt happens to flush it. Exercising
@@ -602,7 +602,7 @@ describe("AgentSession aside delivery", () => {
 		});
 
 		let observedRecords: unknown[] | undefined;
-		session.setIrcWakeTurnObserver(records => {
+		session.setMircWakeTurnObserver(records => {
 			observedRecords = records;
 			return undefined;
 		});
@@ -765,11 +765,11 @@ describe("AgentSession aside delivery", () => {
 
 	it("IrcBridge.restorePending merges a rolled-back snapshot ahead of records queued during the rollback instead of discarding them", () => {
 		// Regression: restorePending used to overwrite the queues wholesale, silently dropping any
-		// record queued between clearPending() and restorePending() (e.g. an in-flight IRC
+		// record queued between clearPending() and restorePending() (e.g. an in-flight MIRC
 		// auto-reply appending while a rolled-back switchSession's async load/hooks were still
 		// running). Exercise the bridge directly with a minimal host stub — the queue ops under
 		// test never touch the host.
-		const host: IrcBridgeHost = {
+		const host: MircBridgeHost = {
 			agent: {} as Agent,
 			sessionManager: {} as SessionManager,
 			settings: {} as Settings,
@@ -777,10 +777,10 @@ describe("AgentSession aside delivery", () => {
 			isStreaming: () => false,
 			planModeEnabled: () => false,
 			emitSessionEvent: async () => {},
-			wakeForIrc: () => {},
+			wakeForMirc: () => {},
 			runEphemeralTurn: async () => ({ replyText: "" }),
 		};
-		const irc = new IrcBridge(host);
+		const mirc = new MircBridge(host);
 
 		const original: AgentMessage = {
 			role: "user",
@@ -788,9 +788,9 @@ describe("AgentSession aside delivery", () => {
 			attribution: "user",
 			timestamp: Date.now(),
 		};
-		irc.queueAside([original]);
-		const snapshot = irc.clearPending();
-		expect(irc.hasPending()).toBe(false);
+		mirc.queueAside([original]);
+		const snapshot = mirc.clearPending();
+		expect(mirc.hasPending()).toBe(false);
 
 		// Simulates a record arriving while the rolled-back transition's async work was in flight.
 		const duringRollback: AgentMessage = {
@@ -799,18 +799,18 @@ describe("AgentSession aside delivery", () => {
 			attribution: "user",
 			timestamp: Date.now(),
 		};
-		irc.queueAside([duringRollback]);
+		mirc.queueAside([duringRollback]);
 
-		irc.restorePending(snapshot);
+		mirc.restorePending(snapshot);
 
-		const drained = irc.drainPending();
+		const drained = mirc.drainPending();
 		expect(drained).toHaveLength(2);
 		expect(drained[0]).toBe(original);
 		expect(drained[1]).toBe(duringRollback);
 	});
 
 	it("drops a queued aside whose normalization outlives a concurrent newSession()", async () => {
-		// Regression: #queueUserMessage's aside branch used to enqueue into IrcBridge
+		// Regression: #queueUserMessage's aside branch used to enqueue into MircBridge
 		// unconditionally after its normalization/vision-description awaits. If a
 		// newSession()/switchSession() completes (clearing the queue and, per the earlier
 		// stranded-aside fix, discarding whatever was queued at that instant) WHILE this

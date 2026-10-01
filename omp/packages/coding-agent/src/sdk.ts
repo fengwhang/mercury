@@ -235,7 +235,7 @@ import {
 } from "./tools";
 import { isMCPToolName, normalizeToolNames } from "./tools/builtin-names";
 import { ToolContextStore } from "./tools/context";
-import { isIrcEnabled } from "./tools/hub";
+import { isMircEnabled } from "./tools/hub";
 import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { isFilesystemSourcePath } from "./tools/path-utils";
@@ -543,7 +543,9 @@ export interface CreateAgentSessionOptions {
 	enableLsp?: boolean;
 	/** Restrict LSP to navigation and diagnostics even when enabled. Defaults to true for restricted sessions. */
 	lspReadOnly?: boolean;
-	/** Whether this invocation may expose IRC. `false` removes it even for subagents. */
+	/** Whether this invocation may expose MIRC. `false` removes it even for subagents. */
+	enableMirc?: boolean;
+	/** Legacy extension option; prefer enableMirc. */
 	enableIrc?: boolean;
 	/** Skip subprocess-kernel availability checks and prelude warmup */
 	skipPythonPreflight?: boolean;
@@ -570,16 +572,16 @@ export interface CreateAgentSessionOptions {
 	parentHindsightSessionState?: HindsightSessionState;
 	/** Parent Mnemopi state to alias for subagent memory tools. */
 	parentMnemopiSessionState?: MnemopiSessionState;
-	/** Pre-allocated agent identity for IRC routing. Default: "Main" for top-level, parentTaskPrefix-derived for sub. */
+	/** Pre-allocated agent identity for MIRC routing. Default: "Main" for top-level, parentTaskPrefix-derived for sub. */
 	agentId?: string;
-	/** Display name for the agent in IRC. Default: "main" or "sub". */
+	/** Display name for the agent in MIRC. Default: "main" or "sub". */
 	agentDisplayName?: string;
 	/**
 	 * Agent definition name used to evaluate rule `agents` scoping. Defaults to
 	 * "main" for a top-level session / "sub" for a subagent.
 	 */
 	agentName?: string;
-	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
+	/** Optional shared agent registry for MIRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistry;
 	/**
 	 * Registry generation authorized for this creation. `null` requires the id
@@ -1791,7 +1793,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			enableLsp,
 			lspReadOnly,
-			enableIrc: restrictToolNames ? false : options.enableIrc,
+			enableMirc: restrictToolNames ? false : (options.enableMirc ?? options.enableIrc),
 			restrictToolNames,
 			get hasEditTool() {
 				const requestedToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
@@ -3162,7 +3164,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				eagerTasksAlways,
 				taskBatch: settings.get("task.batch"),
 				taskMaxConcurrency: settings.get("task.maxConcurrency"),
-				taskIrcEnabled: !restrictToolNames && isIrcEnabled(settings, options.taskDepth ?? 0),
+				taskMircEnabled: !restrictToolNames && isMircEnabled(settings, options.taskDepth ?? 0),
 				autoQaEnabled: !restrictToolNames && isAutoQaEnabled(settings),
 				writeTransportOnly:
 					toolSession.deviceOnlyWrite === true && toolSession.pendingFullWriteDescription !== true,
@@ -3272,7 +3274,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		// Pre-register in the global agent registry BEFORE building the system prompt,
 		// so that subagents launched in the same parallel batch can see each other in
-		// their initial `# IRC Peers` block (rendered inside `rebuildSystemPrompt`).
+		// their initial `# MIRC Peers` block (rendered inside `rebuildSystemPrompt`).
 		// The session reference is attached after construction below.
 		const registrationInput = {
 			id: resolvedAgentId,
@@ -3467,7 +3469,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// a chat request to the provider transport. See onFirstChatDispatch.
 		let notifyFirstChatDispatch = options.onFirstChatDispatch;
 		// Shared, settings-aware stream wrapper used by the main agent, advisor,
-		// and side-channel requests (`/btw`, `/omfg`, IRC auto-replies, handoff).
+		// and side-channel requests (`/btw`, `/omfg`, MIRC auto-replies, handoff).
 		// Keeps OpenRouter sticky-routing variants, antigravity endpoint routing,
 		// in-flight caps, and the loop guard consistent across every provider call
 		// the session drives. Wrapped in a per-provider concurrency limiter so
@@ -3925,7 +3927,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			isStale: entry => entry.isStale(),
 		});
 
-		// Attach the live session to the pre-registered ref so peers can route IRC
+		// Attach the live session to the pre-registered ref so peers can route MIRC
 		// messages here. Refresh sessionFile in case it was unavailable at pre-register
 		// time. The dispose wrapper below unregisters on teardown (unless parked).
 		if (

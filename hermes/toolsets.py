@@ -948,7 +948,7 @@ def validate_toolset(name: str) -> bool:
     # Auto-generated platform composites (see resolve_toolset): valid when
     # the platform is registered. Without this, gateway sessions pass
     # e.g. "mercury-irc" in enabled_toolsets and lose the whole composite
-    # (lounge_share et al.) as "Unknown toolset".
+    # (mlounge_share et al.) as "Unknown toolset".
     if name.startswith("mercury-"):
         try:
             from gateway.platform_registry import platform_registry

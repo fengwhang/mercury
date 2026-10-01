@@ -1,7 +1,7 @@
 """Tests for Matrix MessageEvent metadata (sender, reply context).
 
 The matrix adapter builds MessageEvent from inbound room events. Other adapters
-(Signal, Slack, Telegram, Discord, Mattermost, IRC) populate the sender /
+(Signal, Slack, Telegram, Discord, Mattermost, MIRC) populate the sender /
 reply_to_* fields on MessageEvent so the gateway can:
   - prepend "[Name] message" to user prompt text in shared-multi-user sessions
   - render "[Replying to: ...]" with the replied-to author's name

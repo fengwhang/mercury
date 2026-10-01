@@ -327,9 +327,11 @@ class Platform(Enum):
 
     Built-in platforms have explicit members.  Plugin platforms use dynamic
     members created on-demand by ``_missing_()`` so that
-    ``Platform("irc")`` works without modifying this enum.  Dynamic members
+    ``Platform("mirc")`` works without modifying this enum.  Dynamic members
     are cached in ``_value2member_map_`` for identity-stable comparisons.
     """
+    MIRC = "irc"  # Persisted transport id kept for existing installations.
+    IRC = MIRC  # Legacy extension alias.
     LOCAL = "local"
     TELEGRAM = "telegram"
     DISCORD = "discord"
@@ -359,7 +361,7 @@ class Platform(Enum):
         """Accept unknown platform names only for known plugin adapters.
 
         Creates a pseudo-member cached in ``_value2member_map_`` so that
-        ``Platform("irc") is Platform("irc")`` holds True (identity-stable).
+        ``Platform("mirc") is Platform("mirc")`` holds True (identity-stable).
         Arbitrary strings are rejected to prevent enum pollution.
         """
         if not isinstance(value, str) or not value.strip():
@@ -2727,7 +2729,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             # see the same state they will after enablement. Without this,
             # Google-Chat-on-env-vars-only setups silently fail the gate
             # below even though the user is configured.  Plugins whose
-            # ``is_connected`` reads env vars directly (Discord, IRC,
+            # ``is_connected`` reads env vars directly (Discord, MIRC,
             # Teams, LINE, ntfy, Simplex) are unaffected; this only
             # restores Google Chat.
             seed_for_probe = None

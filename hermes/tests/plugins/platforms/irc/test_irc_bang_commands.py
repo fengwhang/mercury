@@ -23,7 +23,7 @@ def _ts_omp_verbs() -> set[str]:
 
 
 def test_omp_mirror_covers_ts_registry() -> None:
-    from plugins.platforms.irc.adapter import OMP_BANG_VERBS
+    from plugins.platforms.mirc.adapter import OMP_BANG_VERBS
 
     ts_verbs = _ts_omp_verbs()
     assert ts_verbs, "TS registry unreadable — mirror cannot be verified"
@@ -34,7 +34,7 @@ def test_omp_mirror_covers_ts_registry() -> None:
 
 
 def test_bang_passthrough_both_engines() -> None:
-    from plugins.platforms.irc.adapter import bang_to_slash
+    from plugins.platforms.mirc.adapter import bang_to_slash
 
     # hermes-side (dynamic registry)
     assert bang_to_slash("!model opus") == "/model opus"
@@ -55,7 +55,7 @@ def test_bang_passthrough_both_engines() -> None:
 
 
 def test_bang_falls_back_to_core_verbs(monkeypatch) -> None:
-    from plugins.platforms.irc import adapter as adapter_mod
+    from plugins.platforms.mirc import adapter as adapter_mod
 
     def _boom(verb):
         raise ImportError("no registry")

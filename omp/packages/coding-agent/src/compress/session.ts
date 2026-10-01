@@ -1,7 +1,7 @@
 /**
  * Session factory for `omp compress`.
  *
- * Deliberately minimal: two custom tools, no extensions, no MCP, no IRC, no LSP,
+ * Deliberately minimal: two custom tools, no extensions, no MCP, no MIRC, no LSP,
  * no file or shell access. Everything the agent needs arrives in the conversation,
  * so nothing outside the source text can influence the output.
  */
@@ -60,7 +60,7 @@ export async function createCompressSession(options: {
 		slashCommands: [],
 		disableExtensionDiscovery: true,
 		enableMCP: false,
-		enableIrc: false,
+		enableMirc: false,
 		enableLsp: false,
 		hasUI: false,
 		autoApprove: true,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import type { MircMessage } from "@oh-my-pi/pi-coding-agent/mirc/bus";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { type CoordinationDetails, hubToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/hub";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
@@ -13,7 +13,7 @@ async function theme() {
 const lines = (component: { render: (w: number) => readonly string[] }, width = 200) =>
 	sanitizeText(component.render(width).join("\n")).split("\n");
 
-const msg = (overrides: Partial<IrcMessage>): IrcMessage => ({
+const msg = (overrides: Partial<MircMessage>): MircMessage => ({
 	id: "7181122334455667789",
 	from: "AuthLoader",
 	to: "Main",

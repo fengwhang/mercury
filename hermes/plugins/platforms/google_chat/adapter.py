@@ -648,7 +648,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # ``Platform("google_chat")`` resolves via ``_missing_()`` → pseudo-member
         # cached in ``_value2member_map_``.  We deliberately do NOT add an enum
         # attribute to ``gateway.config.Platform`` — bundled platform plugins
-        # are looked up by value, not attribute (matches Teams, IRC).
+        # are looked up by value, not attribute (matches Teams, MIRC).
         super().__init__(config, Platform("google_chat"))
         # Trigger the deferred google-cloud + googleapiclient import here so
         # that any code path which constructs the adapter and then calls

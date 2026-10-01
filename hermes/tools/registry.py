@@ -540,6 +540,9 @@ class ToolRegistry:
         scope: Optional[str] = None,
     ) -> Optional[ToolEntry]:
         """Return the active profile's entry by name, falling back to global."""
+        # Dispatch old transcript tool calls without exposing duplicate tools.
+        if name == "lounge_share":
+            name = "mlounge_share"
         with self._lock:
             return self._merged_tools(scope).get(name)
 

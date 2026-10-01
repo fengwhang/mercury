@@ -23,7 +23,7 @@ def _login_args(*extra):
 def test_login_reprints_setup_card_from_selected_home(
     monkeypatch, tmp_path, capsys, command, override,
 ) -> None:
-    from observatory import lounge, provision
+    from observatory import mlounge, provision
     from mercury_cli import setup
 
     active = tmp_path / (".mercury-nightly" if command.endswith("nightly") else ".mercury")
@@ -36,7 +36,7 @@ def test_login_reprints_setup_card_from_selected_home(
         "server_name": "testnet", "server_host": "100.101.102.103",
         "server_port": 6671, "tls_port": 6698,
     }))
-    paths = lounge.LoungePaths(home)
+    paths = mlounge.MLoungePaths(home)
     users = paths.home / "users"
     users.mkdir(parents=True)
     paths.conf.write_text('module.exports = {host: "100.101.102.103", port: 9001};')
@@ -47,8 +47,8 @@ def test_login_reprints_setup_card_from_selected_home(
         "dns_name": "test-host.tailnet.ts.net",
     }
     monkeypatch.setattr(provision, "detect_tailscale", lambda: tailscale)
-    monkeypatch.setattr(lounge, "lounge_unit_active", lambda: False)
-    monkeypatch.setattr(lounge, "lounge_bin", lambda: tmp_path / "thelounge")
+    monkeypatch.setattr(mlounge, "mlounge_unit_active", lambda: False)
+    monkeypatch.setattr(mlounge, "mlounge_bin", lambda: tmp_path / "thelounge")
 
     # Compare against the real setup renderer using the same disk state.
     setup._print_observatory_setup_card(
@@ -88,8 +88,8 @@ def test_login_unprovisioned_prints_setup_hint(monkeypatch, tmp_path, capsys, co
     assert not (tmp_path / "empty").exists()
 
 
-def test_login_without_lounge_or_tailscale(monkeypatch, tmp_path, capsys) -> None:
-    from observatory import lounge, provision
+def test_login_without_mlounge_or_tailscale(monkeypatch, tmp_path, capsys) -> None:
+    from observatory import mlounge, provision
 
     home = tmp_path / "mercury"
     config = home / "observatory" / "ircd.json"
@@ -97,9 +97,9 @@ def test_login_without_lounge_or_tailscale(monkeypatch, tmp_path, capsys) -> Non
     config.write_text('{"server_name": "localnet"}')
     monkeypatch.setenv("MERCURY_HOME", str(home))
     monkeypatch.setattr(provision, "detect_tailscale", lambda: {})
-    monkeypatch.setattr(lounge, "lounge_unit_active", lambda: False)
-    monkeypatch.setattr(lounge, "lounge_bin", lambda: tmp_path / "thelounge")
-    monkeypatch.setattr(lounge, "_local_port_answers", lambda *a: False)
+    monkeypatch.setattr(mlounge, "mlounge_unit_active", lambda: False)
+    monkeypatch.setattr(mlounge, "mlounge_bin", lambda: tmp_path / "thelounge")
+    monkeypatch.setattr(mlounge, "_local_port_answers", lambda *a: False)
     assert obs_mod.cmd_observatory(_login_args()) == 0
     out = capsys.readouterr().out
     assert "not installed" in out
@@ -142,12 +142,12 @@ def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys, 
         lambda *a, **kw: calls.append("unit") or "installed",
     )
     monkeypatch.setattr(
-        "observatory.lounge.status_lounge",
+        "observatory.mlounge.status_mlounge",
         lambda *a, **kw: {"configured": True},
     )
     monkeypatch.setattr(
-        "observatory.lounge.refresh_lounge_fork",
-        lambda *a, **kw: calls.append("lounge") or "current",
+        "observatory.mlounge.refresh_mlounge_fork",
+        lambda *a, **kw: calls.append("mlounge") or "current",
     )
     monkeypatch.setattr(
         obs_mod, "_restart_gateway_now", lambda: calls.append("gateway") or 0)
@@ -195,16 +195,16 @@ def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys, 
         lambda home=None: {"server_host": "127.0.0.1", "server_port": 6670},
     )
     monkeypatch.setattr(
-        "observatory.provision.read_irc_passwords",
+        "observatory.provision.read_mirc_passwords",
         lambda home=None: {"server": "pw"},
     )
     rc = obs_mod.cmd_observatory(_args())
     assert rc == (0 if duplex and not resync_failures else 1)
-    assert calls == ["unit", "lounge", "gateway"]  # unit re-render BEFORE anything else
+    assert calls == ["unit", "mlounge", "gateway"]  # unit re-render BEFORE anything else
     captured = capsys.readouterr()
     out = captured.out
     assert "daemon: restarted onto current code" in out
-    assert "lounge: current" in out
+    assert "mLounge: current" in out
     assert "bot: nick present" in out
     if duplex and not resync_failures:
         assert "fleet: all 1 live agent(s) present" in out
@@ -225,7 +225,7 @@ def test_restart_fails_when_fleet_never_resyncs(monkeypatch, capsys) -> None:
         "observatory.provision.ensure_observatory_unit", lambda *a, **kw: "installed"
     )
     monkeypatch.setattr(
-        "observatory.lounge.status_lounge", lambda *a, **kw: {"configured": False}
+        "observatory.mlounge.status_mlounge", lambda *a, **kw: {"configured": False}
     )
     monkeypatch.setattr(obs_mod, "_restart_gateway_now", lambda: 0)
     monkeypatch.setattr(
@@ -290,21 +290,21 @@ def test_restart_prints_full_diagnosis_when_bot_never_joins(monkeypatch, capsys)
     assert "[FAIL] bot connection" in text
 
 
-def test_restart_skips_lounge_when_unmanaged(monkeypatch, capsys) -> None:
-    """No managed Lounge (user declined it): restart must NOT install one."""
+def test_restart_skips_mlounge_when_unmanaged(monkeypatch, capsys) -> None:
+    """No managed mLounge (user declined it): restart must NOT install one."""
     monkeypatch.setattr(
         "observatory.provision.ensure_observatory_unit",
         lambda *a, **kw: "installed",
     )
     monkeypatch.setattr(
-        "observatory.lounge.status_lounge",
+        "observatory.mlounge.status_mlounge",
         lambda *a, **kw: {"configured": False},
     )
 
     def _boom(*a, **kw):
         raise AssertionError("refresh must not run without a managed install")
 
-    monkeypatch.setattr("observatory.lounge.refresh_lounge_fork", _boom)
+    monkeypatch.setattr("observatory.mlounge.refresh_mlounge_fork", _boom)
     monkeypatch.setattr(obs_mod, "_restart_gateway_now", lambda: 0)
     monkeypatch.setattr(
         "mercury_cli.setup._verify_gateway_bot",
@@ -312,4 +312,4 @@ def test_restart_skips_lounge_when_unmanaged(monkeypatch, capsys) -> None:
     )
     monkeypatch.setattr(obs_mod, "_verify_fleet", lambda args: 0)
     assert obs_mod.cmd_observatory(_args()) == 0
-    assert "lounge: not installed, skipping" in capsys.readouterr().out
+    assert "mLounge: not installed, skipping" in capsys.readouterr().out

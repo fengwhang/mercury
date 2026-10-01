@@ -326,7 +326,7 @@ describe("InteractiveMode vibe mode toggle", () => {
 		expect(session.getToolByName("vibe_spawn")).toBeUndefined();
 	});
 
-	it("holds IRC wakes during Vibe teardown until the tools are removed", async () => {
+	it("holds MIRC wakes during Vibe teardown until the tools are removed", async () => {
 		const toolNamesPerCall: string[][] = [];
 		const firstStarted = Promise.withResolvers<void>();
 		streamFn = (_model, context, options) => {
@@ -352,7 +352,7 @@ describe("InteractiveMode vibe mode toggle", () => {
 		await mode.handleVibeModeCommand();
 		const prompt = session.prompt("Delegate this");
 		await firstStarted.promise;
-		await session.deliverIrcMessage({ id: "m1", from: "peer", to: "me", body: "first", ts: Date.now() });
+		await session.deliverMircMessage({ id: "m1", from: "peer", to: "me", body: "first", ts: Date.now() });
 
 		const abortSettled = Promise.withResolvers<void>();
 		const releaseTeardown = Promise.withResolvers<void>();
@@ -364,7 +364,7 @@ describe("InteractiveMode vibe mode toggle", () => {
 		});
 		const exit = mode.handleVibeModeCommand();
 		await abortSettled.promise;
-		await session.deliverIrcMessage({ id: "m2", from: "peer", to: "me", body: "second", ts: Date.now() });
+		await session.deliverMircMessage({ id: "m2", from: "peer", to: "me", body: "second", ts: Date.now() });
 		for (let index = 0; index < 5; index++) await Promise.resolve();
 		expect(toolNamesPerCall).toHaveLength(1);
 		releaseTeardown.resolve();

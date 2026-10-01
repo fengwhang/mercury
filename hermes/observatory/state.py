@@ -1,9 +1,9 @@
-"""Agent-tree SQLite store for the IRC observatory.
+"""Agent-tree SQLite store for the MIRC observatory.
 
 One row per live agent session (any depth, any engine). The gateway is
 the ONLY writer; readers are the room manager and boot resync.
 
-``room_id`` is the IRC channel, ``mxid`` the agent nick, ``space_id``
+``room_id`` is the MIRC channel, ``mxid`` the agent nick, ``space_id``
 unused (kept for schema stability).
 
 Design laws tested here:
@@ -294,7 +294,7 @@ class ObservatoryState:
         return self.get(node_id)
 
     def mark_deleted_and_purge(self, node_id: str) -> dict[str, Any]:
-        """Remove a node's row after (or while) destroying its IRC channel.
+        """Remove a node's row after (or while) destroying its MIRC channel.
         Returns the pre-delete row so the caller can log the annihilation
         (needs room_id). The row is deleted — a successor with the same
         name inherits the nick and NOTHING else, so no tombstone may
@@ -361,7 +361,7 @@ class ObservatoryState:
     # --- channel id upsert -----------------------------------------------------
 
     def set_space_id(self, node_id: str, space_id: str) -> None:
-        """Record the node's space id (unused for IRC; kept for schema
+        """Record the node's space id (unused for MIRC; kept for schema
         stability)."""
         self._set_channel_id(node_id, "space_id", space_id)
 

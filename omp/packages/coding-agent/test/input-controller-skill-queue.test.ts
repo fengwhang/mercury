@@ -602,7 +602,7 @@ describe("AgentSession derived queued custom display", () => {
 	it("never restores a visible agent-authored custom steer; preserves on dequeue, drops on interrupt", async () => {
 		fixture = await createRealSession();
 		const { session } = fixture;
-		// An IRC aside / extension/hook notice: visible, but agent-authored — editing it
+		// An MIRC aside / extension/hook notice: visible, but agent-authored — editing it
 		// makes no sense, so it must not ride the Esc/Alt+Up editor-restore path.
 		const steer = () =>
 			session.agent.steer({

@@ -1,6 +1,6 @@
 """update_from_release observatory tail — update-completeness contracts.
 
-Verified behaviors (existing-install upgrade path for the IRC
+Verified behaviors (existing-install upgrade path for the MIRC
 observatory), through the REAL update_from_release with network, download,
 subprocess, and observatory hooks mocked:
 
@@ -136,7 +136,7 @@ class _Harness:
 
 
 def _harness(tmp_path, monkeypatch, **kw):
-    defaults = dict(wheels=WHEELS, enabled=True, provision_result={"ircd": {}})
+    defaults = dict(wheels=WHEELS, enabled=True, provision_result={"irc": {}})
     defaults.update(kw)
     return _Harness(tmp_path, monkeypatch, **defaults)
 

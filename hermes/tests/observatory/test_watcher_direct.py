@@ -67,7 +67,7 @@ async def test_watcher_start_streams_stop_purges(tmp_path, monkeypatch) -> None:
     from observatory import provision as provision_mod
 
     monkeypatch.setattr(provision_mod, "live_server_name", lambda home=None: "vm")
-    monkeypatch.setattr(provision_mod, "get_lounge_nick", lambda home=None: "owner")
+    monkeypatch.setattr(provision_mod, "get_mlounge_nick", lambda home=None: "owner")
     mgr = RoomManager(state, bot)
     rooms_mod.set_room_manager(mgr)
     rooms_mod.set_bot_sink(bot)

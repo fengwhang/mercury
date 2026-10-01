@@ -107,7 +107,7 @@ const RECONNECT_BURST_LIMIT = 5;
 
 /**
  * Bounded buffer for notifications received before any listener attaches.
- * Mirrors {@link IrcBus}'s `MAILBOX_CAP` — drop-oldest on overflow. Drained
+ * Mirrors {@link MircBus}'s `MAILBOX_CAP` — drop-oldest on overflow. Drained
  * into the first {@link MCPManager.addNotificationListener} subscriber, then
  * cleared; subsequent frames deliver directly to attached listeners.
  */
@@ -313,7 +313,7 @@ export class MCPManager {
 	 * Notifications received before any listener attached are buffered
 	 * (bounded FIFO, cap {@link NOTIFICATION_BUFFER_CAP}, drop-oldest) and
 	 * drained into the first subscriber — matches {@link setOnPromptsChanged}'s
-	 * replay-on-attach and {@link IrcBus}'s mailbox semantics.
+	 * replay-on-attach and {@link MircBus}'s mailbox semantics.
 	 *
 	 * Returns an unsubscribe function; call it to remove the listener.
 	 *

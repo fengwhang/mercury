@@ -162,7 +162,7 @@ class Config {
 
 	getDefaultNick() {
 		if (!this.values.defaults.nick) {
-			return "thelounge";
+			return "mlounge";
 		}
 
 		return this.values.defaults.nick.replace(/%/g, () =>

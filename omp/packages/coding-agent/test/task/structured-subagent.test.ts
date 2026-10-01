@@ -153,12 +153,12 @@ describe("structured subagent primitive", () => {
 	it("attenuates plan-mode agents and rejects mutable isolation controls before discovery", async () => {
 		mockDiscovery();
 		const policy = await resolveEffectiveSubagentPolicy(
-			request({ session: session({ planMode: true }), enableLsp: true, enableIrc: true }),
+			request({ session: session({ planMode: true }), enableLsp: true, enableMirc: true }),
 		);
 		expect(policy.effectiveAgent.tools).toEqual(["read", "grep", "glob", "web_search", "ast_grep"]);
 		expect(policy.effectiveAgent.spawns).toBeUndefined();
 		expect(policy.enableLsp).toBe(false);
-		expect(policy.enableIrc).toBe(false);
+		expect(policy.enableMirc).toBe(false);
 
 		vi.restoreAllMocks();
 		const discover = vi.spyOn(discoveryModule, "discoverAgents");
@@ -357,13 +357,13 @@ describe("structured subagent primitive", () => {
 		expect(path.basename(settled.artifactsDir)).toStartWith("omp-task-");
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
-	it("uses identical non-plan LSP and IRC policy for task and eval invocations", async () => {
+	it("uses identical non-plan LSP and MIRC policy for task and eval invocations", async () => {
 		mockDiscovery();
 		const taskPolicy = await resolveEffectiveSubagentPolicy(request());
 		const evalPolicy = await resolveEffectiveSubagentPolicy(request({ invocationKind: "eval" }));
 
 		expect(evalPolicy.enableLsp).toBe(taskPolicy.enableLsp);
-		expect(evalPolicy.enableIrc).toBe(taskPolicy.enableIrc);
+		expect(evalPolicy.enableMirc).toBe(taskPolicy.enableMirc);
 	});
 
 	it("rejects an invalid caller schema before executor dispatch in both modes", async () => {

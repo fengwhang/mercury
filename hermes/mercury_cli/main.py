@@ -13779,7 +13779,7 @@ def main():
     build_peer_parser(subparsers)
 
     # =========================================================================
-    # observatory command — IRC status + room listing
+    # observatory command — MIRC status + room listing
     # =========================================================================
     from mercury_cli.subcommands.observatory import build_observatory_parser
 
