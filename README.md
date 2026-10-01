@@ -18,8 +18,9 @@ while it works. Use the terminal at your desk and the Observatory from
 your phone. Your host runs the agents; you choose their supported model
 providers.
 
-This README describes **[v0.3.1 nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.1)**.
-Use the nightly installer below for the shared family approval changes.
+This README describes **[v0.3.2 nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.2)**.
+Use the nightly installer below for quiet Observatory restarts and accurate
+connection warnings, alongside the shared family approval changes.
 
 ## Why Mercury?
 
