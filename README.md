@@ -18,9 +18,9 @@ while it works. Use the terminal at your desk and the Observatory from
 your phone. Your host runs the agents; you choose their supported model
 providers.
 
-This README describes **[v0.3.3 nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.3)**.
-Use the nightly installer below for OMP steering that keeps programs running
-and configured YOLO behavior shared across both engines and their descendants.
+This README describes **[v0.3.4 nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.4)**.
+Use the nightly installer below for the same thinking kaomoji across Hermes
+and OMP rooms, with program-preserving steering and shared approval settings.
 
 ## Why Mercury?
 
