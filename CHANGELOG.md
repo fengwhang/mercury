@@ -5,6 +5,13 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Default the standard installer to stable regardless of inherited channel
+  variables; explicitly select nightly in its wrapper and save the channel
+  when creating the launcher, before optional setup steps.
+- Honor the launcher's explicit update channel over stale saved markers,
+  and refuse automatic downgrades when a channel's newest release is older.
+- Accept prerelease tags so nightly installations can share a stable version.
+
 ## [0.3.4] — stable
 
 - Promote the tested v0.3.4 nightly packages to stable, including the
