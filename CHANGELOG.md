@@ -5,6 +5,8 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.5] — nightly
+
 - Recognize mLounge's fork marker when checking the frontend focus fix,
   ignore obsolete bundle warnings, and label saved addresses before rotation.
 - Report live gateway connections correctly in Observatory diagnostics, even
