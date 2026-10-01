@@ -34,7 +34,6 @@ import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
 import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
-import { truncateForPrompt } from "./approval";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
 import { rewriteGitWorktreeAdd } from "./bash-worktree-rewrite";
@@ -599,7 +598,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const rawCommand = (args as Partial<BashToolInput>).command;
 		const command = typeof rawCommand === "string" ? rawCommand : "(missing)";
-		return [`Command: ${truncateForPrompt(command)}`];
+		// The Mercury RPC host authorizes this command from the prompt payload.
+		// Truncating it would hide later shell segments from the parent guard.
+		return [`Command: ${command}`];
 	};
 	readonly label = "Bash";
 	readonly loadMode = "essential";

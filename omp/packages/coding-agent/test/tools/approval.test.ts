@@ -327,6 +327,15 @@ describe("tool-owned dynamic approval declarations", () => {
 		}
 	});
 
+	it("the RPC approval payload keeps shell segments beyond the display truncation limit", () => {
+		const command = `printf '${"x".repeat(3000)}'; git push`;
+		const title = formatApprovalPrompt(createBashTool(), { command });
+		// The host reads Command: from this formatted payload; the final segment
+		// must remain visible to both its deny guard and the human approver.
+		expect(title.slice(title.indexOf("Command: ") + "Command: ".length)).toBe(command);
+		expect(title.endsWith("; git push")).toBe(true);
+	});
+
 	it("does not flag benign bash commands", () => {
 		for (const command of [
 			"rm file.txt",

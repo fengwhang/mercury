@@ -8,7 +8,8 @@ open; their reproductions and suggested fixes are retained below.
 
 The current changes also fix lost descendant approval context, forced child
 YOLO, rejected non-shell OMP prompts, background approval-route teardown,
-case-sensitive deny matching, allow-before-deny bypasses, and stale OMP policy
+case-sensitive deny matching, allow-before-deny bypasses, truncated shell
+approval payloads, and stale OMP policy
 in running rooms. They do not restore multiple OMP model roles: **task is the
 only model role**, and legacy role assignments remain inert.
 
@@ -210,7 +211,7 @@ README now recommends one Observatory installation per Linux user.
 ## Follow-up validation and remaining design work
 
 - Python approval/guard coverage: 135 passing checks before the branding rename.
-- Native OMP task/advisor/approval/MIRC coverage: 340 passing checks across
+- Native OMP task/advisor/approval/MIRC coverage: 341 passing checks across
   seven files, including 14 approval-mode checks. A separate persistence
   test verifies native UI changes update the shared Hermes policy.
 - mLounge: all 329 Vitest tests pass, and the offline release-host build creates

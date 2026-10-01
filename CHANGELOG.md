@@ -11,6 +11,7 @@ their original projects and are not Mercury release announcements.
 - Use mLounge and MIRC implementation names while preserving installed configuration and extension aliases.
 
 ### Fixed
+- Long OMP approval commands retain every shell segment for parent policy checks.
 - Live shared permission changes reach OMP descendants without restarting their rooms; explicit deny rules outrank allow rules.
 - Web uploads reject files reached through symlinked credential or system directories.
 - Source OMP runs use Mercury's version and changelog, matching compiled releases.
