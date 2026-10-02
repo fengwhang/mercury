@@ -2,8 +2,8 @@
 
 Slice A — delegation provider step (2026-09-08): the delegate (subagent)
 pickers must use the CHOSEN delegation provider's catalog, not the default
-slot's. Bare ids are prefixed with the chosen provider; the ordinary
-fallback keeps the default catalog; skip still clears.
+slot's. Each fallback can choose its own provider; bare ids are prefixed
+with that provider and skip still clears.
 
 Slice B — wizard-once + tools single-pass: the full wizard must invoke each
 section fn exactly once, and the wizard's tools step must run a single
@@ -25,6 +25,11 @@ SECOND_TITLE = "Select second-order fallback (used when the MAIN fallback also f
 DELEGATE_TITLE = "Select delegate model (the model omp SUBAGENTS run on):"
 DELEGATE_FB_TITLE = "Select delegate fallback (subagent retry model; empty to skip):"
 DELEGATE_2ND_TITLE = "Select second-order delegate fallback (used when the SUBAGENT fallback also fails; empty to skip):"
+FALLBACK_PROVIDER = "Select fallback provider:"
+SECOND_PROVIDER = "Select second-order fallback provider:"
+DELEGATE_PROVIDER = "Select delegation provider (the provider omp SUBAGENTS run on):"
+DELEGATE_FB_PROVIDER = "Select delegate fallback provider:"
+DELEGATE_2ND_PROVIDER = "Select second-order delegate fallback provider:"
 
 OR_CATALOG = ["or-m1", "or-m2"]
 ZAI_CATALOG = ["zai-m1", "zai-m2"]
@@ -45,27 +50,31 @@ def slots_env(tmp_path, monkeypatch):
     """Sandbox the unified config path; hermes view has an openrouter default."""
     monkeypatch.setenv("MERCURY_CONFIG", str(tmp_path / "config.yaml"))
     monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     return tmp_path
 
 
-def _enter_slots_patches(stack, *, model_answers, provider_choice, catalogs):
+def _enter_slots_patches(stack, *, model_answers, provider_choice, catalogs,
+                         provider_choices=None, persist=False):
     """Mock the slots section's boundaries. Returns (seen, written).
 
     model_answers: title -> model id (or None = skip). Missing title -> None.
-    provider_choice: index into the canonical slug list, or None = cancel.
+    provider_choice: delegation provider index, or None = cancel.
+    provider_choices: per-title provider indices; otherwise keep the default.
     catalogs: provider -> list (missing provider -> []).
     seen: {"models": [(title, catalog, current)], "provider": {...}}.
     written: the dict passed to _write_slots.
     """
-    seen = {"models": [], "provider": {}}
+    seen = {"models": [], "provider": {}, "providers": [], "pricing": {}}
     written = {}
 
-    stack.enter_context(
-        patch.object(
-            setup_mod, "load_config",
-            return_value={"model": {"provider": "openrouter", "default": "somemodel"}},
+    if not persist:
+        stack.enter_context(
+            patch.object(
+                setup_mod, "load_config",
+                return_value={"model": {"provider": "openrouter", "default": "somemodel"}},
+            )
         )
-    )
 
     def fake_model_ids(provider, force_refresh=False):
         return list(catalogs.get(provider or "", []))
@@ -74,28 +83,38 @@ def _enter_slots_patches(stack, *, model_answers, provider_choice, catalogs):
         patch("mercury_cli.models.provider_model_ids", side_effect=fake_model_ids)
     )
     stack.enter_context(
-        patch("mercury_cli.models.get_pricing_for_provider", return_value={})
+        patch("mercury_cli.models.get_pricing_for_provider",
+              side_effect=lambda provider, **kwargs: {"provider": provider})
     )
 
     def fake_pick(model_ids, current_model="", pricing=None, title="", **kwargs):
         seen["models"].append((title, list(model_ids), current_model))
-        return model_answers.get(title)
+        seen["pricing"][title] = pricing
+        answer = model_answers.get(title)
+        return answer.pop(0) if isinstance(answer, list) else answer
 
     stack.enter_context(
         patch("mercury_cli.auth._prompt_model_selection", side_effect=fake_pick)
     )
 
     def fake_provider_choice(choices, default=0, title="Select provider:"):
-        seen["provider"] = {"choices": list(choices), "default": default, "title": title}
-        return provider_choice
+        call = {"choices": list(choices), "default": default, "title": title}
+        seen["providers"].append(call)
+        if title == DELEGATE_PROVIDER:
+            seen["provider"] = call
+        if provider_choices and title in provider_choices:
+            return provider_choices[title]
+        return provider_choice if title == DELEGATE_PROVIDER else None
 
     stack.enter_context(
         patch("mercury_cli.main._prompt_provider_choice", side_effect=fake_provider_choice)
     )
-    stack.enter_context(
-        patch("mercury_cli.omp_sync._write_slots",
-              side_effect=lambda update: written.update(update) or True)
-    )
+    if not persist:
+        stack.enter_context(
+            patch("mercury_cli.omp_sync._write_slots",
+                  side_effect=lambda update: written.update(update) or True)
+        )
+    stack.enter_context(patch.object(setup_mod, "_prompt_slot_reasoning"))
     return seen, written
 
 
@@ -192,6 +211,177 @@ class TestDelegationProvider:
             setup_mod._prompt_mercury_slots({})
 
         assert written["delegate_model"] == "myprov/mymodel"
+
+
+class TestFallbackProviders:
+    @pytest.mark.parametrize("provider_title,model_title,slot", [
+        (FALLBACK_PROVIDER, FALLBACK_TITLE, "fallback"),
+        (SECOND_PROVIDER, SECOND_TITLE, "fallback_chain"),
+        (DELEGATE_FB_PROVIDER, DELEGATE_FB_TITLE, "delegate_fallback"),
+        (DELEGATE_2ND_PROVIDER, DELEGATE_2ND_TITLE, "delegate_fallback_chain"),
+    ])
+    def test_each_fallback_uses_selected_catalog_pricing_and_prefix(
+        self, slots_env, provider_title, model_title, slot,
+    ):
+        answers = {
+            FALLBACK_TITLE: "main-fallback", SECOND_TITLE: "main-second",
+            DELEGATE_TITLE: "delegate", DELEGATE_FB_TITLE: "delegate-fallback",
+            DELEGATE_2ND_TITLE: "delegate-second",
+        }
+        # The same bare id is valid on another provider; duplicates are
+        # determined by the complete provider/model selector.
+        answers[model_title] = "somemodel" if slot == "fallback" else "delegate"
+        with ExitStack() as stack:
+            seen, written = _enter_slots_patches(
+                stack, model_answers=answers, provider_choice=None,
+                provider_choices={provider_title: _zai_index()},
+                catalogs={"openrouter": OR_CATALOG, "zai": ZAI_CATALOG},
+            )
+            setup_mod._prompt_mercury_slots({})
+        assert _catalog_for(seen, model_title) == ZAI_CATALOG
+        assert seen["pricing"][model_title] == {"provider": "zai"}
+        value = written[slot][-1] if slot.endswith("chain") else written[slot]
+        assert value == "zai/" + answers[model_title]
+
+    @pytest.mark.parametrize("previously_configured", [False, True])
+    def test_skip_primary_omits_secondary_provider_and_model_prompts(
+        self, slots_env, previously_configured,
+    ):
+        if previously_configured:
+            import yaml
+
+            (slots_env / "config.yaml").write_text(yaml.safe_dump({"models": {
+                "default": "openrouter/somemodel", "fallback": "zai/old-main",
+                "fallback_chain": ["zai/old-main", "openrouter/old-second"],
+                "delegate_model": "openrouter/delegate",
+                "delegate_fallback": "zai/old-delegate",
+                "delegate_fallback_chain": ["zai/old-delegate", "openrouter/old-other"],
+            }}))
+        with ExitStack() as stack:
+            seen, written = _enter_slots_patches(
+                stack, model_answers={DELEGATE_TITLE: "delegate"},
+                provider_choice=None, catalogs={"openrouter": OR_CATALOG},
+            )
+            stack.enter_context(patch.object(setup_mod, "_ask_reconfigure", return_value=True))
+            setup_mod._prompt_mercury_slots({})
+        assert [p["title"] for p in seen["providers"]] == [
+            FALLBACK_PROVIDER, DELEGATE_PROVIDER, DELEGATE_FB_PROVIDER,
+        ]
+        assert SECOND_TITLE not in [m[0] for m in seen["models"]]
+        assert DELEGATE_2ND_TITLE not in [m[0] for m in seen["models"]]
+        assert written["fallback"] == written["delegate_fallback"] == ""
+        assert written["fallback_chain"] == written["delegate_fallback_chain"] == []
+
+    def test_duplicate_retry_retains_chosen_provider(self, slots_env):
+        with ExitStack() as stack:
+            seen, written = _enter_slots_patches(
+                stack, model_answers={
+                    FALLBACK_TITLE: ["somemodel", "different"],
+                    SECOND_TITLE: ["different", "different"],
+                    DELEGATE_TITLE: "delegate",
+                    DELEGATE_FB_TITLE: ["delegate", "delegate"],
+                },
+                provider_choice=None, catalogs={"openrouter": OR_CATALOG},
+            )
+            setup_mod._prompt_mercury_slots({})
+        assert written["fallback"] == "openrouter/different"
+        assert written["fallback_chain"] == []
+        assert written["delegate_fallback"] == ""
+        assert [p["title"] for p in seen["providers"]].count(FALLBACK_PROVIDER) == 1
+        assert [p["title"] for p in seen["providers"]].count(SECOND_PROVIDER) == 1
+
+    def test_saved_provider_defaults_and_custom_provider_cancel(self, slots_env):
+        import yaml
+
+        saved = {
+            "default": "openrouter/somemodel", "fallback": "zai/main-fallback",
+            "fallback_chain": ["zai/main-fallback", "my-provider/second"],
+            "delegate_model": "openrouter/delegate",
+            "delegate_fallback": "zai/delegate-fallback",
+            "delegate_fallback_chain": ["zai/delegate-fallback", "my-provider/other"],
+        }
+        (slots_env / "config.yaml").write_text(yaml.safe_dump({"models": saved}))
+        with ExitStack() as stack:
+            seen, written = _enter_slots_patches(
+                stack, model_answers={
+                    FALLBACK_TITLE: "main-fallback", SECOND_TITLE: "second",
+                    DELEGATE_TITLE: "delegate", DELEGATE_FB_TITLE: "delegate-fallback",
+                    DELEGATE_2ND_TITLE: "other",
+                },
+                provider_choice=None, catalogs={},
+            )
+            stack.enter_context(patch.object(setup_mod, "_ask_reconfigure", return_value=True))
+            setup_mod._prompt_mercury_slots({})
+        assert all(written[k] == v for k, v in saved.items())
+        assert [p["default"] for p in seen["providers"]] == [
+            _zai_index(), len(CANONICAL_SLUGS), _openrouter_index(),
+            _zai_index(), len(CANONICAL_SLUGS),
+        ]
+        assert _catalog_for(seen, SECOND_TITLE) == ["my-provider/second"]
+        assert _catalog_for(seen, DELEGATE_2ND_TITLE) == ["my-provider/other"]
+
+    def test_switching_provider_clears_previous_model_in_picker(self, slots_env):
+        (slots_env / "config.yaml").write_text(
+            "models:\n  default: openrouter/somemodel\n  fallback: openrouter/old\n"
+        )
+        with ExitStack() as stack:
+            seen, written = _enter_slots_patches(
+                stack, model_answers={FALLBACK_TITLE: "custom-new"},
+                provider_choice=None, provider_choices={FALLBACK_PROVIDER: _zai_index()},
+                catalogs={"openrouter": OR_CATALOG},
+            )
+            setup_mod._prompt_mercury_slots({})
+        assert (FALLBACK_TITLE, [], "") in seen["models"]
+        assert written["fallback"] == "zai/custom-new"
+
+    def test_real_saved_chains_reach_both_engines(self, slots_env, monkeypatch):
+        import importlib.util
+        from pathlib import Path
+        import yaml
+        from mercury_cli.config import load_config
+
+        config_path = slots_env / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "models": {"default": "openrouter/somemodel"},
+            "hermes": {"fallback_providers": [{"provider": "openrouter", "model": "stale"}]},
+        }))
+        monkeypatch.setenv("HERMES_OMP_CONFIG", str(config_path))
+        with ExitStack() as stack:
+            _enter_slots_patches(
+                stack, model_answers={
+                    FALLBACK_TITLE: "main-fallback", SECOND_TITLE: "vendor/second",
+                    DELEGATE_TITLE: "delegate", DELEGATE_FB_TITLE: "vendor/fallback",
+                    DELEGATE_2ND_TITLE: "delegate-second",
+                },
+                provider_choice=_zai_index(), provider_choices={
+                    FALLBACK_PROVIDER: _zai_index(), SECOND_PROVIDER: _openrouter_index(),
+                    DELEGATE_FB_PROVIDER: _openrouter_index(), DELEGATE_2ND_PROVIDER: _zai_index(),
+                },
+                catalogs={"openrouter": OR_CATALOG, "zai": ZAI_CATALOG}, persist=True,
+            )
+            setup_mod._prompt_mercury_slots({})
+
+        saved = yaml.safe_load(config_path.read_text())
+        assert saved["models"]["fallback_chain"] == ["zai/main-fallback", "openrouter/vendor/second"]
+        assert saved["models"]["delegate_fallback_chain"] == ["openrouter/vendor/fallback", "zai/delegate-second"]
+        assert "fallback_providers" not in (saved["hermes"] or {})
+        assert load_config()["fallback_providers"] == [
+            {"provider": "zai", "model": "main-fallback"},
+            {"provider": "openrouter", "model": "vendor/second"},
+        ]
+
+        bridge_path = Path(__file__).resolve().parents[3] / "bridge" / "bridge.py"
+        spec = importlib.util.spec_from_file_location("setup_slots_test_bridge", bridge_path)
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+        slots = bridge.parse_config(str(config_path))
+        assert bridge.validate(slots, need_delegate=True) == []
+        bridge.render_omp_subtree(slots, target=str(config_path))
+        rendered = yaml.safe_load(config_path.read_text())
+        assert rendered["omp"]["retry"]["fallbackChains"] == {
+            "zai/delegate": ["openrouter/vendor/fallback", "zai/delegate-second"],
+        }
+        assert rendered["models"] == saved["models"]
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,10 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Let setup choose a provider independently for each main and delegate
+  fallback, including second-order fallbacks, with matching model catalogs
+  and pricing. Preserve saved provider choices on reconfiguration.
+
 ## [0.3.7] — stable
 
 - Build portable OMP runtimes for glibc and musl on Linux x64 and ARM64,

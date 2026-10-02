@@ -1219,23 +1219,48 @@ def _prompt_mercury_slots(config: dict) -> None:
     # MERCURY-OMP PATCH: dropdown pickers — the SAME _prompt_model_selection
     # UX the default model gets (curses list, provider-scoped catalog, pricing
     # columns, current-first, built-in "Enter custom model name" escape).
-    # TWO catalogs: the ordinary fallback side stays on the DEFAULT slot's
-    # provider; the delegate (subagent) side uses the delegation provider
-    # chosen below (defaults to the default slot's provider).
+    # Each model has its own provider-scoped catalog and pricing. A fallback
+    # may use another provider so a provider outage need not exhaust its chain.
     from mercury_cli.auth import _prompt_model_selection
-    from mercury_cli.models import provider_model_ids, get_pricing_for_provider
+    from mercury_cli.models import CANONICAL_PROVIDERS, provider_model_ids, get_pricing_for_provider
+    from mercury_cli.main import _prompt_provider_choice
+    from mercury_cli.omp_sync import _current_chains
 
     provider = provider or _derive_slot_provider(slots["default"])
-    try:
-        catalog = provider_model_ids(provider, force_refresh=False)
-    except Exception:
-        catalog = []
-    if not catalog:
-        catalog = [slots["default"]]
-    try:
-        pricing = get_pricing_for_provider(provider, force_refresh=False)
-    except Exception:
-        pricing = None
+    chains = _current_chains()
+
+    def _choose_provider(title: str, default_provider: str) -> str:
+        slugs = [p.slug for p in CANONICAL_PROVIDERS]
+        labels = [p.tui_desc or p.label for p in CANONICAL_PROVIDERS]
+        if default_provider and default_provider not in slugs:
+            slugs.append(default_provider)
+            labels.append(default_provider)
+        default_index = slugs.index(default_provider) if default_provider in slugs else 0
+        choice = _prompt_provider_choice(labels, default=default_index, title=title)
+        return slugs[choice] if choice is not None else default_provider
+
+    def _model_data(selected_provider: str, current: str):
+        # Do not mark a previous model from another provider as selected.
+        if _derive_slot_provider(current) != selected_provider:
+            current = ""
+        try:
+            catalog = provider_model_ids(selected_provider, force_refresh=False)
+        except Exception:
+            catalog = []
+        if not catalog:
+            # Live-only catalogs still offer the custom model name escape.
+            catalog = [current] if current else []
+        try:
+            pricing = get_pricing_for_provider(selected_provider, force_refresh=False)
+        except Exception:
+            pricing = None
+        return current, catalog, pricing
+
+    def _fallback_data(title: str, current: str, inherited_provider: str):
+        selected_provider = _choose_provider(
+            title, _derive_slot_provider(current) or inherited_provider,
+        )
+        return selected_provider, *_model_data(selected_provider, current)
 
     def _pick(menu_title: str, current: str, picker_catalog: list, picker_pricing) -> str:
         chosen = _prompt_model_selection(
@@ -1259,13 +1284,16 @@ def _prompt_mercury_slots(config: dict) -> None:
     # NO default seeding (user directive): on a fresh config the picker must
     # show a neutral menu — nothing marked as 'already selected'. Only a
     # genuinely configured slot may appear as current.
+    fallback_provider, fallback_current, catalog, pricing = _fallback_data(
+        "Select fallback provider:", slots["fallback"], provider,
+    )
     while True:
-        fallback = _pick("Select fallback model (used when the default fails mid-turn; empty to skip):", slots["fallback"], catalog, pricing)
+        fallback = _pick("Select fallback model (used when the default fails mid-turn; empty to skip):", fallback_current, catalog, pricing)
         if not fallback:
             fallback = ""
             print_info("Fallback skipped — no mid-turn failover will be configured.")
             break
-        fallback = _qualify_omp_model(fallback, provider)
+        fallback = _qualify_omp_model(fallback, fallback_provider)
         if fallback == slots["default"]:
             print_warning("Fallback must differ from the default model.")
             continue
@@ -1280,6 +1308,11 @@ def _prompt_mercury_slots(config: dict) -> None:
     # fallback after the primary — no endless loop. Empty selection skips.
     fallback_chain = []
     if fallback:
+        saved_chain = chains["fallback_chain"]
+        extra_current = saved_chain[1] if len(saved_chain) > 1 else ""
+        extra_provider, extra_current, extra_catalog, extra_pricing = _fallback_data(
+            "Select second-order fallback provider:", extra_current, fallback_provider,
+        )
         # Bounded retries: an unbounded `while not fallback_chain` re-asked
         # FOREVER when the user re-picked the same model (easy to do — the
         # second-order ask follows the first pick and muscle memory repeats
@@ -1289,13 +1322,13 @@ def _prompt_mercury_slots(config: dict) -> None:
         # duplicate pick is treated as skip.
         _dup_retries = 0
         while not fallback_chain:
-            extra = _pick("Select second-order fallback (used when the MAIN fallback also fails; empty to skip):", "", catalog, pricing)
+            extra = _pick("Select second-order fallback (used when the MAIN fallback also fails; empty to skip):", extra_current, extra_catalog, extra_pricing)
             if not extra:
                 break
             # prefix FIRST, THEN compare — comparing the bare id against the
             # prefixed slot values let a duplicate slip through (reinstall
             # artifact: 'delegate_fallback_chain contains duplicates').
-            extra = _qualify_omp_model(extra, provider)
+            extra = _qualify_omp_model(extra, extra_provider)
             if extra == fallback or extra == slots["default"]:
                 if _dup_retries >= 1:
                     print_warning(f"Skipping second-order fallback — must differ from {fallback} and {slots['default']}.")
@@ -1305,53 +1338,23 @@ def _prompt_mercury_slots(config: dict) -> None:
                 continue
             fallback_chain.append(extra)
 
-    print_info("The next two slots are for SUBAGENTS: coding tasks fan out to omp")
+    print_info("The next model choices are for SUBAGENTS: coding tasks fan out to omp")
     print_info("subagents, and these set which model those subagents run on.")
     print()
 
-    # DELEGATION PROVIDER (user directive 2026-09-08): the delegate slots
-    # used to reuse the DEFAULT slot's provider catalog, so after picking
-    # e.g. OpenRouter as default the delegate menus showed that (stale)
-    # catalog and the user had to skip. Ask which provider the SUBAGENT
-    # slots use — same canonical source as the main flow's provider picker
-    # (CANONICAL_PROVIDERS, flat slugs; no new list), default = default
-    # slot's provider. Scopes ONLY the delegate-side catalogs below (the
-    # whole delegate chain shares it); the ordinary fallback above keeps
-    # the default catalog. Cancel keeps the default provider.
-    from mercury_cli.models import CANONICAL_PROVIDERS
-    from mercury_cli.main import _prompt_provider_choice
-    _delegate_slugs = [p.slug for p in CANONICAL_PROVIDERS]
-    _delegate_labels = [p.tui_desc or p.label for p in CANONICAL_PROVIDERS]
-    if provider and provider not in _delegate_slugs:
-        _delegate_slugs.append(provider)
-        _delegate_labels.append(provider)
-    _delegate_default = _delegate_slugs.index(provider) if provider in _delegate_slugs else 0
-    _delegate_choice = _prompt_provider_choice(
-        _delegate_labels,
-        default=_delegate_default,
-        title="Select delegation provider (the provider omp SUBAGENTS run on):",
+    # The delegate model and each of its fallbacks choose providers separately.
+    delegate_provider = _choose_provider(
+        "Select delegation provider (the provider omp SUBAGENTS run on):",
+        _derive_slot_provider(slots["delegate_model"]) or provider,
     )
-    delegate_provider = _delegate_slugs[_delegate_choice] if _delegate_choice is not None else provider
-    try:
-        delegate_catalog = provider_model_ids(delegate_provider, force_refresh=False)
-    except Exception:
-        delegate_catalog = []
-    if not delegate_catalog:
-        # Live-only catalog (or unknown provider): degrade to the genuinely
-        # configured delegate values, current-first — the picker always
-        # keeps its "Enter custom model name" escape, so nothing is lost.
-        delegate_catalog = [v for v in (slots["delegate_model"], slots["delegate_fallback"]) if v]
-    try:
-        delegate_pricing = get_pricing_for_provider(delegate_provider, force_refresh=False)
-    except Exception:
-        delegate_pricing = None
+    delegate_current, delegate_catalog, delegate_pricing = _model_data(delegate_provider, slots["delegate_model"])
     if delegate_provider != provider:
-        print_info(f"Subagent models will come from '{delegate_provider}'.")
+        print_info(f"The subagent model will come from '{delegate_provider}'.")
         print()
 
     # Delegate model — NO seeding: only a genuinely configured slot is
     # current (user directive — never pre-select a preferred model).
-    delegate_model = _pick("Select delegate model (the model omp SUBAGENTS run on):", slots["delegate_model"], delegate_catalog, delegate_pricing)
+    delegate_model = _pick("Select delegate model (the model omp SUBAGENTS run on):", delegate_current, delegate_catalog, delegate_pricing)
     delegate_model = _qualify_omp_model(delegate_model, delegate_provider)
 
     # Delegate fallback — OPTIONAL (user directive 2026-09-05); cancel/skip
@@ -1359,10 +1362,13 @@ def _prompt_mercury_slots(config: dict) -> None:
     # re-ask on an equal pick, then the duplicate means SKIP (an unbounded
     # loop here trapped the wizard when the user picked the same model for
     # both delegate slots).
+    delegate_fallback_provider, delegate_fallback_current, delegate_fb_catalog, delegate_fb_pricing = _fallback_data(
+        "Select delegate fallback provider:", slots["delegate_fallback"], delegate_provider,
+    )
     _df_retries = 0
     while True:
-        delegate_fallback = _pick("Select delegate fallback (subagent retry model; empty to skip):", slots["delegate_fallback"], delegate_catalog, delegate_pricing)
-        delegate_fallback = _qualify_omp_model(delegate_fallback, delegate_provider)
+        delegate_fallback = _pick("Select delegate fallback (subagent retry model; empty to skip):", delegate_fallback_current, delegate_fb_catalog, delegate_fb_pricing)
+        delegate_fallback = _qualify_omp_model(delegate_fallback, delegate_fallback_provider)
         if not delegate_fallback:
             print_info("Delegate fallback skipped — subagent retries will use no fallback model.")
             break
@@ -1386,14 +1392,19 @@ def _prompt_mercury_slots(config: dict) -> None:
     # delegate fallback — no endless loop. Empty selection skips.
     delegate_chain = []
     if delegate_fallback:
+        saved_chain = chains["delegate_fallback_chain"]
+        extra_current = saved_chain[1] if len(saved_chain) > 1 else ""
+        extra_provider, extra_current, extra_catalog, extra_pricing = _fallback_data(
+            "Select second-order delegate fallback provider:", extra_current, delegate_fallback_provider,
+        )
         # Bounded retries (see the ordinary second-order loop): one retry,
         # then a repeated duplicate pick means skip.
         _dup_retries = 0
         while not delegate_chain:
-            extra = _pick("Select second-order delegate fallback (used when the SUBAGENT fallback also fails; empty to skip):", "", delegate_catalog, delegate_pricing)
+            extra = _pick("Select second-order delegate fallback (used when the SUBAGENT fallback also fails; empty to skip):", extra_current, extra_catalog, extra_pricing)
             if not extra:
                 break
-            extra = _qualify_omp_model(extra, delegate_provider)
+            extra = _qualify_omp_model(extra, extra_provider)
             if extra == delegate_fallback or extra == delegate_model:
                 if _dup_retries >= 1:
                     print_warning(f"Skipping second-order delegate fallback — must differ from {delegate_fallback} and {delegate_model}.")

@@ -75,6 +75,8 @@ def test_setup_delegates_to_select_provider_and_model(tmp_path, monkeypatch):
         _write_model_config(tmp_path, "custom", "http://localhost:11434/v1", "qwen3.5:32b")
 
     monkeypatch.setattr("mercury_cli.main.select_provider_and_model", fake_select)
+    # Slot menus are tested separately; this case verifies provider persistence.
+    monkeypatch.setattr(setup_mod, "_prompt_mercury_slots", lambda config: None)
 
     setup_model_provider(config)
     save_config(config)

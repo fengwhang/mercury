@@ -20,6 +20,9 @@ def _maybe_keep_current_tts(question, choices):
 
 
 def _clear_provider_env(monkeypatch):
+    # These tests exercise provider setup, not the subsequent slot wizard.
+    # Its provider/model menus are covered by test_setup_slots.py.
+    monkeypatch.setattr("mercury_cli.setup._prompt_mercury_slots", lambda config: None)
     for key in (
         "HERMES_INFERENCE_PROVIDER",
         "OPENAI_BASE_URL",

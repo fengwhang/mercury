@@ -22,6 +22,12 @@ from mercury_cli.models import CANONICAL_PROVIDERS
 # helpers
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def isolated_model_slots(tmp_path, monkeypatch):
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+    monkeypatch.setenv("MERCURY_CONFIG", str(tmp_path / "config.yaml"))
+
+
 def _interactive(monkeypatch, answers):
     """Simulate an interactive terminal; prompt_yes_no consumes answers.
 
@@ -179,6 +185,7 @@ class TestDelegateSlotsGate:
             )
         )
         written = stack.enter_context(patch("mercury_cli.omp_sync._write_slots"))
+        stack.enter_context(patch.object(setup_mod, "_prompt_slot_reasoning"))
         return picker, written
 
     def test_configured_no_skips_without_writing(self, monkeypatch):

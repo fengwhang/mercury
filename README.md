@@ -336,6 +336,8 @@ The shared configuration has `models:`, `approvals:`, `hermes:`, and `omp:`
 sections. `models.default` selects the Hermes chat model;
 `models.delegate_model` selects the OMP model, including `mercury omp`.
 Both primary fallback slots and their ordered chains are optional.
+Each main and delegate fallback, including second-order fallbacks, can use
+its own provider selected in setup.
 Use `mercury setup model` for provider-aware selection and
 `mercury omp-sync` after hand-editing shared settings.
 
