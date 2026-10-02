@@ -5,6 +5,8 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.9] — nightly
+
 - Ask for reasoning immediately after each model selection in setup,
   including main, delegate, and second-order fallback models.
 
