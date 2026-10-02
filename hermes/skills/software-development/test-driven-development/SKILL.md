@@ -13,6 +13,15 @@ metadata:
 
 # Test-Driven Development (TDD)
 
+## Mercury engine tools
+
+This workflow is shared by Mercury Hermes and Mercury OMP. Tool-call examples
+using `terminal`, `read_file`, or `delegate_task` are Hermes-shaped examples;
+on OMP use the available `bash`, `read`, search, and `task` tools with their
+actual schemas. Never invoke an unavailable tool. For the complete mapping,
+load the `mercury-agent` skill and its `references/engine-tools.md`. Apply this
+mapping to the examples below; keep each engine's permissions unchanged.
+
 ## Overview
 
 Write the test first. Watch it fail. Write minimal code to pass.
@@ -316,9 +325,13 @@ terminal("pytest tests/test_feature.py::test_name -v")
 terminal("pytest tests/ -q")
 ```
 
-### With delegate_task
+### With the active engine's delegation tool
 
 When dispatching subagents for implementation, enforce TDD in the goal:
+
+For OMP, use `task` with `agent: "task"` and carry the same instructions in
+its `task` text. This example uses Hermes `delegate_task` syntax; follow the
+current schema rather than copying its keywords into OMP.
 
 ```python
 delegate_task(

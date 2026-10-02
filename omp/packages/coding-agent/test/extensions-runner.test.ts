@@ -2551,9 +2551,7 @@ describe("ExtensionRunner", () => {
 					abort: () => {},
 					settings: { get: (key: string) => (key === "tools.approvalMode" ? "always-ask" : {}) } as never,
 				}),
-			).rejects.toThrow(
-				"Tool call not approved (approval unanswered (no human reachable)): dangerous_tool",
-			);
+			).rejects.toThrow("Tool call not approved (approval unanswered (no human reachable)): dangerous_tool");
 
 			expect(events).toEqual([
 				{ type: "tool_approval_requested", reason: undefined },

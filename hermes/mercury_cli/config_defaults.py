@@ -836,6 +836,9 @@ DEFAULT_CONFIG = {
                                       # surfaces (server-side logging only). Failure
                                       # notices and manual /compress feedback are
                                       # always visible regardless of this setting.
+        # Setup sets this true so its shared percentage bypasses historical
+        # model-specific autoraises and minimum-size floors.
+        "respect_threshold_percent": False,
         "threshold": 0.50,            # compress when context usage exceeds this ratio.
                                       # Models with context windows below 512K are
                                       # floored at 0.75 (raise-only) so compaction

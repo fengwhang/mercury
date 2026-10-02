@@ -1,7 +1,4 @@
-import {
-	BUILTIN_SLASH_COMMANDS_INTERNAL,
-	lookupBuiltinSlashCommand,
-} from "../../slash-commands/builtin-registry";
+import { BUILTIN_SLASH_COMMANDS_INTERNAL, lookupBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../../slash-commands/helpers/parse";
 
 /**
@@ -31,17 +28,15 @@ export function localSlashResponse(text: string): string | null {
 				return `No such command: /${topic}. Send /help for the list.`;
 			}
 			const blurb = topicSpec.acpDescription ?? topicSpec.description ?? "";
-			const usage = "usage" in topicSpec && typeof topicSpec.usage === "string"
-				? topicSpec.usage
-				: "";
+			const usage = "usage" in topicSpec && typeof topicSpec.usage === "string" ? topicSpec.usage : "";
 			return usage ? `/${topicSpec.name} — ${blurb}\nUsage: ${usage}` : `/${topicSpec.name} — ${blurb}`;
 		}
-		const lines = BUILTIN_SLASH_COMMANDS_INTERNAL.filter(spec =>
-			/^[a-z0-9-]+$/.test(spec.name),
-		).map(spec => {
-			const blurb = spec.acpDescription ?? spec.description ?? "";
-			return blurb ? `/${spec.name} — ${blurb}` : `/${spec.name}`;
-		}).sort();
+		const lines = BUILTIN_SLASH_COMMANDS_INTERNAL.filter(spec => /^[a-z0-9-]+$/.test(spec.name))
+			.map(spec => {
+				const blurb = spec.acpDescription ?? spec.description ?? "";
+				return blurb ? `/${spec.name} — ${blurb}` : `/${spec.name}`;
+			})
+			.sort();
 		return `Available commands:\n${lines.join("\n")}`;
 	}
 	const spec = lookupBuiltinSlashCommand(name) ?? lookupBuiltinSlashCommand(parsed.name);

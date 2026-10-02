@@ -133,12 +133,7 @@ describe("bash tool credential-read approval", () => {
 	});
 
 	function isDeny(decision: unknown): boolean {
-		return (
-			typeof decision === "object" &&
-			decision !== null &&
-			"policy" in decision &&
-			decision.policy === "deny"
-		);
+		return typeof decision === "object" && decision !== null && "policy" in decision && decision.policy === "deny";
 	}
 
 	it("denies credential reads at approval time, allows ordinary commands", () => {

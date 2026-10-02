@@ -62,6 +62,7 @@ const codexModelEntrySchema = type({
 	"id?": "unknown",
 	"display_name?": "unknown",
 	"context_window?": "unknown",
+	"max_context_window?": "unknown",
 	"default_reasoning_level?": "unknown",
 	"supported_reasoning_levels?": "unknown",
 	"input_modalities?": "unknown",
@@ -280,6 +281,7 @@ interface ParsedCodexModelEntry {
 	slug: string;
 	name: string;
 	contextWindow: number | null;
+	maxContextWindow: number | null;
 	reasoning: boolean;
 	thinking?: ThinkingConfig;
 	reasoningCapabilities?: ModelSpec["reasoningCapabilities"];
@@ -312,6 +314,7 @@ function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
 		slug,
 		name: toNonEmptyString(payload.display_name) ?? slug,
 		contextWindow: toPositiveInt(payload.context_window),
+		maxContextWindow: toPositiveInt(payload.max_context_window),
 		reasoning:
 			advertised !== undefined
 				? advertised.thinking !== undefined
@@ -354,9 +357,12 @@ function buildNormalizedCodexModel(
 			? GPT_5_6_CONTEXT_WINDOW
 			: DEFAULT_CONTEXT_WINDOW;
 	const reportedContextWindow = parsed.contextWindow ?? fallbackContextWindow;
-	const contextWindow = CODEX_GPT_5_6_1M_SLUGS.has(canonicalSlug)
-		? Math.max(reportedContextWindow, GPT_5_6_1M_CONTEXT_WINDOW)
-		: reportedContextWindow;
+	const contextWindow =
+		parsed.maxContextWindow !== null
+			? (parsed.contextWindow ?? parsed.maxContextWindow)
+			: CODEX_GPT_5_6_1M_SLUGS.has(canonicalSlug)
+				? Math.max(reportedContextWindow, GPT_5_6_1M_CONTEXT_WINDOW)
+				: reportedContextWindow;
 	const maxTokens = Math.min(DEFAULT_MAX_TOKENS, contextWindow);
 	return {
 		priority: parsed.priority,
@@ -375,6 +381,9 @@ function buildNormalizedCodexModel(
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			remoteCompaction: CODEX_REMOTE_COMPACTION,
 			contextWindow,
+			...(parsed.maxContextWindow !== null
+				? { maxContextWindow: Math.max(contextWindow, parsed.maxContextWindow) }
+				: {}),
 			maxTokens,
 			...(parsed.preferWebsockets ? { preferWebsockets: true } : {}),
 			...(parsed.useResponsesLite ? { useResponsesLite: true } : {}),

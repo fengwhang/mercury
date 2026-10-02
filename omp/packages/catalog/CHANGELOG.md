@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Retain provider-advertised default and maximum context windows separately so Mercury can offer either limit during setup.
 - Model discovery retains API-advertised reasoning levels, defaults, mandatory reasoning, and absence of an effort selector instead of replacing them with bundled rules.
 - Updated Codex client identification and refreshed stale model catalogs so newly available models appear after an upgrade.
 

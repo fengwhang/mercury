@@ -23,6 +23,7 @@ def interactive(tmp_path, monkeypatch):
     monkeypatch.setenv("MERCURY_SKILLS_DIR", str(tmp_path / "skills"))
     monkeypatch.setattr(setup, "is_noninteractive", lambda: False)
     monkeypatch.setattr(setup, "is_interactive_stdin", lambda: True)
+    monkeypatch.setattr("mercury_cli.context_settings.model_context_windows", lambda *args: None)
     return tmp_path / "config.yaml"
 
 
@@ -166,8 +167,11 @@ def test_four_models_are_followed_by_reasoning_and_reach_runtime_chains(interact
         return default
 
     def choose(title, choices, default):
-        menus.append((title, choices))
-        events.append(("reasoning", title.split(" — ", 1)[0]))
+        if title.startswith("Context window for "):
+            events.append(("context", title.removeprefix("Context window for ").rstrip(":")))
+        else:
+            menus.append((title, choices))
+            events.append(("reasoning", title.split(" — ", 1)[0]))
         return default
 
     monkeypatch.setattr("mercury_cli.main.select_provider_and_model", select_main)
@@ -183,6 +187,7 @@ def test_four_models_are_followed_by_reasoning_and_reach_runtime_chains(interact
     assert [model for _, model in model_events] == selected
     for index, model in model_events:
         assert events[index + 1] == ("reasoning", model), events
+        assert events[index + 2] == ("context", model), events
     save_config(config)
     expected = dict(zip(selected, levels))
     assert len(menus) == 4
@@ -255,7 +260,8 @@ def test_rejected_duplicates_and_skipped_slots_get_no_reasoning_prompt(interacti
     monkeypatch.setattr(models, "get_pricing_for_provider", lambda *args, **kwargs: {})
 
     def choose(title, choices, default):
-        models_with_reasoning.append(title.split(" — ", 1)[0])
+        if not title.startswith("Context window for "):
+            models_with_reasoning.append(title.split(" — ", 1)[0])
         return default
 
     monkeypatch.setattr(setup, "_curses_prompt_choice", choose)

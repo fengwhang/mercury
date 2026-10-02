@@ -20,6 +20,15 @@ triggers:
 
 # Popular Web Designs
 
+## Mercury engine tools
+
+This workflow is shared by Mercury Hermes and Mercury OMP. Tool-call examples
+using `terminal`, `read_file`, or `delegate_task` are Hermes-shaped examples;
+on OMP use the available `bash`, `read`, search, and `task` tools with their
+actual schemas. Never invoke an unavailable tool. For the complete mapping,
+load the `mercury-agent` skill and its `references/engine-tools.md`. Apply this
+mapping to the examples below; keep each engine's permissions unchanged.
+
 54 real-world design systems ready for use when generating HTML/CSS. Each template captures a
 site's complete visual language: color palette, typography hierarchy, component styles, spacing
 system, shadows, responsive behavior, and practical agent prompts with exact CSS values.

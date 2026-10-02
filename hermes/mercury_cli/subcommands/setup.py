@@ -19,7 +19,7 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
         help="Interactive setup wizard",
         description="Configure Mercury with an interactive wizard. "
         "Run a specific section: "
-        "mercury setup model|tts|terminal|gateway|observatory|tools|telemetry|agent|approvals|hermes-approvals|omp-approvals",
+        "mercury setup model|tts|terminal|gateway|observatory|tools|telemetry|agent|context|approvals|hermes-approvals|omp-approvals",
     )
     setup_parser.add_argument(
         "section",
@@ -33,6 +33,7 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
             "tools",
             "telemetry",
             "agent",
+            "context",
             "approvals",
             "hermes-approvals",
             "omp-approvals",

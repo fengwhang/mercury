@@ -216,5 +216,8 @@ export function buildModel<TApi extends Api>(spec: ModelSpec<TApi>): Model<TApi>
 	};
 	applyCatalogAssignments(model, policy.catalog);
 	applyCatalogCorrections(model, policy.catalog);
+	if (spec.maxContextWindow !== undefined && spec.contextWindow !== null) {
+		model.contextWindow = Math.min(spec.contextWindow, spec.maxContextWindow);
+	}
 	return model;
 }

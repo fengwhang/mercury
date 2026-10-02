@@ -604,6 +604,8 @@ export const SETTINGS_SCHEMA = {
 
 	enabledModels: { type: "array", default: EMPTY_STRING_ARRAY },
 
+	modelContextWindows: { type: "record", default: EMPTY_NUMBER_RECORD },
+
 	enabledProviders: { type: "array", default: EMPTY_STRING_ARRAY },
 
 	disabledProviders: { type: "array", default: EMPTY_STRING_ARRAY },

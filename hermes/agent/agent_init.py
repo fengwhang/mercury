@@ -2115,6 +2115,7 @@ def init_agent(
     _codex_gpt55_autoraise_notice = str(
         _compression_cfg.get("codex_gpt55_autoraise_notice", True)
     ).lower() in {"true", "1", "yes"}
+    _respect_threshold_percent = bool(_compression_cfg.get("respect_threshold_percent", False))
     agent._compression_threshold_autoraised = None
     try:
         from agent.auxiliary_client import (
@@ -2127,6 +2128,8 @@ def init_agent(
             agent.provider,
             allow_codex_gpt55_autoraise=_codex_gpt55_autoraise,
         )
+        if _respect_threshold_percent:
+            _model_cthresh = None
         # The Codex autoraises (gpt-5.4/5.5 272K family and gpt-5.3-codex-spark)
         # apply only when they RAISE (never lower a user's higher global
         # threshold). The notice is populated only when it actually fires, and
@@ -2823,6 +2826,7 @@ def init_agent(
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
             min_tail_user_messages=compression_min_tail_users,
             tail_mode=compression_tail_mode,
+            respect_threshold_percent=_respect_threshold_percent,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

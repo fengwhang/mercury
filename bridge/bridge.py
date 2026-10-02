@@ -57,6 +57,10 @@ def parse_config(path=None):
     if not isinstance(overrides, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in overrides.items()):
         raise ValueError("models.reasoning_overrides must map model names to reasoning levels")
     slots["reasoning_overrides"] = overrides
+    windows = models.get("context_windows") or {}
+    if not isinstance(windows, dict) or any(not isinstance(k, str) or not isinstance(v, int) or isinstance(v, bool) or v <= 0 for k, v in windows.items()):
+        raise ValueError("models.context_windows must map model names to positive token limits")
+    slots["context_windows"] = windows
     return slots
 
 
@@ -396,6 +400,18 @@ def render_omp_subtree(slots, target=None):
         or slots.get("delegate_thinking_level"))
     if _think and _think != "off":
         omp_block += f"  defaultThinkingLevel: {_think}\n"
+    import yaml
+    whole = yaml.safe_load(text) or {}
+    compression = (whole.get("hermes") or {}).get("compression") or {}
+    threshold = compression.get("threshold", 0.50)
+    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not 0 < threshold < 1:
+        raise ValueError("hermes.compression.threshold must be between 0 and 1")
+    enabled = compression.get("enabled", True)
+    compaction = dict((whole.get("omp") or {}).get("compaction") or {})
+    compaction.update(enabled=bool(enabled), thresholdPercent=threshold * 100,
+                      thresholdTokens=compression.get("threshold_tokens") or -1)
+    omp_block += f"  compaction: {json.dumps(compaction)}\n"
+    omp_block += f"  modelContextWindows: {json.dumps(slots.get('context_windows') or {})}\n"
     omp_provider = _hermes_web_omp_provider(text)
     if omp_provider:
         # PIN the inherited provider first; omp appends its remaining chain.

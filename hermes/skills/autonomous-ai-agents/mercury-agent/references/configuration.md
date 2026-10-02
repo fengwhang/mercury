@@ -19,12 +19,28 @@ as `agent.max_turns` and preserves those subtrees. Upstream reference: https://h
 | `tts` | `provider` (edge/elevenlabs/openai/minimax/mistral/neutts/gemini/piper/kittentts/deepinfra/xai) |
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider`, `write_approval` |
 | `security` | `redact_secrets`, `tirith_enabled`, `website_blocklist` |
-| `models` | Default/fallback/delegate models, fallback chains, per-model effort overrides |
+| `models` | Default/fallback/delegate models, fallback chains, per-model effort overrides, `context_windows` token budgets |
 | `omp.tools` | `approvalMode` (always-ask/write/yolo; native omp tiers) |
 | `checkpoints` | `enabled`, `max_snapshots` (50) |
 | `curator` | `enabled`, `consolidate` (false, opt-in aux-model consolidation), `interval_hours`, `stale_after_days` |
 
 `mercury config check` reports sections missing from an older config.
+
+### Context windows and compaction
+
+`mercury setup model` asks for reasoning and context after each of the four
+models. Provider defaults and maxima are distinct; when only one window is
+advertised, Default selects it and Custom can reduce it. Missing metadata keeps
+automatic detection available. `models.context_windows` maps provider-qualified
+model names to selected positive token limits for both engines and fallback
+chains. Higher context tiers may incur higher provider costs.
+
+`mercury setup context` configures the built-in compressor at 50%, 75%, or a
+custom percentage. It writes `hermes.compression.threshold` as a fraction and
+`respect_threshold_percent: true`, clears older absolute/per-model trigger
+caps, and shares the percentage with OMP. Output headroom may trigger earlier
+near the provider limit. Compaction remains on in Blank Slate; the optional
+Context Engine Plugin Tools toolset is separate.
 
 ### Toolsets
 

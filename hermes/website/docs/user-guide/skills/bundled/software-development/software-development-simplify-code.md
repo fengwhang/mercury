@@ -31,6 +31,15 @@ The following is the complete skill definition that Mercury loads when this skil
 
 # Simplify Code — Parallel Review & Cleanup
 
+## Mercury engine tools
+
+This workflow is shared by Mercury Hermes and Mercury OMP. Tool-call examples
+using `terminal`, `read_file`, or `delegate_task` are Hermes-shaped examples;
+on OMP use the available `bash`, `read`, search, and `task` tools with their
+actual schemas. Never invoke an unavailable tool. For the complete mapping,
+load the `mercury-agent` skill and its `references/engine-tools.md`. Apply this
+mapping to the examples below; keep each engine's permissions unchanged.
+
 Review your recent code changes with four focused reviewers running in
 parallel, aggregate their findings, and apply the fixes worth applying.
 
@@ -99,23 +108,19 @@ before proceeding.
 
 ### Phase 2 — Launch four reviewers in parallel
 
-Use `delegate_task` **batch mode** — pass all four tasks in one `tasks`
-array so they run concurrently. Four is the right fan-out for this pattern;
-it's within the `delegation.max_concurrent_children` budget on any default
-install.
+Dispatch the four review angles through the active engine's delegation tool:
+Hermes `delegate_task`, or OMP `task` with `agent: "task"`. Reviewer names
+and angles describe work; they are not model roles. Use one batch only when
+its schema supports batching and the session's concurrency budget permits it.
 
-**No delegation available?** If you can't call `delegate_task` in this
-context (you're a leaf subagent, delegation is disabled, or the budget is
-exhausted), do NOT skip the review or drop angles. Work through all four
-reviewer angles yourself, sequentially, in this context — same search
-standards, same finding format. Then say clearly in your final summary that
-this was a single-pass inline review, not the parallel fan-out, so the user
-knows what actually ran.
+If delegation, batching, or concurrency is unavailable, review all four angles
+sequentially in the current context. Preserve the same search standards and
+finding format, and state which parts ran inline in the final summary.
 
-Give **every** reviewer the **complete diff** (not fragments — cross-file
-issues hide in the gaps) plus the absolute repo path so they can search the
-wider codebase. Each reviewer gets `terminal`, `file`, and `search`
-toolsets (so they can `git`, `read_file`, and `search_files`/grep).
+Give every reviewer the complete diff and absolute repository path. Use the
+current engine's schema for inputs: Hermes batch items use `goal` and optional
+`toolsets`; OMP items use `name`, `agent: "task"`, and `task`, with shared
+`context` when offered. Use only tools that the child actually has.
 
 Tell each reviewer to:
 - Search the existing codebase for evidence (don't reason from the diff alone).

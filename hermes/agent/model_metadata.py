@@ -1310,11 +1310,14 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         for model in data.get("data", []):
             model_id = model.get("id", "")
             entry = {
-                "context_length": model.get("context_length", 128000),
+                "context_length": model.get("context_length"),
                 "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
                 "name": model.get("name", model_id),
                 "pricing": model.get("pricing", {}),
             }
+            for field in ("context_window", "max_context_window", "max_context_length"):
+                if field in model:
+                    entry[field] = model[field]
             _add_model_aliases(cache, model_id, entry)
             canonical = model.get("canonical_slug", "")
             if canonical and canonical != model_id:
@@ -1474,6 +1477,9 @@ def fetch_endpoint_model_metadata(
                 context_length = _extract_context_length(model)
                 if context_length is not None:
                     entry["context_length"] = context_length
+                for field in ("context_window", "max_context_window", "max_context_length"):
+                    if field in model:
+                        entry[field] = model[field]
                 max_completion_tokens = _extract_max_completion_tokens(model)
                 if max_completion_tokens is not None:
                     entry["max_completion_tokens"] = max_completion_tokens

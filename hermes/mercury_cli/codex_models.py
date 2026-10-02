@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # borrow another account's Codex CLI cache for request capabilities.
 _reasoning_catalogs: dict[tuple[str, str], tuple[float, dict[str, dict]]] = {}
 _reasoning_attempts: dict[tuple[str, str], float] = {}
+_context_catalogs: dict[tuple[str, str], dict[str, dict]] = {}
 
 
 def _catalog_key(access_token: str, base_url: Optional[str]) -> tuple[str, str]:
@@ -71,6 +72,20 @@ def codex_model_reasoning_capabilities(
             cached = _reasoning_catalogs.get(key)
     from agent.model_metadata import strip_codex_context_variant_suffix
     return cached[1].get(strip_codex_context_variant_suffix(model)) if cached else None
+
+def codex_model_context_windows(
+    model: str, *, access_token: Optional[str] = None,
+    base_url: Optional[str] = None, allow_fetch: bool = False,
+) -> Optional[dict]:
+    """Account-scoped default/max context metadata from the same effort probe."""
+    codex_model_reasoning_capabilities(model, access_token=access_token,
+                                      base_url=base_url, allow_fetch=allow_fetch)
+    if not access_token:
+        return None
+    from agent.model_metadata import strip_codex_context_variant_suffix
+    return _context_catalogs.get(_catalog_key(access_token, base_url), {}).get(
+        strip_codex_context_variant_suffix(model))
+
 
 DEFAULT_CODEX_MODELS: List[str] = [
     # Verified in current upstream Codex discovery/compatibility rules. Live
@@ -244,6 +259,8 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
 
     sortable = []
     capabilities = {}
+    contexts = {}
+    from mercury_cli.context_settings import parse_context_windows
     for item in entries:
         if not isinstance(item, dict):
             continue
@@ -261,11 +278,15 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
         priority = item.get("priority")
         rank = int(priority) if isinstance(priority, (int, float)) else 10_000
         sortable.append((rank, slug))
+        context = parse_context_windows(item)
+        if context is not None:
+            contexts[slug] = context
         caps = parse_codex_reasoning_capabilities(item)
         if caps is not None:
             capabilities[slug] = caps
 
     if entries:
+        _context_catalogs[_catalog_key(access_token, base_url)] = contexts
         _reasoning_catalogs[_catalog_key(access_token, base_url)] = (time.monotonic(), capabilities)
 
     sortable.sort(key=lambda x: (x[0], x[1]))

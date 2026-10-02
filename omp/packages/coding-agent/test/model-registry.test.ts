@@ -8,6 +8,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { fingerprintStaticModels } from "@oh-my-pi/pi-catalog/model-manager";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
+import { resolveModelCacheProviderId } from "@oh-my-pi/pi-catalog/provider-models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -2054,6 +2055,7 @@ describe("ModelRegistry", () => {
 		let legacySentinels: ModelRegistry;
 		let standardCache: ModelRegistry;
 		let specialCache: ModelRegistry;
+		let retiredCodexCache: ModelRegistry;
 		let vertexAuthoritative: ModelRegistry;
 		let syntheticCacheLoad: ModelRegistry;
 		let cachedDiscoverableRemoteCompaction: ModelRegistry;
@@ -2266,9 +2268,43 @@ describe("ModelRegistry", () => {
 							}),
 						];
 						for (const cachedModel of cachedModels) {
-							writeModelCache(cachedModel.provider, Date.now(), [cachedModel], true, "", dbPath);
+							writeModelCache(
+								resolveModelCacheProviderId(cachedModel.provider),
+								Date.now(),
+								[cachedModel],
+								true,
+								"",
+								dbPath,
+							);
 						}
 					},
+				},
+			);
+			retiredCodexCache = readonlyRegistry(
+				{ providers: {} },
+				{
+					seedCache: dbPath =>
+						writeModelCache(
+							"openai-codex",
+							Date.now(),
+							[
+								buildModel({
+									id: "gpt-retired-cache-only",
+									name: "Retired Codex Cache Model",
+									api: "openai-codex-responses",
+									provider: "openai-codex",
+									baseUrl: "https://chatgpt.com/backend-api/codex",
+									reasoning: true,
+									input: ["text"],
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+									contextWindow: 400_000,
+									maxTokens: 128_000,
+								}),
+							],
+							true,
+							"",
+							dbPath,
+						),
 				},
 			);
 			vertexAuthoritative = readonlyRegistry(
@@ -2484,6 +2520,10 @@ describe("ModelRegistry", () => {
 			expect(specialCache.find("google-antigravity", "gemini-cache-only-flash")?.maxTokens).toBe(8_192);
 			expect(specialCache.find("google-gemini-cli", "gemini-3.5-flash")?.maxTokens).toBe(16_384);
 			expect(specialCache.find("openai-codex", "gpt-5.4-codex-pro")?.maxTokens).toBe(128_000);
+		});
+
+		test("ignores retired unversioned Codex cache rows on startup", () => {
+			expect(retiredCodexCache.find("openai-codex", "gpt-retired-cache-only")).toBeUndefined();
 		});
 
 		test("applies provider remoteCompaction to cached configured discovery models", () => {

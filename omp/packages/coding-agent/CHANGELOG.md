@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Honor Mercury's per-model context-window choices and shared compaction percentage, including removal of stale fixed-token thresholds.
 - Reasoning controls follow the selected model's advertised levels, and Mercury profile launches load their own persona, memory, and OMP instructions together.
 - Mercury Linux binaries use explicit portable Bun targets, including separate musl builds and native addon caches. Release packaging rejects Nix store loader paths and mismatched native addon ABIs.
 

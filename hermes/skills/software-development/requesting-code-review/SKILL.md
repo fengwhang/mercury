@@ -13,6 +13,15 @@ metadata:
 
 # Pre-Commit Code Verification
 
+## Mercury engine tools
+
+This workflow is shared by Mercury Hermes and Mercury OMP. Tool-call examples
+using `terminal`, `read_file`, or `delegate_task` are Hermes-shaped examples;
+on OMP use the available `bash`, `read`, search, and `task` tools with their
+actual schemas. Never invoke an unavailable tool. For the complete mapping,
+load the `mercury-agent` skill and its `references/engine-tools.md`. Apply this
+mapping to the examples below; keep each engine's permissions unchanged.
+
 Automated verification pipeline before code lands. Static scans, baseline-aware
 quality gates, an independent reviewer subagent, and an auto-fix loop.
 
@@ -124,7 +133,11 @@ Quick scan before dispatching the reviewer:
 
 ## Step 5 — Independent reviewer subagent
 
-Call `delegate_task` directly — it is NOT available inside execute_code or scripts.
+Use the active engine's delegation tool directly, never from code-execution
+or shell scripts. Hermes uses `delegate_task`; OMP uses `task` with
+`agent: "task"`. Transfer the review instructions below into OMP's `task`
+text and follow its live schema for names, isolation, structured output, and
+returned results. The following examples use Hermes syntax.
 
 The reviewer gets ONLY the diff and static scan results. No shared context with
 the implementer. Fail-closed: unparseable response = fail.
@@ -273,7 +286,7 @@ tests exist, tests pass, no regressions.
 - **Empty diff** — check `git status`, tell user nothing to verify
 - **Not a git repo** — skip and tell user
 - **Large diff (>15k chars)** — split by file, review each separately
-- **delegate_task returns non-JSON** — retry once with stricter prompt, then treat as FAIL
+- **The delegated reviewer returns non-JSON** — retry once with stricter prompt, then treat as FAIL
 - **False positives** — if reviewer flags something intentional, note it in fix prompt
 - **No test framework found** — skip regression check, reviewer verdict still runs
 - **Lint tools not installed** — skip that check silently, don't fail

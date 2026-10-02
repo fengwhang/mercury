@@ -118,10 +118,27 @@ export function getReadBlockError(absolutePath: string): string | undefined {
  * its terminal-side sensitive-write coverage).
  */
 const SHELL_READ_VERBS: readonly string[] = [
-	"cat", "head", "tail", "less", "more", "most", "bat", "tac", "nl",
-	"strings", "xxd", "od", "hexdump", "base64",
-	"grep", "rg", "ripgrep", "ag", "ack",
-	"sed", "awk",
+	"cat",
+	"head",
+	"tail",
+	"less",
+	"more",
+	"most",
+	"bat",
+	"tac",
+	"nl",
+	"strings",
+	"xxd",
+	"od",
+	"hexdump",
+	"base64",
+	"grep",
+	"rg",
+	"ripgrep",
+	"ag",
+	"ack",
+	"sed",
+	"awk",
 ];
 
 /**
@@ -130,9 +147,7 @@ const SHELL_READ_VERBS: readonly string[] = [
  * naming a secret path in a read verb, so copy-out of a credential
  * store is denied at the copy step.
  */
-const SHELL_COPYOUT_VERBS: readonly string[] = [
-	"cp", "mv", "install", "ln", "dd", "tar", "rsync", "scp", "sftp",
-];
+const SHELL_COPYOUT_VERBS: readonly string[] = ["cp", "mv", "install", "ln", "dd", "tar", "rsync", "scp", "sftp"];
 
 function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

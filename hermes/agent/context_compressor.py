@@ -2476,7 +2476,7 @@ class ContextCompressor(ContextEngine):
             # _base_threshold_percent already has the per-model override
             # applied, so the floor stacks on top of it.
             self.threshold_percent = self._effective_threshold_percent(
-                self._resolved_context_length, self._base_threshold_percent,
+                self._resolved_context_length, self._base_threshold_percent, self.respect_threshold_percent,
             )
             self._emit_init_summary_once()
         return self._resolved_context_length
@@ -2522,7 +2522,7 @@ class ContextCompressor(ContextEngine):
             # if the percentage would suggest a lower value (#14690 handles
             # the degenerate small-window case inside the helper).
             self._threshold_tokens = self._compute_threshold_tokens(
-                _ctx, self.threshold_percent, self.max_tokens,
+                _ctx, self.threshold_percent, self.max_tokens, self.respect_threshold_percent,
             )
             # Apply absolute token cap (compression.threshold_tokens) —
             # takes the lower of the ratio-based threshold and the cap.
@@ -3142,7 +3142,7 @@ class ContextCompressor(ContextEngine):
         )
         self._base_threshold_percent = _new_base
         self.threshold_percent = self._effective_threshold_percent(
-            context_length, _new_base,
+            context_length, _new_base, self.respect_threshold_percent,
         )
         # max_tokens=None here means "caller didn't specify" → keep the existing
         # output reservation. A switch that genuinely changes the output budget
@@ -3150,7 +3150,7 @@ class ContextCompressor(ContextEngine):
         if max_tokens is not None:
             self.max_tokens = self._coerce_max_tokens(max_tokens)
         self.threshold_tokens = self._compute_threshold_tokens(
-            context_length, self.threshold_percent, self.max_tokens,
+            context_length, self.threshold_percent, self.max_tokens, self.respect_threshold_percent,
         )
         # Re-apply the absolute token cap so it survives model switches
         # and fallback activations. The cap is a first-class config value
@@ -3286,7 +3286,7 @@ class ContextCompressor(ContextEngine):
 
     @staticmethod
     def _effective_threshold_percent(
-        context_length: int, threshold_percent: float,
+        context_length: int, threshold_percent: float, respect_threshold_percent: bool = False,
     ) -> float:
         """Apply the small-context threshold floor (raise-only).
 
@@ -3297,6 +3297,8 @@ class ContextCompressor(ContextEngine):
         Large-context models keep the configured value — at 512K+ the default
         50% trigger already leaves ample post-compaction headroom.
         """
+        if respect_threshold_percent:
+            return threshold_percent
         if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
             return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
         return threshold_percent
@@ -3304,6 +3306,7 @@ class ContextCompressor(ContextEngine):
     @staticmethod
     def _compute_threshold_tokens(
         context_length: int, threshold_percent: float, max_tokens: int | None = None,
+        respect_threshold_percent: bool = False,
     ) -> int:
         """Compute the compaction trigger threshold in tokens.
 
@@ -3342,6 +3345,10 @@ class ContextCompressor(ContextEngine):
         effective_window = context_length - (max_tokens or 0)
         if effective_window <= 0:
             effective_window = context_length
+        if respect_threshold_percent:
+            # The wizard's chosen percentage is of the selected window. Keep
+            # output headroom when that percentage approaches the provider cap.
+            return max(1, min(int(context_length * threshold_percent), effective_window - 1))
         pct_value = int(effective_window * threshold_percent)
         floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
         # The floor must not consume the window's output headroom: cap it at
@@ -3379,7 +3386,9 @@ class ContextCompressor(ContextEngine):
         proactive_prune_min_reclaim_tokens: int = 4096,
         min_tail_user_messages: int = 1,
         tail_mode: str = "lean",
+        respect_threshold_percent: bool = False,
     ):
+        self.respect_threshold_percent = respect_threshold_percent
         self.model = model
         self.base_url = base_url
         self.api_key = api_key

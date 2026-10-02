@@ -31,6 +31,15 @@ The following is the complete skill definition that Mercury loads when this skil
 
 # Grill Me
 
+## Mercury engine tools
+
+This workflow is shared by Mercury Hermes and Mercury OMP. Tool-call examples
+using `terminal`, `read_file`, or `delegate_task` are Hermes-shaped examples;
+on OMP use the available `bash`, `read`, search, and `task` tools with their
+actual schemas. Never invoke an unavailable tool. For the complete mapping,
+load the `mercury-agent` skill and its `references/engine-tools.md`. Apply this
+mapping to the examples below; keep each engine's permissions unchanged.
+
 Stress-tests a plan through structured adversarial questioning before any
 code is written. Models the plan as a **design tree** — every decision
 branches into the decisions that hang off it — and interviews the user in
@@ -77,8 +86,8 @@ round.
 
 **Facts are your job; decisions are the user's.** When a frontier question
 needs a fact from the environment (codebase, filesystem, config, docs), find
-it yourself with `search_files` / `read_file` / `terminal` — or dispatch a
-subagent via `delegate_task` for a heavy exploration. Never ask the user for
+it yourself using the active engine's file, search, and shell tools — or
+dispatch a subagent through its advertised delegation tool for a heavy exploration. Never ask the user for
 anything you could look up. Don't block on an exploration: only the questions
 downstream of it wait; ask the rest of the frontier now.
 

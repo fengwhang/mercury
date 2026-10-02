@@ -1833,14 +1833,28 @@ export class Settings {
 			const loaded = this.#unwrapYamlLoadResult(mercuryPath, raw);
 			if (loaded && typeof loaded === "object") {
 				this.useMercuryApprovalPolicy(mercuryPath);
-				const subtree = (loaded as Record<string, unknown>)["omp"];
-				if (subtree && typeof subtree === "object") {
-					this.#configPath = mercuryPath;
-					return { settings: subtree as RawSettings, configPath: mercuryPath };
+				const whole = loaded as Record<string, unknown>;
+				const subtree = whole.omp;
+				const shared: RawSettings = subtree && typeof subtree === "object" ? { ...subtree } : {};
+				const models = whole.models as Record<string, unknown> | undefined;
+				if (models?.context_windows && typeof models.context_windows === "object") {
+					shared.modelContextWindows = models.context_windows;
 				}
-				// No `omp:` subtree yet — treat as empty main config.
+				const hermes = whole.hermes as Record<string, unknown> | undefined;
+				const compression = hermes?.compression as Record<string, unknown> | undefined;
+				const threshold = compression?.threshold ?? 0.5;
+				if (typeof threshold !== "number" || !Number.isFinite(threshold) || threshold <= 0 || threshold >= 1) {
+					throw new Error("hermes.compression.threshold must be between 0 and 1");
+				}
+				const compaction = (shared.compaction ?? {}) as Record<string, unknown>;
+				shared.compaction = {
+					...compaction,
+					enabled: compression?.enabled ?? true,
+					thresholdPercent: threshold * 100,
+					thresholdTokens: typeof compression?.threshold_tokens === "number" ? compression.threshold_tokens : -1,
+				};
 				this.#configPath = mercuryPath;
-				return { settings: null, configPath: mercuryPath };
+				return { settings: shared, configPath: mercuryPath };
 			}
 			// Missing/unreadable mercury config: fall through to the default
 			// per-filename probe so omp still boots standalone.

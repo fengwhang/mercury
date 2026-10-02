@@ -39,6 +39,7 @@ import {
 } from "@oh-my-pi/pi-catalog/provider-models";
 import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import { getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
+import { applyContextWindow } from "./model-context";
 import { resolveProviderModelReference } from "../config/model-resolver";
 import { generateCodexAttestation } from "../live/attestation";
 import type { AuthStorage } from "../session/auth-storage";
@@ -864,7 +865,7 @@ export class ModelRegistry {
 		const withConfigModels = this.#mergeCustomModels(resolvedDefaults, select(this.#customModelOverlays));
 		const combined = this.#mergeCustomModels(withConfigModels, select(this.#runtimeModelOverlays));
 		const withModelOverrides = this.#applyModelOverrides(collapseBuiltVariants(combined), this.#modelOverrides);
-		const withProviderBedrock = this.#applyProviderBedrockOverrides(withModelOverrides);
+		const withProviderBedrock = this.#applyProviderBedrockOverrides(this.#applyContextWindows(withModelOverrides));
 		return this.#applyLlamaCppModelFixups(this.#applyRuntimeProviderOverrides(withProviderBedrock));
 	}
 
@@ -1506,7 +1507,7 @@ export class ModelRegistry {
 		const withConfigModels = this.#mergeCustomModels(resolved, this.#customModelOverlays);
 		const combined = this.#mergeCustomModels(withConfigModels, this.#runtimeModelOverlays);
 		const withModelOverrides = this.#applyModelOverrides(collapseBuiltVariants(combined), this.#modelOverrides);
-		const withProviderBedrock = this.#applyProviderBedrockOverrides(withModelOverrides);
+		const withProviderBedrock = this.#applyProviderBedrockOverrides(this.#applyContextWindows(withModelOverrides));
 		this.#unprojectedModels = this.#applyLlamaCppModelFixups(
 			this.#applyRuntimeProviderOverrides(withProviderBedrock),
 		);
@@ -2124,6 +2125,17 @@ export class ModelRegistry {
 			return applyModelOverride(model, override);
 		});
 	}
+	#applyContextWindows(models: Model<Api>[]): Model<Api>[] {
+		let windows: Record<string, number> = {};
+		try {
+			windows = (this.#settings ?? settings).get("modelContextWindows");
+		} catch {
+			// SDK catalog consumers may not initialize the CLI settings singleton.
+		}
+		const extended = isExtendedContextEnabledFromSettings(this.#settings);
+		return models.map(model => applyContextWindow(model, windows, extended));
+	}
+
 	#applyHardcodedModelPolicies(models: Model<Api>[]): Model<Api>[] {
 		const extendedContext = isExtendedContextEnabledFromSettings(this.#settings);
 		return models.map(model => {

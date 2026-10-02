@@ -50,6 +50,7 @@ def slots_env(tmp_path, monkeypatch):
     """Sandbox the unified config path; hermes view has an openrouter default."""
     monkeypatch.setenv("MERCURY_CONFIG", str(tmp_path / "config.yaml"))
     monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+    monkeypatch.setattr(setup_mod, "_prompt_model_context", lambda *args: None)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     return tmp_path
 

@@ -37,8 +37,7 @@ const NIX_STORE_DIR = "/nix/store";
 const MERCURY_REPO = "Fengwhang/mercury";
 
 /** User-facing pointer shown instead of the omp update flow under Mercury. */
-export const MERCURY_UPDATE_MESSAGE =
-	`This Mercury build updates via \`mercury update\` (releases: github.com/${MERCURY_REPO}).`;
+export const MERCURY_UPDATE_MESSAGE = `This Mercury build updates via \`mercury update\` (releases: github.com/${MERCURY_REPO}).`;
 
 /**
  * Whether this is a Mercury build (MERCURY_VERSION baked at compile time).
@@ -47,7 +46,7 @@ export const MERCURY_UPDATE_MESSAGE =
  * command, the release check, and the tests below all key off this one name.
  */
 export function isMercuryBuild(): boolean {
-	return (($env.MERCURY_VERSION ?? process.env.MERCURY_VERSION ?? "").trim() !== "");
+	return ($env.MERCURY_VERSION ?? process.env.MERCURY_VERSION ?? "").trim() !== "";
 }
 /**
  * Official npm registry origin.

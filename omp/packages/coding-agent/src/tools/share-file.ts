@@ -3,12 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "nod
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { type } from "@oh-my-pi/omptype";
-import type {
-	AgentTool,
-	AgentToolContext,
-	AgentToolResult,
-	AgentToolUpdateCallback,
-} from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 
 const shareFileSchema = type({
 	path: type("string").describe("Absolute local path of the file to share."),
@@ -88,8 +83,7 @@ export class ShareFileTool implements AgentTool<typeof shareFileSchema, ShareFil
 	readonly label = "Share file";
 	readonly loadMode = "essential";
 	readonly description =
-		"Share a local file in this chat (the paperclip button). Returns " +
-		"its Lounge URL — post it in your reply.";
+		"Share a local file in this chat (the paperclip button). Returns " + "its Lounge URL — post it in your reply.";
 	readonly parameters = shareFileSchema;
 
 	async execute(
@@ -112,7 +106,7 @@ export class ShareFileTool implements AgentTool<typeof shareFileSchema, ShareFil
 		}
 		const denied = checkDenied(resolved);
 		if (denied) return fail(denied);
-	 const token = randomBytes(8).toString("hex");
+		const token = randomBytes(8).toString("hex");
 		const destDir = join(loungeHome(), "uploads", token.slice(0, 2));
 		try {
 			mkdirSync(destDir, { recursive: true });
@@ -126,7 +120,9 @@ export class ShareFileTool implements AgentTool<typeof shareFileSchema, ShareFil
 		const caption = params.caption?.trim();
 		const message = caption ? `${caption}\n${url}` : url;
 		return {
-			content: [{ type: "text", text: `File staged. Post this URL in your reply so the user can open it:\n${message}` }],
+			content: [
+				{ type: "text", text: `File staged. Post this URL in your reply so the user can open it:\n${message}` },
+			],
 			details: { url, filename },
 		};
 	}

@@ -25,6 +25,7 @@ from mercury_cli.models import CANONICAL_PROVIDERS
 @pytest.fixture(autouse=True)
 def isolated_model_slots(tmp_path, monkeypatch):
     monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+    monkeypatch.setattr(setup_mod, "_prompt_model_context", lambda *args: None)
     monkeypatch.setenv("MERCURY_CONFIG", str(tmp_path / "config.yaml"))
 
 

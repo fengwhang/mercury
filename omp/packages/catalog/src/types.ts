@@ -1110,6 +1110,8 @@ export interface Model<TApi extends Api = Api> {
 	cost: ModelCost;
 	/** Premium Copilot requests charged per user-initiated request (defaults to 1). */
 	premiumMultiplier?: number;
+	/** Serving provider maximum, when distinct from its default window. */
+	maxContextWindow?: number;
 	contextWindow: number | null;
 	maxTokens: number | null;
 	/**

@@ -1,6 +1,6 @@
 """Tests for Blank Slate setup mode (mercury_cli/setup.py).
 
-Blank Slate is the third first-time setup option: everything off except the
+Blank Slate is the third first-time setup option: optional capabilities off except the
 bare minimum needed to run an agent (provider/model + file + terminal). These
 tests pin the config the writers produce and the invariant that the toolset
 resolver + tool-schema builder yield exactly the file/terminal tools.
@@ -73,10 +73,11 @@ class TestBlankSlateMinimalToolsets:
 
 
 class TestBlankSlateMinimizeConfig:
-    def test_optional_features_turned_off(self):
+    def test_compaction_enabled_with_optional_features_turned_off(self):
         cfg = {}
         _blank_slate_minimize_config(cfg)
-        assert cfg["compression"]["enabled"] is False
+        assert cfg["compression"]["enabled"] is True
+        assert cfg["compression"]["respect_threshold_percent"] is True
         assert cfg["memory"]["memory_enabled"] is False
         assert cfg["memory"]["user_profile_enabled"] is False
         assert cfg["checkpoints"]["enabled"] is False

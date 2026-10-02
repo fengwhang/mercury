@@ -357,8 +357,8 @@ sections. `models.default` selects the Hermes chat model;
 `models.delegate_model` selects the OMP model, including `mercury omp`.
 Both primary fallback slots and their ordered chains are optional.
 Setup selects four models in order: default, fallback, delegate, and delegate
-fallback. Each can use its own provider, with reasoning immediately after
-its model selection. Configure additional retry models by hand in
+fallback. Each can use its own provider, with reasoning and then context-window
+selection immediately after its model selection. Configure additional retry models by hand in
 `models.fallback_chain` and `models.delegate_fallback_chain`, starting each
 chain with its primary fallback. Setup preserves those extra entries unless
 you skip their primary fallback; entries duplicating a newly selected model
@@ -373,6 +373,22 @@ stays enabled, and models without an effort selector keep their provider's
 reasoning controls without receiving an invented effort tier. Codex discovery
 retains the account's supported levels and default. When discovery is
 unavailable, existing compatibility rules remain the offline fallback.
+Context selection uses the serving provider's advertised default and maximum.
+Choose Default, Maximum (when larger), or Custom; a provider advertising one
+window gets Default and Custom. Custom limits cannot exceed an advertised
+maximum. If metadata is unavailable, keep automatic detection or enter a known
+limit. Larger windows may incur premium pricing or consume more subscription
+credits. Choices are stored in `models.context_windows`, keyed by
+`provider/model`, and apply to both engines, including fallback models.
+
+Built-in context compaction is enabled by default, including Blank Slate.
+The Context Engine Plugin Tools checkbox controls optional plugin tools;
+it does not enable or disable the built-in compressor. Run
+`mercury setup context` to choose 50%, 75%, or a custom compaction percentage
+for both engines. Setup removes older token caps and model-specific overrides
+so the selected percentage takes effect; output headroom still bounds the
+trigger near a provider's limit. Named profiles keep their own settings.
+
 Use `mercury setup model` for provider-aware selection and
 `mercury omp-sync` after hand-editing shared settings.
 
@@ -382,6 +398,14 @@ models:
   delegate_model: your-provider/coding-model
   orchestrator_thinking_level: high
   delegate_thinking_level: xhigh
+  context_windows:
+    your-provider/chat-model: 200000
+    your-provider/coding-model: 400000
+hermes:
+  compression:
+    enabled: true
+    threshold: 0.75
+    respect_threshold_percent: true
 
 approvals:
   mode: smart # Hermes: safe | smart | yolo (manual/off remain accepted)

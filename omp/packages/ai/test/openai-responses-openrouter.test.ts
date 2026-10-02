@@ -550,9 +550,7 @@ describe("Responses replay: synthesized reasoning item carries no fabricated id"
 	}
 
 	it("emits the synthesized reasoning item id-less so Meta accepts the replay", async () => {
-		const { convertResponsesAssistantMessage } = await import(
-			"@oh-my-pi/pi-ai/providers/openai-shared"
-		);
+		const { convertResponsesAssistantMessage } = await import("@oh-my-pi/pi-ai/providers/openai-shared");
 		const items = convertResponsesAssistantMessage(
 			makeToolCallAssistantMsg(),
 			makeResponsesModel(),
@@ -574,9 +572,7 @@ describe("Responses replay: synthesized reasoning item carries no fabricated id"
 	});
 
 	it("keeps a real upstream reasoning item id on the synthesized item", async () => {
-		const { convertResponsesAssistantMessage } = await import(
-			"@oh-my-pi/pi-ai/providers/openai-shared"
-		);
+		const { convertResponsesAssistantMessage } = await import("@oh-my-pi/pi-ai/providers/openai-shared");
 		const msg = makeToolCallAssistantMsg();
 		msg.content.unshift({
 			type: "thinking",

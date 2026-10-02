@@ -85,11 +85,17 @@ choosing between profile instructions and repository rules.
 ## Models, reasoning, and permissions
 
 Setup selects default, fallback, delegate, and delegate fallback, with reasoning
-immediately after each model selection. Extra retry models require editing
+and context-window selection immediately after each model selection. Extra retry models require editing
 `models.fallback_chain` or `models.delegate_fallback_chain` in the selected
 config. Each of the four models can use a different provider. Both engines honor provider-advertised effort choices and mandatory
 reasoning; do not invent effort tiers when the API exposes no selector.
-Unknown/offline metadata retains compatibility behavior.
+Unknown/offline effort metadata retains compatibility behavior. Context choices
+use the serving provider's advertised default/maximum: a single advertised
+window gets Default/Custom, and missing metadata gets automatic detection or
+Custom. `models.context_windows` shares per-model budgets across both engines.
+Compaction is enabled by default. `mercury setup context` selects 50%, 75%, or
+a custom percentage shared with OMP. The Context Engine Plugin Tools checkbox
+controls plugin tools, not the built-in compressor.
 
 omp has exactly one model role, `task`. Task descriptions and profile personas
 are not additional model roles. Do not add planner, reviewer, leaf, or
@@ -129,6 +135,7 @@ against the current fork rather than inferring it from an upstream manual.
 | Engine configuration, toolsets, voice | [configuration.md](https://github.com/fengwhang/mercury/blob/main/hermes/skills/autonomous-ai-agents/mercury-agent/references/configuration.md) |
 | Profile and project instructions | [project-context-files.md](https://github.com/fengwhang/mercury/blob/main/hermes/skills/autonomous-ai-agents/mercury-agent/references/project-context-files.md) |
 | Permissions and privacy | [security-privacy.md](https://github.com/fengwhang/mercury/blob/main/hermes/skills/autonomous-ai-agents/mercury-agent/references/security-privacy.md) |
+| Shared skills and engine tool mappings | [engine-tools.md](https://github.com/fengwhang/mercury/blob/main/hermes/skills/autonomous-ai-agents/mercury-agent/references/engine-tools.md) |
 | Delegation, cron, curator | [background-systems.md](https://github.com/fengwhang/mercury/blob/main/hermes/skills/autonomous-ai-agents/mercury-agent/references/background-systems.md) |
 | MCP servers | [native-mcp.md](https://github.com/fengwhang/mercury/blob/main/hermes/skills/autonomous-ai-agents/mercury-agent/references/native-mcp.md) |
 | Webhooks | [webhooks.md](https://github.com/fengwhang/mercury/blob/main/hermes/skills/autonomous-ai-agents/mercury-agent/references/webhooks.md) |

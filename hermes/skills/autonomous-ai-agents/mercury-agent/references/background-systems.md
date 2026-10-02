@@ -4,13 +4,15 @@ Four systems run alongside the main conversation loop. Quick reference
 here; full developer notes live in `AGENTS.md`, user-facing docs under
 `website/docs/user-guide/features/`.
 
-### Delegation (`delegate_task`)
+### Delegation (Hermes `delegate_task`, OMP `task`)
 
 Hermes delegates coding work to Mercury omp children, not upstream Hermes
-worker agents. The live `delegate_task` schema defines supported arguments.
+worker agents. OMP delegates through its native `task` tool using the sole
+`task` agent type. Follow the current engine's live schema; see
+[engine-tools.md](engine-tools.md) for input/result differences and batch support.
 
 - Single and batch requests run children with isolated conversations.
-- `background=true` returns a handle; results route back through the parent.
+- Hermes `background=true` returns a handle; results route back through the parent. OMP background and batch controls follow its own live schema.
 - Models, fallbacks, effort, and profile instructions come from the selected
   Mercury configuration and bridge.
 - omp has one model role: `task`. Do not configure upstream leaf/orchestrator

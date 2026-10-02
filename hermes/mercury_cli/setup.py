@@ -1203,6 +1203,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         )
         if selected_model:
             _prompt_slot_reasoning(config, default_model=selected_model)
+            _prompt_model_context(config, selected_model)
 
     # Tool Gateway prompt is already shown by _model_flow_nous() above.
     save_config(config)
@@ -1335,6 +1336,7 @@ def _prompt_mercury_slots(config: dict) -> None:
 
     if fallback:
         _prompt_slot_reasoning(config, fallback_model=fallback)
+        _prompt_model_context(config, fallback)
 
     # Extra retries are configured by hand, never added by this wizard.
     # Replacing a primary fallback updates its chain head, keeps the existing
@@ -1368,6 +1370,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     delegate_model = _qualify_omp_model(delegate_model, delegate_provider)
     if delegate_model:
         _prompt_slot_reasoning(config, delegate_model=delegate_model)
+        _prompt_model_context(config, delegate_model)
 
     # Delegate fallback — OPTIONAL (user directive 2026-09-05); cancel/skip
     # leaves it unset. NO seeding (user directive). Bounded retries: one
@@ -1398,6 +1401,7 @@ def _prompt_mercury_slots(config: dict) -> None:
 
     if delegate_fallback:
         _prompt_slot_reasoning(config, delegate_fallback=delegate_fallback)
+        _prompt_model_context(config, delegate_fallback)
 
     delegate_chain = _preserve_extra_fallbacks(
         chains["delegate_fallback_chain"], delegate_fallback, delegate_model,
@@ -1427,6 +1431,110 @@ def _prompt_mercury_slots(config: dict) -> None:
     print_info("Subagents will run on " + delegate_model + f" (fallback chain {chain_txt}).")
     fb_txt = " -> ".join(fallback_chain or [fallback])
     print_info(f"Main model fallback chain: {fb_txt}.")
+
+
+def _prompt_model_context(config: dict, selector: str) -> None:
+    """Choose a per-model budget after effort, bounded by provider metadata."""
+    if is_noninteractive() or not is_interactive_stdin():
+        return
+    from mercury_cli.context_settings import model_context_windows
+    from mercury_cli.omp_sync import _unified_path, _write_slots
+    import yaml
+
+    provider, _, model = selector.partition("/")
+    try:
+        windows = model_context_windows(provider, model)
+    except Exception as exc:
+        logger.debug("Context metadata unavailable for %s: %s", selector, exc)
+        windows = None
+    whole = yaml.safe_load(_unified_path().read_text()) if _unified_path().exists() else {}
+    saved = dict(((whole or {}).get("models") or {}).get("context_windows") or {})
+    current = saved.get(selector)
+    print_header("Context Window")
+    if windows:
+        default, maximum = windows["default"], windows["maximum"]
+        choices = [f"Default — {default:,} tokens"]
+        values = [default]
+        if maximum > default:
+            choices.append(f"Maximum — {maximum:,} tokens")
+            values.append(maximum)
+            print_info("Larger contexts may consume more credits or incur premium pricing; billing depends on your provider.")
+        else:
+            print_info("This provider advertises one context window; Default uses that limit.")
+        choices.append("Custom token limit")
+        index = values.index(current) if current in values else len(values) if current else 0
+    else:
+        print_info("Provider context metadata unavailable; keep automatic detection or enter a known limit.")
+        choices, values, index = ["Keep automatic detection", "Custom token limit"], [None], 1 if current else 0
+        maximum = None
+    choice = _curses_prompt_choice(f"Context window for {selector}:", choices, index)
+    if choice is None:
+        return
+    if choice < len(values):
+        selected = values[choice]
+    else:
+        while True:
+            raw = prompt("Custom context window in tokens (empty to cancel)", str(current or ""))
+            if not raw:
+                return
+            try:
+                selected = int(raw)
+                if selected > 0 and (maximum is None or selected <= maximum):
+                    break
+            except ValueError:
+                pass
+            print_warning(f"Enter a positive integer{' no greater than ' + format(maximum, ',') if maximum else ''}.")
+    if selected is None:
+        saved.pop(selector, None)
+    else:
+        saved[selector] = selected
+    _write_slots({"context_windows": saved})
+    # The wizard later saves its in-memory view; keep the effective override
+    # current so that save cannot reinstate a stale per-model pin.
+    if selector == (str((config.get("model") or {}).get("provider") or "") + "/" + str((config.get("model") or {}).get("default") or "")):
+        config["model"].pop("context_length", None)
+    if model:
+        overrides = config.setdefault("model_overrides", {}).setdefault(provider, {}).setdefault(model, {})
+        overrides.pop("context_window", None)
+        if selected is not None:
+            overrides["context_window"] = selected
+    print_success(f"Context window: {selected:,} tokens" if selected else "Context window: automatic")
+
+
+def _prompt_compaction(config: dict) -> None:
+    """Configure the built-in compressor and both engines' percentage together."""
+    compression = config.setdefault("compression", {})
+    compression.setdefault("enabled", True)
+    if is_noninteractive() or not is_interactive_stdin():
+        compression.setdefault("threshold", 0.50)
+        compression["respect_threshold_percent"] = True
+        return
+    print_header("Context Compaction")
+    print_info("The built-in context engine summarizes older messages; the Context Engine toolset is for plugin tools.")
+    print_info("This percentage of the selected context window applies to both engines.")
+    current = compression.get("threshold", 0.50)
+    options = ["50% — compact halfway through the window", "75% — keep more context before compaction", "Custom percentage"]
+    choice = _curses_prompt_choice("Compact at:", options, 0 if current == 0.50 else 1 if current == 0.75 else 2)
+    if choice is None:
+        return
+    threshold = (0.50, 0.75)[choice] if choice < 2 else None
+    while threshold is None:
+        raw = prompt("Compaction percentage (1-95; empty to cancel)", str(current * 100))
+        if not raw:
+            return
+        try:
+            value = float(raw.rstrip("%"))
+            if 1 <= value <= 95:
+                threshold = value / 100
+                break
+        except ValueError:
+            pass
+        print_warning("Enter a percentage between 1 and 95.")
+    compression.update(enabled=True, threshold=threshold, respect_threshold_percent=True)
+    # Fixed and per-model thresholds otherwise override the new percentage.
+    compression.pop("threshold_tokens", None)
+    compression.pop("model_thresholds", None)
+    print_success(f"Both engines compact at {threshold * 100:g}% context usage.")
 
 
 def _prompt_slot_reasoning(
@@ -2290,7 +2398,8 @@ def _apply_default_agent_settings(config: dict):
     config.setdefault("display", {})["tool_progress"] = "all"
 
     config.setdefault("compression", {})["enabled"] = True
-    config["compression"]["threshold"] = 0.50
+    config["compression"].setdefault("threshold", 0.50)
+    _prompt_compaction(config)
 
     # Default: never auto-reset sessions. This matches the gateway's own
     # default (SessionResetPolicy.mode = "none"); we still write it
@@ -2301,7 +2410,7 @@ def _apply_default_agent_settings(config: dict):
     print_success("Applied recommended defaults:")
     print_info("  Max iterations: 150")
     print_info("  Tool progress: all")
-    print_info("  Compression threshold: 0.50")
+    print_info(f"  Compaction threshold: {config['compression']['threshold'] * 100:g}%")
     print_info("  Session reset: never (use /reset or compression)")
     print_info("  Run `mercury setup agent` later to customize.")
 
@@ -2360,27 +2469,7 @@ def setup_agent_settings(config: dict):
     else:
         print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
 
-    # ── Context Compression ──
-    print_header("Context Compression")
-    print_info("Automatically summarizes old messages when context gets too long.")
-    print_info(
-        "Higher threshold = compress later (use more context). Lower = compress sooner."
-    )
-
-    config.setdefault("compression", {})["enabled"] = True
-
-    current_threshold = cfg_get(config, "compression", "threshold", default=0.50)
-    threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
-    try:
-        threshold = float(threshold_str)
-        if 0.5 <= threshold <= 0.95:
-            config["compression"]["threshold"] = threshold
-    except ValueError:
-        pass
-
-    print_success(
-        f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
-    )
+    _prompt_compaction(config)
 
     # ── Session Reset Policy ──
     print_header("Session Reset Policy")
@@ -5204,6 +5293,7 @@ SETUP_SECTIONS = [
     ("tools", "Tools", setup_tools),
     ("telemetry", "Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
+    ("context", "Context Compaction", _prompt_compaction),
     ("approvals", "Engine Approval Modes", setup_approvals),
     ("hermes-approvals", "Hermes Approval Mode", setup_hermes_approvals),
     ("omp-approvals", "OMP Approval Mode", setup_omp_approvals),
@@ -5974,8 +6064,9 @@ def _blank_slate_minimize_config(config: dict):
     """
     config.setdefault("agent", {})["max_turns"] = 90
 
-    # Compression off — minimal footprint; user opts in if they want long sessions.
-    config.setdefault("compression", {})["enabled"] = False
+    # Even minimal agents need bounded context for long sessions.
+    config.setdefault("compression", {})["enabled"] = True
+    _prompt_compaction(config)
 
     # No automatic memory / user-profile capture.
     mem = config.setdefault("memory", {})
@@ -6034,7 +6125,7 @@ def _run_blank_slate_setup(config: dict, mercury_home, is_existing: bool):
     print()
     print_success("Minimal baseline applied:")
     print_info("  Toolsets: file, terminal, vision, skills (everything else off)")
-    print_info("  Compression, memory, checkpoints, smart routing: off")
+    print_info("  Context compaction: on; memory, checkpoints, smart routing: off")
 
     # ── The fork: stop here, or walk through enabling things ──
     print()

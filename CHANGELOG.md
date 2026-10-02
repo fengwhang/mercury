@@ -5,6 +5,19 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.12] — nightly
+
+- Select each model's context window immediately after its reasoning effort.
+  Retain provider defaults and maxima separately; support single-window APIs,
+  bounded custom limits, and automatic detection when metadata is unavailable.
+- Enable built-in context compaction in every setup path. Add 50%, 75%, and
+  custom percentages shared by both engines, with `mercury setup context`
+  for direct configuration. Honor selected percentages over legacy autoraises.
+- Clarify shared skill tool examples for both engines, including OMP task
+  delegation, batch/result differences, and engine-specific prerequisites.
+- Correct OMP formatting and stale Codex discovery-cache test fixtures so
+  workspace checks pass.
+
 ## [0.3.11] — nightly
 
 - Limit setup to default, fallback, delegate, and delegate fallback models,

@@ -4160,6 +4160,14 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                         # hatch for non-standard setups).
                         _models = _whole.get("models")
                         if isinstance(_models, dict):
+                            _windows = _models.get("context_windows")
+                            if isinstance(_windows, dict):
+                                _metadata = user_config.setdefault("model_overrides", {})
+                                for _selector, _window in _windows.items():
+                                    if isinstance(_selector, str) and isinstance(_window, int) and not isinstance(_window, bool) and _window > 0:
+                                        _provider, _sep, _model = _selector.partition("/")
+                                        if _sep and _model:
+                                            _metadata.setdefault(_provider, {}).setdefault(_model, {})["context_window"] = _window
                             _reasoning = _models.get("reasoning_overrides")
                             if isinstance(_reasoning, dict):
                                 _agent = user_config.get("agent")
