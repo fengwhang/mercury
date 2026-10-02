@@ -102,7 +102,7 @@ curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install-nigh
 ```
 
 Stable is **[v0.3.7](https://github.com/fengwhang/mercury/releases/tag/v0.3.7)**.
-The latest nightly is **[v0.3.10-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.10-nightly)**.
+The latest nightly is **[v0.3.11-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.11-nightly)**.
 The nightly installer selects the newest published prerelease. Stable remains
 on its own update channel; nightly is selected explicitly by this wrapper or
 `--channel nightly`.
@@ -356,10 +356,13 @@ The shared configuration has `models:`, `approvals:`, `hermes:`, and `omp:`
 sections. `models.default` selects the Hermes chat model;
 `models.delegate_model` selects the OMP model, including `mercury omp`.
 Both primary fallback slots and their ordered chains are optional.
-Each main and delegate fallback, including second-order fallbacks, can use
-its own provider selected in setup.
-Setup asks for reasoning immediately after each model selection, including
-second-order fallbacks. Menus use that provider's per-model API metadata and
+Setup selects four models in order: default, fallback, delegate, and delegate
+fallback. Each can use its own provider, with reasoning immediately after
+its model selection. Configure additional retry models by hand in
+`models.fallback_chain` and `models.delegate_fallback_chain`, starting each
+chain with its primary fallback. Setup preserves those extra entries unless
+you skip their primary fallback; entries duplicating a newly selected model
+are removed. Menus use that provider's per-model API metadata and
 respect mandatory reasoning. If no effort choices are published or available,
 setup keeps the current setting and explains why.
 Selections are stored in `models.reasoning_overrides` and applied to both

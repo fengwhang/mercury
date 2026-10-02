@@ -135,15 +135,20 @@ def _bridge():
     return bridge
 
 
-def test_each_model_is_followed_by_reasoning_and_reaches_runtime_chains(interactive, monkeypatch):
+@pytest.mark.parametrize("configured_delegates", [False, True])
+def test_four_models_are_followed_by_reasoning_and_reach_runtime_chains(interactive, monkeypatch, configured_delegates):
     from mercury_cli.config import load_config, save_config
 
-    names = ["main", "fallback", "second", "delegate", "delegate-fallback", "delegate-second"]
-    levels = ["xhigh", "high", "low", "max", "medium", "off"]
+    names = ["main", "fallback", "delegate", "delegate-fallback"]
+    levels = ["xhigh", "high", "max", "off"]
     _seed_catalog(monkeypatch, [_entry(n, ["none" if level == "off" else level], mandatory=level != "off")
                                 for n, level in zip(names, levels)])
     selected = ["openrouter/" + n for n in names]
-    _write_slots({"default": selected[0]})
+    _write_slots({"default": selected[0], **({
+        "delegate_model": "openrouter/old-delegate",
+        "delegate_fallback": "openrouter/old-delegate-fallback",
+    } if configured_delegates else {})})
+    monkeypatch.setattr(setup, "_ask_reconfigure", lambda *a: pytest.fail("separate delegate gate hid fallback choices"))
     menus = []
     events = []
     remaining = iter(selected[1:])
@@ -180,7 +185,7 @@ def test_each_model_is_followed_by_reasoning_and_reaches_runtime_chains(interact
         assert events[index + 1] == ("reasoning", model), events
     save_config(config)
     expected = dict(zip(selected, levels))
-    assert len(menus) == 6
+    assert len(menus) == 4
     assert [menu[1] for menu in menus] == [[level] for level in levels]
     saved = yaml.safe_load(interactive.read_text())
     assert saved["models"]["reasoning_overrides"] == expected
@@ -195,40 +200,45 @@ def test_each_model_is_followed_by_reasoning_and_reaches_runtime_chains(interact
     runtime = yaml.safe_load(interactive.read_text())["omp"]
     assert runtime["defaultThinkingLevel"] == "max"
     assert runtime["retry"]["fallbackChains"] == {
-        selected[3]: [selected[4] + ":medium", selected[5] + ":off"],
+        selected[2]: [selected[3] + ":off"],
     }
     env_output = StringIO()
     with redirect_stdout(env_output):
         bridge.render(slots, delegation=True)
-    assert "OMP_FALLBACK_CHAIN=openrouter/delegate-fallback:medium,openrouter/delegate-second:off" in env_output.getvalue()
+    assert "OMP_FALLBACK_CHAIN=openrouter/delegate-fallback:off" in env_output.getvalue()
     assert "OMP_THINKING_LEVEL=max" in env_output.getvalue()
 
 
 
-def test_default_reasoning_is_asked_before_keeping_delegate_settings(interactive, monkeypatch):
-    from mercury_cli.config import load_config
+def test_existing_delegate_does_not_hide_main_fallback(interactive, monkeypatch):
+    from mercury_cli.config import load_config, save_config
 
     _write_slots({"default": "openrouter/main", "delegate_model": "openrouter/delegate"})
-    _seed_catalog(monkeypatch, [_entry("main", ["low"], mandatory=True)])
-    events = []
-    monkeypatch.setattr(setup, "_skip_configured_section", lambda *args: False)
-    monkeypatch.setattr("mercury_cli.main.select_provider_and_model", lambda: events.append("main model"))
+    _seed_catalog(monkeypatch, [_entry("fallback", ["high"], mandatory=True), _entry("delegate", [])])
+    selected_titles = []
+    picks = iter(["fallback", "delegate", None])
 
-    def choose(title, choices, default):
-        events.append("main reasoning")
-        return default
+    def select_slot(catalog, **kwargs):
+        selected_titles.append(kwargs["title"])
+        return next(picks)
 
-    def keep_delegates(*args):
-        events.append("keep delegates")
-        return False
-
-    monkeypatch.setattr(setup, "_curses_prompt_choice", choose)
-    monkeypatch.setattr(setup, "_ask_reconfigure", keep_delegates)
-    setup.setup_model_provider(load_config(), quick=True)
-    saved = yaml.safe_load(interactive.read_text())
-    assert events == ["main model", "main reasoning", "keep delegates"]
-    assert saved["models"]["delegate_model"] == "openrouter/delegate"
-    assert saved["models"]["reasoning_overrides"] == {"openrouter/main": "low"}
+    monkeypatch.setattr("mercury_cli.auth._prompt_model_selection", select_slot)
+    monkeypatch.setattr("mercury_cli.main._prompt_provider_choice", lambda choices, default=0, **kw: default)
+    monkeypatch.setattr(models, "provider_model_ids", lambda *args, **kw: ["fallback", "delegate"])
+    monkeypatch.setattr(models, "get_pricing_for_provider", lambda *args, **kw: {})
+    monkeypatch.setattr(setup, "_ask_reconfigure", lambda *a: pytest.fail("unexpected delegate gate"))
+    monkeypatch.setattr(setup, "_curses_prompt_choice", lambda title, choices, default: default)
+    config = load_config()
+    setup._prompt_mercury_slots(config)
+    save_config(config)
+    saved = yaml.safe_load(interactive.read_text())["models"]
+    assert "fallback model" in selected_titles[0]
+    assert "delegate model" in selected_titles[1]
+    assert "delegate fallback" in selected_titles[2]
+    assert len(selected_titles) == 3
+    assert saved["fallback"] == "openrouter/fallback"
+    assert saved["delegate_model"] == "openrouter/delegate"
+    assert saved["reasoning_overrides"] == {"openrouter/fallback": "high"}
 
 
 def test_rejected_duplicates_and_skipped_slots_get_no_reasoning_prompt(interactive, monkeypatch):
@@ -236,9 +246,8 @@ def test_rejected_duplicates_and_skipped_slots_get_no_reasoning_prompt(interacti
 
     _write_slots({"default": "openrouter/main"})
     _seed_catalog(monkeypatch, [_entry(name, ["high"], mandatory=True) for name in ("fallback", "delegate")])
-    # Retry the duplicate main fallback; reject a duplicate second-order
-    # fallback twice; skip the delegate fallback and its second-order slot.
-    picks = iter(["main", "fallback", "fallback", "fallback", "delegate", None])
+    # Retry a duplicate main fallback; skip the delegate fallback.
+    picks = iter(["main", "fallback", "delegate", None])
     models_with_reasoning = []
     monkeypatch.setattr("mercury_cli.auth._prompt_model_selection", lambda *args, **kwargs: next(picks))
     monkeypatch.setattr("mercury_cli.main._prompt_provider_choice", lambda choices, default=0, **kwargs: default)

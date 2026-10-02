@@ -1069,14 +1069,10 @@ def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
 
 
 def _read_model_slots() -> dict:
-    """Read the shared four-slot ``models:`` block from the unified config.
+    """Read four model slots, including legacy nested configuration.
 
-    Hoisted from ``_prompt_mercury_slots`` so the delegate reconfigure gate
-    reuses the exact same probe (no new detection). A missing file or a
-    parse error degrades to empty slots (unconfigured → no gate). Real
-    files nest the block under ``hermes:`` (save_config writes the mercury
-    subtree) — check the nested block when the top level is empty, else
-    the delegate gate never fires on real installs.
+    Missing or invalid files produce empty slots. Prefer the shared top-level
+    models block; older installations may keep it under the Hermes subtree.
     """
     import os as _os
     from pathlib import Path as _Path
@@ -1156,9 +1152,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     """
     from mercury_cli.config import load_config, save_config
 
-    # Reconfigure gate: an already-configured install prints current values
-    # and opts in (default NO = safe, fast re-run). The delegate slots have
-    # their own gate, so answering "no" here still offers them below.
+    # An already-configured main model can be kept. The remaining three
+    # slots are still offered in order, including the main fallback.
     if _skip_configured_section(config, "model", "Model & Provider"):
         _prompt_mercury_slots(config)
         return
@@ -1252,17 +1247,6 @@ def _prompt_mercury_slots(config: dict) -> None:
         print_info("No default model configured — skipping slot prompts (run 'mercury setup model' later).")
         return
 
-    # Reconfigure gate: delegate slots already set → print current values
-    # and ask (default NO keeps them and writes nothing). Unset slots fall
-    # straight through to the pickers below.
-    if slots["delegate_model"] or slots["delegate_fallback"]:
-        if not _ask_reconfigure(
-            "Delegate models",
-            f"model={slots['delegate_model'] or 'none'}, "
-            f"fallback={slots['delegate_fallback'] or 'none'}",
-        ):
-            return
-
     print_header("Model Slots")
     print_info(f"   Default:  {slots['default']}")
     print()
@@ -1330,8 +1314,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     # Fallback — OPTIONAL (user directive 2026-09-05: "i should be able to
     # skip the first order fallback too"): cancel/skip leaves it unset; a
     # configured fallback must differ from the default. Skipping the
-    # first-order fallback ALSO skips the second-order ask (asking for a
-    # second-order fallback with no first-order one is meaningless).
+    # primary fallback also clears its manually configured retry chain.
     # NO default seeding (user directive): on a fresh config the picker must
     # show a neutral menu — nothing marked as 'already selected'. Only a
     # genuinely configured slot may appear as current.
@@ -1353,48 +1336,20 @@ def _prompt_mercury_slots(config: dict) -> None:
     if fallback:
         _prompt_slot_reasoning(config, fallback_model=fallback)
 
-    # Ordered ordinary fallback CHAIN (user directive 2026-09-05: parity with
-    # the delegate side). After the primary fallback, offer additional retry
-    # models in order; empty selection ends. Written to models.fallback_chain
-    # (head = primary fallback) and consumed by the hermes side's ordered
-    # fallback_providers machinery (agent_init accepts a list natively).
-    # SECOND-ORDER ONLY (user directive 2026-09-05): exactly one extra
-    # fallback after the primary — no endless loop. Empty selection skips.
-    fallback_chain = []
-    if fallback:
-        saved_chain = chains["fallback_chain"]
-        extra_current = saved_chain[1] if len(saved_chain) > 1 else ""
-        extra_provider, extra_current, extra_catalog, extra_pricing = _fallback_data(
-            "Select second-order fallback provider:", extra_current, fallback_provider,
-        )
-        # Bounded retries: an unbounded `while not fallback_chain` re-asked
-        # FOREVER when the user re-picked the same model (easy to do — the
-        # second-order ask follows the first pick and muscle memory repeats
-        # it), and abandoning the wizard meant NO config write at all, so
-        # the file kept the PREVIOUS run's values (user saw 'i selected
-        # glm-5.3-flash but the config says glm-5.2'). One retry, then the
-        # duplicate pick is treated as skip.
-        _dup_retries = 0
-        while not fallback_chain:
-            extra = _pick("Select second-order fallback (used when the MAIN fallback also fails; empty to skip):", extra_current, extra_catalog, extra_pricing)
-            if not extra:
-                break
-            # prefix FIRST, THEN compare — comparing the bare id against the
-            # prefixed slot values let a duplicate slip through (reinstall
-            # artifact: 'delegate_fallback_chain contains duplicates').
-            extra = _qualify_omp_model(extra, extra_provider)
-            if extra == fallback or extra == slots["default"]:
-                if _dup_retries >= 1:
-                    print_warning(f"Skipping second-order fallback — must differ from {fallback} and {slots['default']}.")
-                    break
-                _dup_retries += 1
-                print_warning("Must differ from the default and the main fallback — pick a DIFFERENT model or skip.")
-                continue
-            fallback_chain.append(extra)
-            _prompt_slot_reasoning(config, fallback_chain=[extra])
+    # Extra retries are configured by hand, never added by this wizard.
+    # Replacing a primary fallback updates its chain head, keeps the existing
+    # extra models, and removes entries that now duplicate the primary pair.
+    def _preserve_extra_fallbacks(saved: list[str], selected: str, primary: str) -> list[str]:
+        if not selected:
+            return []
+        extras = list(dict.fromkeys(model for model in saved[1:] if model not in (selected, primary)))
+        return [selected, *extras] if extras else []
 
-    print_info("The next model choices are for SUBAGENTS: coding tasks fan out to omp")
-    print_info("subagents, and these set which model those subagents run on.")
+    fallback_chain = _preserve_extra_fallbacks(chains["fallback_chain"], fallback, slots["default"])
+    print_info(f"Main chat fallback: {fallback or 'none'}")
+
+    print_header("Delegate Models")
+    print_info("The delegate model runs OMP subagents; its fallback is separate from the main chat fallback.")
     print()
 
     # The delegate model and each of its fallbacks choose providers separately.
@@ -1444,36 +1399,9 @@ def _prompt_mercury_slots(config: dict) -> None:
     if delegate_fallback:
         _prompt_slot_reasoning(config, delegate_fallback=delegate_fallback)
 
-    # Ordered fallback CHAIN (user directive 2026-09-05): after the primary
-    # fallback, offer additional retry models in order. Empty selection ends
-    # the chain. The chain is written to models.delegate_fallback_chain and
-    # consumed by omp's retry.fallbackChains in ORDER.
-    # SECOND-ORDER ONLY (user directive 2026-09-05): exactly one extra
-    # delegate fallback — no endless loop. Empty selection skips.
-    delegate_chain = []
-    if delegate_fallback:
-        saved_chain = chains["delegate_fallback_chain"]
-        extra_current = saved_chain[1] if len(saved_chain) > 1 else ""
-        extra_provider, extra_current, extra_catalog, extra_pricing = _fallback_data(
-            "Select second-order delegate fallback provider:", extra_current, delegate_fallback_provider,
-        )
-        # Bounded retries (see the ordinary second-order loop): one retry,
-        # then a repeated duplicate pick means skip.
-        _dup_retries = 0
-        while not delegate_chain:
-            extra = _pick("Select second-order delegate fallback (used when the SUBAGENT fallback also fails; empty to skip):", extra_current, extra_catalog, extra_pricing)
-            if not extra:
-                break
-            extra = _qualify_omp_model(extra, extra_provider)
-            if extra == delegate_fallback or extra == delegate_model:
-                if _dup_retries >= 1:
-                    print_warning(f"Skipping second-order delegate fallback — must differ from {delegate_fallback} and {delegate_model}.")
-                    break
-                _dup_retries += 1
-                print_warning("Must differ from the delegate model and its fallback — pick a DIFFERENT model or skip.")
-                continue
-            delegate_chain.append(extra)
-            _prompt_slot_reasoning(config, delegate_chain=[extra])
+    delegate_chain = _preserve_extra_fallbacks(
+        chains["delegate_fallback_chain"], delegate_fallback, delegate_model,
+    )
 
     # Write the shared models: block (line-oriented, omp_sync-compatible).
     from mercury_cli.omp_sync import _write_slots
@@ -1484,22 +1412,26 @@ def _prompt_mercury_slots(config: dict) -> None:
             "fallback": fallback,
             "delegate_model": delegate_model,
             "delegate_fallback": delegate_fallback,
-            "delegate_fallback_chain": ([delegate_fallback] + delegate_chain) if (delegate_fallback and delegate_chain) else [],
-            "fallback_chain": ([fallback] + fallback_chain) if (fallback and fallback_chain) else [],
+            "delegate_fallback_chain": delegate_chain,
+            "fallback_chain": fallback_chain,
         }
     )
+    # Refresh the wizard view so its later save cannot restore old fallback
+    # mirrors over the selected shared slots.
+    refreshed = load_config()
+    config.clear()
+    config.update(refreshed)
     print()
     print_success(f"Model slots written: default={slots['default']}, fallback={fallback}")
-    chain_txt = " -> ".join([delegate_fallback] + delegate_chain) if delegate_chain else delegate_fallback
+    chain_txt = " -> ".join(delegate_chain or [delegate_fallback])
     print_info("Subagents will run on " + delegate_model + f" (fallback chain {chain_txt}).")
-    fb_txt = " -> ".join([fallback] + fallback_chain) if fallback_chain else fallback
+    fb_txt = " -> ".join(fallback_chain or [fallback])
     print_info(f"Main model fallback chain: {fb_txt}.")
 
 
 def _prompt_slot_reasoning(
     config: dict, default_model: str = "", fallback_model: str = "",
     delegate_model: str = "", delegate_fallback: str = "",
-    *, fallback_chain=(), delegate_chain=(),
 ) -> None:
     """Ask provider-supported effort immediately after accepting a model.
 
@@ -1549,15 +1481,6 @@ def _prompt_slot_reasoning(
         if _pick is not None:
             override_updates[fallback_model] = _hermes_reasoning_value(_pick)
             shared_updates[fallback_model] = _pick
-    for model in fallback_chain:
-        _cur = str(shared_overrides.get(model) or overrides.get(model) or "").strip().lower()
-        _pick = _pick_reasoning_level(
-            "Select reasoning effort for the SECOND-ORDER FALLBACK model (hermes orchestrator; empty to skip):",
-            _cur, model=model,
-        )
-        if _pick is not None:
-            override_updates[model] = _hermes_reasoning_value(_pick)
-            shared_updates[model] = _pick
     if delegate_model:
         _cur = str(shared_overrides.get(delegate_model) or (think_current or {}).get("delegate_thinking_level") or "").strip().lower()
         _pick = _pick_reasoning_level(
@@ -1576,15 +1499,6 @@ def _prompt_slot_reasoning(
         if _pick is not None:
             omp_update["delegate_fallback_thinking_level"] = _omp_reasoning_value(_pick)
             shared_updates[delegate_fallback] = _pick
-    for model in delegate_chain:
-        _cur = str(shared_overrides.get(model) or "").strip().lower()
-        _pick = _pick_reasoning_level(
-            "Select reasoning effort for the SECOND-ORDER DELEGATE FALLBACK model (omp subagents; empty to skip):",
-            _cur, allow_auto=True, model=model,
-        )
-        if _pick is not None:
-            shared_updates[model] = _pick
-
     if override_updates:
         config.setdefault("agent", {}).setdefault("reasoning_overrides", {}).update(override_updates)
     if shared_updates:

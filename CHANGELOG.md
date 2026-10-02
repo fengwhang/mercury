@@ -5,6 +5,14 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.11] — nightly
+
+- Limit setup to default, fallback, delegate, and delegate fallback models,
+  with reasoning immediately after each model selection. Always offer the
+  main fallback independently of previously configured delegate models.
+- Remove second-order setup menus; preserve extra retry models configured
+  by hand and keep both engines' runtime fallback chains in sync.
+
 ## [0.3.10] — nightly
 
 - Apply API-advertised reasoning efforts in both engines, including Codex

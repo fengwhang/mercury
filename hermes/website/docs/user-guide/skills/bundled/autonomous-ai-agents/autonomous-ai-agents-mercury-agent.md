@@ -84,9 +84,10 @@ choosing between profile instructions and repository rules.
 
 ## Models, reasoning, and permissions
 
-Setup asks for reasoning immediately after each model selection. Default,
-fallback, delegate, and delegate fallback models can each use a different
-provider. Both engines honor provider-advertised effort choices and mandatory
+Setup selects default, fallback, delegate, and delegate fallback, with reasoning
+immediately after each model selection. Extra retry models require editing
+`models.fallback_chain` or `models.delegate_fallback_chain` in the selected
+config. Each of the four models can use a different provider. Both engines honor provider-advertised effort choices and mandatory
 reasoning; do not invent effort tiers when the API exposes no selector.
 Unknown/offline metadata retains compatibility behavior.
 

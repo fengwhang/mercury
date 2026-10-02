@@ -1,7 +1,7 @@
 """Reconfigure gates: each already-configured setup section asks first.
 
-Covers ``mercury setup`` re-runs for the four gated sections
-(model+provider, delegate slots, tools, observatory):
+Covers ``mercury setup`` re-runs for independently gated sections
+(model+provider, tools, observatory); the three follow-up model slots always run:
 
 - configured + "no"  → section skipped (nothing runs, nothing written)
 - configured + "yes" → section runs normally
@@ -102,7 +102,7 @@ class TestModelProviderGate:
         assert _gate_questions(asked) == ["  Reconfigure model & provider?"]
         assert asked[0][1] is False  # default NO is load-bearing
         select.assert_not_called()
-        slots.assert_called_once()  # delegate slots keep their own gate
+        slots.assert_called_once()  # keep the main model, still offer follow-up slots
 
     def test_configured_yes_runs_provider_flow(self, monkeypatch):
         from contextlib import ExitStack
@@ -143,7 +143,7 @@ class TestModelProviderGate:
 
 
 # ---------------------------------------------------------------------------
-# delegate model + fallback + provider (_prompt_mercury_slots)
+# follow-up model slots (_prompt_mercury_slots)
 # ---------------------------------------------------------------------------
 
 _CONFIGURED_SLOTS = {
@@ -154,7 +154,7 @@ _CONFIGURED_SLOTS = {
 }
 
 
-class TestDelegateSlotsGate:
+class TestFollowupModelSlots:
     def _patches(self, stack, *, slots):
         stack.enter_context(
             patch.object(setup_mod, "_read_model_slots", return_value=dict(slots))
@@ -188,44 +188,19 @@ class TestDelegateSlotsGate:
         stack.enter_context(patch.object(setup_mod, "_prompt_slot_reasoning"))
         return picker, written
 
-    def test_configured_no_skips_without_writing(self, monkeypatch):
-        from contextlib import ExitStack
-
-        asked = _interactive(monkeypatch, [False])
-        with ExitStack() as stack:
-            picker, written = self._patches(stack, slots=_CONFIGURED_SLOTS)
-            setup_mod._prompt_mercury_slots({})
-        assert _gate_questions(asked) == ["  Reconfigure delegate models?"]
-        assert asked[0][1] is False
-        picker.assert_not_called()
-        written.assert_not_called()
-
-    def test_configured_yes_runs_pickers_and_writes(self, monkeypatch):
-        from contextlib import ExitStack
-
-        asked = _interactive(monkeypatch, [True])
-        with ExitStack() as stack:
-            picker, written = self._patches(stack, slots=_CONFIGURED_SLOTS)
-            setup_mod._prompt_mercury_slots({})
-        assert _gate_questions(asked) == ["  Reconfigure delegate models?"]
-        assert picker.call_count >= 1
-        written.assert_called_once()
-
-    def test_unconfigured_slots_run_without_gate(self, monkeypatch):
+    @pytest.mark.parametrize("configured", [False, True])
+    def test_followup_slots_have_no_separate_reconfigure_gate(self, monkeypatch, configured):
         from contextlib import ExitStack
 
         asked = _interactive(monkeypatch, [])
-        slots = {
-            "default": "openrouter/m",
-            "fallback": "",
-            "delegate_model": "",
-            "delegate_fallback": "",
+        slots = dict(_CONFIGURED_SLOTS) if configured else {
+            "default": "openrouter/m", "fallback": "", "delegate_model": "", "delegate_fallback": "",
         }
         with ExitStack() as stack:
             picker, written = self._patches(stack, slots=slots)
             setup_mod._prompt_mercury_slots({})
-        assert _gate_questions(asked) == []
-        assert picker.call_count >= 1
+        assert asked == []
+        assert picker.call_count == 3
         written.assert_called_once()
 
     def test_headless_runs_without_prompt(self, monkeypatch):
@@ -239,21 +214,16 @@ class TestDelegateSlotsGate:
         assert picker.call_count >= 1
         written.assert_called_once()
 
-    def test_go_back_propagates_through_gate(self, monkeypatch):
-        monkeypatch.setattr(setup_mod, "is_interactive_stdin", lambda: True)
-        monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
-        monkeypatch.setattr(
-            setup_mod,
-            "_read_model_slots",
-            lambda: dict(_CONFIGURED_SLOTS),
-        )
+    def test_go_back_from_slot_picker_propagates_without_writing(self, monkeypatch):
+        from contextlib import ExitStack
 
-        def raise_back(question, default=False):
-            raise setup_mod._SetupGoBack(0)
-
-        monkeypatch.setattr(setup_mod, "prompt_yes_no", raise_back)
-        with pytest.raises(setup_mod._SetupGoBack):
-            setup_mod._prompt_mercury_slots({})
+        _interactive(monkeypatch, [])
+        with ExitStack() as stack:
+            picker, written = self._patches(stack, slots=_CONFIGURED_SLOTS)
+            picker.side_effect = setup_mod._SetupGoBack(0)
+            with pytest.raises(setup_mod._SetupGoBack):
+                setup_mod._prompt_mercury_slots({})
+            written.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
