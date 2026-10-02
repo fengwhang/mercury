@@ -1774,6 +1774,17 @@ def model_reasoning_capabilities(provider: str, model: str) -> Optional[dict[str
     controls from the model author's direct API.
     """
     provider = normalize_provider(provider)
+    if provider == "openai-codex":
+        from mercury_cli.auth import resolve_codex_runtime_credentials
+        from mercury_cli.codex_models import codex_model_reasoning_capabilities
+        try:
+            credentials = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        except Exception:
+            return None
+        return codex_model_reasoning_capabilities(
+            model, access_token=credentials.get("api_key"),
+            base_url=credentials.get("base_url"), allow_fetch=True,
+        )
     if provider == "openrouter":
         return openrouter_model_reasoning_capabilities(model, allow_fetch=True)
     if provider == "nous":
@@ -2164,6 +2175,40 @@ def clamp_reasoning_effort_to_supported(
     normalization.
     """
     return _clamp_effort(effort, supported_efforts)
+
+
+def reasoning_config_for_capabilities(
+    config: dict[str, Any], capabilities: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Constrain outgoing controls to the serving API, without changing saved preferences."""
+    result = dict(config)
+    if capabilities is None:
+        return result
+    if not capabilities.get("supports_reasoning"):
+        return None
+    mandatory = capabilities.get("mandatory") is True
+    if mandatory and (result.get("enabled") is False or result.get("effort") in ("none", "off")):
+        result["enabled"] = True
+        result.pop("effort", None)
+        default = capabilities.get("default_effort")
+        efforts = capabilities.get("supported_efforts")
+        if default and default not in ("none", "off") and (efforts is None or default in efforts):
+            result["effort"] = default
+    if capabilities.get("supports_effort_selection") is False:
+        result.pop("effort", None)
+    elif result.get("enabled") is not False and result.get("effort"):
+        efforts = capabilities.get("supported_efforts")
+        if efforts == []:
+            result.pop("effort", None)
+            return result
+        if mandatory and efforts is not None:
+            efforts = [effort for effort in efforts if effort not in ("none", "off")]
+        effort = clamp_reasoning_effort_to_supported(result["effort"], efforts)
+        if effort is None:
+            result.pop("effort", None)
+        else:
+            result["effort"] = effort
+    return result
 
 
 def fetch_openrouter_models(

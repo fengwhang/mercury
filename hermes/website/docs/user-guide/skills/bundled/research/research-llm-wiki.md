@@ -15,7 +15,7 @@ Karpathy's LLM Wiki: build/query interlinked markdown KB.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/research\llm-wiki` |
+| Path | `skills/research/llm-wiki` |
 | Version | `2.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -26,7 +26,7 @@ Karpathy's LLM Wiki: build/query interlinked markdown KB.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Karpathy's LLM Wiki
@@ -52,7 +52,7 @@ Use this skill when the user:
 
 ## Wiki Location
 
-**Location:** Set via `WIKI_PATH` environment variable (e.g. in `${HERMES_HOME:-~/.hermes}/.env`).
+**Location:** Set via `WIKI_PATH` environment variable (e.g. in `$MERCURY_HOME/.env`).
 
 If unset, defaults to `~/wiki`.
 

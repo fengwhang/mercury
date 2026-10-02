@@ -18,7 +18,7 @@ while it works. Use the terminal at your desk and the Observatory from
 your phone. Your host runs the agents; you choose their supported model
 providers.
 
-The current stable release is **[v0.3.4](https://github.com/fengwhang/mercury/releases/tag/v0.3.4)**.
+The current stable release is **[v0.3.7](https://github.com/fengwhang/mercury/releases/tag/v0.3.7)**.
 The standard installer below includes the same thinking kaomoji across Hermes
 and OMP rooms, program-preserving steering, and shared approval settings.
 
@@ -102,7 +102,7 @@ curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install-nigh
 ```
 
 Stable is **[v0.3.7](https://github.com/fengwhang/mercury/releases/tag/v0.3.7)**.
-The latest nightly is **[v0.3.9-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.9-nightly)**.
+The latest nightly is **[v0.3.10-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.10-nightly)**.
 The nightly installer selects the newest published prerelease. Stable remains
 on its own update channel; nightly is selected explicitly by this wrapper or
 `--channel nightly`.
@@ -332,6 +332,26 @@ terminal-only interactive screen.
 └── mercury-agent/       installed source and prebuilt runtime bundles
 ```
 
+Named profiles live in `~/.mercury/hermes/profiles/<name>/`. Each owns a
+`config.yaml` and `config/` with `SOUL.md`, `AGENTS.md`, `HERMES.md`,
+`OMP.md`, `MEMORY.md`, and `USER.md`. Both engines build that profile's
+system prompt from its own files; missing files never inherit the default
+profile's persona or instructions. Existing profile Markdown migrates locally.
+Cloning copies instructions once, so subsequent edits stay independent;
+export/import and the profile editors use the same layout.
+
+```bash
+mercury profile create coder
+mercury -p coder setup
+mercury omp -p coder
+```
+
+In the gateway room, `!spawnomp reviewer -p coder` launches an OMP session
+with that profile's model, reasoning, native permissions, and instructions.
+The profile survives Observatory restarts. For OMP's native short print
+flag, use `mercury omp -p coder -- -p 'your prompt'` or `--print`.
+The nightly command supports the same options.
+
 The shared configuration has `models:`, `approvals:`, `hermes:`, and `omp:`
 sections. `models.default` selects the Hermes chat model;
 `models.delegate_model` selects the OMP model, including `mercury omp`.
@@ -344,6 +364,12 @@ respect mandatory reasoning. If no effort choices are published or available,
 setup keeps the current setting and explains why.
 Selections are stored in `models.reasoning_overrides` and applied to both
 engines' fallback chains.
+Both engines use advertised effort levels for runtime requests as well:
+live capability metadata overrides bundled model rules, mandatory reasoning
+stays enabled, and models without an effort selector keep their provider's
+reasoning controls without receiving an invented effort tier. Codex discovery
+retains the account's supported levels and default. When discovery is
+unavailable, existing compatibility rules remain the offline fallback.
 Use `mercury setup model` for provider-aware selection and
 `mercury omp-sync` after hand-editing shared settings.
 

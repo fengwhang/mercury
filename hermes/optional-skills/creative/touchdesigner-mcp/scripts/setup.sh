@@ -8,8 +8,8 @@ OK="${GREEN}✔${NC}"; FAIL="${RED}✘${NC}"; WARN="${YELLOW}⚠${NC}"
 
 TWOZERO_URL="https://www.404zero.com/pisang/twozero.tox"
 TOX_PATH="$HOME/Downloads/twozero.tox"
-HERMES_HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
-HERMES_CFG="${HERMES_HOME_DIR}/config.yaml"
+MERCURY_CLI="${MERCURY_CMD:-mercury}"
+MERCURY_CFG="$("$MERCURY_CLI" config path)"
 MCP_PORT=40404
 MCP_ENDPOINT="http://localhost:${MCP_PORT}/mcp"
 
@@ -43,36 +43,20 @@ else
     fi
 fi
 
-# ── 3. Ensure Hermes config has twozero_td MCP entry ──
-if [[ ! -f "$HERMES_CFG" ]]; then
-    echo -e " ${FAIL} Hermes config not found at ${HERMES_CFG}"
-    manual_steps+=("Create ${HERMES_CFG} with twozero_td MCP server entry")
-elif grep -q 'twozero_td' "$HERMES_CFG" 2>/dev/null; then
-    echo -e " ${OK} twozero_td MCP entry exists in Hermes config"
+# ── 3. Ensure Mercury config has twozero_td MCP entry ──
+if [[ ! -f "$MERCURY_CFG" ]]; then
+    echo -e " ${FAIL} Mercury config not found at ${MERCURY_CFG}"
+    manual_steps+=("Create ${MERCURY_CFG} with twozero_td MCP server entry")
+elif grep -q 'twozero_td' "$MERCURY_CFG" 2>/dev/null; then
+    echo -e " ${OK} twozero_td MCP entry exists in Mercury config"
 else
-    echo -e " ${WARN} Adding twozero_td MCP entry to Hermes config..."
-    python3 -c "
-import yaml, sys, copy
-
-cfg_path = '$HERMES_CFG'
-with open(cfg_path, 'r') as f:
-    cfg = yaml.safe_load(f) or {}
-
-if 'mcp_servers' not in cfg:
-    cfg['mcp_servers'] = {}
-
-if 'twozero_td' not in cfg['mcp_servers']:
-    cfg['mcp_servers']['twozero_td'] = {
-        'url': '${MCP_ENDPOINT}',
-        'timeout': 120,
-        'connect_timeout': 60
-    }
-    with open(cfg_path, 'w') as f:
-        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
-" 2>/dev/null && echo -e " ${OK} twozero_td MCP entry added to config" \
-              || { echo -e " ${FAIL} Could not update config (is PyYAML installed?)"; \
-                   manual_steps+=("Add twozero_td MCP entry to ${HERMES_CFG} manually"); }
-    manual_steps+=("Restart Hermes session to pick up config change")
+    echo -e " ${WARN} Adding twozero_td MCP entry to Mercury config..."
+    "$MERCURY_CLI" config set mcp_servers.twozero_td \
+        "{\"url\":\"${MCP_ENDPOINT}\",\"timeout\":120,\"connect_timeout\":60}" \
+        && echo -e " ${OK} twozero_td MCP entry added to config" \
+        || { echo -e " ${FAIL} Could not update Mercury config"; \
+             manual_steps+=("Configure twozero_td with mercury mcp add"); }
+    manual_steps+=("Start a new Mercury session to pick up config change")
 fi
 
 # ── 4. Test if MCP port is responding ──

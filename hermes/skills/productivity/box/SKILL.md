@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 prerequisites:
   commands: [box]
 metadata:
-  hermes:
+  mercury:
     tags: [Box, Productivity, Cloud Storage, Collaboration, Metadata, Content Extraction, CLI, SDK]
     related_skills: [google-workspace]
     homepage: https://developer.box.com/

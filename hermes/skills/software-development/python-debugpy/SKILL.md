@@ -6,7 +6,7 @@ author: Hermes Agent
 license: MIT
 platforms: [linux, macos]
 metadata:
-  hermes:
+  mercury:
     tags: [debugging, python, pdb, debugpy, breakpoints, dap, post-mortem]
     related_skills: [systematic-debugging, node-inspect-debugger]
 ---
@@ -149,7 +149,7 @@ For long-lived processes: Hermes gateway, tui_gateway, a daemon, a process that'
 ### Setup
 
 ```bash
-source <hermes-agent-repo>/.venv/bin/activate
+source <mercury-repo>/hermes/.venv/bin/activate
 pip install debugpy
 ```
 
@@ -246,7 +246,7 @@ This is fine for one-off automation but painful as an interactive UX.
   "connect": { "host": "127.0.0.1", "port": 5678 },
   "justMyCode": false,
   "pathMappings": [
-    { "localRoot": "${workspaceFolder}", "remoteRoot": "<hermes-agent-repo>" }
+    { "localRoot": "${workspaceFolder}", "remoteRoot": "<mercury-repo>/hermes" }
   ]
 }
 ```

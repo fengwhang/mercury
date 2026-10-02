@@ -770,3 +770,20 @@ if __name__ == "__main__":
             print(f"FAIL {name}: {exc!r}")
     print(f"\n{len(tests) - len(failures)}/{len(tests)} passed")
     sys.exit(1 if failures else 0)
+
+
+def test_shared_credentials_and_profile_subject_data(tmp_path, monkeypatch):
+    root = tmp_path / ".mercury-nightly"
+    home = root / "hermes/profiles/privacy"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("MERCURY_HOME", str(root))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("PDD_DATA_DIR", raising=False)
+    monkeypatch.delenv("MERCURY_SKILL_TEST_SECRET", raising=False)
+    (root / ".env").write_text("MERCURY_SKILL_TEST_SECRET=shared\n")
+    (home / ".env").write_text("MERCURY_SKILL_TEST_SECRET=incorrect-profile-copy\n")
+    assert config.dotenv_env()["MERCURY_SKILL_TEST_SECRET"] == "shared"
+    monkeypatch.setenv("MERCURY_SKILL_TEST_SECRET", "shell")
+    assert config.dotenv_env()["MERCURY_SKILL_TEST_SECRET"] == "shell"
+    assert paths.data_dir() == home / "unbroker"
+    assert cdp.default_profile() == home / "chrome-debug"

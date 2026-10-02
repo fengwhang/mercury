@@ -15,7 +15,7 @@ PDF files: create, read, merge, fill, OCR, edit text.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\pdf` |
+| Path | `skills/productivity/pdf` |
 | Version | `1.1.0` |
 | Author | Nous Research |
 | License | MIT |
@@ -26,7 +26,7 @@ PDF files: create, read, merge, fill, OCR, edit text.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # PDF Skill

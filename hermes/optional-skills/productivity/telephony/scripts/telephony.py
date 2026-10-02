@@ -2,7 +2,7 @@
 """Telephony helper for the Mercury optional telephony skill.
 
 Capabilities:
-- Persist telephony provider credentials to the Mercury .env file ($HERMES_HOME/.env)
+- Persist telephony provider credentials to the Mercury .env file ($MERCURY_HOME/.env)
 - Search for, buy, and remember Twilio phone numbers
 - Make direct Twilio calls (TwiML <Say> or <Play>)
 - Send SMS / MMS via Twilio
@@ -73,10 +73,19 @@ def _hermes_home() -> Path:
 
 
 def _env_path() -> Path:
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if mercury:
+        return Path(mercury) / ".env"
     return _hermes_home() / ".env"
 
 
 def _config_path() -> Path:
+    try:
+        from mercury_constants import get_config_path
+        return get_config_path()
+    except ImportError:
+        if _hermes_home().parent.name != "profiles" and os.environ.get("MERCURY_CONFIG"):
+            return Path(os.environ["MERCURY_CONFIG"])
     return _hermes_home() / "config.yaml"
 
 
@@ -95,7 +104,9 @@ def _load_root_config() -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        return data["hermes"] if isinstance(data.get("hermes"), dict) else data
     except Exception:
         return {}
 

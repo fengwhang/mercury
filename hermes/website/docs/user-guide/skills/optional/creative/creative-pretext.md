@@ -14,8 +14,8 @@ Build creative browser demos with DOM-free text layout.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/pretext` |
-| Path | `optional-skills/creative\pretext` |
+| Source | Optional — install with `mercury skills install official/creative/pretext` |
+| Path | `optional-skills/creative/pretext` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -26,7 +26,7 @@ Build creative browser demos with DOM-free text layout.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Pretext Creative Demos

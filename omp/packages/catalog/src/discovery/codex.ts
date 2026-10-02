@@ -1,8 +1,9 @@
 import { type } from "@oh-my-pi/omptype";
 import { compareRevision, parseRevision } from "../compat/revision";
 import { classifyModel } from "../compat/taxonomy";
+import { THINKING_EFFORTS } from "../effort";
 import { getBundledModels } from "../models";
-import type { FetchImpl, ModelSpec } from "../types";
+import type { FetchImpl, ModelSpec, ThinkingConfig } from "../types";
 import { discoveryFetch } from "../utils";
 import { CODEX_BASE_URL, CODEX_CLIENT_VERSION, OPENAI_HEADER_VALUES, OPENAI_HEADERS } from "../wire/codex";
 
@@ -280,6 +281,8 @@ interface ParsedCodexModelEntry {
 	name: string;
 	contextWindow: number | null;
 	reasoning: boolean;
+	thinking?: ThinkingConfig;
+	reasoningCapabilities?: ModelSpec["reasoningCapabilities"];
 	input: ("text" | "image")[];
 	preferWebsockets: boolean;
 	useResponsesLite: boolean;
@@ -304,11 +307,16 @@ function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
 		return null;
 	}
 
+	const advertised = parseCodexThinking(payload.supported_reasoning_levels, payload.default_reasoning_level);
 	return {
 		slug,
 		name: toNonEmptyString(payload.display_name) ?? slug,
 		contextWindow: toPositiveInt(payload.context_window),
-		reasoning: supportsReasoning(payload.default_reasoning_level, payload.supported_reasoning_levels),
+		reasoning:
+			advertised !== undefined
+				? advertised.thinking !== undefined
+				: supportsReasoning(payload.default_reasoning_level, payload.supported_reasoning_levels),
+		...advertised,
 		input: normalizeInputModalities(payload.input_modalities),
 		preferWebsockets: toBoolean(payload.prefer_websockets) === true,
 		useResponsesLite: toBoolean(payload.use_responses_lite) === true,
@@ -359,6 +367,8 @@ function buildNormalizedCodexModel(
 			provider: "openai-codex",
 			baseUrl,
 			reasoning: parsed.reasoning,
+			thinking: parsed.thinking,
+			reasoningCapabilities: parsed.reasoningCapabilities,
 			input: parsed.input,
 			// Daybreak standard API pricing is rule-owned (`providers/openai-codex.kdl`
 			// cost-patch) and corrected at build time.
@@ -371,6 +381,39 @@ function buildNormalizedCodexModel(
 			...(parsed.toolMode ? { toolMode: "code_mode_only" as const } : {}),
 			...(parsed.priority !== Number.MAX_SAFE_INTEGER ? { priority: parsed.priority } : {}),
 		},
+	};
+}
+
+function parseCodexThinking(
+	levels: unknown,
+	defaultLevel: unknown,
+): { thinking?: ThinkingConfig; reasoningCapabilities: NonNullable<ModelSpec["reasoningCapabilities"]> } | undefined {
+	if (!Array.isArray(levels)) return undefined;
+	const values = levels.flatMap(level => {
+		const value =
+			typeof level === "string"
+				? level
+				: level !== null && typeof level === "object" && "effort" in level
+					? level.effort
+					: undefined;
+		return typeof value === "string" && value.trim() ? [value.trim().toLowerCase()] : [];
+	});
+	if (levels.length > 0 && values.length === 0) return undefined;
+	const efforts = THINKING_EFFORTS.filter(effort => values.includes(effort));
+	const mandatory = efforts.length > 0 && !values.some(value => value === "none" || value === "off");
+	const advertisedDefault = THINKING_EFFORTS.find(effort => effort === defaultLevel && efforts.includes(effort));
+	return {
+		reasoningCapabilities: { effortSelection: efforts.length > 0, mandatory },
+		...(efforts.length > 0
+			? {
+					thinking: {
+						mode: "effort",
+						efforts,
+						requiresEffort: mandatory,
+						...(advertisedDefault !== undefined ? { defaultLevel: advertisedDefault } : {}),
+					},
+				}
+			: {}),
 	};
 }
 

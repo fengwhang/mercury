@@ -7712,11 +7712,10 @@ class AIAgent:
                 openrouter_model_reasoning_capabilities,
                 warm_openrouter_reasoning_caps_async,
             )
-            caps = openrouter_model_reasoning_capabilities(self.model)
+            caps = openrouter_model_reasoning_capabilities(self.model, allow_fetch=True)
             if caps is None:
-                # Cache cold (no picker run this process) — warm it in the
-                # background so subsequent turns get metadata; never block
-                # this turn on HTTP.
+                # The bounded first-use probe failed or did not list the
+                # model. Keep the existing asynchronous recovery path.
                 warm_openrouter_reasoning_caps_async()
         except Exception:
             caps = None

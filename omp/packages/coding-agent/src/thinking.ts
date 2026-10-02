@@ -124,6 +124,9 @@ export function resolveThinkingLevelForModel(
 		return undefined;
 	}
 	if (level === ThinkingLevel.Off) {
+		if (model?.reasoningCapabilities?.mandatory) {
+			return model.thinking?.defaultLevel ?? getSupportedEfforts(model)[0];
+		}
 		return ThinkingLevel.Off;
 	}
 	return clampThinkingLevelForModel(model, level);

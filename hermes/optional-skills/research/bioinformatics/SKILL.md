@@ -6,7 +6,7 @@ author: Teknium (teknium1), Hermes Agent
 license: MIT
 platforms: [linux, macos]
 metadata:
-  hermes:
+  mercury:
     tags: [bioinformatics, genomics, sequencing, biology, research, science]
     category: research
 ---

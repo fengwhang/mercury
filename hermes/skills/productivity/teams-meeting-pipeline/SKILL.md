@@ -9,7 +9,7 @@ prerequisites:
   env_vars: [MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET]
   commands: [hermes]
 metadata:
-  hermes:
+  mercury:
     tags: [Teams, Microsoft Graph, Meetings, Productivity, Operations]
     # Channel-gated: this pipeline only makes sense on the Teams gateway
     # channel (and in cron jobs, where its scheduled summary/replay work
@@ -44,7 +44,7 @@ Multilingual trigger examples (not exhaustive):
 
 ## Prerequisites
 
-Before using the pipeline, verify these are set in `${HERMES_HOME:-~/.mercury}/.env`:
+Before using the pipeline, verify these are set in `$MERCURY_HOME/.env`:
 
 ```bash
 MSGRAPH_TENANT_ID=...

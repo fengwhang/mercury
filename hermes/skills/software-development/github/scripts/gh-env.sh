@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# GitHub environment detection helper for Hermes Agent skills.
+# GitHub environment detection helper for Mercury skills.
 #
 # Usage (via terminal tool):
-#   source skills/github/github-auth/scripts/gh-env.sh
+#   source "$MERCURY_HOME/skills/software-development/github/scripts/gh-env.sh"
 #
 # After sourcing, these variables are set:
 #   GH_AUTH_METHOD  - "gh", "curl", or "none"
@@ -23,13 +23,13 @@ if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
     GH_USER=$(gh api user --jq '.login' 2>/dev/null)
 elif [ -n "$GITHUB_TOKEN" ]; then
     GH_AUTH_METHOD="curl"
-elif _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env" 2>/dev/null; then
+elif _hermes_env="${MERCURY_HOME:-$HOME/.mercury}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env" 2>/dev/null; then
     GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
     if [ -n "$GITHUB_TOKEN" ]; then
         GH_AUTH_METHOD="curl"
     fi
 elif [ -f "$HOME/.git-credentials" ]; then
-    GITHUB_TOKEN=$(uv run python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
+    GITHUB_TOKEN=$(python3 "$(dirname "${BASH_SOURCE[0]}")/git-credential-token.py")
     if [ -n "$GITHUB_TOKEN" ]; then
         GH_AUTH_METHOD="curl"
     fi
@@ -61,6 +61,6 @@ unset _remote_url
 echo "GitHub Auth: $GH_AUTH_METHOD"
 [ -n "$GH_USER" ]       && echo "User: $GH_USER"
 [ -n "$GH_OWNER_REPO" ] && echo "Repo: $GH_OWNER_REPO"
-[ "$GH_AUTH_METHOD" = "none" ] && echo "⚠ Not authenticated — see github-auth skill"
+[ "$GH_AUTH_METHOD" = "none" ] && echo "⚠ Not authenticated — see the github skill authentication reference"
 
 export GH_AUTH_METHOD GITHUB_TOKEN GH_USER GH_OWNER GH_REPO GH_OWNER_REPO

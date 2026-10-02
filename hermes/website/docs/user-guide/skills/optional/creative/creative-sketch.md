@@ -14,8 +14,8 @@ Throwaway HTML mockups: 2-3 design variants to compare.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/sketch` |
-| Path | `optional-skills/creative\sketch` |
+| Source | Optional — install with `mercury skills install official/creative/sketch` |
+| Path | `optional-skills/creative/sketch` |
 | Version | `1.0.1` |
 | Author | Hermes Agent (adapted from gsd-build/get-shit-done) |
 | License | MIT |
@@ -26,7 +26,7 @@ Throwaway HTML mockups: 2-3 design variants to compare.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Sketch
@@ -237,4 +237,4 @@ Repeat for each variant, then present the comparison table.
 
 ## Attribution
 
-Adapted from the GSD (Get Shit Done) project's `/gsd-sketch` workflow — MIT © 2025 Lex Christopherson ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)). The upstream GSD repo is now **archived/unmaintained** on GitHub; the `get-shit-done-cc` npm package still installs (`npx get-shit-done-cc --hermes --global`) and ships persistent sketch state, theme/variant pattern references, and consistency-audit workflows, but treat it as an archived community project.
+Adapted from the GSD (Get Shit Done) project's `/gsd-sketch` workflow — MIT © 2025 Lex Christopherson ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)). The upstream GSD repo is now **archived/unmaintained** on GitHub; the `get-shit-done-cc` npm package still installs (`npx get-shit-done-cc --mercury --global`) and ships persistent sketch state, theme/variant pattern references, and consistency-audit workflows, but treat it as an archived community project.

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from mercury_constants import (
     get_hermes_home,
+    get_prompt_home,
     get_skills_dir,
     is_wsl,
     reset_hermes_home_override,
@@ -179,9 +180,8 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "You run on Mercury. Mercury is a hybrid distribution of Hermes by Nous Research and omp by can1357. When the user needs help with "
     "Mercury itself — configuring, setting up, using, extending, or troubleshooting "
     "it — or when you need to understand your own features, tools, or capabilities, "
-    "the Hermes documentation at https://hermes-agent.nousresearch.com/docs (authoritative for the hermes half) is your "
-    "authoritative reference and always holds the latest, most up-to-date "
-    "information. The `mercury-agent` skill has the actual commands and proven "
+    "Mercury's source and README at https://github.com/fengwhang/mercury take "
+    "precedence over upstream Hermes and omp documentation. The `mercury-agent` skill has the actual commands and proven "
     "workflows — load it with skill_view(name='mercury-agent') before configuring, "
     "modifying, or troubleshooting Mercury so you don't guess or invent workarounds."
 )
@@ -194,9 +194,8 @@ HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
     "You run on Mercury. Mercury is a hybrid distribution of Hermes by Nous Research and omp by can1357. When the user needs help with "
     "Mercury itself — configuring, setting up, using, extending, or troubleshooting "
     "it — or when you need to understand your own features, tools, or capabilities, "
-    "the Hermes documentation at https://hermes-agent.nousresearch.com/docs (authoritative for the hermes half) is the "
-    "authoritative reference and always holds the latest, most up-to-date "
-    "information. Point the user there (or read it yourself if you have a way to "
+    "Mercury's source and README at https://github.com/fengwhang/mercury take "
+    "precedence over upstream Hermes and omp documentation. Point the user there (or read it yourself if you have a way to "
     "fetch web content)."
 )
 
@@ -2100,13 +2099,7 @@ def load_soul_md(
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    mercury = os.environ.get("MERCURY_HOME", "").strip()
-    if home_override is not None:
-        _home = Path(home_override)
-    elif mercury:
-        _home = Path(mercury)
-    else:
-        _home = get_hermes_home()
+    _home = get_prompt_home(home_override)
     # MERCURY LAYOUT: shared .md files live in $MERCURY_HOME/config/; the
     # top level is the pre-layout fallback for one release.
     _cands = [_home / "config" / "SOUL.md", _home / "SOUL.md"]
@@ -2199,10 +2192,7 @@ def load_agents_md_home(
     mercury_home = os.environ.get("MERCURY_HOME", "").strip()
     if not mercury_home:
         return None
-    base = Path(home_override) if home_override is not None else Path(mercury_home)
-    if home_override is not None and base.name != "hermes":
-        # agent-home override: shared file lives at mercury top level
-        base = base.parent
+    base = get_prompt_home(home_override)
     # MERCURY LAYOUT: $MERCURY_HOME/config/AGENTS.md (top-level fallback)
     _cands = [base / "config" / "AGENTS.md", base / "AGENTS.md"]
     path = next((c for c in _cands if c.exists()), _cands[0])
@@ -2240,11 +2230,7 @@ def load_hermes_md_home(
     mercury_home = os.environ.get("MERCURY_HOME", "").strip()
     if not mercury_home:
         return None
-    base = Path(home_override) if home_override is not None else Path(mercury_home)
-    # home_override (agent's own home) wins for profile scoping; otherwise
-    # the mercury home explicitly. MERCURY.md lives at MERCURY_HOME top level.
-    if home_override is None:
-        base = Path(mercury_home)
+    base = get_prompt_home(home_override)
     # MERCURY LAYOUT: $MERCURY_HOME/config/HERMES.md (top-level fallback)
     _cands = [base / "config" / "HERMES.md", base / "HERMES.md"]
     path = next((c for c in _cands if c.exists()), _cands[0])

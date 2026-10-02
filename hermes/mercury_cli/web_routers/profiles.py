@@ -1051,7 +1051,10 @@ async def delete_profile_endpoint(name: str):
 
 @router.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
-    soul_path = _resolve_profile_dir(name) / "SOUL.md"
+    from mercury_cli.config import soul_md_locations
+    soul_path, legacy = soul_md_locations(_resolve_profile_dir(name))
+    if not soul_path.exists() and legacy is not None and legacy.exists():
+        soul_path = legacy
     if soul_path.exists():
         try:
             return {"content": soul_path.read_text(encoding="utf-8"), "exists": True}
@@ -1062,7 +1065,9 @@ async def get_profile_soul(name: str):
 
 @router.put("/api/profiles/{name}/soul")
 async def update_profile_soul(name: str, body: ProfileSoulUpdate):
-    soul_path = _resolve_profile_dir(name) / "SOUL.md"
+    from mercury_cli.config import soul_md_locations
+    soul_path, _legacy = soul_md_locations(_resolve_profile_dir(name))
+    soul_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         from utils import atomic_write_text
 

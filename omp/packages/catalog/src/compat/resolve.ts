@@ -1063,6 +1063,9 @@ function resolveThinkingPolicy<TApi extends Api>(
 	compat: CompatOf<TApi>,
 ): ThinkingConfig | undefined {
 	if (!spec.reasoning) return undefined;
+	// A provider's catalog can explicitly expose no effort selector. Do not
+	// recreate one from lineage, nor remap advertised wire levels using rules.
+	if (spec.reasoningCapabilities !== undefined) return spec.thinking;
 	if (
 		spec.provider === "cline-pass" &&
 		compat !== undefined &&
@@ -1219,6 +1222,17 @@ export function resolveModelPolicy(spec: ModelSpec<Api>): ResolvedModelPolicy<Ap
 		compat = resolveGooglePolicy(spec, axes);
 	} else {
 		compat = undefined;
+	}
+	if (spec.reasoningCapabilities !== undefined && compat !== undefined && "supportsReasoningEffort" in compat) {
+		// Catalog controls also override stale wire-compat flags. Resolve once,
+		// so request handlers do not suppress an API-advertised effort selector.
+		compat = {
+			...compat,
+			supportsReasoningParams: spec.reasoning,
+			supportsReasoningEffort: spec.reasoningCapabilities.effortSelection,
+			omitReasoningEffort: !spec.reasoningCapabilities.effortSelection,
+			reasoningEffortMap: {},
+		};
 	}
 	return {
 		identity,

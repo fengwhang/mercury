@@ -569,9 +569,12 @@ export class ModelControls {
 	 */
 	cycleThinkingLevel(): ConfiguredThinkingLevel | undefined {
 		if (!this.#model?.reasoning) return undefined;
+		if (this.getAvailableThinkingLevels().length === 0) return undefined;
 
 		const levels: ConfiguredThinkingLevel[] = [
-			ThinkingLevel.Off,
+			...(this.#model.reasoningCapabilities?.mandatory || this.#model.thinking?.requiresEffort
+				? []
+				: [ThinkingLevel.Off]),
 			AUTO_THINKING,
 			...this.getAvailableThinkingLevels(),
 		];

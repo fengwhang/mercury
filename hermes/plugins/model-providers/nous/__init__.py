@@ -113,14 +113,18 @@ class NousProfile(ProviderProfile):
         """
         extra_body = {}
         if supports_reasoning:
-            if reasoning_config is not None:
-                rc = dict(reasoning_config)
-                if rc.get("enabled") is False and self._cannot_disable_reasoning(model):
-                    pass  # route rejects a disable — let the model think
-                else:
-                    extra_body["reasoning"] = rc
+            from mercury_cli.models import (
+                nous_model_reasoning_capabilities,
+                reasoning_config_for_capabilities,
+            )
+            rc = reasoning_config if reasoning_config is not None else {"enabled": True, "effort": "xhigh"}
+            caps = nous_model_reasoning_capabilities(model, allow_fetch=True)
+            if rc.get("enabled") is False and self._cannot_disable_reasoning(model):
+                pass  # preserve the Portal's default when a disable is rejected
             else:
-                extra_body["reasoning"] = {"enabled": True, "effort": "xhigh"}
+                cfg = reasoning_config_for_capabilities(rc, caps)
+                if cfg is not None:
+                    extra_body["reasoning"] = cfg
         return extra_body, {}
 
 

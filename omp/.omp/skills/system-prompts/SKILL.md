@@ -5,6 +5,10 @@ description: Write system prompts, tool docs, and agent definitions. Project tag
 
 # System Prompts
 
+This skill covers Mercury omp prompt authoring. Named-profile persona and rules
+belong in that profile's `config/SOUL.md`, `AGENTS.md`, and `OMP.md`. omp has
+one model role, `task`; an agent description does not create another model role.
+
 House style: dense, imperative, RFC-keyed.
 
 Small models (≤2B; tiny/on-device, e.g. LFM2): MUST read [small-models.md](small-models.md). Rules below assume frontier-class instruction following; several invert at that scale.

@@ -353,7 +353,7 @@ class TestObservatoryGate:
         )
         stack.enter_context(patch.object(setup_mod, "_prompt_observatory_enabled_toggle"))
         stack.enter_context(patch.object(setup_mod, "_print_observatory_setup_card"))
-        stack.enter_context(patch.object(setup_mod, "_offer_tailscale_bind"))
+        stack.enter_context(patch.object(setup_mod, "_offer_tailscale_bind", return_value=False))
         stack.enter_context(patch.object(setup_mod, "_maybe_print_bind_mismatch_action"))
         stack.enter_context(
             patch.object(setup_mod, "_tailscale_status", return_value={})
@@ -363,6 +363,16 @@ class TestObservatoryGate:
         stack.enter_context(patch.object(setup_mod, "_prompt_server_label", return_value="mercury"))
         stack.enter_context(patch.object(setup_mod, "_wire_gateway_mirc_env"))
         stack.enter_context(patch.object(setup_mod, "_run_observatory_auto_steps"))
+        # Reconfigure gate tests end at the choice; service/network actions
+        # belong to their own integration tests and must never reach the host.
+        for name in (
+            "_ensure_firewall_port", "_converge_gateway_credential", "_offer_mlounge",
+            "_offer_mlounge_password_reset", "_restart_observatory_unit", "_restart_gateway",
+        ):
+            stack.enter_context(patch.object(setup_mod, name))
+        stack.enter_context(patch.object(setup_mod, "_verify_daemon_listening", return_value=(True, "fixture")))
+        stack.enter_context(patch.object(setup_mod, "_verify_gateway_bot", return_value=(True, "fixture")))
+        stack.enter_context(patch.object(setup_mod, "_restart_observatory_daemon", return_value={"action": "current"}))
         return choose
 
     def test_provisioned_no_skips_section(self, monkeypatch):

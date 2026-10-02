@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 prerequisites:
   env_vars: [NOTION_API_KEY]
 metadata:
-  hermes:
+  mercury:
     tags: [Notion, Productivity, Notes, Database, API, CLI, Workers]
     homepage: https://developers.notion.com
 ---
@@ -26,7 +26,7 @@ Talk to Notion two ways. Same integration token works for both — pick by what'
 
 1. Create an integration at https://notion.so/my-integrations
 2. Copy the API key (starts with `ntn_` or `secret_`)
-3. Store in `${HERMES_HOME:-~/.mercury}/.env`:
+3. Store in `$MERCURY_HOME/.env`:
    ```
    NOTION_API_KEY=ntn_your_key_here
    ```
@@ -50,7 +50,7 @@ export NOTION_API_TOKEN=$NOTION_API_KEY      # ntn reads NOTION_API_TOKEN
 export NOTION_KEYRING=0                       # don't try to use the OS keychain
 ```
 
-Add those exports to your shell profile (or to `${HERMES_HOME:-~/.mercury}/.env`) so every session inherits them.
+Add those exports to your shell profile (or to `$MERCURY_HOME/.env`) so every session inherits them.
 
 ### 3. Choose path at runtime
 

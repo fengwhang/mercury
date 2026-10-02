@@ -206,6 +206,9 @@ def get_default_hermes_root() -> Path:
     Import-safe — no dependencies beyond stdlib.
     """
     global _default_hermes_root_memo
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if mercury:
+        return Path(mercury)
     native_home = _get_platform_default_hermes_home()
     env_home = os.environ.get("HERMES_HOME", "")
     if _default_hermes_root_memo is not None:
@@ -258,6 +261,12 @@ def _is_hermes_profiles_root(profiles_dir: Path) -> bool:
     default Mercury root.
     """
     root = profiles_dir.parent
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if mercury:
+        mercury_root = Path(mercury).resolve(strict=False)
+        resolved = root.resolve(strict=False)
+        if resolved in (mercury_root, mercury_root / "hermes"):
+            return True
     if root.name == ".mercury":
         return True
     if root.name == "hermes" and root.parent.name == ".mercury":
@@ -1678,6 +1687,9 @@ def get_config_path() -> Path:
     ``models:`` four slots. Load/save both target that file; the loader
     extracts the mercury subtree (see _load_config_impl MERCURY patch).
     """
+    home = get_hermes_home()
+    if named_profile_home(home) is not None:
+        return home / "config.yaml"
     mercury = os.environ.get("MERCURY_CONFIG", "").strip()
     if mercury:
         return Path(mercury)
@@ -1709,17 +1721,27 @@ def get_env_path() -> Path:
 
 
 
-def get_config_dir() -> Path:
-    """MERCURY LAYOUT: all hand-editable defaults live in $MERCURY_HOME/config.
+def get_prompt_home(home_override: str | Path | None = None) -> Path:
+    """Resolve persona/instruction storage without inheriting another profile.
 
-    Mirrors the repo's config/ directory (SOUL.md, MEMORY.md, USER.md,
-    AGENTS.md, HERMES.md, OMP.md, config.yaml schema). Readers fall back
-    to the pre-layout top-level location for one release so existing
-    installs migrate without breakage.
+    The default engine home (<MERCURY_HOME>/hermes) uses the installation's
+    config directory. Named profiles and explicit custom homes own theirs.
+    Context-local profile bindings take precedence over process defaults.
     """
-    mercury_home = os.environ.get("MERCURY_HOME", "").strip()
-    base = Path(mercury_home) if mercury_home else _get_platform_default_hermes_home()
-    return base / "config"
+    home = Path(home_override) if home_override is not None else get_hermes_home()
+    if named_profile_home(home) is not None:
+        return home
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if mercury:
+        root = Path(mercury)
+        if home_override is None or home.resolve() in (root.resolve(), (root / "hermes").resolve()):
+            return root
+    return home
+
+
+def get_config_dir(home_override: str | Path | None = None) -> Path:
+    """Hand-editable Markdown belongs to the active profile's config directory."""
+    return get_prompt_home(home_override) / "config"
 
 def mercury_command() -> str:
     """This install's user-facing command name (``mercury`` or

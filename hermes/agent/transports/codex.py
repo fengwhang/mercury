@@ -643,6 +643,25 @@ class ResponsesApiTransport(ProviderTransport):
                 # rejected). #68365 premise confirmed.
                 _supported = codex_supported_efforts(model)
         reasoning_effort = clamp_effort(reasoning_effort, _supported)
+        if params.get("is_codex_backend"):
+            from mercury_cli.codex_models import codex_model_reasoning_capabilities
+            from mercury_cli.models import reasoning_config_for_capabilities
+
+            caps = codex_model_reasoning_capabilities(
+                model, access_token=params.get("codex_access_token"),
+                base_url=params.get("base_url"), allow_fetch=True,
+            )
+            # Clamp the original preference, not the legacy family-clamped
+            # value: the API can advertise a level the bundled rules lack.
+            requested = dict(reasoning_config) if reasoning_config is not None else {"effort": "xhigh"}
+            cfg = reasoning_config_for_capabilities(requested, caps)
+            if caps is not None:
+                reasoning_enabled = cfg is not None and cfg.get("enabled") is not False
+                reasoning_effort = cfg.get("effort") if cfg is not None else None
+                if cfg is not None and cfg.get("enabled") is False:
+                    off = next((e for e in caps.get("supported_efforts", []) if e in ("none", "off")), None)
+                    reasoning_enabled = off is not None
+                    reasoning_effort = off
 
         response_tools = _responses_tools(tools)
 
@@ -806,6 +825,8 @@ class ResponsesApiTransport(ProviderTransport):
                     kwargs["reasoning"] = github_reasoning
             else:
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                if reasoning_effort is None:
+                    kwargs["reasoning"].pop("effort")
                 kwargs["include"] = (
                     ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
                 )

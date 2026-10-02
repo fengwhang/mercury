@@ -6,7 +6,7 @@ author: Hermes Agent + Teknium
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [Research, Citations, Grounding, Sources, Web, Reports]
     category: research
     related_skills: [arxiv, pdf]
@@ -56,7 +56,7 @@ Override per task with `--ledger <path>` or `HERMES_CITATION_LEDGER`.
 ## How to Run
 
 ```bash
-S=~/.mercury/skills/research/grounded-citations/scripts/sources.py
+S=$MERCURY_HOME/skills/research/grounded-citations/scripts/sources.py
 
 python "$S" reset                                  # start a clean ledger
 python "$S" add https://example.com/a --title "A"  # prints: [1]

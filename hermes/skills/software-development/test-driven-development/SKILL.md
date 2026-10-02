@@ -6,7 +6,7 @@ author: Hermes Agent (adapted from obra/superpowers)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [testing, tdd, development, quality, red-green-refactor]
     related_skills: [systematic-debugging, subagent-driven-development]
 ---

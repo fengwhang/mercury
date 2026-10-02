@@ -103,10 +103,8 @@ class TestLegacyHermesLayout:
         assert (legacy / "SOUL.md").is_file()
         assert not (legacy / "config").exists()
 
-    def test_profile_home_keeps_soul_at_profile_root(self, tmp_path, monkeypatch):
-        # Profiles own a top-level SOUL.md by design (seeded by
-        # `mercury profile create`); ensure_hermes_home must not re-point
-        # them at the shared config/ dir nor touch the shared tree.
+    def test_profile_home_owns_its_config_soul(self, tmp_path, monkeypatch):
+        # Profiles seed their own Markdown without touching default persona.
         root = tmp_path / ".mercury"
         profile = root / "profiles" / "bot"
         profile.mkdir(parents=True)  # named profiles must exist before use
@@ -114,8 +112,8 @@ class TestLegacyHermesLayout:
         monkeypatch.setenv("HERMES_HOME", str(profile))
         cfg.ensure_hermes_home()
 
-        assert (profile / "SOUL.md").is_file()
-        assert not (profile / "config").exists()
+        assert (profile / "config" / "SOUL.md").is_file()
+        assert not (profile / "SOUL.md").exists()
         assert not (root / "config" / "SOUL.md").exists()
 
 

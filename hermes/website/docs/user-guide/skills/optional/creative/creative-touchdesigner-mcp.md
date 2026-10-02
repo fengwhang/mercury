@@ -14,8 +14,8 @@ Control TouchDesigner via twozero MCP.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/touchdesigner-mcp` |
-| Path | `optional-skills/creative\touchdesigner-mcp` |
+| Source | Optional — install with `mercury skills install official/creative/touchdesigner-mcp` |
+| Path | `optional-skills/creative/touchdesigner-mcp` |
 | Version | `1.1.0` |
 | Author | kshitijk4poor |
 | License | MIT |
@@ -26,7 +26,7 @@ Control TouchDesigner via twozero MCP.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # TouchDesigner Integration (twozero MCP)
@@ -54,7 +54,7 @@ Hub health check: `GET http://localhost:40404/mcp` returns JSON with instance PI
 Run the setup script to handle everything:
 
 ```bash
-bash "${HERMES_HOME:-$HOME/.hermes}/skills/creative/touchdesigner-mcp/scripts/setup.sh"
+bash "$MERCURY_HOME/skills/creative/touchdesigner-mcp/scripts/setup.sh"
 ```
 
 The script will:

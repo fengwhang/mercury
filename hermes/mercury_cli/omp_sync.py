@@ -31,7 +31,8 @@ def _mercury_home() -> Path:
 
 
 def _unified_path() -> Path:
-    return Path(os.environ.get("MERCURY_CONFIG") or _mercury_home() / "config.yaml")
+    from mercury_constants import get_config_path
+    return get_config_path()
 
 
 def _repo_root() -> Path | None:
@@ -308,9 +309,10 @@ def _render_omp() -> bool:
         bridge = root / "bridge" / "bridge.py"
         if bridge.exists():
             try:
+                from mercury_cli.omp_command import omp_profile_env
                 r = subprocess.run(
                     [sys.executable, str(bridge), "--render-omp"],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True, text=True, timeout=30, env=omp_profile_env(),
                 )
                 if r.returncode == 0:
                     return True

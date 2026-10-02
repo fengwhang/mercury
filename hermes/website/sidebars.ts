@@ -170,8 +170,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-computer-use',
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-merge-reconciler',
+                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-mercury-agent',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
                   ],
                 },
@@ -195,15 +194,6 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
-                  label: 'devops',
-                  key: 'skills-bundled-devops',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/devops/devops-sdlc-review',
-                  ],
-                },
-                {
-                  type: 'category',
                   label: 'email',
                   key: 'skills-bundled-email',
                   collapsed: true,
@@ -218,6 +208,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-media',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/media/media-file-share',
                     'user-guide/skills/bundled/media/media-gif-search',
                     'user-guide/skills/bundled/media/media-songsee',
                     'user-guide/skills/bundled/media/media-youtube-content',
@@ -243,6 +234,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/productivity/productivity-document-to-action-items',
                     'user-guide/skills/bundled/productivity/productivity-docx',
                     'user-guide/skills/bundled/productivity/productivity-google-workspace',
+                    'user-guide/skills/bundled/productivity/productivity-grill-me',
                     'user-guide/skills/bundled/productivity/productivity-maps',
                     'user-guide/skills/bundled/productivity/productivity-meeting-action-items',
                     'user-guide/skills/bundled/productivity/productivity-notion',
@@ -284,8 +276,8 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/software-development/software-development-codebase-inspection',
                     'user-guide/skills/bundled/software-development/software-development-dogfood',
                     'user-guide/skills/bundled/software-development/software-development-github',
-                    'user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
-                    'user-guide/skills/bundled/software-development/software-development-inspecting-hermes-desktop-dom',
+                    'user-guide/skills/bundled/software-development/software-development-inspecting-mercury-desktop-dom',
+                    'user-guide/skills/bundled/software-development/software-development-mercury-skill-authoring',
                     'user-guide/skills/bundled/software-development/software-development-node-inspect-debugger',
                     'user-guide/skills/bundled/software-development/software-development-python-debugpy',
                     'user-guide/skills/bundled/software-development/software-development-requesting-code-review',
@@ -317,6 +309,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-autonomous-ai-agents',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-agent-merge-conflict-arbiter',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok',
@@ -391,8 +384,8 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/devops/devops-actual-setup',
                     'user-guide/skills/optional/devops/devops-docker-management',
-                    'user-guide/skills/optional/devops/devops-hermes-s6-container-supervision',
                     'user-guide/skills/optional/devops/devops-inference-sh-cli',
+                    'user-guide/skills/optional/devops/devops-mercury-s6-container-supervision',
                     'user-guide/skills/optional/devops/devops-pinggy-tunnel',
                     'user-guide/skills/optional/devops/devops-setup-wizard-generator',
                     'user-guide/skills/optional/devops/devops-watchers',
@@ -597,7 +590,6 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/software-development/software-development-ast-grep',
                     'user-guide/skills/optional/software-development/software-development-code-wiki',
-                    'user-guide/skills/optional/software-development/software-development-grill-me',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
                     'user-guide/skills/optional/software-development/software-development-subagent-driven-development',
                   ],

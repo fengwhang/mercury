@@ -7,7 +7,7 @@ author: Willard Moore
 license: MIT
 category: communication
 metadata:
-  hermes:
+  mercury:
     tags: [communication, decision-making, proposals, trade-offs]
 ---
 

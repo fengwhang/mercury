@@ -14,8 +14,8 @@ Frontend design guidance, upstream-maintained (impeccable).
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/impeccable` |
-| Path | `optional-skills/creative\impeccable` |
+| Source | Optional — install with `mercury skills install official/creative/impeccable` |
+| Path | `optional-skills/creative/impeccable` |
 | Version | `4.1.2` |
 | Author | Paul Bakaus (pbakaus) |
 | License | Apache-2.0 |
@@ -26,7 +26,7 @@ Frontend design guidance, upstream-maintained (impeccable).
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Impeccable (upstream-maintained)
@@ -34,7 +34,7 @@ The following is the complete skill definition that Hermes loads when this skill
 > **Catalog stub.** This entry is maintained upstream at
 > [pbakaus/impeccable](https://github.com/pbakaus/impeccable): the project
 > ships and verifies a Hermes-native skill bundle under `.hermes/skills/`.
-> `hermes skills install impeccable` pulls the current bundle live from that
+> `mercury skills install impeccable` pulls the current bundle live from that
 > repo (quarantined and scanned like any hub install) — this directory holds
 > only the catalog metadata, so the vendored copy can never go stale.
 

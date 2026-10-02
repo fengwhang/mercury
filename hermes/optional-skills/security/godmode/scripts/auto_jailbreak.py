@@ -7,7 +7,7 @@ finds what works, and locks it in by writing config.yaml + prefill.json.
 
 Usage in execute_code:
     exec(open(os.path.expanduser(
-        os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.mercury")), "skills/red-teaming/godmode/scripts/auto_jailbreak.py")
+        os.path.join(os.environ.get("MERCURY_HOME", os.path.expanduser("~/.mercury")), "skills/security/godmode/scripts/auto_jailbreak.py")
     )).read())
     
     result = auto_jailbreak()  # Uses current model from config
@@ -35,7 +35,7 @@ try:
     _SKILL_DIR = Path(__file__).resolve().parent.parent
 except NameError:
     # __file__ not defined when loaded via exec() — search standard paths
-    _SKILL_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".mercury")) / "skills" / "red-teaming" / "godmode"
+    _SKILL_DIR = Path(os.getenv("MERCURY_HOME", Path.home() / ".mercury")) / "skills" / "security" / "godmode"
 
 _SCRIPTS_DIR = _SKILL_DIR / "scripts"
 _TEMPLATES_DIR = _SKILL_DIR / "templates"
@@ -58,7 +58,12 @@ if _race_path.exists():
 # ═══════════════════════════════════════════════════════════════════
 
 HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".mercury"))
-CONFIG_PATH = HERMES_HOME / "config.yaml"
+try:
+    from mercury_constants import get_config_path
+    CONFIG_PATH = get_config_path()
+except ImportError:
+    CONFIG_PATH = (HERMES_HOME / "config.yaml" if HERMES_HOME.parent.name == "profiles"
+                   else Path(os.getenv("MERCURY_CONFIG", HERMES_HOME / "config.yaml")))
 PREFILL_PATH = HERMES_HOME / "prefill.json"
 
 # ═══════════════════════════════════════════════════════════════════
@@ -326,10 +331,11 @@ def _get_current_model() -> tuple:
     try:
         with open(CONFIG_PATH) as f:
             cfg = yaml.safe_load(f) or {}
+        cfg = cfg.get("hermes", cfg)
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
             return model_cfg, "https://openrouter.ai/api/v1"
-        model_name = model_cfg.get("name", "")
+        model_name = model_cfg.get("default", model_cfg.get("name", ""))
         base_url = model_cfg.get("base_url", "https://openrouter.ai/api/v1")
         return model_name, base_url
     except Exception:
@@ -390,6 +396,9 @@ def _write_config(system_prompt: str = None, prefill_file: str = None):
         except Exception:
             cfg = {}
 
+    root_cfg = cfg
+    if isinstance(cfg.get("hermes"), dict) or "models" in cfg or "omp" in cfg:
+        cfg = cfg.setdefault("hermes", {})
     if "agent" not in cfg:
         cfg["agent"] = {}
 
@@ -401,7 +410,7 @@ def _write_config(system_prompt: str = None, prefill_file: str = None):
         cfg["agent"].pop("prefill_messages_file", None)
 
     with open(CONFIG_PATH, "w") as f:
-        yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True,
+        yaml.dump(root_cfg, f, default_flow_style=False, allow_unicode=True,
                   width=120, sort_keys=False)
 
     return str(CONFIG_PATH)
@@ -719,12 +728,15 @@ def undo_jailbreak(verbose=True):
         try:
             with open(CONFIG_PATH) as f:
                 cfg = yaml.safe_load(f) or {}
+            root_cfg = cfg
+            if isinstance(cfg.get("hermes"), dict):
+                cfg = cfg["hermes"]
             if "agent" in cfg:
                 cfg["agent"].pop("system_prompt", None)
                 cfg["agent"].pop("prefill_messages_file", None)
             cfg.pop("prefill_messages_file", None)
             with open(CONFIG_PATH, "w") as f:
-                yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True,
+                yaml.dump(root_cfg, f, default_flow_style=False, allow_unicode=True,
                           width=120, sort_keys=False)
             if verbose:
                 print(f"[UNDO] Cleared system_prompt and prefill_messages_file from {CONFIG_PATH}")

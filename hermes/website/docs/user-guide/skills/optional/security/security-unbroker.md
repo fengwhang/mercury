@@ -14,8 +14,8 @@ Autonomously remove your info from data-broker sites.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/security/unbroker` |
-| Path | `optional-skills/security\unbroker` |
+| Source | Optional — install with `mercury skills install official/security/unbroker` |
+| Path | `optional-skills/security/unbroker` |
 | Version | `1.0.0` |
 | Author | SHL0MS (github.com/SHL0MS) |
 | License | MIT |
@@ -26,7 +26,7 @@ Autonomously remove your info from data-broker sites.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # unbroker
@@ -77,7 +77,7 @@ verifying re-scan.
 
 - `python` (stdlib only; no extra packages needed for the core engine).
 - **Optional upgrades** (the skill works zero-config without these; `setup --auto` turns on every
-  one it detects, reading credentials from the shell env **and from `$HERMES_HOME/.env`** so keys
+  one it detects, reading credentials from the shell env **and from `$MERCURY_HOME/.env`** so keys
   Hermes already loads for its own tools are picked up without re-exporting - each one converts a
   class of human tasks into agent actions):
   - **Cloud browser (recommended default): `BROWSERBASE_API_KEY`.** `setup --auto` selects it
@@ -94,7 +94,7 @@ verifying re-scan.
       logged-in browser, **NOT** a cloud browser: a headless cloud browser (Browserbase) holds no
       webmail session and is itself Cloudflare/DataDome-gated on webmail and on session-bound broker
       gates (e.g. PeopleConnect guided-mode). Drive the operator's real Chrome over CDP - launch
-      `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` (a dedicated
+      `chrome --remote-debugging-port=9222 --user-data-dir="$HERMES_HOME/chrome-debug"` (a dedicated
       debug profile signed into the webmail once, not the Default profile) and connect the browser
       tools to `127.0.0.1:9222`. **`$PDD cdp` launches this for you** (finds Chrome/Chromium/Brave/Edge,
       starts it detached on the dedicated profile, prints the CDP endpoint; `--check` to test, `--print`

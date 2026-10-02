@@ -1574,9 +1574,10 @@ class _CodexCompletionsAdapter:
     """Drop-in shim that accepts chat.completions.create() kwargs and
     routes them through the Codex Responses streaming API."""
 
-    def __init__(self, real_client: OpenAI, model: str):
+    def __init__(self, real_client: OpenAI, model: str, *, codex_catalog: bool = False):
         self._client = real_client
         self._model = model
+        self._codex_catalog = codex_catalog
 
     def create(self, **kwargs) -> Any:
         messages = kwargs.get("messages", [])
@@ -1658,34 +1659,30 @@ class _CodexCompletionsAdapter:
         if isinstance(extra_body, dict):
             reasoning_cfg = extra_body.get("reasoning")
             if isinstance(reasoning_cfg, dict):
-                if reasoning_cfg.get("enabled") is False:
-                    # Reasoning explicitly disabled — do not set reasoning
-                    # or include.  The Codex backend still thinks by
-                    # default, but we honor the caller's intent where the
-                    # API allows it.
-                    pass
-                else:
-                    # Truthy-only check mirrors agent/transports/codex.py
-                    # build_kwargs(): falsy values (None, "", 0) fall back
-                    # to the default rather than being forwarded to the
-                    # Codex backend, which rejects e.g. {"effort": null}
-                    # with a 400.
-                    effort = reasoning_cfg.get("effort") or "xhigh"
-                    # Same declared vocabulary + shared clamp as the main
-                    # Codex transport (agent.reasoning_effort): per-model —
-                    # "max" is gpt-5.6-only, "minimal"/"ultra" always
-                    # rejected (live-verified, #68365).
-                    from agent.reasoning_effort import (
-                        clamp_effort,
-                        codex_supported_efforts,
-                    )
+                from agent.reasoning_effort import clamp_effort, codex_supported_efforts
+                from mercury_cli.codex_models import codex_model_reasoning_capabilities
+                from mercury_cli.models import reasoning_config_for_capabilities
 
-                    effort = clamp_effort(effort, codex_supported_efforts(model))
-                    resp_kwargs["reasoning"] = {
-                        "effort": effort,
-                        "summary": "auto",
-                    }
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+                # Other Responses providers use this adapter too; only probe
+                # the Codex catalog on an actual Codex route.
+                caps = None
+                if self._codex_catalog or _is_official_codex_base_url(_host_for_input):
+                    caps = codex_model_reasoning_capabilities(
+                        model, access_token=getattr(self._client, "api_key", None),
+                        base_url=_host_for_input, allow_fetch=True,
+                    )
+                cfg = reasoning_config_for_capabilities(reasoning_cfg, caps)
+                if cfg is not None:
+                    effort = cfg.get("effort")
+                    if caps is None:
+                        effort = clamp_effort(effort or "xhigh", codex_supported_efforts(model))
+                    if cfg.get("enabled") is False:
+                        effort = next((e for e in (caps or {}).get("supported_efforts", []) if e in ("none", "off")), None)
+                    if cfg.get("enabled") is not False or effort is not None:
+                        resp_kwargs["reasoning"] = {"summary": "auto"}
+                        if effort is not None:
+                            resp_kwargs["reasoning"]["effort"] = effort
+                        resp_kwargs["include"] = ["reasoning.encrypted_content"]
 
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")
@@ -2125,9 +2122,9 @@ class CodexAuxiliaryClient:
     Also exposes .api_key and .base_url for introspection by async wrappers.
     """
 
-    def __init__(self, real_client: OpenAI, model: str):
+    def __init__(self, real_client: OpenAI, model: str, *, codex_catalog: bool = False):
         self._real_client = real_client
-        adapter = _CodexCompletionsAdapter(real_client, model)
+        adapter = _CodexCompletionsAdapter(real_client, model, codex_catalog=codex_catalog)
         self.chat = _CodexChatShim(adapter)
         self.api_key = real_client.api_key
         self.base_url = real_client.base_url
@@ -3999,7 +3996,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
         base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url),
     )
-    return CodexAuxiliaryClient(real_client, model), model
+    return CodexAuxiliaryClient(real_client, model, codex_catalog=True), model
 
 
 def _try_azure_foundry(
@@ -6673,7 +6670,7 @@ def resolve_provider_client(
                 "(api_mode=%s, model=%s, base_url=%s)",
                 api_mode or "auto-detected", final_model_str,
                 base_url_str[:60] if base_url_str else "")
-            return CodexAuxiliaryClient(client_obj, final_model_str)
+            return CodexAuxiliaryClient(client_obj, final_model_str, codex_catalog=provider == "openai-codex")
         # Anthropic-wire endpoints: rewrap plain OpenAI clients so
         # chat.completions.create() is translated to /v1/messages.
         return _maybe_wrap_anthropic(

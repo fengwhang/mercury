@@ -15,7 +15,7 @@ Debug Node.js via --inspect + Chrome DevTools Protocol CLI.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\node-inspect-debugger` |
+| Path | `skills/software-development/node-inspect-debugger` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -26,7 +26,7 @@ Debug Node.js via --inspect + Chrome DevTools Protocol CLI.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Node.js Inspect Debugger
@@ -201,7 +201,7 @@ The TUI is built Ink + tsx. Two common scenarios:
 `ui-tui/package.json` has `npm run dev` (tsx --watch). Add `--inspect-brk` by running tsx directly:
 
 ```bash
-cd <hermes-agent-repo>/ui-tui
+cd <mercury-repo>/hermes/ui-tui
 npm run build    # produce dist/ once so transpile isn't needed on first load
 node --inspect-brk dist/entry.js
 # In another terminal:
@@ -217,13 +217,13 @@ cont
 
 When it pauses, `repl` → inspect `props`, state refs, `useInput` handler values, etc.
 
-### Debugging a running `hermes --tui`
+### Debugging a running `mercury --tui`
 
 The TUI spawns Node from the Python CLI. Easiest path:
 
 ```bash
 # 1. Launch TUI
-hermes --tui &
+mercury --tui &
 TUI_PID=$(pgrep -f 'ui-tui/dist/entry' | head -1)
 
 # 2. Enable inspector on that Node PID
@@ -245,7 +245,7 @@ Those are Python, not Node — use the `python-debugpy` skill for them. Only Nod
 ## Running Vitest Tests Under the Debugger
 
 ```bash
-cd <hermes-agent-repo>/ui-tui
+cd <mercury-repo>/hermes/ui-tui
 # Run a single test file paused on entry
 node --inspect-brk ./node_modules/vitest/vitest.mjs run --no-file-parallelism src/app/foo.test.tsx
 ```

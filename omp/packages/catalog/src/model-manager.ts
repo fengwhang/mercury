@@ -568,7 +568,8 @@ function mergeDynamicModel<TApi extends Api>(existingModel: Model<TApi>, dynamic
 	// doesn't expose. Other providers keep the OR so a bundled reasoning flag
 	// survives a discovery row that simply omits the capability.
 	const dynamicReasoningAuthoritative =
-		existingModel.provider === "synthetic" && dynamicModel.provider === "synthetic";
+		dynamicModel.reasoningCapabilities !== undefined ||
+		(existingModel.provider === "synthetic" && dynamicModel.provider === "synthetic");
 	const reasoning = dynamicReasoningAuthoritative
 		? dynamicModel.reasoning
 		: existingModel.reasoning || dynamicModel.reasoning;

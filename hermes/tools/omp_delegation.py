@@ -64,6 +64,10 @@ def _config_path() -> Path:
     a stale _REPO_ROOT fallback made the cache key permanently None →
     config edits never invalidated the cached delegate env).
     """
+    from mercury_constants import get_hermes_home, named_profile_home
+    home = get_hermes_home()
+    if named_profile_home(home) is not None:
+        return home / "config.yaml"
     for var in ("HERMES_OMP_CONFIG", "MERCURY_CONFIG"):
         value = os.environ.get(var)
         if value:
@@ -396,7 +400,7 @@ def handle_omp_control_action(
     )
 
 
-def _omp_delegate_env() -> tuple[Dict[str, str], Optional[str]]:
+def _omp_delegate_env(profile_home=None) -> tuple[Dict[str, str], Optional[str]]:
     """Validated delegate env from the bridge (cached on config.yaml mtime).
 
     Fail-hard: the bridge validating the four-slot config is the gate; a
@@ -407,26 +411,28 @@ def _omp_delegate_env() -> tuple[Dict[str, str], Optional[str]]:
     thread that arrives before the first bridge run finishes spawns its
     OWN bridge subprocess — N identical Python processes for one answer.
     """
-    config_yaml = _config_path()
+    config_yaml = Path(profile_home) / "config.yaml" if profile_home is not None else _config_path()
     try:
-        mtime = config_yaml.stat().st_mtime
+        stamp = config_yaml.stat().st_mtime_ns
     except OSError:
-        mtime = None
+        stamp = None
+    mtime = (str(config_yaml.resolve()), stamp)
     if _env_cache["mtime"] == mtime and _env_cache["env"] is not None:
         return _env_cache["env"], None
     with _env_cache_lock:
         if _env_cache["mtime"] == mtime and _env_cache["env"] is not None:
             return _env_cache["env"], None
-        return _omp_delegate_env_locked(mtime)
+        return _omp_delegate_env_locked(mtime, profile_home)
 
 
-def _omp_delegate_env_locked(mtime: Any) -> tuple[Dict[str, str], Optional[str]]:
+def _omp_delegate_env_locked(mtime: Any, profile_home=None) -> tuple[Dict[str, str], Optional[str]]:
     """Bridge invocation; caller holds ``_env_cache_lock``."""
     bridge = _bridge_path()
+    from mercury_cli.omp_command import omp_profile_env
     try:
         out = subprocess.run(
             [sys.executable, str(bridge), "--delegate"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, env=omp_profile_env(profile_home),
         )
     except subprocess.TimeoutExpired:
         return {}, "bridge timed out (30s) while validating model config"
@@ -609,13 +615,10 @@ def _profile_context_env(parent_agent: Any) -> Dict[str, str]:
     resolve — SAME profile mechanics composed into the omp prompt, nested
     included).
 
-    Resolution mirrors the parent's own context assembly (_agent_home):
-    profile homes under $MERCURY_HOME/profiles/<name> carry their own
-    config/*.md; the shared $MERCURY_HOME/config/*.md is the base layer.
-    Children compose file-by-file: a profile file OVERRIDES the shared
-    file of the same name; names absent from the profile fall through to
-    shared. Nested subagents inherit the pointer through env — omp reads
-    MERCURY_PROFILE_HOME, and its own spawns pass the env through.
+    Resolution mirrors the parent's own context assembly (_agent_home).
+    Named profiles own config/*.md and config.yaml. Children receive those
+    paths explicitly and never inherit another profile's missing files.
+    Nested subagents inherit the same environment.
     """
     mercury = os.environ.get("MERCURY_HOME", "").strip()
     if not mercury:
@@ -631,9 +634,15 @@ def _profile_context_env(parent_agent: Any) -> Dict[str, str]:
     shared_root = Path(mercury).resolve()
     if home == shared_root or home == (shared_root / "hermes").resolve():
         return {}  # default profile: shared layer IS the profile layer
-    if not str(home).startswith(str(shared_root)):
-        return {}  # not a Mercury profile home; leave the shared layer
-    return {"MERCURY_PROFILE_HOME": str(home)}
+    from mercury_constants import named_profile_home
+    if named_profile_home(home) is None:
+        return {}
+    from mercury_cli.omp_command import omp_profile_env
+    env = omp_profile_env(home)
+    return {key: env[key] for key in (
+        "MERCURY_PROFILE_HOME", "HERMES_HOME", "MERCURY_CONFIG",
+        "HERMES_OMP_CONFIG", "PI_CODING_AGENT_DIR",
+    ) if key in env}
 
 
 def _vendored_omp_binary() -> Optional[str]:
@@ -657,21 +666,20 @@ def _resolve_omp_binary() -> Optional[str]:
         return found
     return _vendored_omp_binary()
 
-def _render_omp_config_once() -> None:
-    """Render the agent config.yml (star-pinned roles) once per process.
-
-    Belt-and-suspenders on top of the compiled-in role-strip patch: the
-    rendered config pins every role to the session model even if a future
-    omp update ships new bundled defs. Render failure is non-fatal (the
-    compiled-in patch remains the structural guarantee) but is logged.
-    """
-    if _rendered.is_set() or not _bridge_path().exists():
+def _render_omp_config_once(profile_home=None) -> None:
+    """Refresh native OMP settings and inherited deny rules for this profile."""
+    from mercury_constants import get_hermes_home, named_profile_home
+    from mercury_cli.omp_command import omp_profile_env
+    profile_home = profile_home or named_profile_home(get_hermes_home())
+    # Named profiles have independent settings and must render their own file.
+    if (profile_home is None and _rendered.is_set()) or not _bridge_path().exists():
         return
-    _rendered.set()
+    if profile_home is None:
+        _rendered.set()
     try:
         subprocess.run(
             [sys.executable, str(_bridge_path()), "--render-omp"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, env=omp_profile_env(profile_home),
         )
     except Exception:
         pass
@@ -1261,6 +1269,12 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
     # build it once here — still exactly once per batch, never per child.
     if base_env is None:
         base_env = _delegate_batch_base_env()
+    else:
+        base_env = dict(base_env)
+    base_env.update({key: env[key] for key in (
+        "MERCURY_PROFILE_HOME", "HERMES_HOME", "MERCURY_CONFIG",
+        "HERMES_OMP_CONFIG", "PI_CODING_AGENT_DIR",
+    ) if key in env})
     started = time.time()
     # --isolate-worktree labels (oh-my-pi#452): computed ONCE per batch, not
     # per child. None when the kill-switch is off or the workdir is not in a
@@ -1404,12 +1418,15 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     normalize_delegation_names(task_dicts)
     goals: List[Dict[str, Any]] = task_dicts
 
-    env, err = _omp_delegate_env()
+    profile_env = _profile_context_env(parent_agent)
+    profile_home = profile_env.get("MERCURY_PROFILE_HOME")
+    env, err = _omp_delegate_env(profile_home) if profile_home else _omp_delegate_env()
     if err:
         return tool_error(f"delegation aborted (omp engine): {err}")
     # Profile-composed context (user directive): point omp children at the
     # parent's profile layer. Nested spawns inherit via env passthrough.
-    env.update(_profile_context_env(parent_agent))
+    env = dict(env)
+    env.update(profile_env)
     model = env["OMP_MODEL"]
     if _resolve_omp_binary() is None:
         return tool_error(
@@ -1418,7 +1435,10 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
             f"the patched tree: cd {_REPO_ROOT / 'omp'} && bun install && "
             "bun run build"
         )
-    _render_omp_config_once()
+    if profile_home:
+        _render_omp_config_once(profile_home)
+    else:
+        _render_omp_config_once()
 
     tasks = [
         {"prompt": _build_task_prompt(g["goal"], g["context"], g["output_schema"]),

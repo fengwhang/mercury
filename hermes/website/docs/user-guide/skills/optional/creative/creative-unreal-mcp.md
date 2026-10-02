@@ -14,8 +14,8 @@ Automate Unreal Engine editor scenes, actors, and renders.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/unreal-mcp` |
-| Path | `optional-skills/creative\unreal-mcp` |
+| Source | Optional — install with `mercury skills install official/creative/unreal-mcp` |
+| Path | `optional-skills/creative/unreal-mcp` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -25,7 +25,7 @@ Automate Unreal Engine editor scenes, actors, and renders.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Unreal Engine MCP Skill
@@ -76,13 +76,13 @@ Two halves, in this order: the editor side must be up before Hermes connects.
 
 ### One-time, Hermes side
 
-    hermes mcp install unreal-engine
+    mercury mcp install unreal-engine
 
 This writes the `mcp_servers.unreal-engine` HTTP entry pointing at
 `http://127.0.0.1:8000/mcp` and probes the live server for its tools. Run it
 while the editor + server are up so the probe sees the real surface. If the
 user changed port/path in Editor Preferences, edit the `url` in
-`~/.hermes/config.yaml` under `mcp_servers.unreal-engine` to match.
+`$MERCURY_CONFIG` under `mcp_servers.unreal-engine` to match.
 
 Do NOT use `ModelContextProtocol.GenerateClientConfig` for Hermes — that
 writes `.mcp.json`-style files for Claude Code/Cursor/etc. Hermes connects
@@ -128,7 +128,7 @@ changes (new plugin enabled, toolset authored, `RefreshTools` run).
 
 The alternative eager mode (`Enable Tool Search` off in Editor Preferences)
 advertises every tool as its own `mcp_unreal_engine_<tool>` entry. Discovery
-then happens at `hermes mcp install`/`configure` time instead. Tool-search
+then happens at `mercury mcp install`/`configure` time instead. Tool-search
 mode is the default and what this skill assumes; it also keeps schema tokens
 out of every API call, so prefer it.
 
@@ -240,7 +240,7 @@ Load on demand; keep SKILL.md-level rules in mind throughout.
   hangs indefinitely, tell the user to check the editor for a dialog.
 - **Timeouts on long operations.** Hermes' per-call default is 120 s; asset
   imports, big level saves, and renders can exceed it. Raise
-  `mcp_servers.unreal-engine.timeout` in `~/.hermes/config.yaml` for
+  `mcp_servers.unreal-engine.timeout` in `$MERCURY_CONFIG` for
   render/import-heavy sessions.
 - **Stale tool schemas.** After authoring/hot-reloading toolsets or enabling
   a plugin, run `ModelContextProtocol.RefreshTools` in the editor console

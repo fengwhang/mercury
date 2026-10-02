@@ -6,7 +6,7 @@ author: Teknium (teknium1), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [YouTube, Video, Transcripts, Media]
     related_skills: []
 ---

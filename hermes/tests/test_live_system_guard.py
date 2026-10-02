@@ -8,6 +8,7 @@ guard regression cannot kill anything.
 """
 
 import subprocess
+import sys
 
 import pytest
 
@@ -37,3 +38,19 @@ def test_wrapped_killer_command_is_still_blocked():
 def test_env_wrapped_killer_command_is_still_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
         subprocess.run(["env", "GUARD_TEST=1", "pkill", "-f", "mercury-guard-regression-nomatch"])
+
+
+def test_observatory_and_mlounge_services_are_protected_but_status_is_allowed(tmp_path):
+    # A fake executable makes a broken guard harmless while proving that
+    # blocked service mutations never reach subprocess execution.
+    marker = tmp_path / "executed"
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n")
+    systemctl.chmod(0o755)
+    for unit in ("mercury-observatory.service", "mercury-lounge.service"):
+        with pytest.raises(RuntimeError, match="live-system guard"):
+            subprocess.run([str(systemctl), "--user", "restart", unit])
+        assert not marker.exists()
+    result = subprocess.run([str(systemctl), "--user", "status", "mercury-observatory.service"])
+    assert result.returncode == 0
+    assert marker.read_text() == "executed"

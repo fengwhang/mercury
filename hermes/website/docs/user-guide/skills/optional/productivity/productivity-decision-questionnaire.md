@@ -14,8 +14,8 @@ Turn an unanswerable decision into a questionnaire doc.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/productivity/decision-questionnaire` |
-| Path | `optional-skills/productivity\decision-questionnaire` |
+| Source | Optional — install with `mercury skills install official/productivity/decision-questionnaire` |
+| Path | `optional-skills/productivity/decision-questionnaire` |
 | Version | `1.0.0` |
 | Author | Matt Pocock (mattpocock/skills, to-questionnaire) + Hermes Agent |
 | License | MIT |
@@ -26,7 +26,7 @@ Turn an unanswerable decision into a questionnaire doc.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Decision Questionnaire

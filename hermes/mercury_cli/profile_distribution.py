@@ -87,6 +87,10 @@ ENV_EXAMPLE_FILENAME = ".env.EXAMPLE"
 # distribution-owned but treated specially on update (see _is_config_like).
 DEFAULT_DIST_OWNED: Tuple[str, ...] = (
     "SOUL.md",
+    "config/SOUL.md",
+    "config/AGENTS.md",
+    "config/HERMES.md",
+    "config/OMP.md",
     "config.yaml",
     "mcp.json",
     "skills",
@@ -583,6 +587,12 @@ def _copy_dist_payload(
 
     def _copy_entry(entry: Path, dest: Path) -> None:
         if entry.is_dir():
+            memory_files = {}
+            if dest == target / "config":
+                for name in ("MEMORY.md", "USER.md"):
+                    existing = dest / name
+                    if existing.is_file():
+                        memory_files[name] = existing.read_bytes()
             if dest.exists():
                 shutil.rmtree(dest)
             staged_resolved = staged.resolve()
@@ -595,8 +605,19 @@ def _copy_dist_payload(
                     else []
                 ),
             )
+            for name, content in memory_files.items():
+                (dest / name).write_bytes(content)
         else:
+            if dest.parent == target / "config" and dest.name in ("MEMORY.md", "USER.md") and dest.exists():
+                return
             shutil.copy2(entry, dest)
+            # Legacy distributions may still ship top-level instructions.
+            # Keep their compatibility file and update the canonical reader.
+            if dest.parent == target and dest.name in ("SOUL.md", "AGENTS.md", "HERMES.md", "OMP.md"):
+                if not (staged / "config" / dest.name).exists():
+                    canonical = target / "config" / dest.name
+                    canonical.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(entry, canonical)
 
     explicit_owned = [p.strip().strip("/") for p in manifest.distribution_owned]
     explicit_owned = [p for p in explicit_owned if p]
@@ -693,6 +714,8 @@ def install_distribution(
             plan.manifest,
             preserve_config=False,
         )
+        from mercury_cli.profiles import ensure_profile_prompt_files
+        ensure_profile_prompt_files(plan.target_dir)
 
         if create_alias:
             collision = check_alias_collision(plan.manifest.name)
@@ -745,12 +768,16 @@ def update_distribution(
         )
         plan.preserves_config = not force_config
 
+        from mercury_cli.profiles import ensure_profile_prompt_files
+        ensure_profile_prompt_files(plan.target_dir)
         _copy_dist_payload(
             plan.staged_dir,
             plan.target_dir,
             plan.manifest,
             preserve_config=plan.preserves_config,
         )
+        from mercury_cli.profiles import ensure_profile_prompt_files
+        ensure_profile_prompt_files(plan.target_dir)
         return plan
 
 

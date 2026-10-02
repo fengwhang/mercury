@@ -6,7 +6,7 @@ author: SHL0MS, Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [Manim, Animation, Math, Video]
     related_skills: []
 ---

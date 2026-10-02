@@ -29,7 +29,10 @@ except (ModuleNotFoundError, ImportError):
 
         Mirrors ``mercury_constants.get_hermes_home()``."""
         val = os.environ.get("HERMES_HOME", "").strip()
-        return Path(val) if val else Path.home() / ".mercury"
+        if val:
+            return Path(val)
+        mercury = os.environ.get("MERCURY_HOME", "").strip()
+        return Path(mercury) / "hermes" if mercury else Path.home() / ".mercury"
 
     def display_hermes_home() -> str:
         """Return a user-friendly ``~/``-shortened display string.

@@ -1,7 +1,7 @@
 """Filesystem paths for the unbroker skill (stdlib only).
 
 All per-subject data lives under PDD_DATA_DIR (default: $HERMES_HOME/unbroker),
-which is the same trust boundary Mercury uses for .env and OAuth tokens.
+Shared credentials remain in $MERCURY_HOME/.env; subject data stays in the selected profile.
 """
 from __future__ import annotations
 
@@ -11,6 +11,11 @@ from pathlib import Path
 
 def mercury_home() -> Path:
     return Path(os.environ.get("HERMES_HOME") or (Path.home() / ".mercury"))
+
+
+def shared_home() -> Path:
+    """Installation-wide credentials and shared skills, across named profiles."""
+    return Path(os.environ.get("MERCURY_HOME") or os.environ.get("HERMES_HOME") or Path.home() / ".mercury").expanduser()
 
 
 def data_dir() -> Path:

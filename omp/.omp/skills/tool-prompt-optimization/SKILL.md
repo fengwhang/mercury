@@ -1,9 +1,14 @@
 ---
 name: tool-prompt-optimization
-description: Optimize the description prompts an AI agent reads to learn its built-in tools (the `.md` files under prompts/tools/). Two halves: (1) measure how much of a prompt is already inferable from the tool's JSON parameter schema + name, to prune redundancy with evidence; (2) house authoring rules for what belongs in a tool prompt vs what stays in code. Use when auditing, trimming, writing, or reviewing tool prompts, deciding what schema field descriptions already cover, or testing schema-vs-prompt overlap before deleting prompt lines.
+description: "Optimize the description prompts an AI agent reads to learn its built-in tools (the `.md` files under prompts/tools/). Two halves: (1) measure how much of a prompt is already inferable from the tool's JSON parameter schema + name, to prune redundancy with evidence; (2) house authoring rules for what belongs in a tool prompt vs what stays in code. Use when auditing, trimming, writing, or reviewing tool prompts, deciding what schema field descriptions already cover, or testing schema-vs-prompt overlap before deleting prompt lines."
 ---
 
 # Tool Prompt Optimization
+
+Optimize the actual Mercury omp tool surface and its schemas. Preserve native
+tool identifiers; Hermes engine tools have different names and permission tiers.
+Use `system-prompts` for prompt authoring and `semantic-compression` for prose
+shortening; this skill evaluates tool instructions.
 
 Prompt/schema overlap: content reconstructible from `(name, JSON schema, blank outline)` is a *prune candidate*, never an automatic delete. Probe this overlap for evidence, not vibes: predict the prompt body from those inputs. Reliably recovered lines: candidates; no-model recovery: load-bearing — keep.
 

@@ -60,7 +60,7 @@ def _require_subject(subject_id: str) -> dict:
 def cmd_setup(args) -> None:
     if getattr(args, "auto", False):
         # Autonomous path: detect capabilities and pick the most autonomous valid config without
-        # asking anyone. Read creds from $HERMES_HOME/.env too (the terminal shell doesn't export
+        # asking anyone. Read creds from $MERCURY_HOME/.env too (the terminal shell doesn't export
         # them). Explicit flags still win below.
         cfg = config_mod.auto_configure(env=config_mod.dotenv_env())
     else:
@@ -125,7 +125,7 @@ def cmd_doctor(args) -> None:
     import platform
 
     cfg = config_mod.load_config()
-    caps = config_mod.detect_capabilities(config_mod.dotenv_env())  # see creds in $HERMES_HOME/.env too
+    caps = config_mod.detect_capabilities(config_mod.dotenv_env())  # see creds in $MERCURY_HOME/.env too
     data = paths_mod.data_dir()
     writable = _check_writable(data)
     curated = len(brokers_mod._load_curated())

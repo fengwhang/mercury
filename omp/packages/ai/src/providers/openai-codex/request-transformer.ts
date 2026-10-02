@@ -1,5 +1,9 @@
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
+import {
+	clampThinkingLevelForModel,
+	defaultSupportedEffort,
+	requireSupportedEffort,
+} from "@oh-my-pi/pi-catalog/model-thinking";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { Model } from "../../types";
 import { mapOpenAIReasoningEffort } from "../openai-shared";
@@ -448,11 +452,24 @@ export async function transformRequestBody(
 		applyCodexResponsesLiteShape(body);
 	}
 
-	if (options.reasoningOff || options.reasoningEffort !== undefined || responsesLite) {
-		const reasoningConfig: Partial<ReasoningConfig> = options.reasoningOff
+	const advertised = model.reasoningCapabilities;
+	const requestedOff = options.reasoningOff || options.reasoningEffort === "none";
+	const advertisedEffort =
+		options.reasoningEffort && options.reasoningEffort !== "none"
+			? clampThinkingLevelForModel(model, EFFORT_BY_NAME[options.reasoningEffort])
+			: undefined;
+	const effectiveEffort =
+		advertised !== undefined
+			? ((requestedOff ? undefined : advertisedEffort) ??
+				(advertised.mandatory ? (model.thinking?.defaultLevel ?? defaultSupportedEffort(model)) : undefined))
+			: options.reasoningEffort;
+	const reasoningOff =
+		(advertised !== undefined ? requestedOff : options.reasoningOff) && advertised?.mandatory !== true;
+	if (reasoningOff || effectiveEffort !== undefined || responsesLite) {
+		const reasoningConfig: Partial<ReasoningConfig> = reasoningOff
 			? { effort: "none" }
-			: options.reasoningEffort !== undefined
-				? getReasoningConfig(model, options.reasoningEffort, options)
+			: effectiveEffort !== undefined
+				? getReasoningConfig(model, effectiveEffort, options)
 				: {};
 		body.reasoning = {
 			...body.reasoning,
@@ -471,6 +488,10 @@ export async function transformRequestBody(
 		}
 	} else {
 		delete body.reasoning;
+	}
+	if (advertised?.effortSelection === false) {
+		if (!model.reasoning && !responsesLite) delete body.reasoning;
+		else if (body.reasoning) delete body.reasoning.effort;
 	}
 	if (!model.compat.supportsReasoningSummary && body.reasoning) {
 		delete body.reasoning.summary;

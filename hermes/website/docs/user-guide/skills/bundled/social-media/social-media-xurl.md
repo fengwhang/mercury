@@ -15,7 +15,7 @@ X/Twitter via xurl CLI: raw post search, posting, DM, media.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/social-media\xurl` |
+| Path | `skills/social-media/xurl` |
 | Version | `1.1.3` |
 | Author | xdevplatform + openclaw + Hermes Agent |
 | License | MIT |
@@ -25,7 +25,7 @@ X/Twitter via xurl CLI: raw post search, posting, DM, media.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # xurl — X (Twitter) API via the Official CLI

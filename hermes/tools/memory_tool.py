@@ -73,11 +73,13 @@ def get_memory_dir() -> Path:
     """
     mercury = os.environ.get("MERCURY_HOME", "").strip()
     if mercury:
+        from mercury_constants import get_config_dir, get_prompt_home
         # MERCURY LAYOUT: config/ subdir; seed top-level files once (migration)
-        cfg = Path(mercury) / "config"
+        cfg = get_config_dir()
+        home = get_prompt_home()
         cfg.mkdir(parents=True, exist_ok=True)
         for _name in ("SOUL.md", "MEMORY.md", "USER.md", "AGENTS.md", "HERMES.md", "OMP.md"):
-            _old = Path(mercury) / _name
+            _old = home / _name
             _new = cfg / _name
             if _old.exists() and not _new.exists():
                 try:
@@ -1410,7 +1412,6 @@ registry.register(
     emoji="🧠",
     dynamic_schema_overrides=_build_memory_schema_overrides,
 )
-
 
 
 

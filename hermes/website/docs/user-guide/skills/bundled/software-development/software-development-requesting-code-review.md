@@ -15,7 +15,7 @@ Pre-commit review: security scan, quality gates, auto-fix.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\requesting-code-review` |
+| Path | `skills/software-development/requesting-code-review` |
 | Version | `2.0.0` |
 | Author | Hermes Agent (adapted from obra/superpowers + MorAlekss) |
 | License | MIT |
@@ -26,7 +26,7 @@ Pre-commit review: security scan, quality gates, auto-fix.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Pre-Commit Code Verification

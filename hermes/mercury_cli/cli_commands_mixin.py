@@ -865,6 +865,7 @@ class CLICommandsMixin:
         print()
         print(f"  Profile: {profile_name}")
         print(f"  Home:    {display}")
+        print(f"  Prompts: {reply.data['prompt_dir']}")
         print()
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:

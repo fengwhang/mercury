@@ -14,8 +14,8 @@ Stock quotes, history, search, compare, crypto via Yahoo.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/finance/stocks` |
-| Path | `optional-skills/finance\stocks` |
+| Source | Optional — install with `mercury skills install official/finance/stocks` |
+| Path | `optional-skills/finance/stocks` |
 | Version | `0.1.0` |
 | Author | Mibay (Mibayy), Hermes Agent |
 | License | MIT |
@@ -26,7 +26,7 @@ Stock quotes, history, search, compare, crypto via Yahoo.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Stocks Skill
@@ -54,7 +54,7 @@ fields come back null. Free key: https://www.alphavantage.co/support/#api-key
 Invoke through the `terminal` tool. Once installed:
 
 ```
-SCRIPT=~/.hermes/skills/finance/stocks/scripts/stocks_client.py
+SCRIPT=$MERCURY_HOME/skills/finance/stocks/scripts/stocks_client.py
 python $SCRIPT quote AAPL
 ```
 
@@ -106,7 +106,7 @@ Crypto prices. Pass `BTC` (the script appends `-USD` automatically).
 ## Verification
 
 ```
-python ~/.hermes/skills/finance/stocks/scripts/stocks_client.py quote AAPL
+python $MERCURY_HOME/skills/finance/stocks/scripts/stocks_client.py quote AAPL
 ```
 
 Returns a JSON object with `symbol: "AAPL"` and a numeric `price` field.

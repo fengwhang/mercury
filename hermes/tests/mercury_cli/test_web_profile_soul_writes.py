@@ -44,8 +44,8 @@ def profile_dir(tmp_path, monkeypatch) -> Path:
     from mercury_cli import profiles as profiles_mod
 
     d = profiles_mod.get_profile_dir("demo")
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    (d / "config").mkdir(parents=True, exist_ok=True)
+    return d / "config"
 
 
 class TestSoulWriteDurability:

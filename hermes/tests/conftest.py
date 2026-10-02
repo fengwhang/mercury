@@ -1418,6 +1418,10 @@ def _live_system_guard(request, monkeypatch):
     # ── Subprocess command-string inspection (whole-line) ──────────
     _HERMES_TOKENS = (
         "mercury-gateway",
+        "mercury-observatory",
+        "mercury-lounge",
+        "mercury-nightly-observatory",
+        "mercury-nightly-lounge",
         "mercury.service",
         "mercury_cli.main gateway",
         "mercury_cli/main.py gateway",
@@ -1508,7 +1512,7 @@ def _live_system_guard(request, monkeypatch):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"subprocess.{name}({cmd!r}) — would mutate the "
-                "live mercury-gateway systemd unit. Mock "
+                "live Mercury systemd unit. Mock "
                 "subprocess.run / _run_systemctl in the test, or "
                 "mark with @pytest.mark.live_system_guard_bypass."
             )

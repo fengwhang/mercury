@@ -36,7 +36,9 @@ def _hermes_home():
         from mercury_constants import get_hermes_home
         return str(get_hermes_home())
     except Exception:
-        return os.environ.get("HERMES_HOME") or os.path.expanduser("~/.mercury")
+        return (os.environ.get("HERMES_HOME") or
+                (os.path.join(os.environ["MERCURY_HOME"], "hermes") if os.environ.get("MERCURY_HOME")
+                 else os.path.expanduser("~/.mercury")))
 
 
 def _tokens_dir():

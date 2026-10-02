@@ -6,7 +6,7 @@ author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [Browser, HAR, API, Reverse-Engineering, Playwright]
     category: web-development
 ---

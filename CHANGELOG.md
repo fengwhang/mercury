@@ -5,6 +5,25 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.10] — nightly
+
+- Apply API-advertised reasoning efforts in both engines, including Codex
+  discovery, mandatory reasoning, provider defaults, and models without an
+  effort selector. Keep compatibility rules as the offline fallback.
+- Give named profiles independent config/ prompt files for SOUL, AGENTS,
+  HERMES, OMP, MEMORY, and USER. Preserve isolation during creation, clone,
+  import/export, editing, and migration of existing profile instructions.
+- Launch OMP under a named profile with `mercury omp -p NAME` or
+  `!spawnomp AGENT -p NAME`, carrying model, effort, native permissions,
+  instructions, and descendant configuration through Observatory restarts.
+- Update the profile slash command, bundled and optional skills, helper
+  scripts, and generated catalogs for Mercury's current configuration.
+  Consolidate interviewing into `/grill-me` and archive replaced bundled
+  copies only when unchanged, preserving user customizations.
+- Keep OMP's single task model role and native permission modes separate
+  from Hermes's approval modes. Harden test isolation against live service
+  restarts.
+
 ## [0.3.9] — nightly
 
 - Ask for reasoning immediately after each model selection in setup,

@@ -1089,10 +1089,7 @@ def _read_model_slots() -> dict:
     }
 
     def _unified_path() -> _Path:
-        return _Path(
-            _os.environ.get("MERCURY_CONFIG")
-            or (_Path(_os.environ.get("MERCURY_HOME") or _Path.home() / ".mercury") / "config.yaml")
-        )
+        return get_config_path()
 
     path = _unified_path()
     if not path.exists():

@@ -408,7 +408,10 @@ def _(rid, params: dict) -> dict:
     soul_written = False
     if isinstance(soul, str) and soul.strip():
         try:
-            (path / "SOUL.md").write_text(soul, encoding="utf-8")
+            from mercury_cli.config import soul_md_locations
+            soul_path, _ = soul_md_locations(path)
+            soul_path.parent.mkdir(parents=True, exist_ok=True)
+            soul_path.write_text(soul, encoding="utf-8")
             soul_written = True
         except Exception:
             pass
@@ -681,7 +684,10 @@ def _(rid, params: dict) -> dict:
                     }
                 )
 
-            soul_path = profile_dir / "SOUL.md"
+            from mercury_cli.config import soul_md_locations
+            soul_path, legacy_soul = soul_md_locations(profile_dir)
+            if not soul_path.exists() and legacy_soul is not None and legacy_soul.exists():
+                soul_path = legacy_soul
             soul = ""
             try:
                 if soul_path.is_file():
@@ -864,7 +870,10 @@ def _(rid, params: dict) -> dict:
 
         if isinstance(params.get("soul"), str):
             try:
-                (profile_dir / "SOUL.md").write_text(params["soul"], encoding="utf-8")
+                from mercury_cli.config import soul_md_locations
+                soul_path, _ = soul_md_locations(profile_dir)
+                soul_path.parent.mkdir(parents=True, exist_ok=True)
+                soul_path.write_text(params["soul"], encoding="utf-8")
                 applied["soul"] = True
             except Exception:
                 applied["soul"] = False

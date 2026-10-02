@@ -14,8 +14,8 @@ Poll RSS, JSON APIs, and GitHub with watermark dedup.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/devops/watchers` |
-| Path | `optional-skills/devops\watchers` |
+| Source | Optional — install with `mercury skills install official/devops/watchers` |
+| Path | `optional-skills/devops/watchers` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -25,7 +25,7 @@ Poll RSS, JSON APIs, and GitHub with watermark dedup.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Watchers
@@ -52,7 +52,7 @@ The scripts below handle all three. The agent runs them via the terminal tool �
 
 ## Ready-made scripts
 
-All three live in `$HERMES_HOME/skills/devops/watchers/scripts/` once the skill is installed. Each reads `WATCHER_STATE_DIR` (defaults to `$HERMES_HOME/watcher-state/`) for its state file, keyed by the `--name` argument.
+All three live in `$MERCURY_HOME/skills/devops/watchers/scripts/` once the skill is installed. Each reads `WATCHER_STATE_DIR` (defaults to `$HERMES_HOME/watcher-state/`) for its state file, keyed by the `--name` argument.
 
 | Script | What it watches | Dedup key |
 |---|---|---|
@@ -73,21 +73,21 @@ All three:
 Run a watcher directly from the terminal tool:
 
 ```bash
-python $HERMES_HOME/skills/devops/watchers/scripts/watch_rss.py \
+python $MERCURY_HOME/skills/devops/watchers/scripts/watch_rss.py \
   --name hn --url https://news.ycombinator.com/rss --max 5
 ```
 
-Watch a GitHub repo (set `GITHUB_TOKEN` in `${HERMES_HOME:-~/.hermes}/.env` to avoid the 60 req/hr anonymous rate limit):
+Watch a GitHub repo (set `GITHUB_TOKEN` in `$MERCURY_HOME/.env` to avoid the 60 req/hr anonymous rate limit):
 
 ```bash
-python $HERMES_HOME/skills/devops/watchers/scripts/watch_github.py \
-  --name hermes-issues --repo NousResearch/hermes-agent --scope issues
+python $MERCURY_HOME/skills/devops/watchers/scripts/watch_github.py \
+  --name mercury-issues --repo fengwhang/mercury --scope issues
 ```
 
 Poll an arbitrary JSON API:
 
 ```bash
-python $HERMES_HOME/skills/devops/watchers/scripts/watch_http_json.py \
+python $MERCURY_HOME/skills/devops/watchers/scripts/watch_http_json.py \
   --name api --url https://api.example.com/events \
   --id-field event_id --items-path data.events
 ```

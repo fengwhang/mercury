@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Model discovery retains API-advertised reasoning levels, defaults, mandatory reasoning, and absence of an effort selector instead of replacing them with bundled rules.
 - Updated Codex client identification and refreshed stale model catalogs so newly available models appear after an upgrade.
 
 ## [18.1.6] - 2026-09-03

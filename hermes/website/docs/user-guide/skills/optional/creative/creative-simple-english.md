@@ -14,8 +14,8 @@ Rewrite text to ASD-STE100 Simplified Technical English.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/simple-english` |
-| Path | `optional-skills/creative\simple-english` |
+| Source | Optional — install with `mercury skills install official/creative/simple-english` |
+| Path | `optional-skills/creative/simple-english` |
 | Version | `1.2.0` |
 | Author | AminBlg (https://github.com/AminBlg/SimpleEnglish), ported by Hermes Agent |
 | License | MIT |
@@ -26,7 +26,7 @@ Rewrite text to ASD-STE100 Simplified Technical English.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Simple English: Write Like an Aerospace Manual

@@ -6,7 +6,7 @@ author: Ben Barclay (benbarclay), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [Prices, Availability, Shopping, Travel, Alerts]
     related_skills: [maps]
 ---
@@ -37,12 +37,12 @@ Specify currency, all-in vs pre-tax price, maximum price, availability/stock rul
 
 ### 3. Establish a live baseline, then schedule
 
-Fetch a bounded live result with `web_extract` or `browser_navigate` and record retrieval time, source price, fees/taxes, availability, and terms. Do not schedule until one foreground fetch works. Write the watch contract (item, condition, baseline observation) to a state file under `~/.mercury/price-watches/<watch-slug>.json`, then create the job:
+Fetch a bounded live result with `web_extract` or `browser_navigate` and record retrieval time, source price, fees/taxes, availability, and terms. Do not schedule until one foreground fetch works. Write the watch contract (item, condition, baseline observation) to a state file under `$HERMES_HOME/price-watches/<watch-slug>.json`, then create the job:
 
 ```
 cronjob(action="create",
         schedule="every 6h",
-        prompt="Load the product-price-monitor skill and run the tick for the watch contract at ~/.mercury/price-watches/<watch-slug>.json.",
+        prompt="Load the product-price-monitor skill and run the tick for the watch contract at $HERMES_HOME/price-watches/<watch-slug>.json.",
         deliver=<user's destination>)
 ```
 

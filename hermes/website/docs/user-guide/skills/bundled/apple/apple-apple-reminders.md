@@ -15,7 +15,7 @@ Apple Reminders via remindctl: add, list, complete.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/apple\apple-reminders` |
+| Path | `skills/apple/apple-reminders` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -25,7 +25,7 @@ Apple Reminders via remindctl: add, list, complete.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Apple Reminders

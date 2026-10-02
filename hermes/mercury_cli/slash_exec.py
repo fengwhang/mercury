@@ -81,7 +81,7 @@ def _exec_egress(ctx: CommandContext) -> CommandReply:
 
 
 def _exec_profile(ctx: CommandContext) -> CommandReply:
-    """Core /profile data — active profile name + home directory.
+    """Core /profile data — serving profile, home, and prompt directory.
 
     A multiplexed gateway may pre-resolve the per-source profile/home and pass
     them via ``options`` (``profile_name`` / ``home_display``); otherwise the
@@ -100,6 +100,18 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
 
         home_display = display_hermes_home()
 
+    from pathlib import Path
+    from mercury_constants import get_config_dir
+
+    # A gateway's pre-resolved home belongs to its source profile, not the
+    # multiplexer's process home. Resolve its prompts with that explicit home.
+    home_override = Path(home_display).expanduser() if ctx.options.get("home_display") else None
+    prompt_dir = get_config_dir(home_override)
+    try:
+        prompt_display = "~/" + prompt_dir.relative_to(Path.home()).as_posix()
+    except ValueError:
+        prompt_display = str(prompt_dir)
+
     # Presentation-only display name (profile.yaml). `data.profile` stays
     # the canonical id — consumers route on it; only the text gets the label.
     label = profile_name
@@ -116,8 +128,8 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
         pass
 
     return CommandReply(
-        f"Profile: {label}\nHome: {home_display}",
-        data={"profile": profile_name, "home": home_display},
+        f"Profile: {label}\nHome: {home_display}\nPrompts: {prompt_display}",
+        data={"profile": profile_name, "home": home_display, "prompt_dir": prompt_display},
     )
 
 

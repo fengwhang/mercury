@@ -52,7 +52,7 @@ Discipline:
 
 Eager mode (`Enable Tool Search` off) advertises every tool individually.
 Under Hermes that means each tool becomes `mcp_unreal_engine_<tool_name>` at
-session start, and `hermes mcp configure unreal-engine` can prune the list.
+session start, and `mercury mcp configure unreal-engine` can prune the list.
 Schema payload grows with every registered toolset, and tool authors are told
 NOT to rely on eager advertising — stay in tool-search mode unless a very
 small fixed surface is wanted.

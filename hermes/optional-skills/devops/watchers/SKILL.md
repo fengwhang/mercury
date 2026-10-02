@@ -6,7 +6,7 @@ author: Hermes Agent
 license: MIT
 platforms: [linux, macos]
 metadata:
-  hermes:
+  mercury:
     tags: [cron, polling, rss, github, http, automation, monitoring]
     category: devops
     requires_toolsets: [terminal]
@@ -37,7 +37,7 @@ The scripts below handle all three. The agent runs them via the terminal tool â€
 
 ## Ready-made scripts
 
-All three live in `$HERMES_HOME/skills/devops/watchers/scripts/` once the skill is installed. Each reads `WATCHER_STATE_DIR` (defaults to `$HERMES_HOME/watcher-state/`) for its state file, keyed by the `--name` argument.
+All three live in `$MERCURY_HOME/skills/devops/watchers/scripts/` once the skill is installed. Each reads `WATCHER_STATE_DIR` (defaults to `$HERMES_HOME/watcher-state/`) for its state file, keyed by the `--name` argument.
 
 | Script | What it watches | Dedup key |
 |---|---|---|
@@ -58,21 +58,21 @@ All three:
 Run a watcher directly from the terminal tool:
 
 ```bash
-python $HERMES_HOME/skills/devops/watchers/scripts/watch_rss.py \
+python $MERCURY_HOME/skills/devops/watchers/scripts/watch_rss.py \
   --name hn --url https://news.ycombinator.com/rss --max 5
 ```
 
-Watch a GitHub repo (set `GITHUB_TOKEN` in `${HERMES_HOME:-~/.hermes}/.env` to avoid the 60 req/hr anonymous rate limit):
+Watch a GitHub repo (set `GITHUB_TOKEN` in `$MERCURY_HOME/.env` to avoid the 60 req/hr anonymous rate limit):
 
 ```bash
-python $HERMES_HOME/skills/devops/watchers/scripts/watch_github.py \
-  --name hermes-issues --repo NousResearch/hermes-agent --scope issues
+python $MERCURY_HOME/skills/devops/watchers/scripts/watch_github.py \
+  --name mercury-issues --repo fengwhang/mercury --scope issues
 ```
 
 Poll an arbitrary JSON API:
 
 ```bash
-python $HERMES_HOME/skills/devops/watchers/scripts/watch_http_json.py \
+python $MERCURY_HOME/skills/devops/watchers/scripts/watch_http_json.py \
   --name api --url https://api.example.com/events \
   --id-field event_id --items-path data.events
 ```

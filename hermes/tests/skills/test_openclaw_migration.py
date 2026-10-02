@@ -380,11 +380,11 @@ def test_source_candidate_finds_files_in_custom_workspace(tmp_path: Path):
     report = migrator.migrate()
 
     # SOUL.md should have been found and migrated
-    assert (target / "SOUL.md").exists()
+    assert (target / "config" / "SOUL.md").exists()
 
     # MEMORY.md should have been found and migrated
-    assert (target / "memories" / "MEMORY.md").exists()
-    mem_content = (target / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert (target / "config" / "MEMORY.md").exists()
+    mem_content = (target / "config" / "MEMORY.md").read_text(encoding="utf-8")
     assert "custom workspace entry" in mem_content
 
     # Skills should have been found and migrated
@@ -521,7 +521,7 @@ def test_daily_memory_merged(tmp_path: Path):
         selected_options={"daily-memory"},
     )
     report = migrator.migrate()
-    mem_path = target / "memories" / "MEMORY.md"
+    mem_path = target / "config" / "MEMORY.md"
     assert mem_path.exists()
     content = mem_path.read_text(encoding="utf-8")
     assert "dark mode" in content

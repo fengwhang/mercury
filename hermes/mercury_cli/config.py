@@ -775,10 +775,8 @@ def get_config_path() -> Path:
     ``mercury:`` subtree (see _load_config_impl). Mirrors
     mercury_constants.get_config_path so the two never drift.
     """
-    mercury = os.environ.get("MERCURY_CONFIG", "").strip()
-    if mercury:
-        return Path(mercury)
-    return get_hermes_home() / "config.yaml"
+    from mercury_constants import get_config_path as resolve_config_path
+    return resolve_config_path()
 
 def get_env_path() -> Path:
     """Get the .env file path (API keys) — THE one env store.
@@ -946,18 +944,16 @@ def soul_md_locations(home: Path | None = None) -> Tuple[Path, Optional[Path]]:
       - Mercury layout: ``(<root>/config/SOUL.md, <root>/SOUL.md)`` — the
         top-level path is the pre-layout *stray*, handed back so callers can
         migrate it or explicitly ignore it (it is never the persona file).
-      - Per-profile homes (``…/profiles/<name>`` — persona at the profile
-        root by design, seeded by ``mercury profile create``) and pure legacy
-        hermes homes (no ``$MERCURY_HOME``, not the platform-default root,
-        no ``config/`` dir): ``(<home>/SOUL.md, None)`` — stock behavior.
+      - Named profiles: ``(<home>/config/SOUL.md, <home>/SOUL.md)``.
+      - Pure legacy hermes homes (no ``$MERCURY_HOME``, not the platform-default
+        root, no ``config/`` dir): ``(<home>/SOUL.md, None)``.
     """
     if home is None:
         home = get_hermes_home()
     home = Path(home)
-    # Profile homes own a top-level SOUL.md by design; never re-point them
-    # at a shared config/ dir.
+    # Named profiles own config/SOUL.md; migrate their legacy top-level file.
     if home.parent.name == "profiles":
-        return home / "SOUL.md", None
+        return home / "config" / "SOUL.md", home / "SOUL.md"
     mercury = os.environ.get("MERCURY_HOME", "").strip()
     if mercury:
         root = Path(mercury)
@@ -976,7 +972,7 @@ def _ensure_default_soul_md(home: Path) -> None:
 
     First run: write DEFAULT_SOUL_MD at the layout-correct location from
     ``soul_md_locations`` — ``<root>/config/SOUL.md`` under the Mercury
-    layout, ``<home>/SOUL.md`` for profile and pure legacy hermes homes.
+    layout (including profiles), ``<home>/SOUL.md`` for legacy hermes homes.
     Existing installs whose SOUL.md is still the old comment-only scaffold
     (seeded by older install.sh / install.ps1 / docker images, which shadowed
     the runtime default) get upgraded in place to DEFAULT_SOUL_MD. A SOUL.md
@@ -1045,6 +1041,9 @@ def ensure_hermes_home():
     assert_named_profile_home_live(home)
     if key in _HERMES_HOME_ENSURED and home.is_dir():
         return
+    if home.parent.name == "profiles":
+        from mercury_cli.profiles import ensure_profile_prompt_files
+        ensure_profile_prompt_files(home)
     if is_managed():
         old_umask = os.umask(0o007)
         try:
@@ -2289,7 +2288,7 @@ def check_config_version() -> Tuple[int, int]:
 
     if not isinstance(config, dict):
         config = {}
-    current = _coerce_config_version(config.get("_config_version"))
+    current = _coerce_config_version(unwrap_hermes_subtree(config).get("_config_version"))
     return current, latest
 
 
@@ -3232,10 +3231,12 @@ def split_model_config_default(raw_default: Any) -> tuple[str, str]:
 def unwrap_hermes_subtree(data: Any) -> Any:
     """Return the hermes config view for unified-file reads."""
     try:
-        if isinstance(data, dict) and "model" not in data:
+        if isinstance(data, dict):
             sub = data.get("hermes")
-            if isinstance(sub, dict) and isinstance(sub.get("model"), (dict, str)):
+            if isinstance(sub, dict):
                 return sub
+            if "model" not in data and any(key in data for key in ("models", "omp")):
+                return {}
     except Exception:
         pass
     return data
@@ -3606,10 +3607,7 @@ def read_raw_config() -> Dict[str, Any]:
         # merge_existing, env-ref preservation) operates on mercury' own keys,
         # never omp/models keys. (Applies to read_raw_config; the readonly
         # twin below shares this contract via the same env check.)
-        if os.environ.get("MERCURY_CONFIG", "").strip():
-            if isinstance(data, dict):
-                subtree = data.get("hermes")  # YAML key stays "hermes"
-                data = subtree if isinstance(subtree, dict) else {}
+        data = unwrap_hermes_subtree(data)
 
         if not isinstance(data, dict):
             data = {}
@@ -3710,10 +3708,7 @@ def read_raw_config_readonly() -> Dict[str, Any]:
         # read_raw_config().get(<section>) misses (a saved browser
         # selection "does not stick" and the runtime silently falls back
         # to local). YAML key stays "hermes" (unified-file contract).
-        if os.environ.get("MERCURY_CONFIG", "").strip():
-            if isinstance(data, dict):
-                subtree = data.get("hermes")
-                data = subtree if isinstance(subtree, dict) else {}
+        data = unwrap_hermes_subtree(data)
         # Store and return THE SAME object (identity invariant): the first
         # caller must see the exact dict later cache hits return, so a test
         # asserting ``ro1 is ro2`` holds from the very first call.
@@ -4146,7 +4141,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 # ``mercury:`` subtree alongside omp's ``omp:`` subtree and the
                 # shared ``models:`` slots. Extract ONLY the mercury subtree so
                 # foreign keys never leak into mercury' config view.
-                if os.environ.get("MERCURY_CONFIG", "").strip():
+                if isinstance(user_config, dict) and (
+                    isinstance(user_config.get("hermes"), dict)
+                    or ("model" not in user_config and any(key in user_config for key in ("models", "omp")))
+                ):
                     if isinstance(user_config, dict):
                         _whole = user_config
                         _subtree = _whole.get("hermes")  # YAML key stays "hermes" (unified-file contract; hard-rename survivor)
@@ -4506,16 +4504,8 @@ def save_config(
         # preserving all other subtrees (models:, omp:). atomic_yaml_write
         # replaces the whole file, so pre-merge here.
         mercury_cfg = os.environ.get("MERCURY_CONFIG", "").strip()
-        if mercury_cfg and str(config_path) == mercury_cfg:
-            existing_shared: Dict[str, Any] = {}
-            try:
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        existing_shared = fast_safe_load(f) or {}
-                    if not isinstance(existing_shared, dict):
-                        existing_shared = {}
-            except Exception:
-                existing_shared = {}
+        existing_shared = read_user_config_raw(config_path)
+        if isinstance(existing_shared.get("hermes"), dict) or "models" in existing_shared or (mercury_cfg and str(config_path) == mercury_cfg):
             existing_shared["hermes"] = normalized  # nest under hermes: (unified-file contract)
             normalized = existing_shared
 
@@ -6054,6 +6044,12 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Fail-closed parse via require_readable (unparseable / non-mapping
     # refuse-write); returns the mapping so we do not re-parse / collapse.
     user_config = require_readable_config_before_write(config_path)
+    unified_document = None
+    if isinstance(user_config.get("hermes"), dict) and key.split(".", 1)[0] not in {
+        "models", "omp", "hermes", "approvals",
+    }:
+        unified_document = user_config
+        user_config = dict(unified_document["hermes"])
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
@@ -6203,7 +6199,9 @@ def set_config_value(key: str, value: str, force: bool = False):
     ensure_hermes_home()
     _guard_test_write_target(config_path, "config.yaml")
     from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    if unified_document is not None:
+        unified_document["hermes"] = user_config
+    atomic_yaml_write(config_path, unified_document if unified_document is not None else user_config, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

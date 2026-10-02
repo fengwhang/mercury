@@ -23,7 +23,8 @@ import type { Api, Model, ModelSpec } from "./types";
 // retired unknown-limit sentinels (222222/8888); v5 invalidated rows predating
 // effort-tier variant collapsing (raw `-low`/`-high`/`-thinking` member ids);
 // v4 dropped the pre-efforts ThinkingConfig shape.
-const CACHE_SCHEMA_VERSION = 12;
+// v13 invalidates discovery rows that discarded the API's effort vocabulary.
+const CACHE_SCHEMA_VERSION = 13;
 const HEADER_RESTORE_VERSION = 1;
 
 interface CacheRow {

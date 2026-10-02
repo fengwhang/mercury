@@ -8,7 +8,7 @@ authors:
   - haileymarshall
 license: MIT
 metadata:
-  hermes:
+  mercury:
     tags: [health, fitness, nutrition, gym, workout, diet, exercise]
     category: health
     prerequisites:

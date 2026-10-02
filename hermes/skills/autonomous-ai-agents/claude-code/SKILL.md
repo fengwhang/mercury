@@ -6,9 +6,9 @@ author: Hermes Agent + Teknium
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [Coding-Agent, Claude, Anthropic, Code-Review, Refactoring, PTY, Automation]
-    related_skills: [codex, hermes-agent, opencode]
+    related_skills: [codex, mercury-agent, opencode]
 ---
 
 # Claude Code — Hermes Orchestration Guide

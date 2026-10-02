@@ -527,6 +527,24 @@ def _apply_profile_override() -> None:
     consume = 0
     profile_index = None
 
+    def _bind_mercury_profile_paths(home: str) -> None:
+        root = os.environ.get("MERCURY_HOME", "").strip()
+        if not root:
+            return
+        selected = Path(home)
+        if selected.parent.name == "profiles":
+            os.environ.update({
+                "MERCURY_PROFILE_HOME": str(selected),
+                "MERCURY_CONFIG": str(selected / "config.yaml"),
+                "HERMES_OMP_CONFIG": str(selected / "config.yaml"),
+                "PI_CODING_AGENT_DIR": str(selected / "omp" / "agent"),
+            })
+        elif profile_name == "default":
+            os.environ.pop("MERCURY_PROFILE_HOME", None)
+            os.environ["MERCURY_CONFIG"] = str(Path(root) / "config.yaml")
+            os.environ["HERMES_OMP_CONFIG"] = str(Path(root) / "config.yaml")
+            os.environ["PI_CODING_AGENT_DIR"] = str(Path(root) / "omp")
+
     def _inside_mcp_add_args(index: int) -> bool:
         """True once argv reaches `mercury mcp add ... --args <command argv>`.
 
@@ -588,10 +606,19 @@ def _apply_profile_override() -> None:
             break
         if arg == "--args" and _inside_mcp_add_args(i):
             break
-        # MERCURY-OMP PATCH (NB-2): `omp` is command-argv passthrough — once
-        # the omp subcommand token appears, every later flag (incl. -p) is
-        # omp's, never mercury'. Stop profile scanning there.
+        # OMP reserves an initial profile selector; remaining argv is native.
+        # `mercury omp -- -p ...` retains OMP's short print flag.
         if arg == "omp":
+            from mercury_cli.omp_command import split_omp_profile_args
+            try:
+                omp_profile, remaining = split_omp_profile_args(argv[i + 1:])
+            except ValueError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
+            if omp_profile is not None:
+                profile_name = omp_profile
+                sys.argv = sys.argv[:i + 2] + remaining
+                consume = 0
             break
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
             profile_name = argv[i + 1]
@@ -639,6 +666,7 @@ def _apply_profile_override() -> None:
     mercury_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and mercury_home_env:
         if Path(mercury_home_env).parent.name == "profiles":
+            _bind_mercury_profile_paths(mercury_home_env)
             return
 
     # 2. If no flag, check active_profile in the mercury root.
@@ -726,6 +754,7 @@ def _apply_profile_override() -> None:
             )
             return
         os.environ["HERMES_HOME"] = mercury_home
+        _bind_mercury_profile_paths(mercury_home)
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0 and profile_index is not None:
             start = profile_index + 1  # +1 because argv is sys.argv[1:]
@@ -11181,7 +11210,7 @@ def cmd_profile(args):
                     )
                 else:
                     print(
-                        f"Cloned config, .env, SOUL.md, and skills from {source_label}."
+                        f"Cloned config, .env, config/*.md, and skills from {source_label}."
                     )
 
             # Auto-clone Honcho config for the new profile (only with clone operations)
@@ -11247,13 +11276,13 @@ def cmd_profile(args):
             print(f"  {name} gateway start      Start the messaging gateway")
             if clone or clone_all:
                 print(f"\n  Edit {profile_dir_display}/.env for different API keys")
-                print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
+                print(f"  Edit {profile_dir_display}/config/SOUL.md for different personality")
             else:
                 print(
                     f"\n  ⚠ This profile has no API keys yet. Run '{name} setup' first,"
                 )
                 print("    or it will inherit keys from your shell environment.")
-                print(f"  Edit {profile_dir_display}/SOUL.md to customize personality")
+                print(f"  Edit {profile_dir_display}/config/SOUL.md to customize personality")
             print()
 
         except (ValueError, FileExistsError, FileNotFoundError) as e:
@@ -11405,9 +11434,9 @@ def cmd_profile(args):
         print(
             f".env:    {'exists' if (profile_dir / '.env').exists() else 'not configured'}"
         )
-        print(
-            f"SOUL.md: {'exists' if (profile_dir / 'SOUL.md').exists() else 'not configured'}"
-        )
+        from mercury_cli.config import soul_md_locations
+        soul_path, _ = soul_md_locations(profile_dir)
+        print(f"SOUL.md: {'exists' if soul_path.exists() else 'not configured'} ({soul_path})")
         if dist_name:
             print(f"Distribution: {dist_name}@{dist_version or '?'}")
             if dist_source:
@@ -13306,7 +13335,8 @@ def main():
         description=(
             "Launch omp as its own program — full TUI, single-model fan-out "
             "(roles stripped). Model comes from the unified config's "
-            "delegate_model slot; all omp arguments pass through untouched."
+            "delegate_model slot. Use `omp -p NAME` to select a Mercury profile; "
+            "use `omp -- -p PROMPT` for OMP's native print mode."
         ),
     )
     omp_parser.add_argument(
@@ -13317,7 +13347,7 @@ def main():
     omp_parser.add_argument(
         "omp_args",
         nargs=argparse.REMAINDER,
-        help="Arguments passed to omp verbatim (everything after `omp`)",
+        help="Native OMP arguments after optional -p/--profile NAME; -- protects native flags",
     )
     omp_parser.set_defaults(func=cmd_omp)
 

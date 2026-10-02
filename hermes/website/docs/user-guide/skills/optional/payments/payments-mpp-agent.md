@@ -14,8 +14,8 @@ Pay HTTP 402 APIs via Machine Payments Protocol (MPP).
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/payments/mpp-agent` |
-| Path | `optional-skills/payments\mpp-agent` |
+| Source | Optional — install with `mercury skills install official/payments/mpp-agent` |
+| Path | `optional-skills/payments/mpp-agent` |
 | Version | `0.1.0` |
 | Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
@@ -26,7 +26,7 @@ Pay HTTP 402 APIs via Machine Payments Protocol (MPP).
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # MPP Agent Skill

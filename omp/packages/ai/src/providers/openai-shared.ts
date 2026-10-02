@@ -1,7 +1,11 @@
 import { toClinePassWireModelId } from "@oh-my-pi/pi-catalog/cline-pass-model-id";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { toFirepassWireModelId, toFireworksWireModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
-import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
+import {
+	clampThinkingLevelForModel,
+	defaultSupportedEffort,
+	getSupportedEfforts,
+} from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import type {
 	OpenAICompat,
@@ -809,6 +813,7 @@ export interface OpenAICompatPolicy {
 	compat: OpenAICompatPolicyCompat;
 	reasoning: {
 		modelSupported: boolean;
+		mandatory?: boolean;
 		supportsParams: boolean;
 		requestedEffort?: string;
 		wireEffort?: string;
@@ -850,12 +855,14 @@ export interface OpenAICompatPolicy {
  * request transformer.
  */
 export function mapOpenAIReasoningEffort(
-	model: Pick<Model, "thinking">,
+	model: Pick<Model, "thinking" | "reasoningCapabilities">,
 	compat: { reasoningEffortMap?: Partial<Record<Effort, string>> } | undefined,
 	effort: string,
 ): string {
 	const level = effort as Effort;
-	return compat?.reasoningEffortMap?.[level] ?? model.thinking?.effortMap?.[level] ?? effort;
+	return model.reasoningCapabilities !== undefined
+		? effort
+		: (compat?.reasoningEffortMap?.[level] ?? model.thinking?.effortMap?.[level] ?? effort);
 }
 
 function isImplicitDisableWhenNotRequested(disableMode: OpenAIReasoningDisableMode): boolean {
@@ -895,7 +902,13 @@ export function resolveOpenAICompatPolicy<TApi extends Api>(
 	options: ResolveOpenAICompatPolicyOptions,
 ): OpenAICompatPolicy {
 	const baseCompat = (options.compat ?? model.compat) as OpenAICompatPolicyCompat;
-	const requestedEffort = options.reasoning;
+	const mandatory = model.reasoningCapabilities?.mandatory === true;
+	const disableReasoning = options.disableReasoning && !mandatory;
+	const requestedEffort =
+		model.reasoningCapabilities !== undefined
+			? (clampThinkingLevelForModel(model, options.reasoning as Effort | undefined) ??
+				(mandatory ? (model.thinking?.defaultLevel ?? defaultSupportedEffort(model)) : undefined))
+			: options.reasoning;
 	const modelSupported = Boolean(model.reasoning);
 	const forcedToolChoiceSuppressesReasoning =
 		baseCompat.disableReasoningOnForcedToolChoice &&
@@ -905,15 +918,13 @@ export function resolveOpenAICompatPolicy<TApi extends Api>(
 		!forcedToolChoiceSuppressesReasoning &&
 		baseCompat.disableReasoningOnToolChoice &&
 		options.toolChoice !== undefined;
-	const requestedAndAllowed = requestedEffort !== undefined && !options.disableReasoning && modelSupported;
+	const requestedAndAllowed = requestedEffort !== undefined && !disableReasoning && modelSupported;
 	const conflictDisableReason: OpenAIReasoningDisableReason | undefined = forcedToolChoiceSuppressesReasoning
 		? "forced-tool-choice"
 		: anyToolChoiceSuppressesReasoning
 			? "tool-choice"
 			: undefined;
-	const disableReason: OpenAIReasoningDisableReason | undefined = options.disableReasoning
-		? "caller"
-		: conflictDisableReason;
+	const disableReason: OpenAIReasoningDisableReason | undefined = disableReasoning ? "caller" : conflictDisableReason;
 	const enabledBeforeThinkingVariant = requestedAndAllowed && disableReason === undefined;
 	const baseWireEffort =
 		enabledBeforeThinkingVariant && requestedEffort !== undefined
@@ -927,14 +938,16 @@ export function resolveOpenAICompatPolicy<TApi extends Api>(
 	const compat =
 		enabled && baseCompat.whenThinking ? (baseCompat.whenThinking as OpenAICompatPolicyCompat) : baseCompat;
 	const omitReasoningEffort =
-		options.omitReasoningEffort ?? (compat.omitReasoningEffort || !compat.supportsReasoningEffort);
+		model.reasoningCapabilities?.effortSelection === false ||
+		(options.omitReasoningEffort ?? (compat.omitReasoningEffort || !compat.supportsReasoningEffort));
 	const disableMode = compat.reasoningDisableMode;
 	let wireEffort =
 		enabled && requestedEffort !== undefined ? mapOpenAIReasoningEffort(model, compat, requestedEffort) : undefined;
 	const disabledWithoutRequest =
 		modelSupported &&
 		requestedEffort === undefined &&
-		!options.disableReasoning &&
+		!disableReasoning &&
+		!mandatory &&
 		isImplicitDisableWhenNotRequested(disableMode);
 	const disabled =
 		(modelSupported && disableReason === "caller") ||
@@ -960,6 +973,7 @@ export function resolveOpenAICompatPolicy<TApi extends Api>(
 		compat,
 		reasoning: {
 			modelSupported,
+			mandatory,
 			supportsParams: compat.supportsReasoningParams,
 			requestedEffort,
 			wireEffort,
@@ -3630,7 +3644,7 @@ export function applyResponsesCompatPolicy<P extends ResponseCreateParamsStreami
 	options: ApplyResponsesCompatPolicyOptions | undefined,
 ): void {
 	const reasoning = policy.reasoning;
-	if (options?.forceReasoningOff) {
+	if (options?.forceReasoningOff && !reasoning.mandatory && !reasoning.omitReasoningEffort) {
 		params.reasoning = { effort: "none" } as P["reasoning"];
 		return;
 	}

@@ -6,9 +6,9 @@ author: Matt Maximo (MattMaximo), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [Coding-Agent, Grok, xAI, Code-Review, Refactoring, Automation]
-    related_skills: [codex, claude-code, hermes-agent]
+    related_skills: [codex, claude-code, mercury-agent]
 ---
 
 # Grok Build CLI — Hermes Orchestration Guide
@@ -174,7 +174,7 @@ terminal(command="grok --no-auto-update -c -p 'What did you change last time?'",
 To have Grok review local artifacts and return a clean markdown note (for
 Obsidian or a repo) without mutating anything:
 
-1. Prepare stable input files first with Hermes tools (`read_file`,
+1. Prepare stable input files first with Mercury tools (`read_file`,
    `write_file`). Snapshot only the relevant context into a temp file rather
    than dumping raw paths.
 2. Run Grok headless **without** `--always-approve` so it cannot auto-write, and

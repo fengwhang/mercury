@@ -1173,6 +1173,11 @@ export interface Model<TApi extends Api = Api> {
 	isRecommended?: boolean;
 	/** Canonical thinking capability metadata for this model. */
 	thinking?: ThinkingConfig;
+	/** Live API controls are authoritative, including an absent effort selector. */
+	reasoningCapabilities?: {
+		effortSelection: boolean;
+		mandatory: boolean;
+	};
 	/** Intelligence score delivered by the model catalog. */
 	int?: number | null;
 	/** Catalog-estimated output speed in tokens per second. */

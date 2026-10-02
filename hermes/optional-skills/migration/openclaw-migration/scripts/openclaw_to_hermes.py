@@ -1019,7 +1019,7 @@ class Migrator:
             "memory",
             lambda: self.migrate_memory(
                 self.source_candidate("workspace/MEMORY.md", "workspace.default/MEMORY.md"),
-                self.target_root / "memories" / "MEMORY.md",
+                self.target_root / "config" / "MEMORY.md",
                 self.memory_limit,
                 kind="memory",
             ),
@@ -1028,7 +1028,7 @@ class Migrator:
             "user-profile",
             lambda: self.migrate_memory(
                 self.source_candidate("workspace/USER.md", "workspace.default/USER.md"),
-                self.target_root / "memories" / "USER.md",
+                self.target_root / "config" / "USER.md",
                 self.user_limit,
                 kind="user-profile",
             ),
@@ -1273,9 +1273,9 @@ class Migrator:
     def migrate_soul(self) -> None:
         source = self.source_candidate("workspace/SOUL.md", "workspace.default/SOUL.md")
         if not source:
-            self.record("soul", None, self.target_root / "SOUL.md", "skipped", "No OpenClaw SOUL.md found")
+            self.record("soul", None, self.target_root / "config" / "SOUL.md", "skipped", "No OpenClaw SOUL.md found")
             return
-        self.copy_file(source, self.target_root / "SOUL.md", kind="soul", transform=rebrand_text)
+        self.copy_file(source, self.target_root / "config" / "SOUL.md", kind="soul", transform=rebrand_text)
 
     def migrate_workspace_agents(self) -> None:
         source = self.source_candidate(
@@ -2034,7 +2034,7 @@ class Migrator:
 
     def migrate_daily_memory(self) -> None:
         source_dir = self.source_candidate("workspace/memory")
-        destination = self.target_root / "memories" / "MEMORY.md"
+        destination = self.target_root / "config" / "MEMORY.md"
         if not source_dir or not source_dir.is_dir():
             self.record("daily-memory", None, destination, "skipped", "No workspace/memory/ directory found")
             return

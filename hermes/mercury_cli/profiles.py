@@ -53,6 +53,7 @@ _WARNED_MISSING_ALLOWLIST_ENTRIES: set[tuple[str, ...]] = set()
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
+    "config",
     "memories",
     "sessions",
     "skills",
@@ -74,6 +75,60 @@ _CLONE_CONFIG_FILES = [
     ".env",
     "SOUL.md",
 ]
+
+_PROFILE_PROMPT_FILES = (
+    "SOUL.md", "AGENTS.md", "HERMES.md", "OMP.md", "MEMORY.md", "USER.md",
+    "system_prompt.md",
+)
+
+
+def ensure_profile_prompt_files(profile_dir: Path, source_dir: Path | None = None) -> None:
+    """Seed/migrate independent Markdown, preserving existing profile content.
+
+    Fresh profiles use shipped defaults, never the default user's persona or
+    learned memories. Clones copy their source once. Legacy profile files
+    migrate locally; missing instructions never fall back to another profile.
+    """
+    from utils import atomic_write_text
+
+    profile_dir = Path(profile_dir)
+    cfg = profile_dir / "config"
+    if cfg.is_symlink():
+        # A legacy linked directory must be detached before any writes.
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="mercury-profile-config-") as tmp:
+            staged = Path(tmp) / "config"
+            shutil.copytree(cfg, staged, symlinks=False)
+            cfg.unlink()
+            shutil.copytree(staged, cfg, symlinks=False)
+    cfg.mkdir(parents=True, exist_ok=True)
+    templates = Path(__file__).resolve().parents[2] / "config"
+    for name in _PROFILE_PROMPT_FILES:
+        target = cfg / name
+        if target.is_symlink():
+            text = target.read_text(encoding="utf-8")
+            target.unlink()
+            atomic_write_text(target, text)
+        if target.exists():
+            continue
+        candidates = []
+        if source_dir is not None:
+            candidates.extend((source_dir / "config" / name, source_dir / name))
+            if name in ("MEMORY.md", "USER.md"):
+                candidates.append(source_dir / "memories" / name)
+        candidates.append(profile_dir / name)
+        if name in ("MEMORY.md", "USER.md"):
+            candidates.append(profile_dir / "memories" / name)
+        candidates.append(templates / name)
+        source = next((p for p in candidates if p.is_file()), None)
+        if source is not None:
+            atomic_write_text(target, source.read_text(encoding="utf-8"))
+        elif name == "SOUL.md":
+            from mercury_cli.default_soul import DEFAULT_SOUL_MD
+            atomic_write_text(target, DEFAULT_SOUL_MD)
+        elif name != "system_prompt.md":
+            atomic_write_text(target, f"# {name} — instructions for this Mercury profile\n")
+
 
 # Subdirectory files copied during --clone (path relative to profile root).
 # Memory files are part of the agent's curated identity — just as important
@@ -250,8 +305,8 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
 # (#58394). Add new artifacts here when introduced in ``mercury_constants``.
 _DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
     # Configuration / persona
-    "config.yaml", "SOUL.md", "MEMORY.md", "USER.md", "todo.json",
-    "system_prompt.md", "AGENTS.md", "CLAUDE.md", ".cursorrules",
+    "config", "config.yaml", "SOUL.md", "MEMORY.md", "USER.md", "todo.json",
+    "system_prompt.md", "AGENTS.md", "HERMES.md", "OMP.md", "CLAUDE.md", ".cursorrules",
     # Desktop appearance/interface overlay (written by the desktop app's
     # profile export; applied by its import — see desktop.json handling).
     "desktop.json",
@@ -298,6 +353,9 @@ def _get_default_hermes_dir(env_home: str | None = None) -> Path:
     """
     from mercury_constants import _get_platform_default_hermes_home
 
+    mercury = os.environ.get("MERCURY_HOME", "").strip()
+    if mercury and env_home is None:
+        return Path(mercury) / "hermes"
     native_root = _get_platform_default_hermes_home()
     if env_home is None:
         env_home = os.environ.get("HERMES_HOME", "").strip()
@@ -358,10 +416,8 @@ def _migrate_profiles_to_hermes_home() -> None:
     (including the sudo fallback in ``main`` via
     :func:`migrate_user_profiles_to_hermes_home`).
     """
-    from mercury_constants import _get_platform_default_hermes_home
-
     _move_profiles_tree(
-        _get_platform_default_hermes_home() / "profiles",
+        _get_default_hermes_home() / "profiles",
         _get_default_hermes_dir() / "profiles",
     )
 
@@ -895,11 +951,25 @@ def _seed_model_config(profile_dir: Path) -> None:
         source = source_home / "config.yaml"
         if not source.is_file():
             return
-        model_cfg = read_user_config_raw(source).get("model")
-        if not model_cfg:
+        source_config = read_user_config_raw(source)
+        hermes_config = source_config.get("hermes", source_config)
+        model_cfg = hermes_config.get("model")
+        model_slots = source_config.get("models")
+        if not model_cfg and not model_slots:
             return
+        if model_slots:
+            # Both engines need their model slots and native engine settings.
+            seed = {"models": model_slots, "hermes": {"model": model_cfg or {}}}
+            for key in ("omp", "approvals"):
+                if key in source_config:
+                    seed[key] = source_config[key]
+            for key in ("approvals", "fallback_providers", "agent"):
+                if key in hermes_config:
+                    seed["hermes"][key] = hermes_config[key]
+        else:
+            seed = {"model": model_cfg}
         config_path.write_text(
-            yaml.safe_dump({"model": model_cfg}, sort_keys=False),
+            yaml.safe_dump(seed, sort_keys=False),
             encoding="utf-8",
         )
     except Exception:
@@ -1368,6 +1438,16 @@ def create_profile(
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
+        # Config assets (including relative Markdown includes) are copies,
+        # even when the source or a legacy clone used symlinks.
+        source_cfg = source_dir / "config"
+        target_cfg = profile_dir / "config"
+        if source_cfg.is_dir():
+            if target_cfg.is_symlink():
+                target_cfg.unlink()
+            elif target_cfg.exists():
+                shutil.rmtree(target_cfg)
+            shutil.copytree(source_cfg, target_cfg, symlinks=False)
     else:
         # Bootstrap directory structure
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -1379,6 +1459,9 @@ def create_profile(
 
         # Clone config files from source
         if source_dir is not None:
+            source_cfg = source_dir / "config"
+            if source_cfg.is_dir():
+                shutil.copytree(source_cfg, profile_dir / "config", symlinks=False, dirs_exist_ok=True)
             for filename in _CLONE_CONFIG_FILES:
                 src = source_dir / filename
                 if src.exists():
@@ -1429,15 +1512,7 @@ def create_profile(
         except OSError:
             pass  # best-effort — save_env_value creates the file on demand
 
-    # Seed a default SOUL.md so the user has a file to customize immediately.
-    # Skipped when the profile already has one (from --clone / --clone-all).
-    soul_path = profile_dir / "SOUL.md"
-    if not soul_path.exists():
-        try:
-            from mercury_cli.default_soul import DEFAULT_SOUL_MD
-            soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
-        except Exception:
-            pass  # best-effort — don't fail profile creation over this
+    ensure_profile_prompt_files(profile_dir, source_dir=source_dir)
 
     # Write the opt-out marker so seed_profile_skills() and `mercury update`'s
     # all-profile sync loop both skip this profile for bundled-skill seeding.
@@ -2393,6 +2468,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
             symlinks=True,
             ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
         )
+        ensure_profile_prompt_files(staged)
         _stage_extras(staged)
         _scrub_export_secrets(staged)
         result = make_targz(base, tmpdir, canon)
@@ -2459,6 +2535,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
         shutil.move(str(final_source), str(profile_dir))
 
+    ensure_profile_prompt_files(profile_dir)
     return profile_dir
 
 

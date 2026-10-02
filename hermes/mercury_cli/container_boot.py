@@ -175,7 +175,7 @@ def reconcile_profile_gateways(
             # is not — that comes later via `mercury setup`). Use it as the
             # "real profile" marker so stray dirs (backups, manual mkdir)
             # aren't picked up.
-            if not (entry / "SOUL.md").exists():
+            if not any((entry / rel).exists() for rel in ("config/SOUL.md", "SOUL.md")):
                 continue
             # The "default" service name is reserved for the root
             # profile (above) — if a user has somehow created a

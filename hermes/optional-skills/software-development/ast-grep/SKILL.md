@@ -6,7 +6,7 @@ author: Yeongyu Kim (code-yeongyu), adapted by Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [ast, codemod, refactoring, structural-search, code-search, rewrite, tree-sitter]
     category: software-development
     related_skills: [simplify-code, systematic-debugging]

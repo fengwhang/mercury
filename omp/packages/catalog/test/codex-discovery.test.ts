@@ -185,11 +185,11 @@ describe("Codex model discovery", () => {
 
 		expect(blue.contextWindow).toBe(372_000);
 		expect(getSupportedEfforts(buildModel(blue))).toEqual([
+			Effort.Minimal,
 			Effort.Low,
 			Effort.Medium,
 			Effort.High,
 			Effort.XHigh,
-			Effort.Max,
 		]);
 		// Standard API pricing is rule-owned (`providers/openai-codex.kdl`
 		// cost-patch) and corrected at build time.

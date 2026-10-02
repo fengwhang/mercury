@@ -29,7 +29,7 @@ def _check_config():
         missing.append("CANVAS_BASE_URL")
     if missing:
         mercury_env = os.path.join(
-            os.environ.get("HERMES_HOME", os.path.expanduser("~/.mercury")), ".env"
+            os.environ.get("MERCURY_HOME", os.path.expanduser("~/.mercury")), ".env"
         )
         print(
             f"Missing required environment variables: {', '.join(missing)}\n"

@@ -367,15 +367,27 @@ def build_omp_child(
     from tools.omp_delegation import (
         _delegate_thinking_level,
         _omp_delegate_env,
+        _render_omp_config_once,
         _resolve_omp_binary,
         _shared_env_overrides,
     )
     from tools.omp_rpc_transport import OmpRpcChild
 
     env_err: Optional[str] = None
+    from mercury_cli.omp_command import omp_profile_env
+    child_env = omp_profile_env(profile_home)
+    child_env.update(_shared_env_overrides())
+    if mercury_home is not None:
+        child_env["MERCURY_HOME"] = str(mercury_home)
+    if profile_home is not None:
+        _render_omp_config_once(profile_home)
     resolved_model = (model or "").strip()
-    if not resolved_model:
+    delegate_env = {}
+    if profile_home is not None:
+        delegate_env, env_err = _omp_delegate_env(profile_home)
+    elif not resolved_model:
         delegate_env, env_err = _omp_delegate_env()
+    if not resolved_model:
         resolved_model = delegate_env.get("OMP_MODEL", "")
     if not resolved_model:
         raise RuntimeError(
@@ -390,13 +402,8 @@ def build_omp_child(
             "spawnomp: omp binary not found (HERMES_OMP_BIN or PATH)"
         )
 
-    child_env = _shared_env_overrides()
-    if mercury_home is not None:
-        child_env.setdefault("MERCURY_HOME", str(mercury_home))
-    if profile_home is not None:
-        # A profile spawn is the whole point: the child MUST read the
-        # profile's config/memories, never inherit the gateway's home.
-        child_env["HERMES_HOME"] = str(profile_home)
+    child_env.update(delegate_env)
+    effort = thinking_level or delegate_env.get("OMP_THINKING_LEVEL") or _delegate_thinking_level()
     child = OmpRpcChild(
         omp_path=binary,
         model=resolved_model,
@@ -404,12 +411,12 @@ def build_omp_child(
         env=child_env,
         startup_timeout=startup_timeout,
         approval_callback=None,  # The active room turn supplies its inherited approval context.
-        thinking_level=thinking_level or _delegate_thinking_level(),
+        thinking_level=effort,
         command_override=omp_spawn_argv(
             omp_path=binary,
             model=resolved_model,
             session_dir=omp_sessions_dir(mercury_home),
-            thinking_level=thinking_level or _delegate_thinking_level(),
+            thinking_level=effort,
             resume_session=resume_session,
         ),
     )

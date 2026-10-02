@@ -14,19 +14,19 @@ Build, test, and deploy Python MCP servers.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mcp/fastmcp` |
-| Path | `optional-skills/mcp\fastmcp` |
+| Source | Optional — install with `mercury skills install official/mcp/fastmcp` |
+| Path | `optional-skills/mcp/fastmcp` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `MCP`, `FastMCP`, `Python`, `Tools`, `Resources`, `Prompts`, `Deployment` |
-| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`mcporter`](/docs/user-guide/skills/optional/mcp/mcp-mcporter) |
+| Related skills | [`mercury-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-mercury-agent), [`mcporter`](/docs/user-guide/skills/optional/mcp/mcp-mcporter) |
 
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # FastMCP
@@ -44,7 +44,7 @@ Use this skill when the task is to:
 - install a server into Claude Code, Claude Desktop, Cursor, or a similar MCP client
 - prepare a FastMCP server repo for HTTP deployment
 
-Use `native-mcp` when the server already exists and only needs to be connected to Hermes. Use `mcporter` when the goal is ad-hoc CLI access to an existing MCP server instead of building one.
+Use the `mercury-agent` MCP reference when the server already exists and only needs to be connected to Hermes. Use `mcporter` when the goal is ad-hoc CLI access to an existing MCP server instead of building one.
 
 ## Prerequisites
 
@@ -95,7 +95,7 @@ Prefer a thin server with good names, docstrings, and schemas over a large serve
 Copy a template directly or use the scaffold helper:
 
 ```bash
-python ~/.hermes/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py \
+python $MERCURY_HOME/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py \
   --template api_wrapper \
   --name "Acme API" \
   --output ./acme_server.py
@@ -104,7 +104,7 @@ python ~/.hermes/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py \
 Available templates:
 
 ```bash
-python ~/.hermes/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py --list
+python $MERCURY_HOME/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py --list
 ```
 
 If copying manually, replace `__SERVER_NAME__` with a real server name.
@@ -187,7 +187,7 @@ Use `fastmcp discover` to inspect named MCP servers already configured on the ma
 
 When the goal is Hermes integration, either:
 
-- configure the server in `~/.hermes/config.yaml` using the `native-mcp` skill, or
+- configure the server in `$MERCURY_CONFIG` using the `mercury-agent` skill and its `references/native-mcp.md`, or
 - keep using FastMCP CLI commands during development until the interface stabilizes
 
 ### 7. Deploy After the Local Contract Is Stable
@@ -308,7 +308,7 @@ This usually exposes naming mismatches, missing required arguments, or non-seria
 
 ### Hermes cannot see the deployed server
 
-The server-building part may be correct while the Hermes config is not. Load the `native-mcp` skill and configure the server in `~/.hermes/config.yaml`, then restart Hermes.
+The server-building part may be correct while the Hermes config is not. Load the `mercury-agent` skill and its `references/native-mcp.md` and configure the server in `$MERCURY_CONFIG`, then restart Hermes.
 
 ## References
 

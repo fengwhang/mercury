@@ -6,7 +6,7 @@ author: Teknium + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [tldraw, canvas, whiteboard, document-script, diagramming]
     category: creative
     related_skills: []

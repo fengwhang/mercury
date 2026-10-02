@@ -45,7 +45,7 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(encoding="utf-8", errors="replace")
         except (ValueError, TypeError):
             pass
-from mercury_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
+from mercury_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir, get_skills_dir
 from agent.skill_utils import is_excluded_skill_path
 from typing import Dict, List, Optional, Set, Tuple
 from utils import atomic_replace, atomic_write_text
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 
 HERMES_HOME = get_hermes_home()
-SKILLS_DIR = HERMES_HOME / "skills"
+SKILLS_DIR = get_skills_dir()
 MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
 
 # Import-time snapshots backing the call-time accessors below. Same bug class
@@ -85,7 +85,9 @@ def _skills_dir() -> Path:
     configured = Path(SKILLS_DIR)
     if configured != _SKILLS_DIR_AT_IMPORT:
         return configured
-    return _hermes_home() / "skills"
+    if Path(HERMES_HOME) != _HERMES_HOME_AT_IMPORT:
+        return _hermes_home() / "skills"
+    return get_skills_dir()
 
 
 def _manifest_file() -> Path:
@@ -642,6 +644,45 @@ def _index_active_skills() -> Dict[str, List[Path]]:
     return index
 
 
+def _retire_replaced_skills(manifest: Dict[str, str], bundled_names: Set[str], quiet: bool) -> None:
+    """Archive unchanged bundled predecessors after a Mercury consolidation.
+
+    A manifest hash proves ownership. Keep user edits, external sources, and
+    untracked installations; moving into .archive removes only pristine old
+    commands from discovery and retains a recoverable copy.
+    """
+    replacements = {
+        "hermes-agent": "mercury-agent", "grilling": "grill-me",
+        "hermes-agent-skill-authoring": "mercury-skill-authoring",
+        "inspecting-hermes-desktop-dom": "inspecting-mercury-desktop-dom",
+        "hermes-s6-container-supervision": "mercury-s6-container-supervision",
+    }
+    eligible = {
+        old: manifest[old] for old, new in replacements.items()
+        if old in manifest and manifest[old] and new in bundled_names
+    }
+    if not eligible:
+        return
+    active = _index_active_skills()
+    hub_paths = _read_hub_install_paths()
+    backup_root = _skills_dir() / ".archive" / "bundled-replacements"
+    for name, origin_hash in eligible.items():
+        if not active.get(replacements[name]):
+            continue
+        for candidate in active.get(name, []):
+            if candidate.is_symlink() or candidate.resolve() != candidate.absolute():
+                continue
+            rel = candidate.relative_to(_skills_dir()).as_posix()
+            if rel in hub_paths or _dir_hash(candidate) != origin_hash:
+                continue
+            try:
+                _move_to_restore_backup(candidate, backup_root)
+                if not quiet:
+                    print(f"  → {name} (archived replaced bundled skill)")
+            except OSError:
+                logger.warning("Could not archive replaced skill %s", candidate, exc_info=True)
+
+
 def _recover_renamed_skill(
     skill_name: str,
     origin_hash: str,
@@ -959,6 +1000,8 @@ def sync_skills(quiet: bool = False) -> dict:
         else:
             # ── In manifest but not on disk — user deleted it ──
             skipped += 1
+
+    _retire_replaced_skills(manifest, bundled_names, quiet)
 
     # Clean stale manifest entries (skills removed from bundled dir).
     # Skip on an opted-out profile: bundled_skills was filtered to the

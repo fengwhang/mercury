@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Requests honor discovered reasoning capabilities, including mandatory reasoning and models without an effort selector.
 - Mercury provider logins and OAuth refreshes now share credentials with the Hermes engine within the selected profile.
 
 ## [18.1.6] - 2026-09-03

@@ -6,7 +6,7 @@ author: Francesco Bonacci (f-trycua), Hermes Agent
 license: MIT
 platforms: [macos, windows, linux]
 metadata:
-  hermes:
+  mercury:
     tags: [computer-use, desktop, automation, gui, cross-platform]
     category: desktop
     related_skills: []

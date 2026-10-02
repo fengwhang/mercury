@@ -6,7 +6,7 @@ author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  mercury:
     tags: [excel, spreadsheet, xlsx, csv, openpyxl, productivity]
     category: productivity
     related_skills: [docx, pdf, powerpoint]

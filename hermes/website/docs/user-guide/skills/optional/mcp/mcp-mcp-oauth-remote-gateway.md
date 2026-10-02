@@ -14,19 +14,19 @@ Manual OAuth for remote MCP servers on headless gateways.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mcp/mcp-oauth-remote-gateway` |
-| Path | `optional-skills/mcp\mcp-oauth-remote-gateway` |
+| Source | Optional — install with `mercury skills install official/mcp/mcp-oauth-remote-gateway` |
+| Path | `optional-skills/mcp/mcp-oauth-remote-gateway` |
 | Version | `1.0.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `MCP`, `OAuth`, `PKCE`, `Remote-Deployment` |
-| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`mcporter`](/docs/user-guide/skills/optional/mcp/mcp-mcporter), [`fastmcp`](/docs/user-guide/skills/optional/mcp/mcp-fastmcp) |
+| Related skills | [`mercury-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-mercury-agent), [`mcporter`](/docs/user-guide/skills/optional/mcp/mcp-mcporter), [`fastmcp`](/docs/user-guide/skills/optional/mcp/mcp-fastmcp) |
 
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # MCP OAuth on a Remote Hermes Gateway
@@ -96,8 +96,8 @@ gateway/bot where `/reload-mcp` triggers the flow with nobody at a prompt.
 ## Preferred Front Door: the Hermes Dashboard (try this BEFORE manual token surgery)
 
 A remote Hermes gateway often also runs the **dashboard** web UI as a SEPARATE
-process (e.g. `hermes dashboard --host 0.0.0.0 --port <port>`; check with
-`ps aux | grep 'hermes dashboard'`). It exposes a connector/MCP console —
+process (e.g. `mercury dashboard --host 0.0.0.0 --port <port>`; check with
+`ps aux | grep 'mercury dashboard'`). It exposes a connector/MCP console —
 endpoints like `/api/mcp/servers`, `/api/mcp/status`, and `/connectors` (all
 login-gated; a cookieless curl returning 401/302 confirms they exist).
 
@@ -157,8 +157,8 @@ built-in flow won't work.
 ### 2. Find HERMES_HOME and the config path
 
 ```bash
-HERMES_HOME=$(python3 -c 'from hermes_constants import get_hermes_home; print(get_hermes_home())')
-echo "config: $HERMES_HOME/config.yaml"
+mercury config path
+mercury config env-path
 echo "tokens: $HERMES_HOME/mcp-tokens/"
 ```
 
@@ -385,5 +385,5 @@ tools. Refresh happens automatically before `expires_in` elapses.
 
 ## Related
 
-- `native-mcp` — general guide to configuring MCP in Hermes. Authoritative config reference lives there.
+- `mercury-agent` → `references/native-mcp.md` — general guide to configuring MCP in Hermes. Authoritative config reference lives there.
 - `mcporter` — the external CLI bridge, for ad-hoc MCP calls outside of Hermes' config.

@@ -6,9 +6,9 @@ author: Hermes Agent + Teknium
 license: MIT
 platforms: [macos, linux]
 metadata:
-  hermes:
+  mercury:
     tags: [Search, Knowledge-Base, RAG, Notes, MCP, Local-AI]
-    related_skills: [obsidian, hermes-agent, arxiv]
+    related_skills: [obsidian, mercury-agent, arxiv]
 ---
 
 # QMD — Query Markup Documents
@@ -226,7 +226,7 @@ without needing to load this skill.
 
 ### Option A: Stdio Mode (Simple)
 
-Add to `~/.hermes/config.yaml`:
+Add to `$MERCURY_CONFIG`:
 
 ```yaml
 mcp_servers:

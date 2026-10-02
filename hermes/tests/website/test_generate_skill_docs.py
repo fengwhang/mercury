@@ -114,3 +114,16 @@ def test_bundled_catalog_explains_missing_local_skills(gen_module):
     result = gen_module.build_catalog_md_bundled([])
     assert "respects local deletions and user edits" in result
     assert "mercury skills reset <name> --restore" in result
+
+
+def test_local_skill_reference_links_target_mercury_source(gen_module):
+    from urllib.parse import urlparse
+
+    meta = {"source_kind": "bundled", "rel_path": "autonomous-ai-agents/mercury-agent"}
+    result = gen_module.rewrite_relative_links("[Profiles](references/profiles.md)", meta)
+    target = result.split("](", 1)[1].rstrip(")")
+    parsed = urlparse(target)
+    assert parsed.netloc == "github.com"
+    assert parsed.path == "/fengwhang/mercury/blob/main/hermes/skills/autonomous-ai-agents/mercury-agent/references/profiles.md"
+    # The rewritten resource corresponds to an actual packaged file.
+    assert (REPO_ROOT / "skills" / meta["rel_path"] / "references/profiles.md").is_file()

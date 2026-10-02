@@ -3,14 +3,63 @@
 `mercury omp [args…]` / `mercury omp [args…]` execs the patched omp build as
 its own somewhat-independent program: it feels like original omp (full TUI,
 all fan-out features) but with model roles structurally stripped. The model
-comes from the unified config's delegate_model slot via the bridge
-(fail-hard); argv after that passes through UNTOUCHED — the omp TUI is the
-interface, no wrapper UI.
+comes from the selected profile's delegate_model slot via the bridge.
+An initial -p/--profile selects the Mercury profile; native argv follows
+unchanged. Use -- before native -p to request OMP's short print option.
 """
 import os
 import subprocess
 import shlex
 import sys
+from pathlib import Path
+
+
+def omp_profile_env(profile_home=None, base_env=None) -> dict[str, str]:
+    """Build a child's environment without changing the gateway's environment."""
+    from mercury_constants import get_hermes_home, named_profile_home
+    from mercury_cli.profiles import ensure_profile_prompt_files
+
+    env = dict(os.environ if base_env is None else base_env)
+    home = Path(profile_home) if profile_home is not None else get_hermes_home()
+    profile = named_profile_home(home)
+    if profile is not None:
+        from mercury_constants import assert_named_profile_home_live
+        assert_named_profile_home_live(profile)
+        ensure_profile_prompt_files(profile)
+        env.update({
+            "HERMES_HOME": str(profile),
+            "MERCURY_PROFILE_HOME": str(profile),
+            "MERCURY_CONFIG": str(profile / "config.yaml"),
+            "HERMES_OMP_CONFIG": str(profile / "config.yaml"),
+            "PI_CODING_AGENT_DIR": str(profile / "omp" / "agent"),
+        })
+    else:
+        env.pop("MERCURY_PROFILE_HOME", None)
+    return env
+
+
+def split_omp_profile_args(argv: list[str]) -> tuple[str | None, list[str]]:
+    """Reserve profile selectors before native argv; `--` protects native -p."""
+    profile = None
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--print-cmd":
+            index += 1
+            continue
+        if arg in ("-p", "--profile"):
+            if index + 1 >= len(argv) or argv[index + 1].startswith("-"):
+                raise ValueError("omp: -p/--profile requires a profile name")
+            value, size = argv[index + 1], 2
+        elif arg.startswith("--profile="):
+            value, size = arg.partition("=")[2], 1
+        else:
+            break
+        if profile is not None:
+            raise ValueError("omp: choose one profile")
+        profile = value
+        argv = argv[:index] + argv[index + size:]
+    return profile, argv
 
 
 def _resolve_omp_binary() -> str:
@@ -37,6 +86,13 @@ def _resolve_omp_binary() -> str:
 
 def cmd_omp(args) -> int:
     """Entry point for the `omp` subcommand."""
+    try:
+        env = omp_profile_env()
+    except (OSError, ValueError) as exc:
+        print(f"omp: {exc}", file=sys.stderr)
+        return 1
+    env.setdefault("MERCURY_HOME", os.path.expanduser("~/.mercury"))
+    env.setdefault("MERCURY_CONFIG", str(Path(env["MERCURY_HOME"]) / "config.yaml"))
     omp_bin = _resolve_omp_binary()
     if not omp_bin:
         print(
@@ -65,7 +121,7 @@ def cmd_omp(args) -> int:
     # the CURRENT deny rules, not a stale omp: subtree.
     rr = subprocess.run(
         [sys.executable, bridge, "--render-omp"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, env=env,
     )
     if rr.returncode != 0:
         print(rr.stderr.strip(), file=sys.stderr)
@@ -74,7 +130,7 @@ def cmd_omp(args) -> int:
     # Render the delegate model via the bridge (fail-hard on bad slots).
     br = subprocess.run(
         [sys.executable, bridge, "--delegate"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, env=env,
     )
     if br.returncode != 0:
         print(br.stderr.strip(), file=sys.stderr)
@@ -88,9 +144,6 @@ def cmd_omp(args) -> int:
             if k == "OMP_MODEL":
                 model = v
 
-    env = dict(os.environ)
-    env.setdefault("MERCURY_CONFIG", os.path.expanduser("~/.mercury/config.yaml"))
-    env.setdefault("MERCURY_HOME", os.path.expanduser("~/.mercury"))
     # HERMES-OMP PATCH (Nous search inheritance): when hermes' web selection
     # is the Nous-managed gateway, bridge it into omp's NATIVE firecrawl env
     # so `mercury omp` search/scrape rides the same gateway + credentials.
@@ -101,9 +154,14 @@ def cmd_omp(args) -> int:
     except Exception:
         pass
     for k, v in env_overrides.items():
-        env.setdefault(k, v)
+        if env.get("MERCURY_PROFILE_HOME"):
+            env[k] = v
+        else:
+            env.setdefault(k, v)
 
     passthrough = list(getattr(args, "omp_args", None) or [])
+    if passthrough[:1] == ["--"]:
+        passthrough = passthrough[1:]
     # No explicit model in the passthrough → pin the delegate model.
     if not any(a == "--model" or a.startswith("--model=") for a in passthrough):
         passthrough = ["--model", model] + passthrough

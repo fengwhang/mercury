@@ -342,7 +342,7 @@ def render_setup_sh(plan: dict, brief_md: str, team_md: str) -> str:
     profile_creates = []
     for t in plan["team"]:
         profile_creates.append(
-            f'mercury profile create {t["profile"]} --clone 2>/dev/null || true'
+            f'"$MERCURY_CLI" profile show {t["profile"]} >/dev/null 2>&1 || "$MERCURY_CLI" profile create {t["profile"]} --clone'
         )
 
     # Profile config — emit JSON arrays so the bash function can pass them
@@ -361,7 +361,7 @@ def render_setup_sh(plan: dict, brief_md: str, team_md: str) -> str:
     soul_writes = []
     for t in plan["team"]:
         soul_writes.append(
-            f'cat > "$HOME/.mercury/hermes/profiles/{t["profile"]}/SOUL.md" <<\'SOUL_EOF\'\n'
+            f'cat > "$MERCURY_ROOT/hermes/profiles/{t["profile"]}/config/SOUL.md" <<\'SOUL_EOF\'\n'
             f"{render_soul_md(t, plan)}\n"
             f"SOUL_EOF\n"
             f'echo "  ✓ SOUL.md for {t["profile"]}"'

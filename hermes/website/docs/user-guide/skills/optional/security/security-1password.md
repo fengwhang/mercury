@@ -14,8 +14,8 @@ Set up op CLI, sign in, and read or inject secrets.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/security/1password` |
-| Path | `optional-skills/security\1password` |
+| Source | Optional — install with `mercury skills install official/security/1password` |
+| Path | `optional-skills/security/1password` |
 | Version | `1.0.0` |
 | Author | arceus77-7, enhanced by Hermes Agent |
 | License | MIT |
@@ -25,7 +25,7 @@ Set up op CLI, sign in, and read or inject secrets.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # 1Password CLI
@@ -51,7 +51,7 @@ Use this skill when the user wants secrets managed through 1Password instead of 
 
 ### Service Account (recommended for Hermes)
 
-Set `OP_SERVICE_ACCOUNT_TOKEN` in `${HERMES_HOME:-~/.hermes}/.env` (the skill will prompt for this on first load).
+Set `OP_SERVICE_ACCOUNT_TOKEN` in `$MERCURY_HOME/.env` (the skill will prompt for this on first load).
 No desktop app needed. Supports `op read`, `op inject`, `op run`.
 
 ```bash

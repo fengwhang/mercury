@@ -10,6 +10,10 @@
 # ═══════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
+MERCURY_CLI="${MERCURY_CMD:-mercury}"
+MERCURY_ROOT="${MERCURY_HOME:-$(dirname "$("$MERCURY_CLI" config path)")}"
+MERCURY_ENV_FILE="$("$MERCURY_CLI" config env-path)"
+
 PROJECT_SLUG="{{SLUG}}"
 WORKSPACE="$HOME/projects/video-pipeline/${PROJECT_SLUG}"
 TENANT="{{TENANT}}"
@@ -23,7 +27,7 @@ check_key() {
     local var="$1"
     local kc_account="${2:-hermes}"
     local kc_service="${3:-$1}"
-    local _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"
+    local _hermes_env="${MERCURY_ENV_FILE}"
     if grep -q "^${var}=" "$_hermes_env" 2>/dev/null && \
        [ -n "$(grep "^${var}=" "$_hermes_env" | cut -d= -f2-)" ]; then
         echo "  ✓ ${var} (env)"
@@ -50,9 +54,9 @@ mkdir -p "$WORKSPACE"/{taste,audio/{voiceover,sfx},assets,scenes,checkpoints,too
 echo "  ✓ $WORKSPACE"
 
 # ─────────────────────────────────────────────────────────────────────
-# 3. Create Hermes profiles
+# 3. Create Mercury profiles
 # ─────────────────────────────────────────────────────────────────────
-echo "═══ Creating Hermes profiles ═══"
+echo "═══ Creating Mercury profiles ═══"
 
 {{PROFILE_CREATE_COMMANDS}}
 
@@ -65,8 +69,8 @@ configure_profile() {
     local profile="$1"
     local toolsets_json="$2"     # JSON array string, e.g. '["kanban","terminal","file"]'
     local skills_json="$3"       # JSON array string, e.g. '["ascii-video"]'
-    python3 - "$profile" "$toolsets_json" "$skills_json" "$WORKSPACE" <<'PY'
-"""Patch a Hermes profile config.yaml using PyYAML so we don't depend on the
+    python3 - "$profile" "$toolsets_json" "$skills_json" "$MERCURY_ROOT" <<'PY'
+"""Patch a Mercury profile config.yaml using PyYAML so we don't depend on the
 exact default-config string format. Validates the patch took effect and exits
 non-zero if anything's off."""
 import json
@@ -79,11 +83,11 @@ except ImportError:
     print("ERROR: PyYAML required. pip install pyyaml", file=sys.stderr)
     sys.exit(1)
 
-profile, toolsets_json, skills_json, workspace = sys.argv[1:5]
+profile, toolsets_json, skills_json, mercury_root = sys.argv[1:5]
 toolsets = json.loads(toolsets_json)
 skills = json.loads(skills_json)
 
-p = os.path.expanduser(f"~/.hermes/profiles/{profile}/config.yaml")
+p = os.path.join(mercury_root, "hermes", "profiles", profile, "config.yaml")
 if not os.path.exists(p):
     print(f"  ✗ profile config not found: {p}", file=sys.stderr)
     sys.exit(1)
@@ -91,22 +95,27 @@ if not os.path.exists(p):
 with open(p) as f:
     cfg = yaml.safe_load(f) or {}
 
-# Apply our changes — only the keys we actually want to set.
+# Preserve the unified model/omp/approval subtrees.
+root_cfg = cfg
+if isinstance(cfg.get("hermes"), dict) or "models" in cfg or "omp" in cfg:
+    cfg = cfg.setdefault("hermes", {})
 cfg["toolsets"] = toolsets
 cfg.setdefault("skills", {})
 cfg["skills"]["always_load"] = skills
 
 # Note: we do NOT touch cfg["approvals"] — that's a security-sensitive
 # setting (manual confirmation of tool calls). Workspace cwd is overridden
-# per-task by `--workspace dir:<path>` on `hermes kanban create`, so we
+# per-task by `--workspace dir:<path>` on `mercury kanban create`, so we
 # don't need to mutate cfg["terminal"]["cwd"] either.
 
 with open(p, "w") as f:
-    yaml.safe_dump(cfg, f, sort_keys=False)
+    yaml.safe_dump(root_cfg, f, sort_keys=False)
 
 # Validate
 with open(p) as f:
     after = yaml.safe_load(f)
+if isinstance(after.get("hermes"), dict):
+    after = after["hermes"]
 errors = []
 if after.get("toolsets") != toolsets:
     errors.append(f"toolsets mismatch: {after.get('toolsets')!r}")
@@ -154,7 +163,7 @@ TEAM_EOF
 # ─────────────────────────────────────────────────────────────────────
 echo "═══ Firing initial kanban task ═══"
 
-hermes kanban create "Direct production of {{TITLE}}" \
+"$MERCURY_CLI" kanban create "Direct production of {{TITLE}}" \
     --assignee director \
     --workspace dir:"$WORKSPACE" \
     --tenant "$TENANT" \

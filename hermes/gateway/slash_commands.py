@@ -437,6 +437,7 @@ class GatewaySlashCommandsMixin:
         lines = [
             t("gateway.profile.header", profile=reply.data["profile"]),
             t("gateway.profile.home", home=reply.data["home"]),
+            f"Prompts: `{reply.data['prompt_dir']}`",
         ]
 
         return "\n".join(lines)

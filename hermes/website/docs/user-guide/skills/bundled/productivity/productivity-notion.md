@@ -15,7 +15,7 @@ Notion API + ntn CLI: pages, databases, markdown, Workers.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\notion` |
+| Path | `skills/productivity/notion` |
 | Version | `2.0.0` |
 | Author | community |
 | License | MIT |
@@ -25,7 +25,7 @@ Notion API + ntn CLI: pages, databases, markdown, Workers.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Notion
@@ -41,7 +41,7 @@ Talk to Notion two ways. Same integration token works for both — pick by what'
 
 1. Create an integration at https://notion.so/my-integrations
 2. Copy the API key (starts with `ntn_` or `secret_`)
-3. Store in `${HERMES_HOME:-~/.hermes}/.env`:
+3. Store in `$MERCURY_HOME/.env`:
    ```
    NOTION_API_KEY=ntn_your_key_here
    ```
@@ -65,7 +65,7 @@ export NOTION_API_TOKEN=$NOTION_API_KEY      # ntn reads NOTION_API_TOKEN
 export NOTION_KEYRING=0                       # don't try to use the OS keychain
 ```
 
-Add those exports to your shell profile (or to `${HERMES_HOME:-~/.hermes}/.env`) so every session inherits them.
+Add those exports to your shell profile (or to `$MERCURY_HOME/.env`) so every session inherits them.
 
 ### 3. Choose path at runtime
 

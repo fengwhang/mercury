@@ -3,14 +3,74 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
+import time
 from pathlib import Path
 from typing import List, Optional
 
 import os
 
 logger = logging.getLogger(__name__)
+
+# Account/route-scoped metadata. Keep tokens out of cache keys and do not
+# borrow another account's Codex CLI cache for request capabilities.
+_reasoning_catalogs: dict[tuple[str, str], tuple[float, dict[str, dict]]] = {}
+_reasoning_attempts: dict[tuple[str, str], float] = {}
+
+
+def _catalog_key(access_token: str, base_url: Optional[str]) -> tuple[str, str]:
+    from mercury_cli.auth import DEFAULT_CODEX_BASE_URL
+    return ((base_url or DEFAULT_CODEX_BASE_URL).strip().rstrip("/"),
+            hashlib.sha256(access_token.encode()).hexdigest())
+
+
+def parse_codex_reasoning_capabilities(item: dict) -> Optional[dict]:
+    """Retain the effort vocabulary advertised by the account's /models API."""
+    levels = item.get("supported_reasoning_levels")
+    if not isinstance(levels, list):
+        return None
+    efforts = []
+    for level in levels:
+        value = level.get("effort") if isinstance(level, dict) else level
+        if isinstance(value, str) and value.strip():
+            normalized = value.strip().lower()
+            if normalized not in efforts:
+                efforts.append(normalized)
+    if levels and not efforts:
+        return None  # malformed metadata is unknown, not an off-only model
+    positive = [effort for effort in efforts if effort not in ("none", "off")]
+    result = {"supports_reasoning": bool(positive), "supported_efforts": efforts,
+              "supports_effort_selection": bool(positive),
+              "mandatory": bool(positive) and not any(e in ("none", "off") for e in efforts)}
+    default = item.get("default_reasoning_level")
+    if isinstance(default, str) and default.strip().lower() in efforts:
+        result["default_effort"] = default.strip().lower()
+    return result
+
+
+def codex_model_reasoning_capabilities(
+    model: str, *, access_token: Optional[str] = None,
+    base_url: Optional[str] = None, allow_fetch: bool = False,
+) -> Optional[dict]:
+    """Shared setup/runtime capabilities; refresh once per hour, retry failures later."""
+    # Runtime callers supply the serving request's credentials. Do not read
+    # saved credentials here: that could probe an unrelated account during a
+    # fallback, or refresh the operator's OAuth state from an isolated test.
+    if not isinstance(access_token, str) or not access_token:
+        return None
+    key = _catalog_key(access_token, base_url)
+    now = time.monotonic()
+    cached = _reasoning_catalogs.get(key)
+    if allow_fetch and (cached is None or now - cached[0] >= 3600):
+        last_attempt = _reasoning_attempts.get(key)
+        if last_attempt is None or now - last_attempt >= 60:
+            _reasoning_attempts[key] = now
+            _fetch_models_from_api(access_token, base_url)
+            cached = _reasoning_catalogs.get(key)
+    from agent.model_metadata import strip_codex_context_variant_suffix
+    return cached[1].get(strip_codex_context_variant_suffix(model)) if cached else None
 
 DEFAULT_CODEX_MODELS: List[str] = [
     # Verified in current upstream Codex discovery/compatibility rules. Live
@@ -183,6 +243,7 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
         return []
 
     sortable = []
+    capabilities = {}
     for item in entries:
         if not isinstance(item, dict):
             continue
@@ -200,6 +261,12 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
         priority = item.get("priority")
         rank = int(priority) if isinstance(priority, (int, float)) else 10_000
         sortable.append((rank, slug))
+        caps = parse_codex_reasoning_capabilities(item)
+        if caps is not None:
+            capabilities[slug] = caps
+
+    if entries:
+        _reasoning_catalogs[_catalog_key(access_token, base_url)] = (time.monotonic(), capabilities)
 
     sortable.sort(key=lambda x: (x[0], x[1]))
     return _finalize_codex_models([slug for _, slug in sortable])

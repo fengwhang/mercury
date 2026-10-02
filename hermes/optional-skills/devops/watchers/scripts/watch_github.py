@@ -5,11 +5,11 @@ Usage (via cron with --no-agent):
 
     mercury cron create mercury-issues \\
       --schedule "*/5 * * * *" --no-agent \\
-      --script "$HERMES_HOME/skills/devops/watchers/scripts/watch_github.py" \\
-      --script-args "--name mercury-issues --repo NousResearch/mercury-agent --scope issues"
+      --script "$MERCURY_HOME/skills/devops/watchers/scripts/watch_github.py" \\
+      --script-args "--name mercury-issues --repo fengwhang/mercury --scope issues"
 
 Set GITHUB_TOKEN (or GH_TOKEN) in the Mercury .env file
-(``${HERMES_HOME:-~/.mercury}/.env``) to avoid the 60 req/hr
+(``${MERCURY_HOME:-~/.mercury}/.env``) to avoid the 60 req/hr
 anonymous rate limit.
 
 Scopes: issues | pulls | releases | commits.  Or pass --search QUERY to

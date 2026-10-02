@@ -307,21 +307,23 @@ async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFil
 // HERMES-OMP PATCH: OMP.md — harness-scoped prompt file for the omp half of
 // Mercury. Loaded ONLY into omp's context (system prompt tier); hermes never
 // sees it (hermes' counterpart is HERMES.md via load_hermes_md_home).
-// Optional: absent file → no items. Lives at MERCURY_HOME top level
-// (~/.mercury/OMP.md), mirroring SOUL/MEMORY/USER in the shared layout.
+// A named profile owns its prompt files; absent files never inherit the
+// default profile's instructions.
+function mercuryPromptHome(): string | undefined {
+	const explicit = process.env.MERCURY_PROFILE_HOME?.trim();
+	if (explicit) return explicit;
+	const hermesHome = process.env.HERMES_HOME?.trim();
+	if (hermesHome && path.basename(path.dirname(hermesHome)) === "profiles") return hermesHome;
+	return process.env.MERCURY_HOME?.trim();
+}
+
 async function loadMercuryOmpMd(_ctx: LoadContext): Promise<LoadResult<ContextFile>> {
-	const mercuryHome = process.env.MERCURY_HOME?.trim();
+	const mercuryHome = mercuryPromptHome();
 	if (!mercuryHome) return { items: [], warnings: [] };
-	// MERCURY LAYOUT: config/ first, top-level fallback.
-	// PROFILE COMPOSITION (user directive): the spawning profile's OMP.md
-	// overrides the shared one — same mechanics as the memory composite.
-	const profileHome = process.env.MERCURY_PROFILE_HOME?.trim();
 	const filePath =
-		profileHome && (await readFile(path.join(profileHome, "config", "OMP.md")))
-			? path.join(profileHome, "config", "OMP.md")
-			: (await readFile(path.join(mercuryHome, "config", "OMP.md")))
-				? path.join(mercuryHome, "config", "OMP.md")
-				: path.join(mercuryHome, "OMP.md");
+		(await readFile(path.join(mercuryHome, "config", "OMP.md"))) !== null
+			? path.join(mercuryHome, "config", "OMP.md")
+			: path.join(mercuryHome, "OMP.md");
 	const content = await readFile(filePath);
 	if (!content) return { items: [], warnings: [] };
 	return {
@@ -352,7 +354,7 @@ registerProvider<ContextFile>(contextFileCapability.id, {
 // omp READS them here as user-level context files. Write discipline:
 // hermes-owned — omp consumes, never writes.
 async function loadMercurySharedMemory(_ctx: LoadContext): Promise<LoadResult<ContextFile>> {
-	const mercuryHome = process.env.MERCURY_HOME?.trim();
+	const mercuryHome = mercuryPromptHome();
 	if (!mercuryHome) return { items: [], warnings: [] };
 	const items: ContextFile[] = [];
 	// HERMES-OMP PATCH (config/ reorg): AGENTS.md rides the same shared
@@ -367,23 +369,23 @@ async function loadMercurySharedMemory(_ctx: LoadContext): Promise<LoadResult<Co
 	// arrive; ordering is explicit (persona → state → working rules).
 	// MERCURY LAYOUT: shared .md files live in $MERCURY_HOME/config/; the
 	// top level is the pre-layout fallback (one release).
-	// PROFILE COMPOSITION (user directive): when the spawning hermes agent
-	// ran under a secondary profile, MERCURY_PROFILE_HOME points at that
-	// profile's home — the SAME profile mechanics composed into omp's
-	// prompt. The profile's config/<name> OVERRIDES the shared file of the
-	// same name; names absent from the profile fall through to shared.
-	// Nested subagents inherit this through env passthrough.
+	// Both engines read this profile's files. Nested children inherit its home.
 	const sharedCfg = path.join(mercuryHome, "config");
-	const profileCfg = process.env.MERCURY_PROFILE_HOME?.trim()
-		? path.join(process.env.MERCURY_PROFILE_HOME.trim(), "config")
-		: null;
-	const names = ["SOUL.md", "MEMORY.md", "USER.md", "AGENTS.md"] as const;
+	// User context deduplicates by scope. Include the engine supplement in
+	// this composite too, so OMP.md cannot shadow the persona (or vice versa).
+	const names = ["SOUL.md", "MEMORY.md", "USER.md", "AGENTS.md", "OMP.md"] as const;
 	const parts: string[] = [];
+	if (path.basename(path.dirname(mercuryHome)) === "profiles") {
+		parts.push(
+			`Active Mercury profile: ${path.basename(mercuryHome)}. Your persona, memory and instructions belong to ${sharedCfg}/.`,
+		);
+	}
 	for (const name of names) {
-		let content: string | undefined;
-		if (profileCfg) content = (await readFile(path.join(profileCfg, name))) ?? undefined;
-		if (!content) content = (await readFile(path.join(sharedCfg, name))) ?? undefined;
-		if (!content) content = (await readFile(path.join(mercuryHome, name))) ?? undefined;
+		let content = await readFile(path.join(sharedCfg, name));
+		if (content === null) content = await readFile(path.join(mercuryHome, name));
+		if (content === null && (name === "MEMORY.md" || name === "USER.md")) {
+			content = await readFile(path.join(mercuryHome, "memories", name));
+		}
 		if (content) parts.push(content.trimEnd());
 	}
 	if (!parts.length) return { items: [], warnings: [] };
@@ -402,7 +404,9 @@ registerProvider<ContextFile>(contextFileCapability.id, {
 	displayName: "Mercury shared memory (SOUL/MEMORY/USER)",
 	description:
 		"Read the shared hermes-owned memory files (SOUL.md, MEMORY.md, USER.md, AGENTS.md) from the Mercury config dir (omp reads; hermes writes)",
-	priority: PRIORITY,
+	// The explicitly selected Mercury persona owns the user context scope;
+	// project-level instructions still compose through their separate keys.
+	priority: 101,
 	load: loadMercurySharedMemory,
 });
 

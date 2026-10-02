@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Reasoning controls follow the selected model's advertised levels, and Mercury profile launches load their own persona, memory, and OMP instructions together.
 - Mercury Linux binaries use explicit portable Bun targets, including separate musl builds and native addon caches. Release packaging rejects Nix store loader paths and mismatched native addon ABIs.
 
 - Align settings reload and runtime override regressions with Mercury's sole task model role.

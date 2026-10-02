@@ -14,8 +14,8 @@ Query Shopify Admin/Storefront GraphQL APIs via curl.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/productivity/shopify` |
-| Path | `optional-skills/productivity\shopify` |
+| Source | Optional — install with `mercury skills install official/productivity/shopify` |
+| Path | `optional-skills/productivity/shopify` |
 | Version | `1.0.0` |
 | Author | community |
 | License | MIT |
@@ -26,7 +26,7 @@ Query Shopify Admin/Storefront GraphQL APIs via curl.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Shopify — Admin & Storefront GraphQL APIs
@@ -40,7 +40,7 @@ The REST Admin API is legacy since 2024-04 and only receives security fixes. **U
 1. In Shopify admin: **Settings → Apps and sales channels → Develop apps → Create an app**.
 2. Click **Configure Admin API scopes**, select what you need (examples below), save.
 3. **Install app** → the Admin API access token appears ONCE. Copy it immediately — Shopify will never show it again. Tokens start with `shpat_`.
-4. Save to `${HERMES_HOME:-~/.hermes}/.env`:
+4. Save to `$MERCURY_HOME/.env`:
    ```
    SHOPIFY_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxx
    SHOPIFY_STORE_DOMAIN=my-store.myshopify.com

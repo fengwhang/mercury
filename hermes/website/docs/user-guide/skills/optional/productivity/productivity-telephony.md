@@ -14,8 +14,8 @@ Provision Twilio numbers, SMS/MMS, and AI outbound calls.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/productivity/telephony` |
-| Path | `optional-skills/productivity\telephony` |
+| Source | Optional — install with `mercury skills install official/productivity/telephony` |
+| Path | `optional-skills/productivity/telephony` |
 | Version | `1.0.0` |
 | Author | Nous Research |
 | License | MIT |
@@ -26,7 +26,7 @@ Provision Twilio numbers, SMS/MMS, and AI outbound calls.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Telephony — Numbers, Calls, and Texts without Core Tool Changes
@@ -34,7 +34,7 @@ The following is the complete skill definition that Hermes loads when this skill
 This optional skill gives Hermes practical phone capabilities while keeping telephony out of the core tool list.
 
 It ships with a helper script, `scripts/telephony.py`, that can:
-- save provider credentials into `${HERMES_HOME:-~/.hermes}/.env`
+- save provider credentials into `$MERCURY_HOME/.env`
 - search for and buy a Twilio phone number
 - remember that owned number for later sessions
 - send SMS / MMS from the owned number
@@ -121,7 +121,7 @@ Why:
 
 The skill persists telephony state in two places:
 
-### `${HERMES_HOME:-~/.hermes}/.env`
+### `$MERCURY_HOME/.env`
 Used for long-lived provider credentials and owned-number IDs, for example:
 - `TWILIO_ACCOUNT_SID`
 - `TWILIO_AUTH_TOKEN`
@@ -132,7 +132,7 @@ Used for long-lived provider credentials and owned-number IDs, for example:
 - `VAPI_PHONE_NUMBER_ID`
 - `PHONE_PROVIDER` (AI call provider: bland or vapi)
 
-### `~/.hermes/telephony_state.json`
+### `$HERMES_HOME/telephony_state.json`
 Used for skill-only state that should survive across sessions, for example:
 - remembered default Twilio number / SID
 - remembered Vapi phone number ID
@@ -147,7 +147,7 @@ This means:
 After installing this skill, locate the script like this:
 
 ```bash
-SCRIPT="$(find ~/.hermes/skills -path '*/telephony/scripts/telephony.py' -print -quit)"
+SCRIPT="$(find "$MERCURY_HOME/skills" -path '*/telephony/scripts/telephony.py' -print -quit)"
 ```
 
 If `SCRIPT` is empty, the skill is not installed yet.
@@ -157,8 +157,8 @@ If `SCRIPT` is empty, the skill is not installed yet.
 This is an official optional skill, so install it from the Skills Hub:
 
 ```bash
-hermes skills search telephony
-hermes skills install official/productivity/telephony
+mercury skills search telephony
+mercury skills install official/productivity/telephony
 ```
 
 ## Provider setup
@@ -258,7 +258,7 @@ python "$SCRIPT" save-twilio AC... auth_token_here
 python "$SCRIPT" twilio-search --country US --area-code 702 --limit 10
 ```
 
-3. Buy it and save it into `${HERMES_HOME:-~/.hermes}/.env` + state:
+3. Buy it and save it into `$MERCURY_HOME/.env` + state:
 ```bash
 python "$SCRIPT" twilio-buy "+17025551234" --save-env
 ```
@@ -420,7 +420,7 @@ After setup, you should be able to do all of the following with just this skill:
 
 1. `diagnose` shows provider readiness and remembered state
 2. search and buy a Twilio number
-3. persist that number to `${HERMES_HOME:-~/.hermes}/.env`
+3. persist that number to `$MERCURY_HOME/.env`
 4. send an SMS from the owned number
 5. poll inbound texts for the owned number later
 6. place a direct Twilio call

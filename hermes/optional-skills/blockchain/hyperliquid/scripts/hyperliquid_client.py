@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 
-USER_AGENT = "HermesAgent/1.0"
+USER_AGENT = "Mercury/1.0"
 DEFAULT_USER_ENV = "HYPERLIQUID_USER_ADDRESS"
 DEFAULT_API_BASE = "https://api.hyperliquid.xyz"
 
@@ -55,7 +55,7 @@ def _dotenv_paths() -> List[Path]:
     if project_env.exists():
         paths.append(project_env)
 
-    user_env = _hermes_home() / ".env"
+    user_env = Path(os.environ["MERCURY_HOME"]) / ".env" if os.environ.get("MERCURY_HOME") else _hermes_home() / ".env"
     if user_env.exists():
         paths.append(user_env)
 

@@ -14,8 +14,8 @@ List, auth, and call MCP servers/tools from the terminal.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mcp/mcporter` |
-| Path | `optional-skills/mcp\mcporter` |
+| Source | Optional — install with `mercury skills install official/mcp/mcporter` |
+| Path | `optional-skills/mcp/mcporter` |
 | Version | `1.0.0` |
 | Author | community |
 | License | MIT |
@@ -25,7 +25,7 @@ List, auth, and call MCP servers/tools from the terminal.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # mcporter

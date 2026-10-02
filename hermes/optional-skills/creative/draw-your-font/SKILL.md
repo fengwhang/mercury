@@ -7,7 +7,7 @@ license: MIT
 platforms: [linux, macos, windows]
 required_commands: [node, npx]
 metadata:
-  hermes:
+  mercury:
     tags: [font, handwriting, typography, ttf, woff, vision, creative]
     category: creative
     homepage: https://github.com/danilo-znamerovszkij/draw-your-font

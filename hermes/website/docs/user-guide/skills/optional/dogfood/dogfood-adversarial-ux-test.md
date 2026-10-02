@@ -14,8 +14,8 @@ Roleplay a hostile user to find and triage UX pain points.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/dogfood/adversarial-ux-test` |
-| Path | `optional-skills/dogfood\adversarial-ux-test` |
+| Source | Optional — install with `mercury skills install official/dogfood/adversarial-ux-test` |
+| Path | `optional-skills/dogfood/adversarial-ux-test` |
 | Version | `1.0.0` |
 | Author | Omni @ Comelse |
 | License | MIT |
@@ -26,7 +26,7 @@ Roleplay a hostile user to find and triage UX pain points.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Adversarial UX Test

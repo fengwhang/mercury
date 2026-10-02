@@ -3197,8 +3197,8 @@ function mapOpenRouterThinking(entry: OpenAICompatibleModelRecord): ThinkingConf
 	const reasoning = entry.reasoning;
 	if (!isRecord(reasoning)) return undefined;
 	const supportedEfforts = reasoning.supported_efforts;
-	if (!Array.isArray(supportedEfforts)) return undefined;
-	const efforts = THINKING_EFFORTS.filter(effort => supportedEfforts.includes(effort));
+	if (supportedEfforts !== null && !Array.isArray(supportedEfforts)) return undefined;
+	const efforts = THINKING_EFFORTS.filter(effort => supportedEfforts === null || supportedEfforts.includes(effort));
 	if (efforts.length === 0) return undefined;
 	const defaultLevel =
 		typeof reasoning.default_effort === "string"
@@ -3208,7 +3208,7 @@ function mapOpenRouterThinking(entry: OpenAICompatibleModelRecord): ThinkingConf
 		mode: "effort",
 		efforts,
 		...(defaultLevel !== undefined && efforts.includes(defaultLevel) ? { defaultLevel } : {}),
-		...(reasoning.mandatory === true ? { requiresEffort: true } : {}),
+		requiresEffort: reasoning.mandatory === true,
 	};
 }
 
@@ -3252,7 +3252,11 @@ export function openrouterModelManagerOptions(
 					return {
 						...baseModel,
 						reasoning: params.includes("reasoning"),
-						...(thinking !== undefined ? { thinking } : {}),
+						thinking,
+						reasoningCapabilities: {
+							effortSelection: thinking !== undefined,
+							mandatory: isRecord(entry.reasoning) && entry.reasoning.mandatory === true,
+						},
 						input: modality.includes("image") ? ["text", "image"] : ["text"],
 						cost: {
 							input: parseFloat(String(pricing?.prompt ?? "0")) * 1_000_000,

@@ -15,7 +15,7 @@ Audio spectrograms/features (mel, chroma, MFCC) via CLI.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/media\songsee` |
+| Path | `skills/media/songsee` |
 | Version | `1.0.0` |
 | Author | community |
 | License | MIT |
@@ -25,7 +25,7 @@ Audio spectrograms/features (mel, chroma, MFCC) via CLI.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # songsee

@@ -20,4 +20,7 @@ except (ModuleNotFoundError, ImportError):
     def get_hermes_home() -> Path:
         """Return the Mercury home directory (default: ``~/.mercury``)."""
         val = os.environ.get("HERMES_HOME", "").strip()
-        return Path(val) if val else Path.home() / ".mercury"
+        if val:
+            return Path(val)
+        mercury = os.environ.get("MERCURY_HOME", "").strip()
+        return Path(mercury) / "hermes" if mercury else Path.home() / ".mercury"

@@ -7,6 +7,7 @@ import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl, resolveVertexEndpointHost } from "@oh-my-pi/pi-catalog/hosts";
 import {
+	clampThinkingLevelForModel,
 	defaultSupportedEffort,
 	mapEffortToAnthropicAdaptiveEffort,
 	mapEffortToGoogleThinkingLevel,
@@ -1903,6 +1904,7 @@ function resolveOpenAiReasoningEffort<TApi extends Api>(
 ): Effort | undefined {
 	const reasoning = options?.reasoning;
 	if (!reasoning || !model.reasoning) return undefined;
+	if (model.reasoningCapabilities !== undefined) return clampThinkingLevelForModel(model, reasoning);
 	// Models that reason natively but expose no effort dial carry
 	// `thinking: undefined` (baked at build time from
 	// `compat.supportsReasoningEffort: false` on openai-responses*). The
@@ -1954,7 +1956,10 @@ function normalizeMandatoryReasoningOptions<TApi extends Api>(
 	) {
 		return options;
 	}
-	const floor = defaultSupportedEffort(model);
+	const floor =
+		model.reasoningCapabilities !== undefined
+			? (model.thinking?.defaultLevel ?? defaultSupportedEffort(model))
+			: defaultSupportedEffort(model);
 	if (floor === undefined) return options;
 	return { ...options, reasoning: floor, disableReasoning: undefined, forceReasoningOff: undefined };
 }

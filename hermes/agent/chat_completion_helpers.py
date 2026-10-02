@@ -1946,6 +1946,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             provider=getattr(agent, "provider", None),
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
+            codex_access_token=getattr(agent, "api_key", None) if is_codex_backend else None,
             is_xai_responses=is_xai_responses,
             github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
             replay_encrypted_reasoning=bool(

@@ -7,7 +7,7 @@ license: MIT
 dependencies: [obliteratus, torch, transformers, bitsandbytes, accelerate, safetensors]
 platforms: [linux, macos]
 metadata:
-  hermes:
+  mercury:
     tags: [Abliteration, Uncensoring, Refusal-Removal, LLM, Weight-Projection, SVD, Mechanistic-Interpretability, HuggingFace, Model-Surgery]
     related_skills: [serving-llms-vllm, llama-cpp, huggingface-tokenizers]
 ---

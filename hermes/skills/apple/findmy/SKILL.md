@@ -6,7 +6,7 @@ author: Hermes Agent
 license: MIT
 platforms: [macos]
 metadata:
-  hermes:
+  mercury:
     tags: [FindMy, AirTag, location, tracking, macOS, Apple]
 ---
 

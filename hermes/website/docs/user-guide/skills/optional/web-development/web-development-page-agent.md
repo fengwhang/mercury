@@ -14,8 +14,8 @@ Embed an in-page natural-language GUI copilot in web apps.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/web-development/page-agent` |
-| Path | `optional-skills/web-development\page-agent` |
+| Source | Optional — install with `mercury skills install official/web-development/page-agent` |
+| Path | `optional-skills/web-development/page-agent` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -25,7 +25,7 @@ Embed an in-page natural-language GUI copilot in web apps.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Mercury loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # page-agent
