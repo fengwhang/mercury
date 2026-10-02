@@ -28,9 +28,10 @@ class TestParseReasoningCapabilities:
             "supports_reasoning": True,
             "supported_efforts": ["low", "medium", "high"],
             "mandatory": False,
+            "supports_effort_selection": True,
         }
 
-    def test_reasoning_supported_all_efforts_when_field_omitted(self):
+    def test_reasoning_supported_without_effort_selector_when_field_omitted(self):
         item = {
             "id": "deepseek/deepseek-chat",
             "supported_parameters": ["reasoning", "tools"],
@@ -39,6 +40,7 @@ class TestParseReasoningCapabilities:
         caps = parse_openrouter_reasoning_capabilities(item)
         assert caps["supports_reasoning"] is True
         assert caps["supported_efforts"] is None  # None = every effort accepted
+        assert caps["supports_effort_selection"] is False
         assert caps["mandatory"] is False
 
     def test_reasoning_supported_without_reasoning_object(self):
@@ -47,6 +49,7 @@ class TestParseReasoningCapabilities:
         caps = parse_openrouter_reasoning_capabilities(item)
         assert caps["supports_reasoning"] is True
         assert caps["supported_efforts"] is None
+        assert caps["supports_effort_selection"] is False
 
     def test_mandatory_flag(self):
         item = {
@@ -55,6 +58,7 @@ class TestParseReasoningCapabilities:
         }
         caps = parse_openrouter_reasoning_capabilities(item)
         assert caps["mandatory"] is True
+        assert caps["supports_effort_selection"] is True
 
     def test_reasoning_object_untrusted_without_supported_parameters_entry(self):
         # Top-level reasoning object present but supported_parameters omits

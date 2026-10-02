@@ -4162,6 +4162,17 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                         # hatch for non-standard setups).
                         _models = _whole.get("models")
                         if isinstance(_models, dict):
+                            _reasoning = _models.get("reasoning_overrides")
+                            if isinstance(_reasoning, dict):
+                                _agent = user_config.get("agent")
+                                if not isinstance(_agent, dict):
+                                    _agent = user_config["agent"] = {}
+                                _overrides = _agent.get("reasoning_overrides")
+                                if not isinstance(_overrides, dict):
+                                    _overrides = _agent["reasoning_overrides"] = {}
+                                for _selector, _level in _reasoning.items():
+                                    if isinstance(_selector, str) and isinstance(_level, str):
+                                        _overrides.setdefault(_selector, "none" if _level == "off" else _level)
                             _m_default = str(_models.get("default") or "").strip()
                             if _m_default and not (user_config.get("model") or {}).get("default"):
                                 _prov, _, _mid = _m_default.partition("/")

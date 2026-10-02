@@ -53,11 +53,18 @@ def parse_config(path=None):
         if not isinstance(chain, list) or any(not isinstance(item, str) for item in chain):
             raise ValueError(f"models.{key} must be a list of model names")
         slots[key] = [item for item in chain if item]
+    overrides = models.get("reasoning_overrides") or {}
+    if not isinstance(overrides, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in overrides.items()):
+        raise ValueError("models.reasoning_overrides must map model names to reasoning levels")
+    slots["reasoning_overrides"] = overrides
     return slots
 
 
 def validate(slots, need_delegate=False):
     errors = []
+    for selector, level in (slots.get("reasoning_overrides") or {}).items():
+        if thinking_level_from_config(level) is None:
+            errors.append(f"models.reasoning_overrides[{selector!r}] has invalid reasoning level {level!r}")
     if not slots["default"]:
         errors.append("models.default is empty — set the main session model")
     # OPTIONAL fallbacks (user directive 2026-09-05): the wizard allows
@@ -127,11 +134,23 @@ def thinking_level_from_config(raw, allow_auto=True):
     return None  # invalid -> caller reports
 
 
+def delegate_fallback_selectors(slots):
+    """Attach each fallback's configured effort to its native OMP selector."""
+    chain = [m for m in (slots.get("delegate_fallback_chain") or []) if m] or [slots["delegate_fallback"]]
+    overrides = slots.get("reasoning_overrides") or {}
+    result = []
+    for model in chain:
+        level = overrides.get(model)
+        if not level and model == slots["delegate_fallback"]:
+            level = slots.get("delegate_fallback_thinking_level")
+        result.append(f"{model}:{level}" if model and level else model)
+    return result
+
+
 def render(slots, delegation=False):
     if delegation:
         print(f"OMP_MODEL={slots['delegate_model']}")
-        chain = [m for m in (slots.get("delegate_fallback_chain") or [])
-                 if m] or [slots["delegate_fallback"]]
+        chain = delegate_fallback_selectors(slots)
         print(f"OMP_FALLBACK_CHAIN={','.join(chain)}")
         # MERCURY-OMP PATCH (user directive): delegate thinking is a CONFIG
         # PARAMETER (models.delegate_thinking_level, default xhigh) — never
@@ -139,7 +158,9 @@ def render(slots, delegation=False):
         # inherits the delegate level (SKIP=EMPTY, never auto-mirrored at
         # write time); an explicit value rides as OMP_FALLBACK_THINKING_LEVEL
         # for forward-compat (single-level runs keep using OMP_THINKING_LEVEL).
-        level = thinking_level_from_config(slots.get("delegate_thinking_level"))
+        level = thinking_level_from_config(
+            (slots.get("reasoning_overrides") or {}).get(slots["delegate_model"])
+            or slots.get("delegate_thinking_level"))
         print(f"OMP_THINKING_LEVEL={level or DEFAULT_THINKING_LEVEL}")
         _fb_raw = str(slots.get("delegate_fallback_thinking_level") or "").strip().lower()
         _fb = thinking_level_from_config(_fb_raw) if _fb_raw else ""
@@ -363,14 +384,16 @@ def render_omp_subtree(slots, target=None):
         # HERMES-OMP PATCH (ordered delegate fallback): the user-configured
         # chain (models.delegate_fallback_chain) is rendered in ORDER; the
         # single legacy slot remains the default when no chain is set.
-        f'    fallbackChains: {{"{slots["delegate_model"]}": {json.dumps([m for m in (slots.get("delegate_fallback_chain") or []) if m] or [slots["delegate_fallback"]])}}}\n'
+        f'    fallbackChains: {{"{slots["delegate_model"]}": {json.dumps(delegate_fallback_selectors(slots))}}}\n'
     )
     # HERMES-OMP PATCH (thinking pin): interactive omp's /model picker shows
     # defaultThinkingLevel (omp schema default "high"). Pin it from the single
     # source of truth models.delegate_thinking_level (default xhigh) so the
     # TUI default matches delegated children (OMP_THINKING_LEVEL). "off" has
     # no meaning in that enum — omit it and let the schema default apply.
-    _think = thinking_level_from_config(slots.get("delegate_thinking_level"))
+    _think = thinking_level_from_config(
+        (slots.get("reasoning_overrides") or {}).get(slots["delegate_model"])
+        or slots.get("delegate_thinking_level"))
     if _think and _think != "off":
         omp_block += f"  defaultThinkingLevel: {_think}\n"
     omp_provider = _hermes_web_omp_provider(text)

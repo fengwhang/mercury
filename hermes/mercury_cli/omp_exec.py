@@ -83,6 +83,8 @@ def _exec_omp(ctx: CommandContext) -> CommandReply:
 
     # task as ONE argv element: verbatim by construction
     cmd = [omp_path, "--model", model, "-p", task]
+    if env_map.get("OMP_THINKING_LEVEL"):
+        cmd += ["--thinking", env_map["OMP_THINKING_LEVEL"]]
     env = os.environ.copy()
     if "OMP_FALLBACK_CHAIN" in env_map:
         env["OMP_FALLBACK_CHAIN"] = env_map["OMP_FALLBACK_CHAIN"]

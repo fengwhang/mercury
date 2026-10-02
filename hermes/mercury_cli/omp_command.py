@@ -107,6 +107,13 @@ def cmd_omp(args) -> int:
     # No explicit model in the passthrough → pin the delegate model.
     if not any(a == "--model" or a.startswith("--model=") for a in passthrough):
         passthrough = ["--model", model] + passthrough
+        # The native defaultThinkingLevel setting has no "off" value.
+        # Pass the configured effort explicitly, including a selected disable,
+        # while preserving a user's explicit model or thinking override.
+        if not any(a == "--thinking" or a.startswith("--thinking=") for a in passthrough):
+            thinking = env_overrides.get("OMP_THINKING_LEVEL")
+            if thinking:
+                passthrough = ["--thinking", thinking] + passthrough
 
     if getattr(args, "print_cmd", False):
         print(shlex.join([omp_bin] + passthrough))

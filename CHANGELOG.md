@@ -5,6 +5,11 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Scope setup reasoning choices to each model's serving-provider metadata,
+  respect mandatory reasoning and API defaults, and distinguish an omitted
+  effort selector from an explicit unrestricted one. Configure second-order
+  fallback effort and carry each selection through both engines' retry chains.
+
 - Let setup choose a provider independently for each main and delegate
   fallback, including second-order fallbacks, with matching model catalogs
   and pricing. Preserve saved provider choices on reconfiguration.

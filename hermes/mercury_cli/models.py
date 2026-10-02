@@ -1715,8 +1715,10 @@ def parse_openrouter_reasoning_capabilities(item: Any) -> Optional[dict[str, Any
     reasoning controls at all, and a top-level ``reasoning`` object may add
     detail (``mandatory``, ``supported_efforts``). Per OpenRouter semantics
     the top-level object is only trusted after ``supported_parameters``
-    confirms the route accepts reasoning controls; ``supported_efforts``
-    omitted/None means every effort is accepted.
+    confirms the route accepts reasoning controls. An explicit null
+    ``supported_efforts`` accepts every gateway effort; an omitted field
+    exposes no effort selector. Keep that distinction for setup while
+    preserving the runtime clamp's legacy supported_efforts field.
 
     Returns:
         ``{"supports_reasoning": True, "supported_efforts": [...] | None,
@@ -1749,11 +1751,56 @@ def parse_openrouter_reasoning_capabilities(item: Any) -> Optional[dict[str, Any
                 for effort in raw_efforts
                 if str(effort).strip()
             ))
-    return {
+    result: dict[str, Any] = {
         "supports_reasoning": True,
         "supported_efforts": efforts,
         "mandatory": mandatory,
+        "supports_effort_selection": (
+            isinstance(reasoning, dict)
+            and "supported_efforts" in reasoning
+            and (reasoning["supported_efforts"] is None or isinstance(reasoning["supported_efforts"], list))
+        ),
     }
+    if isinstance(reasoning, dict) and isinstance(reasoning.get("default_effort"), str):
+        result["default_effort"] = reasoning["default_effort"].strip().lower()
+    return result
+
+
+def model_reasoning_capabilities(provider: str, model: str) -> Optional[dict[str, Any]]:
+    """Reasoning controls declared by the serving provider for setup.
+
+    Unknown metadata stays unknown: a catalog outage or an unlisted model
+    must not turn into a made-up effort ladder. Never infer an aggregator's
+    controls from the model author's direct API.
+    """
+    provider = normalize_provider(provider)
+    if provider == "openrouter":
+        return openrouter_model_reasoning_capabilities(model, allow_fetch=True)
+    if provider == "nous":
+        return nous_model_reasoning_capabilities(model, allow_fetch=True)
+    if provider == "lmstudio":
+        model_config = _get_model_config_dict()
+        base_url = model_config.get("base_url") if model_config.get("provider") == "lmstudio" else None
+        options = lmstudio_model_reasoning_options(model, base_url, os.getenv("LMSTUDIO_API_KEY"))
+        if not options:
+            return None
+        return {"supports_reasoning": True, "supported_efforts": options,
+                "supports_effort_selection": True, "mandatory": not any(o in ("off", "none") for o in options)}
+    if provider == "copilot":
+        catalog = fetch_github_model_catalog(api_key=_resolve_copilot_catalog_api_key())
+        if not catalog or not any(item.get("id") == model for item in catalog):
+            return None
+        options = github_model_reasoning_efforts(model, catalog=catalog)
+        return {"supports_reasoning": bool(options), "supported_efforts": options,
+                "supports_effort_selection": bool(options), "mandatory": "none" not in options}
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(provider)
+    options = profile.supported_reasoning_efforts(model) if profile else None
+    if options is None:
+        return None
+    return {"supports_reasoning": bool(options), "supported_efforts": list(options),
+            "supports_effort_selection": bool(options), "mandatory": "none" not in options}
 
 
 # model id → parsed reasoning capabilities (see

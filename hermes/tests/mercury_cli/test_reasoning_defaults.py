@@ -216,7 +216,7 @@ def test_slot_reasoning_explicit_picks_map_and_store(tmp_path, monkeypatch):
     config: dict = {}
     answers = iter(["off", "high", "auto", "low"])
 
-    def fake_pick(title, current="", allow_auto=False):
+    def fake_pick(title, current="", allow_auto=False, **kwargs):
         return next(answers)
 
     with patch.object(setup_mod, "_pick_reasoning_level", side_effect=fake_pick):

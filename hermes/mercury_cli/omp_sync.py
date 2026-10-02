@@ -18,10 +18,12 @@ both engines in sync.
 from __future__ import annotations
 
 import os
+import json
 import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def _mercury_home() -> Path:
@@ -163,6 +165,20 @@ def _current_chains() -> dict[str, list[str]]:
     return chains
 
 
+def _current_reasoning_overrides() -> dict[str, str]:
+    """Read provider-qualified model reasoning choices from the shared file."""
+    import yaml
+
+    try:
+        whole = yaml.safe_load(_unified_path().read_text(encoding="utf-8")) or {}
+        overrides = (whole.get("models") or {}).get("reasoning_overrides") or {}
+        if isinstance(overrides, dict):
+            return {str(k): str(v) for k, v in overrides.items() if isinstance(v, str)}
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+        pass
+    return {}
+
+
 def _strip_hermes_fallback_mirror(lines: list[str]) -> list[str]:
     """Remove hermes.subtree fallback_providers (block-seq list of dicts).
 
@@ -201,7 +217,7 @@ def _strip_hermes_fallback_mirror(lines: list[str]) -> list[str]:
     return out
 
 
-def _write_slots(update: dict[str, str]) -> bool:
+def _write_slots(update: dict[str, Any]) -> bool:
     """Merge updates into the shared models: block, preserving everything else.
 
     Line-oriented merge (same discipline as the bridge): only rewrites
@@ -216,6 +232,15 @@ def _write_slots(update: dict[str, str]) -> bool:
     seen: dict[str, bool] = {k: False for k in update}
     wrote_any = False
     _skip_seq = False
+
+    def _slot_line(key, value):
+        if isinstance(value, dict):
+            return f"  {key}: {json.dumps(value)}"
+        if isinstance(value, (list, tuple)):
+            items = ", ".join(f"'{x}'" for x in value)
+            return f"  {key}: [{items}]"
+        return f"  {key}: {value}"
+
     for line in lines:
         if re.match(r"^models:\s*$", line):
             in_models = True
@@ -223,36 +248,26 @@ def _write_slots(update: dict[str, str]) -> bool:
             out.append(line)
             continue
         if _skip_seq:
-            # Drop the replaced chain's stale block-sequence items. Indent
-            # is 2+ spaces (save_config normalizes flow chains to 4-space
-            # block-seq); blanks inside the run are skipped with it. The
-            # first non-blank non-item line ends the run and is processed
-            # normally below (comments reset the run — preserved, never eaten).
-            if line.strip() == "" or re.match(r"^  +-(\s|$)", line):
+            # Drop a replaced collection's old nested mapping or sequence.
+            # A sibling key ends the run; two-space comments are preserved.
+            if line.strip() == "" or line.startswith("    ") or re.match(r"^  +-(\s|$)", line):
                 continue
             _skip_seq = False
         if in_models and re.match(r"^\S", line):
             # leaving the block: append any never-seen slots before the next top-level key
             for k, v in update.items():
                 if not seen[k]:
-                    if isinstance(v, (list, tuple)):
-                        items = ", ".join(f"'{x}'" for x in v)
-                        out.append(f"  {k}: [{items}]")
-                    else:
-                        out.append(f"  {k}: {v}")
+                    out.append(_slot_line(k, v))
                     seen[k] = True
                     wrote_any = True
             in_models = False
-        m = re.match(r"^  (default|fallback|delegate_model|delegate_fallback|delegate_fallback_chain|fallback_chain|delegate_thinking_level|delegate_fallback_thinking_level|orchestrator_thinking_level):\s*(.*)$", line) if in_models else None
+        m = re.match(r"^  (default|fallback|delegate_model|delegate_fallback|delegate_fallback_chain|fallback_chain|delegate_thinking_level|delegate_fallback_thinking_level|orchestrator_thinking_level|reasoning_overrides):\s*(.*)$", line) if in_models else None
         if m and m.group(1) in update:
             v = update[m.group(1)]
             # ordered chain: write as a YAML flow sequence, single-quoted ids
-            if isinstance(v, (list, tuple)):
-                items = ", ".join(f"'{x}'" for x in v)
-                out.append(f"  {m.group(1)}: [{items}]")
+            out.append(_slot_line(m.group(1), v))
+            if isinstance(v, (list, tuple, dict)):
                 _skip_seq = True
-            else:
-                out.append(f"  {m.group(1)}: {v}")
             seen[m.group(1)] = True
             wrote_any = True
             continue
@@ -261,11 +276,7 @@ def _write_slots(update: dict[str, str]) -> bool:
         # EOF inside models: block
         for k, v in update.items():
             if not seen[k]:
-                if isinstance(v, (list, tuple)):
-                    items = ", ".join(f"'{x}'" for x in v)
-                    out.append(f"  {k}: [{items}]")
-                else:
-                    out.append(f"  {k}: {v}")
+                out.append(_slot_line(k, v))
                 seen[k] = True
                 wrote_any = True
     # Stale-mirror clearing (see docstring): any fallback-slot write
@@ -282,11 +293,7 @@ def _write_slots(update: dict[str, str]) -> bool:
         out.append("")
         out.append("models:")
         for k, v in update.items():
-            if isinstance(v, (list, tuple)):
-                items = ", ".join(f"'{x}'" for x in v)
-                out.append(f"  {k}: [{items}]")
-            else:
-                out.append(f"  {k}: {v}")
+            out.append(_slot_line(k, v))
             wrote_any = True
     if wrote_any:
         path.write_text("\n".join(out).rstrip("\n") + "\n")
