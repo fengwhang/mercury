@@ -5,6 +5,8 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.8] — nightly
+
 - Scope setup reasoning choices to each model's serving-provider metadata,
   respect mandatory reasoning and API defaults, and distinguish an omitted
   effort selector from an explicit unrestricted one. Configure second-order

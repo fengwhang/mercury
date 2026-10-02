@@ -102,8 +102,8 @@ curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install-nigh
 ```
 
 Stable is **[v0.3.7](https://github.com/fengwhang/mercury/releases/tag/v0.3.7)**.
-The matching **[v0.3.7-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.7-nightly)**
-uses identical packages. The nightly installer selects the newest published prerelease. Stable remains
+The latest nightly is **[v0.3.8-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.8-nightly)**.
+The nightly installer selects the newest published prerelease. Stable remains
 on its own update channel; nightly is selected explicitly by this wrapper or
 `--channel nightly`.
 
