@@ -338,9 +338,10 @@ sections. `models.default` selects the Hermes chat model;
 Both primary fallback slots and their ordered chains are optional.
 Each main and delegate fallback, including second-order fallbacks, can use
 its own provider selected in setup.
-Reasoning menus use that provider's per-model API metadata, respect mandatory
-reasoning, and include second-order fallbacks. If no effort choices are
-published or available, setup keeps the current setting and explains why.
+Setup asks for reasoning immediately after each model selection, including
+second-order fallbacks. Menus use that provider's per-model API metadata and
+respect mandatory reasoning. If no effort choices are published or available,
+setup keeps the current setting and explains why.
 Selections are stored in `models.reasoning_overrides` and applied to both
 engines' fallback chains.
 Use `mercury setup model` for provider-aware selection and

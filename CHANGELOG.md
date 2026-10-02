@@ -5,6 +5,9 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Ask for reasoning immediately after each model selection in setup,
+  including main, delegate, and second-order fallback models.
+
 ## [0.3.8] — nightly
 
 - Scope setup reasoning choices to each model's serving-provider metadata,

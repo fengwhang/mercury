@@ -135,7 +135,7 @@ def _bridge():
     return bridge
 
 
-def test_all_six_picks_save_and_reach_runtime_chains(interactive, monkeypatch):
+def test_each_model_is_followed_by_reasoning_and_reaches_runtime_chains(interactive, monkeypatch):
     from mercury_cli.config import load_config, save_config
 
     names = ["main", "fallback", "second", "delegate", "delegate-fallback", "delegate-second"]
@@ -143,21 +143,41 @@ def test_all_six_picks_save_and_reach_runtime_chains(interactive, monkeypatch):
     _seed_catalog(monkeypatch, [_entry(n, ["none" if level == "off" else level], mandatory=level != "off")
                                 for n, level in zip(names, levels)])
     selected = ["openrouter/" + n for n in names]
-    _write_slots({
-        "default": selected[0], "fallback": selected[1],
-        "fallback_chain": selected[1:3], "delegate_model": selected[3],
-        "delegate_fallback": selected[4], "delegate_fallback_chain": selected[4:],
-    })
+    _write_slots({"default": selected[0]})
     menus = []
+    events = []
+    remaining = iter(selected[1:])
+
+    def select_main():
+        events.append(("model", selected[0]))
+
+    def select_slot(catalog, **kwargs):
+        model = next(remaining)
+        events.append(("model", model))
+        return model
+
+    def select_provider(choices, default=0, title=""):
+        events.append(("provider", title))
+        return default
 
     def choose(title, choices, default):
         menus.append((title, choices))
+        events.append(("reasoning", title.split(" — ", 1)[0]))
         return default
 
+    monkeypatch.setattr("mercury_cli.main.select_provider_and_model", select_main)
+    monkeypatch.setattr("mercury_cli.main._prompt_provider_choice", select_provider)
+    monkeypatch.setattr("mercury_cli.auth._prompt_model_selection", select_slot)
+    monkeypatch.setattr(models, "provider_model_ids", lambda *args, **kwargs: names)
+    monkeypatch.setattr(models, "get_pricing_for_provider", lambda *args, **kwargs: {})
+    monkeypatch.setattr(setup, "_skip_configured_section", lambda *args: False)
     monkeypatch.setattr(setup, "_curses_prompt_choice", choose)
     config = load_config()
-    setup._prompt_slot_reasoning(config, selected[0], selected[1], selected[3], selected[4],
-                                fallback_chain=[selected[2]], delegate_chain=[selected[5]])
+    setup.setup_model_provider(config, quick=True)
+    model_events = [(i, model) for i, (kind, model) in enumerate(events) if kind == "model"]
+    assert [model for _, model in model_events] == selected
+    for index, model in model_events:
+        assert events[index + 1] == ("reasoning", model), events
     save_config(config)
     expected = dict(zip(selected, levels))
     assert len(menus) == 6
@@ -183,6 +203,62 @@ def test_all_six_picks_save_and_reach_runtime_chains(interactive, monkeypatch):
     assert "OMP_FALLBACK_CHAIN=openrouter/delegate-fallback:medium,openrouter/delegate-second:off" in env_output.getvalue()
     assert "OMP_THINKING_LEVEL=max" in env_output.getvalue()
 
+
+
+def test_default_reasoning_is_asked_before_keeping_delegate_settings(interactive, monkeypatch):
+    from mercury_cli.config import load_config
+
+    _write_slots({"default": "openrouter/main", "delegate_model": "openrouter/delegate"})
+    _seed_catalog(monkeypatch, [_entry("main", ["low"], mandatory=True)])
+    events = []
+    monkeypatch.setattr(setup, "_skip_configured_section", lambda *args: False)
+    monkeypatch.setattr("mercury_cli.main.select_provider_and_model", lambda: events.append("main model"))
+
+    def choose(title, choices, default):
+        events.append("main reasoning")
+        return default
+
+    def keep_delegates(*args):
+        events.append("keep delegates")
+        return False
+
+    monkeypatch.setattr(setup, "_curses_prompt_choice", choose)
+    monkeypatch.setattr(setup, "_ask_reconfigure", keep_delegates)
+    setup.setup_model_provider(load_config(), quick=True)
+    saved = yaml.safe_load(interactive.read_text())
+    assert events == ["main model", "main reasoning", "keep delegates"]
+    assert saved["models"]["delegate_model"] == "openrouter/delegate"
+    assert saved["models"]["reasoning_overrides"] == {"openrouter/main": "low"}
+
+
+def test_rejected_duplicates_and_skipped_slots_get_no_reasoning_prompt(interactive, monkeypatch):
+    from mercury_cli.config import load_config, save_config
+
+    _write_slots({"default": "openrouter/main"})
+    _seed_catalog(monkeypatch, [_entry(name, ["high"], mandatory=True) for name in ("fallback", "delegate")])
+    # Retry the duplicate main fallback; reject a duplicate second-order
+    # fallback twice; skip the delegate fallback and its second-order slot.
+    picks = iter(["main", "fallback", "fallback", "fallback", "delegate", None])
+    models_with_reasoning = []
+    monkeypatch.setattr("mercury_cli.auth._prompt_model_selection", lambda *args, **kwargs: next(picks))
+    monkeypatch.setattr("mercury_cli.main._prompt_provider_choice", lambda choices, default=0, **kwargs: default)
+    monkeypatch.setattr(models, "provider_model_ids", lambda *args, **kwargs: [])
+    monkeypatch.setattr(models, "get_pricing_for_provider", lambda *args, **kwargs: {})
+
+    def choose(title, choices, default):
+        models_with_reasoning.append(title.split(" — ", 1)[0])
+        return default
+
+    monkeypatch.setattr(setup, "_curses_prompt_choice", choose)
+    config = load_config()
+    setup._prompt_mercury_slots(config)
+    save_config(config)
+    assert models_with_reasoning == ["openrouter/fallback", "openrouter/delegate"]
+    saved = yaml.safe_load(interactive.read_text())["models"]
+    assert saved["reasoning_overrides"] == dict.fromkeys(models_with_reasoning, "high")
+    assert saved["fallback_chain"] == []
+    assert setup._read_model_slots()["delegate_fallback"] == ""
+    assert saved["delegate_fallback_chain"] == []
 
 def test_reasoning_map_rewrite_preserves_unrelated_settings(interactive):
     interactive.write_text(yaml.safe_dump({

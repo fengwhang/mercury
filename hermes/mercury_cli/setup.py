@@ -1201,6 +1201,17 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     # `mercury setup tts`. This keeps both quick and full setup thin.
 
 
+    # Configure the selected main model's effort before moving to other models.
+    from mercury_cli.omp_sync import qualify_omp_model
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        selected_model = qualify_omp_model(
+            str(model_cfg.get("default") or "").strip(),
+            str(model_cfg.get("provider") or "").strip(),
+        )
+        if selected_model:
+            _prompt_slot_reasoning(config, default_model=selected_model)
+
     # Tool Gateway prompt is already shown by _model_flow_nous() above.
     save_config(config)
 
@@ -1342,6 +1353,9 @@ def _prompt_mercury_slots(config: dict) -> None:
             continue
         break
 
+    if fallback:
+        _prompt_slot_reasoning(config, fallback_model=fallback)
+
     # Ordered ordinary fallback CHAIN (user directive 2026-09-05: parity with
     # the delegate side). After the primary fallback, offer additional retry
     # models in order; empty selection ends. Written to models.fallback_chain
@@ -1380,6 +1394,7 @@ def _prompt_mercury_slots(config: dict) -> None:
                 print_warning("Must differ from the default and the main fallback — pick a DIFFERENT model or skip.")
                 continue
             fallback_chain.append(extra)
+            _prompt_slot_reasoning(config, fallback_chain=[extra])
 
     print_info("The next model choices are for SUBAGENTS: coding tasks fan out to omp")
     print_info("subagents, and these set which model those subagents run on.")
@@ -1399,6 +1414,8 @@ def _prompt_mercury_slots(config: dict) -> None:
     # current (user directive — never pre-select a preferred model).
     delegate_model = _pick("Select delegate model (the model omp SUBAGENTS run on):", delegate_current, delegate_catalog, delegate_pricing)
     delegate_model = _qualify_omp_model(delegate_model, delegate_provider)
+    if delegate_model:
+        _prompt_slot_reasoning(config, delegate_model=delegate_model)
 
     # Delegate fallback — OPTIONAL (user directive 2026-09-05); cancel/skip
     # leaves it unset. NO seeding (user directive). Bounded retries: one
@@ -1426,6 +1443,9 @@ def _prompt_mercury_slots(config: dict) -> None:
             print_warning("Delegate fallback must differ from the delegate model — pick a different model or skip.")
             continue
         break
+
+    if delegate_fallback:
+        _prompt_slot_reasoning(config, delegate_fallback=delegate_fallback)
 
     # Ordered fallback CHAIN (user directive 2026-09-05): after the primary
     # fallback, offer additional retry models in order. Empty selection ends
@@ -1456,6 +1476,7 @@ def _prompt_mercury_slots(config: dict) -> None:
                 print_warning("Must differ from the delegate model and its fallback — pick a DIFFERENT model or skip.")
                 continue
             delegate_chain.append(extra)
+            _prompt_slot_reasoning(config, delegate_chain=[extra])
 
     # Write the shared models: block (line-oriented, omp_sync-compatible).
     from mercury_cli.omp_sync import _write_slots
@@ -1476,15 +1497,14 @@ def _prompt_mercury_slots(config: dict) -> None:
     print_info("Subagents will run on " + delegate_model + f" (fallback chain {chain_txt}).")
     fb_txt = " -> ".join([fallback] + fallback_chain) if fallback_chain else fallback
     print_info(f"Main model fallback chain: {fb_txt}.")
-    _prompt_slot_reasoning(
-        config, slots["default"], fallback, delegate_model, delegate_fallback,
-        fallback_chain=fallback_chain, delegate_chain=delegate_chain,
-    )
 
 
-def _prompt_slot_reasoning(config: dict, default_model: str, fallback_model: str, delegate_model: str, delegate_fallback: str,
-                           *, fallback_chain=(), delegate_chain=()) -> None:
-    """Ask provider-supported effort for every selected model and fallback.
+def _prompt_slot_reasoning(
+    config: dict, default_model: str = "", fallback_model: str = "",
+    delegate_model: str = "", delegate_fallback: str = "",
+    *, fallback_chain=(), delegate_chain=(),
+) -> None:
+    """Ask provider-supported effort immediately after accepting a model.
 
     Skipped model slots are never asked. The shared per-model map supplies
     both engines' retry chains; legacy primary thinking slots stay in sync.
