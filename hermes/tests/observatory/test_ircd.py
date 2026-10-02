@@ -1,4 +1,4 @@
-"""IRC daemon tests: join/msg fanout, server replay, destroy, auth."""
+"""MIRC daemon tests: join/msg fanout, server replay, destroy, auth."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from observatory.ircd import DaemonConfig, IrcDaemon, clean_channel, clean_nick
+from observatory.mirc import DaemonConfig, MircDaemon, clean_channel, clean_nick
 
 
 def test_clean_channel() -> None:
@@ -85,11 +85,11 @@ class RawClient:
 
 @asynccontextmanager
 async def running_daemon(tmp_path, **kwargs):
-    """Start an IrcDaemon on ephemeral ports (fixtures stay sync per convention)."""
+    """Start an MircDaemon on ephemeral ports (fixtures stay sync per convention)."""
     config = DaemonConfig(
         agent_port=0, server_port=0, state_dir=str(tmp_path), **kwargs
     )
-    d = IrcDaemon(config)
+    d = MircDaemon(config)
     await d.start()
     agent_port = d._servers[0].sockets[0].getsockname()[1]
     server_port = d._servers[1].sockets[0].getsockname()[1]
@@ -118,6 +118,64 @@ async def test_join_and_privmsg_fanout(tmp_path) -> None:
         finally:
             await a.close()
             await b.close()
+
+
+@pytest.mark.asyncio
+async def test_restored_membership_does_not_repeat_join_topic_or_invite(tmp_path) -> None:
+    """Reconnect JOINs and boot invites keep membership without history noise."""
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        client = RawClient()
+        await client.connect(agent_port)
+        try:
+            await client.register("owner")
+            await client.send("JOIN #restored")
+            await client.next_match(" 366 ")
+            await client.send("TOPIC #restored :Agent work")
+            await client.send("TOPIC #restored")
+            await client.next_match(" 332 ")
+            for _ in range(6):
+                await client.send("JOIN #restored")
+                await client.send("INVITE owner :#restored")
+            # Requesting the current topic must still work and keep the
+            # connection alive; repeated JOINs must not resend it.
+            await client.send("TOPIC #restored")
+            await client.send("PING :restored")
+            lines = []
+            while True:
+                line = await asyncio.wait_for(client.lines.get(), 5)
+                if "PONG" in line:
+                    break
+                lines.append(line)
+            assert not any(" JOIN " in line or " INVITE " in line for line in lines)
+            assert sum(" 332 " in line for line in lines) == 1
+            assert sum(" 366 " in line for line in lines) == 6
+            assert sum(" 341 " in line for line in lines) == 6
+            assert any(" 332 owner #restored :Agent work" in line for line in lines)
+        finally:
+            await client.close()
+
+
+@pytest.mark.asyncio
+async def test_join_with_existing_topic_sends_metadata_without_disconnect(tmp_path) -> None:
+    async with running_daemon(tmp_path) as (_, agent_port, __):
+        first, second = RawClient(), RawClient()
+        try:
+            for client, nick in ((first, "setter"), (second, "viewer")):
+                await client.connect(agent_port)
+                await client.register(nick)
+            await first.send("JOIN #topic-room")
+            await first.next_match(" 366 ")
+            await first.send("TOPIC #topic-room :Work in progress")
+            await first.send("TOPIC #topic-room")
+            await first.next_match(" 332 ")
+            await second.send("JOIN #topic-room")
+            assert "Work in progress" in await second.next_match(" 332 ")
+            assert await second.next_match(" 366 ")
+            await second.send("PING :alive")
+            assert await second.next_match("PONG")
+        finally:
+            await first.close()
+            await second.close()
 
 
 @pytest.mark.asyncio
@@ -242,7 +300,7 @@ def _args(**kw):
 def test_resolve_layers_argv_over_file_over_defaults(tmp_path) -> None:
     import json
 
-    from observatory.ircd import _resolve_daemon_config
+    from observatory.mirc import _resolve_daemon_config
 
     cfg_file = tmp_path / "ircd.json"
     cfg_file.write_text(
@@ -258,7 +316,7 @@ def test_resolve_layers_argv_over_file_over_defaults(tmp_path) -> None:
 def test_resolve_honors_legacy_keys(tmp_path) -> None:
     import json
 
-    from observatory.ircd import _resolve_daemon_config
+    from observatory.mirc import _resolve_daemon_config
 
     cfg_file = tmp_path / "ircd.json"
     cfg_file.write_text(
@@ -272,10 +330,10 @@ def test_resolve_honors_legacy_keys(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_legacy_keys_bind_server_listener(tmp_path) -> None:
-    """Pre-rename ircd.json (old client-listener keys) still binds."""
+    """Pre-rename MIRC daemon.json (old client-listener keys) still binds."""
     import json
 
-    from observatory.ircd import _resolve_daemon_config
+    from observatory.mirc import _resolve_daemon_config
 
     cfg_file = tmp_path / "ircd.json"
     cfg_file.write_text(
@@ -286,7 +344,7 @@ async def test_legacy_keys_bind_server_listener(tmp_path) -> None:
     assert cfg.server_host == "127.0.0.1"
     cfg.agent_port = 0
     cfg.state_dir = str(tmp_path)
-    d = IrcDaemon(cfg)
+    d = MircDaemon(cfg)
     await d.start()
     try:
         assert len(d._servers) >= 2
@@ -304,10 +362,10 @@ async def test_legacy_keys_bind_server_listener(tmp_path) -> None:
 
 
 def test_resolve_agent_host_pin(tmp_path) -> None:
-    """set_ircd_bind's `agent_host` moves the agent listener (#1)."""
+    """set_mirc_bind's `agent_host` moves the agent listener (#1)."""
     import json
 
-    from observatory.ircd import _resolve_daemon_config
+    from observatory.mirc import _resolve_daemon_config
 
     cfg_file = tmp_path / "ircd.json"
     cfg_file.write_text(
@@ -326,7 +384,7 @@ def test_resolve_agent_host_pin(tmp_path) -> None:
 def test_resolve_state_dir_config(tmp_path) -> None:
     import json
 
-    from observatory.ircd import _resolve_daemon_config
+    from observatory.mirc import _resolve_daemon_config
 
     state_dir = tmp_path / "observatory"
     state_dir.mkdir()
@@ -355,9 +413,9 @@ def test_unit_passes_only_state_dir(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_server_bind_failure_degrades_not_dies(tmp_path) -> None:
     """Unbindable server (Tailscale down) must not take the agent down."""
-    from observatory.ircd import DaemonConfig, IrcDaemon
+    from observatory.mirc import DaemonConfig, MircDaemon
 
-    d = IrcDaemon(
+    d = MircDaemon(
         DaemonConfig(
             agent_port=0,
             server_host="203.0.113.1",
@@ -384,14 +442,14 @@ async def test_both_listeners_down_raises(tmp_path) -> None:
     """Nothing bindable at all is still a hard error (no silent no-op)."""
     import socket
 
-    from observatory.ircd import DaemonConfig, IrcDaemon
+    from observatory.mirc import DaemonConfig, MircDaemon
 
     held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     held.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     held.bind(("127.0.0.1", 0))
     held.listen(1)
     port = held.getsockname()[1]
-    d = IrcDaemon(
+    d = MircDaemon(
         DaemonConfig(
             agent_port=port, server_host="127.0.0.1", server_port=port,
             state_dir=str(tmp_path),
@@ -410,7 +468,7 @@ async def test_tls_listener_serves_strict_clients(tmp_path) -> None:
     import ssl
 
     from observatory import provision as _prov
-    from observatory.ircd import DaemonConfig, IrcDaemon
+    from observatory.mirc import DaemonConfig, MircDaemon
 
     home = tmp_path / "mercury"
     (home / "observatory").mkdir(parents=True)
@@ -436,7 +494,7 @@ async def test_tls_listener_serves_strict_clients(tmp_path) -> None:
     probe.bind(("127.0.0.1", 0))
     free_tls_port = probe.getsockname()[1]
     probe.close()
-    d = IrcDaemon(
+    d = MircDaemon(
         DaemonConfig(
             agent_port=0,
             server_port=0,
@@ -504,7 +562,7 @@ async def test_failed_pass_logs_shape_not_secret(tmp_path, caplog) -> None:
         c = RawClient()
         await c.connect(server_port)
         try:
-            with caplog.at_level(logging.INFO, logger="observatory.ircd"):
+            with caplog.at_level(logging.INFO, logger="observatory.mirc"):
                 await c.send("NICK nosy")
                 await c.send("USER nosy 0 * :test")
                 await c.send("PASS wrong")
@@ -752,7 +810,7 @@ async def test_register_auto_joins_all_live_rooms(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_register_falls_back_to_state_db_without_manager(tmp_path) -> None:
     """Restart cover: the daemon never sees the gateway's RoomManager
-    (separate process), so a client that (re)connects after an ircd
+    (separate process), so a client that (re)connects after an MIRC daemon
     restart must still land in every live room via state.db."""
     from observatory import rooms as rooms_mod
     from observatory.state import ObservatoryState
@@ -784,41 +842,40 @@ async def test_register_falls_back_to_state_db_without_manager(tmp_path) -> None
 
 @pytest.mark.asyncio
 async def test_new_channel_auto_joins_server_clients(tmp_path) -> None:
-    """Spawn visibility: a room created AFTER a remote Lounge connected joins it.
+    """Spawn visibility: a room created AFTER a remote mLounge connected joins it.
 
-    Two ircds over tailscale share one Lounge: the Lounge holds a server-
+    Two ircds over tailscale share one mLounge: the mLounge holds a server-
     listener connection to each. The single-nick INVITE only covers the
-    local lounge_nick, so a spawn on machine B stayed invisible on the
-    Lounge watching from machine A. New channels now server-join every
+    local mlounge_nick, so a spawn on machine B stayed invisible on the
+    mLounge watching from machine A. New channels now server-join every
     server-listener client (agent listeners stay scoped).
     """
-    async with running_daemon(tmp_path) as (_, agent_port, server_port):
-        lounge_a, lounge_b, bot, other_bot = (
+    async with running_daemon(tmp_path) as (daemon, agent_port, server_port):
+        mlounge_a, mlounge_b, bot, other_bot = (
             RawClient(), RawClient(), RawClient(), RawClient())
-        await lounge_a.connect(server_port)
-        await lounge_b.connect(server_port)
+        await mlounge_a.connect(server_port)
+        await mlounge_b.connect(server_port)
         await bot.connect(agent_port)
         await other_bot.connect(agent_port)
         try:
-            await lounge_a.register("loungeA")
-            await lounge_b.register("phone")
+            await mlounge_a.register("loungeA")
+            await mlounge_b.register("phone")
             await bot.register("vm_gateway")
             await other_bot.register("other_bot")
-            await lounge_a.next_match("JOIN #", timeout=5.0)
-            await lounge_b.next_match("JOIN #", timeout=5.0)
+            await mlounge_a.next_match("JOIN #", timeout=5.0)
+            await mlounge_b.next_match("JOIN #", timeout=5.0)
             await bot.send("JOIN #mercury_bravo")
             assert await bot.next_match("JOIN #mercury_bravo", timeout=5.0)
-            own_a = await lounge_a.next_match(
-                "loungeA!u@mercury JOIN #mercury_bravo", timeout=5.0)
+            own_a = await mlounge_a.next_match(
+                "loungeA!loungeA@mercury JOIN #mercury_bravo", timeout=5.0)
             assert "#mercury_bravo" in own_a
-            own_b = await lounge_b.next_match(
-                "phone!u@mercury JOIN #mercury_bravo", timeout=5.0)
+            own_b = await mlounge_b.next_match(
+                "phone!phone@mercury JOIN #mercury_bravo", timeout=5.0)
             assert "#mercury_bravo" in own_b
-            with pytest.raises(AssertionError):
-                await other_bot.next_match("#mercury_bravo", timeout=0.5)
+            assert "#mercury_bravo" not in daemon._clients["other_bot"].channels
         finally:
-            await lounge_a.close()
-            await lounge_b.close()
+            await mlounge_a.close()
+            await mlounge_b.close()
             await bot.close()
             await other_bot.close()
 
@@ -829,7 +886,7 @@ async def test_failed_listener_rebinds_when_port_frees(tmp_path) -> None:
     recovers in the background once the port is free."""
     import socket
 
-    from observatory.ircd import DaemonConfig, IrcDaemon
+    from observatory.mirc import DaemonConfig, MircDaemon
 
     blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -840,7 +897,7 @@ async def test_failed_listener_rebinds_when_port_frees(tmp_path) -> None:
         agent_port=0, server_host="127.0.0.1", server_port=blocked_port,
         state_dir=str(tmp_path),
     )
-    d = IrcDaemon(config, rebind_interval=0.1)
+    d = MircDaemon(config, rebind_interval=0.1)
     await d.start()
     try:
         assert len(d._servers) == 1  # agent bound, server deferred
@@ -924,10 +981,10 @@ def _fake_client(writer: _FakeWriter, last_in: float, nick: str):
 @pytest.mark.asyncio
 async def test_send_drops_wedged_client_within_timeout(tmp_path, monkeypatch) -> None:
     """A client whose drain never completes is dropped, not awaited."""
-    from observatory import ircd as ircd_mod
+    from observatory import mirc as mirc_mod
 
-    monkeypatch.setattr(ircd_mod, "SEND_TIMEOUT", 0.05)
-    daemon = IrcDaemon(DaemonConfig(state_dir=str(tmp_path)))
+    monkeypatch.setattr(mirc_mod, "SEND_TIMEOUT", 0.05)
+    daemon = MircDaemon(DaemonConfig(state_dir=str(tmp_path)))
     wedged = _FakeWriter(wedged=True)
     ok = await asyncio.wait_for(
         daemon._send(_fake_client(wedged, 0.0, "w"), "PING :x"), timeout=2.0
@@ -941,11 +998,11 @@ async def test_ping_sweep_survives_wedged_client(tmp_path, monkeypatch) -> None:
     """One wedged socket must never stop PINGs to everybody else."""
     import time as _time
 
-    from observatory import ircd as ircd_mod
+    from observatory import mirc as mirc_mod
 
-    monkeypatch.setattr(ircd_mod, "SEND_TIMEOUT", 0.05)
-    daemon = IrcDaemon(DaemonConfig(state_dir=str(tmp_path)))
-    stale = _time.monotonic() - ircd_mod.PING_INTERVAL - 1.0  # PING due, not dead
+    monkeypatch.setattr(mirc_mod, "SEND_TIMEOUT", 0.05)
+    daemon = MircDaemon(DaemonConfig(state_dir=str(tmp_path)))
+    stale = _time.monotonic() - mirc_mod.PING_INTERVAL - 1.0  # PING due, not dead
     wedged = _FakeWriter(wedged=True)
     healthy = _FakeWriter()
     daemon._clients.update({

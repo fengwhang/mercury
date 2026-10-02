@@ -34,7 +34,6 @@ import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
 import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
-import { truncateForPrompt } from "./approval";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
 import { rewriteGitWorktreeAdd } from "./bash-worktree-rewrite";
@@ -230,12 +229,12 @@ function normalizeBashApprovalPattern(value: string): string {
 	return value.trim().replace(/\s+/gu, " ");
 }
 
-function bashApprovalPatternToRegExp(pattern: string): RegExp {
+function bashApprovalPatternToRegExp(pattern: string, ignoreCase = false): RegExp {
 	const escaped = normalizeBashApprovalPattern(pattern)
 		.split("*")
 		.map(part => part.replace(/[\\^$+?.()|[\]{}]/gu, "\\$&"))
 		.join(".*");
-	return new RegExp(`^${escaped}$`, "u");
+	return new RegExp(`^${escaped}$`, ignoreCase ? "iu" : "u");
 }
 
 function normalizeBashPatternApproval(value: unknown): BashPatternApproval | undefined {
@@ -276,8 +275,8 @@ function bashCommandSegments(command: string): string[] {
 
 // `deny`/`prompt` matching: the rule fires when its glob matches the whole
 // command or any single segment of a compound command.
-function commandSegmentMatchesBashApprovalPattern(command: string, pattern: string): boolean {
-	const regex = bashApprovalPatternToRegExp(pattern);
+function commandSegmentMatchesBashApprovalPattern(command: string, pattern: string, ignoreCase = false): boolean {
+	const regex = bashApprovalPatternToRegExp(pattern, ignoreCase);
 	const normalizedCommand = normalizeBashApprovalPattern(command);
 	if (normalizedCommand.length === 0) return false;
 	if (regex.test(normalizedCommand)) return true;
@@ -293,14 +292,18 @@ function bashApprovalRuleMatches(command: string, rule: BashApprovalPatternRule)
 		if (hasBashApprovalShellControl(command)) return false;
 		return commandMatchesBashApprovalPattern(command, rule.match);
 	}
-	return commandSegmentMatchesBashApprovalPattern(command, rule.match);
+	return commandSegmentMatchesBashApprovalPattern(command, rule.match, rule.approval === "deny");
 }
 
 function findBashApprovalPatternRule(
 	command: string,
 	rules: readonly BashApprovalPatternRule[],
 ): BashApprovalPatternRule | undefined {
-	return rules.find(rule => bashApprovalRuleMatches(command, rule));
+	// Explicit denials remain absolute even when an earlier rule allows the command.
+	return (
+		rules.find(rule => rule.approval === "deny" && bashApprovalRuleMatches(command, rule)) ??
+		rules.find(rule => bashApprovalRuleMatches(command, rule))
+	);
 }
 
 async function saveBashOriginalArtifact(session: ToolSession, originalText: string): Promise<string | undefined> {
@@ -595,7 +598,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const rawCommand = (args as Partial<BashToolInput>).command;
 		const command = typeof rawCommand === "string" ? rawCommand : "(missing)";
-		return [`Command: ${truncateForPrompt(command)}`];
+		// The Mercury RPC host authorizes this command from the prompt payload.
+		// Truncating it would hide later shell segments from the parent guard.
+		return [`Command: ${command}`];
 	};
 	readonly label = "Bash";
 	readonly loadMode = "essential";
@@ -825,6 +830,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		resolvedEnv?: Record<string, string>;
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
 		forwardUpdates: boolean;
+		preserveShellSession?: boolean;
 	}): ManagedBashJobHandle {
 		const manager = this.session.asyncJobManager;
 		if (!manager) {
@@ -846,7 +852,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				try {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
-						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
+						// Tracking alone must not discard foreground shell state.
+						// The executor isolates overlapping calls on a busy session.
+						sessionKey: options.preserveShellSession
+							? (this.session.getSessionId?.() ?? undefined)
+							: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
 						env: options.resolvedEnv,
@@ -1075,16 +1085,19 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		);
 
 		const autoBgManager = this.session.asyncJobManager;
-		// At the running-job cap, fall through to direct foreground execution
-		// instead of failing every bash call until a slot frees up.
+		// Track foreground commands so steering can yield without killing them,
+		// even when automatic backgrounding is disabled. At the running-job cap,
+		// fall through to direct execution and preserve the running command.
 		if (
-			this.#autoBackgroundEnabled &&
+			(this.#autoBackgroundEnabled || ctx?.toolCall?.steeringSignal) &&
 			!pty &&
 			!bridgeTerminalAvailable &&
 			autoBgManager &&
 			!autoBgManager.atCapacity
 		) {
-			const autoBackgroundWaitMs = resolveAutoBackgroundWaitMs(this.#autoBackgroundThresholdMs, timeoutMs);
+			const autoBackgroundWaitMs = this.#autoBackgroundEnabled
+				? resolveAutoBackgroundWaitMs(this.#autoBackgroundThresholdMs, timeoutMs)
+				: undefined;
 			const startBackgrounded = autoBackgroundWaitMs === 0;
 			const job = this.#startManagedBashJob({
 				command,
@@ -1097,6 +1110,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				resolvedEnv,
 				onUpdate,
 				forwardUpdates: !startBackgrounded,
+				preserveShellSession: !this.#autoBackgroundEnabled,
 			});
 			if (startBackgrounded) {
 				return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {

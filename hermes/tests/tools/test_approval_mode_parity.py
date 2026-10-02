@@ -62,6 +62,8 @@ def _write_config(home, yaml_text: str | None) -> None:
 
 # (config yaml, expected mode, expected timeout)
 CASES = [
+    pytest.param("approvals: {mode: safe}\n", "manual", 300, id="public-safe"),
+    pytest.param("approvals: {mode: yolo}\n", "off", 300, id="public-yolo"),
     pytest.param(None, "smart", 300, id="unset-defaults"),
     pytest.param(
         "approvals:\n  mode: manual\n", "manual", 300, id="global-manual"

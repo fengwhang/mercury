@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import yaml
 
 BRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridge.py")
 PY = sys.executable
@@ -57,11 +58,11 @@ def main():
 
     cfg_nf = write_cfg(tmp, base(fallback=""))
     r = run([], cfg_nf)
-    expect("missing fallback: exit 1", r.returncode == 1 and "fallback" in r.stderr)
+    expect("empty fallback: accepted", r.returncode == 0)
 
     cfg_df = write_cfg(tmp, base(delegate_fallback=""))
     r = run(["--delegate"], cfg_df)
-    expect("missing delegate_fallback: exit 1 under --delegate", r.returncode == 1)
+    expect("empty delegate fallback: accepted", r.returncode == 0)
     r = run([], cfg_df)
     expect("missing delegate_fallback: OK w/o --delegate", r.returncode == 0 and "DELEGATE_FALLBACK=<unset>" in r.stdout)
 
@@ -106,7 +107,7 @@ def main():
     expect("C2: exit 0", r.returncode == 0, r.stderr)
     out = open(c).read()
     expect("C2: bash.patterns deny written",
-           "patterns:" in out and "approval: deny" in out and "match: 'rm *'" in out, out)
+           {"match": "rm *", "approval": "deny"} in yaml.safe_load(out)["omp"]["bash"]["patterns"], out)
     expect("C2: hermes: subtree still preserved", "approvals:" in out and "deny:" in out)
 
     # idempotent: re-render doesn't duplicate deny rules
@@ -118,28 +119,28 @@ def main():
     c_none = write_cfg(tmp, base() + "\nhermes:\n  approvals:\n    mode: ask\n")
     r = run(["--render-omp"], c_none)
     out = open(c_none).read()
-    expect("C2: no deny → no bash.patterns", r.returncode == 0 and "patterns:" not in out, out)
+    expect("C2: no deny → no bash.patterns", r.returncode == 0 and "bash" not in yaml.safe_load(out)["omp"], out)
 
     # sibling deny: NOT under approvals: → ignored
     c_sib = write_cfg(tmp, base() + "\nhermes:\n  tools:\n    deny:\n      - 'kill *'\n  approvals:\n    deny:\n      - 'rm *'\n")
     r = run(["--render-omp"], c_sib)
     out = open(c_sib).read()
     expect("C2: sibling deny ignored",
-           "match: 'kill *'" not in out and "match: 'rm *'" in out, out)
+           {"match": "rm *", "approval": "deny"} in yaml.safe_load(out)["omp"]["bash"]["patterns"] and len(yaml.safe_load(out)["omp"]["bash"]["patterns"]) == 1, out)
 
     # fnmatch widening: ? and [seq] → *
     c_wide = write_cfg(tmp, base() + "\nhermes:\n  approvals:\n    deny:\n      - 'mkfs?[abc]'\n      - 'dd if=*of=/dev/sd?'\n      - \"it's\"\n")
     r = run(["--render-omp"], c_wide)
     out = open(c_wide).read()
     expect("C2: fnmatch widened to *",
-           "match: 'mkfs*'" in out and "match: 'dd if=*of=/dev/sd*'" in out, out)
-    expect("C2: YAML single-quote escaping", "match: 'it''s'" in out, out)
+           all({"match": x, "approval": "deny"} in yaml.safe_load(out)["omp"]["bash"]["patterns"] for x in ("mkfs*", "dd if=*of=/dev/sd*")), out)
+    expect("C2: YAML single-quote escaping", {"match": "it's", "approval": "deny"} in yaml.safe_load(out)["omp"]["bash"]["patterns"], out)
 
     # case: hermes matches case-insensitively; omp keeps verbatim (documented delta)
     c_case = write_cfg(tmp, base() + "\nhermes:\n  approvals:\n    deny:\n      - 'systemctl restart*'\n")
     r = run(["--render-omp"], c_case)
     out = open(c_case).read()
-    expect("C2: pattern carried verbatim", "match: 'systemctl restart*'" in out, out)
+    expect("C2: pattern carried verbatim", {"match": "systemctl restart*", "approval": "deny"} in yaml.safe_load(out)["omp"]["bash"]["patterns"], out)
 
     r = run(["--check"], cfg)
     expect("--check: silent exit 0", r.returncode == 0 and r.stdout == "")
@@ -156,8 +157,8 @@ def main():
     expect("mnemopi: autoRecall/autoRetain on",
            "autoRecall: true" in out and "autoRetain: true" in out, out)
     expect("mnemopi: shared dbPath pinned",
-           f"dbPath: '{home}/memories/mnemopi.db'" in out, out)
-    expect("mnemopi: bank pinned", "bank: 'default'" in out, out)
+           yaml.safe_load(out)["omp"]["mnemopi"]["dbPath"] == f"{home}/memories/mnemopi.db", out)
+    expect("mnemopi: bank pinned", yaml.safe_load(out)["omp"]["mnemopi"]["bank"] == "default", out)
 
     # idempotent re-render with the same home: byte-identical
     r = run(["--render-omp"], fresh, home)
@@ -170,7 +171,7 @@ def main():
     out = open(off).read()
     expect("mnemopi: explicit-off exit 0", r.returncode == 0, r.stderr)
     expect("mnemopi: explicit-off kept",
-           "backend: off" in out and "backend: mnemopi" not in out, out)
+           yaml.safe_load(out)["omp"]["memory"]["backend"] == "off", out)
     expect("mnemopi: explicit-off injects no mnemopi block",
            "mnemopi:" not in out, out)
 
@@ -180,8 +181,8 @@ def main():
     r = run(["--render-omp"], custom, home)
     out = open(custom).read()
     expect("mnemopi: custom exit 0", r.returncode == 0, r.stderr)
-    expect("mnemopi: custom dbPath preserved", "dbPath: '/custom/x.db'" in out, out)
-    expect("mnemopi: custom bank preserved", "bank: 'shared'" in out, out)
+    expect("mnemopi: custom dbPath preserved", yaml.safe_load(out)["omp"]["mnemopi"]["dbPath"] == "/custom/x.db", out)
+    expect("mnemopi: custom bank preserved", yaml.safe_load(out)["omp"]["mnemopi"]["bank"] == "shared", out)
     expect("mnemopi: custom gains global scoping", "scoping: global" in out, out)
 
     print()

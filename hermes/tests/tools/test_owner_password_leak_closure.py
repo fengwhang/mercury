@@ -1,4 +1,4 @@
-"""Regression tests for the IRC observatory secret closure.
+"""Regression tests for the MIRC observatory secret closure.
 
 Law: the listener passwords ``IRC_CLIENT_PASSWORD`` /
 ``IRC_AGENT_PASSWORD`` in ``$MERCURY_HOME/.env`` (0600) must never reach
@@ -22,7 +22,7 @@ _TS_ABSENT = {"available": False, "up": False, "ip": None, "dns_name": None}
 
 @pytest.fixture
 def fake_mercury(tmp_path, monkeypatch):
-    """Fake $MERCURY_HOME with planted IRC secrets."""
+    """Fake $MERCURY_HOME with planted MIRC secrets."""
     home = tmp_path / "fake-mercury"
     obs = home / "observatory"
     obs.mkdir(parents=True)
@@ -65,8 +65,8 @@ class TestReadRefusesObservatorySecrets:
         result = json.loads(read_file_tool(str(log)))
         assert not result.get("error"), f"non-secret log must stay readable: {result}"
 
-    def test_read_ircd_config_allowed(self, fake_mercury):
-        """ircd.json carries no secrets (passwords ride env only)."""
+    def test_read_mirc_config_allowed(self, fake_mercury):
+        """MIRC daemon.json carries no secrets (passwords ride env only)."""
         from tools.file_tools import read_file_tool
         cfg = fake_mercury["obs"] / "ircd.json"
         cfg.write_text('{"server_name": "mercury"}\n', encoding="utf-8")

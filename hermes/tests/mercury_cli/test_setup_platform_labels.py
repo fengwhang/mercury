@@ -43,7 +43,7 @@ def test_matrix_adapter_registers_plain_label():
 
 
 def test_gateway_menu_frames_secondary_platforms(monkeypatch, capsys, tmp_path):
-    """setup_gateway checklist asks for *secondary* platforms (IRC lives
+    """setup_gateway checklist asks for *secondary* platforms (MIRC lives
     in the observatory section that now runs first)."""
     import mercury_cli.gateway as gateway_mod
     from mercury_cli import setup as setup_mod

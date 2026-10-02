@@ -267,7 +267,6 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			required: pendingSafetyChecks.length > 0 || (resolved.policy === "prompt" && (explicitPrompt || !xdevBypass)),
 			reason: resolved.reason,
 		};
-
 		if (approvalCheck.required) {
 			const scheduledCall = context?.toolCall?.toolCalls[context.toolCall.index];
 			if (
@@ -335,20 +334,19 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				await emitApprovalResolved(false, err instanceof Error ? err.message : "approval aborted");
 				throw err;
 			}
-		const approved = choice === "Approve";
-		// A non-answer (dead headless bridge, headless cancel, auto-deny UI)
-		// is NOT a user denial — label it so agents don't wait on a human
-		// who never saw the prompt.
-		const denyReason =
-			choice === "Deny" ? "denied by user" : "approval unanswered (no human reachable)";
-		await emitApprovalResolved(approved, approved ? undefined : denyReason);
-		if (!approved) {
-			throw new Error(
-				choice === "Deny"
-					? `Tool call denied by user: ${this.tool.name}`
-					: `Tool call not approved (${denyReason}): ${this.tool.name}`,
-			);
-		}
+			const approved = choice === "Approve";
+			// A non-answer (dead headless bridge, headless cancel, auto-deny UI)
+			// is NOT a user denial — label it so agents don't wait on a human
+			// who never saw the prompt.
+			const denyReason = choice === "Deny" ? "denied by user" : "approval unanswered (no human reachable)";
+			await emitApprovalResolved(approved, approved ? undefined : denyReason);
+			if (!approved) {
+				throw new Error(
+					choice === "Deny"
+						? `Tool call denied by user: ${this.tool.name}`
+						: `Tool call not approved (${denyReason}): ${this.tool.name}`,
+				);
+			}
 			if (pendingSafetyChecks.length > 0) {
 				if (!context) throw new Error("Provider safety approval context is unavailable");
 				context.providerSafetyApproved = true;

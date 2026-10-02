@@ -9398,7 +9398,7 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
 
     Built-in platforms come from ``gateway.config.Platform`` (LOCAL is excluded).
     Plugin platforms come from ``gateway.platform_registry.plugin_entries()``,
-    which lets newly installed adapters (e.g. IRC) appear without a code change
+    which lets newly installed adapters (e.g. MIRC) appear without a code change
     here. Per-platform UI metadata (description, docs URL, env-var picks) lives
     in :data:`_PLATFORM_OVERRIDES`; anything not overridden gets reasonable
     defaults derived from the platform id and required_env.

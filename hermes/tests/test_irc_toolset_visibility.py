@@ -1,4 +1,4 @@
-"""mercury-<platform> composites validate; lounge_share never defers."""
+"""mercury-<platform> composites validate; mlounge_share never defers."""
 
 from __future__ import annotations
 
@@ -17,9 +17,9 @@ def test_validate_mercury_platform_composite_gated_on_registration(
     assert not validate_toolset("mercury-nope")
 
 
-def test_lounge_share_never_deferred() -> None:
+def test_mlounge_share_never_deferred() -> None:
     from tools.registry import discover_builtin_tools
     from tools.tool_search import is_deferrable_tool_name
 
     discover_builtin_tools()
-    assert not is_deferrable_tool_name("lounge_share")
+    assert not is_deferrable_tool_name("mlounge_share")

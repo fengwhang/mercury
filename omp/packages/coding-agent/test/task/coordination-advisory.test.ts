@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { buildCoordinationAdvisory, composeSpawnAdvisory } from "@oh-my-pi/pi-coding-agent/task";
 import type { TaskItem } from "@oh-my-pi/pi-coding-agent/task/types";
 
-// Contract: a multi-sibling spawn with spawn capacity and IRC available draws
+// Contract: a multi-sibling spawn with spawn capacity and MIRC available draws
 // a proactive coordinate-via-irc suggestion.
 const item = (): TaskItem => ({ task: "do the thing" });
 
@@ -38,7 +38,7 @@ describe("composeSpawnAdvisory", () => {
 			agents: ["subagent", "subagent"],
 			items: [worker(), worker()],
 			depthCapacity: true,
-			ircEnabled: true,
+			mircEnabled: true,
 			willRunAsync: true,
 		});
 		// HERMES-OMP PATCH: no specialization tip exists — one agent type.
@@ -51,7 +51,7 @@ describe("composeSpawnAdvisory", () => {
 			agents: ["subagent", "subagent"],
 			items: [worker(), worker()],
 			depthCapacity: true,
-			ircEnabled: true,
+			mircEnabled: true,
 			willRunAsync: true,
 		});
 		expect(advisory).not.toContain("scout");
@@ -64,7 +64,7 @@ describe("composeSpawnAdvisory", () => {
 			agents: ["subagent", "subagent"],
 			items: [worker(), worker()],
 			depthCapacity: true,
-			ircEnabled: true,
+			mircEnabled: true,
 			willRunAsync: false,
 		});
 		expect(advisory).toBeUndefined();
@@ -75,7 +75,7 @@ describe("composeSpawnAdvisory", () => {
 			agents: ["subagent", "subagent"],
 			items: [worker(), worker()],
 			depthCapacity: true,
-			ircEnabled: false,
+			mircEnabled: false,
 			willRunAsync: true,
 		});
 		expect(advisory).toBeUndefined();
@@ -87,7 +87,7 @@ describe("composeSpawnAdvisory", () => {
 				agents: ["reviewer"],
 				items: [worker()],
 				depthCapacity: true,
-				ircEnabled: true,
+				mircEnabled: true,
 				willRunAsync: true,
 			}),
 		).toBeUndefined();
@@ -99,7 +99,7 @@ describe("composeSpawnAdvisory", () => {
 				agents: ["subagent", "subagent"],
 				items: [worker(), worker()],
 				depthCapacity: false,
-				ircEnabled: true,
+				mircEnabled: true,
 				willRunAsync: true,
 			}),
 		).toBeUndefined();

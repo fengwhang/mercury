@@ -8,7 +8,7 @@ block, so after the wizard runs, this module:
 1. extracts the hermes-side choices (model.default + provider,
    fallback chain) back into the shared ``models:`` slots,
 2. re-renders the ``omp:`` subtree via the config bridge so the omp
-   engine inherits the same models/approvals/deny rules,
+   engine inherits shared models/deny rules while preserving its native approval mode,
 3. verifies both engines resolve a model afterwards.
 
 Invoked by the installer right after `mercury setup`, and by

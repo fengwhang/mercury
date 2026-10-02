@@ -1,7 +1,8 @@
-"""``mercury observatory`` — IRC observatory status, rooms, doctor, restart.
+"""``mercury observatory`` — MIRC status, login, rooms, doctor, restart.
 
 ``status`` prints the provisioned network (listeners, unit, gateway
-channel); ``rooms`` lists live agent rooms from state.db; ``restart``
+channel); ``login`` reprints setup's web login card;
+``rooms`` lists live agent rooms from state.db; ``restart``
 freshens the chat surface without the setup wizard: daemon + gateway
 onto the code on disk, then verifies the bot joined its room.
 """
@@ -67,8 +68,42 @@ def _cmd_rooms(args) -> int:
     return 0
 
 
+def _cmd_login(args) -> int:
+    """Print the existing setup card without provisioning or changing state."""
+    from mercury_constants import mercury_command
+
+    try:
+        from observatory import provision
+        from mercury_cli.setup import (
+            _print_observatory_setup_card, _tailscale_status, print_header,
+        )
+
+        home = getattr(args, "home", None)
+        # Avoid bootstrapping config directories for an unconfigured install.
+        status = (
+            provision.status_summary(home)
+            if provision.read_config(home) is not None else {}
+        )
+        if not status.get("provisioned"):
+            print(
+                f"observatory not provisioned — run {mercury_command()} setup observatory.",
+                file=sys.stderr,
+            )
+            return 1
+        print_header("Save this — Observatory login")
+        _print_observatory_setup_card(
+            status, _tailscale_status(provision), mercury_home=home,
+        )
+    except Exception as exc:
+        print(f"observatory login unavailable: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_observatory(args) -> int:
     action = getattr(args, "observatory_action", None) or "status"
+    if action == "login":
+        return _cmd_login(args)
     if action == "rooms":
         return _cmd_rooms(args)
     if action == "doctor":
@@ -90,8 +125,9 @@ def _restart_gateway_now() -> int:
         if bin_ is None:
             print("gateway: command not found on PATH", file=sys.stderr)
             return 1
+        print("gateway: restarting (active sessions will resume)", flush=True)
         proc = subprocess.run(
-            [bin_, "gateway", "restart"],
+            [bin_, "gateway", "restart", "--quick"],
             capture_output=True, text=True, timeout=120,
         )
     except Exception as exc:
@@ -118,7 +154,7 @@ def _print_doctor() -> None:
 
 
 def _cmd_restart(args) -> int:
-    """Freshen the chat surface: daemon + lounge fork + gateway, then verify.
+    """Freshen the chat surface: daemon + mlounge fork + gateway, then verify.
 
     A service unit bakes an interpreter path at render time, so a plain
     restart re-runs whatever tree was current when the unit was last
@@ -127,6 +163,9 @@ def _cmd_restart(args) -> int:
     it), so "restart" always means "restart onto the code now on disk".
     When the bot does not come back, the full diagnosis prints here.
     """
+    import time
+
+    args._observatory_restart_epoch = time.time()
     try:
         from observatory.provision import ensure_observatory_unit
 
@@ -142,28 +181,28 @@ def _cmd_restart(args) -> int:
         print(f"daemon: FAILED ({unit_result})", file=sys.stderr)
         return 1
     try:
-        from observatory import lounge as lounge_mod
+        from observatory import mlounge as mlounge_mod
 
-        configured = bool(lounge_mod.status_lounge().get("configured"))
+        configured = bool(mlounge_mod.status_mlounge().get("configured"))
     except Exception:  # noqa: BLE001 — a broken status read skips, never kills
         configured = False
     if configured:
         try:
-            lounge_result = lounge_mod.refresh_lounge_fork()
+            mlounge_result = mlounge_mod.refresh_mlounge_fork()
         except Exception as exc:  # noqa: BLE001 — refresh never kills restart
-            lounge_result = f"skipped-error: {exc}"
-        print(f"lounge: {lounge_result}")
+            mlounge_result = f"skipped-error: {exc}"
+        print(f"mLounge: {mlounge_result}")
     else:
-        print("lounge: not installed, skipping")
+        print("mLounge: not installed, skipping")
     if _restart_gateway_now() != 0:
         return 1
     try:
         from mercury_cli.setup import _verify_gateway_bot
 
-        ok, detail = _verify_gateway_bot(tries=6, wait=10, stable_samples=3)
+        ok, detail = _verify_gateway_bot(tries=20, wait=1, stable_samples=2)
     except Exception as exc:
         print(f"bot check unavailable: {exc}", file=sys.stderr)
-        return 0
+        return 1
     if not ok:
         print(f"bot: {detail}", file=sys.stderr)
         _print_doctor()
@@ -173,19 +212,20 @@ def _cmd_restart(args) -> int:
 
 
 def _verify_fleet(args) -> int:
-    """Prove every live agent respawned: fresh resync marker + per-room probe.
+    """Check resync results, room presence, and gateway dispatch transport.
 
     A gateway restart alone is not a fleet respawn — spawned agents only
     come back via boot resync (channel JOINs, identity reconnects, omp
     child rebuilds). This waits for a resync newer than the restart,
     then JOINs every live room with a probe client and checks the
-    agent's nick is present. Per-agent ok/FAIL lines; nonzero exit on
-    any failure so callers (and users) never assume a healthy fleet.
+    agent's nick is present. A private transport challenge also proves the
+    gateway nick belongs to a receiver, not a send-only clone. This is NOT
+    provider health; no model turn is run. Nonzero on any failed check.
     """
     import json as _json
     import time as _time
 
-    start = _time.time()
+    start = getattr(args, "_observatory_restart_epoch", None) or _time.time()
     home = getattr(args, "home", None)
     state = _open_state(home)
     if state is None:
@@ -218,20 +258,20 @@ def _verify_fleet(args) -> int:
         print(f"fleet: resync reported: {failure}")
     try:
         from observatory.doctor import _Probe
-        from observatory.provision import read_config, read_irc_passwords
+        from observatory.provision import read_config, read_mirc_passwords
     except Exception as exc:
         print(f"fleet: probe unavailable ({exc})", file=sys.stderr)
         return 1
     try:
         cfg = read_config(home) or {}
-        pw = read_irc_passwords(home) or {}
+        pw = read_mirc_passwords(home) or {}
         host = str(cfg.get("server_host") or "127.0.0.1")
         port = int(cfg.get("server_port") or 6670)
         secret = str(pw.get("server") or "")
     except Exception as exc:
         print(f"fleet: cannot read ircd config ({exc})", file=sys.stderr)
         return 1
-    failures = 0
+    failures = len((marker or {}).get("failed") or [])
     probe = _Probe(host, port, f"mercury-fleet-{os.getpid() % 10000}", secret)
     try:
         if not probe.connect():
@@ -243,7 +283,8 @@ def _verify_fleet(args) -> int:
             nick = str((row or {}).get("mxid") or "")
             name = str((row or {}).get("name") or (row or {}).get("node_id"))
             if not channel or not nick:
-                print(f"fleet: SKIP {name} (no channel/nick recorded)")
+                print(f"fleet: FAIL {name} (no channel/nick recorded)")
+                failures += 1
                 continue
             try:
                 members = probe.names(channel)
@@ -255,20 +296,30 @@ def _verify_fleet(args) -> int:
                 print(f"fleet: FAIL {name} ({channel}): could not JOIN")
                 failures += 1
             elif nick.lower() in {str(m).lower() for m in members}:
-                print(f"fleet: ok {name} ({channel}) — {nick} present")
+                print(f"fleet: presence ok {name} ({channel}) — {nick} present")
             else:
                 print(f"fleet: FAIL {name} ({channel}): {nick} NOT present "
                       f"(members: {', '.join(members) or 'none'})")
                 failures += 1
+        gateway_nick = next((str(row.get("mxid") or "") for row in live
+                             if row.get("node_id") == "gw"
+                             or (row.get("extra") or {}).get("kind") == "gateway"), "")
+        if gateway_nick and probe.gateway_roundtrip(gateway_nick):
+            print("fleet: gateway dispatch transport round-trip ok (provider not tested)")
+        else:
+            print("fleet: FAIL — gateway nick does not answer dispatch probe; "
+                  "presence alone is not a working agent", file=sys.stderr)
+            failures += 1
     finally:
         try:
             probe.close()
         except Exception:
             pass
     if failures:
-        print(f"fleet: {failures} agent(s) did not respawn", file=sys.stderr)
+        print(f"fleet: {failures} check(s) failed", file=sys.stderr)
         return 1
-    print(f"fleet: all {len(live)} live agent(s) present")
+    print(f"fleet: all {len(live)} live agent(s) present; gateway transport verified "
+          "(provider replies not tested)")
     return 0
 
 
@@ -296,11 +347,13 @@ def build_observatory_parser(subparsers) -> None:
     """Attach the ``observatory`` subcommand to ``subparsers``."""
     parser = subparsers.add_parser(
         "observatory",
-        help="IRC observatory status and rooms",
+        help="MIRC observatory status, login, and rooms",
     )
     subs = parser.add_subparsers(dest="observatory_action")
     p_status = subs.add_parser("status", help="Show observatory status")
     p_status.add_argument("--home", default=None, help="Mercury home override")
+    p_login = subs.add_parser("login", help="Show the web login card from setup")
+    p_login.add_argument("--home", default=None, help="Mercury home override")
     p_rooms = subs.add_parser("rooms", help="List live agent rooms")
     p_rooms.add_argument("--home", default=None, help="Mercury home override")
     p_doctor = subs.add_parser("doctor", help="Diagnose user-to-agent chat path")

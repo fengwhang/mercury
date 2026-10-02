@@ -1,7 +1,7 @@
-"""Gateway boot seam for the IRC observatory.
+"""Gateway boot seam for the MIRC observatory.
 
 The gateway owns the whole feature in-process: state.db rows, the
-OrchestratorRegistry, the RoomManager, and the IRC adapter (bot sink).
+OrchestratorRegistry, the RoomManager, and the MIRC adapter (bot sink).
 ``try_boot_sidecar`` (name kept for the run.py call site) does the sync
 boot on a daemon thread; ``boot_resync`` runs after adapters connect
 (join live channels, drain the frame queue, replay the exit journal,
@@ -228,13 +228,13 @@ async def boot_resync(
         except Exception:
             live = []
         bot = get_bot_sink()
-        lounge_nick = ""
+        mlounge_nick = ""
         try:
-            from observatory.provision import get_lounge_nick as _lounge_nick
+            from observatory.provision import get_mlounge_nick as _mlounge_nick
 
-            lounge_nick = str(_lounge_nick(None) or "")
+            mlounge_nick = str(_mlounge_nick(None) or "")
         except Exception:
-            lounge_nick = ""
+            mlounge_nick = ""
         for row in live:
             try:
                 channel = str((row or {}).get("room_id") or "")
@@ -248,7 +248,15 @@ async def boot_resync(
                                 from observatory.identity import ensure_identity
 
                                 nick = str((row or {}).get("mxid") or "")
-                                if nick:
+                                extra = (row or {}).get("extra") or {}
+                                is_gateway = (
+                                    str((row or {}).get("node_id") or "") == "gw"
+                                    or (isinstance(extra, dict) and extra.get("kind") == "gateway")
+                                )
+                                # The gateway already owns the receive/dispatch
+                                # connection. A send-only clone reclaims its nick
+                                # and disconnects inbound for EVERY agent room.
+                                if nick and not is_gateway:
                                     await ensure_identity(nick, channel)
                             except Exception:
                                 pass
@@ -259,8 +267,8 @@ async def boot_resync(
                                 # INVITE is the nudge The Lounge needs —
                                 # without it a restart leaves the user
                                 # with just the lobby.
-                                if lounge_nick:
-                                    await bot.invite_user(lounge_nick, channel)
+                                if mlounge_nick:
+                                    await bot.invite_user(mlounge_nick, channel)
                             except Exception:
                                 pass
                     except Exception:
@@ -269,6 +277,7 @@ async def boot_resync(
                 if (
                     str((row or {}).get("engine") or "") == "omp"
                     and str((row or {}).get("status") or "") == "live"
+                    and int((row or {}).get("depth") or 0) == 0
                 ):
                     node_id = str((row or {}).get("node_id") or "")
                     try:

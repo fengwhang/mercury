@@ -2012,7 +2012,7 @@ export async function runRootCommand(
 
 			// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub
 			// scan, collab mirror, resumed process) has a sessionFile but no in-memory
-			// reviver, so `ensureLive` (IRC sends, hub focus) would refuse it. Install a
+			// reviver, so `ensureLive` (MIRC sends, hub focus) would refuse it. Install a
 			// factory — bound to THIS top-level session — that rebuilds the subagent from
 			// its persisted JSONL (see persisted-revive.ts). Scoped to the non-ACP
 			// bootstrap: ACP keeps several concurrent top-level sessions and a single

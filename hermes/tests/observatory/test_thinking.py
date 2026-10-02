@@ -26,7 +26,8 @@ async def test_face_posts_after_delay(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
+            assert metadata == {"mercury_kind": "thinking"}
             sent.append((room, text))
             return None
 
@@ -46,7 +47,7 @@ async def test_reply_cancels_pending_face(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
             sent.append((room, text))
             return None
 
@@ -64,7 +65,7 @@ async def test_overlapping_turns_post_once(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
             sent.append((room, text))
             return None
 
@@ -84,7 +85,7 @@ async def test_face_posting_does_not_cancel_itself(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
             thinking_mod.thinking_done(room)
             sent.append((room, text))
             return None
@@ -98,11 +99,11 @@ async def test_face_posting_does_not_cancel_itself(monkeypatch) -> None:
     assert sent[0][1] in thinking_mod.thinking_faces()
 
 
-def _irc_adapter():
+def _mirc_adapter():
     from unittest.mock import AsyncMock, MagicMock
 
     from gateway.config import PlatformConfig
-    from plugins.platforms.irc.adapter import IRCAdapter
+    from plugins.platforms.mirc.adapter import MIRCAdapter
 
     cfg = PlatformConfig(
         enabled=True,
@@ -110,7 +111,7 @@ def _irc_adapter():
                "nickname": "testbot", "channel": "#test",
                "use_tls": False},
     )
-    adapter = IRCAdapter(cfg)
+    adapter = MIRCAdapter(cfg)
     writer = MagicMock()
     writer.is_closing = MagicMock(return_value=False)
     writer.write = MagicMock()
@@ -122,7 +123,7 @@ def _irc_adapter():
 @pytest.mark.asyncio
 async def test_dispatch_starts_thinking_face(monkeypatch) -> None:
     """Inbound gateway dispatch schedules a face for the room."""
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
     started: list[str] = []
     monkeypatch.setattr(
         thinking_mod, "thinking_started", lambda room: started.append(room))
@@ -144,7 +145,7 @@ async def test_send_clears_thinking_face(monkeypatch) -> None:
     """The room's reply send cancels its pending face."""
     from observatory import identity as identity_mod
 
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
 
     class FakePool:
         def get(self, channel):
@@ -157,6 +158,36 @@ async def test_send_clears_thinking_face(monkeypatch) -> None:
     result = await adapter.send("#test", "hi")
     assert result.success is True
     assert "#test" not in thinking_mod._tasks
+
+
+@pytest.mark.asyncio
+async def test_trace_sequence_preserves_face_until_reply(monkeypatch) -> None:
+    """OMP tool/thought frames must not suppress the pending face."""
+    from observatory import identity as identity_mod
+
+    class FakePool:
+        def get(self, channel):
+            return None
+
+    monkeypatch.setattr(identity_mod, "get_pool", lambda: FakePool())
+    monkeypatch.setattr(thinking_mod, "THINKING_FACE_DELAY_S", 30.0)
+    adapter = _mirc_adapter()
+    thinking_mod.thinking_started("#test")
+    pending = thinking_mod._tasks["#test"]
+    try:
+        for kind in ("tool_input", "tool_output", "thinking", "user"):
+            await adapter.send("#test", "plain $x_* text", metadata={"mercury_kind": kind})
+            assert thinking_mod._tasks["#test"] is pending
+            assert not pending.cancelling()
+        await adapter.send("#test", "steered mid-run.", metadata={
+            "mercury_kind": "status", "_interim_send": True,
+        })
+        assert thinking_mod._tasks["#test"] is pending
+        await adapter.send("#test", "done", metadata={"mercury_kind": "assistant_reply"})
+        assert "#test" not in thinking_mod._tasks
+        assert pending.cancelling()
+    finally:
+        thinking_mod.thinking_done("#test")
 
 
 def test_interim_notice_shapes() -> None:
@@ -176,7 +207,7 @@ async def test_notice_rearms_pending_face(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
             sent.append((room, text))
 
     monkeypatch.setattr(thinking_mod, "THINKING_FACE_DELAY_S", 0.05)
@@ -197,7 +228,7 @@ async def test_reply_after_notice_still_cancels(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
 
     class FakeBot:
-        async def send(self, room: str, text: str):
+        async def send(self, room: str, text: str, metadata=None):
             sent.append((room, text))
 
     monkeypatch.setattr(thinking_mod, "THINKING_FACE_DELAY_S", 0.05)
@@ -216,7 +247,7 @@ async def test_notice_send_rearms_but_reply_send_cancels(monkeypatch) -> None:
     """Adapter.send routes memory notices to re-arm, other sends to cancel."""
     from observatory import identity as identity_mod
 
-    adapter = _irc_adapter()
+    adapter = _mirc_adapter()
 
     class FakePool:
         def get(self, channel):

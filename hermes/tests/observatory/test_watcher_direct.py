@@ -22,7 +22,7 @@ class FakeBot:
         self.joined.append(channel)
         return True
 
-    async def say(self, channel: str, text: str) -> bool:
+    async def say(self, channel: str, text: str, *, kind: str = "status") -> bool:
         self.said.append((channel, text))
         return True
 
@@ -54,7 +54,7 @@ def _manager(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_watcher_start_streams_stop_purges(tmp_path, monkeypatch) -> None:
+async def test_watcher_start_streams_stop_preserves_session(tmp_path, monkeypatch) -> None:
     import observatory.gateway_session as gs
 
     state = ObservatoryState(tmp_path / "state.db")
@@ -67,7 +67,7 @@ async def test_watcher_start_streams_stop_purges(tmp_path, monkeypatch) -> None:
     from observatory import provision as provision_mod
 
     monkeypatch.setattr(provision_mod, "live_server_name", lambda home=None: "vm")
-    monkeypatch.setattr(provision_mod, "get_lounge_nick", lambda home=None: "owner")
+    monkeypatch.setattr(provision_mod, "get_mlounge_nick", lambda home=None: "owner")
     mgr = RoomManager(state, bot)
     rooms_mod.set_room_manager(mgr)
     rooms_mod.set_bot_sink(bot)
@@ -89,12 +89,12 @@ async def test_watcher_start_streams_stop_purges(tmp_path, monkeypatch) -> None:
             "args": "ls"}, {})
         await asyncio.sleep(0.3)
         assert any("bash" in t for c, t in bot.said if c == "#vm_alpha-bravo")
-        # Stop retires: depth-1 purges inline.
+        # Completion settles activity without removing the session or history.
         await asyncio.to_thread(
             gs._retire_watcher_room, "deleg_1/0", name="bravo")
-        assert "#vm_alpha-bravo" in bot.destroyed
-        with pytest.raises(Exception):
-            state.get("deleg_1/0")
+        assert "#vm_alpha-bravo" not in bot.destroyed
+        assert state.get("deleg_1/0")["status"] == "live"
+        assert state.get("deleg_1/0")["extra"]["task_state"] == "completed"
     finally:
         rooms_mod.set_room_manager(None)
         rooms_mod.set_bot_sink(None)

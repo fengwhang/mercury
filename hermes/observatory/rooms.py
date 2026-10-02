@@ -1,7 +1,7 @@
-"""IRC room manager for the observatory (in-gateway-process).
+"""MIRC room manager for the observatory (in-gateway-process).
 
 Replaces the Matrix sidecar/tree/renderer stack with the boring
-equivalent: one IRC channel per live agent.
+equivalent: one MIRC channel per live agent.
 
 - Gateway agent → ``#<server>_gateway`` (``server_name`` from provision).
 - ``/spawn`` / ``/spawnomp <name>`` → ``#<name>``.
@@ -19,7 +19,7 @@ the actual turns run on existing machinery with CLI parity:
   feed watcher (omp ``transport.steer``; one-shot children are
   read-only traces).
 
-The IRC transport is a :class:`BotSink` — the gateway IRC adapter
+The MIRC transport is a :class:`BotSink` — the gateway MIRC adapter
 registers itself on connect (:func:`set_bot_sink`); tests inject fakes.
 No gateway imports at module level so this stays light under pytest.
 """
@@ -31,11 +31,11 @@ import re
 import threading
 from typing import Any, Protocol
 
-from observatory.ircd import clean_channel, clean_nick
+from observatory.mirc import clean_channel, clean_nick
 
 logger = logging.getLogger(__name__)
 
-#: Prefixes for streamed child frames (IRC has no markdown/quoting).
+#: Prefixes for streamed child frames (MIRC has no markdown/quoting).
 TOOL_PREFIX = "\U0001f527"
 THINK_PREFIX = "\U0001f4ad"
 MSG_PREFIX = ""
@@ -43,18 +43,18 @@ LIFECYCLE_START = "\U0001f680"
 LIFECYCLE_STOP = "✅"
 NOTICE_PREFIX = "ℹ️ "
 
-#: Frame text cap per IRC line burst (adapter splits long sends anyway).
+#: Frame text cap per MIRC line burst (adapter splits long sends anyway).
 FRAME_TEXT_LIMIT = 400
 
 
 class BotSink(Protocol):
-    """What the room manager needs from the IRC transport."""
+    """What the room manager needs from the MIRC transport."""
 
     async def join_channel(self, channel: str) -> bool: ...
 
     async def part_channel(self, channel: str) -> bool: ...
 
-    async def say(self, channel: str, text: str) -> bool: ...
+    async def say(self, channel: str, text: str, *, kind: str = "status") -> bool: ...
 
     async def destroy_channel(self, channel: str) -> bool: ...
 
@@ -86,7 +86,7 @@ def _loop_now():
         return _gateway_loop
 
 
-def say_nowait(channel: str, text: str) -> bool:
+def say_nowait(channel: str, text: str, *, kind: str = "status") -> bool:
     """Fire-and-forget one line into a room from any thread.
 
     True when handed to the gateway loop; False when no loop or sink
@@ -104,7 +104,7 @@ def say_nowait(channel: str, text: str) -> bool:
             return False
         import asyncio as _asyncio
 
-        _asyncio.run_coroutine_threadsafe(bot.say(channel, text), loop)
+        _asyncio.run_coroutine_threadsafe(bot.say(channel, text, kind=kind), loop)
         return True
     except Exception:
         return False
@@ -129,7 +129,7 @@ def call_soon(coro):
 
 
 def set_bot_sink(sink: BotSink | None) -> None:
-    """Register the live IRC transport (adapter on connect; None on drop)."""
+    """Register the live MIRC transport (adapter on connect; None on drop)."""
     global _current_sink
     with _sink_lock:
         _current_sink = sink
@@ -205,7 +205,7 @@ def gateway_channel(server_name: str) -> str:
 def _server_prefix(server: str | None = None) -> str:
     """Live network label (best-effort, never raises).
 
-    ``None`` resolves from the live ircd.json; pass ``""`` for the bare
+    ``None`` resolves from the live MIRC daemon.json; pass ``""`` for the bare
     legacy form (already-qualified names like the gateway nick).
     """
     if server is not None:
@@ -238,6 +238,13 @@ def agent_nick(name: str, server: str | None = None) -> str:
     """Agent nick: ``<server>_<name>`` (gateway: ``<server>_gateway``)."""
     prefix = _server_prefix(server)
     base = f"{prefix}_{name}" if prefix else str(name)
+    if len(base) > 32:
+        import hashlib
+
+        # Truncation alone loses the unique suffix of long room names and
+        # lets a new identity evict another agent under newest-nick-wins.
+        suffix = hashlib.sha256(base.lower().encode()).hexdigest()[:12]
+        return f"{clean_nick(base)[:19]}-{suffix}".lower()
     return clean_nick(base).lower()
 
 
@@ -252,20 +259,19 @@ def _truncate(text: str, limit: int = FRAME_TEXT_LIMIT) -> str:
 
 
 def format_frame(feed: dict[str, Any] | Any) -> str | None:
-    """One OmpFeed/datagram frame dict → one IRC line; None to skip.
+    """One OmpFeed/datagram frame dict → one logical MIRC message; None to skip.
 
     Shapes (see gateway_session._feed_event_to_dict): ``feed`` ∈
     {message, node, tool, thought} with ``text`` / ``tool`` / ``status``
     keys; ``subagent_id == ""`` is the child's own main session, a
     non-empty id tags a grandchild frame with ``[id]``.
 
-    Trace plaintext law: every non-reply line carries a leading trace
-    glyph so the Lounge fork renders it plaintext (markdown bypass).
+    Trace glyphs are readable labels; publish_frame carries explicit
+    rendering provenance separately so punctuation never selects a format.
     Tool calls AND tool-role message frames (command outputs) are
     traces; assistant/user message frames are the reply stream and stay
-    unmarked (markdown). No backticks/escapes anywhere here — the fork
-    no longer markdown-parses these lines, so code-span shielding would
-    print literally.
+    unmarked (markdown). Trace labels do not add backticks or escapes:
+    the fork renders the entire trace literally, preserving its source.
     """
     if not isinstance(feed, dict):
         return None
@@ -273,20 +279,28 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
     sub = str(feed.get("subagent_id") or "")
     tag = f"[{sub}] " if sub else ""
     if kind == "message":
-        text = _truncate(feed.get("text") or "", FRAME_TEXT_LIMIT * 2)
-        if not text:
+        text = str(feed.get("text") or "")
+        if not text.strip():
             return None
         if str(feed.get("role") or "") in ("tool", "function"):
+            if len(text) > FRAME_TEXT_LIMIT * 2:
+                text = text[:FRAME_TEXT_LIMIT * 2 - 1] + "…"
             return f"{TOOL_PREFIX} {tag}{text}"
+        # Replies must retain complete fences, math delimiters and line breaks.
+        # The transport byte-wraps them losslessly into a multiline batch.
         return f"{tag}{text}"
     if kind == "tool":
         tool = str(feed.get("tool") or "tool")
-        args = _truncate(feed.get("args") or feed.get("text") or "")
-        body = f"{tool} {args}".strip()
+        args = str(feed.get("args") or feed.get("text") or "")
+        if len(args) > FRAME_TEXT_LIMIT:
+            args = args[:FRAME_TEXT_LIMIT - 1] + "…"
+        body = f"{tool} {args}" if args else tool
         return f"{TOOL_PREFIX} {tag}{body}"
     if kind == "thought":
-        text = _truncate(feed.get("text") or "")
-        return f"{THINK_PREFIX} {tag}{text}" if text else None
+        text = str(feed.get("text") or "")
+        if len(text) > FRAME_TEXT_LIMIT:
+            text = text[:FRAME_TEXT_LIMIT - 1] + "…"
+        return f"{THINK_PREFIX} {tag}{text}" if text.strip() else None
     if kind == "node":
         status = str(feed.get("status") or "")
         label = str(feed.get("label") or feed.get("name") or "")
@@ -314,7 +328,7 @@ def format_lifecycle(
 def _channel_in_ref(channel: str, ref: str) -> bool:
     """True when gateway session key ``ref`` embeds ``#channel``.
 
-    Group session keys join parts with ``:`` (``ns:irc:group:#ace:…``),
+    Group session keys join parts with ``:`` (``ns:mirc:group:#ace:…``),
     so a boundary-aware substring match maps a delegating turn back to
     the room (and node) that spawned it.
     """
@@ -333,7 +347,7 @@ class RoomManager:
 
     ``state`` is an ``ObservatoryState`` (rows carry ``room_id``=channel,
     ``mxid``=nick, ``space_id``=""). ``bot`` defaults to the global sink.
-    All methods are best-effort except where noted; never raise on IRC
+    All methods are best-effort except where noted; never raise on MIRC
     transport failure (the engine turn is the source of truth, the room
     is the mirror).
     """
@@ -398,7 +412,7 @@ class RoomManager:
     async def ensure_room(
         self, channel: str, *, topic: str = "", greet: str = ""
     ) -> bool:
-        """Bot JOINs ``channel`` (IRC creates on first join); greeting optional."""
+        """Bot JOINs ``channel`` (MIRC creates on first join); greeting optional."""
         bot = self.bot
         if bot is None:
             logger.debug("rooms: no bot sink — room %s deferred", channel)
@@ -410,35 +424,61 @@ class RoomManager:
             return False
         if ok and greet:
             try:
-                await bot.say(channel, greet)
+                await bot.say(channel, greet, kind="status")
             except Exception:
                 logger.debug("rooms: greet %s failed", channel, exc_info=True)
         return ok
 
-    async def publish(self, channel: str, text: str) -> bool:
+    async def publish(self, channel: str, text: str, *, kind: str = "status") -> bool:
         """One (possibly multi-line) message into ``channel``."""
         bot = self.bot
         if bot is None or not text:
             return False
         try:
-            return bool(await bot.say(channel, text))
+            return bool(await bot.say(channel, text, kind=kind))
         except Exception:
             logger.debug("rooms: publish to %s failed", channel, exc_info=True)
             return False
 
     async def publish_frame(self, channel: str, feed: dict[str, Any] | Any) -> bool:
+        from observatory.thinking import thinking_done, thinking_started
+
+        if isinstance(feed, dict) and feed.get("feed") == "activity":
+            if feed.get("active") is True:
+                thinking_started(channel)
+            elif feed.get("active") is False:
+                thinking_done(channel)
+            return True
         line = format_frame(feed)
         if not line:
             return False
-        return await self.publish(channel, line)
+        from observatory.message_format import frame_kind
+
+        if feed.get("feed") == "node" and feed.get("kind") == "death":
+            thinking_done(channel)
+        sent = await self.publish(channel, line, kind=frame_kind(feed))
+        if feed.get("feed") == "node" and feed.get("kind") == "add":
+            thinking_started(channel)
+        return sent
 
     async def publish_lifecycle(
         self, channel: str, lifecycle: str, **kwargs: Any
     ) -> bool:
-        return await self.publish(channel, format_lifecycle(lifecycle, **kwargs))
+        from observatory.thinking import thinking_done, thinking_started
+
+        if lifecycle == "stop":
+            thinking_done(channel)
+        sent = await self.publish(channel, format_lifecycle(lifecycle, **kwargs))
+        row = self.node_for_channel(channel)
+        if lifecycle == "start" and row and row.get("engine") == "omp":
+            thinking_started(channel)
+        return sent
 
     async def destroy_room(self, channel: str) -> bool:
         """Server-side destroy (OPER DESTROY): members PARTed, history dropped."""
+        from observatory.thinking import thinking_done
+
+        thinking_done(channel)
         bot = self.bot
         if bot is None:
             return False
@@ -476,6 +516,7 @@ class RoomManager:
         """Channel for a delegate child: existing row, else create from the frame."""
         channel = self.channel_for_node(node_id)
         if channel:
+            self.state.update_extra(node_id, task_state="running")
             return channel
         try:
             from observatory.provision import live_server_name
@@ -536,11 +577,11 @@ class RoomManager:
         # No server subscription: The Lounge sees rooms via INVITE
         # and prunes them itself on destroy.
         try:
-            from observatory.provision import get_lounge_nick
+            from observatory.provision import get_mlounge_nick
 
             bot = self.bot
             if bot is not None:
-                await bot.invite_user(get_lounge_nick(None), channel)
+                await bot.invite_user(get_mlounge_nick(None), channel)
         except Exception:
             logger.debug("rooms: lounge invite failed for %s", channel)
         try:
@@ -557,35 +598,16 @@ class RoomManager:
         return channel
 
     async def _retire_child_room(self, node_id: str, *, summary: str = "") -> None:
-        """Death/purge for a finished delegate child (D8 timing).
-
-        Every stop dead-marks the row. Depth 1 (child of a 0-agent) purges
-        immediately: summary to the parent room, channel destroyed,
-        row deleted, identity dropped — plus any delegate descendants
-        (their parent just died). Depth >= 2 keeps row + room as reading
-        grace until the parent dies. Never raises.
-        """
+        """Record task completion while retaining the session until explicit exit."""
         try:
             row = self.state.get(node_id)
         except Exception:
             return
-        depth = row.get("depth", 1)
-        try:
-            depth = int(depth)
-        except Exception:
-            depth = 1
-        try:
-            self.state.mark_dead(node_id)
-        except Exception:
-            pass
-        try:
-            from observatory.state import purge_on_death
+        from observatory.thinking import thinking_done
 
-            purge = purge_on_death(depth)
-        except Exception:
-            purge = depth == 1
-        if not purge:
-            return
+        for completed in self.state.get_subtree(node_id):
+            thinking_done(str(completed.get("room_id") or ""))
+            self.state.update_extra(completed["node_id"], task_state="completed")
         parent_channel = ""
         try:
             parent_id = str(row.get("parent_node_id") or "")
@@ -600,50 +622,10 @@ class RoomManager:
                 await self.publish(
                     parent_channel,
                     f"subagent '{row.get('name') or node_id}' finished: {summary}",
+                    kind="assistant_reply",
                 )
             except Exception:
                 pass
-        await self._purge_child_subtree(node_id)
-
-    async def _purge_child_subtree(self, node_id: str) -> None:
-        """Destroy + delete a dead node and its delegate descendants."""
-        try:
-            row = self.state.get(node_id)
-        except Exception:
-            return
-        channel = str(row.get("room_id") or "")
-        children: list[str] = []
-        try:
-            for r in self.state.get_subtree(node_id):
-                cid = str(r.get("node_id") or "")
-                if cid and cid != node_id:
-                    children.append(cid)
-        except Exception:
-            pass
-        for cid in children:
-            try:
-                await self._purge_child_subtree(cid)
-            except Exception:
-                continue
-        if channel:
-            try:
-                await self.destroy_room(channel)
-            except Exception:
-                pass
-            # No unsubscribe step: without a lingering subscription there is no
-            # phone-side subscription — The Lounge prunes the destroyed
-            # room itself.
-            try:
-                from observatory.identity import drop_identity
-
-                await drop_identity(channel)
-            except Exception:
-                pass
-        try:
-            self.state.mark_deleted_and_purge(node_id)
-            logger.info("observatory: room purged %s", channel)
-        except Exception:
-            pass
 
     async def handle_child_message(self, channel: str, sender: str, text: str) -> str:
         """User message in a delegate-child room → steer the live child."""
@@ -666,7 +648,8 @@ class RoomManager:
             return "subagent is no longer accepting input."
         return f"steered (as {sender})."
 
-    async def handle_omp_message(self, channel: str, sender: str, text: str) -> str:
+    async def handle_omp_message(self, channel: str, sender: str, text: str,
+                                 *, approval_session_key: str | None = None) -> str:
         """User message in a spawned-omp room: idle → task, busy → steer."""
         row = self.node_for_channel(channel)
         node_id = str((row or {}).get("node_id") or "")
@@ -709,7 +692,7 @@ class RoomManager:
                     logger.debug("rooms: omp resurrect %s failed: %s", node_id, exc)
                     entry = None
             if entry is None:
-                return "that omp agent is gone (automatic restart failed) — /spawnomp a fresh one."
+                return "OMP is temporarily unavailable. Its session and history are preserved; retry in this room."
             rpc = entry.get("rpc")
         if rpc is None:
             return "omp agent not running."
@@ -724,7 +707,7 @@ class RoomManager:
             import asyncio as _asyncio
 
             _asyncio.get_running_loop().create_task(
-                self._run_spawned_omp_task(channel, node_id, sender, text, rpc),
+                self._run_spawned_omp_task(channel, node_id, sender, text, rpc, approval_session_key=approval_session_key),
                 name=f"observatory-omp-room-{node_id}",
             )
         except Exception:
@@ -734,7 +717,8 @@ class RoomManager:
         # path below still answers "steered mid-run.")
         return ""
     async def _run_spawned_omp_task(
-        self, channel: str, node_id: str, sender: str, text: str, rpc: Any
+        self, channel: str, node_id: str, sender: str, text: str, rpc: Any,
+        *, approval_session_key: str | None = None,
     ) -> None:
         """Background body of one spawned-omp turn: live trace, then answer.
 
@@ -746,6 +730,19 @@ class RoomManager:
         seen: set[str] = set()
         feed: Any = None
         pump_task: Any = None
+        approval_token = None
+        from observatory.thinking import thinking_done, thinking_started
+
+        thinking_started(channel)
+        if approval_session_key:
+            from tools.approval import register_gateway_notify, set_current_session_key
+
+            def notify_approval(data):
+                say_nowait(channel, f"⚠️ Approval requested: {data.get('command', '')}\n"
+                           f"{data.get('description', '')}\nReply !approve or !deny in this room.")
+
+            approval_token = set_current_session_key(approval_session_key)
+            register_gateway_notify(approval_session_key, notify_approval)
         try:
             import asyncio as _asyncio
 
@@ -769,6 +766,11 @@ class RoomManager:
                 pass
             return
         finally:
+            thinking_done(channel)
+            if approval_token is not None:
+                from tools.approval import reset_current_session_key, unregister_gateway_notify
+                unregister_gateway_notify(approval_session_key)
+                reset_current_session_key(approval_token)
             if feed is not None:
                 try:
                     await feed.stop()
@@ -779,6 +781,9 @@ class RoomManager:
                     await pump_task
                 except Exception:
                     pass
+            # Draining buffered live frames may include a late agent_start.
+            # It must not leave a face scheduled after the task has ended.
+            thinking_done(channel)
         try:
             summary = str((result or {}).get("summary") or "")
             frames = (result or {}).get("turn_frames") or []
@@ -793,7 +798,7 @@ class RoomManager:
                 except Exception:
                     pass
                 await self.publish_frame(channel, frame)
-            await self.publish(channel, summary or "(no output)")
+            await self.publish(channel, summary or "(no output)", kind="assistant_reply")
         except Exception as exc:
             logger.debug("rooms: omp reply failed", exc_info=True)
             try:
@@ -876,6 +881,8 @@ class RoomManager:
                 except Exception:
                     target = ""
             if not target:
+                if feed.get("feed") == "activity" and feed.get("active") is False:
+                    return  # A late end must not recreate a retired room.
                 node_id = f"{owner_id}/sub-{sub}"
                 name = (str(feed.get("agent") or "").strip()
                         or str(feed.get("task") or "").strip()
@@ -925,9 +932,7 @@ class RoomManager:
                     if target:
                         grands[sid] = target
                 if target:
-                    line = format_frame(flat)
-                    if line:
-                        await self.publish(target, line)
+                    await self.publish_frame(target, flat)
             elif kind == "death":
                 node_id = f"{owner_id}/sub-{sid}"
                 channel = ""
@@ -936,9 +941,7 @@ class RoomManager:
                 except Exception:
                     pass
                 if channel:
-                    line = format_frame(flat)
-                    if line:
-                        await self.publish(channel, line)
+                    await self.publish_frame(channel, flat)
                 grands.pop(sid, None)
                 await self._retire_child_room(node_id)
         except Exception:
@@ -1046,6 +1049,10 @@ _fallback_registry: Any = None
 
 def register_omp_room(node_id: str, channel: str, rpc: Any) -> None:
     with _omp_lock:
+        existing = _omp_rooms.get(node_id)
+        if existing is not None and existing.get("rpc") is rpc:
+            existing["channel"] = channel
+            return
         _omp_rooms[node_id] = {"channel": channel, "rpc": rpc, "busy": False}
 
 

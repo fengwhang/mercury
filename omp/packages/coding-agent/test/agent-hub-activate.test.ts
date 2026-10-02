@@ -7,7 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { MircBus } from "@oh-my-pi/pi-coding-agent/mirc/bus";
 import { AgentHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
 import { SessionObserverRegistry } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
@@ -62,7 +62,7 @@ function makeHub(focusAgent: (id: string) => Promise<void>) {
 		},
 		requestRender: () => renderRequested.resolve(),
 		registry: agents,
-		irc: new IrcBus(agents),
+		mirc: new MircBus(agents),
 		focusAgent,
 	});
 	return { hub, doneCalls: () => doneCalls, done: done.promise, renderRequested: renderRequested.promise };
@@ -173,7 +173,7 @@ describe("Agent hub Enter activation", () => {
 			onDone,
 			requestRender: () => {},
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			focusAgent,
 			ui: {
 				requestRender: () => {},
@@ -211,7 +211,7 @@ describe("Agent hub Enter activation", () => {
 			onDone: () => {},
 			requestRender: () => {},
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			focusAgent: async () => {},
 			sessionFile,
 		});
@@ -248,7 +248,7 @@ describe("Agent hub Enter activation", () => {
 			onDone: () => {},
 			requestRender: () => {},
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			focusAgent: async () => {},
 			sessionFile,
 		});
@@ -271,7 +271,7 @@ describe("Agent hub Enter activation", () => {
 			onDone: () => {},
 			requestRender: () => {},
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			sessionFile,
 		});
 
@@ -296,7 +296,7 @@ describe("Agent hub Enter activation", () => {
 			onDone: () => {},
 			requestRender: () => {},
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			sessionFile,
 		});
 		await hub.persistedSubagentsReady;
@@ -339,7 +339,7 @@ describe("Agent hub Enter activation", () => {
 			onDone: () => {},
 			requestRender: () => {},
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			sessionFile,
 		});
 		await hub.persistedSubagentsReady;
@@ -418,7 +418,7 @@ describe("Agent hub Enter activation", () => {
 			onDone: () => {},
 			requestRender: () => {},
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			sessionFile,
 		});
 		await hub.persistedSubagentsReady;
@@ -527,7 +527,7 @@ describe("Agent hub Enter activation", () => {
 			onDone: () => {},
 			requestRender: () => {},
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			focusAgent: async () => {},
 			sessionFile: fork.newSessionFile,
 		});
@@ -768,7 +768,7 @@ describe("Agent hub data refresh coalescing", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
-		IrcBus.resetGlobalForTests();
+		MircBus.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 	});
 
@@ -784,7 +784,7 @@ describe("Agent hub data refresh coalescing", () => {
 			onDone: () => {},
 			requestRender,
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			focusAgent: async () => {},
 		});
 
@@ -864,7 +864,7 @@ describe("Agent hub data refresh coalescing", () => {
 			onDone: () => {},
 			requestRender,
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			focusAgent: async () => {},
 		});
 
@@ -925,7 +925,7 @@ describe("Agent hub data refresh coalescing", () => {
 			onDone: () => {},
 			requestRender: () => {},
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			focusAgent: async () => {},
 		});
 		try {

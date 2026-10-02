@@ -1,5 +1,5 @@
 /**
- * Hub messaging half — agent-to-agent messaging over the process-global IrcBus.
+ * Hub messaging half — agent-to-agent messaging over the process-global MircBus.
  *
  * `send` is fire-and-forget: the bus routes the message to the recipient
  * (waking idle agents with a real turn, reviving parked ones via the
@@ -14,7 +14,7 @@ import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatAge, formatDuration } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
-import { IrcAwaitTargetStopped, IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../../irc/bus";
+import { MircAwaitTargetStopped, MircBus, type MircDeliveryReceipt, type MircMessage } from "../../mirc/bus";
 import type { Theme } from "../../modes/theme/theme";
 import { type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { ensurePersistedRoster, isCurrentSessionRosterRef } from "../../registry/persisted-agents";
@@ -41,7 +41,7 @@ import {
 
 export { DEFAULT_HUB_LIST_LIMIT, MAX_HUB_LIST_LIMIT } from "./types";
 
-export const DEFAULT_IRC_TIMEOUT_MS = 120_000;
+export const DEFAULT_MIRC_TIMEOUT_MS = 120_000;
 
 /** Hub roster ordering (running before idle before parked) shared with the child prompt's live-row cap. */
 export const LIST_STATUS_ORDER: Record<string, number> = { running: 0, idle: 1, parked: 2 };
@@ -106,7 +106,7 @@ function formatRosterSummary(counts: HubRosterCounts, emptyNoun: string): string
  * session that can still spawn subagents through the task tool. Only a
  * top-level session with task spawning unavailable has no peers.
  */
-export function isIrcEnabled(settings: Settings, taskDepth: number): boolean {
+export function isMircEnabled(settings: Settings, taskDepth: number): boolean {
 	if (taskDepth > 0) return true;
 	// Top-level session: peers exist only if it can still spawn subagents — the
 	// same capacity gate the task tool uses, reused here to avoid drift.
@@ -114,35 +114,35 @@ export function isIrcEnabled(settings: Settings, taskDepth: number): boolean {
 	return canSpawnAtDepth(maxDepth, taskDepth);
 }
 
-export function formatIncoming(msg: IrcMessage): string {
+export function formatIncoming(msg: MircMessage): string {
 	const replyTag = msg.replyTo ? ` (reply to ${msg.replyTo})` : "";
 	return `[${msg.id}] ${msg.from}${replyTag}: ${msg.body}`;
 }
 
-export function normalizeIrcTimeoutMs(value: number): number {
+export function normalizeMircTimeoutMs(value: number): number {
 	if (value === 0) return 0; // 0 = timeout disabled
 	// Negative or non-finite settings are misconfigurations — fall back to the
 	// default instead of producing an instant 1 ms timeout.
-	if (!Number.isFinite(value) || value < 0) return DEFAULT_IRC_TIMEOUT_MS;
+	if (!Number.isFinite(value) || value < 0) return DEFAULT_MIRC_TIMEOUT_MS;
 	return Math.max(1, Math.trunc(value));
 }
 
-/** Effective message-wait timeout: explicit param wins, then `irc.timeoutMs`. */
+/** Effective message-wait timeout: explicit param wins, then `mirc.timeoutMs`. */
 export function resolveMessageTimeoutMs(settings: Settings, explicit?: number): number {
-	if (explicit !== undefined) return normalizeIrcTimeoutMs(explicit);
-	return normalizeIrcTimeoutMs(settings.get("irc.timeoutMs"));
+	if (explicit !== undefined) return normalizeMircTimeoutMs(explicit);
+	return normalizeMircTimeoutMs(settings.get("irc.timeoutMs"));
 }
 
 /** Session-buffered inbox drain used before parking a bus waiter. */
-export function drainPendingInbox(registry: AgentRegistry, senderId: string, from?: string): IrcMessage | undefined {
+export function drainPendingInbox(registry: AgentRegistry, senderId: string, from?: string): MircMessage | undefined {
 	const session = registry.get(senderId)?.session;
-	return typeof session?.drainPendingIrcInboxMessages === "function"
-		? session.drainPendingIrcInboxMessages(senderId, { from, limit: 1 })[0]
+	return typeof session?.drainPendingMircInboxMessages === "function"
+		? session.drainPendingMircInboxMessages(senderId, { from, limit: 1 })[0]
 		: undefined;
 }
 
 /** `wait` result carrying a consumed message. */
-export function messageResult(senderId: string, waited: IrcMessage): AgentToolResult<CoordinationDetails> {
+export function messageResult(senderId: string, waited: MircMessage): AgentToolResult<CoordinationDetails> {
 	return {
 		content: [{ type: "text", text: formatIncoming(waited) }],
 		details: { op: "wait", from: senderId, waited },
@@ -182,7 +182,7 @@ export async function executeList(
 		truncated,
 	};
 
-	const bus = IrcBus.global();
+	const bus = MircBus.global();
 	const peers = shownRefs.map(ref => ({
 		id: ref.id,
 		displayName: ref.displayName,
@@ -262,15 +262,15 @@ export async function executeSend(
 		await ensurePersistedRoster(registry, sessionFileHint);
 	}
 
-	const bus = IrcBus.global();
-	let waited: IrcMessage | null | undefined;
+	const bus = MircBus.global();
+	let waited: MircMessage | null | undefined;
 	const timeoutMs = params.await ? resolveMessageTimeoutMs(settings, params.timeoutMs) : undefined;
 	const awaitAbort = params.await ? new AbortController() : undefined;
-	const awaitCancelled = new Error("IRC await cancelled");
+	const awaitCancelled = new Error("MIRC await cancelled");
 	let removeAwaitAbortListener: (() => void) | undefined;
 	const waiting = params.await
 		? bus
-				.wait(senderId, { from: to }, timeoutMs ?? DEFAULT_IRC_TIMEOUT_MS, awaitAbort?.signal, {
+				.wait(senderId, { from: to }, timeoutMs ?? DEFAULT_MIRC_TIMEOUT_MS, awaitAbort?.signal, {
 					drainPending: false,
 					awaitTarget: { registry, target: to },
 				})
@@ -284,10 +284,10 @@ export async function executeSend(
 		: undefined;
 	if (params.await && signal && awaitAbort) {
 		if (signal.aborted) {
-			awaitAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("IRC wait aborted"));
+			awaitAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("MIRC wait aborted"));
 		} else {
 			const onAbort = (): void => {
-				awaitAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("IRC wait aborted"));
+				awaitAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("MIRC wait aborted"));
 			};
 			signal.addEventListener("abort", onAbort, { once: true });
 			removeAwaitAbortListener = () => signal.removeEventListener("abort", onAbort);
@@ -337,7 +337,7 @@ export async function executeSend(
 			if (delivered.length > 0) {
 				const reply = await waiting;
 				if (reply.error) {
-					if (reply.error instanceof IrcAwaitTargetStopped) {
+					if (reply.error instanceof MircAwaitTargetStopped) {
 						// The awaited peer ran and stopped without replying: the send
 						// still succeeded, so surface a clean note instead of erroring
 						// out — and settle now rather than blocking the full timeout.
@@ -372,7 +372,7 @@ export async function executeSend(
 			} else {
 				awaitAbort?.abort(awaitCancelled);
 				const reply = await waiting;
-				if (reply.error && !(reply.error instanceof IrcAwaitTargetStopped)) throw reply.error;
+				if (reply.error && !(reply.error instanceof MircAwaitTargetStopped)) throw reply.error;
 			}
 		}
 
@@ -403,7 +403,7 @@ export async function executeMessageWait(
 	const from = params.from?.trim() || undefined;
 	const timeoutMs = resolveMessageTimeoutMs(settings, params.timeoutMs);
 	try {
-		const waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal, {
+		const waited = await MircBus.global().wait(senderId, { from }, timeoutMs, signal, {
 			liveness: { registry, senderId },
 		});
 		if (!waited) {
@@ -429,10 +429,12 @@ export function executeInbox(
 	senderId: string,
 	peek?: boolean,
 ): AgentToolResult<CoordinationDetails> {
-	const busMessages = IrcBus.global().inbox(senderId, { peek });
+	const busMessages = MircBus.global().inbox(senderId, { peek });
 	const session = registry.get(senderId)?.session;
 	const pendingMessages =
-		typeof session?.drainPendingIrcInboxMessages === "function" ? session.drainPendingIrcInboxMessages(senderId) : [];
+		typeof session?.drainPendingMircInboxMessages === "function"
+			? session.drainPendingMircInboxMessages(senderId)
+			: [];
 	const messages = [...busMessages, ...pendingMessages].sort((a, b) => a.ts - b.ts);
 	if (messages.length === 0) {
 		return {
@@ -458,11 +460,11 @@ const BODY_LINES_COLLAPSED = 2;
 const BODY_LINES_EXPANDED = 12;
 const BODY_LINE_WIDTH = 100;
 
-function ircGlyph(theme: Theme): string {
+function mircGlyph(theme: Theme): string {
 	return theme.styledSymbol("tool.irc", "accent");
 }
 
-function outcomeColor(outcome: IrcDeliveryReceipt["outcome"]): ToolUIColor {
+function outcomeColor(outcome: MircDeliveryReceipt["outcome"]): ToolUIColor {
 	switch (outcome) {
 		case "woken":
 			return "success";
@@ -523,7 +525,7 @@ function bodyLines(
 	return lines;
 }
 
-/** Header title carrying the op direction: `IRC ➤ peer` out, `IRC ⟵ peer` in. */
+/** Header title carrying the op direction: `MIRC ➤ peer` out, `MIRC ⟵ peer` in. */
 function callTitle(args: HubRenderArgs | undefined, theme: Theme): string {
 	switch (args?.op) {
 		case "send":
@@ -531,9 +533,9 @@ function callTitle(args: HubRenderArgs | undefined, theme: Theme): string {
 		case "wait":
 			return `IRC ${theme.nav.back} ${args.from?.trim() || "anyone"}`;
 		case "inbox":
-			return "IRC inbox";
+			return "MIRC inbox";
 		case "list":
-			return "IRC peers";
+			return "MIRC peers";
 		default:
 			return "Hub";
 	}
@@ -556,7 +558,7 @@ function renderErrorResult(
 	args: HubRenderArgs | undefined,
 	theme: Theme,
 ): string[] {
-	const text = textContent(result) || "IRC call failed.";
+	const text = textContent(result) || "MIRC call failed.";
 	return [
 		renderStatusLine({ icon: "error", title: callTitle(args, theme), meta: callMeta(args) }, theme),
 		formatErrorDetail(text, theme),
@@ -564,13 +566,13 @@ function renderErrorResult(
 }
 
 /**
- * Display-only transcript card for live IRC traffic: `irc:incoming` DMs
- * delivered to this session, `irc:autoreply` side-channel replies sent on
- * this session's behalf, and `irc:relay` observations of agent↔agent
+ * Display-only transcript card for live MIRC traffic: `mirc:incoming` DMs
+ * delivered to this session, `mirc:autoreply` side-channel replies sent on
+ * this session's behalf, and `mirc:relay` observations of agent↔agent
  * traffic. Shares the tool renderer's glyph + quote-border conventions so
  * cards and hub messaging output look identical in the transcript.
  */
-export function createIrcMessageCard(
+export function createMircMessageCard(
 	card: {
 		kind: "incoming" | "autoreply" | "relay";
 		from?: string;
@@ -598,7 +600,7 @@ export function createIrcMessageCard(
 	return createCachedComponent(
 		getExpanded,
 		(width, expanded) => {
-			const lines = [renderStatusLine({ iconOverride: ircGlyph(uiTheme), title, meta }, uiTheme)];
+			const lines = [renderStatusLine({ iconOverride: mircGlyph(uiTheme), title, meta }, uiTheme)];
 			if (body.trim()) {
 				lines.push(...bodyLines(body, expanded, uiTheme, { indent: "  ", collapsedLines: 3 }));
 			}
@@ -648,7 +650,7 @@ function renderSendResult(
 		? { icon: "error" as const }
 		: timedOut
 			? { icon: "warning" as const }
-			: { iconOverride: ircGlyph(theme) };
+			: { iconOverride: mircGlyph(theme) };
 	const lines = [renderStatusLine({ ...icon, title, meta }, theme)];
 
 	const sent = args?.message?.trim();
@@ -656,7 +658,7 @@ function renderSendResult(
 
 	if (receipts.length > 1 || failedCount > 0) {
 		lines.push(
-			...renderTreeList<IrcDeliveryReceipt>(
+			...renderTreeList<MircDeliveryReceipt>(
 				{
 					items: receipts,
 					expanded,
@@ -709,7 +711,7 @@ function renderWaitResult(
 	const meta = [messageAge(waited.ts)];
 	if (waited.replyTo) meta.push("reply");
 	return [
-		renderStatusLine({ iconOverride: ircGlyph(theme), title: `IRC ${theme.nav.back} ${waited.from}`, meta }, theme),
+		renderStatusLine({ iconOverride: mircGlyph(theme), title: `IRC ${theme.nav.back} ${waited.from}`, meta }, theme),
 		...bodyLines(waited.body, expanded, theme, { indent: "  " }),
 	];
 }
@@ -722,12 +724,12 @@ function renderInboxResult(
 ): string[] {
 	const messages = details.inbox ?? [];
 	if (messages.length === 0) {
-		return [renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC inbox", meta: ["empty"] }, theme)];
+		return [renderStatusLine({ iconOverride: mircGlyph(theme), title: "MIRC inbox", meta: ["empty"] }, theme)];
 	}
 	const meta = [`${messages.length} ${messages.length === 1 ? "message" : "messages"}`];
 	if (args?.peek) meta.push("peek");
-	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC inbox", meta }, theme);
-	const items = renderTreeList<IrcMessage>(
+	const header = renderStatusLine({ iconOverride: mircGlyph(theme), title: "MIRC inbox", meta }, theme);
+	const items = renderTreeList<MircMessage>(
 		{
 			items: messages,
 			expanded,
@@ -761,7 +763,7 @@ function renderListResult(details: Partial<CoordinationDetails>, expanded: boole
 						...(rosterCounts.truncated > 0 ? [`${rosterCounts.truncated} truncated`] : []),
 					]
 				: ["no other agents"];
-		return [renderStatusLine({ icon: "info", title: "IRC peers", meta }, theme)];
+		return [renderStatusLine({ icon: "info", title: "MIRC peers", meta }, theme)];
 	}
 	const counts = new Map<string, number>();
 	for (const peer of peers) counts.set(peer.status, (counts.get(peer.status) ?? 0) + 1);
@@ -775,7 +777,7 @@ function renderListResult(details: Partial<CoordinationDetails>, expanded: boole
 		: [...counts].map(([status, count]) => `${count} ${status}`);
 	const unreadTotal = peers.reduce((sum, peer) => sum + peer.unread, 0);
 	if (unreadTotal > 0) meta.push(theme.fg("warning", `${unreadTotal} unread`));
-	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC peers", meta }, theme);
+	const header = renderStatusLine({ iconOverride: mircGlyph(theme), title: "MIRC peers", meta }, theme);
 	const items = renderTreeList(
 		{
 			items: peers,

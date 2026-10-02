@@ -169,7 +169,7 @@ describe("EventController message_start (user role)", () => {
 	});
 });
 
-function createIrcMessage(timestamp: number): CustomMessage<{ from: string; message: string }> {
+function createMircMessage(timestamp: number): CustomMessage<{ from: string; message: string }> {
 	return {
 		role: "custom",
 		customType: "irc:incoming",
@@ -180,7 +180,7 @@ function createIrcMessage(timestamp: number): CustomMessage<{ from: string; mess
 	};
 }
 
-function createIrcContext(options: { liveBlockAbove?: boolean } = {}) {
+function createMircContext(options: { liveBlockAbove?: boolean } = {}) {
 	const chatContainer = new TranscriptContainer();
 	if (options.liveBlockAbove) {
 		// A still-running tool above the cards: they sit in the live region,
@@ -208,22 +208,22 @@ function createIrcContext(options: { liveBlockAbove?: boolean } = {}) {
 	return { ctx, chatContainer, requestRender, addMessageToChat };
 }
 
-describe("EventController IRC expiry", () => {
+describe("EventController MIRC expiry", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 	});
 
-	it("renders IRC messages immediately and removes live-region cards after the TTL", async () => {
+	it("renders MIRC messages immediately and removes live-region cards after the TTL", async () => {
 		vi.useFakeTimers();
-		const message = createIrcMessage(1);
-		const { ctx, chatContainer, requestRender } = createIrcContext({ liveBlockAbove: true });
+		const message = createMircMessage(1);
+		const { ctx, chatContainer, requestRender } = createMircContext({ liveBlockAbove: true });
 		const controller = new EventController(ctx);
 
 		await controller.handleEvent({ type: "irc_message", message });
 
 		expect(chatContainer.children).toHaveLength(2);
-		// One requestRender from the IRC handler mounting the card. The blanket
+		// One requestRender from the MIRC handler mounting the card. The blanket
 		// pre-render that `handleEvent` used to fire before every dispatch was
 		// removed in #4353 (it doubled the paint rate during streaming and did no
 		// visible work beyond what the handlers already trigger).
@@ -239,11 +239,11 @@ describe("EventController IRC expiry", () => {
 
 	it("evicts the oldest live-region card beyond the cap", async () => {
 		vi.useFakeTimers();
-		const { ctx, chatContainer } = createIrcContext({ liveBlockAbove: true });
+		const { ctx, chatContainer } = createMircContext({ liveBlockAbove: true });
 		const controller = new EventController(ctx);
 
 		for (let i = 0; i < 5; i++) {
-			await controller.handleEvent({ type: "irc_message", message: createIrcMessage(100 + i) });
+			await controller.handleEvent({ type: "irc_message", message: createMircMessage(100 + i) });
 		}
 		// live block + MAX_LIVE_IRC_CARDS (4): the 5th card evicted the 1st.
 		expect(chatContainer.children).toHaveLength(5);
@@ -252,10 +252,10 @@ describe("EventController IRC expiry", () => {
 		expect(rendered.some(text => text.includes("104"))).toBe(true);
 	});
 
-	it("does not schedule duplicate expiry for duplicate IRC events", async () => {
+	it("does not schedule duplicate expiry for duplicate MIRC events", async () => {
 		vi.useFakeTimers();
-		const message = createIrcMessage(2);
-		const { ctx, chatContainer, addMessageToChat } = createIrcContext({ liveBlockAbove: true });
+		const message = createMircMessage(2);
+		const { ctx, chatContainer, addMessageToChat } = createMircContext({ liveBlockAbove: true });
 		const controller = new EventController(ctx);
 
 		await controller.handleEvent({ type: "irc_message", message });
@@ -267,10 +267,10 @@ describe("EventController IRC expiry", () => {
 		expect(chatContainer.children).toHaveLength(1);
 	});
 
-	it("clears pending IRC expiry timers on dispose", async () => {
+	it("clears pending MIRC expiry timers on dispose", async () => {
 		vi.useFakeTimers();
-		const message = createIrcMessage(3);
-		const { ctx, chatContainer, requestRender } = createIrcContext();
+		const message = createMircMessage(3);
+		const { ctx, chatContainer, requestRender } = createMircContext();
 		const controller = new EventController(ctx);
 
 		await controller.handleEvent({ type: "irc_message", message });

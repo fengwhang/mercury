@@ -68,7 +68,7 @@ SKIP_OBSERVATORY=false
 SKIP_GATEWAY=false
 NO_SKILLS=false
 ENSURE_DEPS=""
-OS=""; DISTRO=""; ARCH=""
+OS=""; DISTRO=""; ARCH=""; LIBC="glibc"
 UV_CMD=""
 
 IS_INTERACTIVE=true
@@ -135,7 +135,9 @@ detect_system() {
     esac
     log_success "Detected: $OS ($DISTRO) $ARCH"
     if [ "$OS" = "linux" ] && { [ -f /etc/alpine-release ] || { command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; }; }; then
-        log_warn "musl system — the omp binary links libstdc++/libgcc dynamically:"
+        LIBC="musl"
+        log_info "musl system — selecting the musl release asset"
+        log_warn "the omp binary requires libstdc++/libgcc:"
         log_warn "  if it fails to start: apk add libstdc++ libgcc"
     fi
 }
@@ -315,6 +317,8 @@ fetch_tarball() {
     # call, no rate limit). A bare tag resolves to that release directly.
     # Nightly has no redirect (GitHub offers no "latest prerelease"):
     # install-nightly.sh resolves the tag via API and passes it here.
+    local _libc_suffix=""
+    [ "$LIBC" = "musl" ] && _libc_suffix="-musl"
     if [ -z "$TARBALL_URL" ]; then
         case "$(uname -m)" in
             x86_64|amd64)  _def_arch="x64" ;;
@@ -327,14 +331,14 @@ fetch_tarball() {
         if [ -n "${TAG_ARG:-}" ]; then
             # Versioned asset name (only stable releases carry the
             # version-less aliases; the arch rewrite below still applies).
-            TARBALL_URL="https://github.com/fengwhang/mercury/releases/download/${TAG_ARG}/mercury-${TAG_ARG#v}-${_def_arch}.tar.gz"
+            TARBALL_URL="https://github.com/fengwhang/mercury/releases/download/${TAG_ARG}/mercury-${TAG_ARG#v}${_libc_suffix}-${_def_arch}.tar.gz"
             log_info "$_def_arch host — release $TAG_ARG tarball"
         elif [ "$MERCURY_CHANNEL" = "nightly" ]; then
             log_error "nightly installs need a release tag (no latest-nightly redirect exists)"
             log_error "use the nightly installer, or pass a tag: bash install.sh v0.0.142"
             exit 1
         else
-            TARBALL_URL="https://github.com/fengwhang/mercury/releases/latest/download/mercury-${_def_arch}.tar.gz"
+            TARBALL_URL="https://github.com/fengwhang/mercury/releases/latest/download/mercury${_libc_suffix}-${_def_arch}.tar.gz"
             log_info "$_def_arch host — auto-selected latest stable tarball"
         fi
     fi
@@ -353,8 +357,8 @@ fetch_tarball() {
             *) _arch="" ;;
         esac
         if [[ "$TARBALL_URL" == http* ]] && [ -n "$_arch" ]; then
-            _norm="$(echo "$TARBALL_URL" | sed -E 's/-(x64|arm64)\.tar\.gz$/.tar.gz/')"
-            _want="${_norm%.tar.gz}-$_arch.tar.gz"
+            _norm="$(echo "$TARBALL_URL" | sed -E 's/(-musl)?-(x64|arm64)\.tar\.gz$/.tar.gz/')"
+            _want="${_norm%.tar.gz}${_libc_suffix}-$_arch.tar.gz"
             if [ "$_want" != "$TARBALL_URL" ]; then
                 # Probe robustly: a plain HEAD (-I) is flaky on some networks/
                 # proxies; fall back to a 1-byte ranged GET, which exercises
@@ -474,6 +478,21 @@ select_omp_binary() {
         ln -f "$BIN" "$DIST/omp" 2>/dev/null || cp -f "$BIN" "$DIST/omp"
     fi
     [ -x "$DIST/omp" ] || { log_error "incomplete: prebuilt omp binary missing"; exit 1; }
+    # Diagnose missing loaders before spending time installing Python packages.
+    local checker="$INSTALL_ROOT/hermes/mercury_cli/elf.py"
+    if [ "$OS" = "linux" ] && [ -f "$checker" ]; then
+        if command -v python3 >/dev/null 2>&1; then
+            python3 "$checker" "$DIST/omp" --host --libc "$LIBC" || exit 1
+        else
+            "$UV_CMD" run --no-project --python '>=3.11,<3.14' "$checker" "$DIST/omp" --host --libc "$LIBC" || exit 1
+        fi
+    fi
+    local output
+    if ! output="$("$DIST/omp" --version 2>&1)"; then
+        log_error "omp could not start: $output"
+        log_error "Check the ELF loader and runtime libraries; musl systems need libstdc++/libgcc, and NixOS needs nix-ld."
+        exit 1
+    fi
 }
 
 setup_venv() {
@@ -491,7 +510,8 @@ setup_venv() {
 # ============================================================================
 smoke_test() {
     log_info "smoke test: engines start"
-    omp/packages/coding-agent/dist/omp --version >/dev/null 2>&1 || { log_error "omp binary failed to start"; exit 1; }
+    local output
+    output="$(omp/packages/coding-agent/dist/omp --version 2>&1)" || { log_error "omp binary failed to start: $output"; exit 1; }
     log_success "omp binary starts ($(omp/packages/coding-agent/dist/omp --version 2>/dev/null | head -1))"
     local VENV="$INSTALL_ROOT/hermes/.venv"
     ( cd hermes && "$VENV/bin/python" -c "import mercury_cli.main" ) >/dev/null 2>&1 \
@@ -529,55 +549,9 @@ run_setup_wizard() {
         PYTHONPATH="$INSTALL_ROOT/hermes" \
         "$VENV/bin/python" -m mercury_cli.main setup </dev/tty ) || log_warn "setup wizard exited non-zero — run '$MERCURY_CMD setup' later"
 
-    # Approval mode (user directive): the installer ASKS. One knob, both
-    # engines — omp inherits the hermes agent's mode at spawn (bridge maps
-    # approvals.mode -> omp tools.approvalMode; deny rules always carry).
-    # The setup wizard now owns the approval question (`mercury setup approvals`
-    # + the full-flow step): when it already wrote a mode, keep it — never
-    # double-ask. Only prompt when nothing is set (older wizard runs,
-    # --skip-setup, non-interactive).
-    local EXISTING_MODE=""
-    EXISTING_MODE=$(MERCURY_CONFIG="$MERCURY_HOME/config.yaml" "$VENV/bin/python" - <<PYEOF
-import sys
-sys.path.insert(0, "$INSTALL_ROOT/hermes")
-try:
-    from mercury_cli.config import load_config
-    cfg = load_config() or {}
-    print((cfg.get("approvals") or {}).get("mode") or "")
-except Exception:
-    print("")
-PYEOF
-    ) || EXISTING_MODE=""
-    if [ -z "$EXISTING_MODE" ]; then
-    echo ""
-    log_info "Approval mode — how much the agent may do without asking you:"
-    echo "  1) safe   — read-only auto-approved; writes & commands ask (default)"
-    echo "  2) smart  — reads + workspace writes auto-approved; commands ask"
-    echo "  3) yolo   — never ask; full auto (deny rules still enforced)"
-    local APPROVAL_CHOICE=""
-    while [ -z "$APPROVAL_CHOICE" ]; do
-        printf 'Choose [1/2/3, default=1]: '
-        read -r APPROVAL_CHOICE </dev/tty || APPROVAL_CHOICE="1"
-        case "$APPROVAL_CHOICE" in
-            1|""|safe) APPROVAL_CHOICE="manual" ;;
-            2|smart)   APPROVAL_CHOICE="smart" ;;
-            3|yolo)    APPROVAL_CHOICE="off" ;;
-            *) APPROVAL_CHOICE="" ;;
-        esac
-    done
-    "$VENV/bin/python" - <<PYEOF
-import os, sys
-sys.path.insert(0, "$INSTALL_ROOT/hermes")
-from mercury_cli.config import load_config, save_config
-cfg = load_config() or {}
-cfg["approvals"] = {"mode": "$APPROVAL_CHOICE"}
-save_config(cfg)
-print("approvals.mode = $APPROVAL_CHOICE (both engines; omp inherits at spawn)")
-PYEOF
-    else
-        log_info "approvals.mode = $EXISTING_MODE (kept from the setup wizard)"
-    fi
-    # re-render the omp subtree so the child engine picks the mode up now
+    # The wizard offers Hermes and OMP approval choices separately. Keep
+    # those choices when rendering shared models and explicit deny rules.
+    # Refresh OMP shared settings without changing either engine's mode.
     ( cd "$INSTALL_ROOT/hermes" \
         && MERCURY_HOME="$MERCURY_HOME" MERCURY_CONFIG="$MERCURY_HOME/config.yaml" \
         HERMES_HOME="$MERCURY_HOME/hermes" PI_CODING_AGENT_DIR="$MERCURY_HOME/omp" \

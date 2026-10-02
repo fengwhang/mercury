@@ -15,7 +15,7 @@ import {
 	resolveAbortLabel,
 	shouldRenderAbortReason,
 } from "../../session/messages";
-import { createIrcMessageCard } from "../../tools/hub";
+import { createMircMessageCard } from "../../tools/hub";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { ToolActivityContainer } from "../components/tool-activity";
@@ -103,11 +103,11 @@ export function buildLaunchCompletionBlock(message: CustomOrHookMessage): ToolAc
 }
 
 /**
- * Render a live IRC traffic custom message (`irc:incoming` / `irc:autoreply` /
- * `irc:relay`) as a transcript card. `getExpanded` supplies the live
+ * Render a live MIRC traffic custom message (`mirc:incoming` / `mirc:autoreply` /
+ * `mirc:relay`) as a transcript card. `getExpanded` supplies the live
  * expanded-state getter for the cached card.
  */
-export function buildIrcMessageCard(message: CustomOrHookMessage, getExpanded: () => boolean): Component {
+export function buildMircMessageCard(message: CustomOrHookMessage, getExpanded: () => boolean): Component {
 	const details = (
 		message as CustomMessage<{ from?: string; to?: string; message?: string; body?: string; replyTo?: string }>
 	).details;
@@ -117,7 +117,7 @@ export function buildIrcMessageCard(message: CustomOrHookMessage, getExpanded: (
 			: message.customType === "irc:autoreply"
 				? ("autoreply" as const)
 				: ("relay" as const);
-	return createIrcMessageCard(
+	return createMircMessageCard(
 		{
 			kind,
 			from: details?.from,

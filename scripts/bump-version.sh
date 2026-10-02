@@ -5,9 +5,10 @@
 # Usage: bash scripts/bump-version.sh 0.1.33
 #
 # Stamps:
-#   hermes/mercury_cli/__init__.py  (__version__ — CLI, omp bake, ircd 004)
-#   third_party/thelounge/package.json (version + mercuryFork marker —
-#     the fork IS the release; refresh_lounge_fork keys reinstalls off it)
+#   hermes/mercury_cli/__init__.py  (__version__ — CLI, omp bake, MIRC 004)
+#   third_party/mlounge/package.json (version + mercuryFork marker —
+#     the fork IS the release; refresh_mlounge_fork keys reinstalls off it)
+#   omp/packages/utils/mercury-release.json (source-mode product identity)
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VER="${1:?usage: bump-version.sh <version, e.g. 0.1.33>}"
@@ -32,11 +33,21 @@ assert n == 1, "no __version__ line found"
 init.write_text(new, encoding="utf-8")
 
 # Preserve key order (no reshuffle diffs); marker rides last.
-pkg_path = repo / "third_party" / "thelounge" / "package.json"
+pkg_path = repo / "third_party" / "mlounge" / "package.json"
 pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
 pkg["version"] = ver
 pkg["mercuryFork"] = True
 pkg_path.write_text(
     json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
-print(f"stamped {ver}: mercury_cli/__init__.py + thelounge/package.json")
+release_path = repo / "omp" / "packages" / "utils" / "mercury-release.json"
+release_path.write_text(json.dumps({"version": ver}, indent="\t") + "\n", encoding="utf-8")
+lock_path = pkg_path.with_name("package-lock.json")
+if lock_path.is_file():
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["version"] = ver
+    root_package = lock.get("packages", {}).get("")
+    if isinstance(root_package, dict):
+        root_package["version"] = ver
+    lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+print(f"stamped {ver}: Mercury CLI, source OMP, and mLounge package metadata")
 EOF

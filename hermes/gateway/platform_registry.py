@@ -14,18 +14,18 @@ Usage (plugin side):
     from gateway.platform_registry import platform_registry, PlatformEntry
 
     platform_registry.register(PlatformEntry(
-        name="irc",
-        label="IRC",
-        adapter_factory=lambda cfg: IRCAdapter(cfg),
+        name="mirc",
+        label="MIRC",
+        adapter_factory=lambda cfg: MIRCAdapter(cfg),
         check_fn=check_requirements,
         validate_config=lambda cfg: bool(cfg.extra.get("server")),
         required_env=["IRC_SERVER"],
-        install_hint="pip install irc",
+        install_hint="pip install mirc",
     ))
 
 Usage (gateway side):
 
-    adapter = platform_registry.create_adapter("irc", platform_config)
+    adapter = platform_registry.create_adapter("mirc", platform_config)
 """
 
 import logging
@@ -66,7 +66,7 @@ class PlatformEntry:
     # Identifier used in config.yaml (e.g. "irc", "viber").
     name: str
 
-    # Human-readable label (e.g. "IRC", "Viber").
+    # Human-readable label (e.g. "MIRC", "Viber").
     label: str
 
     # Factory callable: receives a PlatformConfig, returns an adapter instance.
@@ -151,7 +151,7 @@ class PlatformEntry:
     allow_update_command: bool = True
 
     # ── LLM guidance ──
-    # Platform hint injected into the system prompt (e.g. "You are on IRC.
+    # Platform hint injected into the system prompt (e.g. "You are on MIRC.
     # Do not use markdown.").  Empty string = no hint.
     platform_hint: str = ""
 

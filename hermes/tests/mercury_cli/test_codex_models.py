@@ -27,12 +27,33 @@ def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch)
 
     monkeypatch.setattr(
         "mercury_cli.codex_models._fetch_models_from_api",
-        lambda access_token: ["gpt-5.5"],
+        lambda access_token, base_url=None: ["gpt-5.5"],
     )
     model_ids = get_codex_model_ids(access_token="codex-access-token")
 
     assert retained_models.issubset(model_ids)
     assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
+
+
+def test_live_catalog_uses_credential_route_and_retries_ungated_version(monkeypatch):
+    import httpx
+    from mercury_cli.codex_models import _fetch_models_from_api
+    requests = []
+    def get(url, *, headers, timeout):
+        requests.append((url, headers))
+        if len(requests) == 1:
+            return httpx.Response(400)
+        return httpx.Response(200, json={"models": [
+            {"slug": "new-model", "visibility": "list", "priority": 1},
+            {"slug": "hidden-model", "visibility": "hide", "priority": 0},
+        ]})
+    monkeypatch.setattr(httpx, "get", get)
+    assert _fetch_models_from_api("test-token", "https://route.example/codex/") == ["new-model"]
+    assert [request[0] for request in requests] == [
+        "https://route.example/codex/models?client_version=99.0.0",
+        "https://route.example/codex/models?client_version=0.0.0",
+    ]
+    assert all(headers["Authorization"] == "Bearer test-token" for _, headers in requests)
 
 
 def test_picker_synthesizes_900k_variants_for_verified_slugs():
@@ -238,4 +259,3 @@ class TestNormalizeModelForProvider:
         assert changed is True
         # Uses first from available list
         assert cli.model == "gpt-5.3-codex"
-

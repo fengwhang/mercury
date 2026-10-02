@@ -78,6 +78,14 @@ def test_format_frame_traces_are_plaintext() -> None:
     assert reply == "hello **you**"
 
 
+def test_reply_frames_keep_complete_markdown_and_trace_frames_keep_whitespace():
+    reply = 'Before\n```bash\n  echo "$A-$B" ' + "*.txt " * 200 + '\n\n```\nAfter $x^2$.'
+    assert format_frame({"feed": "message", "role": "assistant", "text": reply}) == reply
+    trace = '\n\t**literal** "$A-$B" *.txt  \n'
+    assert format_frame({"feed": "message", "role": "tool", "text": trace}) == "🔧 " + trace
+    assert format_frame({"feed": "thought", "text": trace}) == "💭 " + trace
+
+
 def test_format_lifecycle() -> None:
     assert "started" in format_lifecycle("start", name="kid")
     assert "done" in format_lifecycle(
@@ -103,6 +111,7 @@ class FakeBot:
     def __init__(self):
         self.joined: list[str] = []
         self.said: list[tuple[str, str]] = []
+        self.kinds: list[str] = []
         self.destroyed: list[str] = []
 
     async def join_channel(self, channel: str) -> bool:
@@ -112,8 +121,9 @@ class FakeBot:
     async def part_channel(self, channel: str) -> bool:
         return True
 
-    async def say(self, channel: str, text: str) -> bool:
+    async def say(self, channel: str, text: str, *, kind: str = "status") -> bool:
         self.said.append((channel, text))
+        self.kinds.append(kind)
         return True
 
     async def destroy_channel(self, channel: str) -> bool:
@@ -156,6 +166,21 @@ def _rows():
             "extra": {},
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_frame_kind_is_carried_separately_from_visible_text():
+    bot = FakeBot()
+    mgr = RoomManager(FakeState(_rows()), bot)
+    for feed in [
+        {"feed": "tool", "tool": "bash", "args": 'echo "$A-$B" *.txt'},
+        {"feed": "message", "role": "tool", "text": "**literal** $x$"},
+        {"feed": "thought", "text": "**literal** $x$"},
+        {"feed": "message", "role": "assistant", "text": "✅ **Done** $x^2$"},
+    ]:
+        assert await mgr.publish_frame("#ace", feed)
+    assert bot.kinds == ["tool_input", "tool_output", "thinking", "assistant_reply"]
+    assert bot.said[-1][1] == "✅ **Done** $x^2$"
 
 
 def test_inbound_route() -> None:
@@ -291,14 +316,16 @@ async def test_handle_omp_message_task_then_steer(tmp_path, monkeypatch) -> None
     finally:
         rooms.drop_omp_room("orch-2")
     # A missing child of a live row rebuilds transparently; pin the
-    # rebuild to fail here so this asserts the historical "gone" reply.
+    # rebuild to fail here so this asserts the session-preserving error.
     import observatory.spawn as spawn_mod
 
     def _boom(*args, **kwargs):
         raise RuntimeError("no omp binary in tests")
 
     monkeypatch.setattr(spawn_mod, "resurrect_omp_handle", _boom)
-    assert "gone" in await mgr.handle_omp_message("#king", "op", "again")
+    reply = await mgr.handle_omp_message("#king", "op", "again")
+    assert "temporarily unavailable" in reply
+    assert "history are preserved" in reply
 
 
 @pytest.mark.asyncio
@@ -422,3 +449,35 @@ def test_omp_child_kwargs_for_row() -> None:
         "profile_home": None,
     }
     assert omp_child_kwargs_for_row({})["resume_session"] is None
+
+
+@pytest.mark.asyncio
+async def test_omp_room_approval_reaches_its_owner_and_returns_to_waiting_child(monkeypatch):
+    import importlib
+    approval = importlib.import_module("tools.approval")
+    monkeypatch.setattr(approval, "_get_approval_timeout", lambda: 1)
+    key = "test:irc:group:#task-room:owner"
+    prompts = []
+    decisions = []
+    manager = RoomManager(FakeState([]), FakeBot())
+    async def no_feed(*args):
+        return None
+    monkeypatch.setattr(manager, "_start_live_omp_feed", no_feed)
+    def notify(channel, text, **kwargs):
+        prompts.append((channel, text))
+        assert approval.resolve_gateway_approval("unrelated", "once") == 0
+        assert approval.resolve_gateway_approval(key, "once") == 1
+        return True
+    monkeypatch.setattr(rooms, "say_nowait", notify)
+    class RpcTurn:
+        def run_task(self, prompt):
+            decisions.append(approval.request_tool_approval("write", "child asks to write", require_human=True)["approved"])
+            return {"summary": "approved write", "turn_frames": []}
+    before = approval.get_current_session_key()
+    await manager._run_spawned_omp_task("#task-room", "node-task", "owner", "write", RpcTurn(), approval_session_key=key)
+    assert decisions == [True]
+    assert prompts[0][0] == "#task-room"
+    assert "!approve" in prompts[0][1]
+    assert manager.bot.said == [("#task-room", "approved write")]
+    assert approval.get_current_session_key() == before
+    assert key not in approval._gateway_notify_cbs

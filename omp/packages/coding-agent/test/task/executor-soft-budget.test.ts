@@ -3,7 +3,7 @@ import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobManager } from "@oh-my-pi/pi
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
-import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { MircBus } from "@oh-my-pi/pi-coding-agent/mirc/bus";
 import { RpcSubagentRegistry } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
 import type { RpcSubagentFrame } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
@@ -58,7 +58,7 @@ function createMockSession(
 	let abortCount = 0;
 	let disposeCount = 0;
 	let promptIndex = 0;
-	let ircWakeTurnObserver:
+	let mircWakeTurnObserver:
 		| ((records: CustomMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined)
 		| undefined;
 
@@ -92,12 +92,12 @@ function createMockSession(
 		waitForIdle: async () => {},
 		getLastAssistantMessage: () => messages[messages.length - 1] as never,
 		sendUserMessage: async () => {},
-		setIrcWakeTurnObserver: observer => {
-			ircWakeTurnObserver = observer;
+		setMircWakeTurnObserver: observer => {
+			mircWakeTurnObserver = observer;
 		},
-		trackIrcReply: () => {},
+		trackMircReply: () => {},
 		subscribeRunState: () => () => {},
-		deliverIrcMessage: async msg => {
+		deliverMircMessage: async msg => {
 			const record: CustomMessage = {
 				role: "custom",
 				customType: "irc:incoming",
@@ -107,7 +107,7 @@ function createMockSession(
 				attribution: "agent",
 				timestamp: msg.ts,
 			};
-			const finishObservation = ircWakeTurnObserver?.([record]);
+			const finishObservation = mircWakeTurnObserver?.([record]);
 			const yieldMessage = {
 				role: "assistant" as const,
 				content: [
@@ -332,7 +332,7 @@ describe("runSubprocess soft request budget", () => {
 
 		frames.length = 0;
 		const idleTerminal = waitForFollowUpTerminal();
-		const idleReceipt = await new IrcBus().send({ from: "Main", to: id, body: "resume your inventory" });
+		const idleReceipt = await new MircBus().send({ from: "Main", to: id, body: "resume your inventory" });
 		expect(idleReceipt.outcome).toBe("woken");
 		await idleTerminal;
 		expectRpcTurn();
@@ -341,7 +341,7 @@ describe("runSubprocess soft request budget", () => {
 		expect(AgentRegistry.global().get(id)?.status).toBe("parked");
 		frames.length = 0;
 		const revivedTerminal = waitForFollowUpTerminal();
-		const revivedReceipt = await new IrcBus().send({ from: "Main", to: id, body: "resume after parking" });
+		const revivedReceipt = await new MircBus().send({ from: "Main", to: id, body: "resume after parking" });
 		expect(revivedReceipt.outcome).toBe("revived");
 		await revivedTerminal;
 		expectRpcTurn();
@@ -579,7 +579,7 @@ describe("runSubprocess soft request budget", () => {
 		expect(AgentRegistry.global().get(id)?.status).toBe("aborted");
 		expect(handle.disposeCalls()).toBeGreaterThanOrEqual(1);
 
-		const receipt = await new IrcBus().send({ from: "Main", to: id, body: "resume" });
+		const receipt = await new MircBus().send({ from: "Main", to: id, body: "resume" });
 		expect(receipt.outcome).toBe("failed");
 		expect(receipt.error).toMatch(/hard-aborted/);
 		expect(receipt.error).toMatch(new RegExp(`history://${id}`));

@@ -235,7 +235,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment (on IRC as a Lounge link; prefer the lounge_share tool there for verified delivery)."
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment (on IRC as a Lounge link; prefer the mlounge_share tool there for verified delivery)."
             },
             "emoji": {
                 "type": "string",
@@ -1467,8 +1467,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     # --- Non-media platforms ---
     # Buzz is a plugin platform with verified native media delivery through
-    # _send_via_adapter below, including valid media-only sends. IRC rides
-    # along: the IRC adapter delivers every attachment as a Lounge link
+    # _send_via_adapter below, including valid media-only sends. MIRC rides
+    # along: the MIRC adapter delivers every attachment as a mLounge link
     # (send_document/send_image/send_voice/send_video overrides), so MEDIA
     # here is never an error or a warning for it either.
     if (media_files and not message.strip()

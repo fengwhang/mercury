@@ -1,4 +1,4 @@
-"""Gateway-process side of IRC observatory prompt delivery.
+"""Gateway-process side of MIRC observatory prompt delivery.
 
 The gateway agent's hermes session lives in (and is resumed by) the
 gateway process itself — boot resync deliberately never builds a
@@ -10,7 +10,7 @@ here.
 Execution is a headless AIAgent turn on a STABLE session id
 (``GATEWAY_SESSION_ID``) — the same machinery ``mercury -z`` uses
 (``mercury_cli.oneshot``: config-resolved runtime + ``run_conversation``),
-except the agent is cached per session so consecutive IRC messages share
+except the agent is cached per session so consecutive MIRC messages share
 one transcript. Turns are serialized per session: a headless session is
 always idle between turns, so steer-vs-prompt (a busy-session distinction)
 collapses — every injection starts a turn, and ``kind`` selects the entry
@@ -19,8 +19,8 @@ first tries the gateway slash dispatch (the same table
 ``GatewayRunner._handle_message`` uses) and falls back to a turn for
 unknown verbs.
 
-The gateway-session agent is built with ``platform="irc"`` so the
-system prompt picks the plain-text hint.
+The gateway-session agent is built with ``platform="mirc"`` so the
+system prompt picks the mLounge Markdown/LaTeX hint.
 """
 
 from __future__ import annotations
@@ -32,6 +32,8 @@ import os
 import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from observatory.message_format import frame_kind
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +81,8 @@ def _default_agent(session_id: str) -> Any:
     compression-lineage tip and loads prior history, so a stored
     session resumes and a missing one starts fresh.
 
-    The gateway session renders into an IRC channel, so it is built with
-    ``platform="irc"`` (plain-text hint, no markdown).
+    The gateway session renders into an MIRC channel, so it is built with
+    ``platform="mirc"`` (plain-text hint, no markdown).
     """
     from observatory.spawn import build_hermes_agent
 
@@ -299,7 +301,7 @@ def _push_progress(node_id: str, seq: int, event: dict[str, Any], *, internal: b
         if channel:
             line = format_frame(feed)
             if line:
-                say_nowait(channel, line)
+                say_nowait(channel, line, kind=frame_kind(feed))
     except Exception:
         pass
 def gateway_approval_notify(node_id: str):
@@ -372,6 +374,11 @@ def _feed_event_to_dict(event: Any) -> dict[str, Any] | None:
     except Exception:
         return None
     try:
+        if shape == "ActivityEvent" or (
+            shape == "activity" and isinstance(data.get("active"), bool)
+        ):
+            data["feed"] = "activity"
+            return data
         # Message frames (role-bearing) forward as feed="message": they
         # share subagent_id/text keys with thought frames, so probe them
         # first. Blank text is filtered consumer-side.
@@ -505,7 +512,7 @@ def replay_child_turn_frames(child_id: str, frames: Any) -> int:
                         continue
                     line = format_frame(wanted[i])
                     if line:
-                        say_nowait(channel, line)
+                        say_nowait(channel, line, kind=frame_kind(wanted[i]))
                 except Exception:
                     continue
             return len(surplus)
@@ -536,11 +543,11 @@ def _publish_live_payload(
         if str(payload.get("feed") or "") == "node":
             if sub:
                 _route_grandchild_frame(
-                    manager, child_id, payload, grands or {})
+                    manager, child_id, payload, grands if grands is not None else {})
             return
         if sub:
             _route_grandchild_frame(
-                manager, child_id, payload, grands or {})
+                manager, child_id, payload, grands if grands is not None else {})
             return
         try:
             channel = manager.channel_for_node(child_id)
@@ -548,9 +555,12 @@ def _publish_live_payload(
             channel = ""
         if not channel:
             return
+        if payload.get("feed") == "activity":
+            _hop(manager.publish_frame(channel, payload))
+            return
         line = format_frame(payload)
         if line:
-            say_nowait(channel, line)
+            say_nowait(channel, line, kind=frame_kind(payload))
     except Exception:
         pass
 
@@ -584,9 +594,7 @@ def _route_grandchild_frame(
                 if channel:
                     flat = dict(feed)
                     flat["subagent_id"] = ""
-                    line = format_frame(flat)
-                    if line:
-                        say_nowait(channel, line)
+                    _hop(manager.publish_frame(channel, flat))
             else:
                 node_id = f"{owner_id}/sub-{sid}"
                 try:
@@ -596,9 +604,7 @@ def _route_grandchild_frame(
                 if row_channel:
                     flat = dict(feed)
                     flat["subagent_id"] = ""
-                    line = format_frame(flat)
-                    if line:
-                        say_nowait(row_channel, line)
+                    _hop(manager.publish_frame(row_channel, flat))
                 cache.pop(sid, None)
                 _hop(manager._retire_child_room(node_id))
             return
@@ -613,6 +619,8 @@ def _route_grandchild_frame(
                 channel = row_channel
                 cache[sid] = channel
             else:
+                if feed.get("feed") == "activity" and feed.get("active") is False:
+                    return  # A late end must not recreate a retired room.
                 channel = _hop(manager._ensure_child_room_for(node_id, {
                     "name": _grandchild_name(feed, sid),
                     "parent_name": owner_id,
@@ -625,9 +633,12 @@ def _route_grandchild_frame(
         if channel:
             flat = dict(feed)
             flat["subagent_id"] = ""
+            if flat.get("feed") == "activity":
+                _hop(manager.publish_frame(channel, flat))
+                return
             line = format_frame(flat)
             if line:
-                say_nowait(channel, line)
+                say_nowait(channel, line, kind=frame_kind(flat))
     except Exception:
         pass
 
@@ -724,8 +735,6 @@ def _ensure_watcher_room(child_id: str, meta: dict[str, Any]) -> str:
     Never raises.
     """
     try:
-        from observatory.rooms import format_lifecycle, say_nowait
-
         manager = _watcher_manager()
         if manager is None:
             return ""
@@ -738,8 +747,8 @@ def _ensure_watcher_room(child_id: str, meta: dict[str, Any]) -> str:
         channel = _hop(manager._ensure_child_room_for(child_id, item)) or ""
         if channel:
             logger.info("observatory: room ensured %s for %s", channel, child_id)
-            say_nowait(channel, format_lifecycle(
-                "start", name=str(meta.get("name") or child_id)))
+            _hop(manager.publish_lifecycle(
+                channel, "start", name=str(meta.get("name") or child_id)))
         return channel
     except Exception:
         return ""

@@ -23,6 +23,7 @@
  * @typedef {Object} EmbeddedAddon
  * @property {string} platformTag
  * @property {string} version
+ * @property {"glibc" | "musl"=} libc
  * @property {EmbeddedAddonFile[]} files
  * @property {EmbeddedAddonArchive=} archive
  */

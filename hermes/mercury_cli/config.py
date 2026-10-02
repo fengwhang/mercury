@@ -4199,13 +4199,13 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                                         if _fprov
                                         else {"model": _fmid or _m_fb}
                                     ]
-                        # MERCURY-OMP PATCH (unified approvals): top-level
-                        # approvals: is the ONE mode knob for BOTH engines;
-                        # mercury reads it here (explicit mercury-subtree
-                        # approvals still win as the escape hatch).
-                        _ap = _whole.get("approvals")
-                        if isinstance(_ap, dict) and _ap.get("mode") and "approvals" not in user_config:
-                            user_config["approvals"] = dict(_ap)
+                        # Both engines consume the same top-level policy, including
+                        # deny-only and YAML boolean mode values.
+                        from mercury_cli.approval_policy import shared_approval_config
+                        _ap = shared_approval_config(_whole)
+                        if _ap:
+                            user_config["approvals"] = _ap
+
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -6028,6 +6028,13 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Warn after the write so the user gets immediate feedback plus a
     # "did you mean" hint, without blocking legitimate unknown keys.
     is_known, suggestion = _validate_config_key(key)
+    if key == "omp.tools.approvalMode":
+        from mercury_cli.approval_policy import OMP_APPROVAL_MODES
+
+        if value not in OMP_APPROVAL_MODES:
+            print("✗ OMP approval mode must be always-ask, write, or yolo.", file=sys.stderr)
+            sys.exit(1)
+        is_known = True
 
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
@@ -6242,6 +6249,14 @@ def get_config_value(key: str, *, as_json: bool = False):
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
+    elif os.environ.get("MERCURY_CONFIG", "").strip() and key.startswith("omp."):
+        whole = read_user_config_raw()
+        if key == "omp.tools.approvalMode":
+            from mercury_cli.approval_policy import omp_approval_mode
+
+            value = omp_approval_mode(whole)
+        else:
+            value = _get_nested(whole, key)
     else:
         value = _get_nested(load_config(), key)
 
@@ -6534,7 +6549,7 @@ _inject_profile_env_vars()
 # Bundled platform plugins under ``plugins/platforms/*/plugin.yaml`` declare
 # their required env vars via ``requires_env``.  This mirror of
 # ``_inject_profile_env_vars`` surfaces them in ``mercury config`` UI so users
-# can configure Teams / IRC / Google Chat without the core repo ever needing
+# can configure Teams / MIRC / Google Chat without the core repo ever needing
 # to know they exist.
 #
 # Each ``requires_env`` entry may be a bare string (name only) or a dict:

@@ -34,6 +34,9 @@ def existing_install(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.setenv("MERCURY_CONFIG", str(home / "config.yaml"))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(home / "omp"))
     return home
 
 
@@ -44,6 +47,9 @@ def fresh_install(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.setenv("MERCURY_CONFIG", str(home / "config.yaml"))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(home / "omp"))
     return home
 
 
@@ -64,6 +70,8 @@ def _enter_existing_install_patches(stack, **extra):
         ("mercury_cli.auth.get_active_provider", {"return_value": "openrouter"}),
         ("mercury_cli.setup._print_setup_summary", {}),
         ("mercury_cli.setup._offer_openclaw_migration", {"return_value": False}),
+        ("mercury_cli.memory_setup.ensure_mnemosyne_default", {"return_value": ""}),
+        ("mercury_cli.omp_sync.sync_omp_from_setup", {}),
     ]:
         stack.enter_context(patch(target, **kwargs))
 
@@ -84,6 +92,8 @@ def _enter_fresh_install_patches(stack, **extra):
         ("mercury_cli.auth.get_active_provider", {"return_value": None}),
         ("mercury_cli.setup.get_env_value", {"return_value": None}),
         ("mercury_cli.setup._offer_openclaw_migration", {"return_value": False}),
+        ("mercury_cli.memory_setup.ensure_mnemosyne_default", {"return_value": ""}),
+        ("mercury_cli.omp_sync.sync_omp_from_setup", {}),
     ]:
         stack.enter_context(patch(target, **kwargs))
 
@@ -115,6 +125,8 @@ class TestExistingInstallDefault:
                 gateway="mercury_cli.setup.setup_gateway",
                 observatory="mercury_cli.setup.setup_observatory",
                 tools="mercury_cli.setup.setup_tools",
+                hermes_approvals="mercury_cli.setup.setup_hermes_approvals",
+                omp_approvals="mercury_cli.setup.setup_omp_approvals",
             )
             from mercury_cli.setup import run_setup_wizard
             run_setup_wizard(args)
@@ -132,6 +144,8 @@ class TestExistingInstallDefault:
         m["gateway"].assert_called_once()
         m["observatory"].assert_called_once()
         m["tools"].assert_called_once()
+        m["hermes_approvals"].assert_called_once()
+        m["omp_approvals"].assert_called_once()
 
 
 class TestQuickFlag:

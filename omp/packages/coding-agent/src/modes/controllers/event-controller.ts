@@ -53,9 +53,9 @@ import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-arg
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
 
-const IRC_MESSAGE_VISIBLE_TTL_MS = 10_000;
+const MIRC_MESSAGE_VISIBLE_TTL_MS = 10_000;
 /**
- * Concurrent IRC cards allowed in the transcript's live region. Cards land
+ * Concurrent MIRC cards allowed in the transcript's live region. Cards land
  * below a still-live block (a running task), where they cannot commit to
  * native scrollback (commits are prefix-only) — every visible card inflates
  * the live region and pushes the live block's uncommitted rows above the
@@ -63,7 +63,7 @@ const IRC_MESSAGE_VISIBLE_TTL_MS = 10_000;
  * (several agents coordinating at once) must therefore stay bounded: the
  * oldest live-region card retires as soon as a new one would exceed the cap.
  */
-const MAX_LIVE_IRC_CARDS = 4;
+const MAX_LIVE_MIRC_CARDS = 4;
 const IDLE_RECAP_MIN_SECONDS = 1;
 const IDLE_RECAP_MAX_SECONDS = 3600;
 
@@ -175,10 +175,10 @@ export class EventController {
 	// In-flight ephemeral recap turn; aborted by #cancelIdleRecap when any
 	// activity (new turn, compaction, editor draft) supersedes the idle recap.
 	#idleRecapAbort?: AbortController;
-	#ircExpiryTimers = new Map<string, NodeJS.Timeout>();
-	// Insertion-ordered IRC cards not yet retired; values are the transcript
-	// components each card contributed (see #retireIrcCard for the guard).
-	#liveIrcCards = new Map<string, Component[]>();
+	#mircExpiryTimers = new Map<string, NodeJS.Timeout>();
+	// Insertion-ordered MIRC cards not yet retired; values are the transcript
+	// components each card contributed (see #retireMircCard for the guard).
+	#liveMircCards = new Map<string, Component[]>();
 	// Most recent `hub` tool block whose result still had every watched job
 	// running. Kept un-finalized (live) so the next `hub` call displaces it —
 	// one persistent poll instead of a stack of "waiting on N jobs" frames —
@@ -274,7 +274,7 @@ export class EventController {
 			ttsr_triggered: e => this.#handleTtsrTriggered(e),
 			todo_reminder: e => this.#handleTodoReminder(e),
 			todo_auto_clear: e => this.#handleTodoAutoClear(e),
-			irc_message: e => this.#handleIrcMessage(e),
+			irc_message: e => this.#handleMircMessage(e),
 			notice: e => this.#handleNotice(e),
 			model_changed: async () => {
 				this.ctx.statusLine.invalidate();
@@ -336,11 +336,11 @@ export class EventController {
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
 		this.#setTerminalProgress(false);
-		for (const timer of this.#ircExpiryTimers.values()) {
+		for (const timer of this.#mircExpiryTimers.values()) {
 			clearTimeout(timer);
 		}
-		this.#ircExpiryTimers.clear();
-		this.#liveIrcCards.clear();
+		this.#mircExpiryTimers.clear();
+		this.#liveMircCards.clear();
 	}
 
 	#resetReadGroup(): void {
@@ -740,11 +740,11 @@ export class EventController {
 		this.#retryPending = this.ctx.viewSession.isRetrying;
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
-		for (const timer of this.#ircExpiryTimers.values()) {
+		for (const timer of this.#mircExpiryTimers.values()) {
 			clearTimeout(timer);
 		}
-		this.#ircExpiryTimers.clear();
-		this.#liveIrcCards.clear();
+		this.#mircExpiryTimers.clear();
+		this.#liveMircCards.clear();
 		this.#displaceablePollComponent = undefined;
 		this.#displaceableTodoComponent = undefined;
 		this.#lastTtsrNotification = undefined;
@@ -997,7 +997,7 @@ export class EventController {
 		}
 	}
 
-	async #handleIrcMessage(event: Extract<AgentSessionEvent, { type: "irc_message" }>): Promise<void> {
+	async #handleMircMessage(event: Extract<AgentSessionEvent, { type: "irc_message" }>): Promise<void> {
 		const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
 		if (this.#renderedCustomMessages.has(signature)) {
 			return;
@@ -1005,30 +1005,30 @@ export class EventController {
 		this.#renderedCustomMessages.add(signature);
 		this.#resetReadGroup();
 		const components = this.ctx.addMessageToChat(event.message);
-		this.#scheduleIrcExpiry(signature, components);
-		this.#enforceIrcCardCap(signature);
+		this.#scheduleMircExpiry(signature, components);
+		this.#enforceMircCardCap(signature);
 		this.ctx.ui.requestRender();
 	}
 
-	#scheduleIrcExpiry(signature: string, components: Component[]): void {
-		if (components.length === 0 || this.#ircExpiryTimers.has(signature)) return;
+	#scheduleMircExpiry(signature: string, components: Component[]): void {
+		if (components.length === 0 || this.#mircExpiryTimers.has(signature)) return;
 		const timer = setTimeout(() => {
-			this.#ircExpiryTimers.delete(signature);
-			this.#retireIrcCard(signature);
-		}, IRC_MESSAGE_VISIBLE_TTL_MS);
+			this.#mircExpiryTimers.delete(signature);
+			this.#retireMircCard(signature);
+		}, MIRC_MESSAGE_VISIBLE_TTL_MS);
 		timer.unref?.();
-		this.#ircExpiryTimers.set(signature, timer);
-		this.#liveIrcCards.set(signature, components);
+		this.#mircExpiryTimers.set(signature, timer);
+		this.#liveMircCards.set(signature, components);
 	}
 
 	/**
-	 * Remove an expired/evicted IRC card only while its transcript entry remains
+	 * Remove an expired/evicted MIRC card only while its transcript entry remains
 	 * active. Pending or committed entries already belong to an immutable
 	 * ordered history batch and remain as final history.
 	 */
-	#retireIrcCard(signature: string): void {
-		const components = this.#liveIrcCards.get(signature);
-		this.#liveIrcCards.delete(signature);
+	#retireMircCard(signature: string): void {
+		const components = this.#liveMircCards.get(signature);
+		this.#liveMircCards.delete(signature);
 		if (!components) return;
 		let removed = false;
 		for (const component of components) {
@@ -1040,16 +1040,16 @@ export class EventController {
 	}
 
 	/** Evict oldest live-region cards beyond {@link MAX_LIVE_IRC_CARDS}. */
-	#enforceIrcCardCap(latestSignature: string): void {
-		while (this.#liveIrcCards.size > MAX_LIVE_IRC_CARDS) {
-			const oldest = this.#liveIrcCards.keys().next().value;
+	#enforceMircCardCap(latestSignature: string): void {
+		while (this.#liveMircCards.size > MAX_LIVE_MIRC_CARDS) {
+			const oldest = this.#liveMircCards.keys().next().value;
 			if (oldest === undefined || oldest === latestSignature) return;
-			const timer = this.#ircExpiryTimers.get(oldest);
+			const timer = this.#mircExpiryTimers.get(oldest);
 			if (timer) {
 				clearTimeout(timer);
-				this.#ircExpiryTimers.delete(oldest);
+				this.#mircExpiryTimers.delete(oldest);
 			}
-			this.#retireIrcCard(oldest);
+			this.#retireMircCard(oldest);
 		}
 	}
 

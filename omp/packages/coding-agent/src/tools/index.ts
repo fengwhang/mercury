@@ -12,7 +12,7 @@ import { checkJuliaKernelAvailability } from "../eval/jl/kernel";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import { checkRubyKernelAvailability } from "../eval/rb/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
-import type { PreparedExtension } from "../extensibility/extensions/types";
+import type { ExtensionUIContext, PreparedExtension } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
@@ -52,7 +52,7 @@ import { resolveEvalBackends } from "./eval-backends";
 import { GithubTool } from "./gh";
 import { GlobTool } from "./glob";
 import { GrepTool } from "./grep";
-import { HubTool, isIrcEnabled } from "./hub";
+import { HubTool, isMircEnabled } from "./hub";
 import { InspectImageTool } from "./inspect-image";
 import { LearnTool } from "./learn";
 import { ManageSkillTool } from "./manage-skill";
@@ -230,8 +230,8 @@ export interface ToolSession {
 	enableLsp?: boolean;
 	/** Whether LSP is limited to navigation and diagnostics. */
 	lspReadOnly?: boolean;
-	/** Whether this invocation may expose IRC. `false` removes it even for subagents. */
-	enableIrc?: boolean;
+	/** Whether this invocation may expose MIRC. `false` removes it even for subagents. */
+	enableMirc?: boolean;
 	/**
 	 * Whether MCP capabilities may be forwarded to child sessions. `false`
 	 * prohibits inherited-manager and process-global MCP fallback.
@@ -282,7 +282,7 @@ export interface ToolSession {
 	getHindsightSessionState?: () => HindsightSessionState | undefined;
 	/** Get Mnemopi runtime state for this agent session. */
 	getMnemopiSessionState?: () => MnemopiSessionState | undefined;
-	/** Agent identity used for IRC routing. Returns the registry id (e.g. "Main", "AuthLoader"). */
+	/** Agent identity used for MIRC routing. Returns the registry id (e.g. "Main", "AuthLoader"). */
 	getAgentId?: () => string | null;
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
 	getToolByName?: (name: string) => AgentTool | undefined;
@@ -290,6 +290,8 @@ export interface ToolSession {
 	getToolForEvalBridge?: (name: string) => AgentTool | undefined;
 	/** Current session context for eval-bridged tool execution. */
 	getToolContext?: () => AgentToolContext | undefined;
+	/** Resolve the live ancestor UI for delegated approval requests. */
+	getApprovalUI?: () => ExtensionUIContext | undefined;
 	/** Names currently authorized for invocation through the eval bridge. */
 	getEvalBridgeToolNames?: () => readonly string[];
 	/** Direct partition of the active Code Mode surface; undefined when Code Mode is inactive. */
@@ -316,7 +318,7 @@ export interface ToolSession {
 	 * remains restricted until the activation commits.
 	 */
 	pendingFullWriteDescription?: boolean;
-	/** Agent registry for IRC routing across live sessions. */
+	/** Agent registry for MIRC routing across live sessions. */
 	agentRegistry?: AgentRegistry;
 	/** Idle→parked→revive lifecycle owner; lets the hub kill a non-job-backed agent registration. Default: AgentLifecycleManager.global(). */
 	agentLifecycle?: () => AgentLifecycleManager;
@@ -674,7 +676,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			);
 		if (name === "hub") {
 			return (
-				!restrictToolNames && session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0)
+				!restrictToolNames &&
+				session.enableMirc !== false &&
+				isMircEnabled(session.settings, session.taskDepth ?? 0)
 			);
 		}
 		if (name === "retain" || name === "recall" || name === "reflect") {

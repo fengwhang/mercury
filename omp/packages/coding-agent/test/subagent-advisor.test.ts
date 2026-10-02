@@ -61,16 +61,16 @@ describe("createSubagentSettings advisor default", () => {
 		expect(createSubagentSettings(parent).get("advisor.enabled")).toBe(false);
 	});
 
-	it("lets a per-agent opt-in re-enable the advisor with its own advisor model role", () => {
+	it("keeps legacy advisor role assignments inert when the advisor is enabled", () => {
 		const parent = Settings.isolated({ "advisor.enabled": false, modelRoles: { smol: "openai/gpt-5-mini" } });
 		const child = createSubagentSettings(parent, {
 			"advisor.enabled": true,
 			modelRoles: { ...parent.getModelRoles(), advisor: "moonshot/k3" },
 		});
 		expect(child.get("advisor.enabled")).toBe(true);
-		expect(child.getModelRole("advisor")).toBe("moonshot/k3");
-		// Other roles from the parent snapshot survive the advisor override.
-		expect(child.getModelRole("smol")).toBe("openai/gpt-5-mini");
+		expect(child.getModelRole("advisor")).toBeUndefined();
+		// Removed roles cannot route the worker to a different model.
+		expect(child.getModelRole("smol")).toBeUndefined();
 	});
 });
 

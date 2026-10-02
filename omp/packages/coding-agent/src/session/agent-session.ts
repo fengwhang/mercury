@@ -151,7 +151,7 @@ import { GoalRuntime } from "../goals/runtime";
 import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
-import type { IrcMessage } from "../irc/bus";
+import type { MircMessage } from "../mirc/bus";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
@@ -290,7 +290,7 @@ import {
 	TOOL_EXECUTION_START_CUSTOM_TYPE,
 	type ToolExecutionStartData,
 } from "./exit-diagnostics";
-import { IrcBridge, type IrcBridgeHost } from "./irc-bridge";
+import { MircBridge, type MircBridgeHost } from "./mirc-bridge";
 import {
 	buildLaunchCompletionBatchMessage,
 	isLaunchCompletionOwner,
@@ -659,11 +659,11 @@ export class AgentSession {
 	 */
 	#asyncDeliveryEpoch = 0;
 
-	readonly #irc: IrcBridge;
-	#ircWakeTurnObserver:
+	readonly #mirc: MircBridge;
+	#mircWakeTurnObserver:
 		| ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined)
 		| undefined;
-	// Agent identity (registry id) used for IRC routing and job ownership.
+	// Agent identity (registry id) used for MIRC routing and job ownership.
 	#agentId: string | undefined;
 	#agentKind: "main" | "sub" = "main";
 	#subagentAllowedBySpawnPolicy = true;
@@ -750,10 +750,10 @@ export class AgentSession {
 	// Cursor exec, TUI listeners) is held back. Without this, a client that resumes
 	// on `agent_end` can fire its next `prompt` before #promptWithMessage's finally
 	#promptGeneration = 0;
-	/** Bumped by newSession()/switchSession() at the same point they clear the pending IRC/aside
+	/** Bumped by newSession()/switchSession() at the same point they clear the pending MIRC/aside
 	 *  queue (restored on a rolled-back switchSession()). A message-queueing call that spans an
 	 *  await (image normalization, vision description) captures this before the await and checks
-	 *  it again right before enqueueing into IrcBridge, so a record started for the outgoing
+	 *  it again right before enqueueing into MircBridge, so a record started for the outgoing
 	 *  session cannot land in a different session's queue after the transition. Deliberately
 	 *  distinct from #promptGeneration, which also changes on a plain abort() — asides must still
 	 *  enqueue and fold/resume normally across an in-session interrupt, only a session identity
@@ -886,36 +886,36 @@ export class AgentSession {
 			}
 		}
 		this.#scheduleQueuedMessageDrain();
-		this.#resumeStrandedIrcAsides();
+		this.#resumeStrandedMircAsides();
 	}
 
-	/** IRC records that arrive after the loop's final aside poll — or while an abort skipped that
-	 *  poll — land in pending IRC queues with no loop left to drain them; the queued-message drain's
-	 *  gate (agent.hasQueuedMessages()) does not count peer IRC interrupts. Once idle, wake a turn so
+	/** MIRC records that arrive after the loop's final aside poll — or while an abort skipped that
+	 *  poll — land in pending MIRC queues with no loop left to drain them; the queued-message drain's
+	 *  gate (agent.hasQueuedMessages()) does not count peer MIRC interrupts. Once idle, wake a turn so
 	 *  the agent responds to the peer. Skip only when a queued steer/follow-up will itself drive a
 	 *  resume turn whose aside poll already consumes these (no double-wake). */
-	#resumeStrandedIrcAsides(): void {
-		if (this.#modeExitDrainSuppressionDepth > 0 || this.#isDisposed || this.isStreaming || !this.#irc.hasPending()) {
+	#resumeStrandedMircAsides(): void {
+		if (this.#modeExitDrainSuppressionDepth > 0 || this.#isDisposed || this.isStreaming || !this.#mirc.hasPending()) {
 			return;
 		}
 		// Session transitions call #disconnectFromAgent() BEFORE `await abort()`, and only bump
-		// #sessionGeneration/clear the IRC queue several awaits later once they reach agent.reset().
+		// #sessionGeneration/clear the MIRC queue several awaits later once they reach agent.reset().
 		// A normalization await that resolves in that gap sees an unchanged generation and an idle,
 		// non-streaming session, so without this guard it would wake/fold into the still-old context
 		// and race the transition's own reset — same rationale as #drainStrandedQueuedMessages.
 		if (this.#unsubscribeAgent === undefined) return;
 		if (this.#canAutoContinueForFollowUp() && this.agent.hasQueuedMessages()) return;
-		const records = this.#irc.drainPending();
+		const records = this.#mirc.drainPending();
 		if (this.#planModeState?.enabled) {
-			// Plan mode: fold stranded IRC asides into context without waking an
+			// Plan mode: fold stranded MIRC asides into context without waking an
 			// autonomous turn. Convergence to ask/resolve stays user-driven.
-			this.#foldStrandedIrcAsidesIntoContext(records);
+			this.#foldStrandedMircAsidesIntoContext(records);
 			return;
 		}
 		if (this.#advisors.autoResumeSuppressed) {
 			// A user interrupt is still in effect (clearQueue({ forInterrupt: true }) already
 			// dropped these same records from the agent-core queues to keep the run the user
-			// stopped from auto-resuming). Only a real peer IRC message justifies waking a fresh
+			// stopped from auto-resuming). Only a real peer MIRC message justifies waking a fresh
 			// turn here; extension/user asides fold into context like the plan-mode branch above,
 			// staying user-driven until the next deliberate prompt.
 			const wake: AgentMessage[] = [];
@@ -924,21 +924,21 @@ export class AgentSession {
 				if (record.role === "custom" && record.customType === "irc:incoming") wake.push(record);
 				else fold.push(record);
 			}
-			this.#foldStrandedIrcAsidesIntoContext(fold);
-			if (wake.length > 0) this.#wakeForIrc(wake);
+			this.#foldStrandedMircAsidesIntoContext(fold);
+			if (wake.length > 0) this.#wakeForMirc(wake);
 			return;
 		}
-		this.#wakeForIrc(records);
+		this.#wakeForMirc(records);
 	}
 
-	/** Persist stranded IRC/extension asides into context without starting a turn — shared by the
-	 *  plan-mode branch and the post-interrupt fold branch of #resumeStrandedIrcAsides. All records
+	/** Persist stranded MIRC/extension asides into context without starting a turn — shared by the
+	 *  plan-mode branch and the post-interrupt fold branch of #resumeStrandedMircAsides. All records
 	 *  (custom and non-custom alike) route through emitExternalEvent so message_end both appends to
 	 *  context and notifies event listeners — #persistMessageEnd handles custom-role persistence
 	 *  (sessionManager.appendCustomMessageEntry) from that event, and a displayable custom aside that
 	 *  went stranded mid-stream gets the message_end its sender's rebuild-skip decision expects
-	 *  (extension-ui-controller's #applyCustomMessageDisplay), matching IrcBridge.flushPending(). */
-	#foldStrandedIrcAsidesIntoContext(records: AgentMessage[]): void {
+	 *  (extension-ui-controller's #applyCustomMessageDisplay), matching MircBridge.flushPending(). */
+	#foldStrandedMircAsidesIntoContext(records: AgentMessage[]): void {
 		for (const record of records) {
 			this.agent.emitExternalEvent({ type: "message_start", message: record });
 			this.agent.emitExternalEvent({ type: "message_end", message: record });
@@ -960,16 +960,16 @@ export class AgentSession {
 		return false;
 	}
 
-	/** Fire-and-forget wake turn for incoming IRC — idle delivery and stranded-aside resume both
+	/** Fire-and-forget wake turn for incoming MIRC — idle delivery and stranded-aside resume both
 	 *  route here. Wrapped in #beginInFlight/#endInFlight so the turn is tracked and its settle
 	 *  re-drains anything that stranded during it. A user interrupt may have intentionally left a
 	 *  follow-up queued behind an invalid tail (seam #5); the wake turn's loop would otherwise drain
 	 *  it, so park the follow-up queue across the wake and restore it after. It stays queued post-wake
 	 *  because #canAutoContinueForFollowUp suppresses follow-up auto-resume while a user interrupt is
 	 *  in effect, even though the wake left a provider-valid tail. */
-	#wakeForIrc(records: AgentMessage[]): void {
+	#wakeForMirc(records: AgentMessage[]): void {
 		if (this.#modeExitDrainSuppressionDepth > 0) {
-			this.#irc.queueAside(records);
+			this.#mirc.queueAside(records);
 			return;
 		}
 		// Park only a *blocked* follow-up (one a user interrupt is intentionally holding); an
@@ -987,15 +987,15 @@ export class AgentSession {
 		}
 		let finishObservation: ((error?: unknown) => void | Promise<void>) | undefined;
 		try {
-			finishObservation = this.#ircWakeTurnObserver?.(records);
+			finishObservation = this.#mircWakeTurnObserver?.(records);
 		} catch (error) {
-			logger.warn("IRC wake turn observer failed to start", { error: String(error) });
+			logger.warn("MIRC wake turn observer failed to start", { error: String(error) });
 		}
 		this.#resetPromptMaintenanceState();
 		// Capture the generation before the wake so its post-prompt recovery wait
 		// bails the instant an abort (which bumps #promptGeneration) supersedes
 		// this wake — otherwise the wait would follow a successor turn (a queued
-		// follow-up or another stranded IRC wake started by abort cleanup),
+		// follow-up or another stranded MIRC wake started by abort cleanup),
 		// delaying finishObservation and mis-attributing the successor's RPC
 		// progress to this now-dead wake monitor.
 		const generation = this.#promptGeneration;
@@ -1005,14 +1005,14 @@ export class AgentSession {
 			.prompt(records)
 			.catch(error => {
 				turnError = error;
-				logger.warn("IRC wake turn failed", { error: String(error) });
+				logger.warn("MIRC wake turn failed", { error: String(error) });
 			})
 			.finally(async () => {
 				try {
 					await this.#waitForPostPromptRecovery(generation);
 				} catch (error) {
 					turnError ??= error;
-					logger.warn("IRC wake turn recovery failed", { error: String(error) });
+					logger.warn("MIRC wake turn recovery failed", { error: String(error) });
 				}
 				if (parkedFollowUps.length > 0) {
 					this.agent.replaceQueues(
@@ -1025,7 +1025,7 @@ export class AgentSession {
 					try {
 						await finishObservation?.(turnError);
 					} catch (error) {
-						logger.warn("IRC wake turn observer failed to finish", { error: String(error) });
+						logger.warn("MIRC wake turn observer failed to finish", { error: String(error) });
 					}
 				});
 			});
@@ -1052,7 +1052,7 @@ export class AgentSession {
 	/** Record a suppressed advisor concern as visible, persisted advice without
 	 *  triggering a turn. When the agent is idle (the normal post-interrupt case,
 	 *  including the post-prompt unwind window where the core loop has ended), emit
-	 *  message_start/message_end like #flushPendingIrcAsides so #handleAgentEvent
+	 *  message_start/message_end like #flushPendingMircAsides so #handleAgentEvent
 	 *  renders it live (TUI/ACP) and persists it as a CustomMessageEntry. Only while
 	 *  an abort is still tearing a live turn down do we park it hidden, so abort's
 	 *  settle step replays it once idle — never appended into a live streamMessage. */
@@ -1090,7 +1090,7 @@ export class AgentSession {
 		// emitted immediately before the settle drain schedules work that arrived
 		// after the loop's final queue/aside poll. Such a tail arrival is a real
 		// continuation, not a terminal stop: mark this end non-terminal so
-		// subscribers wait through the queued steer/follow-up or stranded IRC wake.
+		// subscribers wait through the queued steer/follow-up or stranded MIRC wake.
 		const canDrain =
 			!this.#abortInProgress && this.#unsubscribeAgent !== undefined && this.#modeExitDrainSuppressionDepth === 0;
 		const queuedContinuation =
@@ -1098,8 +1098,9 @@ export class AgentSession {
 			!this.#queuedMessageDrainBlocked &&
 			this.#canAutoContinueForFollowUp() &&
 			this.agent.hasQueuedMessages();
-		const ircContinuation = canDrain && !this.#isDisposed && !this.#planModeState?.enabled && this.#irc.hasPending();
-		this.#emit(queuedContinuation || ircContinuation ? { ...pending, isTerminal: false } : pending);
+		const mircContinuation =
+			canDrain && !this.#isDisposed && !this.#planModeState?.enabled && this.#mirc.hasPending();
+		this.#emit(queuedContinuation || mircContinuation ? { ...pending, isTerminal: false } : pending);
 	}
 
 	/**
@@ -1183,7 +1184,7 @@ export class AgentSession {
 			kernelOwnerId: config.evalKernelOwnerId ?? `agent-session:${Snowflake.next()}`,
 			parentSessionId: config.parentEvalSessionId,
 		});
-		const ircHost: IrcBridgeHost = {
+		const mircHost: MircBridgeHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
 			settings: this.settings,
@@ -1191,10 +1192,10 @@ export class AgentSession {
 			isStreaming: () => this.isStreaming,
 			planModeEnabled: () => this.#planModeState?.enabled === true,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
-			wakeForIrc: records => this.#wakeForIrc(records),
+			wakeForMirc: records => this.#wakeForMirc(records),
 			runEphemeralTurn: args => this.runEphemeralTurn(args),
 		};
-		this.#irc = new IrcBridge(ircHost);
+		this.#mirc = new MircBridge(mircHost);
 		const prewalkHost: PrewalkCoordinatorHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1461,9 +1462,9 @@ export class AgentSession {
 		// each step boundary as non-interrupting asides. Peer IRCs share the aside
 		// injection boundary, but also expose a non-consuming interrupt peek so
 		// `hub` waits can return early before the boundary drains them.
-		this.agent.hasIrcInterrupts = () => this.#irc.hasInterrupts();
+		this.agent.hasMircInterrupts = () => this.#mirc.hasInterrupts();
 		this.agent.setAsideMessageProvider(() => {
-			const thunks: AsideMessage[] = this.#irc.drainPending().map(record => () => record);
+			const thunks: AsideMessage[] = this.#mirc.drainPending().map(record => () => record);
 			thunks.push(...this.yieldQueue.drainLazy());
 			// Mid-run todo reconciliation — evaluated at injection time so a turn
 			// that flips a todo just before this poll suppresses the nudge.
@@ -4336,10 +4337,10 @@ export class AgentSession {
 		this.#memory.cancelLocalMemoryStartup();
 		this.#titleGenerationAbortController.abort();
 		this.#abortAutolearnCapture();
-		this.#irc.flushPending();
+		this.#mirc.flushPending();
 		this.yieldQueue.clear();
 		this.agent.setAsideMessageProvider(undefined);
-		this.agent.hasIrcInterrupts = undefined;
+		this.agent.hasMircInterrupts = undefined;
 		this.#advisors.stopRuntime();
 		this.#eval.beginDispose();
 	}
@@ -6178,7 +6179,7 @@ export class AgentSession {
 			// Flush any pending bash messages before the new prompt
 			await this.#bash.flushPending();
 			this.#eval.flushPending();
-			this.#irc.flushPending();
+			this.#mirc.flushPending();
 
 			this.#todo.resetCycle();
 			this.#resetPromptMaintenanceState();
@@ -6645,7 +6646,7 @@ export class AgentSession {
 			this.#modeExitDrainSuppressionDepth--;
 			if (this.#modeExitDrainSuppressionDepth === 0) {
 				this.#scheduleIdleQueueDrain();
-				this.#resumeStrandedIrcAsides();
+				this.#resumeStrandedMircAsides();
 			}
 		}
 	}
@@ -6691,12 +6692,12 @@ export class AgentSession {
 			const records: AgentMessage[] = [];
 			if (imageDescriptionNotice) records.push(imageDescriptionNotice);
 			records.push({ role: "user", content, attribution: "user", timestamp: timestamp ?? Date.now() });
-			this.#irc.queueAside(records);
+			this.#mirc.queueAside(records);
 			// The awaits above (image normalization / vision description) can span the run's
 			// settle, so the run may already be idle by the time the record lands in the aside
 			// queue with no loop left to drain it. Resuming here is a no-op while streaming and
 			// wakes/folds correctly once idle (see #resumeStrandedIrcAsides).
-			this.#resumeStrandedIrcAsides();
+			this.#resumeStrandedMircAsides();
 			return;
 		}
 		this.#allowQueuedMessageDrainRetry();
@@ -6768,12 +6769,12 @@ export class AgentSession {
 		// whose initial steering poll injects the steer before the first provider call, so the
 		// request tail becomes the steer (valid) regardless of any injected custom / bashExecution
 		// / pythonExecution record a user interrupt left as the literal transcript tail. This is
-		// why a queued user steer stranded behind a preserved advisor card (or a flushed IRC aside
+		// why a queued user steer stranded behind a preserved advisor card (or a flushed MIRC aside
 		// / eval execution record) still resumes — no tail-role enumeration needed.
 		if (this.agent.peekSteeringQueue().length > 0) return true;
 		// Follow-up-only auto-resume stays suppressed while a deliberate user interrupt is in effect
 		// (#advisorAutoResumeSuppressed, cleared on the next user prompt): the user stopped, so their
-		// queued follow-up waits for an explicit resume — even if an interleaving IRC wake turn has
+		// queued follow-up waits for an explicit resume — even if an interleaving MIRC wake turn has
 		// since left a provider-valid tail.
 		if (this.#advisors.autoResumeSuppressed) return false;
 		// Follow-up-only resume has no steer to inject, so Agent.continue() continues from the
@@ -6943,12 +6944,12 @@ export class AgentSession {
 			// Non-interrupting: rides the same step-boundary aside poll as
 			// sendCustomMessage's streaming aside branch — not an agent-core queue
 			// entry, so no drain-retry latch and no idle-queue drain scheduling.
-			this.#irc.queueAside([normalizedAppMessage]);
+			this.#mirc.queueAside([normalizedAppMessage]);
 			// The image-normalization await above can span the run's settle, so the run may
 			// already be idle by the time the record lands in the aside queue with no loop
 			// left to drain it. Resuming here is a no-op while streaming and wakes/folds
 			// correctly once idle, matching #queueUserMessage's aside branch.
-			this.#resumeStrandedIrcAsides();
+			this.#resumeStrandedMircAsides();
 			return;
 		}
 		this.#allowQueuedMessageDrainRetry();
@@ -7017,7 +7018,7 @@ export class AgentSession {
 				// registration in the constructor) picks this up without interrupting the current tool
 				// batch. Not an agent-core queue entry, so no drain-retry latch and no idle-queue drain
 				// scheduling here.
-				this.#irc.queueAside([normalizedAppMessage]);
+				this.#mirc.queueAside([normalizedAppMessage]);
 				return false;
 			}
 			this.#allowQueuedMessageDrainRetry();
@@ -7056,10 +7057,10 @@ export class AgentSession {
 			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
 			if (this.#planModeState?.enabled) {
 				// Plan mode stays user-driven: fold into context without an autonomous turn, same as
-				// IrcBridge.deliver()/#resumeStrandedIrcAsides do in plan mode. Routed through the
+				// MircBridge.deliver()/#resumeStrandedIrcAsides do in plan mode. Routed through the
 				// event-emitting fold path (not a direct append) so a displayable aside that began
 				// streaming still gets the message_end its sender's rebuild-skip decision expects.
-				this.#foldStrandedIrcAsidesIntoContext([normalizedAppMessage]);
+				this.#foldStrandedMircAsidesIntoContext([normalizedAppMessage]);
 				return false;
 			}
 			if (this.#advisors.autoResumeSuppressed) {
@@ -7069,7 +7070,7 @@ export class AgentSession {
 				// would undo the user's deliberate stop. Fold into context (same event-emitting path
 				// as the plan-mode branch above) and stay user-driven, matching
 				// #resumeStrandedIrcAsides's post-interrupt fold branch.
-				this.#foldStrandedIrcAsidesIntoContext([normalizedAppMessage]);
+				this.#foldStrandedMircAsidesIntoContext([normalizedAppMessage]);
 				return false;
 			}
 			if (this.#clientBridge?.deferAgentInitiatedTurns && !this.#allowAcpAgentInitiatedTurns) {
@@ -7167,7 +7168,7 @@ export class AgentSession {
 	 *  returned for editor restore. Other queued messages stay in the agent-core queues so a continuing
 	 *  stream still delivers them — EXCEPT on `forInterrupt` (Esc+abort), where only advisor cards are
 	 *  kept (abort()'s #extractQueuedAdvisorCards preserves them as visible advice) and every other
-	 *  non-user steer (hidden goal/plan/budget, IRC/extension asides) is dropped, so abort()'s
+	 *  non-user steer (hidden goal/plan/budget, MIRC/extension asides) is dropped, so abort()'s
 	 *  #drainStrandedQueuedMessages can't auto-resume the run the user just interrupted (the drain only
 	 *  fires while agent.hasQueuedMessages()). Plain Alt+Up dequeue preserves those non-user steers. */
 	clearQueue(options?: { forInterrupt?: boolean }): {
@@ -7597,10 +7598,10 @@ export class AgentSession {
 			// The abort above may have skipped the loop's final aside poll (issue: stranded
 			// asides survive an aborted turn by design so a resumed session can still see
 			// them); discard here so they cannot leak into the new session's transcript via
-			// the first ordinary prompt's IrcBridge.flushPending(). Bump #sessionGeneration in
+			// the first ordinary prompt's MircBridge.flushPending(). Bump #sessionGeneration in
 			// the same breath so an aside-queueing call still awaiting normalization for the
 			// outgoing session also drops its record instead of landing in this new one.
-			this.#irc.clearPending();
+			this.#mirc.clearPending();
 			this.#sessionGeneration++;
 			this.#scheduledHiddenNextTurnGeneration = undefined;
 			this.#queuedMessageDrainBlocked = false;
@@ -8466,39 +8467,39 @@ export class AgentSession {
 	 */
 
 	// =========================================================================
-	// IRC Delivery
+	// MIRC Delivery
 	// =========================================================================
 
-	/** Surfaces and consumes pending IRC records before automatic injection. */
-	drainPendingIrcInboxMessages(agentId: string, opts?: { from?: string; limit?: number }): IrcMessage[] {
-		return this.#irc.drainInboxMessages(agentId, opts);
+	/** Surfaces and consumes pending MIRC records before automatic injection. */
+	drainPendingMircInboxMessages(agentId: string, opts?: { from?: string; limit?: number }): MircMessage[] {
+		return this.#mirc.drainInboxMessages(agentId, opts);
 	}
 
-	/** Delivers an IRC message into this recipient session. */
-	deliverIrcMessage(msg: IrcMessage, opts?: { expectsReply?: boolean }): Promise<"injected" | "woken"> {
-		return this.#irc.deliver(msg, opts);
+	/** Delivers an MIRC message into this recipient session. */
+	deliverMircMessage(msg: MircMessage, opts?: { expectsReply?: boolean }): Promise<"injected" | "woken"> {
+		return this.#mirc.deliver(msg, opts);
 	}
 
-	/** Waits for every IRC reply this session still owes a peer (auto-replies, wake-turn relays). */
-	waitForIrcReplies(): Promise<void> {
-		return this.#irc.waitForReplies();
+	/** Waits for every MIRC reply this session still owes a peer (auto-replies, wake-turn relays). */
+	waitForMircReplies(): Promise<void> {
+		return this.#mirc.waitForReplies();
 	}
 
-	/** Registers an in-flight IRC reply obligation; peers awaiting an answer hold their stop verdict on it. */
-	trackIrcReply(pending: Promise<void>): void {
-		this.#irc.trackReply(pending);
+	/** Registers an in-flight MIRC reply obligation; peers awaiting an answer hold their stop verdict on it. */
+	trackMircReply(pending: Promise<void>): void {
+		this.#mirc.trackReply(pending);
 	}
 
-	/** Installs task-executor monitoring around autonomous IRC wake turns. */
-	setIrcWakeTurnObserver(
+	/** Installs task-executor monitoring around autonomous MIRC wake turns. */
+	setMircWakeTurnObserver(
 		observer: ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined) | undefined,
 	): void {
-		this.#ircWakeTurnObserver = observer;
+		this.#mircWakeTurnObserver = observer;
 	}
 
-	/** Emits an IRC relay observation for UI rendering without persisting it. */
-	emitIrcRelayObservation(record: CustomMessage): void {
-		this.#irc.emitRelayObservation(record);
+	/** Emits an MIRC relay observation for UI rendering without persisting it. */
+	emitMircRelayObservation(record: CustomMessage): void {
+		this.#mirc.emitRelayObservation(record);
 	}
 
 	/**
@@ -8532,7 +8533,7 @@ export class AgentSession {
 			{
 				apiKey: this.#modelRegistry.resolver(model, cacheSessionId),
 				// Side-channel turns must not share OpenAI/Codex append-only
-				// conversation state with the main agent turn: IRC and /btw can run
+				// conversation state with the main agent turn: MIRC and /btw can run
 				// while the main turn is mid-tool-call. Keep the prompt-cache key
 				// stable, but give provider routing a unique request lineage. The
 				// shared provider state map is still required so Codex can allocate
@@ -8754,12 +8755,12 @@ export class AgentSession {
 
 		this.agent.clearAllQueues();
 		// Same rationale as newSession: an aborted turn can skip its final aside poll,
-		// stranding IRC/extension asides meant for the outgoing transcript. Snapshot so a
+		// stranding MIRC/extension asides meant for the outgoing transcript. Snapshot so a
 		// rolled-back switch (catch block below) restores them for the still-live session.
 		// #sessionGeneration bumps in the same breath (and rolls back with it) so an
 		// aside-queueing call still awaiting normalization when the switch started drops its
 		// record on success but stays valid if the switch is rolled back to this same session.
-		const previousIrcPending = this.#irc.clearPending();
+		const previousMircPending = this.#mirc.clearPending();
 		const previousSessionGeneration = this.#sessionGeneration++;
 		const transitionSettled = Promise.withResolvers<void>();
 		const previousSessionTransitionSettled = this.#sessionTransitionSettled;
@@ -8959,7 +8960,7 @@ export class AgentSession {
 			this.agent.setSystemPrompt(previousSystemPrompt);
 			this.agent.replaceMessages(previousAgentMessages);
 			this.agent.replaceQueues(previousSteeringMessages, previousFollowUpMessages);
-			this.#irc.restorePending(previousIrcPending);
+			this.#mirc.restorePending(previousMircPending);
 			this.#sessionGeneration = previousSessionGeneration;
 			transitionSettled.resolve();
 			this.#sessionTransitionSettled = previousSessionTransitionSettled;

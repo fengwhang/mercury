@@ -163,7 +163,7 @@ function createAsyncSession(
 			await options.abort?.();
 		},
 		dispose: options.dispose ?? (async () => {}),
-		setIrcWakeTurnObserver: () => {},
+		setMircWakeTurnObserver: () => {},
 		subscribeRunState: () => () => {},
 	};
 	harness.session = session as unknown as AgentSession;

@@ -8,7 +8,7 @@
 import { afterEach, beforeAll, describe, expect, it, setSystemTime, vi } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { MircBus } from "@oh-my-pi/pi-coding-agent/mirc/bus";
 import { type AgentHubDeps, AgentHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
 import { SessionObserverRegistry } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -51,7 +51,7 @@ function makeHub(agents: AgentRegistry, overrides: Partial<AgentHubDeps> = {}) {
 		onDone: () => {},
 		requestRender: () => {},
 		registry: agents,
-		irc: new IrcBus(agents),
+		mirc: new MircBus(agents),
 		focusAgent: async () => {},
 		...overrides,
 	});
@@ -276,7 +276,7 @@ describe("Agent hub row ordering", () => {
 			onDone: () => {},
 			requestRender: () => {},
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			focusAgent: async () => {},
 		});
 
@@ -331,7 +331,7 @@ describe("Agent hub row ordering", () => {
 			onDone: () => {},
 			requestRender: () => {},
 			registry: agents,
-			irc: new IrcBus(agents),
+			mirc: new MircBus(agents),
 			focusAgent: async () => {},
 		});
 

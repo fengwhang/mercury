@@ -1,4 +1,4 @@
-"""Shared persistent approval-mode command logic.
+"""Persistent Hermes approval-mode command logic.
 
 Approval mode is profile-scoped configuration, not conversation state. Changing
 it affects subsequent terminal guard checks immediately because approval.py
@@ -43,12 +43,13 @@ def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResu
             False,
             f"Approval mode: {current} (persistent profile setting).",
         )
+    requested = {"safe": "manual", "yolo": "off"}.get(requested, requested)
     if requested not in VALID_APPROVAL_MODES:
         return ApprovalModeResult(
             False,
             current,
             False,
-            "Usage: /approvals [manual|smart|off]",
+            "Usage: /approvals [safe|smart|yolo] (manual/off remain accepted)",
         )
 
     # set_config_value is the canonical managed-scope/write-safety chokepoint.

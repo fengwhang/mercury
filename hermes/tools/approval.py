@@ -342,6 +342,9 @@ def _is_gateway_approval_context() -> bool:
         return False
     if _is_unattended_platform_approval_context():
         return False
+    with _lock:
+        if get_current_session_key(default="") in _gateway_notify_cbs:
+            return True
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
     return bool(_get_session_platform())
@@ -2925,6 +2928,8 @@ class _ApprovalEntry:
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
+_gateway_notify_leases: dict[str, int] = {}
+_gateway_notify_deferred: set[str] = set()
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
 
 
@@ -2938,19 +2943,52 @@ def register_gateway_notify(session_key: str, cb) -> None:
     """
     with _lock:
         _gateway_notify_cbs[session_key] = cb
+        _gateway_notify_deferred.discard(session_key)
 
 
 def unregister_gateway_notify(session_key: str) -> None:
     """Unregister the per-session gateway approval callback.
 
-    Signals ALL blocked threads for this session so they don't hang forever
-    (e.g. when the agent run finishes or is interrupted).
+    Background children retain the route until their leases are released.
+    Once no owner remains, signal blocked threads so they cannot hang forever.
     """
     with _lock:
+        if _gateway_notify_leases.get(session_key, 0):
+            _gateway_notify_deferred.add(session_key)
+            return
+        _gateway_notify_deferred.discard(session_key)
         _gateway_notify_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
         entry.event.set()
+
+
+def retain_gateway_notify(session_key: str):
+    """Keep an orchestrator's approval route alive while its background children run."""
+    with _lock:
+        retained = session_key in _gateway_notify_cbs
+        if retained:
+            _gateway_notify_leases[session_key] = _gateway_notify_leases.get(session_key, 0) + 1
+
+    def release():
+        nonlocal retained
+        entries = []
+        with _lock:
+            if not retained:
+                return
+            retained = False
+            remaining = _gateway_notify_leases.get(session_key, 1) - 1
+            if remaining:
+                _gateway_notify_leases[session_key] = remaining
+            else:
+                _gateway_notify_leases.pop(session_key, None)
+                if session_key in _gateway_notify_deferred:
+                    _gateway_notify_deferred.discard(session_key)
+                    _gateway_notify_cbs.pop(session_key, None)
+                    entries = _gateway_queues.pop(session_key, [])
+        for entry in entries:
+            entry.event.set()
+    return release
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -3504,23 +3542,9 @@ def _normalize_approval_mode(mode) -> str:
     being silently accepted and falling through every mode check downstream.
     Always returns one of 'manual', 'smart', or 'off'.
     """
-    _VALID_MODES = ("manual", "smart", "off")
-    if isinstance(mode, bool):
-        return "off" if mode is False else "manual"
-    if isinstance(mode, str):
-        normalized = mode.strip().lower()
-        if not normalized:
-            return "manual"
-        if normalized in _VALID_MODES:
-            return normalized
-        logger.warning(
-            "Unknown approvals.mode %r — defaulting to 'manual'. "
-            "Valid values: %s",
-            mode,
-            ", ".join(_VALID_MODES),
-        )
-        return "manual"
-    return "manual"
+    from mercury_cli.approval_policy import normalize_approval_mode
+    return normalize_approval_mode(mode)
+
 
 
 def _get_approval_config() -> dict:
@@ -3860,6 +3884,7 @@ def _run_approval_gate(
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
+    require_human: bool = False,
 ) -> dict:
     """Shared human-approval gate for a flagged action (command or tool).
 
@@ -3898,6 +3923,8 @@ def _run_approval_gate(
             plugin-flagged action never runs ungated without a human.
         no_human_block_message: Message returned when
             ``fail_closed_when_no_human`` blocks.
+        require_human: Require an explicit answer even under YOLO or a cached grant.
+            Used for provider safety acknowledgements and delegated explicit tool gates.
 
     Returns:
         ``{"approved": bool, "message": str|None, ...}`` — shape shared with
@@ -3906,17 +3933,22 @@ def _run_approval_gate(
     # --yolo bypasses all approval prompts (session- or process-scoped).
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
     # here only skips the recoverable approval layer.
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+    if not require_human and is_approval_bypass_active():
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
+    if not require_human and is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
     approval_callback = _resolve_cli_approval_callback(approval_callback)
 
     is_cli = _is_interactive_cli()
-    is_gateway = _is_gateway_approval_context()
+    with _lock:
+        has_notify = session_key in _gateway_notify_cbs
+    is_gateway = _is_gateway_approval_context() or has_notify
+    if require_human and not is_cli and not has_notify and approval_callback is None:
+        return {"approved": False, "message": no_human_block_message or "Human approval is unavailable."}
+    is_cli = is_cli or approval_callback is not None
 
     # Single-query (-q) sessions export HERMES_INTERACTIVE=1 but have no user
     # to answer approval prompts — an unanswered prompt just waits the full
@@ -4260,6 +4292,7 @@ def request_tool_approval(
     *,
     rule_key: str = "",
     approval_callback=None,
+    require_human: bool = False,
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
@@ -4318,6 +4351,7 @@ def request_tool_approval(
     display_target = f"<{tool_name}> (plugin approval rule)"
 
     return _run_approval_gate(
+        require_human=require_human,
         pattern_key=pattern_key,
         description=description,
         display_target=display_target,

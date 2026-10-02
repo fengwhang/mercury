@@ -264,7 +264,7 @@ interface WireToolConfig {
 
 /**
  * Bedrock validates that requests carrying any `toolUse`/`toolResult` history
- * include a `toolConfig`. For no-tool ephemeral turns (`/btw`, IRC auto-replies)
+ * include a `toolConfig`. For no-tool ephemeral turns (`/btw`, MIRC auto-replies)
  * we have nothing real to send, so we inject this placeholder. Its presence is
  * tracked by a per-request flag — never the wire name — so callers who happen
  * to register a real tool literally called `__no_tools__` are not affected.

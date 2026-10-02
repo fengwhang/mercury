@@ -47,7 +47,7 @@ class FakeBot:
     async def join_channel(self, channel: str) -> bool:
         return True
 
-    async def say(self, channel: str, text: str) -> bool:
+    async def say(self, channel: str, text: str, *, kind: str = "status") -> bool:
         return True
 
     async def invite_user(self, nick: str, channel: str) -> bool:

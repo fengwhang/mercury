@@ -1,4 +1,4 @@
-"""Spawn/exit tests over IRC channels (no matrix)."""
+"""Spawn/exit tests over MIRC channels (no matrix)."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ class FakeBot:
     async def part_channel(self, channel: str) -> bool:
         return True
 
-    async def say(self, channel: str, text: str) -> bool:
+    async def say(self, channel: str, text: str, *, kind: str = "status") -> bool:
         self.said.append((channel, text))
         return True
 
@@ -108,6 +108,24 @@ async def test_spawn_omp_room_registers_pump(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["King", "agent-with-a-name-longer-than-the-nick-limit"])
+async def test_duplicate_spawn_names_keep_distinct_identities(tmp_path, monkeypatch, name):
+    bot = FakeBot()
+    monkeypatch.setattr(spawn, "get_bot_sink", lambda: bot)
+    state = _real_state(tmp_path)
+    registry = OrchestratorRegistry()
+    first = await spawn_orchestrator(name, "hermes", state=state, registry=registry, server_name="vm")
+    second = await spawn_orchestrator(name, "hermes", state=state, registry=registry, server_name="vm")
+    if name == "King":
+        assert first["mxid"] == "vm_king"
+        assert second["mxid"] == "vm_king-2"
+    assert first["mxid"] != second["mxid"]
+    assert max(len(first["mxid"]), len(second["mxid"])) <= 32
+    assert first["room_id"] != second["room_id"]
+    assert len(state.get_live()) == 2
+
+
+@pytest.mark.asyncio
 async def test_spawn_rejects_blank_and_bad_engine(tmp_path) -> None:
     state = _real_state(tmp_path)
     registry = OrchestratorRegistry()
@@ -174,7 +192,7 @@ async def test_exit_without_bot_defers_journal(tmp_path, monkeypatch) -> None:
     assert read_purge_journal(state) == []
 
 
-def test_begin_exit_rejects_nonzero_depth(tmp_path) -> None:
+def test_begin_exit_closes_child_without_closing_parent(tmp_path) -> None:
     state = _real_state(tmp_path)
     state.add_node(
         "root", engine="hermes", name="r", slug="r", mxid="r", session_ref="s"
@@ -188,8 +206,19 @@ def test_begin_exit_rejects_nonzero_depth(tmp_path) -> None:
         session_ref="s",
         parent_node_id="root",
     )
-    with pytest.raises(ValueError):
-        begin_exit(state, "kid")
+    record = begin_exit(state, "kid")
+    assert [row["node_id"] for row in record.rows] == ["kid"]
+    assert state.get("kid")["status"] == "dead"
+    assert state.get("root")["status"] == "live"
+
+
+def test_begin_exit_protects_gateway(tmp_path) -> None:
+    state = _real_state(tmp_path)
+    state.add_node("gw", engine="hermes", name="gateway", slug="gateway",
+                   mxid="gateway", session_ref="s", extra={"kind": "gateway"})
+    with pytest.raises(ValueError, match="use /restart"):
+        begin_exit(state, "gw")
+    assert state.get("gw")["status"] == "live"
 
 
 def test_finish_exit_deletes_deepest_first(tmp_path) -> None:
@@ -232,17 +261,17 @@ async def test_spawn_same_name_gets_distinct_channels(tmp_path, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_spawn_invites_lounge_user(tmp_path, monkeypatch) -> None:
+async def test_spawn_invites_mlounge_user(tmp_path, monkeypatch) -> None:
     """Fresh spawns nudge The Lounge with an INVITE (tap, no typing)."""
     from observatory import provision as provision_mod
 
-    monkeypatch.setattr(provision_mod, "get_lounge_nick", lambda home=None: "lounge")
+    monkeypatch.setattr(provision_mod, "get_mlounge_nick", lambda home=None: "mlounge")
     bot = FakeBot()
     monkeypatch.setattr(spawn, "get_bot_sink", lambda: bot)
     state = _real_state(tmp_path)
     registry = OrchestratorRegistry()
     row = await spawn_orchestrator("Ace", "hermes", state=state, registry=registry)
-    assert ("lounge", row["room_id"]) in bot.invited
+    assert ("mlounge", row["room_id"]) in bot.invited
 
 
 @pytest.mark.asyncio

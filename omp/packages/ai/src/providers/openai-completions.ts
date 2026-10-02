@@ -1713,7 +1713,7 @@ function buildParams(
 		// contains tool_calls/tool_results, even when no tools are offered this turn.
 		// Only inject the sentinel when the caller passed `context.tools = undefined`
 		// (i.e. tools were not specified at all). An explicit `context.tools = []` means
-		// the caller opted out of tools for this turn (as /btw and IRC background replies
+		// the caller opted out of tools for this turn (as /btw and MIRC background replies
 		// do via AgentSession.runEphemeralTurn) — honour that intent and emit nothing,
 		// so LiteLLM → Bedrock never sees an empty `toolConfig` block.
 		params.tools = [];
@@ -1774,7 +1774,7 @@ function buildParams(
 		// `toolConfig` block, and Bedrock requires `toolConfig.tools` to be
 		// non-empty whenever the conversation already holds `toolUse`/`toolResult`
 		// content. Drop it whenever the resolved tools list is missing or empty.
-		// Side-channel turns hit this: `/btw` and IRC background replies route
+		// Side-channel turns hit this: `/btw` and MIRC background replies route
 		// through `AgentSession.runEphemeralTurn`, which sets `context.tools = []`
 		// and `toolChoice: "none"` (see packages/coding-agent/src/session/agent-session.ts).
 		// The same empty-tools case applies after leftover-union quarantine: a

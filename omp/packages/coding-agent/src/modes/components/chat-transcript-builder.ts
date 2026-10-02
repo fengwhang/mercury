@@ -34,7 +34,7 @@ import {
 	assistantUsageIsBilled,
 	buildAsyncResultBlock,
 	buildFileMentionBlock,
-	buildIrcMessageCard,
+	buildMircMessageCard,
 	buildLaunchCompletionBlock,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
@@ -548,7 +548,7 @@ export class ChatTranscriptBuilder {
 			message.customType === "irc:autoreply" ||
 			message.customType === "irc:relay"
 		) {
-			this.container.addChild(buildIrcMessageCard(message, () => this.#expanded));
+			this.container.addChild(buildMircMessageCard(message, () => this.#expanded));
 			return;
 		}
 		if (message.customType === "advisor") {

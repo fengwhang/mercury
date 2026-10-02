@@ -15,7 +15,7 @@ import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { MircBus } from "@oh-my-pi/pi-coding-agent/mirc/bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const tempDirs: TempDir[] = [];
@@ -40,19 +40,19 @@ function createRef(sessionFile: string): AgentRef {
 	};
 }
 
-type IrcWakeObserver = (records: CustomMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined;
+type MircWakeObserver = (records: CustomMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined;
 
 interface RevivedSessionHandle {
 	session: AgentSession;
-	observer: () => IrcWakeObserver | undefined;
-	/** Reply obligations the wake monitor registered via `trackIrcReply`. */
+	observer: () => MircWakeObserver | undefined;
+	/** Reply obligations the wake monitor registered via `trackMircReply`. */
 	trackedReplies: Promise<void>[];
 	/** Text the stubbed session reports as its last assistant message. */
 	setLastAssistantText: (text: string) => void;
 }
 
 function createRevivedSession(activeToolNames: string[][], extensionRunner?: unknown): RevivedSessionHandle {
-	let observer: IrcWakeObserver | undefined;
+	let observer: MircWakeObserver | undefined;
 	let lastAssistantText: string | undefined;
 	const trackedReplies: Promise<void>[] = [];
 	const session = {
@@ -61,10 +61,10 @@ function createRevivedSession(activeToolNames: string[][], extensionRunner?: unk
 			activeToolNames.push(names);
 		},
 		subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
-		setIrcWakeTurnObserver: (next: IrcWakeObserver | undefined) => {
+		setMircWakeTurnObserver: (next: MircWakeObserver | undefined) => {
 			observer = next;
 		},
-		trackIrcReply: (pending: Promise<void>) => {
+		trackMircReply: (pending: Promise<void>) => {
 			trackedReplies.push(pending);
 		},
 		subscribeRunState: () => () => {},
@@ -200,7 +200,7 @@ describe("persisted subagent revival", () => {
 		expect(capturedOptions?.restrictToolNames).toBe(true);
 		expect(capturedOptions?.enableMCP).toBe(false);
 		expect(capturedOptions?.enableLsp).toBe(false);
-		expect(capturedOptions?.enableIrc).toBe(false);
+		expect(capturedOptions?.enableMirc).toBe(false);
 		expect(capturedOptions?.mcpManager).toBeUndefined();
 		expect(capturedOptions?.customTools).toBeUndefined();
 		expect(capturedOptions?.preloadedExtensionPaths).toEqual([]);
@@ -421,7 +421,7 @@ describe("persisted subagent revival", () => {
 		expect(capturedOptions?.modelPatternAuthFallback).toBe("anthropic/claude-sonnet-4-5");
 	});
 
-	it("installs an IRC wake monitor that emits cold-revive lifecycle frames on the shared bus", async () => {
+	it("installs an MIRC wake monitor that emits cold-revive lifecycle frames on the shared bus", async () => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
 		const cwd = makeTempDir("@pi-revive-frames-");
@@ -538,7 +538,7 @@ describe("persisted subagent revival", () => {
 		async function reviveWithWaker(cwd: string): Promise<{ ref: AgentRef; handle: RevivedSessionHandle }> {
 			AgentRegistry.resetGlobalForTests();
 			AgentLifecycleManager.resetGlobalForTests();
-			IrcBus.resetGlobalForTests();
+			MircBus.resetGlobalForTests();
 			const sessionFile = await createPersistedSession(cwd);
 			MCPManager.setInstance({ getTools: () => [] } as unknown as MCPManager);
 			let handle: RevivedSessionHandle | undefined;
@@ -585,7 +585,7 @@ describe("persisted subagent revival", () => {
 			const finish = observer?.([wakeRecord("Main")]);
 			expect(handle.trackedReplies).toHaveLength(1);
 			handle.setLastAssistantText("# Full table\n\n| tool | file |\n|---|---|\n| read | read.ts |");
-			const reply = IrcBus.global().wait("Main", { from: ref.id }, 5000);
+			const reply = MircBus.global().wait("Main", { from: ref.id }, 5000);
 			await finish?.();
 			await handle.trackedReplies[0];
 
@@ -597,7 +597,7 @@ describe("persisted subagent revival", () => {
 			});
 			AgentLifecycleManager.resetGlobalForTests();
 			AgentRegistry.resetGlobalForTests();
-			IrcBus.resetGlobalForTests();
+			MircBus.resetGlobalForTests();
 		});
 
 		it("stays silent when the agent already answered its waker during the turn", async () => {
@@ -607,7 +607,7 @@ describe("persisted subagent revival", () => {
 			expect(observer).toBeDefined();
 
 			const finish = observer?.([wakeRecord("Main")]);
-			const bus = IrcBus.global();
+			const bus = MircBus.global();
 			const answered = bus.wait("Main", { from: ref.id }, 5000);
 			await bus.send({ from: ref.id, to: "Main", body: "here you go" });
 			expect((await answered)?.body).toBe("here you go");
@@ -619,7 +619,7 @@ describe("persisted subagent revival", () => {
 			expect(await duplicate).toBeNull();
 			AgentLifecycleManager.resetGlobalForTests();
 			AgentRegistry.resetGlobalForTests();
-			IrcBus.resetGlobalForTests();
+			MircBus.resetGlobalForTests();
 		});
 	});
 });

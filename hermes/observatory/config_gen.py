@@ -1,8 +1,8 @@
-"""Pure generators for IRC observatory provisioning artifacts.
+"""Pure generators for MIRC observatory provisioning artifacts.
 
-The observatory is a small stdlib asyncio IRC network (``ircd``): one
+The observatory is a small stdlib asyncio MIRC network (``MIRC daemon``): one
 agent listener for the gateway/agents, one server listener for the
-user's IRC client, on the same channel state with SQLite-backed
+user's MIRC client, on the same channel state with SQLite-backed
 history replay. No homeserver, no crypto stack, no appservice.
 """
 
@@ -11,21 +11,21 @@ from __future__ import annotations
 import secrets
 from pathlib import Path
 
-#: IRC network name. Non-federating, so this is a label, not a DNS
+#: MIRC network name. Non-federating, so this is a label, not a DNS
 #: promise; shown in numerics and the gateway channel name.
 SERVER_NAME_DEFAULT = "mercury"
 
 #: Localhost only by default. Phones/clients arrive over Tailscale/VPN
 #: (provision can pin the server listener to the tailnet IP).
-IRCD_ADDRESS = "127.0.0.1"
-#: Distinct from common IRC defaults (6667) so a pre-existing ircd on
+MIRC_ADDRESS = "127.0.0.1"
+#: Distinct from common MIRC defaults (6667) so a pre-existing MIRC daemon on
 #: the box is never collided with.
-IRCD_AGENT_PORT_DEFAULT = 6669
-IRCD_SERVER_PORT_DEFAULT = 6670
+MIRC_AGENT_PORT_DEFAULT = 6669
+MIRC_SERVER_PORT_DEFAULT = 6670
 #: Pre-rename alias (old installs import this name).
-IRCD_BOUNCER_PORT_DEFAULT = IRCD_SERVER_PORT_DEFAULT
+MIRC_BOUNCER_PORT_DEFAULT = MIRC_SERVER_PORT_DEFAULT
 #: TLS server for strict clients (Goguma-style): same rooms, IRCv3 + TLS.
-IRCD_TLS_PORT_DEFAULT = 6697
+MIRC_TLS_PORT_DEFAULT = 6697
 
 #: The ONE systemd user unit (provision installs it; never provision()
 #: itself — the gateway boots provision(), so auto-installing there
@@ -33,7 +33,7 @@ IRCD_TLS_PORT_DEFAULT = 6697
 OBSERVATORY_UNIT_NAME = "mercury-observatory.service"
 #: Back-compat alias (setup/setup-repair paths import this name).
 SIDECAR_UNIT_NAME = OBSERVATORY_UNIT_NAME
-OBSERVATORY_UNIT_DESCRIPTION = "Mercury Observatory IRC network (ircd)"
+OBSERVATORY_UNIT_DESCRIPTION = "Mercury Observatory MIRC server"
 
 #: Gateway agent nick base: ``<server>_gateway`` (rooms.agent_nick).
 GATEWAY_NICK_SUFFIX = "_gateway"
@@ -64,10 +64,10 @@ def render_observatory_unit(
     venv_dir: str | None = None,
     sane_path: str | None = None,
 ) -> str:
-    """Render the ircd systemd USER unit (pure string templating, no I/O).
+    """Render the MIRC daemon systemd USER unit (pure string templating, no I/O).
 
     The unit passes only ``--state-dir``: the daemon reads hosts, ports,
-    and limits live from ``ircd.json`` on every start, so bind edits
+    and limits live from ``MIRC daemon.json`` on every start, so bind edits
     take effect on plain restart — the unit never goes stale.
 
     Env mirrors ``mercury-gateway.service``: the daemon MUST see the
@@ -128,6 +128,6 @@ class ObservatoryPaths:
         self.tls_key = self.tls_dir / FILE_TLS_KEY
 
     def server_url(
-        self, *, address: str = IRCD_ADDRESS, port: int = IRCD_SERVER_PORT_DEFAULT
+        self, *, address: str = MIRC_ADDRESS, port: int = MIRC_SERVER_PORT_DEFAULT
     ) -> str:
         return f"irc://{address}:{port}"

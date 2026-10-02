@@ -3,20 +3,20 @@
  * Agent Hub, hidden from every agent-facing surface, and never messageable.
  *
  * - `AgentRegistry.listVisibleTo` (irc roster / broadcast targets) excludes advisors.
- * - `IrcBus.send` to an advisor ref fails as non-messageable, without reviving it.
+ * - `MircBus.send` to an advisor ref fails as non-messageable, without reviving it.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { MircBus } from "@oh-my-pi/pi-coding-agent/mirc/bus";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
 describe("advisor registry visibility", () => {
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
-		IrcBus.resetGlobalForTests();
+		MircBus.resetGlobalForTests();
 	});
 
 	afterEach(() => {
-		IrcBus.resetGlobalForTests();
+		MircBus.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 	});
 
@@ -47,7 +47,7 @@ describe("advisor registry visibility", () => {
 			sessionFile: "/tmp/x/__advisor.jsonl",
 			status: "parked",
 		});
-		const bus = new IrcBus(registry);
+		const bus = new MircBus(registry);
 
 		const receipt = await bus.send({ from: "Main", to: "Main/advisor", body: "hi" });
 		expect(receipt.outcome).toBe("failed");

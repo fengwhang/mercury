@@ -5,6 +5,54 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.7] — stable
+
+- Build portable OMP runtimes for glibc and musl on Linux x64 and ARM64,
+  removing build-host Nix loader dependencies.
+- Select release downloads by CPU and libc, isolate musl native caches, and
+  package only the matching fallback addons.
+- Reject non-portable ELF loaders and native ABI mismatches before release;
+  diagnose incompatible binaries before installing Python dependencies or
+  swapping an existing installation.
+- Resolve the nightly installer from its selected release tag.
+
+## [0.3.6] — nightly
+
+- Configure Hermes and OMP approval modes separately in setup; restore OMP's
+  native tool tiers and remove Hermes smart risk review from OMP commands.
+- Forward OMP child approval requests to the owner even when the Hermes
+  parent uses YOLO; preserve live descendant policy and explicit deny rules.
+- Make `!restart` in the managed MIRC gateway room restart the full
+  Observatory, skipping mLounge when it is not installed.
+- Probe quiet MIRC connections before declaring failure, preventing healthy
+  progress output from triggering a false disconnect. Mark successful
+  registration connected so real transport failures reach the recovery loop.
+- Move `!spawnomp` startup and session RPC calls off the connection's event
+  loop; keep heartbeats responsive and give repeated spawn names unique nicks.
+- Reconnect idle agent identities automatically and serialize concurrent OMP
+  recovery, preserving busy turns and honoring `!exit` during recovery.
+- Retain spawned sessions and completed subagent rooms until explicit `!exit`,
+  including descendants and history across transport reconnects.
+- Checkpoint gateway sessions promptly during Observatory restart instead of
+  waiting up to 30 minutes for active turns; shorten healthy bot verification.
+- Synchronize membership probes after auto-join replies and filter by room,
+  preventing false empty-room reports during restart verification.
+
+## [0.3.5] — nightly
+
+- Recognize mLounge's fork marker when checking the frontend focus fix,
+  ignore obsolete bundle warnings, and label saved addresses before rotation.
+- Report live gateway connections correctly in Observatory diagnostics, even
+  when saved listener credentials are missing.
+- Use Hermes's risk assessment for OMP smart-mode shell commands, allowing
+  ordinary commands automatically and routing uncertain actions to the owner.
+- Render mLounge Markdown with proper bulleted and numbered lists, nested
+  blocks, and aligned, horizontally scrollable tables; keep tool traces
+  plaintext and code commands literal.
+- Recognize self-signed TLS connections protected by verified Tailscale or
+  localhost in mLounge's connection indicator.
+- Clarify that the Observatory login card's MIRC host is a bare hostname,
+  with no `http://` prefix.
 - Default the standard installer to stable regardless of inherited channel
   variables; explicitly select nightly in its wrapper and save the channel
   when creating the launcher, before optional setup steps.

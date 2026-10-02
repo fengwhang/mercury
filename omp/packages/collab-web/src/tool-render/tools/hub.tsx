@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 import { genericRenderer } from "../generic";
 import type { ToolRenderer, ToolRenderProps } from "../types";
 import { detailsRecord } from "../util";
-import { ircRenderer } from "./irc";
+import { mircRenderer } from "./irc";
 import { jobRenderer } from "./job";
 
 const LAUNCH_OPS = new Set(["start", "ps", "logs", "stop", "restart", "describe"]);
@@ -64,7 +64,7 @@ function Summary(props: ToolRenderProps): ReactNode {
 			return <jobRenderer.Summary {...jobProps} />;
 		}
 		default:
-			return <ircRenderer.Summary {...props} />;
+			return <mircRenderer.Summary {...props} />;
 	}
 }
 
@@ -77,7 +77,7 @@ function Body(props: ToolRenderProps): ReactNode {
 			return jobRenderer.Body ? <jobRenderer.Body {...jobProps} /> : null;
 		}
 		default:
-			return ircRenderer.Body ? <ircRenderer.Body {...props} /> : null;
+			return mircRenderer.Body ? <mircRenderer.Body {...props} /> : null;
 	}
 }
 

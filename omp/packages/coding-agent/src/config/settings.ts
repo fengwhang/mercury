@@ -45,6 +45,7 @@ import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
 import { INSPECT_IMAGE_MODES } from "../utils/inspect-image-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import { stringifyYamlConfig } from "./config-file";
+import { MercuryApprovalPolicy } from "./mercury-approval-policy";
 import {
 	type BashInterceptorRule,
 	type GroupPrefix,
@@ -472,6 +473,22 @@ function physicalTargetSegments(target: string, pathApi: typeof path = path): st
 // ═══════════════════════════════════════════════════════════════════════════
 
 export class Settings {
+	#approvalPolicyParent?: Settings;
+	#mercuryApprovalPolicy?: MercuryApprovalPolicy;
+	#pendingMercuryMode?: SettingValue<"tools.approvalMode">;
+
+	/** Bind root settings to the live OMP policy in the Mercury profile. */
+	useMercuryApprovalPolicy(filePath: string): this {
+		this.#mercuryApprovalPolicy = new MercuryApprovalPolicy(filePath);
+		return this;
+	}
+
+	/** Keep the family permission boundary live across mode and deny-rule changes. */
+	inheritApprovalPolicy(parent: Settings): this {
+		this.#approvalPolicyParent = parent;
+		return this;
+	}
+
 	#configPath: string | null;
 	#cwd: string;
 	#agentDir: string;
@@ -635,6 +652,25 @@ export class Settings {
 	 * Returns the merged value from global + project + overrides, or the default.
 	 */
 	get<P extends SettingPath>(path: P): SettingValue<P> {
+		if (
+			this.#approvalPolicyParent &&
+			(path === "tools.approvalMode" || path === "tools.approval" || path === "bash.patterns")
+		) {
+			return this.#approvalPolicyParent.get(path);
+		}
+
+		if (this.#mercuryApprovalPolicy) {
+			if (path === "tools.approvalMode") {
+				const mode = this.#pendingMercuryMode ?? this.#mercuryApprovalPolicy.read().mode;
+				return mode as SettingValue<P>;
+			}
+			if (path === "bash.patterns") {
+				return this.#mercuryApprovalPolicy.mergePatterns(
+					getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]),
+				) as SettingValue<P>;
+			}
+		}
+
 		if (this.#resolvedCache.has(path)) {
 			return this.#resolvedCache.get(path) as SettingValue<P>;
 		}
@@ -661,6 +697,9 @@ export class Settings {
 	 */
 	set<P extends SettingPath>(path: P, value: SettingValue<P>): void {
 		const prev = this.get(path);
+		if (path === "tools.approvalMode" && this.#mercuryApprovalPolicy) {
+			this.#pendingMercuryMode = value as SettingValue<"tools.approvalMode">;
+		}
 		const segments = path.split(".");
 		this.#captureGlobalMutation(path, this.#modifiedPathMutations, getByPath(this.#global, segments));
 		setByPath(this.#global, segments, value);
@@ -788,6 +827,7 @@ export class Settings {
 		});
 		cloned.#storage = this.#storage;
 		cloned.#configPath = this.#configPath;
+		cloned.#mercuryApprovalPolicy = this.#mercuryApprovalPolicy;
 		cloned.#global = structuredClone(this.#global);
 		cloned.#project = this.#persist ? await cloned.#loadProjectSettings() : structuredClone(this.#project);
 		if (!this.#persist) cloned.#projectShellPathSource = this.#projectShellPathSource;
@@ -1243,14 +1283,12 @@ export class Settings {
 	 * Get a model role (helper for modelRoles record).
 	 */
 	getModelRole(role: ModelRole | string): string | undefined {
-		// HERMES-OMP PATCH (no model roles): stale user configs may still
-		// carry a modelRoles record from the pre-strip era. Only "default"
-		// is ever honored; every historical role key reads as unset so the
-		// session model (delegate model + fallback chain) wins.
-		if (role !== "default") return undefined;
-		const roles: unknown = this.get("modelRoles");
-		if (!isRecord(roles)) return undefined;
-		return modelRoleValueFromUnknown(roles[role]);
+		// "default" is only a compatibility key for the old remembered session model.
+		if (role !== "task" && role !== "default") return undefined;
+		const taskModel = this.get("delegateModel");
+		if (taskModel) return taskModel;
+		const legacy: unknown = this.get("modelRoles");
+		return isRecord(legacy) ? modelRoleValueFromUnknown(legacy.default) : undefined;
 	}
 	/**
 	 * Get a model role from only the global settings layer.
@@ -1300,18 +1338,7 @@ export class Settings {
 	 * Get all model roles (helper for modelRoles record).
 	 */
 	getModelRoles(): ReadOnlyDict<string> {
-		const roles: unknown = this.get("modelRoles");
-		if (!isRecord(roles)) return {};
-
-		const normalized: Record<string, string> = {};
-		for (const role in roles) {
-			if (!Object.hasOwn(roles, role)) continue;
-			const modelId = modelRoleValueFromUnknown(roles[role]);
-			if (modelId !== undefined) {
-				normalized[role] = modelId;
-			}
-		}
-		return normalized;
+		return {}; // Legacy assignment maps never restore role routing.
 	}
 
 	/*
@@ -1805,6 +1832,7 @@ export class Settings {
 			const raw = await this.#loadYamlIfPresent(mercuryPath, false);
 			const loaded = this.#unwrapYamlLoadResult(mercuryPath, raw);
 			if (loaded && typeof loaded === "object") {
+				this.useMercuryApprovalPolicy(mercuryPath);
 				const subtree = (loaded as Record<string, unknown>)["omp"];
 				if (subtree && typeof subtree === "object") {
 					this.#configPath = mercuryPath;
@@ -2699,7 +2727,7 @@ export class Settings {
 	// Saving
 	// ─────────────────────────────────────────────────────────────────────────
 
-	async #writeYamlAtomically(filePath: string, settings: RawSettings): Promise<void> {
+	async #writeYamlAtomically(filePath: string, settings: RawSettings, approvalModeChanged = false): Promise<void> {
 		// HERMES-OMP PATCH (unified config): when writing the Mercury unified
 		// config, omp's layer is nested under `omp:` — the rest of the file
 		// (models:, hermes:, …) is preserved untouched. Never clobbers the
@@ -2726,6 +2754,7 @@ export class Settings {
 				await handle.close();
 			}
 			await replaceFileAtomically(tempPath, filePath);
+			if (approvalModeChanged && !this.#modified.has("tools.approvalMode")) this.#pendingMercuryMode = undefined;
 			removeTemp = false;
 		} finally {
 			if (removeTemp) {
@@ -2789,6 +2818,7 @@ export class Settings {
 				const current =
 					loaded.settings ?? (this.#quarantinedYamlTargets.has(configPath) ? structuredClone(this.#global) : {});
 				let shouldWrite = false;
+				let approvalModeChanged = false;
 
 				// Apply pending changes unless a newer file generation also
 				// changed that setting. Disjoint external edits still merge.
@@ -2809,6 +2839,7 @@ export class Settings {
 					}
 					const value = getByPath(this.#global, segments);
 					setByPath(current, segments, value);
+					if (modPath === "tools.approvalMode") approvalModeChanged = true;
 					shouldWrite = true;
 				}
 
@@ -2866,7 +2897,7 @@ export class Settings {
 				// Update our global with any external changes we preserved.
 				this.#global = current;
 				if (shouldWrite) {
-					await this.#writeYamlAtomically(writePath, this.#global);
+					await this.#writeYamlAtomically(writePath, this.#global, approvalModeChanged);
 				}
 				this.#quarantinedYamlTargets.delete(configPath);
 				// These pending roles were included in this write. Remove each

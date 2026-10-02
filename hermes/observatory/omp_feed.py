@@ -36,6 +36,9 @@ wrapper exposing the same surface), the feed:
    gateway-origin child room shows lifecycle only (BUG2-SUBAGENT-TRACE):
    ``run_task`` is prompt-and-wait, so main-session activity has no other
    live source;
+   ``agent_start`` / ``agent_end`` yield live-only ``ActivityEvent`` boundaries
+   for the shared thinking face, including native descendants. These are not
+   replayed from finished turns;
 4. keeps per-subagent byte offsets for ``get_subagent_messages``
    catch-up: session files are learned from lifecycle/progress frames,
    ``catch_up()`` reads transcripts incrementally (``fromByte=nextByte``),
@@ -86,6 +89,15 @@ class NodeEvent:
 
 
 @dataclass(frozen=True)
+class ActivityEvent:
+    """Live run boundary for the shared room thinking indicator."""
+
+    subagent_id: str
+    active: bool
+    seq: int = 0
+
+
+@dataclass(frozen=True)
 class ToolEvent:
     """The subagent's current tool invocation (from progress frames).
 
@@ -126,7 +138,7 @@ class MessageEvent:
     seq: int = 0
 
 
-FeedEvent = object  # NodeEvent | ToolEvent | ThoughtEvent | MessageEvent
+FeedEvent = object  # NodeEvent | ActivityEvent | ToolEvent | ThoughtEvent | MessageEvent
 
 
 @dataclass
@@ -423,6 +435,8 @@ class OmpFeed:
         if not isinstance(etype, str) or not etype:
             return []
         self.frame_counts[f"main:{etype}"] = self.frame_counts.get(f"main:{etype}", 0) + 1
+        if etype in ("agent_start", "agent_end"):
+            return [ActivityEvent(subagent_id="", active=etype == "agent_start")]
         if etype == "tool_execution_start":
             tool = self._agent_field(event, "tool_name", "toolName", "tool")
             if not isinstance(tool, str) or not tool:
@@ -630,6 +644,8 @@ class OmpFeed:
         if not sid or not isinstance(event, Mapping):
             return []
         etype = event.get("type")
+        if etype in ("agent_start", "agent_end"):
+            return [ActivityEvent(subagent_id=sid, active=etype == "agent_start")]
         if etype == "message_update":
             return self._translate_thinking_delta(sid, event)
         if etype == "message_end":

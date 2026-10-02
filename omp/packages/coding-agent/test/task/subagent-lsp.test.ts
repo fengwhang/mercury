@@ -85,7 +85,7 @@ function createYieldingSession(): AgentSession {
 		getLastAssistantMessage: () => state.messages[state.messages.length - 1],
 		abort: async () => {},
 		dispose: async () => {},
-		setIrcWakeTurnObserver: () => {},
+		setMircWakeTurnObserver: () => {},
 		subscribeRunState: () => () => {},
 	} as unknown as AgentSession;
 }
@@ -281,7 +281,7 @@ describe("subagent LSP availability", () => {
 
 		const options = getOptions();
 		expect(options?.enableLsp).toBe(false);
-		expect(options?.enableIrc).toBe(false);
+		expect(options?.enableMirc).toBe(false);
 		expect(options?.restrictToolNames).toBe(true);
 		expect(options?.toolNames).toEqual(["read", "grep", "glob", "web_search", "ast_grep"]);
 		expect(options?.toolNames).not.toContain("lsp");

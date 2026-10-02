@@ -22,14 +22,14 @@ def test_is_connected_without_process_env(monkeypatch, tmp_path) -> None:
         monkeypatch.delenv(key, raising=False)
 
     from gateway.config import PlatformConfig
-    from plugins.platforms.irc import adapter as irc_mod
+    from plugins.platforms.mirc import adapter as mirc_mod
 
-    assert irc_mod.is_connected(PlatformConfig(enabled=True)) is True
-    assert irc_mod.check_requirements() is True
+    assert mirc_mod.is_connected(PlatformConfig(enabled=True)) is True
+    assert mirc_mod.check_requirements() is True
 
 
 def test_bang_to_slash_known_verbs_only() -> None:
-    from plugins.platforms.irc.adapter import bang_to_slash
+    from plugins.platforms.mirc.adapter import bang_to_slash
 
     assert bang_to_slash("!spawn agent") == "/spawn agent"
     assert bang_to_slash("!SPAWNOMP x") == "/spawnomp x"

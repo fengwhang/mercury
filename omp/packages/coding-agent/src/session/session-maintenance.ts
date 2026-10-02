@@ -1120,7 +1120,7 @@ export class SessionMaintenance {
 				}
 				this.#host.reconnectToAgent();
 				// Compaction disconnected before `await abort()`, so abort's finally drain
-				// (and any steer/follow-up that arrived mid-compaction — async IRC, an
+				// (and any steer/follow-up that arrived mid-compaction — async MIRC, an
 				// `xd://` mount notice, an SDK/RPC steer) was suppressed while disconnected
 				// (issue #5800). Unlike `/new`/switchSession, compaction preserves the agent
 				// queues, so nothing else resumes them: re-drain now that the listener is back

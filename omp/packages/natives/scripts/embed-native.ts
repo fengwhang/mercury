@@ -29,6 +29,7 @@ const embeddedAddonTypedefs = `/** @typedef {"modern" | "baseline" | "default"} 
  * @typedef {Object} EmbeddedAddon
  * @property {string} platformTag
  * @property {string} version
+ * @property {"glibc" | "musl"=} libc
  * @property {EmbeddedAddonFile[]} files
  * @property {EmbeddedAddonArchive=} archive
  */`;
@@ -70,6 +71,9 @@ interface AvailableAddon extends CandidateAddon {
 const targetPlatform = Bun.env.TARGET_PLATFORM || process.platform;
 const targetArch = Bun.env.TARGET_ARCH || process.arch;
 const platformTag = `${targetPlatform}-${targetArch}`;
+const libc = targetPlatform === "linux" ? Bun.env.TARGET_LIBC || "glibc" : undefined;
+if (libc && libc !== "glibc" && libc !== "musl") throw new Error(`Unsupported TARGET_LIBC: ${libc}`);
+const addonDir = libc === "musl" ? path.join(nativeDir, "musl") : nativeDir;
 const candidates: CandidateAddon[] =
 	targetArch === "x64"
 		? [
@@ -80,7 +84,7 @@ const candidates: CandidateAddon[] =
 
 const available: AvailableAddon[] = [];
 for (const candidate of candidates) {
-	const candidatePath = path.join(nativeDir, candidate.filename);
+	const candidatePath = path.join(addonDir, candidate.filename);
 	try {
 		const stat = await fs.stat(candidatePath);
 		available.push({ ...candidate, path: candidatePath, size: stat.size });
@@ -121,6 +125,7 @@ import archivePath from ${JSON.stringify(`../native/${archiveFilename}`)} with {
 export const embeddedAddon = {
 \tplatformTag: ${JSON.stringify(platformTag)},
 \tversion: ${JSON.stringify(packageJson.version)},
+\tlibc: ${JSON.stringify(libc)},
 \tarchive: {
 \t\tformat: "tar.gz",
 \t\tfilename: ${JSON.stringify(archiveFilename)},

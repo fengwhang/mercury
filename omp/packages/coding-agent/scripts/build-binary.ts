@@ -13,6 +13,7 @@ export interface CrossBuild {
 	readonly platform: string;
 	readonly arch: string;
 	readonly target: Bun.Build.CompileTarget;
+	readonly libc?: "glibc" | "musl";
 }
 
 /** Resolves a CROSS_TARGET value to the Bun compile target used by local binary builds. */
@@ -25,6 +26,10 @@ export function resolveCrossBuild(value: string | undefined): CrossBuild | null 
 			return { id: value, platform: "darwin", arch: "arm64", target: "bun-darwin-arm64" };
 		case "darwin-x64":
 			return { id: value, platform: "darwin", arch: "x64", target: "bun-darwin-x64" };
+		case "linux-musl-x64":
+			return { id: value, platform: "linux", arch: "x64", libc: "musl", target: "bun-linux-x64-baseline-musl" };
+		case "linux-musl-arm64":
+			return { id: value, platform: "linux", arch: "arm64", libc: "musl", target: "bun-linux-arm64-musl" };
 		case "linux-arm64":
 			return { id: value, platform: "linux", arch: "arm64", target: "bun-linux-arm64" };
 		case "linux-x64":
@@ -77,6 +82,9 @@ async function main(): Promise<void> {
 	const mercuryVersion = resolveMercuryVersion(repoRoot);
 	console.log(`Baking Mercury version ${mercuryVersion} (omp --version, startup notice, User-Agent)`);
 	const crossBuild = resolveCrossBuild(Bun.env.CROSS_TARGET);
+	// Always fetch the official Linux runtime: reusing the executing Bun
+	// embeds a Nix host's store-specific interpreter in the release.
+	const build = crossBuild ?? (process.platform === "linux" ? resolveCrossBuild(`linux-${process.arch}`) : null);
 	const shouldAdhocSign = process.platform === "darwin" && !crossBuild && Bun.env.BUN_NO_CODESIGN_MACHO_BINARY !== "1";
 	const outName = crossBuild ? `omp-${crossBuild.id}` : "omp";
 	const outputPath = path.join(packageDir, "dist", outName);
@@ -91,7 +99,14 @@ async function main(): Promise<void> {
 		await runCommand(["bun", "--cwd=../collab-web", "run", "gen:tool-views"]);
 		await runCommand(
 			["bun", "--cwd=../natives", "run", "gen:native"],
-			crossBuild ? { ...Bun.env, TARGET_PLATFORM: crossBuild.platform, TARGET_ARCH: crossBuild.arch } : Bun.env,
+			build
+				? {
+						...Bun.env,
+						TARGET_PLATFORM: build.platform,
+						TARGET_ARCH: build.arch,
+						TARGET_LIBC: build.libc ?? "glibc",
+					}
+				: Bun.env,
 		);
 		try {
 			await compileCodingAgent({
@@ -100,7 +115,7 @@ async function main(): Promise<void> {
 				outfile: outputPath,
 				transformersVersion,
 				mercuryVersion,
-				target: crossBuild?.target,
+				target: build?.target,
 				executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH || undefined,
 				skipBuiltinCodesign: shouldAdhocSign,
 			});

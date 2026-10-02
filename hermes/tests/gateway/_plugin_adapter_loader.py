@@ -3,8 +3,8 @@
 Every platform plugin under ``plugins/platforms/<name>/`` ships its own
 ``adapter.py``. If two tests independently do::
 
-    sys.path.insert(0, "plugins/platforms/irc")
-    from adapter import IRCAdapter
+    sys.path.insert(0, "plugins/platforms/mirc")
+    from adapter import MIRCAdapter
 
     sys.path.insert(0, "plugins/platforms/teams")
     from adapter import TeamsAdapter

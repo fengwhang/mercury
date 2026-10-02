@@ -12,6 +12,7 @@ export interface EmbeddedAddonArchive {
 }
 
 export interface EmbeddedAddon {
+	libc?: "glibc" | "musl";
 	platformTag: string;
 	version: string;
 	files: EmbeddedAddonFile[];
@@ -128,3 +129,5 @@ export function validateLoadedBindings(
 ): void;
 
 export function loadNative(): Record<string, unknown>;
+
+export function nativeVersionDir(nativesDir: string, version: string, libc?: "glibc" | "musl"): string;

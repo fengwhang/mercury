@@ -452,9 +452,9 @@ export class Agent {
 	 */
 	transformAssistantMessage?: AgentLoopConfig["transformAssistantMessage"];
 	/**
-	 * Hook that peeks whether interrupting IRC asides are queued for the next boundary.
+	 * Hook that peeks whether interrupting MIRC asides are queued for the next boundary.
 	 */
-	hasIrcInterrupts?: AgentLoopConfig["hasIrcInterrupts"];
+	hasMircInterrupts?: AgentLoopConfig["hasMircInterrupts"];
 
 	constructor(opts: AgentOptions = {}) {
 		this.#state = { ...this.#state, ...opts.initialState };
@@ -990,7 +990,7 @@ export class Agent {
 
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
-	 * Delivered after current tool execution, skips remaining tools.
+	 * Immediate mode cancels model output; running tools yield cooperatively.
 	 */
 	steer(m: AgentMessage) {
 		this.#steeringQueue.push(m);
@@ -1513,7 +1513,24 @@ export class Agent {
 				return { queued: true, source: hasAgentSteering ? "agent" : "system" };
 			},
 			waitForSteeringMessages: signal => this.#waitForSteeringMessages(signal),
-			hasIrcInterrupts: this.hasIrcInterrupts,
+			subscribeToUserSteering: listener => {
+				const check = () => {
+					if (
+						this.#steeringQueue.some(
+							message =>
+								("attribution" in message && message.attribution === "user") ||
+								(message.role === "user" && message.attribution !== "agent"),
+						)
+					)
+						listener();
+				};
+				this.#steeringWaiters.add(check);
+				check();
+				return () => {
+					this.#steeringWaiters.delete(check);
+				};
+			},
+			hasMircInterrupts: this.hasMircInterrupts,
 			getFollowUpMessages: signal => this.#dequeueFollowUpMessagesAfterHooks(signal),
 			getAsideMessages: async () => (await this.#asideMessageProvider?.()) ?? [],
 			onBeforeYield: () => this.#onBeforeYield?.(),

@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import contextvars
 import socket
 import tempfile
 import shutil
@@ -38,6 +39,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 import uuid
 from tools import wave_mem_profiler as _wave_mem_profiler
+from tools.thread_context import propagate_context_to_thread
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -704,6 +706,7 @@ class _ApprovalBridgeServer:
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         import socketserver
         self._cb = approval_callback
+        self._context = contextvars.copy_context()
         self._dir = tempfile.mkdtemp(prefix="mercury-approval-")
         self._path = os.path.join(self._dir, "approval.sock")
         outer = self
@@ -715,10 +718,9 @@ class _ApprovalBridgeServer:
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length) or b"{}")
                 title = str(body.get("title") or "")
+                if body.get("message"):
+                    title += "\n" + str(body["message"])
                 kind = str(body.get("kind") or "select")
-                from tools.omp_rpc_transport import (
-                    extract_command_from_prompt, hermes_approval_decision,
-                )
                 # Thread-local callback propagation: HTTP handler threads do
                 # NOT inherit the delegation thread's approval callback, and
                 # without it a dangerous command would fail closed (deny)
@@ -729,53 +731,12 @@ class _ApprovalBridgeServer:
                         set_approval_callback(outer._cb)
                     except Exception:
                         pass
-                command = extract_command_from_prompt(title)
-                if kind == "select" and command:
-                    # User directive: omp children inherit the hermes
-                    # agent's permission surface, and EVERY approval
-                    # roadblock reaches the USER through hermes.
-                    # 1. Guard stack first: allowlist/smart inheritance,
-                    #    hardline + user-deny stay ABSOLUTE.
-                    # 2. If the guards neither approved nor actively denied
-                    #    (pending_approval in a child that can't drain a
-                    #    gateway queue, or a fail-closed no-context deny),
-                    #    ask the user DIRECTLY through the parent's chat
-                    #    callback — that answer is final.
-                    from tools.approval import check_all_command_guards
-                    try:
-                        decision = check_all_command_guards(
-                            command, env_type="container")
-                    except Exception:
-                        decision = {"approved": False}
-                    ok = bool(decision.get("approved"))
-                    if not ok:
-                        actively_denied = (
-                            decision.get("user_consent") is False
-                            or decision.get("outcome") == "denied"
-                            or str(decision.get("message") or "").startswith(
-                                "BLOCKED (hardline)")
-                        )
-                        if not actively_denied and outer._cb is not None:
-                            try:
-                                ok = bool(outer._cb(
-                                    f"[omp subagent approval]\n{title}"))
-                            except Exception:
-                                ok = False
-                    value = "Approve" if ok else "Deny"
-                elif kind == "confirm":
-                    # Free-form confirm: route through the callback if the
-                    # user can be asked; otherwise fail closed.
-                    if outer._cb is not None:
-                        try:
-                            ok = bool(outer._cb(title))
-                        except Exception:
-                            ok = False
-                    else:
-                        ok = False
-                    value = "Approve" if ok else "Deny"
+                from tools.omp_rpc_transport import hermes_tool_approval_decision
+                if kind in ("select", "confirm"):
+                    ok = outer._context.copy().run(hermes_tool_approval_decision, title)
                 else:
                     ok = False
-                    value = "Deny"
+                value = "Approve" if ok else "Deny"
                 payload = json.dumps({"value": value, "confirmed": ok}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -1347,7 +1308,7 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             _extra = {k: env[k] for k in ("MERCURY_APPROVAL_SOCKET",) if k in env}
             futures = [
-                pool.submit(_run_omp_task, i, t["prompt"], env["OMP_MODEL"],
+                pool.submit(propagate_context_to_thread(_run_omp_task), i, t["prompt"], env["OMP_MODEL"],
                             workdir, timeout, env.get("OMP_FALLBACK_CHAIN"),
                             batch_procs, profile_home=env.get("MERCURY_PROFILE_HOME"),
                             extra_env=_extra or None,
@@ -1548,22 +1509,37 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
         # fail closed).
         session_key = str(parent_session_id or "")
 
-    dispatch = dispatch_async_delegation_batch(
-        goals=[g["goal"] for g in goals],
-        context=function_args.get("context"),
-        toolsets=None,
-        role="task",
-        model=model,
-        session_key=session_key,
-        parent_session_id=parent_session_id,
-        runner=lambda: _run_profiled_batch(batch_procs),
-        delegation_id=delegation_id,
-        origin_ui_session_id=origin_ui_session_id,
-        origin_session_id=origin_session_id,
-        interrupt_fn=_interrupt_batch,
-        max_async_children=_get_max_async_children(),
-        names=[g["name"] for g in goals],
-    )
+    from tools.approval import retain_gateway_notify
+    release_approval_route = retain_gateway_notify(get_current_session_key(default=""))
+
+    def run_background_batch():
+        try:
+            return _run_profiled_batch(batch_procs)
+        finally:
+            release_approval_route()
+
+    try:
+        dispatch = dispatch_async_delegation_batch(
+            goals=[g["goal"] for g in goals],
+            context=function_args.get("context"),
+            toolsets=None,
+            role="task",
+            model=model,
+            session_key=session_key,
+            parent_session_id=parent_session_id,
+            runner=run_background_batch,
+            delegation_id=delegation_id,
+            origin_ui_session_id=origin_ui_session_id,
+            origin_session_id=origin_session_id,
+            interrupt_fn=_interrupt_batch,
+            max_async_children=_get_max_async_children(),
+            names=[g["name"] for g in goals],
+        )
+    except BaseException:
+        release_approval_route()
+        raise
+    if dispatch.get("status") != "dispatched":
+        release_approval_route()
     if dispatch.get("status") == "dispatched":
         n = len(tasks)
         note = (

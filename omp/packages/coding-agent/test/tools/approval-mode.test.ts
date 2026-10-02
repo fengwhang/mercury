@@ -2,11 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { type AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { forwardApprovalUI } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
+import { createSubagentSettings } from "@oh-my-pi/pi-coding-agent/task/executor";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -57,7 +60,7 @@ describe("tools.approvalMode setting", () => {
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
-			toolNames: ["bash"],
+			toolNames: ["bash", "read", "write"],
 		});
 		session = created.session;
 	});
@@ -88,8 +91,8 @@ describe("tools.approvalMode setting", () => {
 		return bash;
 	}
 
-	it("yolo mode (default) bypasses approval for non-overriding tool calls", async () => {
-		const settings = approvalSettings();
+	it("yolo mode bypasses approval for non-overriding tool calls", async () => {
+		const settings = approvalSettings({ "tools.approvalMode": "yolo" });
 		const result = await bashTool().execute("yolo", { command: "echo ok" }, undefined, undefined, {
 			settings,
 		} as AgentToolContext);
@@ -116,16 +119,15 @@ describe("tools.approvalMode setting", () => {
 		expect(textOf(result)).toContain("allowed");
 	});
 
-	it("per-tool prompt overrides can tighten yolo mode", async () => {
+	it("configured yolo bypasses per-tool prompt rules", async () => {
 		const settings = approvalSettings({
 			"tools.approvalMode": "yolo",
 			"tools.approval": { bash: "prompt" },
 		});
-		await expect(
-			bashTool().execute("yolo-prompt", { command: "echo blocked" }, undefined, undefined, {
-				settings,
-			} as AgentToolContext),
-		).rejects.toThrow(/requires approval but no interactive UI available/);
+		const result = await bashTool().execute("yolo-prompt", { command: "echo approved" }, undefined, undefined, {
+			settings,
+		} as AgentToolContext);
+		expect(textOf(result)).toContain("approved");
 	});
 
 	it("write mode still prompts exec-tier tools", async () => {
@@ -138,6 +140,66 @@ describe("tools.approvalMode setting", () => {
 				settings,
 			} as AgentToolContext),
 		).rejects.toThrow(/requires approval but no interactive UI available/);
+	});
+
+	it("OMP write permits file operations but requires the owner for descendant shell execution", async () => {
+		const profile = path.join(tempDir, "engine-modes.yaml");
+		fs.writeFileSync(profile, "approvals: {mode: off}\nomp: {tools: {approvalMode: write}}\n");
+		const parent = approvalSettings({ "tools.approval": {} }).useMercuryApprovalPolicy(profile);
+		const family = createSubagentSettings(createSubagentSettings(parent));
+		const originalUI = session.extensionRunner!.getUIContext();
+		const titles: string[] = [];
+		await initializeExtensions(session, {
+			uiContext: forwardApprovalUI(
+				forwardApprovalUI(
+					{
+						...originalUI,
+						select: async (title: string) => {
+							titles.push(title);
+							return "Deny";
+						},
+					},
+					"child",
+				),
+				"grandchild",
+			),
+			reportSendError: () => {},
+			reportRuntimeError: () => {},
+		});
+		try {
+			const context = { settings: family } as AgentToolContext;
+			const file = path.join(tempDir, "write-mode-probe.txt");
+			await session
+				.getToolByName("write")!
+				.execute("write-probe", { path: file, content: "native write allowed" }, undefined, undefined, context);
+			const read = await session
+				.getToolByName("read")!
+				.execute("read-probe", { path: file }, undefined, undefined, context);
+			expect(textOf(read)).toContain("native write allowed");
+			expect(titles).toHaveLength(0);
+			await expect(
+				bashTool().execute("write-exec", { command: "true" }, undefined, undefined, context),
+			).rejects.toThrow(/denied by user/);
+			expect(titles).toHaveLength(1);
+			expect(titles[0]).toContain("child");
+			expect(titles[0]).toContain("grandchild");
+			expect(titles[0]).toContain("Command: true");
+			// Hermes settings cannot change the native descendant gate.
+			fs.writeFileSync(
+				profile,
+				"approvals: {mode: smart, smart_policy: APPROVE}\nomp: {tools: {approvalMode: write}}\n",
+			);
+			await expect(
+				bashTool().execute("write-exec-again", { command: "true" }, undefined, undefined, context),
+			).rejects.toThrow(/denied by user/);
+			expect(titles).toHaveLength(2);
+		} finally {
+			await initializeExtensions(session, {
+				uiContext: originalUI,
+				reportSendError: () => {},
+				reportRuntimeError: () => {},
+			});
+		}
 	});
 
 	it("critical bash patterns do not prompt in yolo mode with bash allowed", async () => {
@@ -237,5 +299,151 @@ describe("tools.approvalMode setting", () => {
 		// fix is to construct the runner unconditionally; this test makes that contract explicit so
 		// a future change to make the runner optional again cannot silently re-open the hole.
 		expect(session.extensionRunner).toBeDefined();
+	});
+	it("grandchild approval reaches the orchestrator and follows live family policy", async () => {
+		const parentSettings = approvalSettings({ "tools.approvalMode": "always-ask" });
+		const childSettings = createSubagentSettings(parentSettings, { "tools.approvalMode": "yolo" });
+		const grandchildSettings = createSubagentSettings(childSettings);
+		const originalUI = session.extensionRunner!.getUIContext();
+		const titles: string[] = [];
+		let answer = "Approve";
+		const parentUI = {
+			...originalUI,
+			select: async (title: string) => {
+				titles.push(title);
+				return answer;
+			},
+		};
+		await initializeExtensions(session, {
+			uiContext: forwardApprovalUI(forwardApprovalUI(parentUI, "child"), "grandchild"),
+			reportSendError: () => {},
+			reportRuntimeError: () => {},
+		});
+		try {
+			const result = await bashTool().execute(
+				"grandchild-approved",
+				{ command: "echo approved-by-parent" },
+				undefined,
+				undefined,
+				{ settings: grandchildSettings } as AgentToolContext,
+			);
+			expect(textOf(result)).toContain("approved-by-parent");
+			expect(titles).toHaveLength(1);
+			expect(titles[0]).toContain("[child] [grandchild]");
+			answer = "Deny";
+			await expect(
+				bashTool().execute("grandchild-denied", { command: "echo denied" }, undefined, undefined, {
+					settings: grandchildSettings,
+				} as AgentToolContext),
+			).rejects.toThrow(/denied/);
+			parentSettings.override("tools.approvalMode", "yolo");
+			await bashTool().execute("grandchild-yolo", { command: "echo inherited-yolo" }, undefined, undefined, {
+				settings: grandchildSettings,
+			} as AgentToolContext);
+			expect(titles).toHaveLength(2);
+			parentSettings.override("tools.approval", { bash: "deny" });
+			await expect(
+				bashTool().execute("grandchild-policy-deny", { command: "echo denied-in-yolo" }, undefined, undefined, {
+					settings: grandchildSettings,
+				} as AgentToolContext),
+			).rejects.toThrow(/blocked/);
+			expect(titles).toHaveLength(2);
+		} finally {
+			await initializeExtensions(session, {
+				uiContext: originalUI,
+				reportSendError: () => {},
+				reportRuntimeError: () => {},
+			});
+		}
+	});
+	it("native descendants use OMP modes independently of Hermes modes", () => {
+		const profile = path.join(tempDir, "engine-mode-boundary.yaml");
+		fs.writeFileSync(profile, "{}\n");
+		const root = approvalSettings().useMercuryApprovalPolicy(profile);
+		const grandchild = createSubagentSettings(createSubagentSettings(root));
+		for (const [hermesMode, ompMode] of [
+			["smart", "always-ask"],
+			["off", "write"],
+			["manual", "yolo"],
+		] as const) {
+			fs.writeFileSync(profile, `approvals: {mode: ${hermesMode}}\nomp: {tools: {approvalMode: ${ompMode}}}\n`);
+			expect(grandchild.get("tools.approvalMode")).toBe(ompMode);
+		}
+		fs.writeFileSync(profile, "omp: {tools: {approvalMode: smart}}\n");
+		expect(() => grandchild.get("tools.approvalMode")).toThrow(/omp.tools.approvalMode/);
+	});
+
+	it("a live Mercury policy controls grandchild commands without restarting the room", async () => {
+		const profile = path.join(tempDir, "mercury-live-policy.yaml");
+		const writePolicy = (text: string) => fs.writeFileSync(profile, text);
+		writePolicy(
+			'approvals: {mode: yolo}\nomp:\n  # Mercury inherited deny patterns: [{"match":"*ECHO DENIED*","approval":"deny"}]\n  tools: {approvalMode: yolo}\n',
+		);
+		const root = Settings.isolated({
+			...BASE_SETTINGS,
+			"tools.approvalMode": "yolo",
+			"tools.approval": { bash: "prompt" },
+			"bash.patterns": [
+				{ match: "echo *", approval: "allow" },
+				{ match: "*ECHO DENIED*", approval: "deny" },
+			],
+		}).useMercuryApprovalPolicy(profile);
+		const family = createSubagentSettings(createSubagentSettings(root));
+		const created = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			settings: family,
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			workspaceTree: emptyWorkspaceTree(tempDir),
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			enableMirc: false,
+			toolNames: ["bash"],
+		});
+		let prompts = 0;
+		const originalUI = created.session.extensionRunner!.getUIContext();
+		await initializeExtensions(created.session, {
+			uiContext: forwardApprovalUI(
+				{
+					...originalUI,
+					select: async () => {
+						prompts++;
+						return "Approve";
+					},
+				},
+				"grandchild",
+			),
+			reportSendError: () => {},
+			reportRuntimeError: () => {},
+		});
+		const tool = created.session.getToolByName("bash")!;
+		const execute = (command: string) =>
+			tool.execute("live-policy", { command }, undefined, undefined, { settings: family } as AgentToolContext);
+		try {
+			expect(textOf(await execute("printf live-yolo"))).toContain("live-yolo");
+			expect(prompts).toBe(0);
+			writePolicy("approvals: {mode: off}\nomp: {tools: {approvalMode: always-ask}}\n");
+			expect(textOf(await execute("printf live-safe"))).toContain("live-safe");
+			expect(prompts).toBe(1);
+			writePolicy("approvals: {mode: smart}\nomp: {tools: {approvalMode: write}}\n");
+			await execute("printf live-smart");
+			expect(prompts).toBe(2);
+			writePolicy('approvals: {mode: manual, deny: ["*ECHO DENIED*"]}\nomp: {tools: {approvalMode: yolo}}\n');
+			await expect(execute("echo denied")).rejects.toThrow(/Blocked by bash pattern/);
+			expect(prompts).toBe(2);
+			writePolicy("approvals: {mode: smart, deny: []}\nomp: {tools: {approvalMode: yolo}}\n");
+			expect(textOf(await execute("echo denied"))).toContain("denied");
+			writePolicy("approvals: {mode: yolo, deny: invalid}\n");
+			await expect(execute("printf invalid-policy-must-not-run")).rejects.toThrow(
+				/Cannot enforce Mercury approval policy/,
+			);
+		} finally {
+			await created.session.dispose();
+		}
 	});
 });

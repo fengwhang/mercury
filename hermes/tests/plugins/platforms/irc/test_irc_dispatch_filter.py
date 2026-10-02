@@ -15,7 +15,7 @@ import pytest
 
 def _adapter(monkeypatch):
     from gateway.config import PlatformConfig
-    from plugins.platforms.irc import adapter as adapter_mod
+    from plugins.platforms.mirc import adapter as adapter_mod
 
     for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
                 "IRC_USE_TLS", "IRC_MANAGED_BY"):
@@ -25,7 +25,7 @@ def _adapter(monkeypatch):
         extra={"server": "127.0.0.1", "port": 6669,
                "nickname": "nixpi4b_gateway", "channel": "#nixpi4b_gateway"},
     )
-    return adapter_mod.IRCAdapter(cfg)
+    return adapter_mod.MIRCAdapter(cfg)
 
 
 async def _record(monkeypatch):
@@ -45,7 +45,7 @@ async def test_live_peer_line_dispatches(monkeypatch) -> None:
     ad, seen = await _record(monkeypatch)
     await ad._handle_line(
         ":owner!relay@nixpi4b PRIVMSG #nixpi4b_gateway :hello")
-    assert await ad._flush_irc_batch_now(("#nixpi4b_gateway", "owner")) is True
+    assert await ad._flush_mirc_batch_now(("#nixpi4b_gateway", "owner")) is True
     assert len(seen) == 1
     assert seen[0]["text"] == "hello"
     assert seen[0]["chat_id"] == "#nixpi4b_gateway"

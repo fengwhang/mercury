@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from observatory.ircd import DaemonConfig, IrcDaemon
+from observatory.mirc import DaemonConfig, MircDaemon
 
 
 @asynccontextmanager
@@ -21,7 +21,7 @@ async def running_daemon(tmp_path, **kwargs):
     config = DaemonConfig(
         agent_port=0, server_port=0, state_dir=str(tmp_path), **kwargs
     )
-    d = IrcDaemon(config)
+    d = MircDaemon(config)
     await d.start()
     try:
         yield d, d._servers[0].sockets[0].getsockname()[1]
@@ -98,12 +98,12 @@ class _Listener:
 @pytest.mark.asyncio
 async def test_adapter_sends_multiline_batch(tmp_path) -> None:
     """Multi-chunk content goes out as one BATCH, not N dribbles."""
-    from plugins.platforms.irc.adapter import IRCAdapter
+    from plugins.platforms.mirc.adapter import MIRCAdapter
 
     async with running_daemon(tmp_path) as (d, port):
         listener = _Listener()
         await listener.connect(port, "watcher")
-        adapter = IRCAdapter(_config(port))
+        adapter = MIRCAdapter(_config(port))
         assert await adapter.connect()
         try:
             listener.send("JOIN #mercury_gateway")
@@ -127,21 +127,70 @@ async def test_adapter_sends_multiline_batch(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_adapter_negotiates_multiline_cap(tmp_path) -> None:
     """connect() learns draft/multiline from the server."""
-    from plugins.platforms.irc.adapter import IRCAdapter
+    from plugins.platforms.mirc.adapter import MIRCAdapter
 
     async with running_daemon(tmp_path) as (d, port):
-        adapter = IRCAdapter(_config(port))
+        adapter = MIRCAdapter(_config(port))
         assert await adapter.connect()
         try:
             assert adapter._server_multiline is True
         finally:
             await adapter.disconnect()
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_identity", [False, True])
+async def test_typed_long_commands_keep_original_text_over_real_wire(tmp_path, use_identity):
+    from plugins.platforms.mirc.adapter import MIRCAdapter
+    from observatory.identity import IdentityConn, get_pool
+
+    async with running_daemon(tmp_path) as (_, port):
+        listener = _Listener()
+        await listener.connect(port, "watcher")
+        adapter = MIRCAdapter(_config(port))
+        assert await adapter.connect()
+        conn = None
+        try:
+            listener.send("JOIN #mercury_gateway")
+            await listener.expect("JOIN #mercury_gateway")
+            if use_identity:
+                conn = IdentityConn(host="127.0.0.1", port=port, password="",
+                                    nick="child", channel="#mercury_gateway")
+                get_pool().track(conn)
+            content = '\n```bash\n  echo "$A-$B" ' + "é_*" * 300 + '  \n\n```\n'
+            assert (await adapter.send("#mercury_gateway", content)).success
+            await listener.expect("BATCH +")
+            chunks = []
+            while True:
+                line = await asyncio.wait_for(listener.lines.get(), timeout=5)
+                if line.startswith("BATCH -"):
+                    break
+                if " PRIVMSG " not in line:
+                    continue
+                assert len((line + "\r\n").encode("utf-8")) <= 512
+                assert "+mercury/kind=assistant_reply" in line
+                tags, body = line.partition(" ")[::2]
+                text = body.split(" :", 1)[1]
+                if "+mercury/empty=1" in tags:
+                    text = ""
+                chunks.append(("" if not chunks or "draft/multiline-concat" in tags else "\n") + text)
+            assert "".join(chunks) == content
+            # A trace immediately after the batch must not inherit its framing.
+            assert await adapter.say("#mercury_gateway", 'echo "$X" *', kind="tool_input")
+            trace = await listener.expect('echo "$X" *')
+            assert "+mercury/kind=tool_input" in trace and "batch=" not in trace
+        finally:
+            if conn:
+                get_pool().drop("#mercury_gateway")
+                await conn.close()
+            await adapter.disconnect()
+            await listener.close()
+
 @pytest.mark.asyncio
 async def test_adapter_reassembles_inbound_batch(monkeypatch) -> None:
     """Tagged lines + close reassemble into ONE dispatch, no waiting."""
     from gateway.config import PlatformConfig
-    from plugins.platforms.irc import adapter as adapter_mod
+    from plugins.platforms.mirc import adapter as adapter_mod
 
     for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
                 "IRC_USE_TLS", "IRC_MANAGED_BY"):
@@ -151,7 +200,7 @@ async def test_adapter_reassembles_inbound_batch(monkeypatch) -> None:
         extra={"server": "127.0.0.1", "port": 6669,
                "nickname": "nixpi4b_gateway", "channel": "#nixpi4b_gateway"},
     )
-    ad = adapter_mod.IRCAdapter(cfg)
+    ad = adapter_mod.MIRCAdapter(cfg)
     seen: list[dict] = []
 
     async def fake_dispatch(**kwargs):

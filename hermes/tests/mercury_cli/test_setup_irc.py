@@ -1,7 +1,7 @@
-"""Tests for IRC gateway configuration via `mercury setup gateway` UI.
+"""Tests for MIRC gateway configuration via `mercury setup gateway` UI.
 
 Covers the full plugin-platform discovery → status → configure flow so that
-a fresh Mercury install (no state, no env vars) can set up IRC through the
+a fresh Mercury install (no state, no env vars) can set up MIRC through the
 interactive setup menus.
 """
 
@@ -10,8 +10,8 @@ import os
 from gateway.platform_registry import PlatformEntry, platform_registry
 
 
-def _register_irc_platform(**overrides):
-    """Manually register the IRC platform entry as if discover_plugins() found it.
+def _register_mirc_platform(**overrides):
+    """Manually register the MIRC platform entry as if discover_plugins() found it.
 
     Tests run outside the normal plugin-discovery path, so we inject the entry
     directly into the singleton registry and yield its dict shape.
@@ -48,7 +48,7 @@ def _register_irc_platform(**overrides):
     }
 
 
-def _unregister_irc_platform():
+def _unregister_mirc_platform():
     platform_registry.unregister("irc")
 
 
@@ -56,15 +56,15 @@ def _unregister_irc_platform():
 
 
 class TestIRCFreshInstallDiscovery:
-    """IRC stays out of the gateway setup menu (observatory-owned)."""
+    """MIRC stays out of the gateway setup menu (observatory-owned)."""
 
-    def test_irc_hidden_from_all_platforms(self, monkeypatch):
-        """The registry still carries IRC (gateway runtime needs it),
+    def test_mirc_hidden_from_all_platforms(self, monkeypatch):
+        """The registry still carries MIRC (gateway runtime needs it),
         but _all_platforms() never surfaces it for setup."""
         import mercury_cli.gateway as gateway_mod
         from gateway.platform_registry import platform_registry
 
-        _register_irc_platform()
+        _register_mirc_platform()
         try:
             # Ensure no stale env vars leak in
             for key in ("IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"):
@@ -75,14 +75,14 @@ class TestIRCFreshInstallDiscovery:
             keys = {p["key"] for p in platforms}
             assert "irc" not in keys
         finally:
-            _unregister_irc_platform()
+            _unregister_mirc_platform()
 
 
-    def test_irc_status_configured_when_env_set(self, monkeypatch):
+    def test_mirc_status_configured_when_env_set(self, monkeypatch):
         """After the user sets IRC_SERVER and IRC_CHANNEL, status is 'configured'."""
         import mercury_cli.gateway as gateway_mod
 
-        plat = _register_irc_platform()
+        plat = _register_mirc_platform()
         try:
             monkeypatch.setenv("IRC_SERVER", "irc.libera.chat")
             monkeypatch.setenv("IRC_CHANNEL", "#mercury")
@@ -91,17 +91,17 @@ class TestIRCFreshInstallDiscovery:
             status = gateway_mod._platform_status(plat)
             assert status == "configured"
         finally:
-            _unregister_irc_platform()
+            _unregister_mirc_platform()
 
 
 # ── Interactive setup dispatch ──────────────────────────────────────────────
 
 
 class TestIRCInteractiveSetup:
-    """The setup UI dispatches to IRC's interactive_setup() correctly."""
+    """The setup UI dispatches to MIRC's interactive_setup() correctly."""
 
-    def test_configure_platform_dispatches_to_irc_setup_fn(self, monkeypatch, capsys):
-        """_configure_platform() calls the IRC plugin's setup_fn when selected."""
+    def test_configure_platform_dispatches_to_mirc_setup_fn(self, monkeypatch, capsys):
+        """_configure_platform() calls the MIRC plugin's setup_fn when selected."""
         import mercury_cli.gateway as gateway_mod
 
         calls = []
@@ -110,11 +110,11 @@ class TestIRCInteractiveSetup:
             calls.append("setup_called")
             print("IRC setup complete!")
 
-        plat = _register_irc_platform(setup_fn=fake_setup)
+        plat = _register_mirc_platform(setup_fn=fake_setup)
         try:
             gateway_mod._configure_platform(plat)
         finally:
-            _unregister_irc_platform()
+            _unregister_mirc_platform()
 
         assert "setup_called" in calls
         out = capsys.readouterr().out
@@ -125,11 +125,11 @@ class TestIRCInteractiveSetup:
         """A plugin with no setup_fn falls back to env-var instructions."""
         import mercury_cli.gateway as gateway_mod
 
-        plat = _register_irc_platform(setup_fn=None)
+        plat = _register_mirc_platform(setup_fn=None)
         try:
             gateway_mod._configure_platform(plat)
         finally:
-            _unregister_irc_platform()
+            _unregister_mirc_platform()
 
         out = capsys.readouterr().out
         assert "IRC" in out
@@ -140,15 +140,15 @@ class TestIRCInteractiveSetup:
 
 
 class TestIRCGatewaySetupFreshInstall:
-    """Simulate the full `mercury setup gateway` experience with IRC present."""
+    """Simulate the full `mercury setup gateway` experience with MIRC present."""
 
-    def test_setup_gateway_hides_irc_from_platform_menu(self, monkeypatch, capsys, tmp_path):
-        """The gateway setup menu never lists IRC (observatory-owned)."""
+    def test_setup_gateway_hides_mirc_from_platform_menu(self, monkeypatch, capsys, tmp_path):
+        """The gateway setup menu never lists MIRC (observatory-owned)."""
         import mercury_cli.gateway as gateway_mod
         from mercury_cli import setup as setup_mod
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _register_irc_platform()
+        _register_mirc_platform()
         try:
             for key in ("IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"):
                 monkeypatch.delenv(key, raising=False)
@@ -178,15 +178,15 @@ class TestIRCGatewaySetupFreshInstall:
             choices_text = "\n".join(platform_prompt["choices"])
             assert "IRC" not in choices_text
         finally:
-            _unregister_irc_platform()
+            _unregister_mirc_platform()
 
-    def test_setup_gateway_completes_without_irc_row(self, monkeypatch, capsys, tmp_path):
-        """Gateway setup completes cleanly with no IRC row to select."""
+    def test_setup_gateway_completes_without_mirc_row(self, monkeypatch, capsys, tmp_path):
+        """Gateway setup completes cleanly with no MIRC row to select."""
         import mercury_cli.gateway as gateway_mod
         from mercury_cli import setup as setup_mod
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _register_irc_platform()
+        _register_mirc_platform()
         try:
             monkeypatch.setenv("IRC_SERVER", "irc.libera.chat")
             monkeypatch.setenv("IRC_CHANNEL", "#mercury")
@@ -209,4 +209,4 @@ class TestIRCGatewaySetupFreshInstall:
             out = capsys.readouterr().out
             assert "Traceback" not in out
         finally:
-            _unregister_irc_platform()
+            _unregister_mirc_platform()

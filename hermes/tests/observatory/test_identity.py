@@ -8,14 +8,14 @@ from contextlib import asynccontextmanager
 import pytest
 
 from observatory import identity as identity_mod
-from observatory.ircd import DaemonConfig, IrcDaemon
+from observatory.mirc import DaemonConfig, MircDaemon
 
 
 @asynccontextmanager
 async def running_daemon(tmp_path, **kwargs):
     config = DaemonConfig(
         agent_port=0, server_port=0, state_dir=str(tmp_path), **kwargs)
-    d = IrcDaemon(config)
+    d = MircDaemon(config)
     await d.start()
     try:
         yield d, d._servers[0].sockets[0].getsockname()[1]
@@ -91,7 +91,8 @@ async def test_identity_speaks_as_own_nick(tmp_path) -> None:
             assert await c.next_match("JOIN #vm_charlie")
             await conn.send("second line")
             got = await c.next_match("second line")
-            assert got.startswith(":vm_charlie!")
+            assert ":vm_charlie!" in got
+            assert "+mercury/kind=status" in got
         finally:
             await c.close()
             await conn.close()
@@ -130,7 +131,8 @@ async def test_pool_send_prefers_identity(monkeypatch) -> None:
     conn = identity_mod.IdentityConn(
         host="x", port=1, password="p", nick="n", channel="#vm_x")
     pool.track(conn)
-    async def _fake_send(text: str) -> bool:
+    async def _fake_send(text: str, *, kind: str) -> bool:
+        assert kind == "assistant_reply"
         fake.sent.append(text)
         return True
     conn.send = _fake_send  # type: ignore[method-assign]

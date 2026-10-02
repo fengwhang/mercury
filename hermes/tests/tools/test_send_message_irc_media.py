@@ -1,4 +1,4 @@
-"""IRC MEDIA passes send_message (Lounge-link delivery, never omit)."""
+"""MIRC MEDIA passes send_message (mLounge-link delivery, never omit)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 
 
 @pytest.mark.parametrize("message_t", ["see {F}", "{F}"])
-def test_irc_media_reaches_adapter_without_omit(
+def test_mirc_media_reaches_adapter_without_omit(
     tmp_path, monkeypatch, message_t) -> None:
     from tools import send_message_tool as sm
     import tools.interrupt as interrupt_mod

@@ -428,6 +428,16 @@ const noOpUIContext: ExtensionUIContext = {
 	setToolsExpanded: () => {},
 };
 
+/** Forward human decisions through the ancestor UI without sharing its editor or widgets. */
+export function forwardApprovalUI(parent: ExtensionUIContext, agentId: string): ExtensionUIContext {
+	return {
+		...noOpUIContext,
+		timeoutStartsOnPresentation: parent.timeoutStartsOnPresentation,
+		select: (title, options, dialogOptions) => parent.select(`[${agentId}] ${title}`, options, dialogOptions),
+		confirm: (title, message, dialogOptions) => parent.confirm(`[${agentId}] ${title}`, message, dialogOptions),
+	};
+}
+
 interface ToolRegistrationScope {
 	pending: Set<Promise<void>>;
 	signal?: AbortSignal;

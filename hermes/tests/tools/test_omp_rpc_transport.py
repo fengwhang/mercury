@@ -71,7 +71,7 @@ def read_requests(out, emit):
             "type": "extension_ui_request",
             "id": "ui_1",
             "method": "select",
-            "title": "Allow tool: bash\nReason: exec-tier command requires approval\nCommand: rm -rf /tmp/mercury-c1-probe",
+            "title": ("Allow tool: write\nPath: /tmp/probe.txt\nCommand: echo this-is-a-path-not-a-shell-request" if "NON_SHELL" in prompt_cmd.get("message", "") else "Allow tool: bash\nReason: exec-tier command requires approval\nCommand: rm -rf /tmp/mercury-c1-probe"),
             "options": ["Approve", "Deny"],
         })
         deadline = time.time() + 20
@@ -123,12 +123,17 @@ if __name__ == "__main__":
 class _FakeOmpServer:
     """Spawn the fake RPC server; expose its transcript via a file."""
 
-    def __init__(self):
+    def __init__(self, persistent=False):
         self._dir = tempfile.mkdtemp(prefix="mercury-c1-")
         self.script = os.path.join(self._dir, "fake_omp_rpc.py")
         self.log = os.path.join(self._dir, "frames.jsonl")
         with open(self.script, "w") as f:
-            f.write(_FAKE_SERVER)
+            source = _FAKE_SERVER
+            if persistent:
+                source = source.replace("return None, None", "return False")
+                source = source.replace("    read_requests(sys.stdout, emit)",
+                                        "    while read_requests(sys.stdout, emit) is not False:\n        pass")
+            f.write(source)
 
     def command(self):
         return [sys.executable, self.script]
@@ -162,41 +167,6 @@ class TestPromptParsing(unittest.TestCase):
             None, "select"))
 
 
-class TestHermesApprovalDecision(unittest.TestCase):
-    def test_guard_stack_approved_routes_true(self):
-        recorded = {}
-
-        def fake_guards(command, env_type=None, **kw):
-            recorded["command"] = command
-            recorded["env_type"] = env_type
-            return {"approved": True, "message": None}
-
-        orig = getattr(omp_rpc_transport, "check_all_command_guards", None)
-        import tools.approval as approval_mod
-        real = approval_mod.check_all_command_guards
-        approval_mod.check_all_command_guards = fake_guards
-        try:
-            self.assertTrue(
-                omp_rpc_transport.hermes_approval_decision("ls -la"))
-        finally:
-            approval_mod.check_all_command_guards = real
-        self.assertEqual(recorded["command"], "ls -la")
-
-    def test_guard_exception_fails_closed(self):
-        import tools.approval as approval_mod
-        real = approval_mod.check_all_command_guards
-
-        def boom(*a, **kw):
-            raise RuntimeError("guard stack down")
-
-        approval_mod.check_all_command_guards = boom
-        try:
-            self.assertFalse(
-                omp_rpc_transport.hermes_approval_decision("ls"))
-        finally:
-            approval_mod.check_all_command_guards = real
-
-
 class TestRpcChildFlow(unittest.TestCase):
     """End-to-end against the fake server through the REAL client."""
 
@@ -204,12 +174,12 @@ class TestRpcChildFlow(unittest.TestCase):
         fake = _FakeOmpServer()
         results = {}
 
-        def fake_decision(command, session_key=None):
-            results["command"] = command
+        def fake_decision(prompt_text):
+            results["command"] = omp_rpc_transport.extract_command_from_prompt(prompt_text)
             return decision
 
-        real_decision = omp_rpc_transport.hermes_approval_decision
-        omp_rpc_transport.hermes_approval_decision = fake_decision
+        real_decision = omp_rpc_transport.hermes_tool_approval_decision
+        omp_rpc_transport.hermes_tool_approval_decision = fake_decision
         try:
             entry = omp_rpc_transport.run_omp_task_rpc(
                 omp_path=sys.executable,
@@ -221,7 +191,7 @@ class TestRpcChildFlow(unittest.TestCase):
                 command_override=fake.command(),
             )
         finally:
-            omp_rpc_transport.hermes_approval_decision = real_decision
+            omp_rpc_transport.hermes_tool_approval_decision = real_decision
         results["entry"] = entry
         return results
 
@@ -581,3 +551,81 @@ class TestTurnFramesPreserved(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInheritedHumanApprovals(unittest.TestCase):
+    def test_hermes_parent_mode_cannot_bypass_omp_child_prompts(self):
+        from tools import approval
+        from unittest.mock import patch
+        fake = _FakeOmpServer(persistent=True)
+        key = "test:live-family-policy:orchestrator"
+        notifications = []
+        child = omp_rpc_transport.OmpRpcChild(
+            omp_path=sys.executable, model="prov/m-1", command_override=fake.command(),
+            workdir=fake._dir, env={"MERCURY_FAKE": "1"},
+        )
+        child.start()
+        token = approval.set_current_session_key(key)
+        def notify(data):
+            notifications.append(data)
+            approval.resolve_gateway_approval(key, "once", request_id=data["request_id"])
+        approval.register_gateway_notify(key, notify)
+        try:
+            with patch.object(approval, "_YOLO_MODE_FROZEN", False):
+                for count, mode in enumerate(("manual", "off", "smart", "off"), 1):
+                    with patch.object(approval, "_get_approval_mode", return_value=mode):
+                        result = child.run_task("RUN_APPROVAL_GATE NON_SHELL", timeout=10)
+                    self.assertEqual(result["summary"], "GATE=Approve")
+                    self.assertEqual(len(notifications), count)
+        finally:
+            child.stop()
+            approval.unregister_gateway_notify(key)
+            approval.reset_current_session_key(token)
+
+    def test_non_shell_rpc_gate_reaches_parent_session_after_child_start(self):
+        from tools import approval
+        fake = _FakeOmpServer()
+        notifications = []
+        parent_key = "test:hermes:orchestrator"
+        child = omp_rpc_transport.OmpRpcChild(
+            omp_path=sys.executable, model="prov/m-1", command_override=fake.command(),
+            workdir=fake._dir, env={"MERCURY_FAKE": "1"},
+        )
+        # Room RPC clients start before the user turn establishes its context.
+        child.start()
+        def notify(data):
+            notifications.append(data)
+            self.assertEqual(approval.get_current_session_key(), parent_key)
+            self.assertEqual(approval.resolve_gateway_approval("unrelated-room", "once"), 0)
+            approval.resolve_gateway_approval(parent_key, "once", request_id=data["request_id"])
+        token = approval.set_current_session_key(parent_key)
+        approval.register_gateway_notify(parent_key, notify)
+        try:
+            result = child.run_task("RUN_APPROVAL_GATE NON_SHELL", timeout=10)
+            self.assertEqual(result["summary"], "GATE=Approve")
+            self.assertEqual(len(notifications), 1)
+            self.assertIn("Allow tool: write", notifications[0]["description"])
+        finally:
+            child.stop()
+            approval.unregister_gateway_notify(parent_key)
+            approval.reset_current_session_key(token)
+
+    def test_provider_gate_requires_human_even_with_yolo(self):
+        from tools import approval
+        from unittest.mock import patch
+        key = "test:provider:root"
+        prompts = []
+        token = approval.set_current_session_key(key)
+        def notify(data):
+            prompts.append(data)
+            approval.resolve_gateway_approval(key, "deny", request_id=data["request_id"])
+        approval.register_gateway_notify(key, notify)
+        try:
+            with patch.object(approval, "_YOLO_MODE_FROZEN", True):
+                result = omp_rpc_transport.hermes_tool_approval_decision(
+                    "Allow tool: bash\nCommand: echo harmless\nProvider safety checks:\nUser confirmation required")
+            self.assertFalse(result)
+            self.assertEqual(len(prompts), 1)
+        finally:
+            approval.unregister_gateway_notify(key)
+            approval.reset_current_session_key(token)

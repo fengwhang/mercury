@@ -255,7 +255,7 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 		appendSystemPrompt: securityCoordinatorPrompt.trim(),
 		disableExtensionDiscovery: true,
 		enableMCP: false,
-		enableIrc: false,
+		enableMirc: false,
 		enableLsp: true,
 		lspReadOnly: true,
 		hasUI: false,

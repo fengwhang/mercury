@@ -155,7 +155,7 @@ function renderContext(): Record<string, unknown> {
 		hasFind: true,
 		hasSearch: true,
 		id: "ExampleAgent",
-		ircEnabled: true,
+		mircEnabled: true,
 		isolationEnabled: false,
 		jobs: [
 			{

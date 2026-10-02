@@ -707,7 +707,9 @@ def _non_conversational_metadata(
     *,
     platform: Any = None,
 ) -> Optional[Dict[str, Any]]:
-    """Mark Discord lifecycle/status sends without changing other platforms."""
+    """Mark lifecycle/status sends on platforms with typed rendering."""
+    if _gateway_platform_value(platform) == "irc":
+        return {**(metadata or {}), "mercury_kind": "status"}
     if _gateway_platform_value(platform) != "discord":
         return metadata
     merged = dict(metadata or {})
@@ -4831,7 +4833,7 @@ class TurnRunner:
 
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
-        # Observatory mirror (IRC rooms show their agent's tool calls
+        # Observatory mirror (MIRC rooms show their agent's tool calls
         # live, like CLI verbose): depth-0 rooms have no feed producer of
         # their own, so tool/thinking lines are formatted here and handed
         # to the gateway loop for a direct send — the pump queue is not
@@ -12582,6 +12584,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         deadline = loop.time() + timeout
         last_status_at = 0.0
         while self._awaitable_work_count() > 0:
+            if self._restart_after_turn_timeout <= 0:
+                logger.info("Observatory restart requested — checkpointing active sessions now")
+                return False
             now = loop.time()
             if now >= deadline:
                 logger.warning(
@@ -12621,7 +12626,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         )
         return True
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+    def request_restart(
+        self, *, detached: bool = False, via_service: bool = False,
+        after_turn_timeout: float | None = None,
+    ) -> bool:
+        if after_turn_timeout is not None:
+            # Operator-requested Observatory restarts checkpoint sessions
+            # through the existing stop path, without waiting a whole turn.
+            self._restart_after_turn_timeout = max(0.0, after_turn_timeout)
         if self._restart_task_started:
             return False
         self._restart_requested = True
@@ -13828,7 +13840,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         )
         # Also pick up plugin-registered platforms — each entry can declare
         # its own allowed_users_env / allow_all_env, so the warning stays
-        # accurate as plugins like IRC come online.
+        # accurate as plugins like MIRC come online.
         _plugin_allowed_vars: tuple = ()
         _plugin_allow_all_vars: tuple = ()
         try:
@@ -14486,7 +14498,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # confirmed-delivered has its answer in the ledger — redelivering it
         # is strictly cheaper and more correct than re-running the whole turn.
         self._schedule_resume_pending_sessions()
-        # IRC observatory seam: fire-and-forget observatory boot on a
+        # MIRC observatory seam: fire-and-forget observatory boot on a
         # daemon thread; never raises, never blocks.
         try:
             from observatory.platform_hook import try_boot_sidecar
@@ -26538,6 +26550,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 continue
 
             try:
+                if (platform == Platform.MIRC
+                        and getattr(transport.adapter, "_observatory_managed", False) is True):
+                    notified = await transport.adapter.observatory_startup_channels()
+                    if str(home.chat_id).lower() in notified:
+                        delivered.add(target)
+                        continue
                 metadata = self._thread_metadata_for_target(
                     platform,
                     home.chat_id,
@@ -33316,6 +33334,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler}
+        )
+        from observatory.restart import quick_restart_handler
+
+        _control_server.register_handler(
+            "restart-observatory", quick_restart_handler(runner, _main_loop)
         )
         # observatory prompt delivery (irc-observatory): room text arrives
         # as `inject` with {text, kind, node_id, room_id}; the handler runs

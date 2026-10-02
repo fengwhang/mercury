@@ -1,0 +1,273 @@
+/* Shared identity: Hermes DARK_SEEDS and OMP's mercury.json. */
+:root {
+	color-scheme: dark;
+
+	--mercury-ember: #ff4500;
+	--mercury-tomato: #ff6347;
+	--mercury-border: #b22222;
+	--mercury-border-muted: #5a2a2a;
+	--mercury-row: #335;
+	--body-color: #fff5ee;
+	--body-color-muted: #c0a9a9;
+	--body-bg-color: #101014;
+	--button-color: var(--mercury-tomato);
+	--button-text-color-hover: var(--body-bg-color);
+	--link-color: var(--mercury-tomato);
+	--window-bg-color: #1a1a2e;
+	--window-heading-color: var(--mercury-tomato);
+	--date-marker-color: var(--body-color-muted);
+	--unread-marker-color: var(--mercury-tomato);
+	--highlight-bg-color: #32191b;
+	--highlight-border-color: var(--mercury-ember);
+}
+
+::placeholder {
+	color: var(--body-color-muted);
+}
+
+body {
+	accent-color: var(--mercury-tomato);
+	scrollbar-color: var(--mercury-border-muted) var(--body-bg-color);
+}
+
+.mercury-logo {
+	display: block;
+	object-fit: contain;
+	margin: 16px auto;
+}
+
+#sidebar,
+#footer button,
+.channel-list-item .badge,
+#chat .count::before {
+	color: var(--body-color-muted);
+}
+
+.channel-list-item:hover,
+#footer button:hover {
+	background-color: var(--window-bg-color);
+	color: var(--mercury-tomato);
+}
+
+.channel-list-item.active,
+#footer button.active {
+	background-color: var(--mercury-row);
+	color: var(--mercury-tomato);
+}
+
+.channel-list-item[data-type="lobby"] {
+	color: var(--mercury-ember);
+}
+
+.channel-list-item[data-type="lobby"]:hover,
+.channel-list-item[data-type="lobby"].active {
+	color: var(--mercury-tomato);
+}
+
+.channel-list-item .badge.highlight {
+	background: var(--mercury-ember);
+	color: var(--body-bg-color);
+}
+
+#chat .header,
+#chat .userlist,
+#chat .user-mode::before {
+	border-color: var(--mercury-border-muted);
+}
+
+#chat .header {
+	border-bottom-color: var(--mercury-border);
+}
+
+.input,
+#form,
+#form #nick,
+form.message-search input,
+.mentions-popup,
+#context-menu,
+.textcomplete-menu,
+#chat .userlist .count,
+#chat .toggle-content,
+#chat .msg[data-type="monospace_block"] .text {
+	background-color: var(--body-bg-color);
+	border-color: var(--mercury-border-muted);
+	color: var(--body-color);
+}
+
+.input:disabled {
+	background-color: var(--mercury-row);
+}
+
+.input:not(:disabled):hover,
+.input:not(:disabled):focus {
+	border-color: var(--mercury-tomato);
+}
+
+#form {
+	border-top-color: var(--mercury-border);
+}
+
+.context-menu-item,
+.textcomplete-item,
+.textcomplete-item a,
+#chat .toggle-content .body {
+	color: var(--body-color);
+}
+
+.context-menu-item.active,
+.textcomplete-item:focus,
+.textcomplete-item:hover,
+.textcomplete-menu .active,
+#chat .userlist .user.active {
+	background-color: var(--mercury-row);
+}
+
+.context-menu-divider {
+	background-color: var(--mercury-border-muted);
+}
+
+#viewport .lt,
+#viewport .rt,
+#chat button.mentions,
+#chat button.menu,
+#chat button.close,
+#chat form.message-search button,
+#form #upload,
+#form #submit {
+	color: var(--mercury-tomato);
+}
+
+.user {
+	color: var(--mercury-tomato);
+}
+
+#chat .msg[data-type="notice"] .time,
+#chat .msg[data-type="wallops"] .time,
+#chat .msg[data-type="notice"] .content,
+#chat .msg[data-type="wallops"] .content,
+#chat .msg[data-type="notice"] .user,
+#chat .msg[data-type="wallops"] .user,
+#chat .chat-view[data-type="channel"] .msg.highlight .time {
+	color: var(--body-color-muted);
+}
+
+pre,
+code,
+.irc-monospace,
+#chat .md-code,
+#chat .message-raw {
+	background-color: var(--body-bg-color);
+	color: var(--body-color);
+}
+
+#chat .md-code,
+#chat .message-raw {
+	border: 1px solid var(--mercury-border-muted);
+}
+
+#chat .md-code code {
+	background: transparent;
+}
+
+#chat .md-h1,
+#chat .md-h2,
+#chat .md-h3,
+#chat .md-h4,
+#chat .md-h5,
+#chat .md-h6,
+#chat .md-ul::before,
+#chat .md-math,
+#chat .message-tools button,
+#chat .message-copy {
+	color: var(--mercury-tomato);
+}
+
+#chat .md-quote,
+#chat .md-hr {
+	border-color: var(--mercury-border);
+}
+
+#chat .message-tools button[aria-pressed="true"],
+#chat .message-tools button:hover,
+#chat .message-copy:hover {
+	background-color: var(--mercury-tomato);
+	color: var(--body-bg-color);
+}
+
+#chat .hljs-comment,
+#chat .hljs-punctuation {
+	color: var(--body-color-muted);
+}
+
+#chat .hljs-keyword,
+#chat .hljs-selector-tag,
+#chat .hljs-built_in,
+#chat .hljs-operator {
+	color: var(--mercury-ember);
+}
+
+#chat .hljs-title,
+#chat .hljs-type {
+	color: var(--mercury-tomato);
+}
+
+#chat .hljs-string,
+#chat .hljs-regexp {
+	color: #ffd0b5;
+}
+
+#chat .hljs-number,
+#chat .hljs-literal {
+	color: #ffa500;
+}
+
+/* Nick colors follow the same heat spectrum. */
+.user.color-1,
+.user.color-7,
+.user.color-13,
+.user.color-19,
+.user.color-25,
+.user.color-31 {
+	color: #ff6347;
+}
+
+.user.color-2,
+.user.color-8,
+.user.color-14,
+.user.color-20,
+.user.color-26,
+.user.color-32 {
+	color: #ff8c00;
+}
+
+.user.color-3,
+.user.color-9,
+.user.color-15,
+.user.color-21,
+.user.color-27 {
+	color: #ffa07a;
+}
+
+.user.color-4,
+.user.color-10,
+.user.color-16,
+.user.color-22,
+.user.color-28 {
+	color: #ffd0b5;
+}
+
+.user.color-5,
+.user.color-11,
+.user.color-17,
+.user.color-23,
+.user.color-29 {
+	color: #ff4500;
+}
+
+.user.color-6,
+.user.color-12,
+.user.color-18,
+.user.color-24,
+.user.color-30 {
+	color: #ffc078;
+}

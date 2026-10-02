@@ -7,7 +7,7 @@ import pytest
 
 def _adapter(monkeypatch):
     from gateway.config import PlatformConfig
-    from plugins.platforms.irc import adapter as adapter_mod
+    from plugins.platforms.mirc import adapter as adapter_mod
 
     for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
                 "IRC_USE_TLS"):
@@ -17,7 +17,7 @@ def _adapter(monkeypatch):
         extra={"server": "127.0.0.1", "port": 6669,
                "nickname": "bot", "channel": "#bot"},
     )
-    ad = adapter_mod.IRCAdapter(cfg)
+    ad = adapter_mod.MIRCAdapter(cfg)
 
     class _Writer:
         def is_closing(self):
@@ -28,20 +28,20 @@ def _adapter(monkeypatch):
 
 
 def _stage_mocks(monkeypatch, ok=True):
-    import observatory.lounge as lounge_mod
+    import observatory.mlounge as mlounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "stage_lounge_upload",
+        mlounge_mod, "stage_mlounge_upload",
         lambda home, path: {"url_path": "uploads/ab/cdef/f.bin",
                             "filename": "f.bin"})
     monkeypatch.setattr(
-        lounge_mod, "lounge_base_url", lambda home=None: "http://h:9000")
+        mlounge_mod, "mlounge_base_url", lambda home=None: "http://h:9000")
     if not ok:
         def _boom(*a, **k):
-            raise lounge_mod.LoungeError("denied")
+            raise mlounge_mod.MLoungeError("denied")
 
-        monkeypatch.setattr(lounge_mod, "stage_lounge_upload", _boom)
-    monkeypatch.setattr(lounge_mod, "check_upload_serves", lambda *a: True)
+        monkeypatch.setattr(mlounge_mod, "stage_mlounge_upload", _boom)
+    monkeypatch.setattr(mlounge_mod, "check_upload_serves", lambda *a: True)
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 /**
  * Hub tool — the single agent-coordination surface: peer messaging over the
- * IrcBus, lifecycle control for async background jobs, and supervision of
+ * MircBus, lifecycle control for async background jobs, and supervision of
  * project-scoped long-running processes (launch).
  *
  * Op families:
@@ -27,7 +27,7 @@ import type { ToolExample } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
-import { IrcBus } from "../../irc/bus";
+import { MircBus } from "../../mirc/bus";
 import type { Theme } from "../../modes/theme/theme";
 import hubDescription from "../../prompts/tools/hub.md" with { type: "text" };
 import type { AgentRegistry } from "../../registry/agent-registry";
@@ -62,7 +62,7 @@ import {
 	messageResult,
 	messagingRenderCall,
 	messagingRenderResult,
-	normalizeIrcTimeoutMs,
+	normalizeMircTimeoutMs,
 } from "./messaging";
 import {
 	DEFAULT_HUB_LIST_LIMIT,
@@ -74,7 +74,7 @@ import {
 
 export { isWaitingPollDetails } from "./jobs";
 export type { LaunchParams, LaunchToolDetails } from "./launch";
-export { createIrcMessageCard, isIrcEnabled } from "./messaging";
+export { createMircMessageCard, isMircEnabled } from "./messaging";
 export * from "./types";
 
 const hubSchema = type({
@@ -407,7 +407,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 			// there, so without this take the liveness gate would answer "nothing
 			// to wait for" while `hub inbox` hands back the very message being
 			// waited on. Single atomic take: the rest of the backlog stays queued.
-			const queued = IrcBus.global().take(messaging.senderId, from);
+			const queued = MircBus.global().take(messaging.senderId, from);
 			if (queued) return messageResult(messaging.senderId, queued);
 			if (!from) {
 				// A bare wait can only be satisfied by a running peer eventually
@@ -426,7 +426,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		// starts at the floor and climbs as the agent waits in a tight loop,
 		// then resets once it steps away (see AsyncJobManager.nextPollWaitMs).
 		const window = resolvePollWindow(this.session, manager, ownerId);
-		const windowMs = params.timeoutMs !== undefined ? normalizeIrcTimeoutMs(params.timeoutMs) : window.waitMs;
+		const windowMs = params.timeoutMs !== undefined ? normalizeMircTimeoutMs(params.timeoutMs) : window.waitMs;
 		const usedSmartWindow = window.smart && params.timeoutMs === undefined;
 
 		const racePromises: Promise<unknown>[] = runningJobs.map(j => j.promise);
@@ -438,7 +438,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		let removeBusAbortListener: (() => void) | undefined;
 		const busLeg =
 			messaging && busAbort
-				? IrcBus.global()
+				? MircBus.global()
 						.wait(messaging.senderId, { from }, 0, busAbort.signal)
 						.then(
 							message => ({ message, error: null as Error | null }),

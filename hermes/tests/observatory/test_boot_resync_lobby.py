@@ -1,10 +1,12 @@
-"""boot_resync invites the lounge client to the lobby without a setup run."""
+"""boot_resync restores the gateway and invites mLounge without a setup run."""
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 
 import pytest
+
+from observatory.spawn import OrchestratorRegistry
 
 
 class _FakeManager:
@@ -14,7 +16,8 @@ class _FakeManager:
 
 class _FakeState:
     def get_live(self):
-        return []
+        return [{"node_id": "gw", "engine": "hermes", "room_id": "#vm_gateway",
+                 "extra": {"kind": "gateway"}}]
 
 
 @pytest.mark.asyncio
@@ -27,33 +30,31 @@ async def test_resync_subscribes_lobby(monkeypatch) -> None:
     invited = []
 
     class FakeBot:
+        async def join_channel(self, channel):
+            return True
+
         async def invite_user(self, nick, channel):
             invited.append((nick, channel))
             return True
 
     monkeypatch.setattr(rooms_mod, "get_bot_sink", lambda: FakeBot())
-    monkeypatch.setattr(
-        spawn_mod, "replay_purge_journal", lambda state: [])
+    async def replay(state):
+        return []
+
+    monkeypatch.setattr(spawn_mod, "replay_purge_journal", replay)
     monkeypatch.setattr(
         provision_mod, "live_server_name", lambda home=None: "vm")
     monkeypatch.setattr(
-        provision_mod, "get_lounge_nick", lambda home=None: "owner")
+        provision_mod, "get_mlounge_nick", lambda home=None: "owner")
     report = await hook.boot_resync(
         manager=_FakeManager(), state=_FakeState())
-    assert report.get("lobby") == "#vm_gateway"
+    assert report.get("joined") == ["#vm_gateway"]
     assert invited == [("owner", "#vm_gateway")]
-    assert report.get("lobby_invited") is True
+    assert report.get("failed") == []
 
 
-class _FakeRegistry:
-    def __init__(self):
-        self.handles = {}
-
-    def get(self, node_id):
-        return self.handles.get(node_id)
-
-    def register(self, handle):
-        self.handles[handle.node_id] = handle
+class _FakeRegistry(OrchestratorRegistry):
+    pass
 
 
 @pytest.mark.asyncio
@@ -86,6 +87,8 @@ async def test_resync_rebuilds_live_omp_child(monkeypatch) -> None:
             return True
 
     class _LiveState:
+        locked = staticmethod(nullcontext)
+
         _row = {
             "node_id": "orch-1", "engine": "omp", "status": "live",
             "name": "king", "session_ref": "s.jsonl",
@@ -100,7 +103,10 @@ async def test_resync_rebuilds_live_omp_child(monkeypatch) -> None:
             return dict(self._row)
 
     monkeypatch.setattr(rooms_mod, "get_bot_sink", lambda: FakeBot())
-    monkeypatch.setattr(spawn_mod, "replay_purge_journal", lambda state: [])
+    async def replay(state):
+        return []
+
+    monkeypatch.setattr(spawn_mod, "replay_purge_journal", replay)
     monkeypatch.setattr(spawn_mod, "build_omp_child", fake_build)
     monkeypatch.setattr(
         rooms_mod, "register_omp_room",
@@ -108,7 +114,7 @@ async def test_resync_rebuilds_live_omp_child(monkeypatch) -> None:
     monkeypatch.setattr(
         provision_mod, "live_server_name", lambda home=None: "vm")
     monkeypatch.setattr(
-        provision_mod, "get_lounge_nick", lambda home=None: "owner")
+        provision_mod, "get_mlounge_nick", lambda home=None: "owner")
     registry = _FakeRegistry()
     report = await hook.boot_resync(
         manager=None, state=_LiveState(), registry=registry)
@@ -120,9 +126,9 @@ async def test_resync_rebuilds_live_omp_child(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resync_rejoins_hermes_rooms_and_invites_lounge(monkeypatch) -> None:
+async def test_resync_rejoins_hermes_rooms_and_invites_mlounge(monkeypatch) -> None:
     """Observatory restart must respawn hermes rooms too, not just the
-    gateway: every live channel is re-JOINed and the lounge is invited
+    gateway: every live channel is re-JOINed and the mlounge is invited
     to each (spawn parity — the lobby-only invite left spawned rooms
     invisible)."""
     import observatory.platform_hook as hook
@@ -143,6 +149,8 @@ async def test_resync_rejoins_hermes_rooms_and_invites_lounge(monkeypatch) -> No
             return True
 
     class _LiveState:
+        locked = staticmethod(nullcontext)
+
         def get_live(self):
             return [
                 {"node_id": "gw", "engine": "hermes", "status": "live",
@@ -162,7 +170,7 @@ async def test_resync_rejoins_hermes_rooms_and_invites_lounge(monkeypatch) -> No
     monkeypatch.setattr(
         provision_mod, "live_server_name", lambda home=None: "vm")
     monkeypatch.setattr(
-        provision_mod, "get_lounge_nick", lambda home=None: "owner")
+        provision_mod, "get_mlounge_nick", lambda home=None: "owner")
     report = await hook.boot_resync(
         manager=None, state=_LiveState(), registry=_FakeRegistry())
     assert "#vm_gateway" in joined

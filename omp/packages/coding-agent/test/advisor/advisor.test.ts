@@ -651,7 +651,7 @@ describe("advisor", () => {
 			expect(yq.has("normal")).toBe(true);
 
 			// Conversation-boundary cleanup must drop advisor deliveries without
-			// touching other kinds (IRC asides, async-job/diagnostic deliveries).
+			// touching other kinds (MIRC asides, async-job/diagnostic deliveries).
 			yq.clear("advisor");
 			expect(yq.has("advisor")).toBe(false);
 			expect(yq.has("normal")).toBe(true);

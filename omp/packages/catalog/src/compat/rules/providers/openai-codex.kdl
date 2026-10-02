@@ -29,6 +29,16 @@ provider "openai-codex" {
 			cache-write 15.625
 		}
 	}
+	// Upstream Codex subscription credit-equivalent pricing (oh-my-pi 2b023d1).
+	// Availability still comes from account-scoped live discovery, not this rule.
+	models "gpt-6.1-sol" "gpt-6.1-sol-wm" {
+		cost-patch {
+			input 2.0
+			output 10.0
+			cache-read 0.1
+			cache-write 0
+		}
+	}
 	class "openai" {
 		revision ">=5.3 <5.7" {
 			thinking-mode "effort"
@@ -69,9 +79,9 @@ provider "openai-codex" {
 				}
 			}
 		}
-		// First-party GPT-5 Responses SKUs support the freeform apply_patch
+		// First-party GPT-5/GPT-6 Responses SKUs support the freeform apply_patch
 		// custom tool with a Lark grammar.
-		revision ">=5 <6" {
+		revision ">=5 <7" {
 			apply-patch-tool-type "freeform"
 		}
 	}

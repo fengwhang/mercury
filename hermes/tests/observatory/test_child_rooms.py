@@ -1,4 +1,4 @@
-"""Delegate child rooms: prefixed naming, phone visibility, D8 retire."""
+"""Delegate child rooms persist until explicit exit, including after completion."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class FakeBot:
         self.joined.append(channel)
         return True
 
-    async def say(self, channel: str, text: str) -> bool:
+    async def say(self, channel: str, text: str, *, kind: str = "status") -> bool:
         self.said.append((channel, text))
         return True
 
@@ -67,22 +67,22 @@ async def test_ensure_creates_prefixed_visible_room(tmp_path, monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_stop_purges_depth1_room(tmp_path, monkeypatch) -> None:
+async def test_stop_keeps_depth1_room_until_exit(tmp_path, monkeypatch) -> None:
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
     _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
     await mgr._ensure_child_room_for(
         "d1", {"name": "bravo", "parent_name": "alpha-node", "engine": "omp"})
     await mgr.publish_lifecycle("#vm_alpha-bravo", "stop", name="bravo")
     await mgr._retire_child_room("d1")
-    assert "#vm_alpha-bravo" in bot.destroyed
-    with pytest.raises(Exception):
-        state.get("d1")
+    assert "#vm_alpha-bravo" not in bot.destroyed
+    assert state.get("d1")["status"] == "live"
+    assert state.get("d1")["extra"]["task_state"] == "completed"
     stops = [t for c, t in bot.said if c == "#vm_alpha-bravo"]
     assert any("finished" in t for t in stops)
 
 
 @pytest.mark.asyncio
-async def test_stop_keeps_depth2_room_as_grace(tmp_path, monkeypatch) -> None:
+async def test_completion_keeps_descendants_until_explicit_exit(tmp_path, monkeypatch) -> None:
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
     _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
     await mgr._ensure_child_room_for(
@@ -91,10 +91,14 @@ async def test_stop_keeps_depth2_room_as_grace(tmp_path, monkeypatch) -> None:
         "d2", {"name": "cee", "parent_name": "d1", "engine": "omp"})
     assert state.get("d2")["depth"] == 2
     await mgr._retire_child_room("d2")
-    assert state.get("d2")["status"] == "dead"
+    assert state.get("d2")["status"] == "live"
     assert "#vm_alpha-bravo-cee" not in bot.destroyed
-    # Parent purge cascades to the dead grandchild.
+    # Parent completion must also preserve both sessions.
     await mgr._retire_child_room("d1")
+    assert state.get("d2")["status"] == "live"
+    from observatory.spawn import OrchestratorRegistry, exit_orchestrator
+
+    await exit_orchestrator("d1", state=state, registry=OrchestratorRegistry(), bot=bot)
     with pytest.raises(Exception):
         state.get("d2")
     assert "#vm_alpha-bravo-cee" in bot.destroyed
@@ -272,19 +276,17 @@ async def test_grandchild_add_death_lifecycle(tmp_path, monkeypatch) -> None:
         "feed": "node", "kind": "death", "subagent_id": "c1",
         "agent": "charlie", "status": "completed",
     }, grands)
-    # Rule 4: a 2-agent's room survives its own completion...
+    # A grandchild keeps its session after its own and its parent's completion.
     assert "#vm_alpha-bravo-charlie" not in bot.destroyed
-    assert state.get("d1/sub-c1")["status"] == "dead"
-    # ...and dies with its parent.
+    assert state.get("d1/sub-c1")["status"] == "live"
     await mgr._retire_child_room("d1")
-    assert "#vm_alpha-bravo-charlie" in bot.destroyed
-    with pytest.raises(Exception):
-        state.get("d1/sub-c1")
+    assert "#vm_alpha-bravo-charlie" not in bot.destroyed
+    assert state.get("d1/sub-c1")["status"] == "live"
 
 
 @pytest.mark.asyncio
-async def test_omp_root_grandchild_purges_on_death(tmp_path, monkeypatch) -> None:
-    """Same rules under an omp-0 root: its child is depth 1."""
+async def test_omp_root_grandchild_keeps_session_on_completion(tmp_path, monkeypatch) -> None:
+    """Completion keeps the room under an OMP root too."""
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
     state.add_node(
         "bravo-node", engine="omp", name="bravo", slug="bravo",
@@ -305,9 +307,9 @@ async def test_omp_root_grandchild_purges_on_death(tmp_path, monkeypatch) -> Non
         "feed": "node", "kind": "death", "subagent_id": "c9",
         "agent": "zed", "status": "completed",
     }, grands)
-    assert "#vm_bravo-zed" in bot.destroyed
-    with pytest.raises(Exception):
-        state.get("bravo-node/sub-c9")
+    assert "#vm_bravo-zed" not in bot.destroyed
+    assert state.get("bravo-node/sub-c9")["status"] == "live"
+    assert state.get("bravo-node/sub-c9")["extra"]["task_state"] == "completed"
 
 
 @pytest.mark.asyncio

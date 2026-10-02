@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Mercury Linux binaries use explicit portable Bun targets, including separate musl builds and native addon caches. Release packaging rejects Nix store loader paths and mismatched native addon ABIs.
+
+- Align settings reload and runtime override regressions with Mercury's sole task model role.
+- Restore native OMP approval modes independently of Hermes smart review; preserve ancestor approval routing and explicit deny rules.
+
 ## [18.1.6] - 2026-09-03
 
 ### Breaking Changes

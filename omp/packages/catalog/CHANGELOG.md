@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Updated Codex client identification and refreshed stale model catalogs so newly available models appear after an upgrade.
+
 ## [18.1.6] - 2026-09-03
 
 ### Added

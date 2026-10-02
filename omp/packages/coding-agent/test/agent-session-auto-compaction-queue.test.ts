@@ -269,7 +269,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		// listener before `await abort()`, so the abort-finally stranded-message
 		// drain is suppressed while disconnected. Unlike /new (which resets the
 		// queue), compaction preserves the agent queues, so a steer/follow-up that
-		// arrives mid-compaction (async IRC, an xd:// mount notice, an SDK steer)
+		// arrives mid-compaction (async MIRC, an xd:// mount notice, an SDK steer)
 		// would hang until the next explicit prompt unless compact() re-drains
 		// after reconnecting.
 		session.settings.set("compaction.keepRecentTokens", 1);

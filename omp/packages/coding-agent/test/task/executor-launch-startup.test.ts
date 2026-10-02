@@ -69,7 +69,7 @@ it("overlaps registry refresh with session-file opening and session setup", asyn
 		getLastAssistantMessage: () => undefined,
 		abort: async () => {},
 		dispose: async () => {},
-		setIrcWakeTurnObserver: () => {},
+		setMircWakeTurnObserver: () => {},
 		subscribeRunState: () => () => {},
 	} as unknown as AgentSession;
 	vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async () => {
@@ -93,7 +93,7 @@ it("overlaps registry refresh with session-file opening and session setup", asyn
 		id: "task-launch-overlap",
 		authStorage,
 		enableLsp: false,
-		enableIrc: false,
+		enableMirc: false,
 	});
 	await openStarted.promise;
 

@@ -626,8 +626,8 @@ export interface BuildSystemPromptOptions {
 	taskBatch?: boolean;
 	/** Effective task concurrency limit displayed in centralized delegation guidance. Zero means unlimited. */
 	taskMaxConcurrency?: number;
-	/** Whether IRC-backed parallel coordination can be included in delegation policy. */
-	taskIrcEnabled?: boolean;
+	/** Whether MIRC-backed parallel coordination can be included in delegation policy. */
+	taskMircEnabled?: boolean;
 	/** Whether the `subagent` agent is spawnable (not disabled, allowed by spawn policy). Defaults to true. */
 
 	/** Rules with alwaysApply=true — their full content is injected into the prompt. */
@@ -706,7 +706,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		eagerTasksAlways = false,
 		taskBatch = true,
 		taskMaxConcurrency = 0,
-		taskIrcEnabled = false,
+		taskMircEnabled = false,
 		secretsEnabled = false,
 		workspaceTree: providedWorkspaceTree,
 		memoryRootEnabled = false,
@@ -1002,7 +1002,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		eagerTasksAlways,
 		taskBatch,
 		MAX_CONCURRENCY: normalizeConcurrencyLimit(taskMaxConcurrency),
-		taskIrcEnabled,
+		taskMircEnabled,
 		secretsEnabled,
 		hasMemoryRoot: memoryRootEnabled,
 		securityEnabled,

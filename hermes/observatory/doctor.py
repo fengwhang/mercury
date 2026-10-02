@@ -3,7 +3,8 @@
 Answers "why is the bot missing / silent" locally, without guessing:
 provisioning, listener liveness, adapter target vs live bind, bot
 credential match (lengths only, never secrets), gateway process, and —
-decisively — whether the bot nick is actually in the gateway room.
+decisively — whether the bot nick is in the gateway room AND its receiver answers a
+transport-only challenge (no provider call).
 """
 from __future__ import annotations
 
@@ -47,7 +48,7 @@ def _tcp_ok(host: str, port: int, timeout: float = 2.0) -> bool:
 
 
 class _Probe:
-    """Minimal sync IRC client: register, JOIN, NAMES, quit."""
+    """Minimal sync MIRC client: register, JOIN, NAMES, quit."""
 
     def __init__(self, host: str, port: int, nick: str, password: str):
         self.host = host
@@ -74,7 +75,7 @@ class _Probe:
                 for line in self._drain():
                     if " 001 " in line:
                         return True
-                    if " 464 " in line.split():
+                    if "464" in line.split():
                         return False
         except OSError:
             return False
@@ -118,24 +119,58 @@ class _Probe:
 
     def names(self, channel: str, timeout: float = 5.0) -> list[str] | None:
         """Members of *channel*, or None when the join fails."""
+        import uuid
+
         try:
             self._send(f"JOIN {channel}")
             deadline = time.monotonic() + timeout
+            # Registration can auto-join several rooms. Their outstanding
+            # NAMES replies must not complete this new membership query.
+            barrier = f"mercury-names-{uuid.uuid4().hex}"
+            self._send(f"PING :{barrier}")
+            synchronized = False
+            while time.monotonic() < deadline and not synchronized:
+                synchronized = any(
+                    " PONG " in line and line.endswith(f":{barrier}")
+                    for line in self._drain())
+            if not synchronized:
+                return None
+            self._send(f"NAMES {channel}")
             members: list[str] = []
             while time.monotonic() < deadline:
                 for line in self._drain():
                     parts = line.split()
-                    if len(parts) >= 7 and parts[1] == "353":
-                        # :srv 353 me = #chan :n1 n2 ...
+                    if len(parts) >= 6 and parts[1] == "353" and parts[4].lower() == channel.lower():
+                        # :srv 353 me = #chan :n1 n2 ... (names start at 5)
                         members.extend(
-                            n.lstrip(":").lstrip("@+%") for n in parts[6:])
-                    if len(parts) >= 4 and parts[1] == "366":
+                            n.lstrip(":").lstrip("@+%") for n in parts[5:])
+                    if len(parts) >= 4 and parts[1] == "366" and parts[3].lower() == channel.lower():
                         return members
-                    if len(parts) >= 4 and parts[1] in ("403", "471", "474", "475"):
+                    if (len(parts) >= 4 and parts[3].lower() == channel.lower()
+                            and parts[1] in ("403", "471", "474", "475")):
                         return None
         except OSError:
             return None
         return members
+
+    def gateway_roundtrip(self, nick: str, timeout: float = 5.0) -> bool:
+        """Challenge the actual dispatch connection, not just its NAMES entry."""
+        import uuid
+
+        nonce = uuid.uuid4().hex
+        expected = f"\x01MERCURY-PROBE {nonce}\x01"
+        try:
+            self.say(nick, expected)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                for line in self._drain():
+                    prefix, _, rest = line.partition(" ")
+                    if (prefix.lstrip(":").split("!", 1)[0].lower() == nick.lower()
+                            and rest == f"NOTICE {self.nick} :{expected}"):
+                        return True
+        except OSError:
+            pass
+        return False
 
     def close(self) -> None:
         try:
@@ -229,8 +264,11 @@ def _established_to(port: int) -> int:
                         count += 1
         except OSError:
             continue
+    return count
+
+
 def _gateway_log_snippets(home: Path) -> list[str]:
-    """Recent gateway log lines mentioning irc (any source, any case)."""
+    """Recent gateway log lines mentioning mirc (any source, any case)."""
     import re as _re
 
     want = _re.compile(r"\birc\b", _re.IGNORECASE)
@@ -459,7 +497,7 @@ def verify_message_path(home=None, *, wait: float = 25.0) -> tuple[bool, str]:
     """
     mercury_home = _home(home)
     cfg = read_config(mercury_home) or {}
-    pw = read_irc_passwords(mercury_home) or {}
+    pw = read_mirc_passwords(mercury_home) or {}
     server_name = str(cfg.get("server_name") or "mercury")
     server_host = str(cfg.get("server_host") or "127.0.0.1")
     server_port = int(cfg.get("server_port") or 6670)
@@ -514,7 +552,7 @@ def verify_message_path(home=None, *, wait: float = 25.0) -> tuple[bool, str]:
 
 def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     """Run every check. Returns [(ok, label, detail)]. Secrets never leave."""
-    from observatory.provision import read_config, read_irc_passwords
+    from observatory.provision import read_config, read_mirc_passwords
 
     results: list[tuple[bool, str, str]] = []
     mercury_home = _home(home)
@@ -527,7 +565,7 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
     gateway_channel = f"#{server_name}_gateway"
     bot_nick = f"{server_name}_gateway"
 
-    pw = read_irc_passwords(mercury_home) or {}
+    pw = read_mirc_passwords(mercury_home) or {}
     agent_pw = str(pw.get("agent") or "")
     server_pw = str(pw.get("server") or "")
     if not agent_pw:
@@ -570,21 +608,21 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
                             "running daemon predates the code on disk, "
                             "restart it"))
     try:
-        from observatory.lounge import fork_versions, lounge_prefix, lounge_unit_active
+        from observatory.mlounge import fork_versions, mlounge_prefix, mlounge_unit_active
 
-        lounge_on = lounge_unit_active()
-        lounge_installed = Path(lounge_prefix(mercury_home)).exists()
+        mlounge_on = mlounge_unit_active()
+        mlounge_installed = Path(mlounge_prefix(mercury_home)).exists()
         fork_have, fork_want = fork_versions(mercury_home)
     except Exception:  # noqa: BLE001
-        lounge_on = False
-        lounge_installed = False
+        mlounge_on = False
+        mlounge_installed = False
         fork_have, fork_want = None, None
     fork_detail = ""
     if fork_have or fork_want:
         fork_detail = f" (fork installed {fork_have or 'absent'}, shipped {fork_want or 'unknown'})"
-    if lounge_on:
+    if mlounge_on:
         try:
-            from observatory.lounge import fork_staleness as _stale
+            from observatory.mlounge import fork_staleness as _stale
 
             stale = _stale(mercury_home)
         except Exception:  # noqa: BLE001 — versions detail is enough
@@ -593,21 +631,21 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
             why = ("a newer release" if stale == "stale-version"
                    else "different sources under the same version")
             results.append((False, "chat frontend",
-                            "The Lounge serves a STALE fork"
+                            "mLounge serves a STALE fork"
                             f"{fork_detail} ({why}) — run mercury "
                             "observatory restart to vend the shipped bundle"))
         else:
             results.append((True, "chat frontend",
-                            "The Lounge uplink active (your browser chat)"
+                            "mLounge uplink active (your browser chat)"
                             f"{fork_detail}"))
-    elif lounge_installed:
+    elif mlounge_installed:
         results.append((False, "chat frontend",
-                        "The Lounge is installed but NOT running — your "
+                        "mLounge is installed but NOT running — your "
                         "browser chat is dead; mercury observatory restart "
                         "restarts it"))
     else:
         results.append((True, "chat frontend",
-                        "The Lounge not installed (raw IRC client users: fine)"))
+                        "mLounge not installed"))
     dotenv = _read_dotenv(mercury_home)
     wired_host = _env("IRC_SERVER", dotenv) or "127.0.0.1"
     wired_port = _env("IRC_PORT", dotenv) or "6669"
@@ -733,7 +771,7 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
                                 "gateway log shows no IRC adapter lines at all — "
                                 "the adapter never started"))
 
-    if agent_up and agent_pw:
+    if agent_up:
         probe = _Probe(agent_host, agent_port,
                        f"mercury-doctor-{os.getpid() % 10000}", agent_pw)
         try:
@@ -749,7 +787,13 @@ def run_doctor(home=None) -> list[tuple[bool, str, str]]:
                 elif bot_nick.lower() in {m.lower() for m in members}:
                     results.append((True, "bot in room",
                                     f"{bot_nick} present with "
-                                    f"{len(members)} member(s)"))
+                                    f"{len(members)} member(s) (presence only)"))
+                    duplex = probe.gateway_roundtrip(bot_nick)
+                    results.append((duplex, "gateway transport",
+                                    "dispatch connection answers round-trip probe (provider not tested)"
+                                    if duplex else
+                                    "nick is present but dispatch probe received no reply — "
+                                    "send-only nick takeover or stale/blocked gateway"))
                 else:
                     results.append((False, "bot in room",
                                     f"{bot_nick} NOT in {gateway_channel} "

@@ -1,12 +1,12 @@
 /**
  * Shared types for the hub tool — the merged agent-coordination surface
- * covering peer messaging (IRC bus), background-job control, and supervised
+ * covering peer messaging (MIRC bus), background-job control, and supervised
  * long-running processes (launch).
  */
 
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { AsyncJobType } from "../../async";
-import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
+import type { MircDeliveryReceipt, MircMessage } from "../../mirc/bus";
 import type { LaunchParams, LaunchToolDetails } from "./launch";
 
 /**
@@ -103,10 +103,10 @@ export interface CoordinationDetails {
 	op: HubOp;
 	from?: string;
 	to?: string;
-	receipts?: IrcDeliveryReceipt[];
+	receipts?: MircDeliveryReceipt[];
 	/** Message consumed by `wait` / `send await:true`; null when the wait timed out. */
-	waited?: IrcMessage | null;
-	inbox?: IrcMessage[];
+	waited?: MircMessage | null;
+	inbox?: MircMessage[];
 	peers?: HubPeerInfo[];
 	/** Present on `op:"list"`: addressable running/idle/parked plus page size. */
 	counts?: HubRosterCounts;

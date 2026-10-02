@@ -4867,7 +4867,16 @@ def systemd_stop(system: bool = False):
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
 
-def systemd_restart(system: bool = False):
+def _request_gateway_quick_restart(pid: int) -> bool:
+    """Ask this profile's live gateway to checkpoint instead of waiting a turn."""
+    from gateway.control_socket import query_gateway_control
+
+    reply = query_gateway_control(get_hermes_home(), "restart-observatory", timeout=6)
+    return bool(reply and reply.get("pid") == pid and (
+        reply.get("restarting") is True or reply.get("already_stopping") is True))
+
+
+def systemd_restart(system: bool = False, *, quick: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("restart")
@@ -4883,6 +4892,11 @@ def systemd_restart(system: bool = False):
     from gateway.status import get_running_pid
 
     pid = get_running_pid() or _systemd_main_pid(system=system)
+    if pid is not None and quick and _request_gateway_quick_restart(pid):
+        print("→ Checkpointing active sessions and restarting the gateway...", flush=True)
+        if not _wait_for_systemd_service_restart(system=system, previous_pid=pid, timeout=90):
+            raise RuntimeError("Gateway restart was requested but is not ready; check gateway status")
+        return
     if pid is not None and probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
         # Health probe says the event loop is provably dead (#81642): SIGUSR1
         # can never drain it, so the graceful wait below would burn the full
@@ -4903,7 +4917,9 @@ def systemd_restart(system: bool = False):
     if pid is not None:
         scope_label = _service_scope_label(system).capitalize()
         svc = get_service_name()
-        wait_budget = _get_restart_exit_wait_budget()
+        # Older running gateways lack the control verb. SIGUSR1 marks the
+        # restart before a bounded service stop, preserving resume_pending.
+        wait_budget = min(_get_restart_exit_wait_budget(), 10.0) if quick else _get_restart_exit_wait_budget()
         print(
             f"⏳ {scope_label} service restarting gracefully (PID {pid}) — "
             f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
@@ -6131,7 +6147,7 @@ def _wait_for_launchd_service_pid(
         time.sleep(0.5)
 
 
-def launchd_restart():
+def launchd_restart(*, quick: bool = False):
     label = get_launchd_label()
     domain = _launchd_domain()
     target = f"{domain}/{label}"
@@ -6139,6 +6155,11 @@ def launchd_restart():
 
     try:
         pid = get_running_pid()
+        if pid is not None and quick and _request_gateway_quick_restart(pid):
+            print("→ Checkpointing active sessions and restarting the gateway...", flush=True)
+            if not _wait_for_launchd_service_pid(label, pid, timeout=90, domain=domain):
+                raise RuntimeError("Gateway restart was requested but is not ready; check gateway status")
+            return
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
             _clear_launchd_unsupported_marker()
@@ -6179,7 +6200,7 @@ def launchd_restart():
             # streams into surfaces with no other feedback — the desktop
             # updater's live output most of all, where a silent stop here
             # reads as "update stuck" (#44515).
-            wait_budget = _get_restart_exit_wait_budget()
+            wait_budget = min(_get_restart_exit_wait_budget(), 10.0) if quick else _get_restart_exit_wait_budget()
             print(
                 f"→ Stopping gateway (PID {pid}) — draining in-flight runs "
                 f"(up to {wait_budget:.0f}s)..."
@@ -7118,7 +7139,7 @@ def _all_platforms() -> list[dict]:
 
     Combines the built-in ``_PLATFORMS`` with plugin platforms registered via
     ``platform_registry``. Plugins are discovered on first call so bundled
-    platforms (like IRC, which auto-load via ``kind: platform``) appear in
+    platforms (like MIRC, which auto-load via ``kind: platform``) appear in
     ``mercury setup gateway`` without needing the gateway to be running.
     Built-ins keep their dict shape; plugin entries are adapted to the same
     shape with ``_registry_entry`` holding the source.
@@ -7165,7 +7186,7 @@ def _all_platforms() -> list[dict]:
         # a built-in or, post-#41112, a registry-discovered plugin.
         if sys.platform == "win32" and entry.name == "matrix":
             continue
-        # IRC is owned by the observatory (bot transport, wired by
+        # MIRC is owned by the observatory (bot transport, wired by
         # `mercury setup observatory`): offering it here lets users
         # silently clobber the bot wiring with a "second" connection
         # the single-identity adapter cannot serve. Not offered, ever.
@@ -8079,7 +8100,7 @@ def _configure_platform(platform: dict) -> None:
       3. ``_setup_standard_platform`` when the entry has a ``vars`` schema.
       4. Env-var hint fallback for plugins that offer no setup helper.
 
-    Bundled platform plugins (e.g. IRC) auto-load, so no plugin enable step
+    Bundled platform plugins (e.g. MIRC) auto-load, so no plugin enable step
     is needed here. User-installed platform plugins under ~/.mercury/plugins/
     must already be in ``plugins.enabled`` before they appear in this menu.
     """
@@ -9018,6 +9039,7 @@ def _gateway_command_inner(args):
         service_available = False
         system = getattr(args, "system", False)
         restart_all = getattr(args, "all", False)
+        quick = bool(getattr(args, "quick", False))
         service_configured = False
 
         # Phase 4: inside a container with s6, dispatch via the service
@@ -9092,14 +9114,20 @@ def _gateway_command_inner(args):
         ):
             service_configured = True
             try:
-                systemd_restart(system=system)
+                if quick:
+                    systemd_restart(system=system, quick=True)
+                else:
+                    systemd_restart(system=system)
                 service_available = True
             except subprocess.CalledProcessError:
                 pass
         elif is_macos() and get_launchd_plist_path().exists():
             service_configured = True
             try:
-                launchd_restart()
+                if quick:
+                    launchd_restart(quick=True)
+                else:
+                    launchd_restart()
                 service_available = True
             except subprocess.CalledProcessError:
                 pass

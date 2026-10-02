@@ -1,7 +1,7 @@
 /**
  * Model-facing `<task-result>` envelope for a settled subagent run.
  *
- * Rendered by the task tool for spawn results and by the IRC wake-turn relay
+ * Rendered by the task tool for spawn results and by the MIRC wake-turn relay
  * when a woken subagent re-yields, so a parent reads the same shape (status,
  * preview, `agent://` pointer) regardless of which path delivered it.
  */

@@ -16,6 +16,9 @@ from __future__ import annotations
 import platform
 import shutil
 import subprocess
+import struct
+import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -49,7 +52,13 @@ def _sandbox_repo(tmp_path: Path, baked_version: str | None) -> Path:
     omp.mkdir(parents=True)
     machine = platform.machine().lower()
     magic = 183 if machine in ("aarch64", "arm64") else 62
-    payload = b"\x7fELF" + b"\x00" * 14 + bytes([magic]) + b"\x00" * 8
+    interp = b"/lib/ld-linux-aarch64.so.1\0" if magic == 183 else b"/lib64/ld-linux-x86-64.so.2\0"
+    header = bytearray(64)
+    header[:6] = b"\x7fELF\x02\x01"
+    struct.pack_into("<H", header, 18, magic)
+    struct.pack_into("<Q", header, 32, 64)
+    struct.pack_into("<HH", header, 54, 56, 1)
+    payload = bytes(header) + struct.pack("<IIQQQQQQ", 3, 0, 120, 0, 0, len(interp), len(interp), 1) + interp
     if baked_version is not None:
         payload += f"omp/{baked_version}-mercury".encode()
     omp_bin = omp / "omp"
@@ -58,6 +67,27 @@ def _sandbox_repo(tmp_path: Path, baked_version: str | None) -> Path:
     ui = repo / "hermes" / "ui-tui" / "dist"
     ui.mkdir(parents=True)
     (ui / "entry.js").write_text("// tui\n", encoding="utf-8")
+
+    shutil.copy2(REPO_ROOT / "hermes/mercury_cli/elf.py", cli / "elf.py")
+    natives = repo / "omp/packages/natives"
+    natives.mkdir(parents=True)
+    (natives / "package.json").write_text('{\n  "version": "18.1.6"\n}\n')
+    addon_dir = natives / "native"
+    addon_dir.mkdir()
+    addon_header = bytearray(header)
+    (addon_dir / f"pi_natives.linux-{'arm64' if magic == 183 else 'x64-baseline'}.node").write_bytes(
+        bytes(addon_header) + struct.pack("<IIQQQQQQ", 1, 0, 0, 0, 0, 120, 120, 1) + b"__piNativesV18_1_6")
+    source = repo / "third_party/mlounge"
+    source.mkdir(parents=True)
+    package = source / "package.json"
+    package.write_text('{"version":"1.0.0"}')
+    first = f"{hashlib.sha256(package.read_bytes()).hexdigest()}  ./package.json\n".encode()
+    source_sha = hashlib.sha256(first).hexdigest()
+    bundle = repo / "dist/mlounge-fork/tree"
+    bundle.mkdir(parents=True)
+    shutil.copy2(package, bundle / "package.json")
+    (bundle / ".mercury-fork-build.json").write_text(json.dumps({"source_sha":source_sha}))
+    (repo / "PINS.txt").write_text("hermes test\nomp test\n")
 
     git = ["git", "-c", "user.email=t@test", "-c", "user.name=t"]
     subprocess.run(git + ["init", "-q"], cwd=repo, check=True)
@@ -127,3 +157,17 @@ def test_stale_arm64_binary_refuses_pack(tmp_path):
     assert proc.returncode != 0, "stale arm64 binary must fail the pack"
     assert "FATAL" in proc.stderr
     assert "aarch64" in proc.stderr
+
+
+def test_nix_loader_refuses_pack_before_writing_archive(tmp_path):
+    repo = _sandbox_repo(tmp_path, VERSION)
+    binary = repo / "omp/packages/coding-agent/dist/omp"
+    data = binary.read_bytes()
+    interpreter = b"/nix/store/build-host-glibc/lib/ld-linux-x86-64.so.2\0"
+    changed = bytearray(data[:120])
+    struct.pack_into("<QQ", changed, 64 + 32, len(interpreter), len(interpreter))
+    binary.write_bytes(changed + interpreter + f"omp/{VERSION}-mercury".encode())
+    proc = _run_make_dist(repo, {})
+    assert proc.returncode != 0
+    assert "Non-portable ELF" in proc.stderr
+    assert not list((repo / "dist").glob("*.tar.gz"))

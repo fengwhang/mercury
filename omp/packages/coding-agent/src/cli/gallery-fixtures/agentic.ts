@@ -266,7 +266,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		},
 		errorResult: {
 			isError: true,
-			content: [{ type: "text", text: "IRC inbox failed: message store unavailable." }],
+			content: [{ type: "text", text: "MIRC inbox failed: message store unavailable." }],
 			details: { op: "inbox" } satisfies HubDetails,
 		},
 	},
@@ -317,7 +317,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		},
 		errorResult: {
 			isError: true,
-			content: [{ type: "text", text: "IRC list failed: agent hub is unavailable." }],
+			content: [{ type: "text", text: "MIRC list failed: agent hub is unavailable." }],
 			details: { op: "list" } satisfies HubDetails,
 		},
 	},

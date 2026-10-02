@@ -809,7 +809,7 @@ function buildDigest(g: SessionGroup): string {
 	}
 	const unlinked = g.children.filter(c => !linked.has(c));
 	if (unlinked.length) {
-		lines.push(`\n## Other subagent runs (eval agent()/irc/etc., not matched to a task call)`);
+		lines.push(`\n## Other subagent runs (eval agent()/mirc/etc., not matched to a task call)`);
 		for (const c of unlinked.slice(0, 16)) {
 			lines.push(
 				`${c.stem}: ${c.usage.requests} req, billed ${fmtTok(billedTokens(c.usage))}, ${fmtMoney(c.usage.cost)}, ended: ${endedStr(c)}`,

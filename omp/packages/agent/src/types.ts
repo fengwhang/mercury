@@ -271,14 +271,17 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 */
 	waitForSteeringMessages?: (signal?: AbortSignal) => Promise<void>;
 
+	/** Subscribe to real user steering without consuming the queue. */
+	subscribeToUserSteering?: (listener: () => void) => () => void;
+
 	/**
-	 * Peeks whether IRC messages should interrupt an interruptible waiting tool.
+	 * Peeks whether MIRC messages should interrupt an interruptible waiting tool.
 	 *
 	 * Uses the same delivery rules as steering: the poll is non-consuming, only
 	 * runs for interruptible tools, and is ignored when interruptMode is "wait".
 	 * The host owns message injection at the next boundary.
 	 */
-	hasIrcInterrupts?: () => boolean | Promise<boolean>;
+	hasMircInterrupts?: () => boolean | Promise<boolean>;
 
 	/**
 	 * Returns follow-up messages to process after the agent would otherwise stop.
@@ -553,7 +556,7 @@ export interface ToolCallContext {
 	providerMetadata?: ToolCallProviderMetadata;
 	/**
 	 * Cooperative steering signal: aborted when a queued user/steering message
-	 * (or an interrupting peer IRC) is detected while this tool batch runs.
+	 * (or an interrupting peer MIRC) is detected while this tool batch runs.
 	 * Unlike the hard abort signal it NEVER kills the tool — long-running
 	 * tools MAY observe it (via `ctx.toolCall.steeringSignal`) to finish early
 	 * or background themselves so the message injects promptly; ignoring it is
@@ -815,9 +818,9 @@ export interface AgentTool<
 	 *
 	 * Enable only for calls that purely *wait* and observe their abort signal
 	 * cleanly (e.g. `job` poll), so the abort surfaces the tool's current
-	 * snapshot rather than corrupting a side effect. Every other call runs to
-	 * completion even when steering is queued; the message lands at the next
-	 * batch boundary. Honored only when `interruptMode` is "immediate".
+	 * snapshot rather than corrupting a side effect. Other calls finish or
+	 * yield cooperatively before steering is injected; steering never aborts
+	 * their execution signal. Explicit run cancellation still aborts them.
 	 */
 	interruptible?: boolean | ((args: Partial<Static<TParameters>>) => boolean);
 	/**

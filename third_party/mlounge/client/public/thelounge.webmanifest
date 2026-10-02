@@ -1,0 +1,23 @@
+{
+	"name": "mLounge",
+	"short_name": "mLounge",
+	"description": "Mercury mLounge for MIRC agent rooms",
+	"start_url": ".",
+	"display": "standalone",
+	"theme_color": "#101014",
+	"background_color": "#101014",
+	"icons": [
+		{
+			"src": "img/mercury-icon-512.png",
+			"type": "image/png",
+			"purpose": "any",
+			"sizes": "512x512"
+		},
+		{
+			"src": "img/mercury.svg",
+			"type": "image/svg+xml",
+			"purpose": "any",
+			"sizes": "any"
+		}
+	]
+}

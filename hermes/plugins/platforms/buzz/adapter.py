@@ -1010,7 +1010,7 @@ class BuzzAdapter(BasePlatformAdapter):
 
         # Prevent two profiles from driving the same Buzz identity on the
         # same relay (duplicate replies, split de-dupe state). Mirrors the
-        # IRC adapter's scoped-lock pattern.
+        # MIRC adapter's scoped-lock pattern.
         try:
             from gateway.status import acquire_scoped_lock
 

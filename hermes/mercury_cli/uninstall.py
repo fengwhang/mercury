@@ -671,7 +671,7 @@ def run_gui_uninstall(args):
 
 
 def _observatory_data_present(mercury_home) -> bool:
-    """True when IRC observatory data exists under the Mercury home. Lazy import —
+    """True when MIRC observatory data exists under the Mercury home. Lazy import —
     this module must stay importable under a bare system Python."""
     try:
         from observatory.provision import observatory_data_present
@@ -681,7 +681,7 @@ def _observatory_data_present(mercury_home) -> bool:
 
 
 def _wipe_observatory(mercury_home, mode: str) -> None:
-    """Archive/annihilate IRC observatory data (config, history, tree, units)."""
+    """Archive/annihilate MIRC observatory data (config, history, tree, units)."""
     from observatory.provision import wipe_observatory_data
     summary = wipe_observatory_data(mercury_home, mode=mode)
     moved = summary.get("moved" if mode == "archive" else "deleted") or []
@@ -696,7 +696,7 @@ def _wipe_observatory(mercury_home, mode: str) -> None:
 def _remove_observatory_units_only() -> None:
     """Full uninstall: the home rmtree covers data, but the user units live
     outside it — stop + remove them so no zombie daemon survives.
-    Also kills stray ircd pids (a daemon started outside the unit, or
+    Also kills stray MIRC daemon pids (a daemon started outside the unit, or
     one that survived the unit stop, would otherwise keep running with
     its history deleted from under it)."""
     try:
@@ -714,8 +714,8 @@ def _remove_observatory_units_only() -> None:
     except Exception as e:  # noqa: BLE001 — best-effort, never kills uninstall
         log_warn(f"Could not stop stray ircd servers: {e}")
     try:
-        from observatory.provision import _kill_stray_lounge
-        killed = _kill_stray_lounge()
+        from observatory.provision import _kill_stray_mlounge
+        killed = _kill_stray_mlounge()
         if killed:
             log_success(f"Stopped stray chat client(s): {', '.join(map(str, killed))}")
     except Exception as e:  # noqa: BLE001 — best-effort, never kills uninstall

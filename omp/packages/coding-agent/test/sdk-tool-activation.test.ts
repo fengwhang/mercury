@@ -2052,7 +2052,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			enableMCP: true,
 			mcpManager: inheritedManager,
 			enableLsp: true,
-			enableIrc: true,
+			enableMirc: true,
 		});
 
 		try {

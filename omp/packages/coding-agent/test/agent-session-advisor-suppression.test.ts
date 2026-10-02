@@ -25,7 +25,7 @@ import { createMockModel, type MockModel, type MockResponse } from "@oh-my-pi/pi
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import type { MircMessage } from "@oh-my-pi/pi-coding-agent/mirc/bus";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -641,26 +641,32 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		expect(mock.calls.length).toBe(1);
 	});
 
-	it("wakes a turn for an IRC aside stranded across a user interrupt", async () => {
+	it("wakes a turn for an MIRC aside stranded across a user interrupt", async () => {
 		const { session, mock, streamStarted } = await createParkedSession([{ content: ["replying to peer"] }]);
 		const running = session.prompt("do the thing");
 		await streamStarted;
-		// IRC arrives mid-turn → queued as a non-interrupting aside.
-		await session.deliverIrcMessage({ id: "m1", from: "peer", to: "me", body: "ping", ts: Date.now() } as IrcMessage);
+		// MIRC arrives mid-turn → queued as a non-interrupting aside.
+		await session.deliverMircMessage({
+			id: "m1",
+			from: "peer",
+			to: "me",
+			body: "ping",
+			ts: Date.now(),
+		} as MircMessage);
 		// The user interrupt skips the loop's final aside poll, stranding the aside with no loop to
 		// drain it. The settle drain must wake a turn so the peer still gets a response.
 		await session.abort({ reason: USER_INTERRUPT_LABEL });
 		await session.waitForIdle();
 		await running.catch(() => {});
 
-		const sawIrc = session.agent.state.messages.some(
+		const sawMirc = session.agent.state.messages.some(
 			m => m.role === "custom" && (m as { customType?: string }).customType === "irc:incoming",
 		);
-		expect(sawIrc).toBe(true);
+		expect(sawMirc).toBe(true);
 		expect(mock.calls.length).toBe(2);
 	});
 
-	it("stops an idle IRC wake after a terminal yield", async () => {
+	it("stops an idle MIRC wake after a terminal yield", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
 		let providerCalls = 0;
@@ -685,9 +691,9 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
-		const msg: IrcMessage = { id: "m-yield", from: "peer", to: "me", body: "status?", ts: Date.now() };
+		const msg: MircMessage = { id: "m-yield", from: "peer", to: "me", body: "status?", ts: Date.now() };
 
-		const outcome = await session.deliverIrcMessage(msg);
+		const outcome = await session.deliverMircMessage(msg);
 		await session.waitForIdle();
 
 		expect(outcome).toBe("woken");
@@ -695,37 +701,49 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		expect(mock.calls.length).toBe(1);
 	});
 
-	it("flushes an accepted IRC aside on dispose instead of dropping it", async () => {
+	it("flushes an accepted MIRC aside on dispose instead of dropping it", async () => {
 		const { session, streamStarted } = await createParkedSession();
 		const running = session.prompt("do the thing");
 		await streamStarted;
-		await session.deliverIrcMessage({ id: "m1", from: "peer", to: "me", body: "ping", ts: Date.now() } as IrcMessage);
+		await session.deliverMircMessage({
+			id: "m1",
+			from: "peer",
+			to: "me",
+			body: "ping",
+			ts: Date.now(),
+		} as MircMessage);
 		// Dispose mid-flight persists the accepted aside to the transcript rather than dropping it.
 		session.beginDispose();
-		const sawIrc = session.agent.state.messages.some(
+		const sawMirc = session.agent.state.messages.some(
 			m => m.role === "custom" && (m as { customType?: string }).customType === "irc:incoming",
 		);
-		expect(sawIrc).toBe(true);
+		expect(sawMirc).toBe(true);
 		running.catch(() => {});
 	});
 
-	it("responds to a stranded IRC aside while keeping a blocked follow-up queued", async () => {
+	it("responds to a stranded MIRC aside while keeping a blocked follow-up queued", async () => {
 		const { session, mock, streamStarted } = await createParkedSession([{ content: ["replying to peer"] }]);
 		const running = session.prompt("do the thing");
 		await streamStarted;
-		// The user queues a follow-up (Ctrl+Enter) and an IRC ping lands as an aside...
+		// The user queues a follow-up (Ctrl+Enter) and an MIRC ping lands as an aside...
 		await session.prompt("then add the test", { streamingBehavior: "followUp" });
-		await session.deliverIrcMessage({ id: "m2", from: "peer", to: "me", body: "ping", ts: Date.now() } as IrcMessage);
-		// ...then the user interrupts. The IRC must still get a response, but the user's queued
-		// follow-up must NOT auto-run (seam #5) even though the IRC wake turn leaves a valid tail.
+		await session.deliverMircMessage({
+			id: "m2",
+			from: "peer",
+			to: "me",
+			body: "ping",
+			ts: Date.now(),
+		} as MircMessage);
+		// ...then the user interrupts. The MIRC must still get a response, but the user's queued
+		// follow-up must NOT auto-run (seam #5) even though the MIRC wake turn leaves a valid tail.
 		await session.abort({ reason: USER_INTERRUPT_LABEL });
 		await session.waitForIdle();
 		await running.catch(() => {});
 
-		const sawIrc = session.agent.state.messages.some(
+		const sawMirc = session.agent.state.messages.some(
 			m => m.role === "custom" && (m as { customType?: string }).customType === "irc:incoming",
 		);
-		expect(sawIrc).toBe(true);
+		expect(sawMirc).toBe(true);
 		expect(userMessageText([...session.agent.peekFollowUpQueue()])).toContain("then add the test");
 		expect(userMessageText(session.agent.state.messages)).not.toContain("then add the test");
 		expect(mock.calls.length).toBe(2);

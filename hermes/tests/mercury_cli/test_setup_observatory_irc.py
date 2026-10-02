@@ -1,8 +1,10 @@
-"""IRC observatory wizard tests (fresh behavior, fake provision module)."""
+"""MIRC observatory wizard tests (fresh behavior, fake provision module)."""
 
 from __future__ import annotations
 
 from unittest.mock import patch
+
+import pytest
 
 import mercury_cli.setup as setup_mod
 
@@ -36,7 +38,7 @@ class _FakeObs:
         self.unit_calls += 1
         return "installed"
 
-    def set_ircd_bind(self, ip):
+    def set_mirc_bind(self, ip):
         self.bind_calls.append(ip)
         return ip
 
@@ -93,10 +95,10 @@ def _patch_common(stack, fake, *, choice=1, yes_answers=None):
     )
     stack.enter_context(patch.object(setup_mod, "_offer_server_password_rotate"))
     stack.enter_context(patch.object(setup_mod, "_prompt_server_label", return_value="mercury"))
-    stack.enter_context(patch.object(setup_mod, "_wire_gateway_irc_env"))
+    stack.enter_context(patch.object(setup_mod, "_wire_gateway_mirc_env"))
     stack.enter_context(patch.object(setup_mod, "_offer_agent_bind"))
-    stack.enter_context(patch.object(setup_mod, "_offer_lounge"))
-    stack.enter_context(patch.object(setup_mod, "_offer_lounge_password_reset"))
+    stack.enter_context(patch.object(setup_mod, "_offer_mlounge"))
+    stack.enter_context(patch.object(setup_mod, "_offer_mlounge_password_reset"))
     auto = stack.enter_context(
         patch.object(
             setup_mod,
@@ -223,47 +225,62 @@ def test_headless_setup_provisions():
     assert fake.provision_calls == [{}]
 
 
-def test_setup_card_mentions_server_not_password(capsys):
+def test_setup_card_requires_tailnet_mirc_bind_for_another_mlounge(capsys):
     status = _base_status(provisioned=True)
     setup_mod._print_observatory_setup_card(
         status, dict(available=False, up=False, ip=None, dns_name=None)
     )
     out = capsys.readouterr().out
-    assert "127.0.0.1:6670" in out
+    assert "127.0.0.1:6670" not in out
     assert "#mercury_gateway" in out
-    assert "IRC_CLIENT_PASSWORD" in out
-    assert "server address" in out
+    assert "IRC_CLIENT_PASSWORD" not in out
+    assert "server address" not in out
+    assert "server port:" not in out
+    assert "TLS port:" not in out
+    assert "or connect any IRC client" not in out
     assert "client address" not in out
-    assert "The Lounge" in out
+    assert "mLounge" in out
+    assert "this box from another mLounge" in out
+    assert "bind the MIRC server" in out
+    assert "setup observatory" in out
 
 
-def test_setup_card_lounge_login(monkeypatch, capsys):
-    import observatory.lounge as lounge_mod
+@pytest.mark.parametrize("bind, up, dns, expected_host", [
+    ("100.9.9.9", True, "host.tailnet.ts.net", "host.tailnet.ts.net"),
+    ("100.9.9.9", True, "host.tailnet.ts.net.", "host.tailnet.ts.net"),
+    ("100.9.9.9", True, None, "100.9.9.9"),
+    ("100.9.9.9", False, "host.tailnet.ts.net", "100.9.9.9"),
+    ("127.0.0.1", True, "host.tailnet.ts.net", "127.0.0.1"),
+    ("192.168.1.10", True, "host.tailnet.ts.net", "192.168.1.10"),
+    ("0.0.0.0", True, "host.tailnet.ts.net", "host.tailnet.ts.net"),
+])
+def test_setup_card_mlounge_login(monkeypatch, capsys, bind, up, dns, expected_host):
+    import observatory.mlounge as mlounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "status_lounge",
+        mlounge_mod, "status_mlounge",
         lambda *a, **k: {"configured": True, "users": ["owner"],
-                         "host": "100.9.9.9", "port": 9000,
+                         "host": bind, "port": 9000,
                          "unit": "active", "binary": "/b"})
     status = _base_status(provisioned=True)
     status["agent"] = "127.0.0.1:6669"
     status["server_name"] = "vm"
     setup_mod._print_observatory_setup_card(
-        status, dict(available=True, up=True, ip="100.9.9.9",
-                     dns_name=None)
+        status, dict(available=True, up=up, ip="100.9.9.9",
+                     dns_name=dns)
     )
     out = capsys.readouterr().out
-    assert "http://100.9.9.9:9000" in out
+    assert f"http://{expected_host}:9000" in out
     assert "user 'owner'" in out
     assert "pre-added" in out
     assert "#vm_gateway" in out
 
 
-def test_setup_card_lounge_missing(monkeypatch, capsys):
-    import observatory.lounge as lounge_mod
+def test_setup_card_mlounge_missing(monkeypatch, capsys):
+    import observatory.mlounge as mlounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "status_lounge",
+        mlounge_mod, "status_mlounge",
         lambda *a, **k: {"configured": False, "users": [],
                          "host": "", "port": 0, "external": False,
                          "unit": "inactive", "binary": ""})
@@ -274,32 +291,56 @@ def test_setup_card_lounge_missing(monkeypatch, capsys):
     assert "not installed" in capsys.readouterr().out
 
 
-def test_setup_card_lounge_external(monkeypatch, capsys):
-    import observatory.lounge as lounge_mod
+@pytest.mark.parametrize("tailnet", [False, True])
+def test_setup_card_mlounge_external(monkeypatch, capsys, tailnet):
+    import observatory.mlounge as mlounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "status_lounge",
+        mlounge_mod, "status_mlounge",
         lambda *a, **k: {"configured": False, "users": [],
                          "host": "127.0.0.1", "port": 9000,
                          "external": True, "unit": "unknown",
                          "binary": ""})
     status = _base_status(provisioned=True)
+    monkeypatch.setattr(mlounge_mod, "mlounge_port_open", lambda *args: True)
     setup_mod._print_observatory_setup_card(
-        status, dict(available=False, up=False, ip=None, dns_name=None)
+        status, dict(available=tailnet, up=tailnet, ip="100.9.9.9",
+                     dns_name="host.tailnet.ts.net")
     )
     out = capsys.readouterr().out
     assert "runs outside" in out
-    assert "http://127.0.0.1:9000" in out
+    expected_host = "host.tailnet.ts.net" if tailnet else "127.0.0.1"
+    assert f"http://{expected_host}:9000" in out
+    assert "other-Lounge" not in out
 
 
-def test_setup_card_existing_lounge_block(capsys):
-    status = _base_status(provisioned=True)
+@pytest.mark.parametrize("bind,dns,expected_host", [
+    ("100.9.9.9", "host.tailnet.ts.net.", "host.tailnet.ts.net"),
+    ("100.9.9.9", None, "100.9.9.9"),
+    ("0.0.0.0", "host.tailnet.ts.net", "host.tailnet.ts.net"),
+    ("[::]", "host.tailnet.ts.net", "host.tailnet.ts.net"),
+])
+def test_setup_card_other_mlounge_uses_mirc_bind_not_web_bind(
+    monkeypatch, capsys, bind, dns, expected_host,
+):
+    import observatory.mlounge as mlounge_mod
+
+    monkeypatch.setattr(mlounge_mod, "status_mlounge", lambda *a, **k: {
+        "configured": True, "host": "127.0.0.1", "port": 9001, "users": ["owner"],
+    })
+    status = _base_status(provisioned=True, server=f"{bind}:6671")
     setup_mod._print_observatory_setup_card(
-        status, dict(available=False, up=False, ip=None, dns_name=None)
+        status, dict(available=True, up=True, ip="100.9.9.9", dns_name=dns)
     )
     out = capsys.readouterr().out
-    assert "another Lounge" in out
+    assert "this box from another mLounge" in out
+    assert f"MIRC host:            {expected_host}" in out
+    assert "MIRC port:            6671 (TLS OFF over Tailscale)" in out
+    assert "http://127.0.0.1:9001" in out
+    assert "IRC_CLIENT_PASSWORD" in out
+    assert "/h/.env" in out
     assert "#mercury_gateway" in out
+    assert "or connect any IRC client" not in out
 
 
 def test_verify_daemon_listening_live_and_dead():
@@ -473,7 +514,7 @@ def test_rotate_offer_with_chosen_password_defers_restart(monkeypatch, tmp_path)
     monkeypatch.setattr(
         setup_mod, "_prompt_validated", lambda *a, **k: "my-chosen-pw"
     )
-    monkeypatch.setattr(setup_mod, "_converge_lounge_uplink", lambda: None)
+    monkeypatch.setattr(setup_mod, "_converge_mlounge_uplink", lambda: None)
 
     class _Obs:
         def validate_server_password(self, value):
@@ -488,10 +529,10 @@ def test_rotate_offer_random_reports_dirty(monkeypatch, capsys):
     import observatory.provision as provision_mod
 
     monkeypatch.setattr(
-        provision_mod, "mirror_irc_env", lambda *a: None
+        provision_mod, "mirror_mirc_env", lambda *a: None
     )
     monkeypatch.setattr(
-        provision_mod, "read_irc_passwords",
+        provision_mod, "read_mirc_passwords",
         lambda home: {"server": "old", "agent": "ag"},
     )
     monkeypatch.setattr(
@@ -501,7 +542,7 @@ def test_rotate_offer_random_reports_dirty(monkeypatch, capsys):
     monkeypatch.setattr(
         setup_mod, "prompt_yes_no", lambda *a, **k: next(answers)
     )
-    monkeypatch.setattr(setup_mod, "_converge_lounge_uplink", lambda: None)
+    monkeypatch.setattr(setup_mod, "_converge_mlounge_uplink", lambda: None)
 
     class _Obs:
         pass
@@ -571,7 +612,7 @@ def test_restart_gateway_decline_prints_manual(monkeypatch, capsys):
     assert "mercury gateway restart" in capsys.readouterr().out
 
 
-def test_tail_offers_lounge_layer(monkeypatch):
+def test_tail_offers_mlounge_layer(monkeypatch):
     from contextlib import ExitStack
     from unittest.mock import patch
 
@@ -579,7 +620,7 @@ def test_tail_offers_lounge_layer(monkeypatch):
     with ExitStack() as stack:
         _patch_common(stack, fake, choice=1, yes_answers=[True])
         offer = stack.enter_context(
-            patch.object(setup_mod, "_offer_lounge"))
+            patch.object(setup_mod, "_offer_mlounge"))
         setup_mod.setup_observatory({})
     assert offer.call_count == 1
 
@@ -601,16 +642,16 @@ def test_wire_gateway_sets_allow_all(monkeypatch):
         lambda home: {"server_name": "vm", "agent_host": "127.0.0.1",
                       "agent_port": 6669})
     monkeypatch.setattr(
-        provision_mod, "read_irc_passwords",
+        provision_mod, "read_mirc_passwords",
         lambda home: {"server": "b", "agent": "a"})
-    assert setup_mod._wire_gateway_irc_env("vm") is True
+    assert setup_mod._wire_gateway_mirc_env("vm") is True
     assert saved["IRC_ALLOW_ALL_USERS"] == "true"
     assert saved["IRC_CHANNEL"] == "#vm_gateway"
     assert saved["IRC_NICKNAME"] == "vm_gateway"
 
 
 def test_provisioned_flow_ends_with_gateway_restart():
-    """The gateway restarts AFTER the soju/ircd converge (final step)."""
+    """The gateway restarts AFTER the soju/MIRC daemon converge (final step)."""
     from contextlib import ExitStack
     from unittest.mock import patch
 
@@ -643,7 +684,7 @@ def test_offer_agent_bind_localhost_wires_env(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(setup_mod, "save_env_value",
                         lambda k, v: saved.__setitem__(k, v))
     import observatory.provision as provision_mod
-    monkeypatch.setattr(provision_mod, "read_irc_passwords",
+    monkeypatch.setattr(provision_mod, "read_mirc_passwords",
                         lambda home: {"server": "b", "agent": "a"})
     assert setup_mod._offer_agent_bind(None, "vm", {"up": False}) is True
     cfg = _json.loads((obs / "ircd.json").read_text())
@@ -671,7 +712,7 @@ def test_offer_agent_bind_respects_existing_pin(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(setup_mod, "save_env_value",
                         lambda k, v: saved.__setitem__(k, v))
     import observatory.provision as provision_mod
-    monkeypatch.setattr(provision_mod, "read_irc_passwords",
+    monkeypatch.setattr(provision_mod, "read_mirc_passwords",
                         lambda home: {"server": "b", "agent": "a"})
     assert setup_mod._offer_agent_bind(
         None, "vm", {"up": True, "ip": "100.9.9.9"}) is False
@@ -680,22 +721,22 @@ def test_offer_agent_bind_respects_existing_pin(tmp_path, monkeypatch) -> None:
     assert saved["IRC_SERVER"] == "100.9.9.9"
 
 
-def test_lounge_offer_skipped_when_answering(monkeypatch, capsys) -> None:
-    import observatory.lounge as lounge_mod
+def test_mlounge_offer_skipped_when_answering(monkeypatch, capsys) -> None:
+    import observatory.mlounge as mlounge_mod
 
-    monkeypatch.setattr(lounge_mod, "status_lounge",
+    monkeypatch.setattr(mlounge_mod, "status_mlounge",
                         lambda *a, **k: {"configured": False})
-    monkeypatch.setattr(lounge_mod, "lounge_port_open",
+    monkeypatch.setattr(mlounge_mod, "mlounge_port_open",
                         lambda *a, **k: True)
-    setup_mod._offer_lounge(None, None)
+    setup_mod._offer_mlounge(None, None)
     assert "already answers" in capsys.readouterr().out
 
 
-def test_setup_card_lounge_first(monkeypatch, capsys):
-    import observatory.lounge as lounge_mod
+def test_setup_card_mlounge_first(monkeypatch, capsys):
+    import observatory.mlounge as mlounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "status_lounge",
+        mlounge_mod, "status_mlounge",
         lambda *a, **k: {"configured": True, "users": ["owner"],
                          "host": "127.0.0.1", "port": 9000,
                          "unit": "active", "binary": "/b"})
@@ -705,15 +746,15 @@ def test_setup_card_lounge_first(monkeypatch, capsys):
         status, dict(available=False, up=False, ip=None, dns_name=None)
     )
     out = capsys.readouterr().out
-    assert out.index("http://127.0.0.1:9000") < out.index("server address")
+    assert out.index("http://127.0.0.1:9000") < out.index("gateway channel")
     assert "pre-added" in out
 
 
 def test_setup_card_live_server_name(monkeypatch, capsys):
-    import observatory.lounge as lounge_mod
+    import observatory.mlounge as mlounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "status_lounge",
+        mlounge_mod, "status_mlounge",
         lambda *a, **k: {"configured": False, "users": [],
                          "host": "", "port": 0, "external": False,
                          "unit": "inactive", "binary": ""})
@@ -727,81 +768,81 @@ def test_setup_card_live_server_name(monkeypatch, capsys):
     assert "#mercury_gateway" not in out
 
 
-def test_lounge_offer_resumes_partial_install(monkeypatch, capsys) -> None:
-    import observatory.lounge as lounge_mod
+def test_mlounge_offer_resumes_partial_install(monkeypatch, capsys) -> None:
+    import observatory.mlounge as mlounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "status_lounge",
+        mlounge_mod, "status_mlounge",
         lambda *a, **k: {"configured": True, "users": []})
-    monkeypatch.setattr(lounge_mod, "_local_port_answers",
+    monkeypatch.setattr(mlounge_mod, "_local_port_answers",
                         lambda *a, **k: False)
     asked = []
     monkeypatch.setattr(
         setup_mod, "prompt_yes_no",
         lambda q, default=True: asked.append(q) or False)
-    setup_mod._offer_lounge(None, None)
+    setup_mod._offer_mlounge(None, None)
     assert asked, "partial install must re-offer (username/password below)"
     assert "Skipped" in capsys.readouterr().out
 
 
-def test_lounge_offer_skipped_when_users_exist(monkeypatch, capsys) -> None:
-    import observatory.lounge as lounge_mod
+def test_mlounge_offer_skipped_when_users_exist(monkeypatch, capsys) -> None:
+    import observatory.mlounge as mlounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "status_lounge",
+        mlounge_mod, "status_mlounge",
         lambda *a, **k: {"configured": True, "users": ["owner"]})
     seen = []
     monkeypatch.setattr(
-        lounge_mod, "refresh_lounge_fork",
+        mlounge_mod, "refresh_mlounge_fork",
         lambda *a, **k: seen.append(True) or "current")
     asked = []
     monkeypatch.setattr(
         setup_mod, "prompt_yes_no",
         lambda q, default=True: asked.append(q) or False)
-    setup_mod._offer_lounge(None, None)
+    setup_mod._offer_mlounge(None, None)
     assert not asked
     assert seen == [True]
     assert "keeping it" in capsys.readouterr().out
 
 
-def test_lounge_keep_path_reports_fork_refresh(monkeypatch, capsys) -> None:
-    import observatory.lounge as lounge_mod
+def test_mlounge_keep_path_reports_fork_refresh(monkeypatch, capsys) -> None:
+    import observatory.mlounge as mlounge_mod
 
     monkeypatch.setattr(
-        lounge_mod, "status_lounge",
+        mlounge_mod, "status_mlounge",
         lambda *a, **k: {"configured": True, "users": ["owner"]})
     monkeypatch.setattr(
-        lounge_mod, "refresh_lounge_fork",
+        mlounge_mod, "refresh_mlounge_fork",
         lambda *a, **k: "reinstalled")
     monkeypatch.setattr(
-        setup_mod, "_converge_lounge_uplink", lambda: None)
-    setup_mod._offer_lounge(None, None)
+        setup_mod, "_converge_mlounge_uplink", lambda: None)
+    setup_mod._offer_mlounge(None, None)
     assert "reinstalled" in capsys.readouterr().out
 
 
 def test_password_reset_skipped_after_fresh_creation(monkeypatch) -> None:
-    setup_mod._JUST_CREATED_LOUNGE_USER = "owner"
+    setup_mod._JUST_CREATED_MLOUNGE_USER = "owner"
     asked = []
     monkeypatch.setattr(
         setup_mod, "prompt_yes_no",
         lambda q, default=True: asked.append(q) or False)
     try:
-        setup_mod._offer_lounge_password_reset(None)
+        setup_mod._offer_mlounge_password_reset(None)
     finally:
-        setup_mod._JUST_CREATED_LOUNGE_USER = None
+        setup_mod._JUST_CREATED_MLOUNGE_USER = None
     assert not asked
-    assert setup_mod._JUST_CREATED_LOUNGE_USER is None
+    assert setup_mod._JUST_CREATED_MLOUNGE_USER is None
 
 
-def test_lounge_offer_seeds_live_server_bind(monkeypatch) -> None:
+def test_mlounge_offer_seeds_live_server_bind(monkeypatch) -> None:
     """Pre-seeded uplink uses the live server_host, never localhost."""
-    import observatory.lounge as lounge_mod
+    import observatory.mlounge as mlounge_mod
     from observatory import provision as provision_mod
 
     monkeypatch.setattr(
-        lounge_mod, "status_lounge",
+        mlounge_mod, "status_mlounge",
         lambda *a, **k: {"configured": False, "users": []})
-    monkeypatch.setattr(lounge_mod, "_local_port_answers",
+    monkeypatch.setattr(mlounge_mod, "_local_port_answers",
                         lambda *a, **k: False)
     monkeypatch.setattr(provision_mod, "_mercury_home", lambda home: "/h")
     monkeypatch.setattr(
@@ -809,7 +850,7 @@ def test_lounge_offer_seeds_live_server_bind(monkeypatch) -> None:
         lambda home: {"server_name": "vm", "server_host": "100.9.9.9",
                       "server_port": 6670})
     monkeypatch.setattr(
-        provision_mod, "read_irc_passwords",
+        provision_mod, "read_mirc_passwords",
         lambda home: {"server": "pw", "agent": "pw2"})
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
     monkeypatch.setattr(setup_mod, "prompt_choice", lambda *a, **k: 0)
@@ -817,9 +858,9 @@ def test_lounge_offer_seeds_live_server_bind(monkeypatch) -> None:
     monkeypatch.setattr(setup_mod, "_ensure_firewall_port", lambda *a: None)
     seen = {}
     monkeypatch.setattr(
-        lounge_mod, "provision_lounge",
+        mlounge_mod, "provision_mlounge",
         lambda **kw: seen.update(kw) or {"user": {"action": "created"}})
-    setup_mod._offer_lounge(None, {"up": False, "ip": None})
+    setup_mod._offer_mlounge(None, {"up": False, "ip": None})
     assert seen["uplink_host"] == "100.9.9.9"
     assert seen["uplink_port"] == 6670
     assert seen["uplink_channel"] == "#vm_gateway"
@@ -827,7 +868,7 @@ def test_lounge_offer_seeds_live_server_bind(monkeypatch) -> None:
 
 def test_converge_repoints_drifted_uplink(tmp_path, monkeypatch) -> None:
     import json as _json
-    import observatory.lounge as lounge_mod
+    import observatory.mlounge as mlounge_mod
     from observatory import provision as provision_mod
 
     home = tmp_path / "mercury"
@@ -837,26 +878,26 @@ def test_converge_repoints_drifted_uplink(tmp_path, monkeypatch) -> None:
         lambda h: {"server_name": "vm", "server_host": "100.9.9.9",
                    "server_port": 6670})
     monkeypatch.setattr(
-        provision_mod, "read_irc_passwords",
+        provision_mod, "read_mirc_passwords",
         lambda h: {"server": "pw", "agent": "pw2"})
-    users = lounge_mod.LoungePaths(home).home / "users"
+    users = mlounge_mod.MLoungePaths(home).home / "users"
     users.mkdir(parents=True)
     (users / "owner.json").write_text(_json.dumps({"networks": [{
         "name": "vm", "host": "127.0.0.1", "port": 6670,
         "password": "pw", "nick": "owner", "username": "owner",
         "channels": [{"name": "#vm_gateway", "muted": False,
                       "key": ""}]}]}))
-    monkeypatch.setattr(lounge_mod, "lounge_unit_active", lambda: True)
+    monkeypatch.setattr(mlounge_mod, "mlounge_unit_active", lambda: True)
     restarted = []
-    monkeypatch.setattr(lounge_mod, "restart_lounge",
+    monkeypatch.setattr(mlounge_mod, "restart_mlounge",
                         lambda: restarted.append(True))
-    setup_mod._converge_lounge_uplink()
+    setup_mod._converge_mlounge_uplink()
     data = _json.loads((users / "owner.json").read_text())
     assert data["networks"][0]["host"] == "100.9.9.9"
     assert restarted == [True]
 
 
-def test_rotate_reseeds_lounge_uplink(tmp_path, monkeypatch) -> None:
+def test_rotate_reseeds_mlounge_uplink(tmp_path, monkeypatch) -> None:
     from observatory import provision as provision_mod
 
     home = tmp_path / "mercury"
@@ -869,7 +910,7 @@ def test_rotate_reseeds_lounge_uplink(tmp_path, monkeypatch) -> None:
         setup_mod, "_restart_observatory_unit", lambda *a, **k: True)
     converged = []
     monkeypatch.setattr(
-        setup_mod, "_converge_lounge_uplink",
+        setup_mod, "_converge_mlounge_uplink",
         lambda: converged.append(True))
     import types as _types
     setup_mod._offer_server_password_rotate(
@@ -886,13 +927,13 @@ def test_converge_failure_is_loud(monkeypatch, capsys) -> None:
         raise RuntimeError("no home")
 
     monkeypatch.setattr(provision_mod, "_mercury_home", _boom)
-    setup_mod._converge_lounge_uplink()
+    setup_mod._converge_mlounge_uplink()
     assert "converge failed" in capsys.readouterr().out
 
 
 def test_converge_applies_config_template_drift(tmp_path, monkeypatch) -> None:
     import json as _json
-    import observatory.lounge as lounge_mod
+    import observatory.mlounge as mlounge_mod
     from observatory import provision as provision_mod
 
     home = tmp_path / "mercury"
@@ -902,9 +943,9 @@ def test_converge_applies_config_template_drift(tmp_path, monkeypatch) -> None:
         lambda h: {"server_name": "vm", "server_host": "127.0.0.1",
                    "server_port": 6670})
     monkeypatch.setattr(
-        provision_mod, "read_irc_passwords",
+        provision_mod, "read_mirc_passwords",
         lambda h: {"server": "pw", "agent": "pw2"})
-    paths = lounge_mod.LoungePaths(home)
+    paths = mlounge_mod.MLoungePaths(home)
     users = paths.home / "users"
     users.mkdir(parents=True)
     (users / "owner.json").write_text(_json.dumps({"networks": [{
@@ -916,12 +957,13 @@ def test_converge_applies_config_template_drift(tmp_path, monkeypatch) -> None:
     paths.dir.mkdir(parents=True, exist_ok=True)
     (paths.dir / "config.js").write_text(
         'module.exports = {\n\thost: "127.0.0.1",\n\tport: 9000,\n};\n')
-    monkeypatch.setattr(lounge_mod, "lounge_unit_active", lambda: True)
+    monkeypatch.setattr(mlounge_mod, "mlounge_unit_active", lambda: True)
     restarted = []
-    monkeypatch.setattr(lounge_mod, "restart_lounge",
+    monkeypatch.setattr(mlounge_mod, "restart_mlounge",
                         lambda: restarted.append(True))
-    setup_mod._converge_lounge_uplink()
-    assert "fileUpload" in (paths.dir / "config.js").read_text()
+    setup_mod._converge_mlounge_uplink()
+    assert "fileUpload" in paths.conf.read_text()
+    assert not (paths.dir / "config.js").exists()
     assert restarted == [True]
 
 
@@ -939,14 +981,14 @@ def test_converge_gateway_credential_rewires_on_drift(monkeypatch, tmp_path, cap
     }))
     monkeypatch.setenv("MERCURY_HOME", str(home))
     monkeypatch.setattr(
-        provision_mod, "read_irc_passwords",
+        provision_mod, "read_mirc_passwords",
         lambda h: {"server": "b", "agent": "new-a"})
     values = {"IRC_SERVER_PASSWORD": "stale-a"}
     monkeypatch.setattr(
         "mercury_cli.config.get_env_value", lambda k: values.get(k, ""))
     rewired = []
     monkeypatch.setattr(
-        _setup, "_wire_gateway_irc_env",
+        _setup, "_wire_gateway_mirc_env",
         lambda label: rewired.append(label) or True)
     _setup._converge_gateway_credential()
     assert rewired == ["vm"]
@@ -965,14 +1007,14 @@ def test_converge_gateway_credential_leaves_healthy_alone(monkeypatch, tmp_path)
     }))
     monkeypatch.setenv("MERCURY_HOME", str(home))
     monkeypatch.setattr(
-        provision_mod, "read_irc_passwords",
+        provision_mod, "read_mirc_passwords",
         lambda h: {"server": "b", "agent": "a"})
     monkeypatch.setattr(
         "mercury_cli.config.get_env_value",
         lambda k: {"IRC_SERVER_PASSWORD": "a"}.get(k, ""))
     rewired = []
     monkeypatch.setattr(
-        _setup, "_wire_gateway_irc_env",
+        _setup, "_wire_gateway_mirc_env",
         lambda label: rewired.append(label) or True)
     _setup._converge_gateway_credential()
     assert rewired == []
@@ -991,7 +1033,7 @@ def test_converge_gateway_credential_leaves_repointed_alone(monkeypatch, tmp_pat
     }))
     monkeypatch.setenv("MERCURY_HOME", str(home))
     monkeypatch.setattr(
-        provision_mod, "read_irc_passwords",
+        provision_mod, "read_mirc_passwords",
         lambda h: {"server": "b", "agent": "a"})
     monkeypatch.setattr(
         "mercury_cli.config.get_env_value",
@@ -999,7 +1041,7 @@ def test_converge_gateway_credential_leaves_repointed_alone(monkeypatch, tmp_pat
                    "IRC_SERVER_PASSWORD": "elsewhere"}.get(k, ""))
     rewired = []
     monkeypatch.setattr(
-        _setup, "_wire_gateway_irc_env",
+        _setup, "_wire_gateway_mirc_env",
         lambda label: rewired.append(label) or True)
     _setup._converge_gateway_credential()
     assert rewired == []

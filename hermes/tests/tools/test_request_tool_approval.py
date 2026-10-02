@@ -24,6 +24,7 @@ def _isolate_approval_state(monkeypatch):
     # Not a yolo session (the shared gate checks this first).
     monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
     monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False, raising=False)
+    monkeypatch.setattr(approval, "_get_approval_mode", lambda: "manual")
     # No thread-registered CLI callback by default.
     monkeypatch.setattr(
         "tools.terminal_tool._get_approval_callback", lambda: None, raising=False
@@ -32,6 +33,12 @@ def _isolate_approval_state(monkeypatch):
 
 
 class TestRequestToolApproval:
+    def test_live_config_yolo_bypasses_recoverable_tool_prompt(self, monkeypatch):
+        monkeypatch.setattr(approval, "_get_approval_mode", lambda: "off")
+        monkeypatch.setattr(approval, "prompt_dangerous_approval",
+                            lambda *a, **k: pytest.fail("configured yolo must not prompt"))
+        assert request_tool_approval("write_file", "sensitive path")["approved"] is True
+
     def test_session_cached_approval_short_circuits(self, monkeypatch):
         monkeypatch.setattr(approval, "is_approved", lambda sk, pk: True)
         # Should NOT prompt at all.
@@ -144,7 +151,7 @@ class TestRequestToolApproval:
     def test_yolo_session_bypasses_gate(self, monkeypatch):
         """A --yolo session skips the plugin approval gate (parity with the
         dangerous-command path, via the shared _run_approval_gate)."""
-        monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: True)
+        monkeypatch.setattr(approval, "is_session_yolo_enabled", lambda key: True)
         monkeypatch.setattr(
             approval, "prompt_dangerous_approval",
             lambda *a, **k: pytest.fail("yolo must not prompt"),

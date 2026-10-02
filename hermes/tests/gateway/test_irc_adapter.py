@@ -1,4 +1,4 @@
-"""Tests for the IRC platform adapter plugin."""
+"""Tests for the MIRC platform adapter plugin."""
 
 import asyncio
 import pytest
@@ -9,21 +9,21 @@ from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 # Load plugins/platforms/irc/adapter.py under a unique module name
 # (plugin_adapter_irc) so it cannot collide with other plugin adapters
 # loaded by sibling tests in the same xdist worker.
-_irc_mod = load_plugin_adapter("irc")
+_mirc_mod = load_plugin_adapter("mirc")
 
-_parse_irc_message = _irc_mod._parse_irc_message
-_extract_nick = _irc_mod._extract_nick
-IRCAdapter = _irc_mod.IRCAdapter
-check_requirements = _irc_mod.check_requirements
-validate_config = _irc_mod.validate_config
-register = _irc_mod.register
-_standalone_send = _irc_mod._standalone_send
+_parse_mirc_message = _mirc_mod._parse_mirc_message
+_extract_nick = _mirc_mod._extract_nick
+MIRCAdapter = _mirc_mod.MIRCAdapter
+check_requirements = _mirc_mod.check_requirements
+validate_config = _mirc_mod.validate_config
+register = _mirc_mod.register
+_standalone_send = _mirc_mod._standalone_send
 
 
 class TestIRCProtocolHelpers:
 
     def test_parse_simple_command(self):
-        msg = _parse_irc_message("PING :server.example.com")
+        msg = _parse_mirc_message("PING :server.example.com")
         assert msg["command"] == "PING"
         assert msg["params"] == ["server.example.com"]
         assert msg["prefix"] == ""
@@ -33,10 +33,10 @@ class TestIRCProtocolHelpers:
         assert _extract_nick("nick!user@host") == "nick"
 
 
-# ── IRC Adapter ──────────────────────────────────────────────────────────
+# ── MIRC Adapter ──────────────────────────────────────────────────────────
 
 
-class TestIRCAdapterInit:
+class TestMIRCAdapterInit:
 
 
     def test_init_from_config_extra(self, monkeypatch):
@@ -55,7 +55,7 @@ class TestIRCAdapterInit:
                 "use_tls": True,
             },
         )
-        adapter = IRCAdapter(cfg)
+        adapter = MIRCAdapter(cfg)
 
         assert adapter.server == "irc.libera.chat"
         assert adapter.port == 6697
@@ -64,7 +64,7 @@ class TestIRCAdapterInit:
         assert adapter.use_tls is True
 
 
-class TestIRCAdapterSend:
+class TestMIRCAdapterSend:
 
     @pytest.fixture
     def adapter(self, monkeypatch):
@@ -81,7 +81,7 @@ class TestIRCAdapterSend:
                 "use_tls": False,
             },
         )
-        return IRCAdapter(cfg)
+        return MIRCAdapter(cfg)
 
 
     @pytest.mark.asyncio
@@ -101,7 +101,7 @@ class TestIRCAdapterSend:
         assert b"PRIVMSG #test :hello world" in sent_data
 
 
-class TestIRCAdapterMessageParsing:
+class TestMIRCAdapterMessageParsing:
 
     @pytest.fixture
     def adapter(self, monkeypatch):
@@ -118,7 +118,7 @@ class TestIRCAdapterMessageParsing:
                 "use_tls": False,
             },
         )
-        a = IRCAdapter(cfg)
+        a = MIRCAdapter(cfg)
         a._current_nick = "mercury"
         a._registered = True
         return a
@@ -136,9 +136,9 @@ class TestIRCAdapterMessageParsing:
         adapter._message_handler = AsyncMock()
 
         await adapter._handle_line(":user!u@host PRIVMSG #test :just talking")
-        assert await adapter._flush_irc_batch_now(("#test", "user")) is True
+        assert await adapter._flush_mirc_batch_now(("#test", "user")) is True
         await adapter._handle_line(":user!u@host PRIVMSG #test :mercury: hello there")
-        assert await adapter._flush_irc_batch_now(("#test", "user")) is True
+        assert await adapter._flush_mirc_batch_now(("#test", "user")) is True
         assert len(dispatched) == 2
         assert dispatched[0]["text"] == "just talking"
         assert dispatched[0]["chat_id"] == "#test"
@@ -158,7 +158,7 @@ class TestIRCAdapterMessageParsing:
         await adapter._handle_line(":user!u@host PRIVMSG #other :just talking")
         assert len(dispatched) == 0
         await adapter._handle_line(":user!u@host PRIVMSG #other :mercury: hello")
-        assert await adapter._flush_irc_batch_now(("#other", "user")) is True
+        assert await adapter._flush_mirc_batch_now(("#other", "user")) is True
         assert len(dispatched) == 1
         assert dispatched[0]["text"] == "hello"
 
@@ -175,7 +175,7 @@ class TestIRCAdapterMessageParsing:
         adapter._message_handler = AsyncMock()
 
         await adapter._handle_line(":user!u@host PRIVMSG mercury :\x01ACTION waves\x01")
-        assert await adapter._flush_irc_batch_now(("user", "user")) is True
+        assert await adapter._flush_mirc_batch_now(("user", "user")) is True
         assert len(dispatched) == 1
         assert dispatched[0]["text"] == "* user waves"
 
@@ -197,7 +197,7 @@ class TestIRCAdapterMessageParsing:
                 "allowed_users": ["Admin", "BOB"],
             },
         )
-        adapter = IRCAdapter(cfg)
+        adapter = MIRCAdapter(cfg)
         adapter._current_nick = "mercury"
         adapter._registered = True
         dispatched = []
@@ -212,15 +212,15 @@ class TestIRCAdapterMessageParsing:
         assert len(dispatched) == 0
 
 
-class TestIRCAdapterSplitting:
+class TestMIRCAdapterSplitting:
 
     def test_split_respects_byte_limit(self):
-        """Multi-byte characters should not exceed IRC byte limit."""
+        """Multi-byte characters should not exceed MIRC byte limit."""
         # 100 japanese chars = 300 bytes in utf-8
         text = "あ" * 100
         from gateway.config import PlatformConfig
         cfg = PlatformConfig(enabled=True, extra={"server": "x", "channel": "#x"})
-        adapter = IRCAdapter(cfg)
+        adapter = MIRCAdapter(cfg)
         adapter._current_nick = "bot"
         lines = adapter._split_message(text, "#test")
         for line in lines:
@@ -232,7 +232,7 @@ class TestIRCAdapterSplitting:
         with real breaks (ChatGPT-style), so packing with spaces is gone."""
         from gateway.config import PlatformConfig
         cfg = PlatformConfig(enabled=True, extra={"server": "x", "channel": "#x"})
-        adapter = IRCAdapter(cfg)
+        adapter = MIRCAdapter(cfg)
         adapter._current_nick = "bot"
         text = "line one\nline two\n\npara two"
         lines = adapter._split_message(text, "#test")
@@ -242,7 +242,7 @@ class TestIRCAdapterSplitting:
         """The client renders markdown — the wire must not strip it."""
         from gateway.config import PlatformConfig
         cfg = PlatformConfig(enabled=True, extra={"server": "x", "channel": "#x"})
-        adapter = IRCAdapter(cfg)
+        adapter = MIRCAdapter(cfg)
         adapter._current_nick = "bot"
         lines = adapter._split_message("**bold** and `code`", "#test")
         assert lines == ["**bold** and `code`"]
@@ -252,21 +252,21 @@ class TestIRCProtocolHelpersExtra:
 
     def test_parse_malformed_no_space(self):
         """A line starting with : but no space should not crash."""
-        msg = _parse_irc_message(":justaprefix")
+        msg = _parse_mirc_message(":justaprefix")
         assert msg["prefix"] == "justaprefix"
         assert msg["command"] == ""
         assert msg["params"] == []
 
 
-class TestIRCAdapterMarkdown:
+class TestMIRCAdapterMarkdown:
 
 
     def test_strip_link(self):
-        result = IRCAdapter._strip_markdown("[click here](https://example.com)")
+        result = MIRCAdapter._strip_markdown("[click here](https://example.com)")
         assert result == "click here (https://example.com)"
 
     def test_strip_image(self):
-        result = IRCAdapter._strip_markdown("![alt](https://example.com/img.png)")
+        result = MIRCAdapter._strip_markdown("![alt](https://example.com/img.png)")
         assert result == "https://example.com/img.png"
 
 
@@ -315,7 +315,7 @@ class TestIRCPluginRegistration:
 
 
 class _FakeIRCConnection:
-    """A scripted reader/writer pair used to simulate an IRC server.
+    """A scripted reader/writer pair used to simulate an MIRC server.
 
     Construct with the lines the server should respond with (already
     framed by ``\\r\\n``).  Captures every line written by the client so
@@ -374,7 +374,7 @@ class TestIRCStandaloneSend:
         async def _fake_open(host, port, **kwargs):
             return conn, conn  # reader and writer share the same fake
 
-        monkeypatch.setattr(_irc_mod.asyncio, "open_connection", _fake_open)
+        monkeypatch.setattr(_mirc_mod.asyncio, "open_connection", _fake_open)
 
         result = await _standalone_send(
             PlatformConfig(enabled=True, extra={}),
@@ -411,7 +411,7 @@ class TestIRCStandaloneSend:
         async def _fake_open(host, port, **kwargs):
             return conn, conn
 
-        monkeypatch.setattr(_irc_mod.asyncio, "open_connection", _fake_open)
+        monkeypatch.setattr(_mirc_mod.asyncio, "open_connection", _fake_open)
 
         # Patch wait_for to raise TimeoutError immediately so the test is fast
         async def _fast_timeout(coro, timeout):
@@ -420,7 +420,7 @@ class TestIRCStandaloneSend:
             except asyncio.IncompleteReadError:
                 raise asyncio.TimeoutError()
 
-        monkeypatch.setattr(_irc_mod.asyncio, "wait_for", _fast_timeout)
+        monkeypatch.setattr(_mirc_mod.asyncio, "wait_for", _fast_timeout)
 
         result = await _standalone_send(
             PlatformConfig(enabled=True, extra={}),
@@ -434,7 +434,7 @@ class TestIRCStandaloneSend:
 
 
 
-class TestIRCAdapterIdentityRouting:
+class TestMIRCAdapterIdentityRouting:
     @pytest.fixture
     def adapter(self, monkeypatch):
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
@@ -448,8 +448,8 @@ class TestIRCAdapterIdentityRouting:
                    "nickname": "testbot", "channel": "#test",
                    "use_tls": False},
         )
-        from plugins.platforms.irc.adapter import IRCAdapter
-        adapter = IRCAdapter(cfg)
+        from plugins.platforms.mirc.adapter import MIRCAdapter
+        adapter = MIRCAdapter(cfg)
         writer = MagicMock()
         writer.is_closing = MagicMock(return_value=False)
         writer.write = MagicMock()
@@ -470,7 +470,8 @@ class TestIRCAdapterIdentityRouting:
             def get(self, channel):
                 return object() if channel == "#test" else None
 
-        async def fake_send_as(channel, text):
+        async def fake_send_as(channel, text, *, kind):
+            assert kind == "assistant_reply"
             assert channel == "#test"
             sent.append(text)
             return True
@@ -507,7 +508,9 @@ class TestIRCAdapterIdentityRouting:
             def get(self, channel):
                 return object() if channel == "#test" else None
 
-        async def fake_multiline(channel, lines):
+        async def fake_multiline(channel, lines, *, kind, concat):
+            assert kind == "assistant_reply"
+            assert concat == [False, False, False]
             calls.append((channel, list(lines)))
             return True
 
@@ -533,7 +536,8 @@ class TestIRCAdapterIdentityRouting:
             def get(self, channel):
                 return object() if channel == "#test" else None
 
-        async def fake_send_as(channel, text):
+        async def fake_send_as(channel, text, *, kind):
+            assert kind == "assistant_reply"
             sent.append(text)
             return True
 
@@ -574,12 +578,12 @@ class TestIRCAdapterIdentityRouting:
 
 class TestIRCSilenceWatchdog:
     def test_enable_keepalive_no_writer(self):
-        from plugins.platforms.irc.adapter import _enable_keepalive
+        from plugins.platforms.mirc.adapter import _enable_keepalive
         _enable_keepalive(None)  # never raises
 
     def test_enable_keepalive_sets_socket_opt(self):
         import socket as _socket
-        from plugins.platforms.irc.adapter import _enable_keepalive
+        from plugins.platforms.mirc.adapter import _enable_keepalive
 
         class FakeSock:
             def __init__(self):
@@ -600,9 +604,9 @@ class TestIRCSilenceWatchdog:
     @pytest.mark.asyncio
     async def test_watchdog_closes_silent_connection(self, monkeypatch):
         import time as _time
-        from plugins.platforms.irc import adapter as adapter_mod
+        from plugins.platforms.mirc import adapter as adapter_mod
         from gateway.config import PlatformConfig
-        from plugins.platforms.irc.adapter import IRCAdapter
+        from plugins.platforms.mirc.adapter import MIRCAdapter
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
             monkeypatch.delenv(key, raising=False)
         cfg = PlatformConfig(
@@ -610,12 +614,12 @@ class TestIRCSilenceWatchdog:
             extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
                    "channel": "#test", "use_tls": False},
         )
-        adapter = IRCAdapter(cfg)
+        adapter = MIRCAdapter(cfg)
         closed = []
 
         class FakeWriter:
             def is_closing(self):
-                return False
+                return bool(closed)
             def close(self):
                 closed.append(True)
 
@@ -629,9 +633,9 @@ class TestIRCSilenceWatchdog:
     @pytest.mark.asyncio
     async def test_watchdog_quiet_when_traffic_flows(self, monkeypatch):
         import time as _time
-        from plugins.platforms.irc import adapter as adapter_mod
+        from plugins.platforms.mirc import adapter as adapter_mod
         from gateway.config import PlatformConfig
-        from plugins.platforms.irc.adapter import IRCAdapter
+        from plugins.platforms.mirc.adapter import MIRCAdapter
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
             monkeypatch.delenv(key, raising=False)
         cfg = PlatformConfig(
@@ -639,7 +643,7 @@ class TestIRCSilenceWatchdog:
             extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
                    "channel": "#test", "use_tls": False},
         )
-        adapter = IRCAdapter(cfg)
+        adapter = MIRCAdapter(cfg)
         polls = []
         closed = []
 
@@ -667,13 +671,13 @@ class TestIRCAgentEchoGuard:
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
             monkeypatch.delenv(key, raising=False)
         from gateway.config import PlatformConfig
-        from plugins.platforms.irc.adapter import IRCAdapter
+        from plugins.platforms.mirc.adapter import MIRCAdapter
         cfg = PlatformConfig(
             enabled=True,
             extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
                    "channel": "#test", "use_tls": False},
         )
-        adapter = IRCAdapter(cfg)
+        adapter = MIRCAdapter(cfg)
         adapter.extra_channels = {"#vm_alpha"}
         return adapter
 
@@ -704,7 +708,7 @@ class TestIRCAgentEchoGuard:
             calls.append(kwargs)
         monkeypatch.setattr(adapter, "_dispatch_message", fake_dispatch)
         await adapter._handle_line(":owner!u@mercury PRIVMSG #test :watchbot: hello")
-        assert await adapter._flush_irc_batch_now(("#test", "owner")) is True
+        assert await adapter._flush_mirc_batch_now(("#test", "owner")) is True
         assert len(calls) == 1
         assert calls[0]["chat_id"] == "#test"
 
@@ -713,7 +717,7 @@ class _StubRoomManager:
     def __init__(self, reply):
         self._reply = reply
 
-    async def handle_omp_message(self, channel, sender, text):
+    async def handle_omp_message(self, channel, sender, text, *, approval_session_key=None):
         return self._reply
 
     async def handle_child_message(self, channel, sender, text):
@@ -725,13 +729,13 @@ class TestIRCRoomOwnedDispatch:
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
             monkeypatch.delenv(key, raising=False)
         from gateway.config import PlatformConfig
-        from plugins.platforms.irc.adapter import IRCAdapter
+        from plugins.platforms.mirc.adapter import MIRCAdapter
         cfg = PlatformConfig(
             enabled=True,
             extra={"server": "localhost", "port": 6667, "nickname": "watchbot",
                    "channel": "#test", "use_tls": False},
         )
-        adapter = IRCAdapter(cfg)
+        adapter = MIRCAdapter(cfg)
         adapter.extra_channels = {"#vm_bravo"}
         return adapter
 
@@ -751,7 +755,7 @@ class TestIRCRoomOwnedDispatch:
         sent = []
         async def fake_send(chat_id, content, *a, **k):
             sent.append((chat_id, content))
-            from plugins.platforms.irc.adapter import SendResult
+            from plugins.platforms.mirc.adapter import SendResult
             return SendResult(success=True, message_id="1")
         monkeypatch.setattr(adapter, "send", fake_send)
         gateway_calls = []
@@ -760,7 +764,7 @@ class TestIRCRoomOwnedDispatch:
         monkeypatch.setattr(adapter, "handle_message", fake_handle)
         monkeypatch.setattr(adapter, "_message_handler", lambda event: None)
         await adapter._handle_line(":owner!u@mercury PRIVMSG #vm_bravo :hello")
-        await adapter._flush_irc_batch_now(("#vm_bravo", "owner"))
+        await adapter._flush_mirc_batch_now(("#vm_bravo", "owner"))
         assert sent == [("#vm_bravo", "bravo says hi")]
         assert gateway_calls == []
 
@@ -771,7 +775,7 @@ class TestIRCRoomOwnedDispatch:
         sent = []
         async def fake_send(chat_id, content, *a, **k):
             sent.append((chat_id, content))
-            from plugins.platforms.irc.adapter import SendResult
+            from plugins.platforms.mirc.adapter import SendResult
             return SendResult(success=True, message_id="1")
         monkeypatch.setattr(adapter, "send", fake_send)
         gateway_calls = []
@@ -791,20 +795,20 @@ class TestIRCReadHandleSplit:
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
             monkeypatch.delenv(key, raising=False)
         from gateway.config import PlatformConfig
-        from plugins.platforms.irc.adapter import IRCAdapter
+        from plugins.platforms.mirc.adapter import MIRCAdapter
         cfg = PlatformConfig(
             enabled=True,
             extra={"server": "localhost", "port": 6667, "nickname": "splitbot",
                    "channel": "#test", "use_tls": False},
         )
-        return IRCAdapter(cfg)
+        return MIRCAdapter(cfg)
 
     def test_is_ping_shapes(self):
-        from plugins.platforms.irc.adapter import IRCAdapter
-        assert IRCAdapter._is_ping("PING :abc") is True
-        assert IRCAdapter._is_ping(":srv PING :srv") is True
-        assert IRCAdapter._is_ping(":n!u@h PRIVMSG #t :hi") is False
-        assert IRCAdapter._is_ping("") is False
+        from plugins.platforms.mirc.adapter import MIRCAdapter
+        assert MIRCAdapter._is_ping("PING :abc") is True
+        assert MIRCAdapter._is_ping(":srv PING :srv") is True
+        assert MIRCAdapter._is_ping(":n!u@h PRIVMSG #t :hi") is False
+        assert MIRCAdapter._is_ping("") is False
 
     @pytest.mark.asyncio
     async def test_ping_answered_without_handler(self, monkeypatch):
@@ -865,7 +869,7 @@ class TestIRCReadHandleSplit:
 
 
 
-class TestIRCAdapterMultilineReconcile:
+class TestMIRCAdapterMultilineReconcile:
     @pytest.fixture
     def adapter(self, monkeypatch):
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
@@ -877,8 +881,8 @@ class TestIRCAdapterMultilineReconcile:
                    "nickname": "testbot", "channel": "#test",
                    "use_tls": False},
         )
-        from plugins.platforms.irc.adapter import IRCAdapter
-        return IRCAdapter(cfg)
+        from plugins.platforms.mirc.adapter import MIRCAdapter
+        return MIRCAdapter(cfg)
 
     @pytest.mark.asyncio
     async def test_ensure_multiline_requests_late_cap(self, adapter, monkeypatch):
@@ -888,7 +892,7 @@ class TestIRCAdapterMultilineReconcile:
         adapter._server_caps = {"draft/multiline"}
         adapter._server_multiline = False
 
-        async def fake_send_raw(line):
+        async def fake_send_raw(line, **kwargs):
             sent.append(line)
             adapter._server_multiline = True
             adapter._cap_event.set()
@@ -913,7 +917,7 @@ class TestIRCAdapterMultilineReconcile:
         await adapter._ensure_multiline()
 
 
-class TestIRCAdapterBatchPacing:
+class TestMIRCAdapterBatchPacing:
     @pytest.fixture
     def adapter(self, monkeypatch):
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
@@ -927,8 +931,8 @@ class TestIRCAdapterBatchPacing:
                    "nickname": "testbot", "channel": "#test",
                    "use_tls": False},
         )
-        from plugins.platforms.irc.adapter import IRCAdapter
-        adapter = IRCAdapter(cfg)
+        from plugins.platforms.mirc.adapter import MIRCAdapter
+        adapter = MIRCAdapter(cfg)
         writer = MagicMock()
         writer.is_closing = MagicMock(return_value=False)
         writer.write = MagicMock()
@@ -959,4 +963,3 @@ class TestIRCAdapterBatchPacing:
         result = await adapter.send("#test", "one\ntwo\nthree")
         assert result.success is True
         assert sleeps == []
-

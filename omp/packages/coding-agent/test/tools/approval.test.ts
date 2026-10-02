@@ -90,9 +90,18 @@ describe("resolveApproval override and user policy", () => {
 		expect(result.reason).toBeUndefined();
 	});
 
-	it("user policy still controls execution in yolo mode", () => {
+	it("yolo bypasses explicit tool prompts at every capability tier", () => {
+		for (const tier of ["read", "write", "exec"] as const) {
+			const subject = tool("custom", { tier, policy: "prompt", override: true });
+			expect(requiresApproval(subject, {}, "yolo", { custom: "prompt" }).required).toBe(false);
+			expect(requiresApproval(subject, {}, "always-ask").required).toBe(true);
+			expect(requiresApproval(subject, {}, "write").required).toBe(true);
+		}
+	});
+
+	it("yolo bypasses prompt rules while retaining explicit user denials", () => {
 		expect(resolveApproval(dangerous, {}, "yolo", { bash: "allow" }).policy).toBe("allow");
-		expect(resolveApproval(dangerous, {}, "yolo", { bash: "prompt" }).policy).toBe("prompt");
+		expect(resolveApproval(dangerous, {}, "yolo", { bash: "prompt" }).policy).toBe("allow");
 		expect(resolveApproval(dangerous, {}, "yolo", { bash: "deny" }).policy).toBe("deny");
 		expect(() => requiresApproval(dangerous, {}, "yolo", { bash: "deny" })).toThrow(
 			'Tool "bash" is blocked by user policy',
@@ -142,7 +151,7 @@ describe("resolveApproval override and user policy", () => {
 	it("valid user policy overrides mode and tier when no tool override is active", () => {
 		const writeTool = tool("write", "write");
 		expect(resolveApproval(writeTool, {}, "always-ask", { write: "allow" }).policy).toBe("allow");
-		expect(resolveApproval(writeTool, {}, "yolo", { write: "prompt" }).policy).toBe("prompt");
+		expect(resolveApproval(writeTool, {}, "yolo", { write: "prompt" }).policy).toBe("allow");
 		expect(resolveApproval(writeTool, {}, "yolo", { write: "deny" }).policy).toBe("deny");
 	});
 
@@ -327,6 +336,15 @@ describe("tool-owned dynamic approval declarations", () => {
 		}
 	});
 
+	it("the RPC approval payload keeps shell segments beyond the display truncation limit", () => {
+		const command = `printf '${"x".repeat(3000)}'; git push`;
+		const title = formatApprovalPrompt(createBashTool(), { command });
+		// The host reads Command: from this formatted payload; the final segment
+		// must remain visible to both its deny guard and the human approver.
+		expect(title.slice(title.indexOf("Command: ") + "Command: ".length)).toBe(command);
+		expect(title.endsWith("; git push")).toBe(true);
+	});
+
 	it("does not flag benign bash commands", () => {
 		for (const command of [
 			"rm file.txt",
@@ -353,7 +371,7 @@ describe("tool-owned dynamic approval declarations", () => {
 		};
 
 		for (const command of ["git diff packages/coding-agent/src/tools/bash.ts", "git status", "git log --oneline"]) {
-			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
+			expect(bashApproval(command, settingsOverrides)).toBe("exec");
 		}
 
 		expect(bashApproval("rm -rf build", settingsOverrides)).toEqual({
@@ -388,14 +406,11 @@ describe("tool-owned dynamic approval declarations", () => {
 			override: true,
 			reason: "Critical pattern detected",
 		});
-		expect(bashApproval("echo hello", settingsOverrides)).toEqual({
-			tier: "write",
-			policy: "allow",
-		});
+		expect(bashApproval("echo hello", settingsOverrides)).toBe("exec");
 		expect(bashApproval("echo hello && rm file.txt", settingsOverrides)).toBe("exec");
 	});
 
-	it("applies the first matching bash approval pattern", () => {
+	it("explicit bash denials outrank an earlier allow pattern", () => {
 		const settingsOverrides = {
 			"bash.patterns": [
 				{ match: "*", approval: "allow" },
@@ -404,8 +419,10 @@ describe("tool-owned dynamic approval declarations", () => {
 		};
 
 		expect(bashApproval("git status", settingsOverrides)).toEqual({
-			tier: "write",
-			policy: "allow",
+			tier: "exec",
+			override: true,
+			policy: "deny",
+			reason: "Blocked by bash pattern: git *",
 		});
 	});
 
@@ -494,21 +511,21 @@ describe("tool-owned dynamic approval declarations", () => {
 		}
 
 		for (const command of ["git status", "git status --short", "git  status", "git\tstatus"]) {
-			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
+			expect(bashApproval(command, settingsOverrides)).toBe("exec");
 		}
 	});
 
-	it("allows literal shell metacharacters in quoted arguments", () => {
+	it("quoted metacharacters do not let legacy allow patterns bypass exec approval", () => {
 		const settingsOverrides = {
 			"bash.patterns": [{ match: "cargo *", approval: "allow" }],
 		};
 		const command =
 			"cargo bench --manifest-path layers/layer3/Cargo.toml --bench standardized_criterion -- --full '^layer3/write/file-wal/batch-(10|1000|10000)$'";
 
-		expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
+		expect(bashApproval(command, settingsOverrides)).toBe("exec");
 	});
 
-	it("honors bash pattern rules in yolo mode", () => {
+	it("yolo bypasses recoverable bash pattern prompts", () => {
 		const tool = createBashTool({
 			"bash.patterns": [
 				{ match: "echo *", approval: "prompt" },
@@ -517,12 +534,12 @@ describe("tool-owned dynamic approval declarations", () => {
 		});
 
 		expect(resolveApproval(tool, { command: "echo hello" }, "yolo", {})).toMatchObject({
-			policy: "prompt",
-			source: "tool",
+			policy: "allow",
+			source: "mode",
 		});
 		expect(resolveApproval(tool, { command: "git status" }, "yolo", {})).toMatchObject({
 			policy: "allow",
-			source: "tool",
+			source: "mode",
 		});
 		expect(resolveApproval(tool, { command: "true" }, "yolo", {})).toMatchObject({
 			policy: "allow",
