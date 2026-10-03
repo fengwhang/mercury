@@ -21,10 +21,12 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 	readonly description = retainDescription;
 	readonly parameters = memoryRetainSchema;
 	readonly strict = true;
-	readonly loadMode = "discoverable";
+	readonly loadMode: "essential" | "discoverable";
 	readonly summary = "Store important facts in long-term memory";
 
-	constructor(private readonly session: ToolSession) {}
+	constructor(private readonly session: ToolSession) {
+		this.loadMode = session.settings.get("memory.backend") === "mnemopi" ? "essential" : "discoverable";
+	}
 
 	static createIf(session: ToolSession): MemoryRetainTool | null {
 		const backend = session.settings.get("memory.backend");
@@ -40,8 +42,11 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 				throw new Error("Mnemopi backend is not initialised for this session.");
 			}
 
+			const memories: { id: string; content: string; bank: string }[] = [];
+			if (params.items.some(item => !item.content.trim())) throw new Error("Memory content must not be empty.");
 			for (const item of params.items) {
-				state.rememberScoped(item.content, {
+				const content = item.content.trim();
+				const id = state.rememberScoped(content, {
 					source: "coding-agent-retain",
 					importance: 0.75,
 					metadata: {
@@ -56,13 +61,18 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 					veracity: "tool",
 					memoryType: "fact",
 				});
+				const stored = id ? state.getScopedMemory(id) : null;
+				if (!stored || stored.row.content !== content) {
+					throw new Error(`Memory write could not be verified (${memories.length} earlier items stored).`);
+				}
+				memories.push({ id: stored.row.id, content: stored.row.content, bank: stored.bank });
 			}
 
 			const count = params.items.length;
 			const noun = count === 1 ? "memory" : "memories";
 			return {
-				content: [{ type: "text", text: `${count} ${noun} stored.` }],
-				details: { count },
+				content: [{ type: "text", text: `${count} ${noun} stored and verified.\n${JSON.stringify({ memories })}` }],
+				details: { count, memories, verified: true, dbPath: state.config.dbPath },
 			};
 		}
 

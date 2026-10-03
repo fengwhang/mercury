@@ -379,7 +379,16 @@ describe("retain.execute (Mnemopi backend)", () => {
 			items: [{ content: "user prefers tabs", context: "editor configuration" }],
 		});
 
-		expect(result.content[0]).toEqual({ type: "text", text: "1 memory stored." });
+		expect(result.content[0]).toMatchObject({
+			type: "text",
+			text: expect.stringContaining("1 memory stored and verified."),
+		});
+		expect(result.details).toMatchObject({
+			count: 1,
+			verified: true,
+			memories: [{ id: expect.any(String), content: "user prefers tabs", bank: "test-bank" }],
+		});
+		expect(tool.loadMode).toBe("essential");
 
 		// Verify the memory was actually stored by recalling it
 		const recallTool = MemoryRecallTool.createIf(makeSession(settings))!;
@@ -402,7 +411,11 @@ describe("retain.execute (Mnemopi backend)", () => {
 			],
 		});
 
-		expect(result.content[0]).toEqual({ type: "text", text: "3 memories stored." });
+		expect(result.content[0]).toMatchObject({
+			type: "text",
+			text: expect.stringContaining("3 memories stored and verified."),
+		});
+		expect(result.details).toMatchObject({ count: 3, verified: true });
 
 		// Verify all memories are recallable
 		const recallTool = MemoryRecallTool.createIf(makeSession(settings))!;
@@ -412,6 +425,16 @@ describe("retain.execute (Mnemopi backend)", () => {
 		expect(text).toContain("fact one");
 		expect(text).toContain("fact two");
 		expect(text).toContain("fact three");
+	});
+
+	it("reports a failed database write instead of a stored success", async () => {
+		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
+		registerMnemopiState();
+		registeredMnemopiState!.memory.close();
+		const tool = MemoryRetainTool.createIf(makeSession(settings))!;
+		await expect(tool.execute("failed-write", { items: [{ content: "must not claim success" }] })).rejects.toThrow(
+			"Memory write could not be verified",
+		);
 	});
 
 	it("isolates memories between projects when scoping is per-project", async () => {

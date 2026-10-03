@@ -239,7 +239,7 @@ def ensure_mnemosyne_default(*, install: bool = True, verbose: bool = False) -> 
     reinstalled warn-only. The provider itself is in-tree stdlib-only, so
     memory keeps working via FTS even when the install fails offline.
     """
-    from mercury_cli.config import load_config, save_config
+    from mercury_cli.config import load_config, save_config, read_user_config_raw
 
     try:
         config = load_config()
@@ -252,15 +252,24 @@ def ensure_mnemosyne_default(*, install: bool = True, verbose: bool = False) -> 
         mem = {}
         config["memory"] = mem
     current = str(mem.get("provider", "") or "").strip()
-    if current not in _UNSET_MEMORY_PROVIDERS:
-        # Explicit user backend (or already mnemosyne): never clobber, silent.
-        # Omp convergence on reruns rides the bridge render in sync_omp (which
-        # preserves explicit backends); the fresh path below stamps BOTH sides
-        # so first boot lands unified.
+    if current not in _UNSET_MEMORY_PROVIDERS and current != MNEMOSYNE_PROVIDER:
+        # Another explicit backend is never clobbered.
         return current
+    if current == MNEMOSYNE_PROVIDER:
+        # A merged runtime default is not proof that setup persisted it.
+        # Inspect presence for this write-back, so first setup still stamps
+        # both engines while subsequent runs preserve the user's config.
+        try:
+            raw = read_user_config_raw()
+            section = raw.get("hermes", raw)
+            explicit = section.get("memory", {}).get("provider") == MNEMOSYNE_PROVIDER
+        except Exception:
+            return current
+        if explicit:
+            return current
     mem["provider"] = MNEMOSYNE_PROVIDER
     try:
-        save_config(config)
+        save_config(config, preserve_keys={("memory", "provider")})
     except Exception:
         return ""
     # Fresh default: pin the omp side in the same pass so the preflight
@@ -865,6 +874,48 @@ def cmd_status(args) -> None:
 # Router
 # ---------------------------------------------------------------------------
 
+def cmd_memory_data(args) -> None:
+    """Supported CLI access to the configured profile bank, without reconfiguration."""
+    import json
+    import math
+    from mercury_cli.config import load_config
+    from mercury_constants import get_hermes_home, mercury_command
+    from plugins.memory.mnemosyne import MnemosyneMemoryProvider
+
+    config = load_config()
+    memory = config.get("memory", {})
+    if memory.get("provider") != "mnemosyne":
+        print(json.dumps({"error": "Mnemosyne is not the active memory provider",
+                          "hint": f"{mercury_command()} memory status"}), file=sys.stderr)
+        raise SystemExit(1)
+    if args.memory_command == "remember":
+        if not math.isfinite(args.importance) or not 0 <= args.importance <= 1:
+            print(json.dumps({"error": "importance must be between 0 and 1"}), file=sys.stderr)
+            raise SystemExit(1)
+        parameters = {"content": args.content, "importance": args.importance}
+        tool_name = "mnemosyne_remember"
+    else:
+        if not 1 <= args.top_k <= 20:
+            print(json.dumps({"error": "top-k must be between 1 and 20"}), file=sys.stderr)
+            raise SystemExit(1)
+        parameters = {"query": args.query, "top_k": args.top_k}
+        tool_name = "mnemosyne_recall"
+
+    provider = MnemosyneMemoryProvider(memory.get("mnemosyne", {}))
+    try:
+        provider.initialize("mercury-memory-cli", mercury_home=str(get_hermes_home()), agent_context="primary")
+        result = json.loads(provider.handle_tool_call(tool_name, parameters))
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        raise SystemExit(1) from exc
+    finally:
+        provider.shutdown()
+    if "error" in result:
+        print(json.dumps(result), file=sys.stderr)
+        raise SystemExit(1)
+    print(json.dumps(result))
+
+
 def memory_command(args) -> None:
     """Route memory subcommands."""
     sub = getattr(args, "memory_command", None)
@@ -876,5 +927,7 @@ def memory_command(args) -> None:
             cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
+    elif sub in ("remember", "recall"):
+        cmd_memory_data(args)
     else:
         cmd_status(args)

@@ -29,6 +29,7 @@ def omp_profile_env(profile_home=None, base_env=None) -> dict[str, str]:
         env.update({
             "HERMES_HOME": str(profile),
             "MERCURY_PROFILE_HOME": str(profile),
+            "MERCURY_SKILLS_DIR": str(profile / "skills"),
             "MERCURY_CONFIG": str(profile / "config.yaml"),
             "HERMES_OMP_CONFIG": str(profile / "config.yaml"),
             "PI_CODING_AGENT_DIR": str(profile / "omp" / "agent"),

@@ -391,13 +391,7 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5062, str(e))
 
-    # Mirror the CLI/REST create flow: fresh profiles get the bundled
-    # skills; safe alias wrapper. Both best-effort.
-    try:
-        if not clone_from:
-            profiles_mod.seed_profile_skills(path, quiet=True)
-    except Exception:
-        pass
+    # Skill defaults and clone preservation are handled by create_profile.
     try:
         if not profiles_mod.check_alias_collision(name):
             profiles_mod.create_wrapper_script(name)

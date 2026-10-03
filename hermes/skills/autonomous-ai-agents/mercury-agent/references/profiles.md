@@ -56,7 +56,9 @@ canonical prompt folder. Mnemosyne/Mnemopi uses a separate
 Normal clones start with an empty bank; `--clone-all` snapshots the source
 memories into an independent database. Existing pins outside a named profile
 are rebased to its local bank. This does not change other memory providers'
-external-service scoping. The skills library remains shared.
+external-service scoping. Both engines share the selected profile's skills
+library. Fresh profiles receive stock Mercury skills; clones copy their source
+profile's skills, including customizations and intentional removals.
 
 In the managed MIRC gateway room:
 

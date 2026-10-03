@@ -11,6 +11,7 @@ import * as path from "node:path";
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
 
 import type { Settings } from "../config/settings";
+import { mercuryProfileHome } from "../config/mercury-memory-settings";
 import { clearCache as clearFsCache, findRepoRoot, cacheStats as fsCacheStats, invalidate as invalidateFs } from "./fs";
 import type {
 	Capability,
@@ -278,13 +279,9 @@ export async function loadCapability<T>(
 	}
 
 	const cwd = options.cwd ?? getProjectDir();
-	// HERMES-OMP PATCH (shared skills, no extra scan): under MERCURY_HOME,
-	// user-level discovery resolves against the mercury home — omp's native
-	// user skills dir becomes $MERCURY_HOME/skills (the SHARED library
-	// hermes also uses) via the .agent/.agents candidates, and user-level
-	// AGENTS.md candidates include $MERCURY_HOME. One tree, both engines,
-	// zero add-on scanning.
-	const home = process.env.MERCURY_HOME?.trim() || os.homedir();
+	// User-level discovery follows the selected Mercury profile, so another
+	// profile's authored skills and instructions cannot leak into this session.
+	const home = mercuryProfileHome() || process.env.MERCURY_HOME?.trim() || os.homedir();
 	const repoRoot = await findRepoRoot(cwd);
 	const ctx: LoadContext = { cwd, home, repoRoot };
 	if (options.providers) ctx.explicitProviders = new Set(options.providers);

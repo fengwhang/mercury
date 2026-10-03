@@ -33,6 +33,12 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         help="Provider to configure directly (e.g. honcho), skipping the picker",
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
+    remember = memory_sub.add_parser("remember", help="Store a fact in this profile's Mnemosyne bank (JSON receipt)")
+    remember.add_argument("content", help="Exact fact to remember")
+    remember.add_argument("--importance", type=float, default=0.5, help="Importance from 0 to 1 (default: 0.5)")
+    recall = memory_sub.add_parser("recall", help="Search this profile's Mnemosyne bank (JSON results)")
+    recall.add_argument("query", help="Search terms")
+    recall.add_argument("--top-k", type=int, default=5, help="Maximum results, 1–20 (default: 5)")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
     _reset_parser = memory_sub.add_parser(
         "reset",

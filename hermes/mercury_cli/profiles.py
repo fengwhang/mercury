@@ -130,6 +130,38 @@ def ensure_profile_prompt_files(profile_dir: Path, source_dir: Path | None = Non
             atomic_write_text(target, f"# {name} — instructions for this Mercury profile\n")
 
 
+def _rebase_profile_skill_links(profile_dir: Path, source_dir: Path) -> None:
+    """Keep the native OMP view attached to its cloned or renamed library."""
+    source_library = (source_dir / "skills").resolve()
+    # A shared authored skill can itself be a symlink. The bridge resolves it
+    # to an external path, so match known aliases before checking containment.
+    aliases: dict[tuple[str, Path], Path] = {}
+    if source_library.is_dir():
+        for category in sorted(source_library.iterdir()):
+            if not category.is_dir() or category.name.startswith("."):
+                continue
+            for skill in sorted(category.iterdir()):
+                if (skill / "SKILL.md").is_file():
+                    aliases.setdefault((skill.name, skill.resolve()),
+                                       profile_dir / "skills" / category.name / skill.name)
+    for relative in ("omp/skills", "omp/agent/skills"):
+        view = profile_dir / relative
+        if not view.is_dir() or view.is_symlink():
+            continue
+        for link in view.iterdir():
+            if not link.is_symlink():
+                continue
+            try:
+                original = link.resolve()
+                target = aliases.get((link.name, original))
+                if target is None:
+                    target = profile_dir / "skills" / original.relative_to(source_library)
+            except (ValueError, OSError):
+                continue
+            link.unlink()
+            link.symlink_to(target, target_is_directory=True)
+
+
 # Subdirectory files copied during --clone (path relative to profile root).
 # Memory files are part of the agent's curated identity — just as important
 # as SOUL.md for continuity when cloning a profile.
@@ -197,8 +229,8 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 
 # Marker file written by `mercury profile create --no-skills`.  When present in
 # a profile's root, callers of seed_profile_skills() (fresh-create, `mercury
-# update`'s all-profile sync, the web dashboard) skip bundled-skill seeding
-# for that profile.  The user can still install skills manually via
+# update`'s all-profile sync, the web dashboard) seed only essential skills
+# for that profile. The user can still install skills manually via
 # `mercury skills install` or drop SKILL.md files into the profile's skills/.
 # Delete the marker file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
@@ -1488,7 +1520,7 @@ def create_profile(
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+                shutil.copytree(source_skills, profile_dir / "skills", symlinks=False, dirs_exist_ok=True)
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
@@ -1497,6 +1529,18 @@ def create_profile(
                     dst = profile_dir / relpath
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
+
+    if clone_all and source_dir and (source_dir / "skills").is_dir():
+        # Snapshot linked skills too: edits to the clone must not modify the
+        # source library, even if its authored skills were symlinked.
+        target_skills = profile_dir / "skills"
+        if target_skills.is_symlink():
+            target_skills.unlink()
+        elif target_skills.exists():
+            shutil.rmtree(target_skills)
+        shutil.copytree(source_dir / "skills", target_skills, symlinks=False)
+    if source_dir is not None:
+        _rebase_profile_skill_links(profile_dir, source_dir)
 
     # Keep a private file for local channel secrets and provider overrides.
     # Inheriting provider logins does not inherit the main messaging identity.
@@ -1518,8 +1562,8 @@ def create_profile(
     from mercury_cli.memory_settings import ensure_profile_memory
     ensure_profile_memory(profile_dir, source_dir=source_dir, copy_state=clone_all)
 
-    # Write the opt-out marker so seed_profile_skills() and `mercury update`'s
-    # all-profile sync loop both skip this profile for bundled-skill seeding.
+    # Opt-out profiles receive only the essential operating manual, both
+    # during creation and in the all-profile update sync.
     if no_skills:
         try:
             (profile_dir / NO_BUNDLED_SKILLS_MARKER).write_text(
@@ -1530,6 +1574,12 @@ def create_profile(
             )
         except OSError:
             pass  # best-effort — the feature still works via the empty skills/ dir
+
+    # All creation surfaces (CLI, chat, dashboard) get the same defaults.
+    # Clones retain the source library, including intentional deletions.
+    if source_dir is None:
+        if seed_profile_skills(profile_dir, quiet=True) is None:
+            logger.warning("Profile %s created, but stock skills could not be seeded", canon)
 
     # Cloned configs can be older than the running Mercury (or predate schema
     # tracking entirely). Migrate config-only clones immediately so
@@ -1584,8 +1634,7 @@ def profileadd_command(args: str) -> str:
     lines = [f"Profile '{name}' created at {profile_dir}",
              f"Prompts: {profile_dir / 'config'}",
              "Models and provider logins: inherited from the main profile (local model overrides supported)."]
-    result = seed_profile_skills(profile_dir, quiet=True)
-    if result is None:
+    if not (profile_dir / "skills" / "autonomous-ai-agents" / "mercury-agent" / "SKILL.md").is_file():
         lines.append(f"Skills could not be seeded; run {command} -p {name} update to retry.")
 
     try:
@@ -2704,6 +2753,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
     # 2. Rename directory
     old_dir.rename(new_dir)
+    _rebase_profile_skill_links(new_dir, old_dir)
     from mercury_cli.memory_settings import ensure_profile_memory
     ensure_profile_memory(new_dir, source_dir=old_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")

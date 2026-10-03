@@ -1,6 +1,6 @@
 # Using shared skills from either Mercury engine
 
-The skills library is shared. A skill's workflow is independent of the engine
+The skills library is shared within the selected profile. A skill's workflow is independent of the engine
 reading it; its tool-call examples may use one engine's syntax. Translate the
 operation using tools actually exposed in the current session. Never invent
 a missing tool or execute a harness tool call as Python or shell code.
@@ -13,6 +13,8 @@ a missing tool or execute a harness tool call as Python or shell code.
 | Edit or write | `patch`, `write_file` | `edit`, `write` |
 | Delegate | `delegate_task` | `task` |
 | Load a skill | `skill_view` or available file tools | skill slash command or available file tools |
+| Recall Mnemosyne memory | `mnemosyne_recall` | `recall` |
+| Remember a Mnemosyne fact | `mnemosyne_remember` | `retain` |
 
 Check each live schema. Parameter names, time units, batch support, background
 handles, and result envelopes differ. For example, put a shell snippet from

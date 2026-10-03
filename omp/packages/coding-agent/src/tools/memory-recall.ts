@@ -18,10 +18,12 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 	readonly description = recallDescription;
 	readonly parameters = memoryRecallSchema;
 	readonly strict = true;
-	readonly loadMode = "discoverable";
+	readonly loadMode: "essential" | "discoverable";
 	readonly summary = "Search memory for relevant prior context";
 
-	constructor(private readonly session: ToolSession) {}
+	constructor(private readonly session: ToolSession) {
+		this.loadMode = session.settings.get("memory.backend") === "mnemopi" ? "essential" : "discoverable";
+	}
 
 	static createIf(session: ToolSession): MemoryRecallTool | null {
 		const backend = session.settings.get("memory.backend");

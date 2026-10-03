@@ -112,8 +112,9 @@ def test_bundled_catalog_explains_missing_local_skills(gen_module):
     """The bundled catalog should explain how to restore a listed skill that
     was removed from the local profile's skills tree."""
     result = gen_module.build_catalog_md_bundled([])
-    assert "respects local deletions and user edits" in result
-    assert "mercury skills reset <name> --restore" in result
+    assert "preserving local deletions and user edits" in result
+    assert "mercury -p <profile> skills reset <name> --restore" in result
+    assert "named profiles use their own `skills/` directory" in result
 
 
 def test_local_skill_reference_links_target_mercury_source(gen_module):

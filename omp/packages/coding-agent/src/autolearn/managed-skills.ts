@@ -12,6 +12,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
+import { mercurySkillsDir } from "../config/mercury-memory-settings";
 
 /** Provider id stamped on discovered managed skills (distinguishes them from authored). */
 export const MANAGED_SKILLS_PROVIDER_ID = "omp-managed";
@@ -24,16 +25,13 @@ const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /**
  * Resolve the managed-skills directory.
  *
- * HERMES-OMP PATCH (shared skills, both ways): under MERCURY_HOME, omp
- * manages its skills inside the SHARED library
- * (`$MERCURY_HOME/skills/omp-managed`) so hermes sees omp-authored and
- * omp-learned skills immediately — same agentskills.io format, no
- * conversion. Stock behavior (isolated `~/.omp/agent/managed-skills`)
- * when MERCURY_HOME is unset.
+ * Mercury stores learned skills in the active profile's shared library under
+ * `skills/omp-managed`, so Hermes and OMP can both discover them. Standalone
+ * OMP keeps its native directory when no Mercury library is selected.
  */
 export function getManagedSkillsDir(agentDir: string = getAgentDir()): string {
-	const mercuryHome = process.env.MERCURY_HOME?.trim();
-	if (mercuryHome) return path.join(mercuryHome, "skills", "omp-managed");
+	const library = mercurySkillsDir(agentDir);
+	if (library) return path.join(library, "omp-managed");
 	return path.join(agentDir, "managed-skills");
 }
 

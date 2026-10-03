@@ -77,8 +77,18 @@ async def test_profileadd_creates_complete_profile_without_switching(install, su
         prompt = home / "config" / f"{name}.md"
         assert prompt.is_file() and not prompt.is_symlink()
         assert "DEFAULT-PRIVATE-INSTRUCTIONS" not in prompt.read_text()
-    # Both engines and all profiles use this installation's shared skills library.
-    assert (root / "skills" / "autonomous-ai-agents" / "mercury-agent" / "SKILL.md").is_file()
+    # Both engines share this profile's seeded library, not the default's.
+    assert (home / "skills" / "autonomous-ai-agents" / "mercury-agent" / "SKILL.md").is_file()
+    assert (home / "skills" / "memory" / "mnemosyne-memory" / "SKILL.md").is_file()
+    from mercury_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools.skills_tool import skills_list, skill_view
+    token = set_hermes_home_override(home)
+    try:
+        assert "mnemosyne-memory" in skills_list()
+        assert "mnemosyne_remember" in skill_view("mnemosyne-memory")
+    finally:
+        reset_hermes_home_override(token)
+    assert not (root / "skills").exists()
     assert (home / ".env").is_file()
     config = yaml.safe_load((home / "config.yaml").read_text())
     assert "default" not in config["models"]

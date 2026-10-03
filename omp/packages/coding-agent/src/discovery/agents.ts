@@ -16,6 +16,7 @@ import { type Skill, skillCapability } from "../capability/skill";
 import { type SlashCommand, slashCommandCapability } from "../capability/slash-command";
 import { type SystemPrompt, systemPromptCapability } from "../capability/system-prompt";
 import type { LoadContext, LoadResult } from "../capability/types";
+import { mercurySkillsDir } from "../config/mercury-memory-settings";
 import {
 	buildRuleFromMarkdown,
 	calculateDepth,
@@ -163,15 +164,8 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 		scanSkillsFromDir(ctx, { dir, providerId: PROVIDER_ID, level: "user" }),
 	);
 
-	// HERMES-OMP PATCH (shared skills, REVISED per user decision): the
-	// mercury home IS the user home under MERCURY_HOME (capability/index.ts
-	// ctx patch), so getUserPathCandidates above already resolves
-	// $MERCURY_HOME/.agent(s)/skills natively. The FLAT shared library
-	// ($MERCURY_HOME/skills — hermes' native layout) rides FIRST in the
-	// user scan set: one pass, zero add-on providers, both engines point
-	// at the same tree.
-	const mercuryHome = process.env.MERCURY_HOME?.trim();
-	const sharedDir = mercuryHome ? [path.join(mercuryHome, "skills")] : [];
+	const library = mercurySkillsDir();
+	const sharedDir = library ? [library] : [];
 	const results = await Promise.all([
 		...projectScans,
 		...sharedDir.map(dir => scanSkillsFromDir(ctx, { dir, providerId: PROVIDER_ID, level: "user" })),

@@ -11072,7 +11072,7 @@ def cmd_profile(args):
         list_profiles,
         create_profile,
         delete_profile,
-        seed_profile_skills,
+        has_bundled_skills_opt_out,
         set_active_profile,
         get_active_profile_name,
         check_alias_collision,
@@ -11227,15 +11227,13 @@ def cmd_profile(args):
             # already copied the source profile's skills, including any
             # user-installed or intentionally removed skills.
             if not (clone_config or clone_all):
-                result = seed_profile_skills(profile_dir)
-                if result and result.get("skipped_opt_out"):
+                if has_bundled_skills_opt_out(profile_dir):
                     print(
                         "No bundled skills seeded (--no-skills). "
                         "Delete .no-bundled-skills in the profile to opt back in."
                     )
-                elif result:
-                    copied = len(result.get("copied", []))
-                    print(f"{copied} bundled skills synced.")
+                elif (profile_dir / "skills" / "autonomous-ai-agents" / "mercury-agent" / "SKILL.md").is_file():
+                    print("Bundled skills synced into this profile.")
                 else:
                     print(
                         "⚠ Skills could not be seeded. Run `{} update` to retry.".format(

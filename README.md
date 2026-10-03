@@ -35,7 +35,8 @@ Mercury's contribution is the wiring between the three engines and surfaces:
   reply, steer a running RPC child, or stop it without asking the parent
   to relay every instruction.
 - **Shared knowledge across two runtimes.** Both engines read the shared
-  persona and instruction files and skills library. The bridge defaults
+  persona and instruction files and skills library. Fresh profiles get stock
+  Mercury skills; clones copy their source's skills. The bridge defaults
   OMP's memory to a Mnemosyne/Mnemopi SQLite bank shared within each profile,
   with text search enabled and embeddings optional. Children still have their own
   conversations; shared memory does not give them the parent's transcript.
@@ -352,6 +353,22 @@ Existing pins to the main profile or another profile are rebased automatically.
 The default profile keeps its existing database. A normal clone starts a new
 bank; `--clone-all` makes an independent snapshot of the source memories.
 Named-profile database overrides must stay inside that profile's folder.
+The bundled `mnemosyne-memory` skill documents both engines' native tools.
+Hermes exposes `mnemosyne_remember`/`mnemosyne_recall`; OMP exposes
+`retain`/`recall` when its Mnemopi backend is enabled. Requested writes return
+verified IDs and content. For direct access or sessions without those tools:
+
+```bash
+mercury -p research memory status
+mercury -p research memory remember 'The project uses PostgreSQL.' --importance 0.8
+mercury -p research memory recall 'PostgreSQL' --top-k 5
+```
+
+Use your actual profile name (`default` for the main profile) and
+`mercury-nightly` for nightly. Remember and recall return JSON and do not change
+configuration. Fresh profiles receive stock skills, including the memory
+skill; clones preserve their source's custom skills and intentional removals.
+
 Nightly profiles inherit only from nightly.
 Set `profile.inherit_models: false` or `profile.inherit_credentials: false` in
 a profile's config to configure those independently. Older profiles keep

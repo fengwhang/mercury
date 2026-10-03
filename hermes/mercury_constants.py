@@ -1697,17 +1697,14 @@ def get_config_path() -> Path:
 
 
 def get_skills_dir() -> Path:
-    """Return the path to the skills directory under HERMES_HOME.
-
-    MERCURY-OMP PATCH (F0): under MERCURY_HOME, skills live in the SHARED
-    library at the mercury home (~/.mercury/skills) — both engines read and
-    write the same directory (mercury skill_manager_tool + omp authored/
-    promoted skills). Without MERCURY_HOME, stock behavior.
-    """
+    """Both engines share skills within the active profile."""
+    home = get_hermes_home()
+    if named_profile_home(home) is not None:
+        return home / "skills"
     mercury = os.environ.get("MERCURY_HOME", "").strip()
     if mercury:
         return Path(mercury) / "skills"
-    return get_hermes_home() / "skills"
+    return home / "skills"
 
 
 

@@ -5,7 +5,7 @@ import * as path from "node:path";
 /** The two engines share a bank within a profile, never between profiles. */
 export function mercuryProfileHome(location?: string): string | undefined {
 	const root = process.env.MERCURY_HOME?.trim();
-	let current = path.resolve(location || process.env.HERMES_HOME || ".");
+	let current = path.resolve(location || process.env.MERCURY_PROFILE_HOME || process.env.HERMES_HOME || ".");
 	while (true) {
 		const parent = path.dirname(current);
 		const owner = path.dirname(parent);
@@ -22,6 +22,14 @@ export function mercuryProfileHome(location?: string): string | undefined {
 		if (parent === current) return undefined;
 		current = parent;
 	}
+}
+
+/** Authored and learned skills use the same library in either engine. */
+export function mercurySkillsDir(location?: string): string | undefined {
+	const profile = mercuryProfileHome(location);
+	if (profile) return path.join(profile, "skills");
+	const root = process.env.MERCURY_HOME?.trim();
+	return process.env.MERCURY_SKILLS_DIR?.trim() || (root ? path.join(root, "skills") : undefined);
 }
 
 export function mercuryProfileBankPath(configured: string | undefined, location?: string): string | undefined {

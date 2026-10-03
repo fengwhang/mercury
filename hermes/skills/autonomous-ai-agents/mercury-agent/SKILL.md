@@ -55,7 +55,9 @@ home. The launchers set these variables; do not overwrite them in a shell tool.
 
 - `mercury config path` identifies the selected YAML configuration.
 - `mercury config env-path` identifies the shared secrets file.
-- `$MERCURY_HOME/skills/` is the shared skill library read by both engines.
+- Both engines read `$MERCURY_HOME/skills/` in the default profile and the
+  selected named profile's `skills/` directory otherwise. Fresh profiles get
+  stock Mercury skills; clones copy the source profile's skills.
 - Default Markdown instructions live in `$MERCURY_HOME/config/`.
 - Named profiles live in `$MERCURY_HOME/hermes/profiles/<name>/`, with their own
   `config.yaml`, runtime state, and `config/` instruction folder.
@@ -64,6 +66,12 @@ Read [references/profiles.md](references/profiles.md) for creation, cloning,
 prompt files, and launching either engine. Read
 [references/project-context-files.md](references/project-context-files.md) when
 choosing between profile instructions and repository rules.
+
+For durable memory, load `mnemosyne-memory`. Hermes uses `mnemosyne_remember`
+and `mnemosyne_recall`; OMP uses `retain` and `recall`. Both engines share one
+Mnemosyne bank within a profile, with separate banks for other profiles.
+`mercury[-nightly] -p <name> memory remember|recall` offers a profile-aware CLI
+fallback and verified write receipts.
 
 ## Models, reasoning, and permissions
 

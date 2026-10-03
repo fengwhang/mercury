@@ -216,6 +216,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'memory',
+                  key: 'skills-bundled-memory',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/memory/memory-mnemosyne-memory',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'note-taking',
                   key: 'skills-bundled-note-taking',
                   collapsed: true,

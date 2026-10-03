@@ -184,7 +184,11 @@ def resolve_omp_agent_dir(home: Optional[Path] = None) -> Path:
 
 
 def resolve_mercury_skills_dir(home: Optional[Path] = None) -> Path:
-    """Shared library root: MERCURY_SKILLS_DIR > $MERCURY_HOME/skills > ~/.mercury/skills."""
+    """Selected profile first, then the default installation's library."""
+    from mercury_constants import get_hermes_home, named_profile_home
+    profile = named_profile_home(get_hermes_home())
+    if profile is not None:
+        return profile / "skills"
     env = os.environ.get("MERCURY_SKILLS_DIR", "").strip()
     if env:
         return Path(env)
@@ -205,6 +209,10 @@ def resolve_hermes_engine_skills_dir(home: Optional[Path] = None) -> Path:
     ``HERMES_HOME`` can never leak a foreign install's tree once the
     mercury home is known (mirrors ``resolve_mercury_skills_dir``).
     """
+    from mercury_constants import get_hermes_home, named_profile_home
+    profile = named_profile_home(get_hermes_home())
+    if profile is not None:
+        return profile / "skills"
     mercury = os.environ.get("MERCURY_HOME", "").strip()
     if mercury:
         return Path(mercury) / "hermes" / "skills"
@@ -217,6 +225,10 @@ def resolve_hermes_engine_skills_dir(home: Optional[Path] = None) -> Path:
 
 def resolve_unified_config_path() -> Optional[Path]:
     """The unified config file — same resolution as omp_sync / omp_delegation."""
+    from mercury_constants import get_hermes_home, named_profile_home
+    profile = named_profile_home(get_hermes_home())
+    if profile is not None:
+        return profile / "config.yaml"
     value = os.environ.get("MERCURY_CONFIG", "").strip()
     if value:
         return Path(value)
@@ -401,6 +413,14 @@ def reconcile_omp_skills(
         return summary
 
     managed_roots = {root.resolve() for root in (skills_root, hermes_root)}
+    # Older profile launches bridged the default library. Those links belong
+    # to Mercury too: replace/remove them rather than leaking default skills.
+    from mercury_constants import get_hermes_home, named_profile_home
+    if named_profile_home(get_hermes_home()) is not None:
+        mercury = os.environ.get("MERCURY_HOME", "").strip()
+        if mercury:
+            managed_roots.update({(Path(mercury) / "skills").resolve(),
+                                  (Path(mercury) / "hermes" / "skills").resolve()})
 
     # Create / refresh desired links.
     for name in sorted(desired):

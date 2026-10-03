@@ -2051,12 +2051,12 @@ DEFAULT_CONFIG = {
         # turn/session extraction can set this to 0 and keep the small local
         # store reserved for explicit high-frequency operational facts.
         "nudge_interval": 10,
-        # External memory provider plugin (empty = built-in only).
+        # External memory provider plugin (explicit empty = built-in only).
         # Set to a provider name to activate: "mnemosyne" (local mnemosyne
-        # default, hermes + omp read one SQLite file), "openviking", "mem0",
+        # default, both engines share one SQLite file per profile), "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
-        "provider": "",
+        "provider": "mnemosyne",
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

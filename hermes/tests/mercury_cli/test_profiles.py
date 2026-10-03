@@ -215,10 +215,10 @@ class TestNoSkillsOptOut:
         # has_bundled_skills_opt_out() agrees
         assert has_bundled_skills_opt_out(profile_dir) is True
 
-        # skills/ dir exists (profile bootstrapping still creates the dir) but
-        # contains nothing yet because create_profile itself doesn't seed.
+        # Creation seeds only the essential operating manual on opt-out.
         assert (profile_dir / "skills").is_dir()
-        assert list((profile_dir / "skills").iterdir()) == []
+        skills = list((profile_dir / "skills").rglob("SKILL.md"))
+        assert [p.parent.name for p in skills] == ["mercury-agent"]
 
 
 
@@ -1177,5 +1177,4 @@ class TestResolveProfileEnvSpelling:
         # No HERMES_HOME: the platform default root applies (existing contract).
         monkeypatch.delenv("HERMES_HOME", raising=False)
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
-
 
