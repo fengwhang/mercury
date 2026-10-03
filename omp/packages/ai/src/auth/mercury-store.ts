@@ -151,10 +151,13 @@ export function mercuryCredentialStore(
 		}
 	}
 	const mtime = () => {
-		return ["auth.json", ".anthropic_oauth.json"]
+		return [context.hermesHome, path.join(context.home, "hermes"), context.home]
+			.flatMap(home =>
+				["auth.json", ".anthropic_oauth.json", ".env", "config.yaml"].map(file => path.join(home, file)),
+			)
 			.map(file => {
 				try {
-					const stat = fs.statSync(path.join(context.hermesHome, file));
+					const stat = fs.statSync(file);
 					return `${stat.mtimeMs}:${stat.size}`;
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";

@@ -1763,7 +1763,7 @@ export class Settings {
 				if (whole && typeof whole === "object") {
 					result = {
 						...result,
-						settings: projectMercuryModels(whole),
+						settings: projectMercuryModels(whole, mercuryPath),
 					} as typeof result;
 				}
 			}
@@ -1832,7 +1832,7 @@ export class Settings {
 			if (loaded && typeof loaded === "object") {
 				this.useMercuryApprovalPolicy(mercuryPath);
 				const whole = loaded as Record<string, unknown>;
-				const shared: RawSettings = projectMercuryModels(whole);
+				const shared: RawSettings = projectMercuryModels(whole, mercuryPath);
 				const hermes = whole.hermes as Record<string, unknown> | undefined;
 				const compression = hermes?.compression as Record<string, unknown> | undefined;
 				const threshold = compression?.threshold ?? 0.5;
@@ -2746,7 +2746,7 @@ export class Settings {
 			const raw = await this.#loadYamlIfPresent(mercuryPath, false);
 			const parsed = this.#unwrapYamlLoadResult(mercuryPath, raw);
 			if (parsed && typeof parsed === "object") existing = parsed as Record<string, unknown>;
-			toWrite = persistMercuryModels(existing, settings);
+			toWrite = persistMercuryModels(existing, settings, mercuryPath);
 		}
 		const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
 		let removeTemp = false;

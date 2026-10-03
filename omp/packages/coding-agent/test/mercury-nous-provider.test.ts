@@ -140,6 +140,7 @@ describe.skipIf(!python)("Mercury Nous inference through native OMP transports",
 		await Bun.write(
 			process.env.MERCURY_CONFIG!,
 			YAML.stringify({
+				profile: { inherit_credentials: false },
 				models: {
 					default: "openai-codex/gpt-6.1-sol",
 					delegate_model: `nous/${chatId}`,
@@ -227,4 +228,17 @@ describe.skipIf(!python)("Mercury Nous inference through native OMP transports",
 		for (let i = 0; i < 2; i++) await expect(registry.getApiKey(model)).rejects.toThrow("login is unavailable");
 		expect(requests).toHaveLength(1);
 	}, 30000);
+
+	test("an inheriting profile uses the main Portal login for actual inference", async () => {
+		const file = `${selected}/config.yaml`;
+		const config = YAML.parse(await Bun.file(file).text()) as { profile: { inherit_credentials: boolean } };
+		config.profile.inherit_credentials = true;
+		await Bun.write(file, YAML.stringify(config));
+		await infer(registry.find("nous", chatId)!);
+		expect(requests.at(-1)?.authorization).toBe(`Bearer ${token("default")}`);
+		const rotated = token("main-peer-rotated");
+		await login(rotated, temp.join("hermes"));
+		await infer(registry.find("nous", claudeId)!);
+		expect(requests.at(-1)?.authorization).toBe(`Bearer ${rotated}`);
+	});
 });

@@ -13,8 +13,17 @@ mercury omp -p coder
 
 Names use lowercase letters, digits, hyphens, and underscores; they are single
 arguments, not space-separated display names. Fresh profiles receive their own
-bundled Markdown defaults and initial model configuration. They do not read the
+bundled Markdown defaults and inherit main-profile inference defaults. They do not read the
 default profile's personal Markdown at runtime.
+
+Models, fallbacks, reasoning levels and context budgets inherit live from the
+main profile; local `models:` entries override selected defaults. Provider API
+keys and OAuth logins inherit from the same installation. OAuth refreshes write
+to the main login owner, so Hermes and OMP do not duplicate rotating grants.
+To use independent models or logins, set `profile.inherit_models: false` or
+`profile.inherit_credentials: false` in the named profile's `config.yaml`.
+Older explicit model selections remain overrides; remove them to inherit.
+Prompts, sessions, native approvals and messaging credentials remain local.
 
 Each named profile owns `$MERCURY_HOME/hermes/profiles/<name>/config/`:
 

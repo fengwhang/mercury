@@ -43,8 +43,7 @@ def _catalog(base_url: str, api_key: str, state: dict) -> list[dict]:
 
 
 def runtime_provider(*, include_models: bool = True, force_refresh: bool = False) -> dict | None:
-    # An OMP profile must have its own Portal login, rather than adopting a
-    # different profile's grant from Hermes' shared legacy refresh mirror.
+    # The auth store resolves the main login owner for inheriting profiles.
     state = (auth._load_auth_store().get("providers") or {}).get("nous")
     if not state:
         return None

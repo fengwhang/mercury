@@ -913,6 +913,9 @@ def _read_config_model(profile_dir: Path) -> tuple:
         # profile's home, so read THIS profile's file via the raw primitive.
         from mercury_cli.config import read_user_config_raw
         cfg = read_user_config_raw(config_path)
+        from mercury_cli.profile_defaults import resolve_model_defaults
+        from mercury_cli.model_settings import hermes_model_view
+        cfg = hermes_model_view(resolve_model_defaults(cfg, config_path))
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
             return model_cfg, None
@@ -924,17 +927,7 @@ def _read_config_model(profile_dir: Path) -> tuple:
 
 
 def _seed_model_config(profile_dir: Path) -> None:
-    """Give a profile created without a clone source a usable model block.
-
-    Such a profile gets its directory tree but no ``config.yaml`` at all, so it
-    resolves no provider and its first turn dies with "No LLM provider
-    configured" — created, but unable to run. Copy the active profile's
-    ``model`` block over at creation time.
-
-    This is a copy, not a link: profiles remain independent islands, and
-    editing either one afterwards never touches the other. "Fresh" means fresh
-    skills and SOUL, not unreachable.
-    """
+    """Seed native behavior; Mercury profiles inherit main inference defaults."""
     config_path = profile_dir / "config.yaml"
     if config_path.exists():
         return
@@ -942,20 +935,24 @@ def _seed_model_config(profile_dir: Path) -> None:
         import yaml
         from mercury_constants import get_hermes_home, named_profile_home
         from mercury_cli.config import read_user_config_raw
+        from mercury_cli.profile_defaults import main_profile_root
 
         ambient = get_hermes_home()
         # The default profile's config lives at the mercury ROOT (the ONE
         # config), not the hermes subdir — same law as clone sources.
         source_home = ambient if named_profile_home(ambient) is not None \
             else _get_default_hermes_home()
+        managed_profile = main_profile_root(profile_dir) is not None
+        if managed_profile:
+            source_home = _get_default_hermes_home()
         source = source_home / "config.yaml"
-        if not source.is_file():
+        if not source.is_file() and not managed_profile:
             return
         source_config = read_user_config_raw(source)
         hermes_config = source_config.get("hermes", source_config)
         model_cfg = hermes_config.get("model")
         model_slots = source_config.get("models")
-        if not model_cfg and not model_slots:
+        if not model_cfg and not model_slots and not managed_profile:
             return
         if model_slots:
             # Both engines need their model slots and native engine settings.
@@ -968,6 +965,12 @@ def _seed_model_config(profile_dir: Path) -> None:
                     seed["hermes"][key] = hermes_config[key]
         else:
             seed = {"model": model_cfg}
+        if managed_profile:
+            from mercury_cli.model_settings import canonical_model_document
+            seed = canonical_model_document(seed)
+            seed["models"] = {}
+            seed["hermes"].pop("model_options", None)
+            seed["profile"] = {"inherit_models": True, "inherit_credentials": True}
         config_path.write_text(
             yaml.safe_dump(seed, sort_keys=False),
             encoding="utf-8",
@@ -1493,12 +1496,9 @@ def create_profile(
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
 
-    # Seed an empty .env so the profile has its own credentials file from
-    # day one. Without it, profile-scoped env writes (dashboard Channels /
-    # Keys pages, `mercury -p <name> auth add`) had no file until first
-    # write, and the profile silently inherited API keys from the shell
-    # environment — users reasonably read that as "the new profile reads
-    # the root .env". Skipped when --clone/--clone-all already copied one.
+    # Keep a private file for local channel secrets and provider overrides.
+    # Inheriting provider logins does not inherit the main messaging identity.
+    # Explicit clone operations may already have copied this file.
     env_path = profile_dir / ".env"
     if not env_path.exists():
         try:
@@ -1578,7 +1578,8 @@ def profileadd_command(args: str) -> str:
     name = profile_dir.name
     command = mercury_command()
     lines = [f"Profile '{name}' created at {profile_dir}",
-             f"Prompts: {profile_dir / 'config'}"]
+             f"Prompts: {profile_dir / 'config'}",
+             "Models and provider logins: inherited from the main profile (local model overrides supported)."]
     result = seed_profile_skills(profile_dir, quiet=True)
     if result is None:
         lines.append(f"Skills could not be seeded; run {command} -p {name} update to retry.")

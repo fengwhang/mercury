@@ -199,6 +199,13 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
             f"(Workstream A)."
         )
 
+    from mercury_constants import get_hermes_home
+    from mercury_cli.profile_defaults import main_profile_root
+    home = get_hermes_home()
+    if main_profile_root(home) is not None:
+        secrets = build_profile_secret_scope(home)
+        if name in secrets:
+            return secrets[name]
     val = os.environ.get(name)
     return val if val is not None else default
 
@@ -286,15 +293,53 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     return secrets
 
 
+def inherited_provider_secrets(home: Path) -> Dict[str, str]:
+    """Inherit inference credentials only, never messaging tokens/allowlists."""
+    from mercury_cli.profile_defaults import main_profile_root, inherits, _document
+    root = main_profile_root(home)
+    if root is None or not inherits(home, "credentials"):
+        return {}
+    from mercury_cli.auth import PROVIDER_REGISTRY
+    from mercury_cli.providers import get_provider
+    from mercury_cli.model_settings import shared_models
+    allowed = {"OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"}
+    for provider in PROVIDER_REGISTRY.values():
+        allowed.update(provider.api_key_env_vars or ())
+        if provider.base_url_env_var:
+            allowed.add(provider.base_url_env_var)
+    document = _document(root / "config.yaml")
+    for selector in shared_models(document).values():
+        if not isinstance(selector, str) or "/" not in selector:
+            continue
+        provider = get_provider(selector.split("/", 1)[0], allow_network=False)
+        if provider:
+            allowed.update(provider.api_key_env_vars or ())
+            if provider.base_url_env_var:
+                allowed.add(provider.base_url_env_var)
+    native = document.get("hermes") or {}
+    custom = list((native.get("providers") or {}).values()) + (native.get("custom_providers") or [])
+    for provider in custom:
+        if isinstance(provider, dict):
+            names = provider.get("key_env") or provider.get("api_key_env") or provider.get("env") or provider.get("api_key_env_vars") or []
+            allowed.update([names] if isinstance(names, str) else names)
+    values = load_env_file(root / ".env")
+    values.update(load_env_file(root / "hermes" / ".env"))
+    from mercury_cli.env_loader import get_secret_source_values
+    values.update(get_secret_source_values(root))
+    values.update(get_secret_source_values(root / "hermes"))
+    return {key: value for key, value in values.items() if key in allowed and not _is_global_env(key)}
+
+
 def build_profile_secret_scope(mercury_home: Path) -> Dict[str, str]:
-    """Build a profile's secret mapping from its ``<home>/.env``.
+    """Build local secrets over explicitly inherited main provider credentials.
 
     Returns a fresh dict (safe to install via ``set_secret_scope``). Genuinely
     global vars are intentionally NOT copied in — ``get_secret`` reads those
     from ``os.environ`` directly, so the scope holds only profile secrets.
     """
     home = Path(mercury_home)
-    secrets = load_env_file(home / ".env")
+    secrets = inherited_provider_secrets(home)
+    secrets.update(load_env_file(home / ".env"))
 
     try:
         from mercury_cli.env_loader import get_secret_source_values

@@ -36,6 +36,44 @@ afterEach(() => {
 	temp.removeSync();
 });
 
+test("a named profile inherits live model defaults without freezing them on native saves", async () => {
+	process.env.MERCURY_HOME = temp.path();
+	const profile = temp.join("hermes/profiles/research");
+	const file = path.join(profile, "config.yaml");
+	process.env.MERCURY_CONFIG = file;
+	const main = {
+		models: {
+			delegate_model: "openai-codex/gpt-6.1-sol",
+			delegate_fallback: "nous/xiaomi/mimo-v2.6-pro",
+			reasoning_overrides: { "openai-codex/gpt-6.1-sol": "high" },
+			context_windows: { "openai-codex/gpt-6.1-sol": 872000 },
+		},
+	};
+	await Bun.write(temp.join("config.yaml"), YAML.stringify(main));
+	await Bun.write(file, YAML.stringify({ models: {}, hermes: {}, omp: { tools: { approvalMode: "write" } } }));
+	await fs.mkdir(path.join(profile, "omp"), { recursive: true });
+	const settings = await Settings.init({ agentDir: path.join(profile, "omp"), cwd: temp.path() });
+	expect(settings.getModelRole("task")).toBe(main.models.delegate_model);
+	expect(settings.get("defaultThinkingLevel")).toBe(Effort.High);
+	expect(settings.get("modelContextWindows")[main.models.delegate_model]).toBe(872000);
+	settings.set("tools.approvalMode", "always-ask");
+	await settings.flush();
+	const saved = YAML.parse(await Bun.file(file).text()) as StoredDocument;
+	expect(saved.models.delegate_model).toBeUndefined();
+	expect(saved.models.reasoning_overrides).toBeUndefined();
+	main.models.delegate_model = "nous/xiaomi/mimo-v2.6-pro";
+	await Bun.write(temp.join("config.yaml"), YAML.stringify(main));
+	await settings.reloadFromDisk();
+	expect(settings.getModelRole("task")).toBe(main.models.delegate_model);
+	settings.setModelRole("task", "openai-codex/gpt-6.1-sol");
+	await settings.flush();
+	const overridden = YAML.parse(await Bun.file(file).text()) as StoredDocument;
+	expect(overridden.models.delegate_model).toBe("openai-codex/gpt-6.1-sol");
+	expect((YAML.parse(await Bun.file(temp.join("config.yaml")).text()) as StoredDocument).models.delegate_model).toBe(
+		main.models.delegate_model,
+	);
+});
+
 test("OMP projects shared choices and its picker saves only the shared delegate model", async () => {
 	const file = temp.join("config.yaml");
 	process.env.MERCURY_CONFIG = file;

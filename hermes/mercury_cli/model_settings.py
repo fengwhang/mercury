@@ -163,7 +163,7 @@ def save_hermes_model_view(whole: dict, native: dict, previous: dict | None = No
             if option_selector:
                 native.setdefault("model_options", {}).setdefault(option_selector, {}).update(options)
         if incoming.get("context_length") != before.get("context_length") and incoming.get("context_length"):
-            models.setdefault("context_windows", {})[models["default"]] = incoming["context_length"]
+            models.setdefault("context_windows", {})[qualify_model(selection["default"], selection["provider"])] = incoming["context_length"]
     native.pop("model", None)
     from mercury_cli.fallback_config import get_fallback_chain
     if any(key in native for key in ("fallback_providers", "fallback_model")):
@@ -185,9 +185,10 @@ def save_hermes_model_view(whole: dict, native: dict, previous: dict | None = No
     for selector, level in (agent.get("reasoning_overrides") or {}).items():
         if level != (old_agent.get("reasoning_overrides") or {}).get(selector):
             efforts[selector] = "off" if level == "none" else level
-    if "reasoning_effort" in agent and agent["reasoning_effort"] != old_agent.get("reasoning_effort") and models.get("default"):
+    default_selector = models.get("default") or qualify_model(incoming.get("default", before.get("default", "")), incoming.get("provider", before.get("provider", "")))
+    if "reasoning_effort" in agent and agent["reasoning_effort"] != old_agent.get("reasoning_effort") and default_selector:
         level = agent["reasoning_effort"]
-        efforts[models["default"]] = "off" if level == "none" else level
+        efforts[default_selector] = "off" if level == "none" else level
     agent.pop("reasoning_overrides", None)
     agent.pop("reasoning_effort", None)
     for provider, overrides in list((native.get("model_overrides") or {}).items()):

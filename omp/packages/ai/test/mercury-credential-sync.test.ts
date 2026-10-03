@@ -119,8 +119,40 @@ describe.skipIf(!python)("Mercury cross-engine credential IPC", () => {
 		expect(store.listAuthCredentials("openai-codex")).toEqual([]);
 	});
 
-	test("the real factory isolates a Hermes profile despite the inherited launcher agent directory", async () => {
+	test("a Mercury named profile inherits the main login and observes a peer's rotated grant", async () => {
+		const owner = path.join(context.hermesHome, "auth.json");
+		const access = token("main");
+		await Bun.write(
+			owner,
+			JSON.stringify({
+				version: 1,
+				providers: {
+					"openai-codex": { tokens: { access_token: access, refresh_token: "main-refresh" } },
+				},
+			}),
+		);
+		context = { ...context, hermesHome: path.join(dir, "hermes/profiles/research") };
+		await Bun.write(path.join(context.hermesHome, "config.yaml"), "models: {}\n");
+		const { storage, store } = await open();
+		expect(await storage.getApiKey("openai-codex")).toBe(access);
+		const rotated = token("main-rotated");
+		await Bun.write(
+			owner,
+			JSON.stringify({
+				version: 1,
+				providers: {
+					"openai-codex": { tokens: { access_token: rotated, refresh_token: "rotated-refresh" } },
+				},
+			}),
+		);
+		expect(store.pollExternalChanges?.()).toBe(true);
+		expect(await storage.getApiKey("openai-codex")).toBe(rotated);
+		expect(fs.existsSync(path.join(context.hermesHome, "auth.json"))).toBe(false);
+	});
+
+	test("the real factory honors an independent profile despite the inherited launcher agent directory", async () => {
 		const selected = path.join(dir, "hermes/profiles/private");
+		await Bun.write(path.join(selected, "config.yaml"), "profile:\n  inherit_credentials: false\n");
 		const privateAccess = token("private");
 		await Bun.write(
 			path.join(context.hermesHome, "auth.json"),

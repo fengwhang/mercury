@@ -42,7 +42,8 @@ Mercury's contribution is the wiring between the three engines and surfaces:
 - **One place to configure the handoff.** `config.yaml` contains the chat
   and coding model slots, optional fallback chains, thinking levels, and
   approval settings. Supported API-key credentials and compatible OAuth
-  logins are shared between Hermes and OMP within the active profile.
+  logins are shared between Hermes and OMP; named profiles inherit the main
+  profile's inference settings and logins by default.
 - **Direct execution when you already know the task.** `mercury omp`
   opens OMP's TUI; `/omp` sends a task directly to OMP; `omp_direct` cron
   jobs run the coding engine without an intervening Hermes agent turn.
@@ -339,6 +340,16 @@ system prompt from its own files; missing files never inherit the default
 profile's persona or instructions. Existing profile Markdown migrates locally.
 Cloning copies instructions once, so subsequent edits stay independent;
 export/import and the profile editors use the same layout.
+
+New profiles inherit the main profile's models, fallbacks, reasoning/context
+settings, and provider logins. Local `models:` entries override those defaults;
+changing the main model updates profiles that haven't overridden it. OAuth
+tokens stay in the main auth store, including refreshes from either engine.
+Profiles retain their own prompts, memory, sessions, channel credentials, and
+native permission settings. Nightly profiles inherit only from nightly.
+Set `profile.inherit_models: false` or `profile.inherit_credentials: false` in
+a profile's config to configure those independently. Older profiles keep
+their explicit model selections but inherit the main login automatically.
 
 ```bash
 mercury profile create coder

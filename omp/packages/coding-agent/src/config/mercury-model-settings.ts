@@ -1,4 +1,7 @@
 /** Transient native settings; the Mercury models block owns persisted choices. */
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { YAML } from "bun";
 import { parseModelString } from "./model-resolver";
 import type { RawSettings } from "./settings";
 
@@ -6,9 +9,39 @@ function record(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
-export function projectMercuryModels(whole: RawSettings): RawSettings {
+function inheritsModels(whole: RawSettings, configPath?: string): boolean {
+	const root = process.env.MERCURY_HOME?.trim();
+	return (
+		!!root &&
+		!!configPath &&
+		path.dirname(path.dirname(path.resolve(configPath))) === path.resolve(root, "hermes", "profiles") &&
+		record(whole.profile).inherit_models !== false
+	);
+}
+
+function effectiveModels(whole: RawSettings, configPath?: string): Record<string, unknown> {
+	const local = record(whole.models);
+	if (!inheritsModels(whole, configPath)) return local;
+	const mainPath = path.resolve(process.env.MERCURY_HOME!, "config.yaml");
+	let main: Record<string, unknown>;
+	try {
+		main = record(YAML.parse(fs.readFileSync(mainPath, "utf8")));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return local;
+		throw error;
+	}
+	const base = record(main.models);
+	return {
+		...base,
+		...local,
+		reasoning_overrides: { ...record(base.reasoning_overrides), ...record(local.reasoning_overrides) },
+		context_windows: { ...record(base.context_windows), ...record(local.context_windows) },
+	};
+}
+
+export function projectMercuryModels(whole: RawSettings, configPath?: string): RawSettings {
 	const native = structuredClone(record(whole.omp));
-	const models = record(whole.models);
+	const models = effectiveModels(whole, configPath);
 	const selector = models.delegate_model;
 	const efforts = record(models.reasoning_overrides);
 	if (models.reasoning_overrides !== undefined) native.modelReasoningOverrides = efforts;
@@ -32,12 +65,13 @@ export function projectMercuryModels(whole: RawSettings): RawSettings {
 	return native;
 }
 
-export function persistMercuryModels(whole: RawSettings, native: RawSettings): RawSettings {
+export function persistMercuryModels(whole: RawSettings, native: RawSettings, configPath?: string): RawSettings {
 	const result = structuredClone(whole);
-	const before = projectMercuryModels(whole);
+	const before = projectMercuryModels(whole, configPath);
+	const inheriting = inheritsModels(whole, configPath);
 	const models = { ...record(result.models) };
 	const task = native.delegateModel;
-	if (models.delegate_model === undefined && typeof task === "string") models.delegate_model = task;
+	if (!inheriting && models.delegate_model === undefined && typeof task === "string") models.delegate_model = task;
 	if (task !== before.delegateModel) {
 		if (typeof task === "string") {
 			const parsed = parseModelString(task, { allowMaxSuffix: true, allowAutoAlias: true });
@@ -52,24 +86,36 @@ export function persistMercuryModels(whole: RawSettings, native: RawSettings): R
 	}
 	if (
 		(native.defaultThinkingLevel !== before.defaultThinkingLevel ||
-			record(models.reasoning_overrides)[models.delegate_model as string] === undefined) &&
+			(!inheriting && record(models.reasoning_overrides)[task as string] === undefined)) &&
 		typeof native.defaultThinkingLevel === "string" &&
-		typeof models.delegate_model === "string"
+		typeof task === "string"
 	) {
 		models.reasoning_overrides = {
 			...record(models.reasoning_overrides),
-			[models.delegate_model]: native.defaultThinkingLevel,
+			[task]: native.defaultThinkingLevel,
 		};
 	}
 	if (
 		native.modelContextWindows &&
-		(models.context_windows === undefined || !Bun.deepEquals(native.modelContextWindows, before.modelContextWindows))
+		((!inheriting && models.context_windows === undefined) ||
+			!Bun.deepEquals(native.modelContextWindows, before.modelContextWindows))
 	) {
-		models.context_windows = native.modelContextWindows;
+		if (!inheriting) models.context_windows = native.modelContextWindows;
+		else {
+			const windows = { ...record(models.context_windows) };
+			const previous = record(before.modelContextWindows);
+			const incoming = record(native.modelContextWindows);
+			for (const key of new Set([...Object.keys(previous), ...Object.keys(incoming)])) {
+				if (incoming[key] === previous[key]) continue;
+				if (typeof incoming[key] === "number") windows[key] = incoming[key];
+				else delete windows[key];
+			}
+			models.context_windows = windows;
+		}
 	}
 	const oldEfforts = record(before.modelReasoningOverrides);
 	const newEfforts = record(native.modelReasoningOverrides);
-	if (models.reasoning_overrides === undefined && Object.keys(newEfforts).length)
+	if (!inheriting && models.reasoning_overrides === undefined && Object.keys(newEfforts).length)
 		models.reasoning_overrides = { ...newEfforts };
 	if (!Bun.deepEquals(oldEfforts, newEfforts)) {
 		const efforts = { ...record(models.reasoning_overrides) };
@@ -82,7 +128,7 @@ export function persistMercuryModels(whole: RawSettings, native: RawSettings): R
 	}
 	const oldChains = record(record(before.retry).fallbackChains);
 	const newChains = record(record(native.retry).fallbackChains);
-	const selected = typeof models.delegate_model === "string" ? models.delegate_model : "";
+	const selected = typeof task === "string" ? task : "";
 	let fallback: unknown[] | undefined;
 	if (native.delegateFallback !== before.delegateFallback) {
 		fallback =

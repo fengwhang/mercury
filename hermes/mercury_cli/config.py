@@ -292,6 +292,7 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # managed_scope), and the env snapshot invalidates it when a referenced ${VAR}
 # changes value (late .env load, in-process rotation — #58514).
 _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
+_PROFILE_PARENT_SIGNATURES: Dict[str, tuple] = {}
 # (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
@@ -779,15 +780,14 @@ def get_config_path() -> Path:
     return resolve_config_path()
 
 def get_env_path() -> Path:
-    """Get the .env file path (API keys) — THE one env store.
-
-    MERCURY-OMP PATCH (ONE env, user rule): $MERCURY_HOME/.env is THE env
-    file for both engines. No other location is read, written, or aliased.
-    """
+    """Use the install's env store, or a profile's explicitly independent one."""
     mercury = os.environ.get("MERCURY_HOME", "").strip()
     if not mercury:
         return get_hermes_home() / ".env"
-    # NO legacy paths, NO symlinks (user rule): THE env file, full stop.
+    from mercury_cli.profile_defaults import main_profile_root, inherits
+    home = get_hermes_home()
+    if main_profile_root(home) is not None and not inherits(home, "credentials"):
+        return home / ".env"
     return Path(mercury) / ".env"
 
 def get_project_root() -> Path:
@@ -4086,6 +4086,11 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         ensure_hermes_home()
         config_path = get_config_path()
         path_key = str(config_path)
+        from mercury_cli.profile_defaults import model_parent_signature, resolve_model_defaults
+        parent_signature = model_parent_signature(config_path)
+        if _PROFILE_PARENT_SIGNATURES.get(path_key) != parent_signature:
+            _LOAD_CONFIG_CACHE.pop(path_key, None)
+            _PROFILE_PARENT_SIGNATURES[path_key] = parent_signature
 
         try:
             st = config_path.stat()
@@ -4136,7 +4141,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         if user_sig is not None:
             try:
                 with open(config_path, encoding="utf-8") as f:
-                    user_config = fast_safe_load(f) or {}
+                    user_config = resolve_model_defaults(fast_safe_load(f) or {}, config_path)
 
                 # MERCURY-OMP PATCH (unified config): the Mercury unified file
                 # (~/.mercury/config.yaml) holds mercury' settings under the
@@ -4449,11 +4454,17 @@ def save_config(
         mercury_cfg = os.environ.get("MERCURY_CONFIG", "").strip()
         existing_shared = read_user_config_raw(config_path)
         if isinstance(existing_shared.get("hermes"), dict) or "models" in existing_shared or (mercury_cfg and str(config_path) == mercury_cfg):
-            from mercury_cli.model_settings import canonical_model_document, save_hermes_model_view
+            from mercury_cli.model_settings import canonical_model_document, save_hermes_model_view, hermes_model_view
+            from mercury_cli.profile_defaults import resolve_model_defaults
+            previous = _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path))
+            if previous is None:
+                previous = hermes_model_view(resolve_model_defaults(existing_shared, config_path))
             normalized = canonical_model_document(save_hermes_model_view(
                 existing_shared, normalized,
-                previous=_LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+                previous=previous,
             ))
+            from mercury_cli.profile_defaults import keep_local_transport_settings
+            normalized = keep_local_transport_settings(normalized, existing_shared, previous, config_path)
 
         atomic_yaml_write(
             config_path,
@@ -5990,11 +6001,13 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Fail-closed parse via require_readable (unparseable / non-mapping
     # refuse-write); returns the mapping so we do not re-parse / collapse.
     user_config = require_readable_config_before_write(config_path)
+    original_user_config = copy.deepcopy(user_config)
     unified_document = None
     previous_native_view = None
     if isinstance(user_config.get("hermes"), dict):
         from mercury_cli.model_settings import hermes_model_view
-        previous_native_view = hermes_model_view(user_config)
+        from mercury_cli.profile_defaults import resolve_model_defaults
+        previous_native_view = hermes_model_view(resolve_model_defaults(user_config, config_path))
         if key.startswith("hermes."):
             user_config["hermes"] = copy.deepcopy(previous_native_view)
         # Partial edits to legacy OMP maps start from the shared view rather
@@ -6005,11 +6018,11 @@ def set_config_value(key: str, value: str, force: bool = False):
                 from mercury_cli.model_settings import shared_models
                 user_config.setdefault("omp", {})[alias] = copy.deepcopy(shared_models(user_config).get(shared_key) or {})
     if isinstance(user_config.get("hermes"), dict) and key.split(".", 1)[0] not in {
-        "models", "omp", "hermes", "approvals",
+        "models", "omp", "hermes", "approvals", "profile",
     }:
         unified_document = user_config
         from mercury_cli.model_settings import hermes_model_view
-        user_config = hermes_model_view(unified_document)
+        user_config = copy.deepcopy(previous_native_view)
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
@@ -6180,12 +6193,16 @@ def set_config_value(key: str, value: str, force: bool = False):
     elif isinstance(user_config.get("hermes"), dict):
         from mercury_cli.model_settings import canonical_model_document, save_hermes_model_view, save_omp_model_edit
         if key.startswith("hermes."):
-            user_config = save_hermes_model_view(user_config, user_config["hermes"], previous=previous_native_view)
+            user_config = save_hermes_model_view(original_user_config, user_config["hermes"], previous=previous_native_view)
         elif key.startswith("omp."):
             user_config = save_omp_model_edit(user_config, key, value)
         else:
             user_config = canonical_model_document(user_config)
-    atomic_yaml_write(config_path, unified_document if unified_document is not None else user_config, sort_keys=False)
+    document = unified_document if unified_document is not None else user_config
+    if previous_native_view is not None:
+        from mercury_cli.profile_defaults import keep_local_transport_settings
+        document = keep_local_transport_settings(document, original_user_config, previous_native_view, config_path)
+    atomic_yaml_write(config_path, document, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

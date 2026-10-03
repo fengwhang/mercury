@@ -577,7 +577,8 @@ def load_cli_config() -> Dict[str, Any]:
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 from mercury_cli.config import _normalize_root_model_keys, unwrap_hermes_subtree
-                file_config = unwrap_hermes_subtree(fast_safe_load(f) or {})
+                from mercury_cli.profile_defaults import resolve_model_defaults
+                file_config = unwrap_hermes_subtree(resolve_model_defaults(fast_safe_load(f) or {}, config_path))
                 file_config = _normalize_root_model_keys(file_config)
             
             _file_has_terminal_config = "terminal" in file_config

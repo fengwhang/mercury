@@ -132,6 +132,8 @@ def _current_slots() -> dict[str, str]:
     try:
         import yaml
         whole = yaml.safe_load(_unified_path().read_text()) or {}
+        from mercury_cli.profile_defaults import resolve_model_defaults
+        whole = resolve_model_defaults(whole, _unified_path())
         models = whole.get("models") or {}
         for k in slots:
             v = str(models.get(k) or "").strip()
@@ -148,6 +150,8 @@ def _current_chains() -> dict[str, list[str]]:
     try:
         import yaml
         whole = yaml.safe_load(_unified_path().read_text()) or {}
+        from mercury_cli.profile_defaults import resolve_model_defaults
+        whole = resolve_model_defaults(whole, _unified_path())
         models = whole.get("models") or {}
         for k in chains:
             v = models.get(k) or []
@@ -167,6 +171,8 @@ def _current_reasoning_overrides() -> dict[str, str]:
 
     try:
         whole = yaml.safe_load(_unified_path().read_text(encoding="utf-8")) or {}
+        from mercury_cli.profile_defaults import resolve_model_defaults
+        whole = resolve_model_defaults(whole, _unified_path())
         overrides = (whole.get("models") or {}).get("reasoning_overrides") or {}
         if isinstance(overrides, dict):
             return {str(k): str(v) for k, v in overrides.items() if isinstance(v, str)}

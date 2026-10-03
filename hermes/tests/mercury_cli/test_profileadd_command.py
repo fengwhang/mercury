@@ -81,7 +81,9 @@ async def test_profileadd_creates_complete_profile_without_switching(install, su
     assert (root / "skills" / "autonomous-ai-agents" / "mercury-agent" / "SKILL.md").is_file()
     assert (home / ".env").is_file()
     config = yaml.safe_load((home / "config.yaml").read_text())
-    assert config["models"]["default"] == "openrouter/default-chat"
+    assert "default" not in config["models"]
+    from mercury_cli.profile_defaults import resolve_model_defaults
+    assert resolve_model_defaults(config, home / "config.yaml")["models"]["default"] == "openrouter/default-chat"
     wrapper = Path.home() / ".local" / "bin" / "research"
     assert wrapper.is_file() and command in wrapper.read_text()
     assert f"Configure: {command} -p research setup" in reply

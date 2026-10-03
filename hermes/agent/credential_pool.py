@@ -3252,6 +3252,10 @@ def get_env_prefer_dotenv(key: str) -> str:
     env_file = load_env()
     raw = env_file.get(key, "").strip()
     scoped_value = (_get_secret(key, "") or "").strip()
+    from mercury_constants import get_hermes_home
+    from mercury_cli.profile_defaults import main_profile_root
+    if main_profile_root(get_hermes_home()) is not None and scoped_value:
+        return scoped_value
     # If .env contains an unresolved op:// reference, prefer the
     # already-resolved value supplied by the active secret scope (or by
     # os.environ in legacy single-profile mode), set by

@@ -1132,7 +1132,8 @@ def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any
 # =============================================================================
 
 def _auth_file_path() -> Path:
-    path = get_hermes_home() / "auth.json"
+    from mercury_cli.profile_defaults import credential_home
+    path = credential_home(get_hermes_home()) / "auth.json"
     # Seat belt: if pytest is running and HERMES_HOME resolves to the real
     # user's auth store, refuse rather than silently corrupt it. This catches
     # tests that forgot to monkeypatch HERMES_HOME, tests invoked without the
@@ -1165,6 +1166,10 @@ def _global_auth_file_path() -> Optional[Path]:
     """
     try:
         from mercury_constants import get_default_hermes_root
+        from mercury_cli.profile_defaults import main_profile_root, inherits
+        root = main_profile_root(get_hermes_home())
+        if root is not None:
+            return root / "hermes" / "auth.json" if inherits(get_hermes_home(), "credentials") else None
         global_root = get_default_hermes_root()
     except Exception:
         return None

@@ -40,6 +40,9 @@ def parse_config(path=None):
     except FileNotFoundError:
         sys.exit(f"FATAL: {path} not found")
     from mercury_cli.model_settings import shared_models
+    from mercury_cli.profile_defaults import resolve_model_defaults
+    from pathlib import Path
+    config = resolve_model_defaults(config, Path(path))
     models = shared_models(config)
     if not isinstance(models, dict):
         raise ValueError("models must be a mapping")
@@ -496,6 +499,12 @@ def render_omp_subtree(slots, target=None):
     from mercury_cli.model_settings import canonical_model_document
     from utils import atomic_write_text
     document = canonical_model_document(yaml.safe_load(text) or {})
+    from pathlib import Path
+    from mercury_cli.profile_defaults import inherits
+    if inherits(Path(target).parent, "models", whole_config):
+        # Generated OMP projections must not turn live inherited defaults
+        # into a permanent local model selection when an agent is spawned.
+        document["models"] = canonical_model_document(whole_config)["models"]
     text = yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
     text = text.replace("omp:\n", "omp:\n  # Mercury inherited deny patterns: " + json.dumps(inherited_now) + "\n", 1)
     os.makedirs(os.path.dirname(target), exist_ok=True)

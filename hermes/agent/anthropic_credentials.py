@@ -914,7 +914,8 @@ _OAUTH_TOKEN_USER_AGENT = "axios/1.7.9"
 _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
 def _get_hermes_oauth_file() -> Path:
-    return get_hermes_home() / ".anthropic_oauth.json"
+    from mercury_cli.profile_defaults import credential_home
+    return credential_home(get_hermes_home()) / ".anthropic_oauth.json"
 
 
 def _generate_pkce() -> tuple:
@@ -1121,4 +1122,3 @@ def _write_hermes_oauth_credentials(
             "Failed to write refreshed Mercury OAuth credentials to %s: %s", oauth_file, e
         )
         raise CredentialPersistError(oauth_file, e) from e
-

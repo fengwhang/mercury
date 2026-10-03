@@ -1,9 +1,9 @@
 """Private credential interchange for Mercury's Hermes and OMP engines.
 
-Hermes' profile-local auth store is the authority. OMP keeps a usage/selection
+The profile's resolved login owner is the authority (main by default). OMP keeps a usage/selection
 mirror, but refreshes shared OAuth grants through this module and the SAME
 cross-process auth lock as Hermes. Never copy grants to another installation,
-profile, Codex CLI, or Claude CLI, and never put credentials in argv or logs.
+Codex CLI, or Claude CLI, and never put credentials in argv or logs.
 """
 from __future__ import annotations
 
@@ -76,8 +76,8 @@ def _entries(store: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     pools = store.setdefault("credential_pool", {})
     if not isinstance(pools, dict):
         raise ValueError("Invalid credential pool")
-    # Seed only this profile's owned logins, without discovering credentials
-    # from other profiles or external CLIs. Setup can save these before a
+    # Seed the resolved login owner's grants, without discovering credentials
+    # from another installation or external CLIs. Setup can save these before a
     # runtime has ever loaded its credential pool.
     from agent.anthropic_credentials import read_hermes_oauth_credentials
     from agent.credential_pool import get_env_prefer_dotenv
