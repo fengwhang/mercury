@@ -85,3 +85,32 @@ async def test_omp_room_routing(monkeypatch) -> None:
     await _send("!nope123")    # unknown bang stays chat -> task
     assert mgr.pumped == ["/help", "/model opus", "hello", "!nope123"]
     assert gatewayed == ["/exit", "/whoami", "/nope123"]
+
+
+@pytest.mark.asyncio
+async def test_profile_omp_turn_and_approve_share_the_same_session_key(monkeypatch):
+    from types import SimpleNamespace
+    from gateway.session import build_session_key
+    from observatory import rooms
+
+    adapter = _adapter(monkeypatch)
+    key_for = lambda source: build_session_key(source, profile=source.profile)
+    adapter._session_store = SimpleNamespace(_generate_session_key=key_for)
+    captured = []
+    class Manager:
+        async def handle_omp_message(self, channel, sender, text, *, approval_session_key):
+            captured.append(approval_session_key)
+            return ""
+        def node_for_channel(self, channel):
+            return {"extra": {"profile": "coding"}}
+    monkeypatch.setattr(rooms, "get_room_manager", lambda: Manager())
+    monkeypatch.setattr(rooms, "route_channel", lambda channel: ("spawn-omp", {"extra": {"profile": "coding"}}))
+    async def handle(event):
+        captured.append(key_for(event.source))
+    adapter._message_handler = handle
+    monkeypatch.setattr(adapter, "handle_message", handle)
+    await adapter._dispatch_message("delegate", "#nixpi4_coder", "group", "owner", "owner")
+    await adapter._dispatch_message("!approve", "#nixpi4_coder", "group", "owner", "owner")
+    assert len(captured) == 2
+    assert captured[0] == captured[1]
+    assert captured[0].startswith("agent:coding:")

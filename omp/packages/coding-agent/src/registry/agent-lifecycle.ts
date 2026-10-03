@@ -423,6 +423,15 @@ export class AgentLifecycleManager {
 			adopted && (expected === undefined || adopted.ref === expected || adopted.ref.session === expected);
 		const ref = currentMatches ? current : adoptedMatches ? adopted.ref : undefined;
 		if (!ref) return false;
+		if (process.env.MERCURY_OBSERVATORY_DEPTH !== undefined) {
+			// Completion/exit of an observatory parent ends its family, including
+			// parked descendants that otherwise remain revivable from history.
+			for (const child of this.#registry
+				.list()
+				.filter(candidate => candidate.parentId === id && candidate !== ref)) {
+				await this.release(child.id, child, { tombstone: true });
+			}
+		}
 		if (adopted?.ref === ref) {
 			clearTimeout(adopted.timer);
 			this.#adopted.delete(id);

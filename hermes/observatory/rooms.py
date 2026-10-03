@@ -355,6 +355,7 @@ class RoomManager:
     def __init__(self, state: Any, bot: BotSink | None = None):
         self.state = state
         self._bot = bot
+        self._retired_nodes: dict[str, str] = {}
 
     @property
     def bot(self) -> BotSink | None:
@@ -514,6 +515,13 @@ class RoomManager:
 
     async def _ensure_child_room_for(self, node_id: str, item: dict[str, Any]) -> str:
         """Channel for a delegate child: existing row, else create from the frame."""
+        if node_id in self._retired_nodes:
+            ref = str(item.get("session_ref") or "")
+            if not ref or ref == node_id or ref == self._retired_nodes[node_id]:
+                return ""
+            # A new transcript is a new generation (e.g. after /new).
+            # Late frames from the old task must not recreate its room.
+            del self._retired_nodes[node_id]
         channel = self.channel_for_node(node_id)
         if channel:
             self.state.update_extra(node_id, task_state="running")
@@ -527,6 +535,11 @@ class RoomManager:
         name = str(item.get("name") or node_id)
         parent = str(item.get("parent_name") or "")
         parent_row = self._resolve_parent(parent)
+        if parent and parent_row is None:
+            logger.warning("rooms: unresolved delegation parent %s for %s", parent, node_id)
+            return ""
+        if parent_row is not None and parent_row.get("status") != "live":
+            return ""
         if parent_row is None:
             # Gateway sessions carry bare session UUIDs (no channel to
             # match), so gateway-owned delegates resolve to nothing.
@@ -545,10 +558,6 @@ class RoomManager:
         else:
             channel = child_channel(parent_name, name, server=live or None)
         try:
-            depth = int((parent_row or {}).get("depth", 0)) + 1
-        except Exception:
-            depth = 1
-        try:
             slug = f"{parent_name}-{name}".lower()[:64]
             self.state.add_node(
                 node_id,
@@ -561,6 +570,8 @@ class RoomManager:
                 if parent_row is not None
                 else None,
                 extra={"kind": "delegate", **(
+                    {"profile": parent_row["extra"]["profile"]}
+                    if (parent_row or {}).get("extra", {}).get("profile") else {}), **(
                     {"subagent_id": str(item.get("subagent_id") or "")}
                     if str(item.get("subagent_id") or "") else {})},
             )
@@ -598,16 +609,15 @@ class RoomManager:
         return channel
 
     async def _retire_child_room(self, node_id: str, *, summary: str = "") -> None:
-        """Record task completion while retaining the session until explicit exit."""
+        """Depth 1 ends with its task; deeper agents share their parent's lifetime."""
         try:
             row = self.state.get(node_id)
         except Exception:
             return
         from observatory.thinking import thinking_done
 
-        for completed in self.state.get_subtree(node_id):
-            thinking_done(str(completed.get("room_id") or ""))
-            self.state.update_extra(completed["node_id"], task_state="completed")
+        thinking_done(str(row.get("room_id") or ""))
+        self.state.update_extra(node_id, task_state="completed")
         parent_channel = ""
         try:
             parent_id = str(row.get("parent_node_id") or "")
@@ -626,6 +636,20 @@ class RoomManager:
                 )
             except Exception:
                 pass
+        if int(row["depth"]) == 1:
+            from observatory.spawn import exit_orchestrator
+
+            self._retired_nodes.update(
+                (r["node_id"], str(r.get("session_ref") or r["node_id"]))
+                for r in self.state.get_subtree(node_id)
+            )
+            await exit_orchestrator(node_id, state=self.state, registry=_shared_registry(),
+                                    bot=self.bot, status="completed", summary=summary)
+
+    def _native_parent(self, owner_id: str, feed: dict[str, Any]) -> str:
+        """Map an in-process OMP parent to the immediate observatory node."""
+        parent = str(feed.get("parent_subagent_id") or "")
+        return f"{owner_id}/sub-{parent}" if parent and parent != "Main" else owner_id
 
     async def handle_child_message(self, channel: str, sender: str, text: str) -> str:
         """User message in a delegate-child room → steer the live child."""
@@ -731,6 +755,12 @@ class RoomManager:
         feed: Any = None
         pump_task: Any = None
         approval_token = None
+        with _omp_lock:
+            entry = _omp_rooms.get(node_id)
+        persistent = entry is not None and entry.get("rpc") is rpc
+        if persistent:
+            seen = entry.setdefault("seen", set())
+            seen.clear()
         from observatory.thinking import thinking_done, thinking_started
 
         thinking_started(channel)
@@ -743,14 +773,25 @@ class RoomManager:
 
             approval_token = set_current_session_key(approval_session_key)
             register_gateway_notify(approval_session_key, notify_approval)
+            if persistent and not entry.get("release_approval_route"):
+                from tools.approval import retain_gateway_notify
+
+                entry["approval_session_key"] = approval_session_key
+                entry["release_approval_route"] = retain_gateway_notify(approval_session_key)
         try:
             import asyncio as _asyncio
 
-            feed = await self._start_live_omp_feed(rpc, channel, seen)
-            if feed is not None:
+            feed = entry.get("feed") if persistent else None
+            if feed is None:
+                feed = await self._start_live_omp_feed(rpc, channel, seen)
+            pump_task = entry.get("feed_task") if persistent else None
+            if feed is not None and (pump_task is None or pump_task.done()):
                 pump_task = _asyncio.get_running_loop().create_task(
                     self._pump_live_omp_feed(feed, node_id, channel, {}, seen)
                 )
+                if persistent:
+                    entry.update(feed=feed, feed_task=pump_task,
+                                 feed_loop=_asyncio.get_running_loop())
             result = await _asyncio.to_thread(
                 rpc.run_task, f"[{sender} over IRC] {text}"
             )
@@ -771,12 +812,12 @@ class RoomManager:
                 from tools.approval import reset_current_session_key, unregister_gateway_notify
                 unregister_gateway_notify(approval_session_key)
                 reset_current_session_key(approval_token)
-            if feed is not None:
+            if feed is not None and not persistent:
                 try:
                     await feed.stop()
                 except Exception:
                     pass
-            if pump_task is not None:
+            if pump_task is not None and not persistent:
                 try:
                     await pump_task
                 except Exception:
@@ -795,6 +836,7 @@ class RoomManager:
 
                     if child_frame_key(frame) in seen:
                         continue
+                    seen.add(child_frame_key(frame))
                 except Exception:
                     pass
                 await self.publish_frame(channel, frame)
@@ -848,7 +890,10 @@ class RoomManager:
                 if _omp_room_skips_frame(payload):
                     continue
                 try:
-                    seen.add(child_frame_key(payload))
+                    key = child_frame_key(payload)
+                    if key in seen:
+                        continue
+                    seen.add(key)
                 except Exception:
                     pass
                 try:
@@ -884,12 +929,13 @@ class RoomManager:
                 if feed.get("feed") == "activity" and feed.get("active") is False:
                     return  # A late end must not recreate a retired room.
                 node_id = f"{owner_id}/sub-{sub}"
-                name = (str(feed.get("agent") or "").strip()
+                name = (str(feed.get("name") or "").strip()
+                        or str(feed.get("agent") or "").strip()
                         or str(feed.get("task") or "").strip()
                         or f"sub-{sub[:8]}")
                 target = await self._ensure_child_room_for(node_id, {
                     "name": name,
-                    "parent_name": owner_id,
+                    "parent_name": self._native_parent(owner_id, feed),
                     "engine": "omp",
                     "subagent_id": sub,
                     "session_ref": str(feed.get("session_file") or node_id),
@@ -918,12 +964,13 @@ class RoomManager:
                 target = grands.get(sid)
                 if not target:
                     node_id = f"{owner_id}/sub-{sid}"
-                    name = (str(feed.get("agent") or "").strip()
+                    name = (str(feed.get("name") or "").strip()
+                            or str(feed.get("agent") or "").strip()
                             or str(feed.get("task") or "").strip()
                             or f"sub-{sid[:8]}")
                     target = await self._ensure_child_room_for(node_id, {
                         "name": name,
-                        "parent_name": owner_id,
+                        "parent_name": self._native_parent(owner_id, feed),
                         "engine": "omp",
                         "subagent_id": sid,
                         "session_ref": str(
@@ -964,6 +1011,8 @@ def _omp_room_skips_frame(payload: Any) -> bool:
         if not isinstance(payload, dict):
             return False
         if str(payload.get("feed") or "") != "message":
+            return False
+        if payload.get("subagent_id"):
             return False
         return str(payload.get("role") or "") in ("user", "assistant")
     except Exception:
@@ -1049,6 +1098,10 @@ _fallback_registry: Any = None
 
 def register_omp_room(node_id: str, channel: str, rpc: Any) -> None:
     with _omp_lock:
+        previous = _omp_rooms.get(node_id)
+    if previous is not None and previous.get("rpc") is not rpc:
+        drop_omp_room(node_id)
+    with _omp_lock:
         existing = _omp_rooms.get(node_id)
         if existing is not None and existing.get("rpc") is rpc:
             existing["channel"] = channel
@@ -1058,7 +1111,25 @@ def register_omp_room(node_id: str, channel: str, rpc: Any) -> None:
 
 def drop_omp_room(node_id: str) -> None:
     with _omp_lock:
-        _omp_rooms.pop(node_id, None)
+        entry = _omp_rooms.pop(node_id, None)
+    if entry is None:
+        return
+    release = entry.get("release_approval_route")
+    if release is not None:
+        from tools.approval import unregister_gateway_notify
+
+        unregister_gateway_notify(entry["approval_session_key"])
+        release()
+    loop = entry.get("feed_loop")
+    if loop is not None and not loop.is_closed():
+        def stop_feed():
+            task = entry.get("feed_task")
+            if task is not None:
+                task.cancel()
+            feed = entry.get("feed")
+            if feed is not None:
+                loop.create_task(feed.stop())
+        loop.call_soon_threadsafe(stop_feed)
 
 
 def channel_for_node_id(node_id: str) -> str:

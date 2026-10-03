@@ -971,6 +971,7 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
         "goal": goal,
         "model": model,
         "owner_session_id": owner_session_id or "",
+        "parent_node_id": (base_env or {}).get("MERCURY_OBSERVATORY_PARENT", ""),
     }
     if omp_path is None:
         return {
@@ -1272,6 +1273,7 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
     base_env.update({key: env[key] for key in (
         "MERCURY_PROFILE_HOME", "HERMES_HOME", "MERCURY_CONFIG",
         "HERMES_OMP_CONFIG", "PI_CODING_AGENT_DIR",
+        "MERCURY_OBSERVATORY_PARENT", "MERCURY_OBSERVATORY_DEPTH",
     ) if key in env})
     started = time.time()
     # --isolate-worktree labels (oh-my-pi#452): computed ONCE per batch, not
@@ -1425,6 +1427,24 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     # parent's profile layer. Nested spawns inherit via env passthrough.
     env = dict(env)
     env.update(profile_env)
+    # The durable conversation UUID and the approval endpoint are not tree
+    # identities. Bind the delegating room before entering detached workers.
+    from observatory.rooms import get_room_manager
+    from gateway.session_context import get_session_env
+    manager = get_room_manager()
+    if manager is not None:
+        parent_sid = str(getattr(parent_agent, "session_id", "") or "")
+        bound_node = getattr(parent_agent, "_observatory_node_id", None)
+        parent = manager._resolve_parent(bound_node) if isinstance(bound_node, str) else None
+        if parent is None:
+            parent = manager._resolve_parent(parent_sid)
+        if parent is None:
+            parent = manager.node_for_channel(get_session_env("HERMES_SESSION_CHAT_ID", ""))
+            if parent is not None and parent_sid:
+                manager.state.set_session_ref(parent["node_id"], parent_sid)
+        if parent is not None:
+            env["MERCURY_OBSERVATORY_PARENT"] = parent["node_id"]
+            env["MERCURY_OBSERVATORY_DEPTH"] = str(int(parent["depth"]) + 1)
     model = env["OMP_MODEL"]
     if _resolve_omp_binary() is None:
         return tool_error(

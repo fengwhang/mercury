@@ -87,6 +87,9 @@ export interface SubagentEventPayload {
 /** Payload emitted on TASK_SUBAGENT_LIFECYCLE_CHANNEL */
 export interface SubagentLifecyclePayload {
 	id: string;
+	/** Immediate registry parent, separate from the tool-call/approval owner. */
+	parentAgentId?: string;
+	name?: string;
 	agent: string;
 	agentSource: AgentSource;
 	description?: string;

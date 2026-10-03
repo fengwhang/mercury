@@ -86,6 +86,8 @@ class NodeEvent:
     agent: Optional[str] = None
     task: Optional[str] = None
     session_file: Optional[str] = None
+    parent_subagent_id: Optional[str] = None
+    name: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -561,6 +563,8 @@ class OmpFeed:
                     task=_opt_str(payload.get("description"))
                     or _opt_str(payload.get("task")),
                     session_file=state.session_file,
+                    parent_subagent_id=_opt_str(payload.get("parentAgentId")),
+                    name=_opt_str(payload.get("name")),
                 )
             ]
         if status in _TERMINAL_LIFECYCLE:
@@ -575,6 +579,8 @@ class OmpFeed:
                     task=_opt_str(payload.get("description"))
                     or _opt_str(payload.get("task")),
                     session_file=state.session_file,
+                    parent_subagent_id=_opt_str(payload.get("parentAgentId")),
+                    name=_opt_str(payload.get("name")),
                 )
             ]
         return []

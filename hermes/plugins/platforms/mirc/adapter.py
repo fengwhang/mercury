@@ -1393,6 +1393,10 @@ class MIRCAdapter(BasePlatformAdapter):
                 from observatory.rooms import get_room_manager, route_channel
                 route, _row = route_channel(chat_id)
                 manager = get_room_manager()
+                if isinstance(_row, dict) and (_row.get("extra") or {}).get("profile"):
+                    # Select the profile before deriving the approval key.
+                    # /approve and OMP's RPC turn must use the same namespace.
+                    source.profile = _row["extra"]["profile"]
                 if manager is not None and route in ("child", "spawn-omp"):
                     if route == "child":
                         reply = await manager.handle_child_message(chat_id, user_name, text)
@@ -1436,14 +1440,6 @@ class MIRCAdapter(BasePlatformAdapter):
                 logger.debug("MIRC: room route failed, falling through", exc_info=True)
         if not self._message_handler:
             return
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=chat_id,
-            chat_type=chat_type,
-            user_id=user_id,
-            user_name=user_name,
-        )
-
         event = MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
@@ -1471,6 +1467,7 @@ class MIRCAdapter(BasePlatformAdapter):
                 _prof = ((_row.get("extra") or {}).get("profile")
                          if isinstance(_row, dict) else None)
                 if _prof:
+                    source.profile = _prof
                     _profile_token = set_hermes_home_override(
                         str(get_profile_dir(_prof)))
             except Exception:

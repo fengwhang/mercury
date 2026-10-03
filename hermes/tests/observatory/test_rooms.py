@@ -232,6 +232,8 @@ def _real_state(tmp_path):
 async def test_direct_ensure_creates_child_room(tmp_path) -> None:
     bot = FakeBot()
     mgr = RoomManager(_real_state(tmp_path), bot)
+    mgr.state.add_node("gateway", engine="hermes", name="gateway", slug="gateway", mxid="gateway", session_ref="gateway")
+    mgr.state.set_room_id("gateway", "#gateway")
     channel = await mgr._ensure_child_room_for(
         "deleg-1", {"name": "cow", "parent_name": "gateway", "engine": "omp"})
     assert channel == "#gateway-cow"
@@ -251,6 +253,8 @@ async def test_direct_ensure_creates_child_room(tmp_path) -> None:
 async def test_handle_child_message_steers(tmp_path) -> None:
     bot = FakeBot()
     mgr = RoomManager(_real_state(tmp_path), bot)
+    mgr.state.add_node("gateway", engine="hermes", name="gateway", slug="gateway", mxid="gateway", session_ref="gateway")
+    mgr.state.set_room_id("gateway", "#gateway")
     await mgr._ensure_child_room_for(
         "deleg-9", {"name": "kid", "parent_name": "gateway", "engine": "hermes"})
     assert "finished" in await mgr.handle_child_message(

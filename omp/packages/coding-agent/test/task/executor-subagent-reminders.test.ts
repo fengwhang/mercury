@@ -306,6 +306,54 @@ describe("runSubprocess yield reminders", () => {
 		expect(result.output).toContain("SYSTEM WARNING: Subagent called yield with null data.");
 	});
 
+	it("returns a greeting preceding a yield-only assistant message", async () => {
+		const session = createMockSession(({ emit, state }) => {
+			const greeting = createAssistantStopMessage("Hello from the subagent!");
+			state.messages.push(greeting);
+			emit({ type: "message_end", message: greeting });
+			const terminal = createAssistantStopMessage("");
+			terminal.content.push({ type: "toolCall", id: "finalize", name: "yield", arguments: { type: "result" } });
+			state.messages.push(terminal);
+			emit({ type: "message_end", message: terminal });
+			emit({
+				type: "tool_execution_end",
+				toolCallId: "finalize",
+				toolName: "yield",
+				isError: false,
+				result: {
+					content: [{ type: "text", text: "Result submitted." }],
+					details: { status: "success", type: "result", useLastTurn: true },
+				},
+			});
+		});
+		mockCreateAgentSession(session);
+		const result = await runSubprocess({ ...baseOptions, id: "greeting-only" });
+		expect(result.exitCode).toBe(0);
+		expect(result.output).toBe("Hello from the subagent!");
+	});
+
+	it("retries empty last-turn extraction so the agent can supply its greeting", async () => {
+		const session = createMockSession(({ promptIndex, emit }) => {
+			emit({
+				type: "tool_execution_end",
+				toolCallId: `yield-${promptIndex}`,
+				toolName: "yield",
+				isError: false,
+				result: {
+					content: [{ type: "text", text: "Result submitted." }],
+					details:
+						promptIndex === 1
+							? { status: "success", type: "result", useLastTurn: true }
+							: { status: "success", data: "Hello from the subagent!" },
+				},
+			});
+		});
+		mockCreateAgentSession(session);
+		const result = await runSubprocess({ ...baseOptions, id: "greeting-retry" });
+		expect(result.exitCode).toBe(0);
+		expect(result.output).toBe("Hello from the subagent!");
+	});
+
 	it("retries when yield tool returns an error before succeeding", async () => {
 		const prompts: string[] = [];
 		const session = createMockSession(({ text, promptIndex, emit, state }) => {

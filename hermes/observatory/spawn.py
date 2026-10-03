@@ -376,6 +376,7 @@ def build_omp_child(
     env_err: Optional[str] = None
     from mercury_cli.omp_command import omp_profile_env
     child_env = omp_profile_env(profile_home)
+    child_env["MERCURY_OBSERVATORY_DEPTH"] = "0"
     child_env.update(_shared_env_overrides())
     if mercury_home is not None:
         child_env["MERCURY_HOME"] = str(mercury_home)
@@ -999,15 +1000,45 @@ async def exit_orchestrator(
     on the next boot.
     """
     from observatory.rooms import drop_child_steer
+    from observatory.gateway_session import _snapshot_live_children
+
+    live_children = _snapshot_live_children()
+    subtree = state.get_subtree(node_id)
+    native_controls = []
+    for row in subtree:
+        sid = str(row.get("extra", {}).get("subagent_id") or "")
+        parent_id = str(row.get("parent_node_id") or "")
+        while sid and parent_id:
+            handle = registry.get(parent_id)
+            rpc = handle.rpc if handle else live_children.get(parent_id, {}).get("transport")
+            if rpc is not None and callable(getattr(rpc, "subagent_abort", None)):
+                native_controls.append((rpc, sid))
+                break
+            parent_id = str(state.get(parent_id).get("parent_node_id") or "")
     record = begin_exit(state, node_id, status=status, summary=summary)
-    handle = registry.unregister(node_id)
-    if handle is not None:
-        handle.stop()
-    drop_omp_room(node_id)
-    try:
-        drop_child_steer(node_id)
-    except Exception:
-        pass
+    for rpc, sid in reversed(native_controls):
+        try:
+            await asyncio.to_thread(rpc.subagent_abort, sid)
+        except Exception:
+            # A completion frame can arrive after native teardown. It already
+            # ended the runtime; channel/history deletion still must converge.
+            logger.debug("spawn: native child %s already stopped", sid, exc_info=True)
+    # Every descendant belongs to this lifetime, including retained native
+    # OMP agents. Stop deepest first so no child outlives its parent.
+    from observatory.thinking import thinking_done
+
+    for row in subtree:
+        thinking_done(str(row.get("room_id") or ""))
+    for child in reversed(record.rows):
+        child_id = child["node_id"]
+        handle = registry.unregister(child_id)
+        if handle is not None:
+            await asyncio.to_thread(handle.stop)
+        transport = live_children.get(child_id, {}).get("transport")
+        if transport is not None:
+            await asyncio.to_thread(transport.kill)
+        drop_omp_room(child_id)
+        drop_child_steer(child_id)
     records: list[dict[str, Any]] = []
     deferred: list[str] = []
     bot = bot if bot is not None else get_bot_sink()

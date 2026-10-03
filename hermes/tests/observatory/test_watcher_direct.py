@@ -54,7 +54,7 @@ def _manager(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_watcher_start_streams_stop_preserves_session(tmp_path, monkeypatch) -> None:
+async def test_watcher_start_streams_stop_retires_depth1_session(tmp_path, monkeypatch) -> None:
     import observatory.gateway_session as gs
 
     state = ObservatoryState(tmp_path / "state.db")
@@ -89,12 +89,13 @@ async def test_watcher_start_streams_stop_preserves_session(tmp_path, monkeypatc
             "args": "ls"}, {})
         await asyncio.sleep(0.3)
         assert any("bash" in t for c, t in bot.said if c == "#vm_alpha-bravo")
-        # Completion settles activity without removing the session or history.
+        # Depth-1 completion removes this task's room and leaves its root alive.
         await asyncio.to_thread(
             gs._retire_watcher_room, "deleg_1/0", name="bravo")
-        assert "#vm_alpha-bravo" not in bot.destroyed
-        assert state.get("deleg_1/0")["status"] == "live"
-        assert state.get("deleg_1/0")["extra"]["task_state"] == "completed"
+        assert "#vm_alpha-bravo" in bot.destroyed
+        with pytest.raises(KeyError):
+            state.get("deleg_1/0")
+        assert len(state.get_live()) == 1
     finally:
         rooms_mod.set_room_manager(None)
         rooms_mod.set_bot_sink(None)

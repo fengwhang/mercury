@@ -15,6 +15,8 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -112,6 +114,79 @@ describe("runSubprocess deferred cleanup outcome (issue #9670)", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
+
+	for (const baseDepth of [0, 1]) {
+		it(`observatory base depth ${baseDepth}: native children follow the family lifetime`, async () => {
+			const previous = process.env.MERCURY_OBSERVATORY_DEPTH;
+			process.env.MERCURY_OBSERVATORY_DEPTH = String(baseDepth);
+			AgentRegistry.resetGlobalForTests();
+			AgentLifecycleManager.resetGlobalForTests();
+			const registry = AgentRegistry.global();
+			const id = `observatory-base-${baseDepth}`;
+			const disposed: string[] = [];
+			const session = mockSession({
+				onPrompt: emit => emitYield(emit, "Hello from the subagent!"),
+				dispose: async () => {
+					disposed.push(id);
+				},
+			});
+			const descendant = mockSession({
+				onPrompt: () => {},
+				dispose: async () => {
+					disposed.push("descendant");
+				},
+			});
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async () => {
+				registry.register({ id, displayName: id, kind: "sub", parentId: "Main", session, sessionFile: null });
+				registry.register({
+					id: "descendant",
+					displayName: "descendant",
+					kind: "sub",
+					parentId: id,
+					session: descendant,
+					sessionFile: null,
+				});
+				return {
+					session,
+					extensionsResult: {} as unknown as LoadExtensionsResult,
+					setToolUIContext: () => {},
+					eventBus: new EventBus(),
+				} as CreateAgentSessionResult;
+			});
+			try {
+				const result = await runSubprocess({
+					cwd: "/tmp",
+					agent: baseAgent,
+					task: "say hello",
+					id,
+					index: 0,
+					enableMirc: false,
+					enableLsp: false,
+					persistArtifacts: false,
+					taskDepth: 0,
+				});
+				expect(result.exitCode).toBe(0);
+				expect(result.output).toBe("Hello from the subagent!");
+				if (baseDepth === 0) {
+					expect(registry.get(id)?.status).toBe("aborted");
+					expect(registry.get("descendant")?.status).toBe("aborted");
+					expect(disposed).toEqual(["descendant", id]);
+				} else {
+					expect(registry.get(id)?.status).toBe("idle");
+					expect(registry.get("descendant")?.session).toBe(descendant);
+					expect(disposed).toEqual([]);
+					await AgentLifecycleManager.global().release(id, registry.get(id), { tombstone: true });
+					expect(registry.get("descendant")?.status).toBe("aborted");
+					expect(disposed).toEqual(["descendant", id]);
+				}
+			} finally {
+				if (previous === undefined) delete process.env.MERCURY_OBSERVATORY_DEPTH;
+				else process.env.MERCURY_OBSERVATORY_DEPTH = previous;
+				AgentLifecycleManager.resetGlobalForTests();
+				AgentRegistry.resetGlobalForTests();
+			}
+		});
+	}
 
 	it("preserves a successful yield when disposal is deferred past the cleanup deadline", async () => {
 		const disposeGate = Promise.withResolvers<void>();

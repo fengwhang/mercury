@@ -1535,6 +1535,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				const eventRecord: unknown = event;
 				const eventArgs = isRecord(eventRecord) && isRecord(eventRecord.args) ? eventRecord.args : {};
 				if (handler) {
+					let emptyLastTurnYield = false;
 					// Extract data using handler
 					if (handler.extractData) {
 						const data = handler.extractData({
@@ -1545,7 +1546,15 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 							isError: event.isError,
 						});
 						if (data !== undefined) {
-							recordExtractedToolData(event.toolName, data);
+							if (event.toolName === "yield" && isRecord(data) && data.useLastTurn === true) {
+								const yields = (progress.extractedToolData?.yield ?? []) as YieldItem[];
+								emptyLastTurnYield =
+									assembleYieldResult([...yields, data as YieldItem], lastAssistantSalvageText)
+										?.missingData === true;
+							}
+							// Keep the reminder ladder alive when there is no last-turn
+							// text to extract. The agent can still submit real data.
+							if (!emptyLastTurnYield) recordExtractedToolData(event.toolName, data);
 						}
 					}
 
@@ -1555,6 +1564,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 
 					// Check if handler wants to terminate the session
 					if (
+						!emptyLastTurnYield &&
 						handler.shouldTerminate?.({
 							toolName: event.toolName,
 							toolCallId: event.toolCallId,
@@ -1655,6 +1665,11 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					const eventContent = isRecord(event) && "content" in event ? event.content : undefined;
 					const messageContent = getMessageContent(event.message) || eventContent;
 					if (messageContent && Array.isArray(messageContent)) {
+						const resultText = messageContent
+							.filter(block => isRecord(block) && block.type === "text" && typeof block.text === "string")
+							.map(block => (block as { text: string }).text)
+							.join("\n");
+						if (resultText.trim()) lastAssistantSalvageText = resultText;
 						for (const block of messageContent) {
 							if (!isRecord(block)) continue;
 							if (block.type === "text" && typeof block.text === "string") {
@@ -1828,14 +1843,23 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		// cancelled/aborted children can surface "last activity" instead of
 		// "(no output)".
 		try {
-			const lastContent = session.getLastAssistantMessage()?.content;
-			if (Array.isArray(lastContent)) {
-				const text = lastContent
+			// A yield-only assistant message may follow the actual result.
+			// Search this assignment's assistant turns, stopping at the user
+			// boundary so a resumed task never returns a previous task's text.
+			const messages = session.state?.messages?.length
+				? session.state.messages
+				: [session.getLastAssistantMessage()];
+			for (let index = messages.length - 1; index >= 0; index--) {
+				const message = messages[index];
+				if (message?.role === "user") break;
+				if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+				const text = message.content
 					.map(block => (block.type === "text" && typeof block.text === "string" ? block.text : ""))
 					.filter(Boolean)
 					.join("\n");
 				if (text.trim()) {
 					lastAssistantSalvageText = text;
+					break;
 				}
 			}
 		} catch {
@@ -2325,6 +2349,8 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	// Emit lifecycle end event after finalization so yield status is reflected
 	const settledPayload = {
 		id,
+		parentAgentId: AgentRegistry.global().get(id)?.parentId,
+		name: id,
 		agent: agent.name,
 		parentToolCallId: args.parentToolCallId,
 		detached: args.detached,
@@ -2679,6 +2705,19 @@ export async function finalizeSubagentLifecycle(args: {
 	}
 
 	if (!args.keepAlive) {
+		// Observatory depth-1 completion also ends every retained descendant.
+		if (process.env.MERCURY_OBSERVATORY_DEPTH !== undefined && ref && ownsRef) {
+			const release = AgentLifecycleManager.global()
+				.release(args.id, ref, { tombstone: true })
+				.then(() => {});
+			try {
+				await untilAborted(AbortSignal.timeout(Math.max(0, cleanupDeadlineAt - Date.now())), () => release);
+			} catch (error) {
+				if (Date.now() < cleanupDeadlineAt) throw error;
+				args.onCleanupDeferred?.(release);
+			}
+			return;
+		}
 		// One-shot helper: dispose and unregister. No MIRC, no revival.
 		await disposeSession();
 		if (ref && ownsRef) registry.unregister(args.id, ref);
@@ -2932,6 +2971,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const softRequestBudgetNotice = settings.get("task.softRequestBudgetNotice") ?? false;
 	const parentDepth = options.taskDepth ?? 0;
 	const childDepth = parentDepth + 1;
+	// Internal transport metadata: a Hermes-delegated OMP process is already
+	// depth 1; a manually spawned OMP process is depth 0. Native descendants
+	// add their local recursion depth to that base.
+	const observatoryBaseDepth = process.env.MERCURY_OBSERVATORY_DEPTH;
+	const observatoryDepth = observatoryBaseDepth === undefined ? undefined : Number(observatoryBaseDepth) + childDepth;
+	const keepAlive = options.keepAlive !== false && observatoryDepth !== 1;
 	const atMaxDepth = maxRecursionDepth >= 0 && childDepth >= maxRecursionDepth;
 	const mircEnabled = options.enableMirc !== false && isMircEnabled(subagentSettings, childDepth);
 
@@ -3418,6 +3463,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// Emit lifecycle start event
 			const startedPayload = {
 				id,
+				parentAgentId: options.parentAgentId,
+				name: id,
 				agent: agent.name,
 				parentToolCallId: options.parentToolCallId,
 				detached: options.detached,
@@ -3641,7 +3688,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			const session = monitor.takeActiveSession();
 			if (session) {
 				monitor.captureSalvage(session);
-				if (options.keepAlive !== false && worktree === undefined) {
+				if (keepAlive && worktree === undefined) {
 					installMircWakeTurnMonitor(session);
 				}
 				await finalizeSubagentLifecycle({
@@ -3649,7 +3696,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					session,
 					aborted,
 					abortKind: monitor.abortKind(),
-					keepAlive: options.keepAlive !== false,
+					keepAlive,
 					isolated: worktree !== undefined,
 					agentIdleTtlMs,
 					reviveSession,

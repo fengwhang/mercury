@@ -8,9 +8,10 @@ unused (kept for schema stability).
 
 Design laws tested here:
 - **Depth is stored at insert** and never recomputed.
-- **Sessions are never auto-deleted**: rooms and history survive task
-  completion, transport loss, and restarts until /exit. ``mark_dead`` only
-  tombstones; deletion is always an explicit ``mark_deleted_and_purge``.
+- **Root sessions survive** transport loss and restarts until /exit.
+  Depth-1 task completion ends its subtree; deeper completed agents survive
+  until their parent dies. ``mark_dead`` only tombstones; deletion is always
+  an explicit ``mark_deleted_and_purge`` after channel destruction.
 - **Slug collisions count LIVE agents only**: dead/purged rows are
   invisible to ``find_live_by_slug``, so a new agent reuses an inert
   predecessor's nick-and-nothing-else.

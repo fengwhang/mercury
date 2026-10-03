@@ -194,6 +194,17 @@ def _dispatch_slash_command(
         clean = (text or "").strip()
         if not clean:
             return None
+        if canonical in ("approve", "deny"):
+            from tools.approval import has_blocking_approval, resolve_gateway_approval
+
+            approval_key = _headless_approval_key(node_id or "gw")
+            if has_blocking_approval(approval_key):
+                args = clean.split()[1:]
+                choice = "deny" if canonical == "deny" else (
+                    "always" if "always" in args else "session" if "session" in args else "once")
+                count = resolve_gateway_approval(approval_key, choice, resolve_all="all" in args,
+                    reason=" ".join(args) if canonical == "deny" and args else None)
+                return f"{count} approval request(s) {'approved' if canonical == 'approve' else 'denied'}."
         source = SessionSource(
             platform=Platform.MATRIX,
             chat_id="gateway",
@@ -304,6 +315,31 @@ def _push_progress(node_id: str, seq: int, event: dict[str, Any], *, internal: b
                 say_nowait(channel, line, kind=frame_kind(feed))
     except Exception:
         pass
+
+def _approval_root_id(node_id: str) -> str:
+    from observatory.rooms import get_room_manager
+
+    manager = get_room_manager()
+    if manager is not None:
+        seen: set[str] = set()
+        while node_id not in seen:
+            seen.add(node_id)
+            try:
+                row = manager.state.get(node_id)
+            except Exception:
+                break
+            parent = str(row.get("parent_node_id") or "")
+            if not parent:
+                break
+            node_id = parent
+    return node_id
+
+
+def _headless_approval_key(node_id: str) -> str:
+    root = _approval_root_id(node_id)
+    return GATEWAY_APPROVAL_SESSION_KEY if root == "gw" else f"session:observatory:{root}"
+
+
 def gateway_approval_notify(node_id: str):
     """``tools.approval.register_gateway_notify`` callback for gateway
     turns: mirrors the guard prompt into the room. Runs on the
@@ -339,13 +375,14 @@ def push_approval_prompt(
     try:
         from observatory.rooms import channel_for_node_id, say_nowait
 
+        node_id = _approval_root_id(node_id)
         channel = channel_for_node_id(node_id)
         if channel:
             say_nowait(
                 channel,
                 f"ℹ️ approval requested: {command}"
                 f" — {description} "
-                f"(reply /approve or /deny in the parent room)",
+                f"(reply !approve or !deny in this room)",
             )
     except Exception:
         pass
@@ -521,12 +558,6 @@ def replay_child_turn_frames(child_id: str, frames: Any) -> int:
         return 0
 
 
-def _grandchild_name(feed: dict[str, Any], sid: str) -> str:
-    name = (str(feed.get("agent") or "").strip()
-            or str(feed.get("task") or "").strip())
-    return name or f"sub-{sid[:8]}"
-
-
 def _publish_live_payload(
     child_id: str, payload: dict[str, Any], grands: dict[str, str] | None,
 ) -> None:
@@ -569,78 +600,9 @@ def _route_grandchild_frame(
     manager, owner_id: str, feed: dict[str, Any],
     cache: dict[str, str],
 ) -> None:
-    """One N>1 frame into its own room (watcher thread)."""
-    from observatory.rooms import format_frame, say_nowait
-
-    try:
-        sid = str(feed.get("subagent_id") or "")
-        if not sid:
-            return
-        kind = str(feed.get("kind") or "")
-        if kind in ("add", "death"):
-            if kind == "add":
-                channel = cache.get(sid)
-                if not channel:
-                    node_id = f"{owner_id}/sub-{sid}"
-                    channel = _hop(manager._ensure_child_room_for(node_id, {
-                        "name": _grandchild_name(feed, sid),
-                        "parent_name": owner_id,
-                        "engine": "omp",
-                        "subagent_id": sid,
-                        "session_ref": str(feed.get("session_file") or node_id),
-                    })) or ""
-                    if channel:
-                        cache[sid] = channel
-                if channel:
-                    flat = dict(feed)
-                    flat["subagent_id"] = ""
-                    _hop(manager.publish_frame(channel, flat))
-            else:
-                node_id = f"{owner_id}/sub-{sid}"
-                try:
-                    row_channel = manager.channel_for_node(node_id)
-                except Exception:
-                    row_channel = ""
-                if row_channel:
-                    flat = dict(feed)
-                    flat["subagent_id"] = ""
-                    _hop(manager.publish_frame(row_channel, flat))
-                cache.pop(sid, None)
-                _hop(manager._retire_child_room(node_id))
-            return
-        channel = cache.get(sid)
-        if not channel:
-            node_id = f"{owner_id}/sub-{sid}"
-            try:
-                row_channel = manager.channel_for_node(node_id)
-            except Exception:
-                row_channel = ""
-            if row_channel:
-                channel = row_channel
-                cache[sid] = channel
-            else:
-                if feed.get("feed") == "activity" and feed.get("active") is False:
-                    return  # A late end must not recreate a retired room.
-                channel = _hop(manager._ensure_child_room_for(node_id, {
-                    "name": _grandchild_name(feed, sid),
-                    "parent_name": owner_id,
-                    "engine": "omp",
-                    "subagent_id": sid,
-                    "session_ref": node_id,
-                })) or ""
-                if channel:
-                    cache[sid] = channel
-        if channel:
-            flat = dict(feed)
-            flat["subagent_id"] = ""
-            if flat.get("feed") == "activity":
-                _hop(manager.publish_frame(channel, flat))
-                return
-            line = format_frame(flat)
-            if line:
-                say_nowait(channel, line, kind=frame_kind(flat))
-    except Exception:
-        pass
+    """Use the same tree routing as manually spawned OMP sessions."""
+    _hop(manager._publish_routed_frame(
+        owner_id, manager.channel_for_node(owner_id), feed, cache))
 
 
 async def _forward_child_feed(
@@ -740,7 +702,7 @@ def _ensure_watcher_room(child_id: str, meta: dict[str, Any]) -> str:
             return ""
         item = {
             "name": str(meta.get("name") or child_id),
-            "parent_name": str(meta.get("owner_session_id") or ""),
+            "parent_name": str(meta.get("parent_node_id") or meta.get("owner_session_id") or ""),
             "engine": "omp",
             "session_ref": child_id,
         }
@@ -1167,6 +1129,7 @@ def _run_gateway_prompt_with_events_inner(
                     _session_agents[session_id] = agent
         collector = _TurnEventCollector(node_id=node_id, internal=internal)
         restore = _install_collector(agent, collector)
+        agent._observatory_node_id = node_id
         try:
             result = turn(agent, clean) if turn is not None else agent.run_conversation(clean)
         except Exception:
@@ -1216,10 +1179,10 @@ def run_gateway_prompt_with_events(
     """Run one headless turn; return (reply text, batched display events).
 
     Thin scope around :func:`_run_gateway_prompt_with_events_inner`: the
-    turn blocks in ``tools.approval`` under the canonical
-    :data:`GATEWAY_APPROVAL_SESSION_KEY` with
+    turn blocks in ``tools.approval`` under its level-0 ancestor's
+    approval session key (the gateway uses :data:`GATEWAY_APPROVAL_SESSION_KEY`) with
     :func:`gateway_approval_notify` registered, so every guard prompt is
-    forwarded into the rooms queue (mirrored into the node's channel). Registration is undone
+    forwarded into the rooms queue (mirrored into the ancestor's channel). Registration is undone
     when the turn ends (same register/unregister law as the gateway's own
     ``_run_agent_turn``). When ``tools.approval`` is unavailable the turn
     runs unwrapped (approvals take their existing default path)."""
@@ -1236,15 +1199,16 @@ def run_gateway_prompt_with_events(
             room_id=room_id, agent_factory=agent_factory, turn=turn,
             slash_dispatch=slash_dispatch, internal=internal,
         )
+    approval_key = _headless_approval_key(node_id)
     token = None
     try:
-        token = set_current_session_key(GATEWAY_APPROVAL_SESSION_KEY)
+        token = set_current_session_key(approval_key)
     except Exception:
         token = None
     registered = False
     try:
         register_gateway_notify(
-            GATEWAY_APPROVAL_SESSION_KEY, gateway_approval_notify(node_id))
+            approval_key, gateway_approval_notify(node_id))
         registered = True
     except Exception:
         logger.debug("gateway_session: approval forward not registered", exc_info=True)
@@ -1257,7 +1221,7 @@ def run_gateway_prompt_with_events(
     finally:
         if registered:
             try:
-                unregister_gateway_notify(GATEWAY_APPROVAL_SESSION_KEY)
+                unregister_gateway_notify(approval_key)
             except Exception:
                 pass
         if token is not None:

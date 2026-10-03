@@ -5,6 +5,18 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.16] — nightly
+
+- Name delegated Observatory rooms after their immediate parent and inherit
+  that parent's profile, including headless Hermes and nested OMP tasks.
+- Keep gateway and manual spawns at level 0. End level-1 agents when their
+  task completes; retain deeper agents until their parent exits, then tear
+  down the entire descendant tree without reviving it from late events.
+- Route approvals across Hermes/OMP descendants to the initiating level-0
+  room, keeping OMP approval routes and event feeds active between turns.
+- Recover from empty OMP last-turn yields and preserve greeting responses
+  when the final assistant message contains only a yield call.
+
 ## [0.3.12] — nightly
 
 - Select each model's context window immediately after its reasoning effort.

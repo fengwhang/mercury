@@ -1048,6 +1048,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				return `\n\n${agentId} was aborted — ${transcript}`;
 			}
 			const followUp = mircEnabled ? "message it via `hub` to follow up; " : "";
+			const ref = AgentRegistry.global().get(agentId);
+			if (process.env.MERCURY_OBSERVATORY_DEPTH !== undefined && (!ref || ref.status === "aborted")) {
+				return `\n\n${agentId} has ended — transcript at history://${agentId}`;
+			}
 			return `\n\n${agentId} is now idle — ${followUp}transcript at history://${agentId}`;
 		};
 		return manager.register(

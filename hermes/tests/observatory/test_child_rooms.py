@@ -1,4 +1,4 @@
-"""Delegate child rooms persist until explicit exit, including after completion."""
+"""Delegate rooms follow the immediate parent and its depth-based lifetime."""
 
 from __future__ import annotations
 
@@ -67,22 +67,23 @@ async def test_ensure_creates_prefixed_visible_room(tmp_path, monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_stop_keeps_depth1_room_until_exit(tmp_path, monkeypatch) -> None:
+async def test_stop_deletes_depth1_room_on_completion(tmp_path, monkeypatch) -> None:
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
     _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
     await mgr._ensure_child_room_for(
         "d1", {"name": "bravo", "parent_name": "alpha-node", "engine": "omp"})
     await mgr.publish_lifecycle("#vm_alpha-bravo", "stop", name="bravo")
     await mgr._retire_child_room("d1")
-    assert "#vm_alpha-bravo" not in bot.destroyed
-    assert state.get("d1")["status"] == "live"
-    assert state.get("d1")["extra"]["task_state"] == "completed"
+    assert "#vm_alpha-bravo" in bot.destroyed
+    with pytest.raises(KeyError):
+        state.get("d1")
+    assert state.get("alpha-node")["status"] == "live"
     stops = [t for c, t in bot.said if c == "#vm_alpha-bravo"]
     assert any("finished" in t for t in stops)
 
 
 @pytest.mark.asyncio
-async def test_completion_keeps_descendants_until_explicit_exit(tmp_path, monkeypatch) -> None:
+async def test_deeper_child_survives_completion_until_parent_finishes(tmp_path, monkeypatch) -> None:
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
     _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
     await mgr._ensure_child_room_for(
@@ -93,14 +94,13 @@ async def test_completion_keeps_descendants_until_explicit_exit(tmp_path, monkey
     await mgr._retire_child_room("d2")
     assert state.get("d2")["status"] == "live"
     assert "#vm_alpha-bravo-cee" not in bot.destroyed
-    # Parent completion must also preserve both sessions.
+    # Depth-1 completion ends its retained subtree, without ending the root.
     await mgr._retire_child_room("d1")
-    assert state.get("d2")["status"] == "live"
-    from observatory.spawn import OrchestratorRegistry, exit_orchestrator
-
-    await exit_orchestrator("d1", state=state, registry=OrchestratorRegistry(), bot=bot)
-    with pytest.raises(Exception):
+    with pytest.raises(KeyError):
         state.get("d2")
+    with pytest.raises(KeyError):
+        state.get("d1")
+    assert state.get("alpha-node")["status"] == "live"
     assert "#vm_alpha-bravo-cee" in bot.destroyed
 
 
@@ -276,16 +276,17 @@ async def test_grandchild_add_death_lifecycle(tmp_path, monkeypatch) -> None:
         "feed": "node", "kind": "death", "subagent_id": "c1",
         "agent": "charlie", "status": "completed",
     }, grands)
-    # A grandchild keeps its session after its own and its parent's completion.
+    # A grandchild survives its own completion, then dies with its parent.
     assert "#vm_alpha-bravo-charlie" not in bot.destroyed
     assert state.get("d1/sub-c1")["status"] == "live"
     await mgr._retire_child_room("d1")
-    assert "#vm_alpha-bravo-charlie" not in bot.destroyed
-    assert state.get("d1/sub-c1")["status"] == "live"
+    assert "#vm_alpha-bravo-charlie" in bot.destroyed
+    with pytest.raises(KeyError):
+        state.get("d1/sub-c1")
 
 
 @pytest.mark.asyncio
-async def test_omp_root_grandchild_keeps_session_on_completion(tmp_path, monkeypatch) -> None:
+async def test_omp_root_child_ends_on_completion(tmp_path, monkeypatch) -> None:
     """Completion keeps the room under an OMP root too."""
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
     state.add_node(
@@ -307,14 +308,15 @@ async def test_omp_root_grandchild_keeps_session_on_completion(tmp_path, monkeyp
         "feed": "node", "kind": "death", "subagent_id": "c9",
         "agent": "zed", "status": "completed",
     }, grands)
-    assert "#vm_bravo-zed" not in bot.destroyed
-    assert state.get("bravo-node/sub-c9")["status"] == "live"
-    assert state.get("bravo-node/sub-c9")["extra"]["task_state"] == "completed"
+    assert "#vm_bravo-zed" in bot.destroyed
+    with pytest.raises(KeyError):
+        state.get("bravo-node/sub-c9")
+    assert state.get("bravo-node")["status"] == "live"
 
 
 @pytest.mark.asyncio
-async def test_unresolvable_parent_falls_back_to_gateway(tmp_path, monkeypatch) -> None:
-    """Gateway sessions carry bare UUIDs — delegates still land depth 1."""
+async def test_unresolvable_parent_does_not_fabricate_gateway_ancestry(tmp_path, monkeypatch) -> None:
+    """Unknown session ancestry must never be silently assigned to gateway."""
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
     state.add_node(
         "gw", engine="hermes", name="gateway agent", slug="gateway",
@@ -324,10 +326,10 @@ async def test_unresolvable_parent_falls_back_to_gateway(tmp_path, monkeypatch) 
     channel = await mgr._ensure_child_room_for(
         "deleg_z/0", {"name": "zed", "parent_name": "20260913_234155_8fad8e3d",
                       "engine": "omp"})
-    assert channel == "#vm_gateway-zed"
-    row = state.get("deleg_z/0")
-    assert row["depth"] == 1
-    assert row["parent_node_id"] == "gw"
+    assert channel == ""
+    with pytest.raises(KeyError):
+        state.get("deleg_z/0")
+    assert bot.joined == []
 
 
 @pytest.mark.asyncio
