@@ -5,6 +5,20 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.19] — nightly
+
+- Make Mnemosyne memory available by default in Hermes, preserving explicit
+  opt-outs. Expose native memory tools with profile-aware instructions in both
+  engines, and verify persisted memory contents before reporting success.
+- Add `mercury memory remember` and `mercury memory recall`, including named
+  profiles and nightly installations, without changing configuration.
+- Bundle an engine-neutral Mnemosyne skill with native-tool and CLI guidance.
+- Seed new profiles with stock Mercury skills; preserve a cloned profile's
+  custom skills and deliberate removals. Keep skills and native OMP views
+  profile-local across creation, clone and rename.
+- Honor custom profile-local memory database paths consistently in runtime,
+  CLI tools and status output.
+
 ## [0.3.18] — nightly
 
 - Isolate Mnemosyne/Mnemopi databases per profile while sharing the profile's
