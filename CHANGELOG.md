@@ -5,6 +5,18 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.18] — nightly
+
+- Isolate Mnemosyne/Mnemopi databases per profile while sharing the profile's
+  bank between Hermes and OMP. Rebase existing main-profile database pins
+  at runtime, during setup and when rendering OMP settings.
+- Keep the default profile's memories intact. Rebase profile creation,
+  imports and renames; full-state clones snapshot SQLite, including live
+  WAL contents, into an independent database.
+- Preserve valid YAML when redacting exported profile configuration.
+- Restore Return as a newline on mobile mLounge keyboards, including iOS.
+  Use the visible Send button to submit; desktop Enter still sends.
+
 ## [0.3.17] — nightly
 
 - Wait for MIRC JOIN confirmation before reporting an agent identity ready

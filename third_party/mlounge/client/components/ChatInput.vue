@@ -8,12 +8,12 @@
 			ref="input"
 			dir="auto"
 			class="mousetrap"
-			enterkeyhint="send"
+			:enterkeyhint="multilineReturn ? 'enter' : 'send'"
 			autocomplete="off"
 			:value="channel.pendingMessage"
 			:placeholder="getInputPlaceholder(channel)"
 			@input="setPendingMessage"
-			@keypress.enter.exact.prevent="onSubmit"
+			@keypress.enter.exact="onEnter"
 			@blur="onBlur"
 		/>
 		<span
@@ -102,6 +102,12 @@ export default defineComponent({
 		const input = ref<HTMLTextAreaElement>();
 		const uploadInput = ref<HTMLInputElement>();
 		const autocompletionRef = ref<ReturnType<typeof autocompletion>>();
+		// Mobile keyboards need Return for composing multiline messages. iPads
+		// can identify as Macs and use a fine pointer when a trackpad is attached.
+		const multilineReturn =
+			window.matchMedia?.("(pointer: coarse)").matches ||
+			/iPad|iPhone|iPod/.test(navigator.platform) ||
+			(navigator.userAgent.includes("Mac") && navigator.maxTouchPoints > 1);
 
 		const setInputSize = () => {
 			void nextTick(() => {
@@ -252,6 +258,15 @@ export default defineComponent({
 			}
 
 			socket.emit("input", {target, text});
+		};
+
+		const onEnter = (event: KeyboardEvent) => {
+			if (multilineReturn || event.isComposing || event.defaultPrevented) {
+				return;
+			}
+
+			event.preventDefault();
+			onSubmit();
 		};
 
 		const onUploadInputChange = () => {
@@ -417,6 +432,8 @@ export default defineComponent({
 			upload,
 			getInputPlaceholder,
 			onSubmit,
+			onEnter,
+			multilineReturn,
 			setPendingMessage,
 		};
 	},
