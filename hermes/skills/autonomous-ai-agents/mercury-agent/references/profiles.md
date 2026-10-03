@@ -51,8 +51,12 @@ mercury profile import coder.tar.gz --name coder-copy
 `--clone-from` selects the source. `--clone-all` copies additional state with the
 CLI's history exclusions. Markdown copies and included files are independent,
 including when the source used symlinks. Imports and distributions use the same
-canonical prompt folder. The shared skills library and external memory backend
-have their own scoping; owning Markdown files does not imply separate databases.
+canonical prompt folder. Mnemosyne/Mnemopi uses a separate
+`memories/mnemopi.db` per profile, shared by Hermes and OMP in that profile.
+Normal clones start with an empty bank; `--clone-all` snapshots the source
+memories into an independent database. Existing pins outside a named profile
+are rebased to its local bank. This does not change other memory providers'
+external-service scoping. The skills library remains shared.
 
 In the managed MIRC gateway room:
 

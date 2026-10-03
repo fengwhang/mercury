@@ -78,3 +78,22 @@ describe("loadMnemopiConfig database path resolution", () => {
 		expect(mnemopiConfigFor({ "mnemopi.dbPath": " \t " }, agentDir).dbPath).toBe(defaultPath);
 	});
 });
+
+describe("Mercury profile memory storage", () => {
+	it("rebases legacy global and relative paths at runtime", () => {
+		const root = "/tmp/memory-profile-test/.mercury-nightly";
+		const home = path.join(root, "hermes/profiles/research");
+		const local = path.join(home, "memories/mnemopi.db");
+		expect(
+			mnemopiConfigFor({ "mnemopi.dbPath": path.join(root, "memories/mnemopi.db") }, path.join(home, "omp")).dbPath,
+		).toBe(local);
+		expect(mnemopiConfigFor({ "mnemopi.dbPath": "" }, path.join(home, "omp")).dbPath).toBe(local);
+		expect(mnemopiConfigFor({ "mnemopi.dbPath": "memories/custom.db" }, path.join(home, "omp")).dbPath).toBe(
+			path.join(home, "memories/custom.db"),
+		);
+		const other = path.join(root, "hermes/profiles/other");
+		expect(mnemopiConfigFor({ "mnemopi.dbPath": local }, path.join(other, "omp")).dbPath).toBe(
+			path.join(other, "memories/mnemopi.db"),
+		);
+	});
+});

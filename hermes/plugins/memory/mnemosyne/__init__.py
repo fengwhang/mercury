@@ -158,16 +158,9 @@ _bootstrap_side_venv()
 # ---------------------------------------------------------------------------
 
 def _mercury_home(hermes_home: str = "") -> str:
-    """Resolve the Mercury home (~/.mercury) holding the shared bank."""
-    env_home = os.environ.get("MERCURY_HOME", "").strip()
-    if env_home:
-        return env_home
-    if hermes_home:
-        # Under the launcher HERMES_HOME=$MERCURY_HOME/hermes.
-        if Path(hermes_home).name == "hermes":
-            return str(Path(hermes_home).parent)
-        return hermes_home
-    return os.path.join(os.path.expanduser("~"), ".mercury")
+    """Resolve the active profile's memory home."""
+    from mercury_cli.memory_settings import memory_home
+    return str(memory_home(hermes_home))
 
 
 _ENSURED_BANKS: set = set()
@@ -180,10 +173,15 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, dd
 
 
 def resolve_bank_path(hermes_home: str = "", config: Optional[Dict[str, Any]] = None) -> str:
-    """Resolve the ONE shared bank file both engines use."""
+    """Resolve the bank shared by both engines within the active profile."""
+    from mercury_cli.memory_settings import profile_bank_path
+
+    def scoped(value: str) -> str:
+        return profile_bank_path(value, home=hermes_home)
+
     env_db = os.environ.get("MNEMOSYNE_DB_PATH", "").strip()
     if env_db:
-        return os.path.expanduser(env_db)
+        return scoped(env_db)
     cfg = config or {}
     mem_cfg = cfg.get("memory", {}) if isinstance(cfg, dict) else {}
     mn_cfg = mem_cfg.get("mnemosyne", {}) if isinstance(mem_cfg, dict) else {}
@@ -191,19 +189,19 @@ def resolve_bank_path(hermes_home: str = "", config: Optional[Dict[str, Any]] = 
         for key in ("db_path", "dbPath"):
             val = mn_cfg.get(key, "")
             if isinstance(val, str) and val.strip():
-                return os.path.expanduser(val.strip())
+                return scoped(val)
     # Same pin the omp side renders (omp.mnemopi.dbPath in the unified file).
     # Raw read: the merged config view extracts only the hermes subtree.
     try:
-        raw = _read_unified_raw()
+        raw = _read_unified_raw(hermes_home)
         omp_node = raw.get("omp", {}) if isinstance(raw, dict) else {}
         mn_node = omp_node.get("mnemopi", {}) if isinstance(omp_node, dict) else {}
         omp_db = mn_node.get("dbPath", "") if isinstance(mn_node, dict) else ""
         if isinstance(omp_db, str) and omp_db.strip():
-            return os.path.expanduser(omp_db.strip())
+            return scoped(omp_db)
     except Exception:
         pass
-    return os.path.join(_mercury_home(hermes_home), "memories", SHARED_BANK_FILENAME)
+    return scoped("")
 
 
 # ---------------------------------------------------------------------------
@@ -804,10 +802,9 @@ class MnemosyneMemoryProvider(MemoryProvider):
         return None
 
     def backup_paths(self) -> List[str]:
-        # The bank lives at $MERCURY_HOME/memories (outside $HERMES_HOME),
-        # so backup/import must capture it explicitly. No init, no network.
+        # Capture this instance's profile bank, even from another context.
         try:
-            path = resolve_bank_path()
+            path = self._bank_path or resolve_bank_path()
         except Exception:
             return []
         return [path] if os.path.isfile(path) else []
@@ -843,22 +840,12 @@ _REQUIRED_TABLES = ("working_memory", "episodic_memory", "fts_working", "fts_epi
 _REQUIRED_WORKING_COLUMNS = ("id", "content", "scope", "valid_until", "superseded_by")
 
 
-def _unified_config_path() -> str:
-    explicit = os.environ.get("MERCURY_CONFIG", "").strip()
-    if explicit:
-        return explicit
-    home = os.environ.get("MERCURY_HOME", "").strip()
-    if home:
-        return os.path.join(home, "config.yaml")
-    try:
-        from mercury_constants import get_hermes_home
-
-        return str(Path(get_hermes_home()) / "config.yaml")
-    except Exception:
-        return os.path.join(os.path.expanduser("~"), ".mercury", "config.yaml")
+def _unified_config_path(hermes_home: str = "") -> str:
+    from mercury_cli.memory_settings import memory_config_path
+    return str(memory_config_path(hermes_home))
 
 
-def _read_unified_raw() -> Dict[str, Any]:
+def _read_unified_raw(hermes_home: str = "") -> Dict[str, Any]:
     """Parse the unified config file raw (omp: subtree included)."""
     try:
         import yaml  # noqa: F401
@@ -867,7 +854,7 @@ def _read_unified_raw() -> Dict[str, Any]:
     try:
         import yaml as _yaml
 
-        with open(_unified_config_path(), encoding="utf-8") as fh:
+        with open(_unified_config_path(hermes_home), encoding="utf-8") as fh:
             data = _yaml.safe_load(fh)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -1001,7 +988,7 @@ def preflight_shared_bank(
         _record("bank_file", "fail", f"cannot open/converge {bank_path}: {exc}")
         return {"ok": False, "bank_path": bank_path, "layers": layers}
 
-    omp = _omp_effective_settings()
+    omp = _omp_effective_settings(_read_unified_raw(hermes_home))
     if omp["bank"] != "default":
         _record("bank_name", "fail",
                 f"omp mnemopi.bank={omp['bank']!r} is not 'default': sibling banks split recall")

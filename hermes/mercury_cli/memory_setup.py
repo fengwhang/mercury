@@ -53,21 +53,13 @@ def _parse_yaml_bool_or_none_ensure(value):
 
 
 def _unified_config_path_for_ensure() -> str:
-    explicit = os.environ.get("MERCURY_CONFIG", "").strip()
-    if explicit:
-        return explicit
-    home = os.environ.get("MERCURY_HOME", "").strip()
-    if home:
-        return os.path.join(home, "config.yaml")
-    try:
-        return str(Path(get_hermes_home()) / "config.yaml")
-    except Exception:
-        return os.path.join(os.path.expanduser("~"), ".mercury", "config.yaml")
+    from mercury_cli.memory_settings import memory_config_path
+    return str(memory_config_path())
 
 
 def _shared_mnemopi_db_path_for_ensure() -> str:
-    home = os.environ.get("MERCURY_HOME", os.path.expanduser("~/.mercury"))
-    return os.path.join(home, "memories", "mnemopi.db")
+    from mercury_cli.memory_settings import profile_bank_path
+    return profile_bank_path()
 
 
 def _existing_omp_memory_backend_ensure(text: str):
@@ -131,6 +123,8 @@ def _ensure_omp_mnemopi_defaults() -> bool:
             return False
         old_mn = _existing_omp_mnemopi_values_ensure(text)
         db_path = (old_mn.get("dbPath") or "").strip().strip("'\"") or _shared_mnemopi_db_path_for_ensure()
+        from mercury_cli.memory_settings import profile_bank_path
+        db_path = profile_bank_path(db_path, config_path=path)
         bank = (old_mn.get("bank") or "").strip().strip("'\"") or "default"
         scoping = (old_mn.get("scoping") or "").strip().strip("'\"")
         if scoping not in _VALID_MNEMOPI_SCOPINGS:
@@ -176,7 +170,7 @@ def _ensure_omp_mnemopi_defaults() -> bool:
                     new_omp = new_omp.rstrip("\n") + "\n" + mem_block.split("  memory:\n    backend: mnemopi\n", 1)[1]
                 else:
                     # Fill missing keys inside the existing mnemopi block.
-                    mm = re.search(r"(^[ \t]+mnemopi:[ \t]*\n((?:^[ \t]+.*\n?)*))", new_omp, flags=re.M)
+                    mm = re.search(r"(^([ \t]+)mnemopi:[ \t]*\n(?:^\2[ \t]+.*\n?)*)", new_omp, flags=re.M)
                     if mm:
                         chunk = mm.group(0)
                         missing_lines = ""
@@ -194,8 +188,14 @@ def _ensure_omp_mnemopi_defaults() -> bool:
                             # Schema defaults embeddings ON when absent:
                             # render explicitly so fresh stays FTS-only.
                             missing_lines += f"    noEmbeddings: {str(no_emb).lower()}\n"
-                        if missing_lines:
-                            new_omp = new_omp[:mm.end()] + missing_lines + new_omp[mm.end():]
+                        # Existing global pins also need rebasing, rather
+                        # than only filling a missing dbPath on fresh setup.
+                        chunk = re.sub(
+                            r"(?m)^([ \t]+dbPath\s*:\s*).*$",
+                            lambda match: match.group(1) + _yaml_sq_ensure(db_path),
+                            chunk, count=1,
+                        )
+                        new_omp = new_omp[:mm.start()] + chunk + missing_lines + new_omp[mm.end():]
                 new_text = text[:m.start()] + new_omp + text[m.end():]
             else:
                 # omp block exists without any memory section (setup wrote

@@ -36,8 +36,8 @@ Mercury's contribution is the wiring between the three engines and surfaces:
   to relay every instruction.
 - **Shared knowledge across two runtimes.** Both engines read the shared
   persona and instruction files and skills library. The bridge defaults
-  OMP's memory to the shared Mnemosyne/Mnemopi SQLite bank, with text
-  search enabled and embeddings optional. Children still have their own
+  OMP's memory to a Mnemosyne/Mnemopi SQLite bank shared within each profile,
+  with text search enabled and embeddings optional. Children still have their own
   conversations; shared memory does not give them the parent's transcript.
 - **One place to configure the handoff.** `config.yaml` contains the chat
   and coding model slots, optional fallback chains, thinking levels, and
@@ -326,7 +326,7 @@ terminal-only interactive screen.
 ├── .env                 shared environment credentials
 ├── config/              SOUL, MEMORY, USER, AGENTS, HERMES, and OMP markdown
 ├── skills/              shared skill library
-├── memories/            shared memory bank
+├── memories/            default profile memory bank
 ├── hermes/              Hermes profile, authentication, and runtime state
 ├── omp/                 OMP runtime state
 ├── observatory/         MIRC state, mLounge configuration, and uploads
@@ -346,7 +346,13 @@ settings, and provider logins. Local `models:` entries override those defaults;
 changing the main model updates profiles that haven't overridden it. OAuth
 tokens stay in the main auth store, including refreshes from either engine.
 Profiles retain their own prompts, memory, sessions, channel credentials, and
-native permission settings. Nightly profiles inherit only from nightly.
+native permission settings. Each named profile uses its own
+`memories/mnemopi.db`; Hermes and OMP in that profile share the database.
+Existing pins to the main profile or another profile are rebased automatically.
+The default profile keeps its existing database. A normal clone starts a new
+bank; `--clone-all` makes an independent snapshot of the source memories.
+Named-profile database overrides must stay inside that profile's folder.
+Nightly profiles inherit only from nightly.
 Set `profile.inherit_models: false` or `profile.inherit_credentials: false` in
 a profile's config to configure those independently. Older profiles keep
 their explicit model selections but inherit the main login automatically.

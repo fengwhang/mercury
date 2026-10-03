@@ -424,6 +424,8 @@ def render_omp_subtree(slots, target=None):
     if _new_backend == "mnemopi":
         _old_mn = _existing_omp_mnemopi_values(text)
         _db_path = (_old_mn.get("dbPath") or "").strip().strip("'\"") or _shared_mnemopi_db_path()
+        from mercury_cli.memory_settings import profile_bank_path
+        _db_path = profile_bank_path(_db_path, config_path=target)
         _bank = (_old_mn.get("bank") or "").strip().strip("'\"") or "default"
         _scoping = (_old_mn.get("scoping") or "").strip().strip("'\"")
         if _scoping not in _VALID_MNEMOPI_SCOPINGS:

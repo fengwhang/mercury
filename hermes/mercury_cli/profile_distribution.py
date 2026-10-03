@@ -716,6 +716,8 @@ def install_distribution(
         )
         from mercury_cli.profiles import ensure_profile_prompt_files
         ensure_profile_prompt_files(plan.target_dir)
+        from mercury_cli.memory_settings import ensure_profile_memory
+        ensure_profile_memory(plan.target_dir)
 
         if create_alias:
             collision = check_alias_collision(plan.manifest.name)
@@ -770,6 +772,8 @@ def update_distribution(
 
         from mercury_cli.profiles import ensure_profile_prompt_files
         ensure_profile_prompt_files(plan.target_dir)
+        from mercury_cli.memory_settings import ensure_profile_memory
+        ensure_profile_memory(plan.target_dir)
         _copy_dist_payload(
             plan.staged_dir,
             plan.target_dir,
@@ -778,6 +782,8 @@ def update_distribution(
         )
         from mercury_cli.profiles import ensure_profile_prompt_files
         ensure_profile_prompt_files(plan.target_dir)
+        from mercury_cli.memory_settings import ensure_profile_memory
+        ensure_profile_memory(plan.target_dir)
         return plan
 
 

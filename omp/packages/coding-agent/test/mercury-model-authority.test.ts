@@ -130,3 +130,19 @@ test("OMP projects shared choices and its picker saves only the shared delegate 
 	expect(updated.omp.modelReasoningOverrides).toBeUndefined();
 	expect(updated.omp.delegateFallback).toBeUndefined();
 });
+
+test.each(["alpha", "beta"])("profile %s rebases legacy main-bank pins on load and save", async name => {
+	process.env.MERCURY_HOME = temp.path();
+	const mainBank = temp.join("memories/mnemopi.db");
+	const home = temp.join(`hermes/profiles/${name}`);
+	const file = path.join(home, "config.yaml");
+	process.env.MERCURY_CONFIG = file;
+	await Bun.write(file, YAML.stringify({ hermes: {}, omp: { mnemopi: { dbPath: mainBank } } }));
+	const settings = await Settings.init({ agentDir: path.join(home, "omp"), cwd: temp.path() });
+	const local = path.join(home, "memories/mnemopi.db");
+	expect(settings.get("mnemopi.dbPath")).toBe(local);
+	settings.set("tools.approvalMode", "write");
+	await settings.flush();
+	const saved = YAML.parse(await Bun.file(file).text()) as { omp: { mnemopi: { dbPath: string } } };
+	expect(saved.omp.mnemopi.dbPath).toBe(local);
+});

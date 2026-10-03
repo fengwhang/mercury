@@ -4,6 +4,7 @@ import * as path from "node:path";
 import type { MnemopiOptions } from "@oh-my-pi/pi-mnemopi";
 import { getMemoriesDir, logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import { mercuryProfileBankPath } from "../config/mercury-memory-settings";
 
 export type MnemopiLlmMode = "none" | "remote"; // HERMES-OMP PATCH: no "smol" role mode
 
@@ -44,9 +45,9 @@ export function loadMnemopiConfig(settings: Settings, agentDir: string): Mnemopi
 	const configuredDbPath = settings.get("mnemopi.dbPath");
 	const cwd = settings.getCwd();
 	const scoping = settings.get("mnemopi.scoping");
-	const dbPath = configuredDbPath?.trim()
-		? configuredDbPath
-		: path.join(getMemoriesDir(agentDir), "mnemopi", "mnemopi.db");
+	const dbPath =
+		mercuryProfileBankPath(configuredDbPath, agentDir) ??
+		(configuredDbPath?.trim() ? configuredDbPath : path.join(getMemoriesDir(agentDir), "mnemopi", "mnemopi.db"));
 	const scope = computeMnemopiBankScope(settings.get("mnemopi.bank"), cwd, scoping);
 	const recallBanks =
 		scoping === "global" ? scope.recallBanks : extendRecallWithLegacyBanks(scope.recallBanks, dbPath, cwd);

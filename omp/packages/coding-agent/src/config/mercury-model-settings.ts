@@ -2,6 +2,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { YAML } from "bun";
+import { mercuryProfileBankPath } from "./mercury-memory-settings";
 import { parseModelString } from "./model-resolver";
 import type { RawSettings } from "./settings";
 
@@ -41,6 +42,12 @@ function effectiveModels(whole: RawSettings, configPath?: string): Record<string
 
 export function projectMercuryModels(whole: RawSettings, configPath?: string): RawSettings {
 	const native = structuredClone(record(whole.omp));
+	const memory = record(native.mnemopi);
+	const bank = mercuryProfileBankPath(
+		typeof memory.dbPath === "string" ? memory.dbPath : undefined,
+		configPath ? path.dirname(configPath) : undefined,
+	);
+	if (bank) native.mnemopi = { ...memory, dbPath: bank };
 	const models = effectiveModels(whole, configPath);
 	const selector = models.delegate_model;
 	const efforts = record(models.reasoning_overrides);

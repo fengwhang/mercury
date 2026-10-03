@@ -132,24 +132,27 @@ def _omp_backend_ready() -> str:
     return ""
 
 
-def _new_provider(monkeypatch, tmp_path, session="unify-sess"):
+def _new_provider(monkeypatch, tmp_path, session="unify-sess", profile_name=None):
     from plugins.memory.mnemosyne import MnemosyneMemoryProvider
 
     monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
     monkeypatch.setenv("MNEMOSYNE_DB_PATH", "")
-    bank = str(tmp_path / "memories" / "mnemopi.db")
+    home = tmp_path / "hermes" / "profiles" / profile_name if profile_name else tmp_path
+    home.mkdir(parents=True, exist_ok=True)
+    bank = str(home / "memories" / "mnemopi.db")
     provider = MnemosyneMemoryProvider()
-    provider.initialize(session, mercury_home=str(tmp_path), agent_context="primary")
+    provider.initialize(session, mercury_home=str(home), agent_context="primary")
     assert provider._bank_path == bank
     return provider, bank
 
 
-def test_shared_universe_round_trip(tmp_path, monkeypatch):
+@pytest.mark.parametrize("profile_name", [None, "research"])
+def test_shared_universe_round_trip(tmp_path, monkeypatch, profile_name):
     reason = _omp_backend_ready()
     if reason:
         pytest.skip(reason)
 
-    provider, bank = _new_provider(monkeypatch, tmp_path)
+    provider, bank = _new_provider(monkeypatch, tmp_path, profile_name=profile_name)
     # hermes -> bank (fresh connection each op; no restart anywhere below).
     provider.on_memory_write("add", "memory", "hermes wrote pomegranate row 3344 for omp recall")
     provider.shutdown()
@@ -174,7 +177,7 @@ def test_shared_universe_round_trip(tmp_path, monkeypatch):
     # omp -> hermes: fresh provider instance (no shared state, no restart).
     # The bun side wrote with default session scope; the shared universe
     # must still surface it.
-    provider2, _ = _new_provider(monkeypatch, tmp_path, session="other-sess")
+    provider2, _ = _new_provider(monkeypatch, tmp_path, session="other-sess", profile_name=profile_name)
     found = provider2.prefetch("persimmon omp wrote")
     assert "5566" in found
     provider2.shutdown()

@@ -971,6 +971,8 @@ def _seed_model_config(profile_dir: Path) -> None:
             seed["models"] = {}
             seed["hermes"].pop("model_options", None)
             seed["profile"] = {"inherit_models": True, "inherit_credentials": True}
+        if "memory" in hermes_config:
+            seed.get("hermes", seed)["memory"] = hermes_config["memory"]
         config_path.write_text(
             yaml.safe_dump(seed, sort_keys=False),
             encoding="utf-8",
@@ -1513,6 +1515,8 @@ def create_profile(
             pass  # best-effort — save_env_value creates the file on demand
 
     ensure_profile_prompt_files(profile_dir, source_dir=source_dir)
+    from mercury_cli.memory_settings import ensure_profile_memory
+    ensure_profile_memory(profile_dir, source_dir=source_dir, copy_state=clone_all)
 
     # Write the opt-out marker so seed_profile_skills() and `mercury update`'s
     # all-profile sync loop both skip this profile for bundled-skill seeding.
@@ -1530,8 +1534,8 @@ def create_profile(
     # Cloned configs can be older than the running Mercury (or predate schema
     # tracking entirely). Migrate config-only clones immediately so
     # desktop/status surfaces don't warn that a just-created profile is
-    # v0/outdated. Leave --clone-all snapshots byte-for-byte apart from the
-    # explicit runtime/history stripping above.
+    # v0/outdated. Full-state snapshots skip config-version migration;
+    # their memory pins and SQLite snapshots are isolated above.
     if not clone_all:
         _migrate_profile_config_if_outdated(profile_dir)
 
@@ -2448,6 +2452,11 @@ def _scrub_export_secrets(staged: Path) -> None:
             continue
 
         redacted = redact_sensitive_text(text, force=True)
+        if path.name == "config.yaml":
+            # A bare *** is an invalid YAML alias. Keep redacted profile
+            # configs importable so their memory paths can be rebased.
+            import re
+            redacted = re.sub(r"(?m)^(\s*[^:#\n]+:\s*)\*\*\*(\s*)$", r"\1'***'\2", redacted)
         if redacted == text:
             continue
 
@@ -2581,6 +2590,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         shutil.move(str(final_source), str(profile_dir))
 
     ensure_profile_prompt_files(profile_dir)
+    from mercury_cli.memory_settings import ensure_profile_memory
+    ensure_profile_memory(profile_dir)
     return profile_dir
 
 
@@ -2693,6 +2704,8 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
     # 2. Rename directory
     old_dir.rename(new_dir)
+    from mercury_cli.memory_settings import ensure_profile_memory
+    ensure_profile_memory(new_dir, source_dir=old_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
