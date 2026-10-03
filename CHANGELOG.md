@@ -5,6 +5,15 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.17] — nightly
+
+- Wait for MIRC JOIN confirmation before reporting an agent identity ready
+  during Observatory startup and reconnection.
+- Recheck missing identities for a bounded grace period after restart,
+  preserving genuine failures without rejecting a late-joining agent.
+- Verify the current live roster after resync, excluding tasks that end
+  during the check. Treat incomplete NAMES replies as inconclusive.
+
 ## [0.3.16] — nightly
 
 - Name delegated Observatory rooms after their immediate parent and inherit

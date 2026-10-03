@@ -151,7 +151,8 @@ class _Probe:
                         return None
         except OSError:
             return None
-        return members
+        # A partial 353 without its 366 receipt is not a membership snapshot.
+        return None
 
     def gateway_roundtrip(self, nick: str, timeout: float = 5.0) -> bool:
         """Challenge the actual dispatch connection, not just its NAMES entry."""

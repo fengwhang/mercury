@@ -87,6 +87,23 @@ class IdentityConn:
                     if b" 001 " in raw:
                         break
             await send_raw(f"JOIN {self.channel}")
+            # drain() only queues the JOIN locally. Wait for the server's
+            # membership receipt before resync advertises this identity ready.
+            async with asyncio.timeout(15):
+                while True:
+                    raw = await reader.readline()
+                    if not raw:
+                        raise ConnectionError("eof before join confirmation")
+                    line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    if line.startswith("PING "):
+                        await send_raw(f"PONG {line[5:]}")
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 4 and parts[3].lower() == self.channel.lower():
+                        if parts[1] == "366":
+                            break
+                        if parts[1] in ("403", "471", "474", "475"):
+                            raise ConnectionError("identity JOIN rejected")
         except Exception:
             logger.debug("identity: register failed for %s", self.nick,
                          exc_info=True)
@@ -306,10 +323,15 @@ async def ensure_identity(nick: str, channel: str) -> bool:
     pool = get_pool()
     conn = pool.get(channel)
     if conn is not None:
-        if conn._writer is None or conn._writer.is_closing():
-            conn._schedule_reconnect()
-            return False
-        return True
+        # A reconnect assigns its writer before registration and JOIN finish.
+        # The connection lock covers that handshake; don't report ready early.
+        async with conn._lock:
+            if conn._closed:
+                return False
+            if conn._writer is None or conn._writer.is_closing():
+                conn._schedule_reconnect()
+                return False
+            return True
     conn = IdentityConn(host=host, port=port, password=password,
                         nick=nick, channel=channel)
     pool.track(conn)

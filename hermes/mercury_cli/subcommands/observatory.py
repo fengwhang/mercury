@@ -217,8 +217,9 @@ def _verify_fleet(args) -> int:
     A gateway restart alone is not a fleet respawn — spawned agents only
     come back via boot resync (channel JOINs, identity reconnects, omp
     child rebuilds). This waits for a resync newer than the restart,
-    then JOINs every live room with a probe client and checks the
-    agent's nick is present. A private transport challenge also proves the
+    then reads the current roster and checks every room with a probe client.
+    Missing identities get a bounded shared grace period for reconnects.
+    A private transport challenge also proves the
     gateway nick belongs to a receiver, not a send-only clone. This is NOT
     provider health; no model turn is run. Nonzero on any failed check.
     """
@@ -230,14 +231,6 @@ def _verify_fleet(args) -> int:
     state = _open_state(home)
     if state is None:
         print("fleet: observatory not provisioned (no state.db).", file=sys.stderr)
-        return 1
-    try:
-        live = list(state.get_live())
-    except Exception as exc:
-        print(f"fleet: cannot read live agents ({exc})", file=sys.stderr)
-        return 1
-    if not live:
-        print("fleet: no live agents (gateway row missing?)", file=sys.stderr)
         return 1
     marker: dict = {}
     for _ in range(24):
@@ -256,6 +249,14 @@ def _verify_fleet(args) -> int:
         return 1
     for failure in (marker or {}).get("failed") or []:
         print(f"fleet: resync reported: {failure}")
+    try:
+        live = list(state.get_live())
+    except Exception as exc:
+        print(f"fleet: cannot read live agents ({exc})", file=sys.stderr)
+        return 1
+    if not live:
+        print("fleet: no live agents (gateway row missing?)", file=sys.stderr)
+        return 1
     try:
         from observatory.doctor import _Probe
         from observatory.provision import read_config, read_mirc_passwords
@@ -278,29 +279,53 @@ def _verify_fleet(args) -> int:
             print(f"fleet: FAIL — probe could not register on {host}:{port}",
                   file=sys.stderr)
             return 1
-        for row in live:
-            channel = str((row or {}).get("room_id") or "")
-            nick = str((row or {}).get("mxid") or "")
-            name = str((row or {}).get("name") or (row or {}).get("node_id"))
-            if not channel or not nick:
-                print(f"fleet: FAIL {name} (no channel/nick recorded)")
-                failures += 1
-                continue
+        pending = {row["node_id"]: row for row in live}
+        observations = {}
+        present = set()
+        deadline = _time.monotonic() + 5.0
+        while pending:
+            # A delegated task can complete during restart verification. Use
+            # the current roster, rather than fail an already-ended session.
             try:
-                members = probe.names(channel)
+                current = {row["node_id"]: row for row in state.get_live()}
             except Exception as exc:
-                print(f"fleet: FAIL {name} ({channel}): probe error ({exc})")
-                failures += 1
-                continue
-            if members is None:
-                print(f"fleet: FAIL {name} ({channel}): could not JOIN")
-                failures += 1
-            elif nick.lower() in {str(m).lower() for m in members}:
-                print(f"fleet: presence ok {name} ({channel}) — {nick} present")
-            else:
-                print(f"fleet: FAIL {name} ({channel}): {nick} NOT present "
-                      f"(members: {', '.join(members) or 'none'})")
-                failures += 1
+                print(f"fleet: cannot read live agents ({exc})", file=sys.stderr)
+                return 1
+            for node_id in list(pending):
+                if node_id not in current:
+                    pending.pop(node_id)
+                    continue
+                row = pending[node_id] = current[node_id]
+                channel = str(row.get("room_id") or "")
+                nick = str(row.get("mxid") or "")
+                name = str(row.get("name") or node_id)
+                if not channel or not nick:
+                    observations[node_id] = "no channel/nick recorded"
+                    continue
+                try:
+                    members = probe.names(channel, timeout=max(
+                        0.1, min(1.0, deadline - _time.monotonic())))
+                except Exception as exc:
+                    observations[node_id] = f"probe error ({exc})"
+                    continue
+                if members is None:
+                    observations[node_id] = "membership probe timed out or JOIN rejected"
+                elif nick.lower() in {str(m).lower() for m in members}:
+                    print(f"fleet: presence ok {name} ({channel}) — {nick} present")
+                    present.add(node_id)
+                    pending.pop(node_id)
+                else:
+                    observations[node_id] = (
+                        f"{nick} NOT present (members: {', '.join(members) or 'none'})")
+            remaining = deadline - _time.monotonic()
+            if not pending or remaining <= 0:
+                break
+            _time.sleep(min(0.25, remaining))
+        for node_id, row in pending.items():
+            channel = str((row or {}).get("room_id") or "")
+            name = str((row or {}).get("name") or (row or {}).get("node_id"))
+            print(f"fleet: FAIL {name} ({channel}): {observations[node_id]}")
+            failures += 1
         gateway_nick = next((str(row.get("mxid") or "") for row in live
                              if row.get("node_id") == "gw"
                              or (row.get("extra") or {}).get("kind") == "gateway"), "")
@@ -318,7 +343,7 @@ def _verify_fleet(args) -> int:
     if failures:
         print(f"fleet: {failures} check(s) failed", file=sys.stderr)
         return 1
-    print(f"fleet: all {len(live)} live agent(s) present; gateway transport verified "
+    print(f"fleet: all {len(present)} live agent(s) present; gateway transport verified "
           "(provider replies not tested)")
     return 0
 

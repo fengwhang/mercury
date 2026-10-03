@@ -178,7 +178,7 @@ def test_restart_rerenders_unit_then_gateway_then_verifies(monkeypatch, capsys, 
         def connect(self):
             return True
 
-        def names(self, channel):
+        def names(self, channel, timeout=5.0):
             assert channel == "#vm_gateway"
             return ["owner", "vm_gateway"]
 
