@@ -205,6 +205,7 @@ async def test_start_command_is_noop_during_active_session():
         ("/commands", "_handle_commands_command", "Commands text"),
         ("/update", "_handle_update_command", "Update text"),
         ("/profile", "_handle_profile_command", "Profile text"),
+        ("/profileadd coder", "_handle_profileadd_command", "Profile created"),
     ],
 )
 async def test_active_session_bypass_commands_dispatch_without_interrupt(

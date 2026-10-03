@@ -245,6 +245,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show serving profile, home, and prompt directory", "Info",
                busy_policy="dispatch", execute="profile"),
+    CommandDef("profileadd", "Create a profile with its own config, prompts, and skills", "Configuration",
+               args_hint="<name>", argument_mode="text", busy_policy="dispatch"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",), desktop="terminal"),
     CommandDef("resume", "Resume a previously-named session", "Session",
@@ -1475,7 +1477,9 @@ _SLACK_PRIORITY_ALIASES: tuple[str, ...] = ()
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "insights"})
+# Profile creation is available as /mercury profileadd <name> on Slack, keeping
+# its capped native menu from displacing an existing session command.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "insights", "profileadd"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

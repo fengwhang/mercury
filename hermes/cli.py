@@ -12581,6 +12581,8 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_whoami_command()
         elif canonical == "profile":
             self._handle_profile_command()
+        elif canonical == "profileadd":
+            self._handle_profileadd_command(cmd_original)
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":

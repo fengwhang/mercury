@@ -868,6 +868,13 @@ class CLICommandsMixin:
         print(f"  Prompts: {reply.data['prompt_dir']}")
         print()
 
+    def _handle_profileadd_command(self, cmd_original: str):
+        """Create a fresh profile without changing this session's profile."""
+        from mercury_cli.profiles import profileadd_command
+
+        parts = cmd_original.split(None, 1)
+        print(profileadd_command(parts[1] if len(parts) > 1 else ""))
+
     def _handle_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
 

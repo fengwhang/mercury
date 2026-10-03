@@ -61,5 +61,9 @@ mercury omp -p coder -- -p "Summarize this repository"
 ```
 
 `/profile` displays the profile serving the current chat and its prompt directory.
-It is informational; create or configure profiles with the CLI commands above or
-the profile creation controls, then launch a session using that profile.
+In a Hermes session, `/profileadd coder` creates a fresh profile just like
+`mercury profile create coder`, including its config, independent Markdown files,
+bundled skills, and a command alias when available. It uses the current
+installation's home: stable and nightly profiles stay separate. It leaves the
+current session in its existing profile. Configure and launch the new profile
+with the commands shown in the reply.

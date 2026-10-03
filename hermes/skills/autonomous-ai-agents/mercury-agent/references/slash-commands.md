@@ -36,6 +36,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 ### Configuration
 ```
 /config                  Show config (CLI)
+/profileadd <name>       Create an independent profile (Hermes sessions)
 /model [name] [--global] Switch model (session-scoped by default)
 /personality [name]      Set a personality
 /reasoning [level|show|hide] Effort/display; choices depend on the provider
@@ -112,9 +113,12 @@ it. New commands land often; `/help` in-session is always authoritative.
 
 ### Profile creation and Observatory rooms
 
-`/profile` is informational. Create with `mercury profile create NAME`, configure
+`/profile` is informational. In a Hermes session, create with `/profileadd NAME`
+or `mercury profile create NAME`, configure
 with `mercury -p NAME setup`, then launch `mercury -p NAME chat` or
 `mercury omp -p NAME`. See [profiles.md](profiles.md) for the private Markdown folder.
+Use `mercury-nightly` for a nightly installation; `/profileadd` follows the
+installation running the session without switching the current profile.
 
 In the managed MIRC gateway room use `!spawn NAME -p PROFILE` /
 `!spawnomp NAME -p PROFILE`. `!restart` there restarts the Observatory; `!exit`

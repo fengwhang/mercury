@@ -1559,6 +1559,50 @@ def create_profile(
     return profile_dir
 
 
+def profileadd_command(args: str) -> str:
+    """Noninteractive /profileadd, sharing the CLI's fresh-profile creation flow."""
+    from mercury_constants import mercury_command
+
+    try:
+        names = shlex.split(args)
+    except ValueError:
+        return "Usage: /profileadd <name>"
+    if len(names) != 1:
+        return "Usage: /profileadd <name>"
+
+    try:
+        profile_dir = create_profile(names[0])
+    except (ValueError, OSError) as exc:
+        return f"Could not create profile: {exc}"
+
+    name = profile_dir.name
+    command = mercury_command()
+    lines = [f"Profile '{name}' created at {profile_dir}",
+             f"Prompts: {profile_dir / 'config'}"]
+    result = seed_profile_skills(profile_dir, quiet=True)
+    if result is None:
+        lines.append(f"Skills could not be seeded; run {command} -p {name} update to retry.")
+
+    try:
+        collision = check_alias_collision(name)
+        if collision:
+            lines.append(f"Alias '{name}' unavailable: {collision}")
+        else:
+            wrapper = create_wrapper_script(name)
+            if wrapper:
+                lines.append(f"Wrapper: {wrapper}")
+            else:
+                lines.append("Alias could not be created; use the profile flag below.")
+    except (ValueError, OSError) as exc:
+        # The profile is already usable even if its optional alias cannot be written.
+        lines.append(f"Alias could not be created: {exc}")
+
+    lines.extend((f"Configure: {command} -p {name} setup",
+                  f"Chat: {command} -p {name} chat",
+                  f"OMP: {command} omp -p {name}"))
+    return "\n".join(lines)
+
+
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
     """Seed bundled skills into a profile via subprocess.
 

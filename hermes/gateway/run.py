@@ -17999,6 +17999,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             "help": self._handle_help_command,
             "commands": self._handle_commands_command,
             "profile": self._handle_profile_command,
+            "profileadd": self._handle_profileadd_command,
             "update": self._handle_update_command,
             "version": self._handle_version_command,
             "spawn": self._handle_spawn_command,

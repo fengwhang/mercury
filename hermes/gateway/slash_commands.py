@@ -388,6 +388,12 @@ class GatewaySlashCommandsMixin:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
         return EphemeralReply(f"{header}{_tip_line}")
 
+    async def _handle_profileadd_command(self, event: MessageEvent) -> str:
+        """Create a profile off the event loop, keeping the active agent running."""
+        from mercury_cli.profiles import profileadd_command
+
+        return await asyncio.to_thread(profileadd_command, event.get_command_args() or "")
+
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show the profile serving this source and its home.
 
