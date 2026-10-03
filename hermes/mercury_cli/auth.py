@@ -7592,8 +7592,8 @@ def _update_config_for_provider(
     _whole = None
     if os.environ.get("MERCURY_CONFIG", "").strip():
         _whole = read_user_config_raw(config_path)
-        _sub = _whole.get("hermes") if isinstance(_whole, dict) else None
-        config = dict(_sub) if isinstance(_sub, dict) else {}
+        from mercury_cli.model_settings import hermes_model_view
+        config = hermes_model_view(_whole)
     else:
         config = read_raw_config()
 
@@ -7627,7 +7627,8 @@ def _update_config_for_provider(
             model_cfg["default"] = default_model
     config["model"] = model_cfg
     if _whole is not None:
-        _whole["hermes"] = config
+        from mercury_cli.model_settings import save_hermes_model_view
+        _whole = save_hermes_model_view(_whole, config)
         atomic_yaml_write(config_path, _whole, sort_keys=False)
     else:
         atomic_yaml_write(config_path, config, sort_keys=False)

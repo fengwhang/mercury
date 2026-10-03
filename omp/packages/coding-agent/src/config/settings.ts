@@ -46,6 +46,7 @@ import { INSPECT_IMAGE_MODES } from "../utils/inspect-image-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import { stringifyYamlConfig } from "./config-file";
 import { MercuryApprovalPolicy } from "./mercury-approval-policy";
+import { persistMercuryModels, projectMercuryModels } from "./mercury-model-settings";
 import {
 	type BashInterceptorRule,
 	type GroupPrefix,
@@ -1210,21 +1211,15 @@ export class Settings {
 		this.#queueProjectSave();
 	}
 
-	/**
-	 * Set a model role (helper for modelRoles record). Passing `undefined`
-	 * clears the role from the persisted record and any runtime override.
-	 *
-	 * In project storage mode, when a project edit has temporarily replaced
-	 * the process-wide runtime override for `role` and that override is still
-	 * active (the runtime slot currently matches the project value), the
-	 * global-layer write must not rewrite that runtime slot — otherwise the
-	 * global fallback would immediately shadow the still-configured project
-	 * role. The global layer is still persisted; only the runtime override is
-	 * left untouched. The guard is precise so that a later clear, a late
-	 * `overrideModelRoles`, or a storage-mode transition does not leave a
-	 * stale skip in place.
-	 */
+	/** Save the single task model; "default" is a legacy picker alias. */
 	setModelRole(role: ModelRole | string, modelId: string | undefined): void {
+		if (role !== "task" && role !== "default") return;
+		if (process.env.MERCURY_CONFIG?.trim()) {
+			this.set("delegateModel", modelId);
+			return;
+		}
+		// Preserve the native SDK's legacy remembered-session setting when no
+		// Mercury document is active. This does not enable model role routing.
 		const prev = this.get("modelRoles");
 		const current = this.#modelRolesFromLayer(this.#global);
 		this.#captureGlobalMutation(role, this.#modifiedGlobalModelRoleMutations, current[role]);
@@ -1248,6 +1243,11 @@ export class Settings {
 		}
 		this.#savedRuntimeModelRoleOverrides.delete(role);
 		this.#updateRuntimeModelRoleOverride(role, modelId);
+	}
+
+	/** Persist one model's effort without changing which model is selected. */
+	setModelReasoning(selector: string, level: string): void {
+		this.set("modelReasoningOverrides", { ...this.get("modelReasoningOverrides"), [selector]: level });
 	}
 
 	/**
@@ -1761,11 +1761,9 @@ export class Settings {
 			if (result.kind === "loaded") {
 				const whole = this.#unwrapYamlLoadResult(filePath, result);
 				if (whole && typeof whole === "object") {
-					const subtree = (whole as Record<string, unknown>)["omp"];
 					result = {
 						...result,
-						// eslint-disable-next-line @typescript-eslint/no-explicit-any
-						settings: subtree && typeof subtree === "object" ? (subtree as any) : {},
+						settings: projectMercuryModels(whole),
 					} as typeof result;
 				}
 			}
@@ -1834,12 +1832,7 @@ export class Settings {
 			if (loaded && typeof loaded === "object") {
 				this.useMercuryApprovalPolicy(mercuryPath);
 				const whole = loaded as Record<string, unknown>;
-				const subtree = whole.omp;
-				const shared: RawSettings = subtree && typeof subtree === "object" ? { ...subtree } : {};
-				const models = whole.models as Record<string, unknown> | undefined;
-				if (models?.context_windows && typeof models.context_windows === "object") {
-					shared.modelContextWindows = models.context_windows;
-				}
+				const shared: RawSettings = projectMercuryModels(whole);
 				const hermes = whole.hermes as Record<string, unknown> | undefined;
 				const compression = hermes?.compression as Record<string, unknown> | undefined;
 				const threshold = compression?.threshold ?? 0.5;
@@ -2753,8 +2746,7 @@ export class Settings {
 			const raw = await this.#loadYamlIfPresent(mercuryPath, false);
 			const parsed = this.#unwrapYamlLoadResult(mercuryPath, raw);
 			if (parsed && typeof parsed === "object") existing = parsed as Record<string, unknown>;
-			existing["omp"] = settings;
-			toWrite = existing as RawSettings;
+			toWrite = persistMercuryModels(existing, settings);
 		}
 		const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
 		let removeTemp = false;

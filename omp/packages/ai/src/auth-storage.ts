@@ -17,7 +17,13 @@ import {
 	serializeCredential,
 	USAGE_REPORT_TTL_MS,
 } from "./auth/sqlite-credential-store";
-import { mercuryCredentialContext, mercuryCredentialStore } from "./auth/mercury-store";
+import {
+	mercuryCredentialContext,
+	mercuryCredentialStore,
+	resolveMercuryRuntimeProvider,
+	type MercuryCredentialContext,
+	type MercuryRuntimeProvider,
+} from "./auth/mercury-store";
 import type { ApiKeyResolver } from "./auth-retry";
 import * as AIError from "./error";
 import { isUsageLimitOutcome } from "./error/rate-limit";
@@ -1320,6 +1326,9 @@ export class AuthStorage {
 	/** Provider -> credentials cache, populated from store on reload(). */
 	#data: Map<string, StoredCredential[]> = new Map();
 	#runtimeOverrides: Map<string, string> = new Map();
+	#mercuryContext?: MercuryCredentialContext;
+	#mercuryRuntimeProviders = new Map<string, MercuryRuntimeProvider>();
+	#mercuryManagedProviders = new Set<string>();
 	#configOverrides: Map<string, string> = new Map();
 	/** Tracks next credential index per provider:type key for round-robin distribution (non-session use). */
 	#providerRoundRobinIndex: Map<string, number> = new Map();
@@ -1432,10 +1441,12 @@ export class AuthStorage {
 			store.close();
 			throw error;
 		}
-		return new AuthStorage(sharedStore, {
+		const storage = new AuthStorage(sharedStore, {
 			...options,
 			sourceLabel: options.sourceLabel ?? (context ? "Mercury shared profile credentials" : undefined),
 		});
+		storage.#mercuryContext = context;
+		return storage;
 	}
 
 	/**
@@ -1447,6 +1458,32 @@ export class AuthStorage {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#store.close();
+	}
+
+	/** Resolve Portal metadata/keys through the same profile authority as Hermes. */
+	async getMercuryRuntimeProvider(
+		provider: string,
+		includeModels = true,
+		forceRefresh = false,
+		signal?: AbortSignal,
+	): Promise<MercuryRuntimeProvider | undefined> {
+		if (!this.#mercuryContext) return undefined;
+		const runtime = await resolveMercuryRuntimeProvider(
+			this.#mercuryContext,
+			provider,
+			includeModels,
+			forceRefresh,
+			signal,
+		);
+		if (runtime) {
+			this.#mercuryRuntimeProviders.set(provider, runtime);
+			this.#mercuryManagedProviders.add(provider);
+		} else this.#mercuryRuntimeProviders.delete(provider);
+		return runtime;
+	}
+
+	getMercuryRuntimeBearer(provider: string): string | undefined {
+		return this.#runtimeOverrides.get(provider) ?? this.#mercuryRuntimeProviders.get(provider)?.apiKey;
 	}
 
 	getGeneration(): number {
@@ -2820,6 +2857,7 @@ export class AuthStorage {
 	 */
 	hasAuth(provider: string): boolean {
 		if (this.#runtimeOverrides.has(provider)) return true;
+		if (this.#mercuryManagedProviders.has(provider)) return this.#mercuryRuntimeProviders.has(provider);
 		if (this.#configOverrides.has(provider)) return true;
 		if (this.#getCredentialsForProvider(provider).length > 0) return true;
 		if (this.#hasDedicatedEnvAuth(provider)) return true;
@@ -2840,6 +2878,7 @@ export class AuthStorage {
 	 */
 	hasConcreteAuth(provider: string): boolean {
 		if (this.#runtimeOverrides.has(provider)) return true;
+		if (this.#mercuryManagedProviders.has(provider)) return this.#mercuryRuntimeProviders.has(provider);
 		if (this.#configOverrides.has(provider)) return true;
 		if (this.#getCredentialsForProvider(provider).length > 0) return true;
 		if ((provider === "amazon-bedrock" || provider === "bedrock-mantle") && $env.AWS_BEARER_TOKEN_BEDROCK?.trim()) {
@@ -5782,6 +5821,24 @@ export class AuthStorage {
 		const runtimeKey = this.#runtimeOverrides.get(provider);
 		if (runtimeKey) {
 			return runtimeKey;
+		}
+
+		if (this.#mercuryManagedProviders.has(provider)) {
+			const runtime = await this.getMercuryRuntimeProvider(
+				provider,
+				false,
+				options?.forceRefresh === true,
+				options?.signal,
+			);
+			if (!runtime) throw new Error("Mercury provider login is unavailable; log in using Mercury setup");
+			if (
+				options?.baseUrl &&
+				options.baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "") !==
+					runtime.baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "")
+			) {
+				throw new Error("Mercury provider endpoint changed; refresh the model catalog before retrying");
+			}
+			return runtime.apiKey;
 		}
 
 		// Config override: explicit apiKey pinned in models.yml beats the broker's

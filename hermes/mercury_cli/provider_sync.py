@@ -166,6 +166,12 @@ def _remove_singleton_alias(store: dict[str, Any], provider: str, removed: list[
 def exchange(request: dict[str, Any]) -> dict[str, Any]:
     """Internal structured request; callers must never display the response."""
     operation = request.get("operation")
+    if operation == "runtime-provider":
+        if request.get("provider") != "nous":
+            raise ValueError("Provider has no Mercury runtime adapter")
+        from mercury_cli.omp_provider import runtime_provider
+        return {"runtime": runtime_provider(include_models=request.get("includeModels", True),
+                                            force_refresh=request.get("forceRefresh", False))}
     with auth._auth_store_lock(timeout_seconds=60):
         store = auth._load_auth_store()
         before = json.dumps(store, sort_keys=True)

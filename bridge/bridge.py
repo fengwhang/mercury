@@ -20,13 +20,8 @@ DEFAULT_CONFIG = os.path.join(MERCURY_HOME, "config.yaml")
 CONFIG = os.environ.get("HERMES_OMP_CONFIG", os.environ.get("MERCURY_CONFIG", DEFAULT_CONFIG))
 
 SLOTS = ("default", "fallback", "delegate_model", "delegate_fallback")
-# MERCURY-OMP PATCH (user directive): thinking is a config parameter, not
-# agent-selected. models.delegate_thinking_level (omp side, default xhigh)
-# pins subagent depth; models.delegate_fallback_thinking_level (omp fallback,
-# optional, inherits delegate when empty) and
-# models.orchestrator_thinking_level (hermes side, default xhigh) complete
-# the set. Empty fallback thinking = inherit, never auto-mirror at write
-# time (SKIP=EMPTY: skip leaves the slot untouched).
+# Read compatibility for older configs. Setup migrates these obsolete slot
+# fields to models.reasoning_overrides, keyed by provider/model identity.
 THINKING_SLOTS = ("delegate_thinking_level", "delegate_fallback_thinking_level", "orchestrator_thinking_level")
 
 # omp interactive-onboarding version (omp/src/modes/setup-version.ts).
@@ -44,7 +39,8 @@ def parse_config(path=None):
             config = yaml.safe_load(source) or {}
     except FileNotFoundError:
         sys.exit(f"FATAL: {path} not found")
-    models = config.get("models") or {}
+    from mercury_cli.model_settings import shared_models
+    models = shared_models(config)
     if not isinstance(models, dict):
         raise ValueError("models must be a mapping")
     slots = {key: str(models.get(key) or "").strip() for key in (*SLOTS, *THINKING_SLOTS)}
@@ -156,17 +152,14 @@ def render(slots, delegation=False):
         print(f"OMP_MODEL={slots['delegate_model']}")
         chain = delegate_fallback_selectors(slots)
         print(f"OMP_FALLBACK_CHAIN={','.join(chain)}")
-        # MERCURY-OMP PATCH (user directive): delegate thinking is a CONFIG
-        # PARAMETER (models.delegate_thinking_level, default xhigh) — never
-        # agent-selected per spawn. Fallback thinking is optional: empty
-        # inherits the delegate level (SKIP=EMPTY, never auto-mirrored at
-        # write time); an explicit value rides as OMP_FALLBACK_THINKING_LEVEL
-        # for forward-compat (single-level runs keep using OMP_THINKING_LEVEL).
+        # Use the selected model's effort; old slot fields are read-only
+        # compatibility for configs that have not yet run omp-sync.
         level = thinking_level_from_config(
             (slots.get("reasoning_overrides") or {}).get(slots["delegate_model"])
             or slots.get("delegate_thinking_level"))
         print(f"OMP_THINKING_LEVEL={level or DEFAULT_THINKING_LEVEL}")
-        _fb_raw = str(slots.get("delegate_fallback_thinking_level") or "").strip().lower()
+        _fb_raw = str((slots.get("reasoning_overrides") or {}).get(slots["delegate_fallback"])
+                      or slots.get("delegate_fallback_thinking_level") or "").strip().lower()
         _fb = thinking_level_from_config(_fb_raw) if _fb_raw else ""
         if _fb:
             print(f"OMP_FALLBACK_THINKING_LEVEL={_fb}")
@@ -390,11 +383,8 @@ def render_omp_subtree(slots, target=None):
         # single legacy slot remains the default when no chain is set.
         f'    fallbackChains: {{"{slots["delegate_model"]}": {json.dumps(delegate_fallback_selectors(slots))}}}\n'
     )
-    # HERMES-OMP PATCH (thinking pin): interactive omp's /model picker shows
-    # defaultThinkingLevel (omp schema default "high"). Pin it from the single
-    # source of truth models.delegate_thinking_level (default xhigh) so the
-    # TUI default matches delegated children (OMP_THINKING_LEVEL). "off" has
-    # no meaning in that enum — omit it and let the schema default apply.
+    # Project the selected model's effort into OMP's native startup setting.
+    # "off" is passed explicitly by the launcher, not stored in this enum.
     _think = thinking_level_from_config(
         (slots.get("reasoning_overrides") or {}).get(slots["delegate_model"])
         or slots.get("delegate_thinking_level"))
@@ -490,6 +480,10 @@ def render_omp_subtree(slots, target=None):
     user_patterns = [pattern for pattern in existing_patterns if pattern not in inherited_before]
     inherited_now = [{"match": glob, "approval": "deny"} for glob in deny_globs]
     merged = merge_settings(original, generated)
+    # Retry chains are a projection of shared models, never an accumulating cache.
+    merged["retry"]["fallbackChains"] = generated["retry"]["fallbackChains"]
+    if "modelFallback" in (original.get("retry") or {}):
+        merged["retry"]["modelFallback"] = original["retry"]["modelFallback"]
     if user_patterns or inherited_now or existing_patterns:
         merged.setdefault("bash", {})["patterns"] = user_patterns + inherited_now
     omp_block = "omp:\n" + yaml.safe_dump(merged, sort_keys=False, allow_unicode=True)
@@ -499,9 +493,13 @@ def render_omp_subtree(slots, target=None):
         text = re.sub(r"^omp:(.*?)(?=^\S|\Z)", omp_block, text, count=1, flags=re.M | re.S)
     else:
         text = text.rstrip("\n") + "\n\n" + omp_block
+    from mercury_cli.model_settings import canonical_model_document
+    from utils import atomic_write_text
+    document = canonical_model_document(yaml.safe_load(text) or {})
+    text = yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
+    text = text.replace("omp:\n", "omp:\n  # Mercury inherited deny patterns: " + json.dumps(inherited_now) + "\n", 1)
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "w") as f:
-        f.write(text)
+    atomic_write_text(target, text, preserve_mode=True)
     return target
 
 

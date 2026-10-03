@@ -83,7 +83,7 @@ def main():
     expect("render-omp: exit 0", r.returncode == 0, r.stderr)
     out = open(unified).read()
     expect("render-omp: omp: subtree written",
-           "omp:" in out and "fallbackChains" in out and "fallbackChain:" not in out)
+           "omp:" in out and "fallbackChains" not in out and "fallbackChain:" not in out)
     expect("render-omp: hermes: subtree preserved", "keep-me" in out)
     expect("render-omp: models: preserved", "delegate_model: prov/m-1" in out)
     expect("render-omp: NO modelRoles written", "modelRoles" not in out)

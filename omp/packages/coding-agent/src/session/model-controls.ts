@@ -29,6 +29,7 @@ import {
 	type ConfiguredThinkingLevel,
 	clampAutoThinkingEffort,
 	clampThinkingLevelToCeiling,
+	parseConfiguredThinkingLevel,
 	resolveProvisionalAutoLevel,
 	resolveThinkingLevelForModel,
 	shouldDisableReasoning,
@@ -249,7 +250,11 @@ export class ModelControls {
 
 		// Re-apply thinking for the newly selected model. Prefer the model's
 		// configured defaultLevel; otherwise preserve the current level (or auto).
-		this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
+		const savedEffort = parseConfiguredThinkingLevel(
+			this.#host.settings.get("modelReasoningOverrides")[`${targetModel.provider}/${targetModel.id}`],
+		);
+		if (savedEffort !== undefined) this.setThinkingLevel(savedEffort);
+		else this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
 		await this.#host.syncAfterModelChange(previousEditMode);
 		return { switched: true };
 	}
@@ -287,7 +292,11 @@ export class ModelControls {
 		if (thinkingLevel !== undefined) {
 			this.setThinkingLevel(thinkingLevel);
 		} else {
-			this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
+			const savedEffort = parseConfiguredThinkingLevel(
+				this.#host.settings.get("modelReasoningOverrides")[`${targetModel.provider}/${targetModel.id}`],
+			);
+			if (savedEffort !== undefined) this.setThinkingLevel(savedEffort);
+			else this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
 		}
 		await this.#host.syncAfterModelChange(previousEditMode);
 	}
@@ -519,7 +528,8 @@ export class ModelControls {
 			}
 			this.#applyThinkingLevelToAgent(provisional);
 			if (persist) {
-				this.#host.settings.set("defaultThinkingLevel", AUTO_THINKING);
+				if (this.#model)
+					this.#host.settings.setModelReasoning(`${this.#model.provider}/${this.#model.id}`, AUTO_THINKING);
 			}
 			const isChanging = !wasAuto || previousLevel !== provisional;
 			if (isChanging) {
@@ -547,8 +557,8 @@ export class ModelControls {
 		if (isChanging) {
 			this.#host.clearInheritedProviderPromptCacheKey();
 			this.#host.sessionManager.appendThinkingLevelChange(effectiveLevel, effectiveLevel);
-			if (persist && effectiveLevel !== undefined && effectiveLevel !== ThinkingLevel.Off) {
-				this.#host.settings.set("defaultThinkingLevel", effectiveLevel);
+			if (persist && effectiveLevel !== undefined && this.#model) {
+				this.#host.settings.setModelReasoning(`${this.#model.provider}/${this.#model.id}`, effectiveLevel);
 			}
 			this.#host.emit({ type: "thinking_level_changed", thinkingLevel: effectiveLevel });
 		}

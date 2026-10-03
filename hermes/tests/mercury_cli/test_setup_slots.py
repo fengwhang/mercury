@@ -126,6 +126,73 @@ def _catalog_for(seen, title):
     raise AssertionError(f"no picker call for {title!r}")
 
 
+def test_nous_fallback_identity_and_shared_effort_survive_save_and_render(slots_env, monkeypatch, capsys):
+    import importlib.util
+    from pathlib import Path
+    import yaml
+    from mercury_cli.config import load_config, save_config
+    from mercury_cli import omp_sync
+
+    primary = "openai-codex/gpt-6.1-sol"
+    fallback = "nous/xiaomi/mimo-v2.6-pro"
+    path = slots_env / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "models": {
+            "default": primary, "fallback": "xiaomi/mimo-v2.6-pro", "delegate_model": primary,
+            "delegate_fallback": "xiaomi/mimo-v2.6-pro",
+            "fallback_chain": ["xiaomi/mimo-v2.6-pro", "openrouter/xiaomi/mimo-v2.6-pro"],
+            "delegate_fallback_chain": ["xiaomi/mimo-v2.6-pro", "openrouter/xiaomi/mimo-v2.6-pro"],
+            "orchestrator_thinking_level": "xhigh", "delegate_thinking_level": "high",
+            "reasoning_overrides": {primary: "high"}, "context_windows": {primary: 872000},
+        },
+        "hermes": {
+            "model": {"default": "gpt-6.1-sol", "provider": "openai-codex"},
+            "agent": {"reasoning_overrides": {primary: "xhigh"}},
+            "fallback_providers": [{"provider": "openrouter", "model": "stale"}],
+            "memory": {"provider": "mnemosyne"},
+        },
+        "omp": {"tools": {"approvalMode": "yolo"}, "retry": {"fallbackChains": {
+            "openrouter/old-model": ["openrouter/old-fallback"],
+        }}, "defaultThinkingLevel": "xhigh"},
+    }))
+    monkeypatch.setenv("HERMES_OMP_CONFIG", str(path))
+    monkeypatch.setattr("mercury_cli.models.provider_model_ids", lambda provider, **kwargs: {
+        "nous": ["xiaomi/mimo-v2.6-pro"], "openai-codex": ["gpt-6.1-sol"],
+    }[provider])
+    monkeypatch.setattr("mercury_cli.models.get_pricing_for_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr("mercury_cli.main._prompt_provider_choice", lambda choices, default, title:
+                        CANONICAL_SLUGS.index("openai-codex" if title == DELEGATE_PROVIDER else "nous"))
+    picks = iter(["xiaomi/mimo-v2.6-pro", "gpt-6.1-sol", "xiaomi/mimo-v2.6-pro"])
+    monkeypatch.setattr("mercury_cli.auth._prompt_model_selection", lambda *args, **kwargs: next(picks))
+    monkeypatch.setattr(setup_mod, "_pick_reasoning_level", lambda *args, **kwargs: "high")
+    config = load_config()
+    setup_mod._prompt_mercury_slots(config)
+    save_config(config)
+    spec = importlib.util.spec_from_file_location("nous_config_bridge", Path(__file__).resolve().parents[3] / "bridge/bridge.py")
+    bridge = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bridge)
+    monkeypatch.setattr(omp_sync, "_render_omp", lambda: bool(bridge.render_omp_subtree(
+        bridge.parse_config(str(path)), target=str(path))))
+    assert omp_sync.sync_omp_from_setup(quiet=True)
+    whole = yaml.safe_load(path.read_text())
+    saved = whole["models"]
+    assert saved["default"] == saved["delegate_model"] == primary
+    assert saved["fallback"] == saved["delegate_fallback"] == fallback
+    assert saved["fallback_chain"] == saved["delegate_fallback_chain"] == []
+    assert not set(omp_sync.LEGACY_THINKING_SLOTS).intersection(saved)
+    assert saved["reasoning_overrides"] == {primary: "high", fallback: "high"}
+    assert saved["context_windows"] == {primary: 872000}
+    assert load_config()["fallback_providers"] == [{"provider": "nous", "model": "xiaomi/mimo-v2.6-pro"}]
+    assert load_config()["agent"]["reasoning_overrides"][primary] == "high"
+    assert "fallbackChains" not in whole["omp"]["retry"]
+    assert whole["omp"]["tools"]["approvalMode"] == "yolo"
+    assert "defaultThinkingLevel" not in whole["omp"]
+    bridge.render(bridge.parse_config(str(path)), delegation=True)
+    output = capsys.readouterr().out
+    assert f"OMP_FALLBACK_CHAIN={fallback}:high" in output
+    assert "OMP_THINKING_LEVEL=high" in output
+
+
 class TestDelegationProvider:
     """Delegate pickers use the chosen delegation provider's catalog."""
 
@@ -211,7 +278,7 @@ class TestDelegationProvider:
             )
             setup_mod._prompt_mercury_slots({})
 
-        assert written["delegate_model"] == "myprov/mymodel"
+        assert written["delegate_model"] == "zai/myprov/mymodel"
 
 
 class TestFallbackProviders:
@@ -331,7 +398,7 @@ class TestFallbackProviders:
         assert (FALLBACK_TITLE, [], "") in seen["models"]
         assert written["fallback"] == "zai/custom-new"
 
-    def test_existing_chains_rebase_and_remove_collisions(self, slots_env):
+    def test_changed_fallbacks_clear_previous_extra_retries(self, slots_env):
         import yaml
 
         (slots_env / "config.yaml").write_text(yaml.safe_dump({"models": {
@@ -348,10 +415,10 @@ class TestFallbackProviders:
             )
             setup_mod._prompt_mercury_slots({})
         assert len(seen["models"]) == 3
-        assert written["fallback_chain"] == ["openrouter/new-main", "zai/extra"]
-        assert written["delegate_fallback_chain"] == ["openrouter/new-retry", "zai/extra"]
+        assert written["fallback_chain"] == []
+        assert written["delegate_fallback_chain"] == []
 
-    def test_real_saved_chains_reach_both_engines(self, slots_env, monkeypatch):
+    def test_real_saved_chains_reach_both_engines(self, slots_env, monkeypatch, capsys):
         import importlib.util
         from pathlib import Path
         import yaml
@@ -387,13 +454,12 @@ class TestFallbackProviders:
         save_config(config)
 
         saved = yaml.safe_load(config_path.read_text())
-        assert saved["models"]["fallback_chain"] == ["zai/main-fallback", "openrouter/vendor/second"]
-        assert saved["models"]["delegate_fallback_chain"] == ["openrouter/vendor/fallback", "zai/delegate-second"]
+        assert saved["models"]["fallback_chain"] == []
+        assert saved["models"]["delegate_fallback_chain"] == []
         assert saved["models"]["reasoning_overrides"] == {"openrouter/vendor/second": "low", "zai/delegate-second": "high"}
         assert all(entry["model"] != "stale" for entry in saved["hermes"].get("fallback_providers", []))
         assert load_config()["fallback_providers"] == [
             {"provider": "zai", "model": "main-fallback"},
-            {"provider": "openrouter", "model": "vendor/second"},
         ]
 
         bridge_path = Path(__file__).resolve().parents[3] / "bridge" / "bridge.py"
@@ -404,9 +470,9 @@ class TestFallbackProviders:
         assert bridge.validate(slots, need_delegate=True) == []
         bridge.render_omp_subtree(slots, target=str(config_path))
         rendered = yaml.safe_load(config_path.read_text())
-        assert rendered["omp"]["retry"]["fallbackChains"] == {
-            "zai/delegate": ["openrouter/vendor/fallback", "zai/delegate-second:high"],
-        }
+        assert "fallbackChains" not in rendered["omp"]["retry"]
+        bridge.render(bridge.parse_config(str(config_path)), delegation=True)
+        assert "OMP_FALLBACK_CHAIN=openrouter/vendor/fallback" in capsys.readouterr().out
         assert rendered["models"] == saved["models"]
 
 

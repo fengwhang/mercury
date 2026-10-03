@@ -145,8 +145,8 @@ def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
 # constant; any 512 observed is provider-side) — neither is offered here.
 # SKIP=EMPTY: skip (Esc/cancel) leaves the slot untouched — never writes the
 # default, never auto-mirrors another slot, never resurrects a cleared slot.
-# Hermes-side slots map to agent.reasoning_effort values (off -> none =
-# disabled); omp-side slots map to Effort strings (off/auto pass through).
+# Shared per-model efforts project to Hermes (off -> none = disabled) and
+# OMP's native effort vocabulary. No separate role-level effort is written.
 REASONING_DEFAULT = "xhigh"
 HERMES_REASONING_CHOICES = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 OMP_REASONING_CHOICES = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
@@ -156,11 +156,6 @@ def _hermes_reasoning_value(pick: str) -> str:
     """Map a hermes-side picker choice to an agent.reasoning_effort value."""
     v = str(pick or "").strip().lower()
     return "none" if v == "off" else v
-
-
-def _omp_reasoning_value(pick: str) -> str:
-    """Map an omp-side picker choice to an Effort string (off/auto kept)."""
-    return str(pick or "").strip().lower()
 
 
 def _pick_reasoning_level(title: str, current: str = "", *, allow_auto: bool = False, model: str = "") -> str | None:
@@ -1199,7 +1194,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     if isinstance(model_cfg, dict):
         selected_model = qualify_omp_model(
             str(model_cfg.get("default") or "").strip(),
-            str(model_cfg.get("provider") or "").strip(),
+            str(model_cfg.get("provider") or "").strip(), provider_relative=True,
         )
         if selected_model:
             _prompt_slot_reasoning(config, default_model=selected_model)
@@ -1234,12 +1229,12 @@ def _prompt_mercury_slots(config: dict) -> None:
         model_cfg = (load_config() or {}).get("model") or {}
         default = str(model_cfg.get("default") or "").strip()
         provider = str(model_cfg.get("provider") or "").strip()
-        default_qualified = _qualify_omp_model(default, provider)
+        default_qualified = _qualify_omp_model(default, provider, provider_relative=True)
     except Exception:
         provider = ""
         default_qualified = ""
 
-    if default_qualified and not slots["default"]:
+    if default_qualified:
         slots["default"] = default_qualified
 
     if not slots["default"]:
@@ -1328,7 +1323,7 @@ def _prompt_mercury_slots(config: dict) -> None:
             fallback = ""
             print_info("Fallback skipped — no mid-turn failover will be configured.")
             break
-        fallback = _qualify_omp_model(fallback, fallback_provider)
+        fallback = _qualify_omp_model(fallback, fallback_provider, provider_relative=True)
         if fallback == slots["default"]:
             print_warning("Fallback must differ from the default model.")
             continue
@@ -1339,10 +1334,10 @@ def _prompt_mercury_slots(config: dict) -> None:
         _prompt_model_context(config, fallback)
 
     # Extra retries are configured by hand, never added by this wizard.
-    # Replacing a primary fallback updates its chain head, keeps the existing
-    # extra models, and removes entries that now duplicate the primary pair.
+    # Changing a primary fallback clears its old chain. Keeping that fallback
+    # preserves manual extra retries, with duplicate primary models removed.
     def _preserve_extra_fallbacks(saved: list[str], selected: str, primary: str) -> list[str]:
-        if not selected:
+        if not selected or not saved or saved[0] != selected:
             return []
         extras = list(dict.fromkeys(model for model in saved[1:] if model not in (selected, primary)))
         return [selected, *extras] if extras else []
@@ -1367,7 +1362,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     # Delegate model — NO seeding: only a genuinely configured slot is
     # current (user directive — never pre-select a preferred model).
     delegate_model = _pick("Select delegate model (the model omp SUBAGENTS run on):", delegate_current, delegate_catalog, delegate_pricing)
-    delegate_model = _qualify_omp_model(delegate_model, delegate_provider)
+    delegate_model = _qualify_omp_model(delegate_model, delegate_provider, provider_relative=True)
     if delegate_model:
         _prompt_slot_reasoning(config, delegate_model=delegate_model)
         _prompt_model_context(config, delegate_model)
@@ -1383,7 +1378,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     _df_retries = 0
     while True:
         delegate_fallback = _pick("Select delegate fallback (subagent retry model; empty to skip):", delegate_fallback_current, delegate_fb_catalog, delegate_fb_pricing)
-        delegate_fallback = _qualify_omp_model(delegate_fallback, delegate_fallback_provider)
+        delegate_fallback = _qualify_omp_model(delegate_fallback, delegate_fallback_provider, provider_relative=True)
         if not delegate_fallback:
             print_info("Delegate fallback skipped — subagent retries will use no fallback model.")
             break
@@ -1541,80 +1536,32 @@ def _prompt_slot_reasoning(
     config: dict, default_model: str = "", fallback_model: str = "",
     delegate_model: str = "", delegate_fallback: str = "",
 ) -> None:
-    """Ask provider-supported effort immediately after accepting a model.
-
-    Skipped model slots are never asked. The shared per-model map supplies
-    both engines' retry chains; legacy primary thinking slots stay in sync.
-    SKIP=EMPTY: a skip (Esc/cancel) leaves that slot untouched — no default
-    write, no mirror from another slot, no resurrection of a cleared slot.
-    Hermes-side (default/fallback) maps off->none and stores per-model in
-    agent.reasoning_overrides; omp-side (delegate slots) stores Effort
-    strings in models.delegate_thinking_level /
-    models.delegate_fallback_thinking_level (fallback empty = inherit).
-    """
-    from mercury_cli.omp_sync import _current_slots as _read_think_slots, _write_slots as _write_think_slots
+    """Ask effort after each model selection and write only per-model settings."""
+    from mercury_cli.omp_sync import _current_reasoning_overrides, _write_slots
 
     print_header("Reasoning Effort")
-    print_info("Reasoning choices come from each model's provider; Esc keeps the current setting.")
+    print_info("Effort belongs to the provider/model and is shared by both engines; Esc keeps it.")
     print()
-
-    agent_cfg = config.get("agent") if isinstance(config.get("agent"), dict) else {}
-    overrides = agent_cfg.get("reasoning_overrides") if isinstance(agent_cfg.get("reasoning_overrides"), dict) else {}
-    try:
-        think_current = _read_think_slots()
-    except Exception:
-        think_current = {}
-
-    omp_update: dict[str, Any] = {}
-    override_updates: dict[str, str] = {}
-    from mercury_cli.omp_sync import _current_reasoning_overrides
-    shared_overrides = _current_reasoning_overrides()
-    shared_updates: dict[str, str] = {}
-
-    if default_model:
-        _cur = str(shared_overrides.get(default_model) or overrides.get(default_model) or "").strip().lower()
-        _pick = _pick_reasoning_level(
-            "Select reasoning effort for the DEFAULT model (hermes orchestrator; empty to skip):",
-            _cur, allow_auto=False, model=default_model,
+    overrides = (config.get("agent") or {}).get("reasoning_overrides") or {}
+    shared = _current_reasoning_overrides()
+    updates = {}
+    for label, selector in (("DEFAULT", default_model), ("FALLBACK", fallback_model),
+                            ("DELEGATE", delegate_model), ("DELEGATE FALLBACK", delegate_fallback)):
+        if not selector:
+            continue
+        current = str(updates.get(selector) or shared.get(selector) or overrides.get(selector) or "").lower()
+        chosen = _pick_reasoning_level(
+            f"Select reasoning effort for the {label} model ({selector}; empty to skip):",
+            current, allow_auto=False, model=selector,
         )
-        if _pick is not None:
-            override_updates[default_model] = _hermes_reasoning_value(_pick)
-            shared_updates[default_model] = _pick
-    if fallback_model:
-        _cur = str(shared_overrides.get(fallback_model) or overrides.get(fallback_model) or "").strip().lower()
-        _pick = _pick_reasoning_level(
-            "Select reasoning effort for the FALLBACK model (hermes orchestrator; empty to skip):",
-            _cur, allow_auto=False, model=fallback_model,
+        if chosen is not None:
+            updates[selector] = chosen
+    if updates:
+        _write_slots({"reasoning_overrides": {**shared, **updates}})
+        config.setdefault("agent", {}).setdefault("reasoning_overrides", {}).update(
+            {selector: _hermes_reasoning_value(level) for selector, level in updates.items()}
         )
-        if _pick is not None:
-            override_updates[fallback_model] = _hermes_reasoning_value(_pick)
-            shared_updates[fallback_model] = _pick
-    if delegate_model:
-        _cur = str(shared_overrides.get(delegate_model) or (think_current or {}).get("delegate_thinking_level") or "").strip().lower()
-        _pick = _pick_reasoning_level(
-            "Select reasoning effort for the DELEGATE model (omp subagents; empty to skip):",
-            _cur, allow_auto=True, model=delegate_model,
-        )
-        if _pick is not None:
-            omp_update["delegate_thinking_level"] = _omp_reasoning_value(_pick)
-            shared_updates[delegate_model] = _pick
-    if delegate_fallback:
-        _cur = str(shared_overrides.get(delegate_fallback) or (think_current or {}).get("delegate_fallback_thinking_level") or "").strip().lower()
-        _pick = _pick_reasoning_level(
-            "Select reasoning effort for the DELEGATE FALLBACK model (omp subagents; empty to skip):",
-            _cur, allow_auto=True, model=delegate_fallback,
-        )
-        if _pick is not None:
-            omp_update["delegate_fallback_thinking_level"] = _omp_reasoning_value(_pick)
-            shared_updates[delegate_fallback] = _pick
-    if override_updates:
-        config.setdefault("agent", {}).setdefault("reasoning_overrides", {}).update(override_updates)
-    if shared_updates:
-        omp_update["reasoning_overrides"] = {**shared_overrides, **shared_updates}
-    if omp_update:
-        _write_think_slots(omp_update)
-    if override_updates or omp_update:
-        print_success(f"Reasoning effort written for {len(shared_updates)} model(s).")
+        print_success(f"Reasoning effort written for {len(updates)} model(s).")
     else:
         print_info("Reasoning effort unchanged (all slots skipped).")
 

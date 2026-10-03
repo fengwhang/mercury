@@ -171,7 +171,8 @@ class TestHandleReasoningCommand(unittest.TestCase):
         )
         with patch.dict(
             CLI_CONFIG.setdefault("agent", {}),
-            {"reasoning_effort": "medium", "service_tier": "normal"},
+            {"reasoning_effort": "medium", "service_tier": "normal",
+             "reasoning_overrides": {"openrouter/config-default-model": "high"}},
         ), patch.dict(
             CLI_CONFIG,
             {"model": {"default": "config-default-model", "provider": "openrouter"}},
@@ -186,6 +187,8 @@ class TestHandleReasoningCommand(unittest.TestCase):
         self.assertIsNone(stub._pending_one_turn_model_restore)
         # Model reset to the config default via the live agent swap.
         self.assertEqual(stub.model, "config-default-model")
+        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
+        self.assertEqual(agent.reasoning_config, stub.reasoning_config)
         agent.switch_model.assert_called_once()
 
 
@@ -489,10 +492,8 @@ class TestConfigDefault(unittest.TestCase):
         from mercury_cli.config import DEFAULT_CONFIG
         display = DEFAULT_CONFIG.get("display", {})
         self.assertIn("show_reasoning", display)
-        # Default ON (July 2026 TTFT-perception change): thinking models
-        # stream reasoning for tens of seconds; hiding it left users staring
-        # at a spinner. The key must exist and be a bool.
-        self.assertTrue(display["show_reasoning"])
+        # Mercury keeps reasoning display opt-in; stock Hermes defaults ON.
+        self.assertFalse(display["show_reasoning"])
 
 
 class TestCommandRegistered(unittest.TestCase):

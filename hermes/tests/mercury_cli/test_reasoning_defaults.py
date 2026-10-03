@@ -1,12 +1,7 @@
-"""Reasoning-level defaults + wizard per-slot picker (user directive 2026-09-10).
+"""Per-model effort selection, legacy migration and native engine projections.
 
-Covers:
-- xhigh defaults hold for delegate + orchestrator thinking levels on fresh installs
-- wizard reasoning picker asks per slot (model/fallback/delegate/delegate fallback),
-  choices off..max (+auto omp-side), default xhigh, SKIP=EMPTY (skip leaves untouched,
-  never auto-mirrors or resurrects)
-- hermes-side maps to agent.reasoning_effort values, omp-side to Effort strings
-- NO ultra level (valid set tops at max), NO 512 budget in wizard/bridge scope.
+Picker cancellation preserves saved preferences. Both engines consume one
+effort per provider/model, with read compatibility for obsolete slot fields.
 """
 
 from __future__ import annotations
@@ -77,7 +72,7 @@ def test_bridge_validate_thinking_levels():
     assert b.validate(ok_off) == []
 
 
-def test_sync_defaults_delegate_and_orchestrator_to_xhigh(tmp_path, monkeypatch):
+def test_sync_does_not_create_model_role_effort_settings(tmp_path, monkeypatch):
     from mercury_cli import omp_sync
 
     cfg = tmp_path / "config.yaml"
@@ -99,8 +94,8 @@ def test_sync_defaults_delegate_and_orchestrator_to_xhigh(tmp_path, monkeypatch)
     monkeypatch.setattr(omp_sync, "_render_omp", lambda: True)
     assert omp_sync.sync_omp_from_setup(quiet=True) is True
     text = cfg.read_text(encoding="utf-8")
-    assert "delegate_thinking_level: xhigh" in text
-    assert "orchestrator_thinking_level: xhigh" in text
+    assert "delegate_thinking_level" not in text
+    assert "orchestrator_thinking_level" not in text
     # fallback thinking is NOT defaulted (SKIP=EMPTY: inherit at runtime, never mirrored)
     assert "delegate_fallback_thinking_level" not in text
 
@@ -125,10 +120,11 @@ def test_sync_never_mirrors_or_resurrects_fallback_thinking(tmp_path, monkeypatc
     assert omp_sync.sync_omp_from_setup(quiet=True) is True
     after = cfg.read_text(encoding="utf-8")
     # existing explicit levels kept (no overwrite to xhigh), fallback thinking not invented
-    assert "delegate_thinking_level: high" in after
-    assert "orchestrator_thinking_level: high" in after
+    assert "delegate_thinking_level" not in after
+    assert "orchestrator_thinking_level" not in after
     assert "delegate_fallback_thinking_level" not in after
-    assert "delegate_thinking_level: xhigh" not in after
+    import yaml
+    assert yaml.safe_load(after)["models"]["reasoning_overrides"] == {"openrouter/m1": "high"}
 
 
 def test_delegation_thinking_defaults_xhigh_and_fallback_inherits(monkeypatch):
@@ -165,8 +161,6 @@ def test_picker_vocabularies_no_ultra_default_xhigh():
     # hermes off -> none (agent.reasoning_effort disabled); omp off/auto pass through
     assert setup_mod._hermes_reasoning_value("off") == "none"
     assert setup_mod._hermes_reasoning_value("xhigh") == "xhigh"
-    assert setup_mod._omp_reasoning_value("off") == "off"
-    assert setup_mod._omp_reasoning_value("auto") == "auto"
 
 
 def test_pick_reasoning_skip_leaves_untouched():
@@ -227,8 +221,11 @@ def test_slot_reasoning_explicit_picks_map_and_store(tmp_path, monkeypatch):
     assert overrides["openrouter/m2"] == "high"
     # omp-side: Effort strings pass through (auto kept)
     slots = _current_slots()
-    assert slots["delegate_thinking_level"] == "auto"
-    assert slots["delegate_fallback_thinking_level"] == "low"
+    from mercury_cli.omp_sync import _current_reasoning_overrides
+    levels = _current_reasoning_overrides()
+    assert levels["openrouter/d1"] == "auto"
+    assert levels["openrouter/d2"] == "low"
+    assert not slots["delegate_thinking_level"] and not slots["delegate_fallback_thinking_level"]
 
 
 def test_slot_reasoning_empty_model_slots_never_asked():

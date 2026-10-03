@@ -131,7 +131,7 @@ def test_omp_cli_selects_profile_before_bridge_and_preserves_native_print(profil
     home = create("coder")
     cfg = yaml.safe_load((home / "config.yaml").read_text())
     cfg["models"]["delegate_model"] = "openrouter/profile-code"
-    cfg["models"]["delegate_thinking_level"] = "medium"
+    cfg["models"].setdefault("reasoning_overrides", {})["openrouter/profile-code"] = "medium"
     cfg["omp"]["tools"]["approvalMode"] = "write"
     (home / "config.yaml").write_text(yaml.safe_dump(cfg))
     original = (profile_install / "config.yaml").read_bytes()
@@ -160,7 +160,8 @@ def test_observatory_omp_spawn_and_resume_keep_profile_settings(profile_install,
 
     home = create("coder")
     cfg = yaml.safe_load((home / "config.yaml").read_text())
-    cfg["models"].update(delegate_model="openrouter/profile-code", delegate_thinking_level="low")
+    cfg["models"]["delegate_model"] = "openrouter/profile-code"
+    cfg["models"].setdefault("reasoning_overrides", {})["openrouter/profile-code"] = "low"
     cfg["omp"]["tools"]["approvalMode"] = "always-ask"
     (home / "config.yaml").write_text(yaml.safe_dump(cfg))
     monkeypatch.setattr(omp_delegation, "_shared_env_overrides", lambda: {})
@@ -188,7 +189,6 @@ def test_profile_cli_writes_and_setup_sync_preserve_both_engines(profile_install
     home = create("coder")
     cfg = yaml.safe_load((home / "config.yaml").read_text())
     cfg["models"]["default"] = "openrouter/profile-chat"
-    cfg["hermes"]["model"]["default"] = "profile-chat"
     (home / "config.yaml").write_text(yaml.safe_dump(cfg))
     default = (profile_install / "config.yaml").read_bytes()
     completed = subprocess.run([sys.executable, "-m", "mercury_cli.main", "-p", "coder", "config", "set", "agent.max_turns", "17"],

@@ -3234,9 +3234,11 @@ def unwrap_hermes_subtree(data: Any) -> Any:
         if isinstance(data, dict):
             sub = data.get("hermes")
             if isinstance(sub, dict):
-                return sub
+                from mercury_cli.model_settings import hermes_model_view
+                return hermes_model_view(data)
             if "model" not in data and any(key in data for key in ("models", "omp")):
-                return {}
+                from mercury_cli.model_settings import hermes_model_view
+                return hermes_model_view(data)
     except Exception:
         pass
     return data
@@ -4147,75 +4149,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 ):
                     if isinstance(user_config, dict):
                         _whole = user_config
-                        _subtree = _whole.get("hermes")  # YAML key stays "hermes" (unified-file contract; hard-rename survivor)
-                        user_config = dict(_subtree) if isinstance(_subtree, dict) else {}
-                        # Feed mercury' REQUEST-LEVEL fallback machinery
-                        # (try_activate_fallback / restore_primary_runtime —
-                        # per-turn swap + restore) from the shared four-slot
-                        # models: models.default → model.default (+provider),
-                        # models.fallback → fallback_providers chain. The
-                        # machinery retries the default per request and swaps
-                        # in the fallback on failure, restoring primary next
-                        # turn. Explicit mercury-subtree keys WIN (escape
-                        # hatch for non-standard setups).
-                        _models = _whole.get("models")
-                        if isinstance(_models, dict):
-                            _windows = _models.get("context_windows")
-                            if isinstance(_windows, dict):
-                                _metadata = user_config.setdefault("model_overrides", {})
-                                for _selector, _window in _windows.items():
-                                    if isinstance(_selector, str) and isinstance(_window, int) and not isinstance(_window, bool) and _window > 0:
-                                        _provider, _sep, _model = _selector.partition("/")
-                                        if _sep and _model:
-                                            _metadata.setdefault(_provider, {}).setdefault(_model, {})["context_window"] = _window
-                            _reasoning = _models.get("reasoning_overrides")
-                            if isinstance(_reasoning, dict):
-                                _agent = user_config.get("agent")
-                                if not isinstance(_agent, dict):
-                                    _agent = user_config["agent"] = {}
-                                _overrides = _agent.get("reasoning_overrides")
-                                if not isinstance(_overrides, dict):
-                                    _overrides = _agent["reasoning_overrides"] = {}
-                                for _selector, _level in _reasoning.items():
-                                    if isinstance(_selector, str) and isinstance(_level, str):
-                                        _overrides.setdefault(_selector, "none" if _level == "off" else _level)
-                            _m_default = str(_models.get("default") or "").strip()
-                            if _m_default and not (user_config.get("model") or {}).get("default"):
-                                _prov, _, _mid = _m_default.partition("/")
-                                _model_cfg = dict(user_config.get("model") or {})
-                                _model_cfg["default"] = _mid or _m_default
-                                if _prov and not _model_cfg.get("provider"):
-                                    _model_cfg["provider"] = _prov
-                                user_config["model"] = _model_cfg
-                            # HERMES-OMP PATCH (ordered ordinary fallback):
-                            # models.fallback_chain (ordered list, head =
-                            # primary fallback) feeds the SAME ordered
-                            # fallback_providers machinery. Legacy single
-                            # models.fallback applies only when no chain is
-                            # set (and never overrides an explicit
-                            # mercury-subtree fallback_providers).
-                            _m_chain = _models.get("fallback_chain")
-                            _chain_entries = []
-                            if isinstance(_m_chain, list):
-                                for _ent in _m_chain:
-                                    _s = str(_ent or "").strip()
-                                    if not _s:
-                                        continue
-                                    _p, _, _m = _s.partition("/")
-                                    _chain_entries.append(
-                                        {"provider": _p, "model": _m or _s}
-                                        if _p else {"model": _m or _s})
-                            if _chain_entries and not user_config.get("fallback_providers"):
-                                user_config["fallback_providers"] = _chain_entries
-                            else:
-                                _m_fb = str(_models.get("fallback") or "").strip()
-                                if _m_fb and not user_config.get("fallback_providers"):
-                                    _fprov, _, _fmid = _m_fb.partition("/")
-                                    user_config["fallback_providers"] = [
-                                        {"provider": _fprov, "model": _fmid or _m_fb}
-                                        if _fprov
-                                        else {"model": _fmid or _m_fb}
-                                    ]
+                        from mercury_cli.model_settings import hermes_model_view
+                        user_config = hermes_model_view(_whole)
                         # Both engines consume the same top-level policy, including
                         # deny-only and YAML boolean mode values.
                         from mercury_cli.approval_policy import shared_approval_config
@@ -4514,8 +4449,11 @@ def save_config(
         mercury_cfg = os.environ.get("MERCURY_CONFIG", "").strip()
         existing_shared = read_user_config_raw(config_path)
         if isinstance(existing_shared.get("hermes"), dict) or "models" in existing_shared or (mercury_cfg and str(config_path) == mercury_cfg):
-            existing_shared["hermes"] = normalized  # nest under hermes: (unified-file contract)
-            normalized = existing_shared
+            from mercury_cli.model_settings import canonical_model_document, save_hermes_model_view
+            normalized = canonical_model_document(save_hermes_model_view(
+                existing_shared, normalized,
+                previous=_LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+            ))
 
         atomic_yaml_write(
             config_path,
@@ -6036,7 +5974,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # bare success and left the user debugging behavior that never changed.
     # Warn after the write so the user gets immediate feedback plus a
     # "did you mean" hint, without blocking legitimate unknown keys.
-    is_known, suggestion = _validate_config_key(key)
+    is_known, suggestion = _validate_config_key(key.removeprefix("hermes."))
     if key == "omp.tools.approvalMode":
         from mercury_cli.approval_policy import OMP_APPROVAL_MODES
 
@@ -6053,11 +5991,25 @@ def set_config_value(key: str, value: str, force: bool = False):
     # refuse-write); returns the mapping so we do not re-parse / collapse.
     user_config = require_readable_config_before_write(config_path)
     unified_document = None
+    previous_native_view = None
+    if isinstance(user_config.get("hermes"), dict):
+        from mercury_cli.model_settings import hermes_model_view
+        previous_native_view = hermes_model_view(user_config)
+        if key.startswith("hermes."):
+            user_config["hermes"] = copy.deepcopy(previous_native_view)
+        # Partial edits to legacy OMP maps start from the shared view rather
+        # than an absent/stale mirror, preserving the other model identities.
+        for alias, shared_key in (("modelContextWindows", "context_windows"),
+                                  ("modelReasoningOverrides", "reasoning_overrides")):
+            if key.startswith(f"omp.{alias}."):
+                from mercury_cli.model_settings import shared_models
+                user_config.setdefault("omp", {})[alias] = copy.deepcopy(shared_models(user_config).get(shared_key) or {})
     if isinstance(user_config.get("hermes"), dict) and key.split(".", 1)[0] not in {
         "models", "omp", "hermes", "approvals",
     }:
         unified_document = user_config
-        user_config = dict(unified_document["hermes"])
+        from mercury_cli.model_settings import hermes_model_view
+        user_config = hermes_model_view(unified_document)
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
@@ -6068,7 +6020,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
+    if not isinstance(_default_value_for_key(key), str) and not key.startswith(("models.reasoning_overrides.", "omp.modelReasoningOverrides.", "agent.reasoning_overrides.", "hermes.agent.reasoning_overrides.")) and key not in ("omp.defaultThinkingLevel", "agent.reasoning_effort", "hermes.agent.reasoning_effort"):
         _stripped = value.strip()
         _lower = _stripped.lower()
         if _lower in {'true', 'yes', 'on'}:
@@ -6190,7 +6142,22 @@ def set_config_value(key: str, value: str, force: bool = False):
                 )
                 sys.exit(1)
     try:
-        _set_nested(user_config, key, value)
+        model_map = next((prefix for prefix in (
+            "models.reasoning_overrides", "models.context_windows",
+            "omp.modelReasoningOverrides", "omp.modelContextWindows",
+            "agent.reasoning_overrides", "hermes.agent.reasoning_overrides",
+        ) if key.startswith(prefix + ".")), None)
+        if model_map:
+            # Everything after this map's prefix is an opaque model identity;
+            # a period in mimo-v2.6-pro is not another YAML nesting level.
+            selector = ".".join(_split_key_path(key[len(model_map) + 1:]))
+            choices = _get_nested(user_config, model_map)
+            choices = dict(choices) if isinstance(choices, dict) else {}
+            choices[selector] = value
+            _set_nested(user_config, model_map, choices)
+            is_known = True
+        else:
+            _set_nested(user_config, key, value)
     except ValueError as e:
         print(f"✗ {e}", file=sys.stderr)
         sys.exit(1)
@@ -6208,7 +6175,16 @@ def set_config_value(key: str, value: str, force: bool = False):
     _guard_test_write_target(config_path, "config.yaml")
     from utils import atomic_yaml_write
     if unified_document is not None:
-        unified_document["hermes"] = user_config
+        from mercury_cli.model_settings import save_hermes_model_view
+        unified_document = save_hermes_model_view(unified_document, user_config, previous=previous_native_view)
+    elif isinstance(user_config.get("hermes"), dict):
+        from mercury_cli.model_settings import canonical_model_document, save_hermes_model_view, save_omp_model_edit
+        if key.startswith("hermes."):
+            user_config = save_hermes_model_view(user_config, user_config["hermes"], previous=previous_native_view)
+        elif key.startswith("omp."):
+            user_config = save_omp_model_edit(user_config, key, value)
+        else:
+            user_config = canonical_model_document(user_config)
     atomic_yaml_write(config_path, unified_document if unified_document is not None else user_config, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
@@ -6319,6 +6295,11 @@ def unset_config_value(key: str):
     # Fail-closed parse via require_readable (unparseable / non-mapping
     # refuse-write); returns the mapping so we do not re-parse / collapse.
     user_config = require_readable_config_before_write(config_path)
+    if isinstance(user_config.get("hermes"), dict):
+        from mercury_cli.model_settings import canonical_model_document
+        # Remove obsolete mirrors before clearing shared values, so migration
+        # cannot re-import a value the user just removed.
+        user_config = canonical_model_document(user_config)
 
     removed = _unset_nested(user_config, key)
 

@@ -67,7 +67,7 @@ def test_window_selection_reaches_hermes_fallback_and_omp_configuration(profile,
         assert len(menus[0]) == 2  # a single advertised window gets no duplicate Maximum
     module = bridge()
     module.render_omp_subtree(module.parse_config(str(profile)), target=str(profile))
-    assert yaml.safe_load(profile.read_text())["omp"]["modelContextWindows"] == saved["models"]["context_windows"]
+    assert "modelContextWindows" not in yaml.safe_load(profile.read_text())["omp"]
 
 
 def test_invalid_custom_window_reprompts_instead_of_exceeding_provider_max(profile, monkeypatch):
@@ -127,7 +127,7 @@ def test_clearing_automatic_choice_removes_old_window_after_wizard_save(profile,
     setup._prompt_model_context(config, "openai-codex/main")
     save_config(config)
     assert yaml.safe_load(profile.read_text())["models"]["context_windows"] == {}
-    assert "context_window" not in load_config()["model_overrides"]["openai-codex"]["main"]
+    assert "context_window" not in load_config().get("model_overrides", {}).get("openai-codex", {}).get("main", {})
 
 
 def test_real_agent_uses_selected_window_and_percentage_without_codex_autoraise(profile, monkeypatch):

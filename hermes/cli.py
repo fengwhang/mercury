@@ -10417,26 +10417,10 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # was for the previous session only, not for every session spawned
         # afterwards.
         self._explicit_model_override = False
-        # MERCURY-OMP PATCH (user directive): thinking level is a CONFIG
-        # PARAMETER, not agent-selected. models.orchestrator_thinking_level
-        # (default xhigh) pins the hermes-side (orchestrator) effort; the
-        # legacy agent.reasoning_effort key still works as a fallback.
-        _orch_level = ""
-        try:
-            _models_cfg = CLI_CONFIG.get("models", {}) or {}
-            _models_cfg = _models_cfg if isinstance(_models_cfg, dict) else {}
-            _orch_level = str(_models_cfg.get("orchestrator_thinking_level") or "").strip()
-        except Exception:
-            _orch_level = ""
-        if _orch_level:
-            self.reasoning_config = _parse_reasoning_config(_orch_level)
-        else:
-            self.reasoning_config = _parse_reasoning_config(
-                CLI_CONFIG["agent"].get("reasoning_effort", "")
-            )
-        if not self.reasoning_config:
-            # default: xhigh (per user directive) unless explicitly disabled
-            self.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        # Reasoning belongs to the selected provider/model. No model-role pin.
+        self.reasoning_config = _parse_reasoning_config(
+            CLI_CONFIG["agent"].get("reasoning_effort", "")
+        ) or {"enabled": True, "effort": "xhigh"}
         # /new is a full conversation boundary: session-scoped runtime
         # overrides (/model --session, /fast, one-turn restores) do not carry
         # forward.  Re-derive model/provider and service tier from config.yaml
@@ -10499,6 +10483,12 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Best-effort: an unreachable config default must never block
                 # /new. The session keeps the current working model.
                 logger.debug("/new model reset to config default failed", exc_info=True)
+        _reasoning_overrides = CLI_CONFIG["agent"].get("reasoning_overrides") or {}
+        _model_effort = _reasoning_overrides.get(
+            f"{getattr(self, 'provider', '')}/{getattr(self, 'model', '')}"
+        )
+        if _model_effort is not None:
+            self.reasoning_config = _parse_reasoning_config(_model_effort)
         _sync_process_session_id(self.session_id)
 
         if self.agent:

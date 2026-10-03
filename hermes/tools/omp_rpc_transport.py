@@ -297,9 +297,7 @@ class OmpRpcChild:
                  isolate_worktree: Optional[str] = None):
         self._omp_path = omp_path
         self._model = model
-        # MERCURY-OMP PATCH (user directive): thinking level is a CONFIG
-        # parameter (models.delegate_thinking_level, default xhigh) — never
-        # agent-selected per spawn.
+        # The selected model's configured effort is passed by the caller.
         self._thinking_level = thinking_level
         # --isolate-worktree label (oh-my-pi#452): None = flag omitted.
         self._isolate_worktree = isolate_worktree

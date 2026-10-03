@@ -203,10 +203,9 @@ def test_four_models_are_followed_by_reasoning_and_reach_runtime_chains(interact
     assert bridge.validate(slots, need_delegate=True) == []
     bridge.render_omp_subtree(slots, target=str(interactive))
     runtime = yaml.safe_load(interactive.read_text())["omp"]
-    assert runtime["defaultThinkingLevel"] == "max"
-    assert runtime["retry"]["fallbackChains"] == {
-        selected[2]: [selected[3] + ":off"],
-    }
+    assert "defaultThinkingLevel" not in runtime
+    assert "fallbackChains" not in runtime["retry"]
+    assert yaml.safe_load(interactive.read_text())["models"]["reasoning_overrides"] == expected
     env_output = StringIO()
     with redirect_stdout(env_output):
         bridge.render(slots, delegation=True)

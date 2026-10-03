@@ -456,7 +456,7 @@ _THINKING_LEVEL_CACHE: Dict[str, Any] = {"mtime": None, "level": None}
 
 
 def _delegate_thinking_level() -> str:
-    """Config-pinned delegate thinking level (models.delegate_thinking_level).
+    """The selected delegate model's shared per-model effort.
 
     Default xhigh; read from the bridge's cached env so both spawn paths and
     the RPC transport share one value. Never agent-selected.
@@ -466,7 +466,7 @@ def _delegate_thinking_level() -> str:
 
 
 def _delegate_fallback_thinking_level() -> str:
-    """Fallback-slot thinking level (models.delegate_fallback_thinking_level).
+    """The selected fallback model's shared per-model effort.
 
     Empty inherits the delegate level (SKIP=EMPTY: skip leaves the slot
     untouched, never auto-mirrors at write time; inheritance happens only at
@@ -1134,9 +1134,7 @@ def _run_omp_one_shot(task_index: int, prompt: str, model: str, omp_path: str,
     if fallback_chain:
         env["OMP_FALLBACK_CHAIN"] = fallback_chain
     # prompt as ONE argv element: verbatim by construction
-    # MERCURY-OMP PATCH (user directive): thinking level is a config
-    # parameter (models.delegate_thinking_level, default xhigh) — passed
-    # explicitly, never agent-selected per spawn.
+    # Pass the selected model's configured effort explicitly at spawn.
     cmd = [omp_path, "--model", model, "-p", prompt]
     _tl = _delegate_thinking_level()
     if _tl:

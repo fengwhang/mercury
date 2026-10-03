@@ -18,7 +18,6 @@ both engines in sync.
 from __future__ import annotations
 
 import os
-import json
 import re
 import subprocess
 import sys
@@ -47,19 +46,12 @@ def _repo_root() -> Path | None:
     return None
 
 
-def qualify_omp_model(model_id: str, provider: str) -> str:
-    """Prefix a provider-relative model id with the mercury provider slug.
+def qualify_omp_model(model_id: str, provider: str, *, provider_relative: bool = False) -> str:
+    """Qualify a catalog ID without guessing its serving provider from slashes.
 
-    OpenRouter catalog ids are provider-RELATIVE but contain a slash
-    (``meta/muse-spark-...``, ``openai/gpt-...``) — a bare ``"/" in id``
-    check mistakes them for already-qualified selectors, and the short id
-    reaches ``omp --model`` raw, where omp resolves provider ``meta`` with
-    no key mapping (``No API key found for "meta"``). So for ``openrouter``,
-    only an ``openrouter/`` prefix counts as qualified. Other providers use
-    bare catalog ids, so the legacy rule stands: anything containing a slash
-    is treated as an already-qualified (possibly custom-provider) selector
-    and passes through untouched. Idempotent in all cases: re-syncs never
-    double-prefix (``openrouter/openrouter/...``).
+    Catalog callers pass provider_relative=True; vendor/model IDs are opaque
+    to that provider. Legacy shared selectors already containing a slash keep
+    their own provider, including cross-provider fallback entries.
     """
     mid = (model_id or "").strip()
     prov = (provider or "").strip().rstrip("/")
@@ -67,7 +59,7 @@ def qualify_omp_model(model_id: str, provider: str) -> str:
         return mid
     if mid == prov or mid.startswith(prov + "/"):
         return mid
-    if prov == "openrouter" or "/" not in mid:
+    if provider_relative or "/" not in mid:
         return f"{prov}/{mid}"
     return mid
 
@@ -128,7 +120,7 @@ def _read_fallback() -> str | None:
             prov = str(chain[0].get("provider") or "").strip()
             mid = str(chain[0].get("model") or "").strip()
             if mid:
-                return qualify_omp_model(mid, prov)
+                return qualify_omp_model(mid, prov, provider_relative=True)
     except Exception:
         pass
     return None
@@ -166,6 +158,9 @@ def _current_chains() -> dict[str, list[str]]:
     return chains
 
 
+from mercury_cli.model_settings import LEGACY_THINKING_SLOTS, per_model_reasoning
+
+
 def _current_reasoning_overrides() -> dict[str, str]:
     """Read provider-qualified model reasoning choices from the shared file."""
     import yaml
@@ -189,116 +184,66 @@ def _strip_hermes_fallback_mirror(lines: list[str]) -> list[str]:
     """
     out: list[str] = []
     in_hermes = False
-    skipping = False
+    skipped_indent = None
     for line in lines:
         if re.match(r"^hermes:\s*$", line):
             in_hermes = True
-            skipping = False
+            skipped_indent = None
             out.append(line)
             continue
         if in_hermes and line and not line[0].isspace():
             in_hermes = False
-            skipping = False
-        if in_hermes and re.match(r"^\s+fallback_providers:\s*$", line):
-            skipping = True
+            skipped_indent = None
+        mirror = re.match(r"^(\s+)fallback_providers:", line)
+        if in_hermes and mirror:
+            skipped_indent = len(mirror[1])
             continue
-        if skipping:
-            # consume the whole mirror block: '- item' entries AND their
-            # indented continuation keys (provider:/model: under a dash),
-            # plus blank lines inside it. A deeper-indented mapping line
-            # that is not a sibling key belongs to the removed block.
-            if line.strip() == "" or re.match(r"^\s+-\s", line):
+        if skipped_indent is not None:
+            indent = len(line) - len(line.lstrip())
+            if not line.strip() or indent > skipped_indent or (
+                indent == skipped_indent and line.lstrip().startswith("- ")
+            ):
                 continue
-            if re.match(r"^\s{3,}\S", line):
-                # continuation of a '- key: val' mapping (indent > the
-                # fallback_providers key's own 2 spaces)
-                continue
-            skipping = False
+            skipped_indent = None
         out.append(line)
     return out
 
 
 def _write_slots(update: dict[str, Any]) -> bool:
-    """Merge updates into the shared models: block, preserving everything else.
+    """Parse shared models once; atomically replace that block, preserving peers.
 
-    Line-oriented merge (same discipline as the bridge): only rewrites
-    the slot lines inside the models: block. Creates the block if
-    missing.
+    None deletes obsolete keys. YAML handles quoted IDs, maps, lists and any
+    valid indentation instead of guessing structure from individual lines.
     """
+    import yaml
+    from utils import atomic_write_text
+
+    if not update:
+        return False
     path = _unified_path()
     text = path.read_text() if path.exists() else ""
-    lines = text.split("\n")
-    out: list[str] = []
-    in_models = False
-    seen: dict[str, bool] = {k: False for k in update}
-    wrote_any = False
-    _skip_seq = False
-
-    def _slot_line(key, value):
-        if isinstance(value, dict):
-            return f"  {key}: {json.dumps(value)}"
-        if isinstance(value, (list, tuple)):
-            items = ", ".join(f"'{x}'" for x in value)
-            return f"  {key}: [{items}]"
-        return f"  {key}: {value}"
-
-    for line in lines:
-        if re.match(r"^models:\s*$", line):
-            in_models = True
-            _skip_seq = False
-            out.append(line)
-            continue
-        if _skip_seq:
-            # Drop a replaced collection's old nested mapping or sequence.
-            # A sibling key ends the run; two-space comments are preserved.
-            if line.strip() == "" or line.startswith("    ") or re.match(r"^  +-(\s|$)", line):
-                continue
-            _skip_seq = False
-        if in_models and re.match(r"^\S", line):
-            # leaving the block: append any never-seen slots before the next top-level key
-            for k, v in update.items():
-                if not seen[k]:
-                    out.append(_slot_line(k, v))
-                    seen[k] = True
-                    wrote_any = True
-            in_models = False
-        m = re.match(r"^  (default|fallback|delegate_model|delegate_fallback|delegate_fallback_chain|fallback_chain|delegate_thinking_level|delegate_fallback_thinking_level|orchestrator_thinking_level|reasoning_overrides|context_windows):\s*(.*)$", line) if in_models else None
-        if m and m.group(1) in update:
-            v = update[m.group(1)]
-            # ordered chain: write as a YAML flow sequence, single-quoted ids
-            out.append(_slot_line(m.group(1), v))
-            if isinstance(v, (list, tuple, dict)):
-                _skip_seq = True
-            seen[m.group(1)] = True
-            wrote_any = True
-            continue
-        out.append(line)
-    if in_models:
-        # EOF inside models: block
-        for k, v in update.items():
-            if not seen[k]:
-                out.append(_slot_line(k, v))
-                seen[k] = True
-                wrote_any = True
-    # Stale-mirror clearing (see docstring): any fallback-slot write
-    # invalidates the hermes.subtree fallback_providers mirror from a
-    # previous run — explicit subtree keys WIN at config load, so a stale
-    # mirror silently overrides the user's fresh pick.
-    _fallback_written = any(
-        k in update and update[k] is not None
-        for k in ("fallback", "fallback_chain", "delegate_fallback", "delegate_fallback_chain")
-    )
-    if _fallback_written:
-        out = _strip_hermes_fallback_mirror(out)
-    if not any(re.match(r"^models:\s*$", l) for l in out):
-        out.append("")
-        out.append("models:")
-        for k, v in update.items():
-            out.append(_slot_line(k, v))
-            wrote_any = True
-    if wrote_any:
-        path.write_text("\n".join(out).rstrip("\n") + "\n")
-    return wrote_any
+    whole = yaml.safe_load(text) or {}
+    models = dict(whole.get("models") or {})
+    for key, value in update.items():
+        if value is None:
+            models.pop(key, None)
+        else:
+            models[key] = value
+    if text.lstrip().startswith("{"):
+        whole["models"] = models
+        text = yaml.safe_dump(whole, sort_keys=False, allow_unicode=True)
+    else:
+        block = yaml.safe_dump({"models": models}, sort_keys=False, allow_unicode=True)
+        pattern = r"^models:[^\n]*(?:\n(?!\S)[^\n]*)*"
+        if re.search(r"^models:", text, re.M):
+            text = re.sub(pattern, lambda match: block.rstrip("\n"), text, count=1, flags=re.M)
+        else:
+            text = text.rstrip("\n") + "\n\n" + block
+    if any(key in update and update[key] is not None
+           for key in ("fallback", "fallback_chain", "delegate_fallback", "delegate_fallback_chain")):
+        text = "\n".join(_strip_hermes_fallback_mirror(text.split("\n")))
+    atomic_write_text(path, text.rstrip("\n") + "\n", preserve_mode=True)
+    return True
 
 
 def _render_omp() -> bool:
@@ -389,15 +334,14 @@ def sync_omp_from_setup(quiet: bool = False) -> bool:
             print("omp-sync: no hermes model configured — nothing to sync")
         return False
     provider, model_id = default
-    qualified = qualify_omp_model(model_id, provider)
+    qualified = qualify_omp_model(model_id, provider, provider_relative=True)
 
-    update: dict[str, str] = {}
+    update: dict[str, Any] = {}
     slots = _current_slots()
     if slots["default"] != qualified:
         update["default"] = qualified
-    # Repair bare pre-fix fallback entries in place (same model, missing
-    # provider prefix, e.g. openrouter meta/... with a slash). SKIP=EMPTY:
-    # empties stay empty and delegate slots are never touched here.
+    # Only qualify selectors without a slash. Existing shared selectors
+    # retain their provider, including cross-provider fallbacks.
     if slots["fallback"]:
         _repaired_fb = qualify_omp_model(slots["fallback"], provider)
         if _repaired_fb != slots["fallback"]:
@@ -423,20 +367,17 @@ def sync_omp_from_setup(quiet: bool = False) -> bool:
     # fails loudly at the bridge ("required for delegation") instead of
     # degrading to an unchosen model.
 
-    # MERCURY-OMP PATCH (user directive): thinking levels are config
-    # parameters with xhigh defaults — ensure both engine keys exist so users
-    # can see and edit them. Never invented per-spawn. The per-slot fallback
-    # thinking key (delegate_fallback_thinking_level) is deliberately NOT
-    # defaulted here: empty inherits the delegate level at runtime (SKIP=EMPTY
-    # — skip leaves the slot untouched, never auto-mirrors or resurrects).
-    _think_update: dict[str, str] = {}
-    _cur = _current_slots()
-    for _k, _v in (("delegate_thinking_level", "xhigh"),
-                   ("orchestrator_thinking_level", "xhigh")):
-        if not _cur.get(_k):
-            _think_update[_k] = _v
-    if _think_update:
-        update.update(_think_update)
+    # Migrate legacy slot-level effort into the per-model authority once.
+    import yaml
+    whole = yaml.safe_load(_unified_path().read_text()) or {}
+    from mercury_cli.model_settings import shared_models
+    models = shared_models(whole)
+    levels = models.get("reasoning_overrides") or {}
+    if levels != (whole.get("models") or {}).get("reasoning_overrides", {}):
+        update["reasoning_overrides"] = levels
+    for key in LEGACY_THINKING_SLOTS:
+        if key in (whole.get("models") or {}):
+            update[key] = None
 
     if update:
         _write_slots(update)

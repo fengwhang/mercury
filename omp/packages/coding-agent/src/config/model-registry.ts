@@ -272,6 +272,42 @@ export class ModelRegistry {
 	#ignoreLocalModelConfig: boolean;
 	#fetch: FetchImpl;
 	#settings: Settings | undefined;
+	#mercuryProviderHydration?: Promise<void>;
+	#mercuryProviderInstalled = false;
+
+	async #hydrateMercuryProvider(): Promise<void> {
+		if (this.#ignoreLocalModelConfig) return;
+		if (!this.#mercuryProviderInstalled && this.#customProviderApiKeys.has("nous")) return;
+		this.#mercuryProviderHydration ??= this.#installMercuryProvider();
+		try {
+			await this.#mercuryProviderHydration;
+		} finally {
+			this.#mercuryProviderHydration = undefined;
+		}
+	}
+
+	async #installMercuryProvider(): Promise<void> {
+		const runtime = await this.authStorage.getMercuryRuntimeProvider("nous");
+		if (!runtime || !runtime.models.length) return;
+		const storage = this.authStorage;
+		const headers: Record<string, string> = {};
+		Object.defineProperty(headers, "Authorization", {
+			enumerable: true,
+			get: () => `Bearer ${storage.getMercuryRuntimeBearer("nous") ?? ""}`,
+		});
+		this.registerProvider(
+			"nous",
+			{
+				baseUrl: runtime.baseUrl,
+				apiKey: runtime.apiKey,
+				models: runtime.models,
+				headers,
+				auth: "apiKey",
+			},
+			"mercury-provider",
+		);
+		this.#mercuryProviderInstalled = true;
+	}
 
 	#captureCatalogMetrics(models: readonly Model<Api>[], replace: boolean): void {
 		if (replace) {
@@ -391,6 +427,7 @@ export class ModelRegistry {
 	 * Reload models from disk (built-in + custom config).
 	 */
 	async refresh(strategy: ModelRefreshStrategy = "online-if-uncached"): Promise<void> {
+		await this.#hydrateMercuryProvider();
 		this.#reloadStaticModels();
 		this.#suppressedSelectors.clear();
 		await this.#refreshRuntimeDiscoveries(strategy);
@@ -403,6 +440,11 @@ export class ModelRegistry {
 	 * awaits this local-only, best-effort pass before validating model selectors.
 	 */
 	async hydrateCredentialScopedModelCaches(): Promise<void> {
+		try {
+			await this.#hydrateMercuryProvider();
+		} catch {
+			logger.warn("Mercury provider discovery unavailable; check provider login status");
+		}
 		if (!this.#credentialScopedCacheHydration) {
 			const providerIds = new Set<string>();
 			for (const providerId of STARTUP_MODEL_CACHE_PROVIDER_IDS) {
@@ -523,6 +565,7 @@ export class ModelRegistry {
 	}
 
 	async refreshProvider(providerId: string, strategy: ModelRefreshStrategy = "online"): Promise<void> {
+		if (providerId === "nous") await this.#hydrateMercuryProvider();
 		this.#reloadStaticModels();
 		for (const selector of this.#suppressedSelectors.keys()) {
 			if (selector.startsWith(`${providerId}/`)) {
@@ -2556,7 +2599,7 @@ export class ModelRegistry {
 	syncExtensionSources(activeSourceIds: string[]): void {
 		const activeSources = new Set(activeSourceIds);
 		for (const sourceId of this.#registeredProviderSources) {
-			if (activeSources.has(sourceId)) {
+			if (sourceId === "mercury-provider" || activeSources.has(sourceId)) {
 				continue;
 			}
 			this.clearSourceRegistrations(sourceId);
@@ -2584,6 +2627,7 @@ export class ModelRegistry {
 				headers: config.headers,
 				apiKey: config.apiKey,
 				api: config.api,
+				auth: config.auth,
 				oauthConfigured: Boolean(config.oauth),
 				models: (config.models ?? []) as ProviderValidationModel[],
 			},
@@ -2652,7 +2696,7 @@ export class ModelRegistry {
 					config.apiKey,
 					config.authHeader,
 					config.compat,
-					undefined,
+					config.auth,
 					config.remoteCompaction,
 					modelDef as CustomModelDefinitionLike,
 				);
@@ -2837,6 +2881,7 @@ export class ModelRegistry {
  * Input type for registerProvider API (from extensions).
  */
 export interface ProviderConfigInput {
+	auth?: ProviderAuthMode;
 	baseUrl?: string;
 	apiKey?: string;
 	api?: Api;

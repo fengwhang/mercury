@@ -67,7 +67,7 @@ def test_unwrap_hermes_subtree_unified():
 
 
 def test_unwrap_hermes_subtree_no_model_passthrough():
-    assert unwrap_hermes_subtree({"omp": {}}) == {"omp": {}}
+    assert unwrap_hermes_subtree({"omp": {}}) == {}
     assert unwrap_hermes_subtree({}) == {}
     assert unwrap_hermes_subtree(None) is None
 
@@ -76,7 +76,7 @@ def _write(path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def test_sync_repairs_bare_fallback_slot(tmp_path, monkeypatch):
+def test_sync_preserves_explicit_fallback_provider(tmp_path, monkeypatch):
     cfg = tmp_path / "config.yaml"
     _write(
         cfg,
@@ -100,14 +100,14 @@ def test_sync_repairs_bare_fallback_slot(tmp_path, monkeypatch):
 
     assert omp_sync.sync_omp_from_setup(quiet=True) is True
     text = cfg.read_text(encoding="utf-8")
-    assert "fallback: openrouter/meta/other-model" in text
-    # Second run is a no-op: repair is idempotent.
+    assert "fallback: meta/other-model" in text
+    # A selector already stored in the shared block is not a catalog ID.
     before = text
     assert omp_sync.sync_omp_from_setup(quiet=True) is True
     assert cfg.read_text(encoding="utf-8") == before
 
 
-def test_sync_repairs_bare_fallback_chain(tmp_path, monkeypatch):
+def test_sync_preserves_cross_provider_fallback_chain(tmp_path, monkeypatch):
     cfg = tmp_path / "config.yaml"
     _write(
         cfg,
@@ -135,8 +135,8 @@ def test_sync_repairs_bare_fallback_chain(tmp_path, monkeypatch):
 
     models = yaml.safe_load(cfg.read_text(encoding="utf-8"))["models"]
     assert models["fallback_chain"] == [
-        "openrouter/meta/other-model",
-        "openrouter/openai/gpt-5",
+        "meta/other-model",
+        "openai/gpt-5",
     ]
 
 
@@ -230,7 +230,7 @@ def test_gateway_prefers_explicit_unified_file(tmp_path, monkeypatch):
 
 def test_qualify_bare_ids_for_all_slots():
     assert (
-        qualify_omp_model("meta/other-model", "openrouter")
+        qualify_omp_model("meta/other-model", "openrouter", provider_relative=True)
         == "openrouter/meta/other-model"
     )
     full = "openrouter/meta/other-model"
@@ -259,7 +259,9 @@ def test_update_config_preserves_unified_siblings_and_slash_default(tmp_path, mo
         "nous", "https://inference.example.com/v1/", default_model="anthropic/x"
     )
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-    assert data["hermes"]["model"]["default"] == "meta/muse-spark-1.3"
-    assert data["hermes"]["model"]["provider"] == "nous"
-    assert data["models"] == {"default": "openrouter/meta/muse-spark-1.3"}
+    assert "model" not in data["hermes"]
+    assert data["models"]["default"] == "nous/meta/muse-spark-1.3"
+    from mercury_cli.config import read_raw_config
+    assert read_raw_config()["model"]["provider"] == "nous"
+    assert read_raw_config()["model"]["default"] == "meta/muse-spark-1.3"
     assert data["omp"] == {"marker": True}

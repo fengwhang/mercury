@@ -5,6 +5,7 @@ import { getAgentDbPath } from "@oh-my-pi/pi-utils";
 import type { AuthCredential, AuthCredentialStore, OAuthCredential, StoredAuthCredential } from "../auth-storage";
 import { getOAuthProvider, refreshOAuthToken } from "../registry/oauth";
 import type { OAuthCredentials, OAuthProvider } from "../registry/oauth/types";
+import type { Api, ModelSpec } from "../types";
 
 interface SharedRecord {
 	id: string;
@@ -37,11 +38,11 @@ export function mercuryCredentialContext(dbPath: string): MercuryCredentialConte
 	return { home, hermesHome, repo, python: process.env.MERCURY_PYTHON?.trim() || "python3" };
 }
 
-async function exchange(
+async function exchangeRaw(
 	context: MercuryCredentialContext,
 	request: Record<string, unknown>,
 	signal?: AbortSignal,
-): Promise<SharedSnapshot> {
+): Promise<unknown> {
 	if (signal?.aborted) throw new Error("Credential interchange aborted");
 	const child = Bun.spawn([context.python, "-m", "mercury_cli.provider_sync"], {
 		cwd: context.repo,
@@ -69,24 +70,67 @@ async function exchange(
 		]);
 		// Neither response bodies nor credential-bearing requests go into exception/log text.
 		if (exit !== 0) throw new Error("Mercury credential interchange failed; check provider login status");
-		let snapshot: SharedSnapshot;
 		try {
-			snapshot = JSON.parse(output);
+			return JSON.parse(output);
 		} catch {
 			throw new Error("Invalid Mercury credential interchange response");
 		}
-		if (
-			!Array.isArray(snapshot.records) ||
-			!Array.isArray(snapshot.oauthProviders) ||
-			!Array.isArray(snapshot.apiKeyProviders)
-		) {
-			throw new Error("Invalid Mercury credential interchange response");
-		}
-		return snapshot;
 	} finally {
 		clearTimeout(timer);
 		signal?.removeEventListener("abort", abort);
 	}
+}
+
+export interface MercuryRuntimeProvider {
+	provider: string;
+	baseUrl: string;
+	apiKey: string;
+	models: (Omit<ModelSpec<Api>, "provider" | "contextWindow" | "maxTokens"> & {
+		contextWindow: number;
+		maxTokens: number;
+	})[];
+}
+
+export async function resolveMercuryRuntimeProvider(
+	context: MercuryCredentialContext,
+	provider: string,
+	includeModels = true,
+	forceRefresh = false,
+	signal?: AbortSignal,
+): Promise<MercuryRuntimeProvider | undefined> {
+	const response = await exchangeRaw(
+		context,
+		{ operation: "runtime-provider", provider, includeModels, forceRefresh },
+		signal,
+	);
+	const runtime = (response as { runtime?: MercuryRuntimeProvider | null })?.runtime;
+	if (!runtime) return undefined;
+	if (
+		runtime.provider !== provider ||
+		typeof runtime.apiKey !== "string" ||
+		typeof runtime.baseUrl !== "string" ||
+		!Array.isArray(runtime.models)
+	) {
+		throw new Error("Invalid Mercury runtime provider response");
+	}
+	return runtime;
+}
+
+async function exchange(
+	context: MercuryCredentialContext,
+	request: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<SharedSnapshot> {
+	const snapshot = (await exchangeRaw(context, request, signal)) as SharedSnapshot;
+	if (
+		!snapshot ||
+		!Array.isArray(snapshot.records) ||
+		!Array.isArray(snapshot.oauthProviders) ||
+		!Array.isArray(snapshot.apiKeyProviders)
+	) {
+		throw new Error("Invalid Mercury credential interchange response");
+	}
+	return snapshot;
 }
 
 /** Keep usage/backoff in SQLite, but shared grants and refresh authority in Hermes. */

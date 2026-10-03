@@ -605,6 +605,8 @@ export const SETTINGS_SCHEMA = {
 	enabledModels: { type: "array", default: EMPTY_STRING_ARRAY },
 
 	modelContextWindows: { type: "record", default: EMPTY_NUMBER_RECORD },
+	// Mercury generates this native view from models.reasoning_overrides.
+	modelReasoningOverrides: { type: "record", default: EMPTY_STRING_RECORD, hidden: true },
 
 	enabledProviders: { type: "array", default: EMPTY_STRING_ARRAY },
 

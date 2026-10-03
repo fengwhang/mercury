@@ -1606,6 +1606,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		if (level === undefined && !hasExplicitModel && !hasThinkingEntry && defaultRoleSpec.explicitThinkingLevel) {
 			level = defaultRoleSpec.thinkingLevel;
 		}
+		if (level === undefined && selectedModel) {
+			level = parseConfiguredThinkingLevel(
+				settings.get("modelReasoningOverrides")[`${selectedModel.provider}/${selectedModel.id}`],
+			);
+		}
 		if (level === undefined && selectedModel?.thinking?.defaultLevel !== undefined) {
 			level = selectedModel.thinking.defaultLevel;
 		}

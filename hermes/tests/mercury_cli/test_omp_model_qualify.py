@@ -14,12 +14,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 import mercury_cli.omp_sync as omp_sync
 from mercury_cli.omp_sync import qualify_omp_model
 
 
 def test_qualify_prefixes_short_id_with_slash():
-    assert qualify_omp_model("meta/muse-spark-1.3-contributor", "openrouter") == (
+    assert qualify_omp_model("meta/muse-spark-1.3-contributor", "openrouter", provider_relative=True) == (
         "openrouter/meta/muse-spark-1.3-contributor"
     )
 
@@ -58,7 +60,7 @@ def test_qualify_empty_model_stays_empty():
 
 
 def test_qualify_strips_whitespace_and_trailing_slash():
-    assert qualify_omp_model("  meta/x  ", "  openrouter/ ") == "openrouter/meta/x"
+    assert qualify_omp_model("  meta/x  ", "  openrouter/ ", provider_relative=True) == "openrouter/meta/x"
 
 
 def _write_config(path: Path, text: str) -> None:
@@ -90,7 +92,7 @@ def test_sync_writes_qualified_default_slot(tmp_path, monkeypatch):
     assert "openrouter/openrouter" not in text
 
 
-def test_sync_drops_stale_block_seq_chain_items(tmp_path, monkeypatch):
+def test_sync_preserves_existing_cross_provider_chain_selectors(tmp_path, monkeypatch):
     """Block-seq fallback_chain + sync must stay valid YAML (no stale items).
 
     Regression: save_config normalizes flow chains to 4-space block-seq;
@@ -124,8 +126,8 @@ def test_sync_drops_stale_block_seq_chain_items(tmp_path, monkeypatch):
     assert omp_sync.sync_omp_from_setup(quiet=True) is True
     models = yaml.safe_load(cfg.read_text(encoding="utf-8"))["models"]
     assert models["fallback_chain"] == [
-        "openrouter/meta/other-model",
-        "openrouter/openai/gpt-5",
+        "meta/other-model",
+        "openai/gpt-5",
     ]
 
 
@@ -149,6 +151,7 @@ def test_sync_is_idempotent_on_qualified_slots(tmp_path, monkeypatch):
     monkeypatch.setattr(omp_sync, "_read_fallback", lambda: None)
     monkeypatch.setattr(omp_sync, "_render_omp", lambda: True)
 
+    assert omp_sync.sync_omp_from_setup(quiet=True) is True
     before = cfg.read_text(encoding="utf-8")
     assert omp_sync.sync_omp_from_setup(quiet=True) is True
     after = cfg.read_text(encoding="utf-8")
@@ -174,3 +177,40 @@ def test_read_fallback_leaves_qualified_id_alone(monkeypatch):
         },
     )
     assert omp_sync._read_fallback() == "openrouter/meta/other-model"
+
+
+@pytest.mark.parametrize("layout", ["four_spaces", "indentless_sequence", "json"])
+def test_shared_model_write_preserves_native_settings_and_permissions(tmp_path, monkeypatch, layout):
+    """Saving slots must not consume native sibling settings or corrupt YAML."""
+    import json
+    import yaml
+
+    whole = {
+        "models": {"default": "openai-codex/gpt-6.1-sol",
+                   "orchestrator_thinking_level": "xhigh",
+                   "context_windows": {"openai-codex/gpt-6.1-sol": 872000}},
+        "hermes": {"fallback_providers": [{"provider": "openrouter", "model": "old"}],
+                   "agent": {"max_turns": 23}},
+        "omp": {"tools": {"approvalMode": "write"}},
+    }
+    path = tmp_path / "config.yaml"
+    if layout == "json":
+        text = json.dumps(whole)
+    else:
+        text = yaml.safe_dump(whole, indent=4 if layout == "four_spaces" else 2, sort_keys=False)
+        text = text.replace("omp:\n", "# Native settings stay intact\nomp:\n")
+    path.write_text(text)
+    path.chmod(0o640)
+    monkeypatch.setenv("MERCURY_CONFIG", str(path))
+    omp_sync._write_slots({"fallback": "nous/xiaomi/mimo-v2.6-pro",
+                          "orchestrator_thinking_level": None})
+    saved = yaml.safe_load(path.read_text())
+    assert saved["hermes"] == {"agent": {"max_turns": 23}}
+    assert saved["omp"] == whole["omp"]
+    assert saved["models"] == {
+        "default": "openai-codex/gpt-6.1-sol", "fallback": "nous/xiaomi/mimo-v2.6-pro",
+        "context_windows": {"openai-codex/gpt-6.1-sol": 872000},
+    }
+    assert path.stat().st_mode & 0o777 == 0o640
+    if layout != "json":
+        assert "# Native settings stay intact" in path.read_text()

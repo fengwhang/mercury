@@ -360,9 +360,9 @@ Setup selects four models in order: default, fallback, delegate, and delegate
 fallback. Each can use its own provider, with reasoning and then context-window
 selection immediately after its model selection. Configure additional retry models by hand in
 `models.fallback_chain` and `models.delegate_fallback_chain`, starting each
-chain with its primary fallback. Setup preserves those extra entries unless
-you skip their primary fallback; entries duplicating a newly selected model
-are removed. Menus use that provider's per-model API metadata and
+chain with its primary fallback. Setup keeps manual extra retries when the
+primary fallback is unchanged; selecting a different primary fallback or
+skipping it clears the old chain. Menus use that provider's per-model API metadata and
 respect mandatory reasoning. If no effort choices are published or available,
 setup keeps the current setting and explains why.
 Selections are stored in `models.reasoning_overrides` and applied to both
@@ -390,14 +390,31 @@ so the selected percentage takes effect; output headroom still bounds the
 trigger near a provider's limit. Named profiles keep their own settings.
 
 Use `mercury setup model` for provider-aware selection and
-`mercury omp-sync` after hand-editing shared settings.
+`mercury omp-sync` after hand-editing shared settings. The top-level `models`
+block is the sole editable authority for model selections, reasoning efforts,
+and context budgets. Both engines generate their native views when loading it;
+setup migrates old model mirrors and removes them from the saved file.
+`hermes` and `omp` hold engine-specific behavior and separate permissions.
+Hermes custom endpoint settings are keyed by full identity under
+`hermes.model_options`; OMP custom endpoint definitions stay in `models.yml`. Reasoning and context settings belong to each
+full `provider/model` identity, with one value when slots use the same model.
+Changing a primary fallback clears its old retry chain; keeping it preserves
+manual extra retries. OMP retry settings are generated from the shared choices.
+
+Nous Portal works in both engines: select `nous/vendor/model`, such as
+`nous/xiaomi/mimo-v2.6-pro`. OMP uses the active profile's Mercury Portal login,
+refreshes inference tokens through the existing auth flow, and reads Nous's
+model catalogue for reasoning options and context limits. Requests use OMP's
+native Chat Completions or Anthropic Messages transport. Portal refresh grants
+remain in the profile's auth store, rather than being copied to OMP's database.
 
 ```yaml
 models:
   default: your-provider/chat-model
   delegate_model: your-provider/coding-model
-  orchestrator_thinking_level: high
-  delegate_thinking_level: xhigh
+  reasoning_overrides:
+    your-provider/chat-model: high
+    your-provider/coding-model: xhigh
   context_windows:
     your-provider/chat-model: 200000
     your-provider/coding-model: 400000
