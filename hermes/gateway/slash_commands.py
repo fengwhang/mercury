@@ -1721,7 +1721,8 @@ class GatewaySlashCommandsMixin:
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
-        from gateway.run import _hermes_home, _load_gateway_config
+        from gateway.run import _gateway_config_home, _load_gateway_config
+        from mercury_cli.profile_defaults import ProfileModelError, main_profile_root
         from mercury_cli.model_switch import (
             switch_model as _switch_model, parse_model_switch_args,
             resolve_persist_behavior,
@@ -1773,7 +1774,10 @@ class GatewaySlashCommandsMixin:
         user_provs = None
         custom_provs = None
         excluded_provs = []
-        config_path = (_command_profile_home or _hermes_home) / "config.yaml"
+        # MIRC scopes spawned-profile rooms with a context-local home even
+        # when gateway-wide profile multiplexing is disabled. The startup
+        # home would bypass that scope and read an empty legacy model view.
+        config_path = (_command_profile_home or _gateway_config_home()) / "config.yaml"
         try:
             cfg = _load_gateway_config(config_path=config_path)
             if cfg:
@@ -1791,6 +1795,14 @@ class GatewaySlashCommandsMixin:
                 _excl = cfg.get("model_catalog", {}).get("excluded_providers")
                 if isinstance(_excl, list):
                     excluded_provs = _excl
+        except ProfileModelError as exc:
+            detail = str(exc)
+            root = main_profile_root(config_path.parent)
+            if root is not None:
+                # Gateway text delivery treats bare file paths as attachments.
+                # Report the field error without offering the config as a file.
+                detail = detail.replace(str(root / "config.yaml"), "installation config")
+            return t("gateway.model.error_prefix", error=detail)
         except Exception:
             pass
 
