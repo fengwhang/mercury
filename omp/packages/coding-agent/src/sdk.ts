@@ -160,7 +160,7 @@ import { AgentSession, type InitialRetryFallbackState, type PlanYolo, type Prewa
 import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
 import { DateCwdReminderInjector } from "./session/date-cwd-reminder";
-import { createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
+import { createInterruptedToolResults, createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
 import { recoverInlineSloppyEdit } from "./session/inline-edit-recovery";
 import {
 	type CustomMessage,
@@ -172,11 +172,16 @@ import {
 } from "./session/messages";
 import { clampProviderContextImages, dropUnreadableContextImages } from "./session/provider-image-budget";
 import {
+	CREDENTIAL_DISABLED_NOTICE_SOURCE,
+	formatCredentialDisabledNotice,
+} from "./session/credential-disabled-notice";
+import {
 	expandDefaultRetryFallbackChains,
 	findRetryFallbackCandidates,
 	type RetryFallbackResolutionContext,
 	resolveRetryFallbackChainKey,
 } from "./session/retry-fallback-chains";
+import { describeUsageFallback } from "./session/retry-fallback-reason";
 import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
 import { collectMountedMCPToolRoutes, projectMountedMCPXdevGuidance } from "./session/session-tools";
@@ -427,6 +432,8 @@ export interface CreateAgentSessionOptions {
 	systemPrompt?: string | string[] | ((defaultPrompt: string[]) => string | string[]);
 	/** Already-loaded custom prompt text rendered through the bundled custom system prompt template. */
 	customSystemPrompt?: string;
+	/** Already-loaded Handlebars system-prompt template rendered with the default prompt's live context. */
+	systemPromptTemplate?: string;
 	/** Already-loaded text appended through the bundled system prompt templates. */
 	appendSystemPrompt?: string;
 	/**
@@ -1353,7 +1360,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// buffer — so we can't rely on it to catch startup events for the extension runner.
 	const startupCredentialDisabledEvents: CredentialDisabledEvent[] = [];
 	let credentialDisabledTarget: ExtensionRunner | undefined;
+	// Set once the session exists; the built-in warning covers disables from then on.
+	let credentialNoticeSession: AgentSession | undefined;
 	const unsubscribeCredentialDisabled: (() => void) | undefined = authStorage.onCredentialDisabled(event => {
+		if (credentialNoticeSession) {
+			const notice = formatCredentialDisabledNotice(event);
+			if (notice) credentialNoticeSession.emitNotice("warning", notice, CREDENTIAL_DISABLED_NOTICE_SOURCE);
+		}
 		if (credentialDisabledTarget) {
 			// Discard return: any handler error is routed through runner.onError listeners.
 			void credentialDisabledTarget.emitCredentialDisabled(event);
@@ -1447,6 +1460,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		options.thinkingLevel !== undefined ||
 		options.systemPrompt !== undefined ||
 		options.customSystemPrompt !== undefined ||
+		options.systemPromptTemplate !== undefined ||
 		options.appendSystemPrompt !== undefined ||
 		options.toolNames !== undefined ||
 		options.customTools !== undefined;
@@ -1484,6 +1498,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	let existingBranch = logger.time("getSessionBranch", () => sessionManager.getBranch());
 	const interruptedTurnAbort = createInterruptedTurnAbortMessage(existingBranch);
 	if (interruptedTurnAbort) {
+		for (const result of createInterruptedToolResults(existingBranch)) sessionManager.appendMessage(result);
 		sessionManager.appendMessage(interruptedTurnAbort);
 		existingBranch = logger.time("getRecoveredSessionBranch", () => sessionManager.getBranch());
 	}
@@ -2449,6 +2464,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				? availableModels
 				: allModels;
 			let usageFallbackTriggered = false;
+			let usageFallbackReason: { from: string; reason: string } | undefined;
 			for (let patternIndex = 0; patternIndex < expandedModelPatterns.length; patternIndex += 1) {
 				const { pattern, retryFallback } = expandedModelPatterns[patternIndex];
 				const primary = parseModelPattern(pattern, resolutionModels, matchPreferences);
@@ -2498,6 +2514,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						}
 						if (modelFallbackEnabled) {
 							usageFallbackTriggered = true;
+							usageFallbackReason ??= {
+								from: formatModelSelectorValue(
+									formatModelStringWithRouting(primary.model),
+									primary.thinkingLevel,
+								),
+								reason: describeUsageFallback(usageHealth, settings.get("retry.usageReservePct")),
+							};
 							continue;
 						}
 					}
@@ -2512,6 +2535,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							(usageReservePolicy === "auto" || (!options.hasUI && !options.deferUsageReserveConfirmation))
 						) {
 							usageFallbackTriggered = true;
+							usageFallbackReason ??= {
+								from: formatModelSelectorValue(
+									formatModelStringWithRouting(primary.model),
+									primary.thinkingLevel,
+								),
+								reason: describeUsageFallback(usageHealth, settings.get("retry.usageReservePct")),
+							};
 							continue;
 						}
 					}
@@ -2598,6 +2628,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				initialRetryFallback =
 					retryFallback && usageFallbackTriggered ? { ...retryFallback, pinned: true } : retryFallback;
 				modelFallbackMessage = undefined;
+				if (usageFallbackReason) {
+					const target = formatModelSelectorValue(
+						formatModelStringWithRouting(selectedModel),
+						effectiveThinkingLevel,
+					);
+					modelFallbackMessage = `Fallback: ${usageFallbackReason.from} -> ${target}\n${usageFallbackReason.reason}`;
+				}
 				if (selectedExplicitThinkingLevel) {
 					restoredSessionThinkingLevel = selectedThinkingLevel;
 				}
@@ -2750,6 +2787,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				model: model.id,
 			});
 			if (selectedModelAbort) {
+				for (const result of createInterruptedToolResults(existingBranch)) sessionManager.appendMessage(result);
 				sessionManager.appendMessage(selectedModelAbort);
 				existingBranch = logger.time("getRecoveredUserTailBranch", () => sessionManager.getBranch());
 				existingSession = logger.time("loadRecoveredUserTailContext", () =>
@@ -3153,6 +3191,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					? xdevDocsAll(toolSession.xdev, settings.get("tools.xdevDocs"), settings.get("tools.xdevInlineDevices"))
 					: "",
 				resolvedCustomPrompt: options.customSystemPrompt,
+				systemPromptTemplate: options.systemPromptTemplate,
 				skills: settings.get("skillful") ? (session?.skills ?? skills) : [],
 				contextFiles,
 				tools: promptTools,
@@ -3812,6 +3851,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			titleSystemPrompt: options.titleSystemPrompt,
 		});
 		hasSession = true;
+		credentialNoticeSession = session;
 		// Backfill the resumed advisor spend without blocking startup: the scan
 		// runs after the session is live, so `--resume` no longer scales with the
 		// advisor transcript size (issue #9553).

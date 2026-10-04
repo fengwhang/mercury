@@ -161,6 +161,12 @@ export const enum PiGenAIAttr {
 	GatewayRoutedTo = "pi.gen_ai.gateway.routed_to",
 	/** Cloudflare AI Gateway response-cache status (`cf-aig-cache-status`), never prompt-cache. */
 	GatewayResponseCacheStatus = "pi.gen_ai.gateway.response_cache.status",
+	/** Caller-level reason a judgment ran (`find`, `ttsr`, `judge_batch`, …). */
+	JudgmentPurpose = "pi.gen_ai.judgment.purpose",
+	/** Questions the caller asked in one judgment request. */
+	JudgmentQuestions = "pi.gen_ai.judgment.questions",
+	/** Questions answered from the local judgment cache instead of the provider. */
+	JudgmentCachedQuestions = "pi.gen_ai.judgment.cached_questions",
 }
 
 /** GenAI operation names — values for {@link GenAIAttr.OperationName}. */
@@ -169,6 +175,8 @@ export const GenAIOperation = {
 	ExecuteTool: "execute_tool",
 	InvokeAgent: "invoke_agent",
 	Handoff: "handoff",
+	/** Typed judgment over a state (System One or a prompted judge model). */
+	Judgment: "judgment",
 	GenerateContent: "generate_content",
 	TextCompletion: "text_completion",
 	CreateAgent: "create_agent",
@@ -178,7 +186,7 @@ export const GenAIOperation = {
 export type GenAIOperationName = (typeof GenAIOperation)[keyof typeof GenAIOperation];
 
 /** Identifies which agent span a callback is reporting on. */
-export type TelemetrySpanKind = "invoke_agent" | "chat" | "execute_tool" | "handoff";
+export type TelemetrySpanKind = "invoke_agent" | "chat" | "execute_tool" | "handoff" | "judgment";
 
 /**
  * Aggregated usage + cost surface passed to {@link AgentTelemetryConfig.costEstimator}.
@@ -548,6 +556,8 @@ function kindToOperation(kind: TelemetrySpanKind): GenAIOperationName | undefine
 			return GenAIOperation.ExecuteTool;
 		case "handoff":
 			return GenAIOperation.Handoff;
+		case "judgment":
+			return GenAIOperation.Judgment;
 	}
 }
 
@@ -2110,4 +2120,106 @@ function safeJson(value: unknown): string {
 	} catch {
 		return String(value);
 	}
+}
+
+/**
+ * One judgment attempt reported to {@link recordJudgmentTelemetry}: a billed
+ * System One request, one prompted-model attempt, or a request answered
+ * entirely from the local judgment cache.
+ */
+export interface JudgmentTelemetryOptions {
+	readonly provider: string;
+	/** Requested model id. */
+	readonly model: string;
+	/** Model that answered, when the provider resolves an alias. */
+	readonly responseModel?: string;
+	/** Caller-level reason the judgment ran; stamped as {@link PiGenAIAttr.JudgmentPurpose}. */
+	readonly purpose: string;
+	/** Priced usage of this attempt — the same amount the session ledger bills. */
+	readonly usage: Usage;
+	readonly stopReason: StopReason;
+	readonly errorMessage?: string;
+	/** Epoch ms the attempt started. */
+	readonly startTime: number;
+	/** Questions in the request; omitted for prompted backends, which report per completion attempt. */
+	readonly questions?: number;
+	/** Questions answered from the local cache rather than the provider. */
+	readonly cachedQuestions?: number;
+}
+
+/**
+ * Emit one `judgment` span per judgment attempt and forward any billed usage
+ * to `onCostDelta` / `onChatUsage`. Cost is the attempt's own priced usage
+ * rather than {@link AgentTelemetryConfig.costEstimator}, so spans, metrics,
+ * and the session ledger agree on every judgment dollar. Attempts that billed
+ * nothing (cache hits, pre-response failures) keep their span but fire no
+ * usage hooks. No-op when telemetry is disabled.
+ *
+ * Ported from upstream omitting only `startTime` (this tree's `startSpan`
+ * builds the standard envelope without a start-time override) and the
+ * `operation` hook field (this tree's chat-usage hook carries no operation;
+ * the span name and `judgment.*` attributes still identify the operation).
+ */
+export async function recordJudgmentTelemetry(
+	telemetry: AgentTelemetry | undefined,
+	options: JudgmentTelemetryOptions,
+): Promise<void> {
+	if (!telemetry) return;
+	const attributes: Attributes = {
+		[GenAIAttr.RequestModel]: options.model,
+		[PiGenAIAttr.JudgmentPurpose]: options.purpose,
+	};
+	const provider = normalizeProviderName(telemetry, options.provider);
+	if (provider) attributes[GenAIAttr.ProviderName] = provider;
+	if (options.questions !== undefined) attributes[PiGenAIAttr.JudgmentQuestions] = options.questions;
+	if (options.cachedQuestions !== undefined) {
+		attributes[PiGenAIAttr.JudgmentCachedQuestions] = options.cachedQuestions;
+	}
+	const span = startSpan(telemetry, "judgment", `judgment ${options.model}`, {
+		spanKind: SpanKind.CLIENT,
+		attributes,
+	});
+	if (!span) return;
+	const model = options.responseModel ?? options.model;
+	span.setAttribute(GenAIAttr.ResponseModel, model);
+	const finishReason = mapStopReason(options.stopReason);
+	if (finishReason) span.setAttribute(GenAIAttr.ResponseFinishReasons, [finishReason]);
+	applyUsageAttributes(span, options.usage);
+	const { cost } = options.usage;
+	span.setAttribute(PiGenAIAttr.CostEstimatedUsd, cost.total);
+	span.setAttribute(PiGenAIAttr.CostInputUsd, cost.input);
+	span.setAttribute(PiGenAIAttr.CostOutputUsd, cost.output);
+	if (options.usage.totalTokens > 0 || cost.total > 0) {
+		const applied: AppliedCostEstimate = {
+			costUsd: cost.total,
+			inputUsd: cost.input,
+			outputUsd: cost.output,
+			costUnavailableReason: undefined,
+		};
+		emitCostDelta(telemetry, {
+			agent: normalizedTelemetryAgent(telemetry),
+			conversationId: telemetry.conversationId,
+			stepNumber: undefined,
+			provider: provider ?? options.provider,
+			model,
+			serviceTier: undefined,
+			usage: buildUsageSnapshot(options.usage),
+			costUsd: applied.costUsd,
+			inputUsd: applied.inputUsd,
+			outputUsd: applied.outputUsd,
+			costUnavailableReason: undefined,
+		});
+		await emitChatUsage(telemetry, span, {
+			model,
+			provider: options.provider,
+			serviceTier: undefined,
+			stepNumber: undefined,
+			usage: options.usage,
+			applied,
+			headers: undefined,
+		});
+	}
+	applyTerminalStatus(span, options.stopReason, options.errorMessage);
+	safeOnSpanEnd(telemetry, { ...buildTelemetryAttributeContext(telemetry, "judgment", {}), span });
+	span.end();
 }

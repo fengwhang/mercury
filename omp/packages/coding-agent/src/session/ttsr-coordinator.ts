@@ -9,10 +9,11 @@ import {
 	createToolScopedAbortReason,
 } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolCall } from "@oh-my-pi/pi-ai";
-import { isRecord, prompt, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
+import { prompt, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../capability/rule";
 import type { Settings } from "../config/settings";
 import type { TtsrManager, TtsrMatchContext } from "../export/ttsr";
+import { TtsrToolInspector } from "./ttsr-outputs";
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
 import type { AgentSessionEvent } from "./agent-session-events";
@@ -42,6 +43,7 @@ export interface TtsrCoordinatorHost {
 export class TtsrCoordinator {
 	readonly #host: TtsrCoordinatorHost;
 	readonly #manager: TtsrManager | undefined;
+	readonly #inspector: TtsrToolInspector;
 	#pendingInjections: Rule[] = [];
 	#perToolInjections = new Map<string, Rule[]>();
 	#abortPending = false;
@@ -52,6 +54,10 @@ export class TtsrCoordinator {
 	constructor(host: TtsrCoordinatorHost, manager: TtsrManager | undefined) {
 		this.#host = host;
 		this.#manager = manager;
+		this.#inspector = new TtsrToolInspector(
+			() => host.agent.state.tools,
+			() => host.sessionManager.getCwd(),
+		);
 	}
 
 	/** Configured TTSR manager, when stream rules are enabled. */
@@ -91,7 +97,7 @@ export class TtsrCoordinator {
 			matchContext = { source: "thinking" };
 		} else if (assistantEvent.type === "toolcall_delta") {
 			streamingToolCall = this.#getStreamingToolCallBlock(event.message, assistantEvent.contentIndex);
-			matchContext = this.#getToolMatchContext(streamingToolCall, assistantEvent.contentIndex);
+			matchContext = this.#inspector.matchContext(streamingToolCall, assistantEvent.contentIndex);
 		}
 		if (!matchContext || !("delta" in assistantEvent)) return false;
 		const targetMessageTimestamp = event.message.role === "assistant" ? event.message.timestamp : undefined;
@@ -305,84 +311,40 @@ export class TtsrCoordinator {
 		return block && typeof block === "object" && block.type === "toolCall" ? (block as ToolCall) : undefined;
 	}
 
-	#getToolMatchContext(toolCall: ToolCall | undefined, contentIndex: number): TtsrMatchContext {
-		const context: TtsrMatchContext = { source: "tool" };
-		if (!toolCall) return context;
-		context.toolName = toolCall.name;
-		context.streamKey = toolCall.id ? `toolcall:${toolCall.id}` : `tool:${toolCall.name}:${contentIndex}`;
-		context.filePaths = this.#extractToolFilePaths(toolCall);
-		return context;
-	}
-
-	#extractToolFilePaths(toolCall: ToolCall): string[] | undefined {
-		const args = toolCall.arguments ?? {};
-		const tool = this.#resolveTool(toolCall);
-		const toolPaths = tool?.matcherPaths?.(args);
-		if (toolPaths && toolPaths.length > 0) {
-			const normalized = toolPaths.flatMap(filePath => this.#normalizePathCandidates(filePath));
-			if (normalized.length > 0) return Array.from(new Set(normalized));
-		}
-		return this.#extractFilePathsFromArgs(args);
-	}
-
 	#checkStream(delta: string, matchContext: TtsrMatchContext, toolCall: ToolCall | undefined): Rule[] {
 		if (!this.#manager) return [];
-		const entries = this.#resolveMatcherEntries(toolCall);
+		const entries = this.#inspector.entries(toolCall);
 		if (entries) {
 			const matches: Rule[] = [];
 			for (const entry of entries) {
-				matches.push(...this.#manager.checkSnapshot(entry.digest, this.#perFileContext(matchContext, entry.path)));
+				matches.push(
+					...this.#manager.checkSnapshot(entry.digest, this.#inspector.perFileContext(matchContext, entry.path)),
+				);
 			}
 			return matches;
 		}
-		const digest = this.#resolveMatcherDigest(toolCall);
+		const digest = this.#inspector.digest(toolCall);
 		return digest !== undefined
 			? this.#manager.checkSnapshot(digest, matchContext)
 			: this.#manager.checkDelta(delta, matchContext);
 	}
 
-	#resolveMatcherDigest(toolCall: ToolCall | undefined): string | undefined {
-		const tool = this.#resolveTool(toolCall);
-		return tool?.matcherDigest?.(toolCall?.arguments ?? {});
-	}
-
-	#resolveMatcherEntries(toolCall: ToolCall | undefined): readonly { path: string; digest: string }[] | undefined {
-		const tool = this.#resolveTool(toolCall);
-		const entries = tool?.matcherEntries?.(toolCall?.arguments ?? {});
-		return entries && entries.length > 0 ? entries : undefined;
-	}
-
-	#resolveTool(toolCall: ToolCall | undefined) {
-		if (!toolCall) return undefined;
-		const tools = this.#host.agent.state.tools;
-		return (
-			tools.find(tool => tool.name === toolCall.name) ??
-			tools.find(tool => tool.customWireName !== undefined && tool.customWireName === toolCall.name)
-		);
-	}
-
-	#perFileContext(base: TtsrMatchContext, filePath: string): TtsrMatchContext {
-		const filePaths = this.#normalizePathCandidates(filePath);
-		return {
-			...base,
-			filePaths: filePaths.length > 0 ? filePaths : [filePath],
-			streamKey: base.streamKey ? `${base.streamKey}#${filePath}` : undefined,
-		};
-	}
-
 	async #checkAstStream(matchContext: TtsrMatchContext, toolCall: ToolCall | undefined): Promise<Rule[]> {
 		if (!this.#manager) return [];
-		const entries = this.#resolveMatcherEntries(toolCall);
+		const entries = this.#inspector.entries(toolCall);
 		if (entries) {
 			const matches: Rule[] = [];
 			for (const entry of entries) {
 				matches.push(
-					...(await this.#manager.checkAstSnapshot(entry.digest, this.#perFileContext(matchContext, entry.path))),
+					...(await this.#manager.checkAstSnapshot(
+						entry.digest,
+						this.#inspector.perFileContext(matchContext, entry.path),
+					)),
 				);
 			}
 			return matches;
 		}
-		const digest = this.#resolveMatcherDigest(toolCall);
+		const digest = this.#inspector.digest(toolCall);
 		return digest === undefined ? [] : this.#manager.checkAstSnapshot(digest, matchContext);
 	}
 
@@ -464,35 +426,4 @@ export class TtsrCoordinator {
 		return true;
 	}
 
-	#extractFilePathsFromArgs(args: unknown): string[] | undefined {
-		if (!isRecord(args)) return undefined;
-		const rawPaths: string[] = [];
-		for (const key in args) {
-			const value = args[key];
-			const normalizedKey = key.toLowerCase();
-			if (typeof value === "string" && (normalizedKey === "path" || normalizedKey.endsWith("path"))) {
-				rawPaths.push(value);
-				continue;
-			}
-			if (Array.isArray(value) && (normalizedKey === "paths" || normalizedKey.endsWith("paths"))) {
-				for (const candidate of value) if (typeof candidate === "string") rawPaths.push(candidate);
-			}
-		}
-		const normalizedPaths = rawPaths.flatMap(filePath => this.#normalizePathCandidates(filePath));
-		return normalizedPaths.length === 0 ? undefined : Array.from(new Set(normalizedPaths));
-	}
-
-	#normalizePathCandidates(rawPath: string): string[] {
-		const trimmed = rawPath.trim();
-		if (trimmed.length === 0) return [];
-		const normalizedInput = trimmed.replaceAll("\\", "/");
-		const candidates = new Set<string>([normalizedInput]);
-		if (normalizedInput.startsWith("./")) candidates.add(normalizedInput.slice(2));
-		const cwd = this.#host.sessionManager.getCwd();
-		const absolutePath = path.isAbsolute(trimmed) ? path.normalize(trimmed) : path.resolve(cwd, trimmed);
-		candidates.add(absolutePath.replaceAll("\\", "/"));
-		const relative = path.relative(cwd, absolutePath).replaceAll("\\", "/");
-		if (relative && relative !== "." && !relative.startsWith("../") && relative !== "..") candidates.add(relative);
-		return Array.from(candidates);
-	}
 }

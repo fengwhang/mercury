@@ -17,6 +17,7 @@ import {
 	PREWALK_PLAN_MESSAGE_TYPE,
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
+import { CONTEXT_NOTES_ENTRY_TYPE, getContextNotes, renderContextNotes } from "./context-notes";
 import { type CompactionEntry, EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
 
 // #4470 crash artifacts had legacy frames (no shape metadata) with 17 frames,
@@ -495,6 +496,24 @@ export function buildSessionContext(
 		// No compaction - emit all messages, handle branch summaries and custom messages
 		for (const entry of path) {
 			appendMessage(entry);
+		}
+	}
+
+	if (!options?.transcript) {
+		const notes = getContextNotes(path);
+		const renderedNotes = renderContextNotes(path);
+		if (notes && renderedNotes.length > 0) {
+			const sourceEntry = path.find(entry => entry.id === notes.entryId);
+			if (sourceEntry) {
+				// Mercury note: upstream shifts the insert point past a native
+				// Anthropic compaction block (`anthropicCompaction` payload). This tree
+				// has no native Anthropic compaction, so the notes simply prepend.
+				messages.splice(
+					0,
+					0,
+					createCustomMessage(CONTEXT_NOTES_ENTRY_TYPE, renderedNotes, false, undefined, sourceEntry.timestamp),
+				);
+			}
 		}
 	}
 

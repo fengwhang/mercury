@@ -24,6 +24,14 @@ export interface TtsrMatchContext {
 	streamKey?: string;
 }
 
+/** One output surface a rule can match: its content plus where it came from. */
+export interface TtsrOutput {
+	content: string;
+	context: TtsrMatchContext;
+	/** How warnings name the output, e.g. "reply" or "`edit` call on `src/a.ts`". */
+	subject: string;
+}
+
 interface ToolScope {
 	toolName?: string;
 	pathGlob?: Bun.Glob;

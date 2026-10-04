@@ -580,6 +580,8 @@ export interface BuildSystemPromptOptions {
 	customPrompt?: string;
 	/** Already-loaded custom system prompt text; bypasses path resolution. */
 	resolvedCustomPrompt?: string;
+	/** Raw Handlebars system-prompt template rendered with the default prompt's live context. */
+	systemPromptTemplate?: string;
 	/** Tools to include in prompt. */
 	tools?: Map<string, SystemPromptToolMetadata>;
 	/** Tool names to include in prompt. */
@@ -687,6 +689,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const {
 		customPrompt,
 		resolvedCustomPrompt: providedResolvedCustomPrompt,
+		systemPromptTemplate: optionsSystemPromptTemplate,
 		tools,
 		appendSystemPrompt,
 		inlineToolDescriptors: providedInlineToolDescriptors,
@@ -724,6 +727,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		activeRepoContext: providedActiveRepoContext,
 	} = options;
 	const inlineToolDescriptors = providedInlineToolDescriptors ?? false;
+	const hasExplicitCustomPrompt = customPrompt !== undefined || providedResolvedCustomPrompt !== undefined;
+	if (optionsSystemPromptTemplate !== undefined && hasExplicitCustomPrompt) {
+		throw new Error("systemPromptTemplate cannot be combined with a literal custom system prompt");
+	}
 	const resolvedCwd = cwd ?? getProjectDir();
 
 	const prepDefaults = {
@@ -1016,7 +1023,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		autoQaEnabled,
 		writeTransportOnly,
 	};
-	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
+	const rendered = prompt.render(
+		optionsSystemPromptTemplate ?? (resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate),
+		data,
+	);
 	const systemPrompt = [rendered];
 	if (toolNames.includes("computer")) {
 		systemPrompt.push(computerSafetyPrompt.trim());

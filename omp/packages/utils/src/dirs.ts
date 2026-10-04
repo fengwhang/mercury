@@ -637,6 +637,13 @@ export function getLogPath(date = new Date(), pid = process.pid): string {
 	return path.join(getLogsDir(), `${APP_NAME}.${date.toISOString().slice(0, 10)}.${pid}.log`);
 }
 
+/** Get the native-judgment answer-cache database path (override: `OMP_JUDGMENT_CACHE_DB`). */
+export function getJudgmentCacheDbPath(): string {
+	const override = process.env.OMP_JUDGMENT_CACHE_DB;
+	if (override) return override;
+	return dirs.rootSubdir(path.join("cache", "judgment-cache.db"), "cache");
+}
+
 /**
  * Get the plugins directory (~/.omp/plugins or its XDG equivalent).
  *

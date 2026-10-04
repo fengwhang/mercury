@@ -62,6 +62,7 @@ import {
 	type ServingModel,
 	validateRetryFallbackChains,
 } from "./retry-fallback-chains";
+import { describeUsageFallback } from "./retry-fallback-reason";
 import { getLatestCompactionEntry } from "./session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
@@ -1738,6 +1739,7 @@ export class TurnRecovery {
 			pinFallback: true,
 			apiKey: fallback.apiKey,
 			signal,
+			reason: describeUsageFallback(health, this.#host.settings.get("retry.usageReservePct")),
 		});
 	}
 
@@ -1761,7 +1763,7 @@ export class TurnRecovery {
 		role: string,
 		selector: RetryFallbackSelector,
 		currentSelector: string,
-		options?: { pinFallback?: boolean; apiKey?: string; signal?: AbortSignal },
+		options?: { pinFallback?: boolean; apiKey?: string; signal?: AbortSignal; reason?: string },
 	): Promise<boolean> {
 		const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 		const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
@@ -1832,6 +1834,7 @@ export class TurnRecovery {
 			from: currentSelector,
 			to: selector.raw,
 			role,
+			reason: options?.reason,
 		});
 		return true;
 	}

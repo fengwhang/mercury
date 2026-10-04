@@ -31,6 +31,8 @@ export interface Args {
 	allowHome?: boolean;
 	provider?: string;
 	model?: string;
+	/** Objective for a fresh interactive goal session. */
+	goal?: string;
 	config?: string[];
 	prewalk?: boolean;
 	noPrewalk?: boolean;
@@ -40,6 +42,7 @@ export interface Args {
 	maxTime?: number;
 	apiKey?: string;
 	systemPrompt?: string;
+	systemPromptTemplate?: string;
 	appendSystemPrompt?: string;
 	thinking?: ConfiguredThinkingLevel;
 	serviceTier?: ServiceTierOpenAISettingValue;
@@ -78,6 +81,8 @@ export interface Args {
 	skills?: string[];
 	noRules?: boolean;
 	noTitle?: boolean;
+	/** RPC modes only: run extensions without a UI; `rpc-ui` tool UI remains enabled. */
+	noUi?: boolean;
 	autoApprove?: boolean;
 	approvalMode?: "always-ask" | "write" | "yolo";
 	messages: string[];
@@ -273,6 +278,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.noExtensions = true;
 		} else if (arg === "--no-skills") {
 			result.noSkills = true;
+		} else if (arg === "--no-ui") {
+			result.noUi = true;
 		} else if (arg === "--no-rules") {
 			result.noRules = true;
 		} else if (arg === "--no-title") {
@@ -330,7 +337,52 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 		}
 	}
 
+	if (result.systemPrompt !== undefined && result.systemPromptTemplate !== undefined) {
+		throw new CliUsageError("--system-prompt and --system-prompt-template cannot be combined");
+	}
+
 	return result;
+}
+
+/**
+ * Reject a `--goal` launch that cannot start fresh: goal mode needs an
+ * interactive terminal and an untouched session (no resume, continue, fork,
+ * or import — those act before a later rejection could unwind them).
+ */
+export function validateGoalLaunch(args: Args, interactive: boolean): void {
+	if (args.goal === undefined) return;
+	if (!interactive) {
+		throw new CliUsageError("--goal requires an interactive terminal (not --print or --mode).");
+	}
+	if (args.continue || args.resume || args.fork || args.fromClaude || args.fromCodex) {
+		throw new CliUsageError("--goal requires a fresh session (no resume, continue, fork, or import).");
+	}
+}
+
+/**
+ * Reject conflicting startup inputs before constructing an interactive goal
+ * session. Runs on the extension-aware reparse: an extension flag's value can
+ * look like a positional prompt to the startup parse.
+ */
+export function validateGoalStartup(
+	args: Args,
+	goalEnabled: boolean,
+	pipedInput?: string,
+	planStartsOnStartup = false,
+): void {
+	if (args.goal === undefined) return;
+	if (args.messages.length > 0 || args.fileArgs.length > 0 || pipedInput !== undefined) {
+		throw new CliUsageError("--goal cannot be combined with a positional message, @file, or stdin prompt.");
+	}
+	if (args.planYolo || args.noTools) {
+		throw new CliUsageError("--goal cannot be combined with --plan-yolo or --no-tools.");
+	}
+	if (planStartsOnStartup) {
+		throw new CliUsageError("--goal cannot be combined with plan.defaultOnStartup; disable startup plan mode first.");
+	}
+	if (!goalEnabled) {
+		throw new CliUsageError("--goal requires goal.enabled to be enabled.");
+	}
 }
 
 /** Reject requested tool names absent from the fully discovered session registry. */

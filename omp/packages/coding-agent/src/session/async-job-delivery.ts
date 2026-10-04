@@ -8,6 +8,7 @@
  * This replaces the old single hardwired `onJobComplete` closure that routed
  * every completion — regardless of owner — into the first top-level session.
  */
+import { escapeHarnessTags } from "./harness-tags";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobType } from "../async";
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
@@ -54,7 +55,7 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 	if (entries.length === 0) return null;
 	const jobs = entries.map(entry => ({
 		jobId: entry.jobId,
-		result: entry.result,
+		result: escapeHarnessTags(entry.result),
 		type: entry.job?.type,
 		label: entry.job?.label,
 		durationMs: entry.durationMs,
