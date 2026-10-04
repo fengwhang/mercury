@@ -587,23 +587,14 @@ describe("runSubprocess soft request budget", () => {
 });
 
 describe("resolveSoftRequestBudget", () => {
-	it("lets a configured budget lower a bundled agent's ceiling", () => {
-		expect(resolveSoftRequestBudget("scout", 20)).toBe(20);
-		expect(resolveSoftRequestBudget("sonic", 20)).toBe(20);
-	});
-
-	it("keeps the bundled ceiling when the configured budget is higher", () => {
-		expect(resolveSoftRequestBudget("scout", 200)).toBe(100);
-		expect(resolveSoftRequestBudget("sonic", 200)).toBe(100);
-	});
-
-	it("uses the configured budget for agents without a bundled entry", () => {
+	it("honors configured task budgets without an inherited role ceiling", () => {
 		expect(resolveSoftRequestBudget("task", 20)).toBe(20);
+		expect(resolveSoftRequestBudget("task", 200)).toBe(200);
 	});
 
 	it("keeps 0 disabled and normalizes negative or fractional budgets", () => {
-		expect(resolveSoftRequestBudget("scout", 0)).toBe(0);
-		expect(resolveSoftRequestBudget("scout", -5)).toBe(0);
-		expect(resolveSoftRequestBudget("scout", 20.9)).toBe(20);
+		expect(resolveSoftRequestBudget("task", 0)).toBe(0);
+		expect(resolveSoftRequestBudget("task", -5)).toBe(0);
+		expect(resolveSoftRequestBudget("task", 20.9)).toBe(20);
 	});
 });

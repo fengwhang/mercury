@@ -3,6 +3,12 @@
 This is Mercury's product history. Vendored upstream changelogs document
 their original projects and are not Mercury release announcements.
 
+## [Unreleased]
+
+- Prevent OMP completed reports submitted in the yield tool's error field
+  from immediately aborting the task: request a corrected submission and
+  advertise plain-text success reports, while preserving actual failures.
+
 ## [0.3.22] — stable and nightly
 
 - Remove completed level-1 agent rooms and their descendants from MIRC and
