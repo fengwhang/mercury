@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from observatory.state import CLOSED_ROOMS_META_KEY
+from observatory.state import CLOSED_ROOMS_META_KEY, MANAGED_ROOMS_META_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ def _live_room_ids_from_disk(state_dir: Path | str = "") -> list[str]:
     return []
 
 
-def _closed_room_ids_from_disk(state_dir: str) -> set[str]:
+def _room_policy_from_disk(state_dir: str) -> tuple[set[str], set[str] | None]:
     """Durable expiries prevent cached JOINs from reviving deleted rooms.
 
     A newly spawned live session may reuse the room name. Read the shared
@@ -143,13 +143,14 @@ def _closed_room_ids_from_disk(state_dir: str) -> set[str]:
     """
     db = Path(state_dir) / "state.db"
     if not db.is_file():
-        return set()
+        return set(), None
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
     try:
         row = con.execute("SELECT value FROM meta WHERE key = ?", (CLOSED_ROOMS_META_KEY,)).fetchone()
         closed = set(json.loads(row[0])) if row else set()
         live = {r[0].lower() for r in con.execute("SELECT room_id FROM nodes WHERE status = 'live'") if r[0]}
-        return closed - live
+        policy = con.execute("SELECT value FROM meta WHERE key = ?", (MANAGED_ROOMS_META_KEY,)).fetchone()
+        return closed - live, live if policy and policy[0] == "true" else None
     finally:
         con.close()
 
@@ -438,6 +439,11 @@ class MircDaemon:
         Returns the number of members removed. Never raises.
         """
         key = channel.lower()
+        if key == self.gateway_channel:
+            return 0
+        # Persist expiry before sending PART, so a reconnect cannot race the
+        # deletion and recreate the channel from mLounge's saved network state.
+        await asyncio.to_thread(self._remember_closed_room, key)
         async with self._lock:
             members = sorted(self._channels.pop(key, ()))
             self._display.pop(key, None)
@@ -451,6 +457,25 @@ class MircDaemon:
                 client, f":{client.nick}!{client.user}@{self.config.server_name} PART {channel} :{reason}"
             )
         return len(members)
+
+    @property
+    def gateway_channel(self) -> str:
+        base = clean_channel(self.config.server_name).lstrip("#")
+        return f"#{base}_gateway"
+
+    def _remember_closed_room(self, key: str) -> None:
+        from observatory.state import ObservatoryState
+
+        if not self.config.state_dir:
+            return
+        with ObservatoryState(Path(self.config.state_dir) / "state.db") as state:
+            with state.locked() as db, db:
+                row = db.execute("SELECT value FROM meta WHERE key = ?", (CLOSED_ROOMS_META_KEY,)).fetchone()
+                closed = set(json.loads(row[0])) if row else set()
+                closed.add(key)
+                db.execute("INSERT INTO meta (key, value) VALUES (?, ?) "
+                           "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                           (CLOSED_ROOMS_META_KEY, json.dumps(sorted(closed))))
 
     async def server_notice(self, channel: str, text: str) -> None:
         """Post a server-originated notice into a channel (fanned to members)."""
@@ -750,21 +775,23 @@ class MircDaemon:
         if not arg:
             await self._numeric(client, 461, "JOIN", "Not enough parameters")
             return
-        try:
-            closed = await asyncio.to_thread(_closed_room_ids_from_disk, self.config.state_dir)
-        except (sqlite3.Error, ValueError):
-            logger.warning("MIRC: room expiry state unavailable — JOIN will retry", exc_info=True)
-            return
         joined: list[tuple[str, str, bool]] = []
         already_joined: list[tuple[str, str]] = []
         async with self._lock:
+            # Check inside the membership lock: a JOIN queued behind DESTROY
+            # must not use an expiry snapshot from before the room was closed.
+            try:
+                closed, managed = await asyncio.to_thread(_room_policy_from_disk, self.config.state_dir)
+            except (sqlite3.Error, ValueError):
+                logger.warning("MIRC: room expiry state unavailable — JOIN will retry", exc_info=True)
+                return
             for chan in arg.split(","):
                 chan = chan.split(" ", 1)[0].strip()
                 if not chan.startswith("#") or len(chan) < 2:
                     await self._numeric(client, 403, chan, "No such channel")
                     continue
                 key = chan.lower()
-                if key in closed:
+                if key != self.gateway_channel and (key in closed or (managed is not None and key not in managed)):
                     # A self PART removes saved channels from every mLounge
                     # browser, including rooms restored by a cached JOIN.
                     await self._send(client, f":{client.nick}!{client.user}@{self.config.server_name} PART {chan} :room expired")
@@ -826,6 +853,13 @@ class MircDaemon:
 
     async def _emit_join(self, peer: _Client, key: str, display: str) -> None:
         """JOIN + topic + names for a new member."""
+        async with self._lock:
+            if peer.nick.lower() not in self._channels.get(key, ()):
+                return  # DESTROY won the race while join fanout was queued.
+            await self._emit_join_locked(peer, key, display)
+
+    async def _emit_join_locked(self, peer: _Client, key: str, display: str) -> None:
+        """Serialize the member's JOIN frames before any destruction PART."""
         await self._send(
             peer, f":{peer.nick}!{peer.user}@{self.config.server_name} JOIN {display}"
         )
@@ -983,6 +1017,9 @@ class MircDaemon:
         channel = arg.split(" ", 1)[0].strip()
         if not channel.startswith("#"):
             await self._numeric(client, 403, channel or "*", "No such channel")
+            return
+        if channel.lower() == self.gateway_channel:
+            await self._numeric(client, 481, client.nick, "The configured gateway room is protected")
             return
         await self.destroy_channel(channel, reason="room closed (/exit)")
         await self._numeric(

@@ -250,9 +250,18 @@ Observatory restarts checkpoint active gateway sessions and resume them,
 without waiting for a long model turn to finish. mLounge is optional for
 this command.
 
-Spawned agent sessions and completed subagent rooms stay in the Observatory
-until you send `!exit` in their room. Closing a parent also closes its
-descendant rooms. A transport reconnect retains the sessions and restores
+**Do not restart the Observatory during active delegated work.** An Observatory
+restart ends all subagents and deletes their rooms, along with orphan rooms.
+It preserves registered level-0 sessions and always protects the configured
+gateway room, whose name follows your MIRC network name. Use
+`mercury-nightly observatory restart` for a nightly installation.
+
+The gateway and explicitly spawned agents are level 0 and persist until
+`!exit`. Their children are level 1 and their rooms disappear on task completion.
+Deeper descendants remain until their parent dies. Expiry removes the entire
+MIRC room and removes it from every connected mLounge user's sidebar; saved
+joins cannot revive it. Closing a parent also closes its descendant rooms.
+A transport reconnect retains the sessions and restores
 room membership; idle agent identities reconnect automatically.
 Re-run `mercury setup observatory` if you need to reset a lost mLounge
 password.

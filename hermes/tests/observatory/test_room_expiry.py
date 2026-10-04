@@ -71,7 +71,9 @@ async def test_automatic_expiry_ejects_all_users_even_during_slow_message_handli
             # Cached clients cannot recreate either expired room.
             for client in observers:
                 await client.send(f"JOIN {rooms['child']}")
-                assert "room expired" in await client.next_match(f" PART {rooms['child']} ")
+                # Cached JOINs already queued during expiry can leave an earlier
+                # destruction PART in the socket queue. Match this JOIN refusal.
+                await client.next_match(f" PART {rooms['child']} :room expired")
             assert rooms["child"] not in daemon.channel_names()
             # Explicitly spawning a new generation permits name reuse.
             state.add_node("replacement", engine="omp", name="child", slug="child", mxid="child",

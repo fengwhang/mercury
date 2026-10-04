@@ -16,6 +16,80 @@ _RESTART_HELPER = (
 )
 
 
+def prepare_room_cleanup(mercury_home=None) -> dict:
+    """Journal restart expiry before either service can restore old rooms.
+
+    Root sessions are durable and will resume. Descendants cannot resume their
+    old task transports, so an explicit Observatory restart ends them. Unknown
+    cached frontend rooms are rejected by MIRC's managed-room policy.
+    """
+    import json
+    import time
+
+    from observatory.provision import (
+        GATEWAY_NODE_ID, ensure_gateway_node_in_state, live_server_name,
+    )
+    from observatory.rooms import gateway_channel
+    from observatory.spawn import ExitRecord, PURGE_JOURNAL_KEY, read_purge_journal
+    from observatory.state import (
+        CLOSED_ROOMS_META_KEY, MANAGED_ROOMS_META_KEY, ObservatoryState,
+        default_state_db_path,
+    )
+
+    server = live_server_name(mercury_home)
+    if not server:
+        raise RuntimeError("Observatory is not provisioned (no MIRC network name)")
+    gateway = gateway_channel(server).lower()
+    with ObservatoryState(default_state_db_path(mercury_home)) as state:
+        ensure_gateway_node_in_state(state, server_name=server)
+        with state.locked() as db, db:
+            rows = db.execute(
+                "SELECT node_id, parent_node_id, depth, status, room_id FROM nodes "
+                "ORDER BY depth, created_epoch, node_id"
+            ).fetchall()
+            entries = read_purge_journal(state)
+            protected = {row["node_id"] for row in rows if row["node_id"] == GATEWAY_NODE_ID
+                         or (row["status"] == "live" and row["depth"] == 0
+                             and row["parent_node_id"] is None)}
+            protected_channels = {gateway} | {row["room_id"].lower() for row in rows
+                                               if row["node_id"] in protected and row["room_id"]}
+            # Old journals must not annihilate a protected room or a newly
+            # registered root that reused an expired name.
+            for entry in entries:
+                entry["rows"] = [row for row in entry.get("rows", []) if row["node_id"] not in protected]
+                entry["channels"] = [channel for channel in entry.get("channels", [])
+                                     if channel.lower() not in protected_channels]
+            pending = {row["node_id"] for entry in entries for row in entry.get("rows", [])}
+            removed = [dict(row) for row in rows if row["node_id"] not in pending
+                       and row["node_id"] != GATEWAY_NODE_ID
+                       and not (row["status"] == "live" and row["depth"] == 0
+                                and row["parent_node_id"] is None)]
+            channels = sorted({str(row["room_id"]) for row in removed
+                               if row["room_id"] and row["room_id"].lower() != gateway})
+            prior = db.execute("SELECT value FROM meta WHERE key = ?", (CLOSED_ROOMS_META_KEY,)).fetchone()
+            closed = set(json.loads(prior[0])) if prior else set()
+            closed.update(channel.lower() for channel in channels)
+            closed.discard(gateway)
+            if removed:
+                record = ExitRecord(
+                    journal_id=f"pj-restart-{uuid4().hex}", node_id="restart-cleanup",
+                    status="restart", summary=None, created_epoch=time.time(),
+                    rows=removed, channels=channels,
+                )
+                entries.append(record.to_entry())
+                db.executemany("UPDATE nodes SET status = 'dead', died_epoch = ? WHERE node_id = ?",
+                               [(time.time(), row["node_id"]) for row in removed])
+            # Even a previously tombstoned gateway is protected and made live.
+            db.execute("UPDATE nodes SET status = 'live', died_epoch = NULL WHERE node_id = ?",
+                       (GATEWAY_NODE_ID,))
+            for key, value in ((CLOSED_ROOMS_META_KEY, json.dumps(sorted(closed))),
+                               (PURGE_JOURNAL_KEY, json.dumps(entries)),
+                               (MANAGED_ROOMS_META_KEY, "true")):
+                db.execute("INSERT INTO meta (key, value) VALUES (?, ?) "
+                           "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+    return {"expired_agents": len(removed), "channels": channels, "gateway": gateway}
+
+
 def quick_restart_handler(runner, loop):
     """Control-socket handler; marshal a session-preserving restart to the loop."""
     def request():
