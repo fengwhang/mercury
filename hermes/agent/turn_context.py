@@ -732,6 +732,11 @@ def build_turn_context(
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):
         _reset_consol()
+    # Expiry clock for build_api_messages: admission time (not the input's platform-event
+    # stamp, which can predate admission by minutes), frozen so every request this turn
+    # sends identical bytes. Distinct from note_turn_start's _inflight_turn_started, a
+    # tripwire slot cleared at persist.
+    agent._current_turn_timestamp = time.time()
     agent._vision_supported = True
 
     # Pre-turn connection health check: clean up dead TCP connections.

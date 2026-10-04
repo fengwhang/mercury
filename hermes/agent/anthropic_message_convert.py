@@ -445,6 +445,23 @@ def _apply_assistant_cache_control_to_last_cacheable_block(
             break
 
 
+def assistant_replay_carrier(m: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]]]:
+    """``(ordered, blocks)`` for rejected-thinking mirrors.
+
+    Single owner of carrier precedence for conversion, accounting and
+    rejected-signature mirrors: the sanitized ordered sidecar when any block
+    survives it (the whole turn then replays from it), else the
+    ``reasoning_details`` thinking blocks.
+    """
+    ordered_blocks = m.get("anthropic_content_blocks")
+    if isinstance(ordered_blocks, list) and ordered_blocks:
+        replayed = [_sanitize_replay_block(b) for b in ordered_blocks]
+        replayed = [b for b in replayed if b is not None]
+        if replayed:
+            return True, replayed
+    return False, _extract_preserved_thinking_blocks(m)
+
+
 def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     """Convert an assistant message to Anthropic content blocks.
 
