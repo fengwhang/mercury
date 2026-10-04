@@ -3908,6 +3908,15 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def _ensure_dict(parent: Dict[str, Any], key: str) -> Dict[str, Any]:
+    """Return ``parent[key]`` as a dict, replacing a missing or non-dict value with ``{}``."""
+    child = parent.get(key)
+    if not isinstance(child, dict):
+        child = {}
+        parent[key] = child
+    return child
+
+
 def write_platform_config_field(
     platform_key: str,
     field_key: str,
