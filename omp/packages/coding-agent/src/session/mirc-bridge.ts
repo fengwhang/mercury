@@ -6,6 +6,7 @@ import parentMircSteerTemplate from "../prompts/steering/parent-irc.md" with { t
 import mircAutoReplyTemplate from "../prompts/system/irc-autoreply.md" with { type: "text" };
 import mircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { escapeHarnessTags } from "./harness-tags";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
@@ -170,7 +171,7 @@ export class MircBridge {
 			customType: "irc:incoming",
 			content: prompt.render(mircIncomingTemplate, {
 				from: msg.from,
-				message: msg.body,
+				message: escapeHarnessTags(msg.body),
 				replyTo: msg.replyTo ?? "",
 				autoReplied: autoReply,
 				interrupting: streaming,
@@ -187,7 +188,7 @@ export class MircBridge {
 			if (recipientParentId === msg.from) {
 				this.#host.agent.steer({
 					role: "user",
-					content: prompt.render(parentMircSteerTemplate, { from: msg.from, message: msg.body }),
+					content: prompt.render(parentMircSteerTemplate, { from: msg.from, message: escapeHarnessTags(msg.body) }),
 					attribution: "agent",
 					timestamp: msg.ts,
 					steering: true,

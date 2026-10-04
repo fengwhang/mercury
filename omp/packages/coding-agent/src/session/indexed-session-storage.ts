@@ -12,6 +12,7 @@ import {
 	type SessionTitleUpdate,
 	titleUpdateFromSlot,
 } from "./session-title-slot";
+import { enoent } from "./session-storage-errors";
 
 export interface SessionStorageIndexEntry {
 	path: string;
@@ -48,16 +49,6 @@ interface EnqueueOptions {
 }
 
 const RESOLVED = Promise.resolve();
-
-function enoent(p: string): NodeJS.ErrnoException {
-	const err = new Error(`ENOENT: no such file, '${p}'`) as NodeJS.ErrnoException;
-	err.code = "ENOENT";
-	err.errno = -2;
-	err.path = p;
-	err.syscall = "open";
-	return err;
-}
-
 function matchesGlob(name: string, pattern: string): boolean {
 	if (pattern === "*") return true;
 	if (pattern.startsWith("*.")) return name.endsWith(pattern.slice(1));

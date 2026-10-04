@@ -5,6 +5,7 @@
  * when a woken subagent re-yields, so a parent reads the same shape (status,
  * preview, `agent://` pointer) regardless of which path delivered it.
  */
+import { escapeHarnessTags } from "../session/harness-tags";
 import { prompt } from "@oh-my-pi/pi-utils";
 import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: "text" };
 import { AgentRegistry } from "../registry/agent-registry";
@@ -62,9 +63,9 @@ export function formatTaskResultSummary(
 		id: result.id,
 		status,
 		duration: formatDuration(options.totalDurationMs),
-		abortReason: result.aborted ? result.abortReason : undefined,
+		abortReason: result.aborted ? escapeHarnessTags(result.abortReason ?? "") || undefined : undefined,
 		resumable,
-		preview,
+		preview: escapeHarnessTags(preview),
 		truncated,
 		meta: result.outputMeta
 			? {

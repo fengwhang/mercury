@@ -9,6 +9,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_MS } from "../session/agent-session";
+import { CREDENTIAL_DISABLED_NOTICE_SOURCE } from "../session/credential-disabled-notice";
 import { isSilentAbort } from "../session/messages";
 import { flushTelemetryExport } from "../telemetry-export";
 import { initializeExtensions } from "./runtime-init";
@@ -156,6 +157,10 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		// In JSON mode, output all events
 		if (mode === "json") {
 			writeStdoutLine(`${JSON.stringify(printableEvent(event))}\n`);
+		} else if (event.type === "notice" && event.source === CREDENTIAL_DISABLED_NOTICE_SOURCE) {
+			// Text mode renders no session notices, but an automatic sign-out must not stay
+			// hidden behind a sibling account that quietly answers the prompt.
+			process.stderr.write(`Warning: ${event.message}\n`);
 		}
 	});
 
