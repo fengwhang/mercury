@@ -69,10 +69,28 @@ The gateway room hosts the main Hermes conversation. In that room, use:
 - `!spawnomp <name>` or `/spawnomp <name>` to create an OMP agent room.
 
 Each spawned agent has its own room. Delegated work appears in child trace
-rooms. Thinking traces, tool inputs, and tool outputs display as plaintext;
+rooms. Hermes thinking traces are hidden by default; enabling
+`display.thinking_progress` shows them. Thinking traces, tool inputs, and tool outputs display as plaintext;
 assistant replies use Markdown and LaTeX. The **Raw** option exposes the
 original message for selection and copying. Put copyable shell commands in
 code fences so punctuation remains literal in a formatted reply.
+
+Chat also shows the engines' user-facing progress: tool completion labels,
+full todo lists, delegation completion, compaction, retries, fallback
+changes and extension notices.
+
+The gateway and explicitly spawned agents are level 0. A child of a level-N
+agent is level N+1. Level-1 agents report to their parent and close when
+their task completes, taking their descendants with them. Deeper agents
+report when their task completes and remain available until their parent
+ends. Closing a room ejects its users and removes it from mLounge, including
+other connected browsers. Parent reports continue through the family until
+the level-0 agent's task finishes.
+
+In an OMP room, `!model` reports the current model and
+`!model PROVIDER/MODEL` switches it through the engine's local command
+handler. These commands remain available during a turn and when the
+provider has exhausted its usage allowance.
 
 Steer an agent by writing in its room. Delivery occurs at the engine's next
 supported boundary; it does not guarantee interruption of a running tool.
@@ -81,9 +99,10 @@ its descendants. The gateway room cannot be exited this way.
 
 When any descendant needs human approval, its request reaches the ancestor's
 approval UI, including across Hermes and OMP. Reply `!approve` / `!deny` (or
-`/approve` / `/deny`) in the room displaying the prompt. Shared **safe**,
-**smart**, and **yolo** permissions and explicit deny rules follow the family
-boundary. OMP uses one model role, **task**, with its configured fallback
+`/approve` / `/deny`) in the room displaying the prompt. Hermes uses
+**safe**, **smart**, or **yolo**; OMP uses **always-ask**, **write**, or
+**yolo**. Each engine keeps its configured policy, with approval requests
+routed up the family to the level-0 user interface. OMP uses one model role, **task**, with its configured fallback
 chain; agents cannot assign separate model roles to their children.
 
 MIRC retains a bounded message history. Agent state and local transcripts

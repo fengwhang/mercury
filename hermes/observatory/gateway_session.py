@@ -302,6 +302,8 @@ def _push_progress(node_id: str, seq: int, event: dict[str, Any], *, internal: b
             feed = {"feed": "tool", "subagent_id": "",
                     "tool": str(event.get("tool") or "tool"),
                     "args": event.get("args") or {}}
+        elif kind == "status":
+            feed = {"feed": "status", "subagent_id": "", "text": event.get("text") or ""}
         else:
             return
         from observatory.rooms import (
@@ -415,6 +417,9 @@ def _feed_event_to_dict(event: Any) -> dict[str, Any] | None:
             shape == "activity" and isinstance(data.get("active"), bool)
         ):
             data["feed"] = "activity"
+            return data
+        if shape in {"StatusEvent", "status"}:
+            data["feed"] = "status"
             return data
         # Message frames (role-bearing) forward as feed="message": they
         # share subagent_id/text keys with thought frames, so probe them
@@ -952,12 +957,14 @@ class _TurnEventCollector:
     on normalized text — first capture wins, the drop consumes no seq.
     """
 
-    def __init__(self, node_id: str = "gw", *, internal: bool = False) -> None:
+    def __init__(self, node_id: str = "gw", *, internal: bool = False, thinking_enabled: bool = False) -> None:
         self._node_id = node_id or "gw"
         self._internal = bool(internal)
+        self._thinking_enabled = thinking_enabled
         self._next_seq = 0
         self._records: list[dict[str, Any]] = []
         self._seen_thinking: set[str] = set()
+        self._pending_tool_args: dict[str, list[dict]] = {}
 
     # -- capture ---------------------------------------------------------
     def _record(self, event: dict[str, Any]) -> None:
@@ -971,6 +978,8 @@ class _TurnEventCollector:
         _push_progress(self._node_id, seq, event, internal=self._internal)
 
     def _add_thinking(self, text: str) -> None:
+        if not self._thinking_enabled:
+            return
         norm = _strip_thinking_markup(text)
         if not norm or norm in self._seen_thinking:
             return
@@ -988,12 +997,21 @@ class _TurnEventCollector:
             if event_type == "tool.started" and name:
                 if str(name).startswith("_"):
                     return
+                self._pending_tool_args.setdefault(str(name), []).append(args if isinstance(args, dict) else {})
                 if isinstance(args, dict):
                     self._record({"type": "tool_call", "tool": str(name), "args": args})
                 elif args is None:
                     self._record({"type": "tool_call", "tool": str(name), "args": {}})
                 else:
                     self._record({"type": "tool_call", "tool": str(name), "args": {"_raw": str(args)}})
+            else:
+                from observatory.progress import hermes_progress_frame
+
+                pending = self._pending_tool_args.get(str(name), [])
+                stored_args = pending.pop(0) if event_type == "tool.completed" and pending else args
+                frame = hermes_progress_frame(event_type, name, args=stored_args, **kwargs)
+                if frame:
+                    self._record({"type": "status", "text": frame["text"]})
         except Exception:
             pass
 
@@ -1013,6 +1031,7 @@ def _install_collector(agent: Any, collector: _TurnEventCollector) -> Callable[[
     prev_tp = getattr(agent, "tool_progress_callback", None)
     prev_th = getattr(agent, "thinking_callback", None)
     prev_re = getattr(agent, "reasoning_callback", None)
+    prev_status = getattr(agent, "status_callback", None)
 
     def _tp(event_type: str, name: str | None = None, preview=None, args=None, **kwargs) -> None:
         if callable(prev_tp):
@@ -1038,6 +1057,15 @@ def _install_collector(agent: Any, collector: _TurnEventCollector) -> Callable[[
                 pass
         collector.thinking(text)
 
+    def _status(event_type: str, text: str) -> None:
+        if callable(prev_status):
+            try:
+                prev_status(event_type, text)
+            except Exception:
+                pass
+        if isinstance(text, str) and text.strip():
+            collector._record({"type": "status", "text": text})
+
     try:
         agent.tool_progress_callback = _tp
     except Exception:
@@ -1050,12 +1078,17 @@ def _install_collector(agent: Any, collector: _TurnEventCollector) -> Callable[[
         agent.reasoning_callback = _re
     except Exception:
         pass
+    try:
+        agent.status_callback = _status
+    except Exception:
+        pass
 
     def _restore() -> None:
         for attr, prev in (
             ("tool_progress_callback", prev_tp),
             ("thinking_callback", prev_th),
             ("reasoning_callback", prev_re),
+            ("status_callback", prev_status),
         ):
             try:
                 setattr(agent, attr, prev)
@@ -1127,7 +1160,11 @@ def _run_gateway_prompt_with_events_inner(
                 agent = _default_agent(session_id)
                 with _locks_guard:
                     _session_agents[session_id] = agent
-        collector = _TurnEventCollector(node_id=node_id, internal=internal)
+        from mercury_cli.config import cfg_get, load_config
+        from utils import is_truthy_value
+
+        collector = _TurnEventCollector(node_id=node_id, internal=internal,
+            thinking_enabled=is_truthy_value(cfg_get(load_config(), "display", "thinking_progress", default=False)))
         restore = _install_collector(agent, collector)
         agent._observatory_node_id = node_id
         try:

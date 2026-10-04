@@ -144,7 +144,7 @@ def test_collector_thinking_events_do_not_shadow_method():
     sinks through ``_install_collector`` — stub-agent probes miss this
     because the crash needs a real thinking event.
     """
-    collector = gs._TurnEventCollector()
+    collector = gs._TurnEventCollector(thinking_enabled=True)
     assert callable(collector.thinking)
 
 

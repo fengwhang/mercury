@@ -63,6 +63,8 @@ SKIP_RESPAWN_KINDS = ("gateway", "manual-run")
 
 #: state.db meta key holding the write-ahead purge journal.
 PURGE_JOURNAL_KEY = "purge-journal"
+PURGE_RETRY_INTERVAL = 2.0
+_purge_retry_tasks: dict[ObservatoryState, asyncio.Task] = {}
 
 #: omp session JSONLs for spawned orchestrators live here (under the
 #: observatory root: the session file is the resume handle).
@@ -596,12 +598,19 @@ def validate_spawn_session_ref(
 
 
 def _unique_slug(clean: str, state: ObservatoryState) -> str:
-    """Live-collision slug: base, base-2, base-3… (dead rows invisible)."""
+    """Reserve live names and unfinished purges until destruction is confirmed."""
     import re as _re
+    reserved: set[str] = set()
+    for entry in read_purge_journal(state):
+        for row in entry.get("rows", []):
+            try:
+                reserved.add(str(state.get(row["node_id"])["slug"]))
+            except StateError:
+                continue
     base = _re.sub(r"[^a-z0-9]+", "-", clean.strip().lower()).strip("-")[:48] or "agent"
     slug = base
     n = 2
-    while state.find_live_by_slug(slug):
+    while slug in reserved or state.find_live_by_slug(slug):
         slug = f"{base}-{n}"
         n += 1
     return slug
@@ -855,14 +864,24 @@ def begin_exit(
         ],
         channels=channels,
     )
-    entries = read_purge_journal(state)
-    entries.append(record.to_entry())
     died = time.time()
     # The atomic core: journal write + every dead-mark commit together.
     # Locked: this state is shared with the gateway event loop (/spawn
     # pass-through) while boot opened it on another thread.
     with state.locked() as db:
         with db:
+            from observatory.state import CLOSED_ROOMS_META_KEY
+
+            entries = read_purge_journal(state)
+            entries.append(record.to_entry())
+            prior = db.execute("SELECT value FROM meta WHERE key = ?", (CLOSED_ROOMS_META_KEY,)).fetchone()
+            closed = set(json.loads(prior[0])) if prior else set()
+            closed.update(c.lower() for c in channels)
+            db.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (CLOSED_ROOMS_META_KEY, json.dumps(sorted(closed))),
+            )
             db.execute(
                 "INSERT INTO meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -896,6 +915,9 @@ async def _execute_channel_destroy(bot: Any, channels: list[str]) -> PurgeOutcom
                 out.fatal.append(f"{channel}: no bot sink (daemon down?)")
                 continue
             ok = await bot.destroy_channel(str(channel))
+            if not ok:
+                out.fatal.append(f"{channel}: daemon did not acknowledge channel destruction")
+                continue
             try:
                 from observatory.identity import drop_identity
 
@@ -914,12 +936,12 @@ def finish_exit(state: ObservatoryState, record: ExitRecord) -> None:
     point child→parent and the journal's row list is BFS top-down) and
     drop the entry, in ONE transaction: no tombstone survives to
     leak state into a same-named successor."""
-    remaining = [
-        e for e in read_purge_journal(state)
-        if e.get("journal_id") != record.journal_id
-    ]
     with state.locked() as db:
         with db:
+            remaining = [
+                e for e in read_purge_journal(state)
+                if e.get("journal_id") != record.journal_id
+            ]
             for r in reversed(record.rows):
                 db.execute(
                     "DELETE FROM nodes WHERE node_id = ?", (r["node_id"],)
@@ -937,8 +959,8 @@ async def replay_purge_journal(
     """Startup replay: every journal entry re-destroys its channels
     (idempotent — destroying a gone channel is success) and, once the
     destroy converged, finishes (rows deleted, entry dropped). Entries
-    with a still-failing destroy stay journaled and are retried on the
-    next boot; their rows are already dead, so boot resync skips
+    with a still-failing destroy stay journaled and retry automatically;
+    their rows are already dead, so boot resync skips
     them either way."""
     deferred: list[dict[str, Any]] = []
     bot = bot if bot is not None else get_bot_sink()
@@ -967,7 +989,31 @@ async def replay_purge_journal(
             "purge journal: entry %s replayed (%d channels, %d rows deleted)",
             record.journal_id, len(channels), len(record.rows),
         )
+    if deferred:
+        retry_deferred_purges(state, bot)
     return deferred
+
+
+def retry_deferred_purges(state: ObservatoryState, bot: Any = None) -> None:
+    """Retry durable room cleanup without requiring a gateway restart."""
+    pending = _purge_retry_tasks.get(state)
+    if pending is not None and not pending.done():
+        return
+
+    async def retry():
+        delay = PURGE_RETRY_INTERVAL
+        try:
+            while read_purge_journal(state):
+                await asyncio.sleep(delay)
+                sink = get_bot_sink() or bot
+                if not await replay_purge_journal(state, bot=sink):
+                    return
+                delay = min(delay * 2, 30.0)
+        finally:
+            _purge_retry_tasks.pop(state, None)
+
+    _purge_retry_tasks[state] = asyncio.get_running_loop().create_task(
+        retry(), name="observatory-room-cleanup")
 
 
 # ============================================================================
@@ -1049,6 +1095,8 @@ async def exit_orchestrator(
         deferred = ["no bot sink attached (IRC down?)"]
     if not deferred:
         finish_exit(state, record)
+    else:
+        retry_deferred_purges(state, bot)
     return {"record": record, "records": records, "deferred": deferred}
 
 

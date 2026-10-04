@@ -1,6 +1,6 @@
 import {expect, describe, it, vi} from "vitest";
 import {Client as MircClient} from "irc-framework";
-import type Client from "../../../server/client";
+import Client from "../../../server/client";
 import Chan from "../../../server/models/chan";
 import Msg from "../../../server/models/msg";
 import Network, {type NetworkWithIrcFramework} from "../../../server/models/network";
@@ -11,6 +11,7 @@ import part from "../../../server/plugins/irc-events/part";
 import quit from "../../../server/plugins/irc-events/quit";
 import topic from "../../../server/plugins/irc-events/topic";
 import invite from "../../../server/plugins/irc-events/invite";
+import connection from "../../../server/plugins/irc-events/connection";
 
 function harness(mercury = true) {
 	const mirc = new MircClient();
@@ -57,6 +58,44 @@ function harness(mercury = true) {
 }
 
 describe("MIRC room restoration", () => {
+	it("removes an expired room from the network, saved account, and all browser clients", async () => {
+		const {network, room, client, pushed, read} = harness();
+		Object.assign(client, {mentions: []});
+		client.part.mockImplementation((targetNetwork, targetRoom) => {
+			Client.prototype.part.call(client as unknown as Client, targetNetwork, targetRoom);
+		});
+		read(":owner!owner@vm JOIN #room");
+		read(":owner!owner@vm PART #room :room closed (/exit)");
+		await vi.waitFor(() => expect(network.getChannel("#room")).toBeUndefined());
+		expect(client.save).toHaveBeenCalledOnce();
+		expect(client.emit).toHaveBeenCalledWith("part", {chan: room.id});
+		expect(pushed).toHaveLength(0);
+	});
+	it("does not resurrect a room through a pending reconnect JOIN after expiry", async () => {
+		vi.useFakeTimers();
+
+		try {
+			const {mirc, network, room, client, read} = harness();
+			Object.assign(client, {mentions: []});
+			client.part.mockImplementation((targetNetwork, targetRoom) => {
+				Client.prototype.part.call(client as unknown as Client, targetNetwork, targetRoom);
+			});
+			connection.call(
+				client as unknown as Client,
+				mirc as NetworkWithIrcFramework["irc"],
+				network as NetworkWithIrcFramework
+			);
+			const joinRoom = vi.spyOn(mirc, "join").mockImplementation(() => undefined);
+			vi.spyOn(mirc, "startPeriodicPing").mockImplementation(() => undefined);
+			mirc.emit("registered", {nick: "owner"});
+			read(":owner!owner@vm PART #room :room closed (/exit)");
+			await vi.advanceTimersByTimeAsync(2000);
+			expect(network.channels).not.toContain(room);
+			expect(joinRoom).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 	it("keeps membership and topics up to date without storing reconnect chatter", async () => {
 		const {room, client, pushed, read} = harness();
 

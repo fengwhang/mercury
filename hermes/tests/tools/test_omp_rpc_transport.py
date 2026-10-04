@@ -548,6 +548,26 @@ class TestTurnFramesPreserved(unittest.TestCase):
         self.assertEqual(entry["status"], "failed")
         self.assertEqual(entry["turn_frames"], [])
 
+    def test_provider_usage_error_is_failed_and_retains_progress(self):
+        turn = self._turn()
+        from types import SimpleNamespace
+
+        failed = SimpleNamespace(events=turn.events, assistant_message={
+            "role": "assistant", "stopReason": "error", "errorMessage": "usage_limit_reached"})
+        entry = self._child(turn=failed).run_task("continue")
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["error"], "usage_limit_reached")
+        self.assertTrue(entry["turn_frames"])
+
+    def test_local_command_preserves_harness_output_without_assistant_text(self):
+        from types import SimpleNamespace
+
+        turn = SimpleNamespace(events=(), agent_invoked=False,
+                               command_output=("Available commands", "Current model: test"))
+        entry = self._child(turn=turn).run_task("/help")
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual([f["text"] for f in entry["turn_frames"]], list(turn.command_output))
+
 
 if __name__ == "__main__":
     unittest.main()

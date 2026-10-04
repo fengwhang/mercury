@@ -26,13 +26,17 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import re
+import sqlite3
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+
+from observatory.state import CLOSED_ROOMS_META_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +133,25 @@ def _live_room_ids_from_disk(state_dir: Path | str = "") -> list[str]:
         except Exception:
             continue
     return []
+
+
+def _closed_room_ids_from_disk(state_dir: str) -> set[str]:
+    """Durable expiries prevent cached JOINs from reviving deleted rooms.
+
+    A newly spawned live session may reuse the room name. Read the shared
+    state each time so both expiry and reuse take effect without a restart.
+    """
+    db = Path(state_dir) / "state.db"
+    if not db.is_file():
+        return set()
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+    try:
+        row = con.execute("SELECT value FROM meta WHERE key = ?", (CLOSED_ROOMS_META_KEY,)).fetchone()
+        closed = set(json.loads(row[0])) if row else set()
+        live = {r[0].lower() for r in con.execute("SELECT room_id FROM nodes WHERE status = 'live'") if r[0]}
+        return closed - live
+    finally:
+        con.close()
 
 @dataclass
 class HistoryMessage:
@@ -727,6 +750,11 @@ class MircDaemon:
         if not arg:
             await self._numeric(client, 461, "JOIN", "Not enough parameters")
             return
+        try:
+            closed = await asyncio.to_thread(_closed_room_ids_from_disk, self.config.state_dir)
+        except (sqlite3.Error, ValueError):
+            logger.warning("MIRC: room expiry state unavailable — JOIN will retry", exc_info=True)
+            return
         joined: list[tuple[str, str, bool]] = []
         already_joined: list[tuple[str, str]] = []
         async with self._lock:
@@ -736,6 +764,11 @@ class MircDaemon:
                     await self._numeric(client, 403, chan, "No such channel")
                     continue
                 key = chan.lower()
+                if key in closed:
+                    # A self PART removes saved channels from every mLounge
+                    # browser, including rooms restored by a cached JOIN.
+                    await self._send(client, f":{client.nick}!{client.user}@{self.config.server_name} PART {chan} :room expired")
+                    continue
                 if key in client.channels and client.nick.lower() in self._channels.get(key, ()):
                     already_joined.append((key, self._display.get(key, chan)))
                     continue

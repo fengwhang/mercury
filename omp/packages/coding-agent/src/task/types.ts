@@ -90,6 +90,9 @@ export interface SubagentLifecyclePayload {
 	/** Immediate registry parent, separate from the tool-call/approval owner. */
 	parentAgentId?: string;
 	name?: string;
+	/** Final report for user-facing parent-room progress. */
+	output?: string;
+	error?: string;
 	agent: string;
 	agentSource: AgentSource;
 	description?: string;

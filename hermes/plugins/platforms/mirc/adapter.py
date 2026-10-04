@@ -90,6 +90,7 @@ WATCHDOG_PROBE_TIMEOUT = 15.0  # bounded wait for inbound proof of liveness
 #: Bound for one connect-phase drain: a half-open socket must fail loud
 #: (retryable reconnect) instead of stalling connect() forever silent.
 CONNECT_SEND_TIMEOUT = 10.0
+ROOM_CONTROL_TIMEOUT = 5.0
 
 
 def _enable_keepalive(writer) -> None:
@@ -256,6 +257,9 @@ class MIRCAdapter(BasePlatformAdapter):
         self._observatory_resync_task: Optional[asyncio.Task] = None
         self._observatory_online_channels: set[str] = set()
         self._oper = False  # set by 381, cleared by 464/481
+        self._oper_event = asyncio.Event()
+        self._destroy_lock = asyncio.Lock()
+        self._destroy_pending: tuple[str, asyncio.Future[bool]] | None = None
         self._registration_event = asyncio.Event()
         self._current_nick = self.nickname
         # draft/multiline negotiation state (learned per connect; cleared
@@ -309,6 +313,8 @@ class MIRCAdapter(BasePlatformAdapter):
         except ImportError:
             self._lock_key = None  # status module not available (e.g. tests)
         self._conn_generation = getattr(self, "_conn_generation", 0) + 1
+        self._oper = False
+        self._oper_event.clear()
         self._inbound_event = asyncio.Event()
         self._observatory_online_channels = set()
         try:
@@ -387,7 +393,9 @@ class MIRCAdapter(BasePlatformAdapter):
         # OPER for the observatory /exit room kill (no-op when unconfigured).
         if self.oper_password:
             try:
+                self._oper_event.clear()
                 await self._send_raw(f"OPER {self.oper_password}", timeout=CONNECT_SEND_TIMEOUT)
+                await asyncio.wait_for(self._oper_event.wait(), ROOM_CONTROL_TIMEOUT)
             except Exception:
                 logger.debug("MIRC: OPER failed", exc_info=True)
 
@@ -451,6 +459,7 @@ class MIRCAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Quit and close the connection."""
+        self._fail_room_control()
         # Release the scoped lock so another profile can use this identity
         if getattr(self, "_lock_key", None):
             try:
@@ -544,6 +553,7 @@ class MIRCAdapter(BasePlatformAdapter):
             self._registration_event.clear()
         except Exception:
             pass
+        self._fail_room_control()
         self._server_caps = set()
         self._server_multiline = False
         try:
@@ -842,26 +852,65 @@ class MIRCAdapter(BasePlatformAdapter):
         return bool(getattr(result, "success", False))
 
     async def destroy_channel(self, channel: str) -> bool:
-        """Server-side room kill: OPER refresh, DESTROY, PART, undirect.
+        """End a room only after MIRC confirms every member was removed.
 
-        Never raises. Returns part's outcome; a failed destroy is
-        WARNING-loud (a silent one strands visible rooms).
+        A local PART is not proof of destruction. Failed or disconnected
+        requests stay in the Observatory purge journal for replay.
         """
-        if self._writer and not self._writer.is_closing():
+        async with self._destroy_lock:
+            if not self._writer or self._writer.is_closing():
+                return False
             try:
-                if self.oper_password and not self._oper:
-                    await self._send_raw(f"OPER {self.oper_password}")
-                    await asyncio.sleep(1.0)
-                await self._send_raw(f"DESTROY {channel} :room closed")
-                await asyncio.sleep(0.5)
                 if not self._oper:
-                    logger.warning(
-                        "MIRC: destroy %s sent without oper — likely 481",
-                        channel)
+                    if not self.oper_password:
+                        return False
+                    self._oper_event.clear()
+                    await self._send_raw(f"OPER {self.oper_password}", timeout=ROOM_CONTROL_TIMEOUT)
+                    await asyncio.wait_for(self._oper_event.wait(), ROOM_CONTROL_TIMEOUT)
+                    if not self._oper:
+                        return False
+                receipt = asyncio.get_running_loop().create_future()
+                self._destroy_pending = (channel.lower(), receipt)
+                await self._send_raw(f"DESTROY {channel} :room closed", timeout=ROOM_CONTROL_TIMEOUT)
+                if not await asyncio.wait_for(receipt, ROOM_CONTROL_TIMEOUT):
+                    return False
+                self.extra_channels.discard(channel)
+                return True
             except Exception as exc:
                 logger.warning("MIRC: destroy %s failed: %s", channel, exc)
-        self.extra_channels.discard(channel)
-        return await self.part_channel(channel)
+                return False
+            finally:
+                self._destroy_pending = None
+
+    def _handle_room_control(self, msg: dict) -> bool:
+        """Consume control receipts ahead of slow room-message handlers."""
+        command, params = msg["command"], msg["params"]
+        if command in {"381", "464", "481"}:
+            self._oper = command == "381"
+            self._oper_event.set()
+            if not self._oper:
+                logger.warning("MIRC: oper/auth refused (%s) — room destroys will retry", command)
+        pending = self._destroy_pending
+        if pending is not None:
+            channel, receipt = pending
+            if not receipt.done():
+                if command == "200" and any(p.lower() == channel for p in params):
+                    receipt.set_result(True)
+                    return True
+                if command in {"464", "481"} or (
+                    command == "403" and any(p.lower() == channel for p in params)
+                ):
+                    receipt.set_result(False)
+                    return True
+        return command in {"381", "464", "481"}
+
+    def _fail_room_control(self) -> None:
+        self._oper = False
+        self._oper_event.set()
+        if self._destroy_pending is not None:
+            receipt = self._destroy_pending[1]
+            if not receipt.done():
+                receipt.set_result(False)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """MIRC has no typing indicator — no-op."""
@@ -991,6 +1040,8 @@ class MIRCAdapter(BasePlatformAdapter):
                         self._inbound_event.set()
                         if self._is_ping(decoded):
                             await self._answer_ping(decoded)
+                        elif self._handle_room_control(_parse_mirc_message(decoded)):
+                            pass
                         else:
                             self._line_queue.put_nowait(decoded)
                     except Exception as e:
@@ -1115,6 +1166,8 @@ class MIRCAdapter(BasePlatformAdapter):
         msg = _parse_mirc_message(raw)
         command = msg["command"]
         params = msg["params"]
+        if self._handle_room_control(msg):
+            return
 
         # PING/PONG keepalive
         if command == "PING":
@@ -1145,16 +1198,6 @@ class MIRCAdapter(BasePlatformAdapter):
                 if sub == "ACK" and "draft/multiline" in " ".join(params[2:]).split():
                     self._server_multiline = True
                 self._cap_event.set()
-            return
-
-        # RPL_YOUREOPER (381) / ERR_PASSWDMISMATCH (464) — oper state.
-        if command == "381":
-            self._oper = True
-            return
-        if command in {"464", "481"}:
-            self._oper = False
-            logger.warning("MIRC: oper/auth refused (%s) — room destroys will fail",
-                           command)
             return
 
         # ERR_NICKNAMEINUSE (433) — nick collision during registration

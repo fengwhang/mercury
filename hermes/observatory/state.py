@@ -36,6 +36,7 @@ from typing import Any
 SCHEMA_VERSION = 1
 
 STATE_DB_FILENAME = "state.db"
+CLOSED_ROOMS_META_KEY = "closed-rooms"
 
 #: Valid values for ``nodes.engine`` (spec: sidecar mirrors both engines).
 ENGINES = ("hermes", "omp")

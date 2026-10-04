@@ -403,6 +403,19 @@ class OmpRpcChild:
         try:
             turn = self._client.prompt_and_wait(prompt, timeout=timeout)
             frames = _turn_frames_of(turn)
+            if getattr(turn, "agent_invoked", True) is False:
+                outputs = getattr(turn, "command_output", ()) or ("Command completed.",)
+                frames.extend({"feed": "status", "text": text, "subagent_id": ""} for text in outputs)
+                return {"status": "completed", "summary": "", "exit_reason": "completed",
+                        "truncated": False, "model": self._model,
+                        "duration_seconds": round(_time.time() - started, 2), "turn_frames": frames}
+            message = getattr(turn, "assistant_message", None)
+            if isinstance(message, dict) and message.get("stopReason") in {"error", "aborted"}:
+                return {"status": "failed", "summary": None,
+                        "error": message.get("errorMessage") or f"OMP turn {message['stopReason']}",
+                        "exit_reason": message["stopReason"], "truncated": False,
+                        "model": self._model, "duration_seconds": round(_time.time() - started, 2),
+                        "turn_frames": frames}
             text = turn.require_assistant_text()
             return {
                 "status": "completed", "summary": text or "(omp returned no output)",
@@ -425,6 +438,16 @@ class OmpRpcChild:
                 "exit_reason": reason, "truncated": False,
                 "model": self._model, "duration_seconds": round(_time.time() - started, 2), "turn_frames": [],
             }
+
+    def model_command(self, text: str) -> str:
+        """Use OMP's local model handler, even while a provider turn is busy."""
+        if text.strip().split(None, 1)[0].lower() not in {"/model", "/models"}:
+            raise ValueError("model_command requires /model or /models")
+        client = self._require_client()
+        lines: list[str] = []
+        if client.prompt(text, _command_output=lines):
+            raise OmpRpcControlError("OMP unexpectedly sent a model command to the provider")
+        return "\n".join(lines) or "Model command completed."
 
     # ------------------------------------------------------------------
     # MERCURY-OMP PATCH (matrix observatory §8.1/§8.2): live control +

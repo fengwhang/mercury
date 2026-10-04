@@ -282,7 +282,7 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
         text = str(feed.get("text") or "")
         if not text.strip():
             return None
-        if str(feed.get("role") or "") in ("tool", "function"):
+        if str(feed.get("role") or "") in ("tool", "function", "toolResult"):
             if len(text) > FRAME_TEXT_LIMIT * 2:
                 text = text[:FRAME_TEXT_LIMIT * 2 - 1] + "…"
             return f"{TOOL_PREFIX} {tag}{text}"
@@ -306,6 +306,9 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
         label = str(feed.get("label") or feed.get("name") or "")
         body = f"{label} {status}".strip()
         return f"{NOTICE_PREFIX} {tag}{body}" if body else None
+    if kind == "status":
+        text = str(feed.get("text") or "")
+        return f"{tag}{text}" if text.strip() else None
     return None
 
 
@@ -551,12 +554,24 @@ class RoomManager:
                 parent_row = self.state.get(GATEWAY_NODE_ID)
             except Exception:
                 parent_row = None
+        if parent_row is None or parent_row.get("status") != "live":
+            return ""
         parent_name = str((parent_row or {}).get("name") or "gateway")
         parent_channel = str((parent_row or {}).get("room_id") or "").lstrip("#")
         if parent_channel:
             channel = clean_channel(f"{parent_channel}-{name}")
         else:
             channel = child_channel(parent_name, name, server=live or None)
+        from observatory.spawn import read_purge_journal
+
+        reserved = {str(room).lower() for entry in read_purge_journal(self.state)
+                    for room in entry.get("channels", [])}
+        reserved.update(str(row.get("room_id") or "").lower() for row in self.live_rows())
+        base_channel = channel
+        suffix = 2
+        while channel.lower() in reserved:
+            channel = f"{base_channel}-{suffix}"
+            suffix += 1
         try:
             slug = f"{parent_name}-{name}".lower()[:64]
             self.state.add_node(
@@ -585,7 +600,7 @@ class RoomManager:
             channel, greet=f"ℹ️ live trace for subagent '{name}' streams here"
         )
         logger.info("observatory: room ensured %s for %s", channel, node_id)
-        # No server subscription: The Lounge sees rooms via INVITE
+        # No server subscription: mLounge sees rooms via INVITE
         # and prunes them itself on destroy.
         try:
             from observatory.provision import get_mlounge_nick
@@ -594,7 +609,7 @@ class RoomManager:
             if bot is not None:
                 await bot.invite_user(get_mlounge_nick(None), channel)
         except Exception:
-            logger.debug("rooms: lounge invite failed for %s", channel)
+            logger.debug("rooms: mLounge invite failed for %s", channel)
         try:
             # Voice of the room: without its own identity every frame
             # arrives stamped vm_gateway (the bot connection). The nick
@@ -608,7 +623,7 @@ class RoomManager:
             logger.debug("rooms: identity ensure failed for %s", channel)
         return channel
 
-    async def _retire_child_room(self, node_id: str, *, summary: str = "") -> None:
+    async def _retire_child_room(self, node_id: str, *, summary: str = "", status: str = "completed") -> None:
         """Depth 1 ends with its task; deeper agents share their parent's lifetime."""
         try:
             row = self.state.get(node_id)
@@ -617,7 +632,8 @@ class RoomManager:
         from observatory.thinking import thinking_done
 
         thinking_done(str(row.get("room_id") or ""))
-        self.state.update_extra(node_id, task_state="completed")
+        already_completed = row.get("extra", {}).get("task_state") == "completed"
+        self.state.update_extra(node_id, task_state="completed", task_outcome=status)
         parent_channel = ""
         try:
             parent_id = str(row.get("parent_node_id") or "")
@@ -627,12 +643,13 @@ class RoomManager:
                 )
         except Exception:
             parent_channel = ""
-        if summary and parent_channel:
+        if parent_channel and not already_completed:
             try:
+                label = str(row.get("name") or node_id)
                 await self.publish(
                     parent_channel,
-                    f"subagent '{row.get('name') or node_id}' finished: {summary}",
-                    kind="assistant_reply",
+                    f"Delegate task {status}: {label}" + (f"\n{summary}" if summary else ""),
+                    kind="assistant_reply" if summary else "status",
                 )
             except Exception:
                 pass
@@ -644,7 +661,7 @@ class RoomManager:
                 for r in self.state.get_subtree(node_id)
             )
             await exit_orchestrator(node_id, state=self.state, registry=_shared_registry(),
-                                    bot=self.bot, status="completed", summary=summary)
+                                    bot=self.bot, status=status, summary=summary)
 
     def _native_parent(self, owner_id: str, feed: dict[str, Any]) -> str:
         """Map an in-process OMP parent to the immediate observatory node."""
@@ -720,7 +737,18 @@ class RoomManager:
             rpc = entry.get("rpc")
         if rpc is None:
             return "omp agent not running."
+        verb = (text.strip().split(None, 1) or [""])[0].lower()
+        if verb in {"/model", "/models"}:
+            import asyncio as _asyncio
+
+            try:
+                return await _asyncio.to_thread(rpc.model_command, text)
+            except Exception:
+                logger.warning("rooms: OMP model command failed", exc_info=True)
+                return "Model command failed; check the gateway logs. Your session is preserved."
         if entry.get("busy"):
+            if classify_omp_slash(text) == "omp":
+                return "The agent is still working. Retry this command when it finishes; !model is available now."
             try:
                 rpc.steer(f"[{sender} over IRC] {text}")
                 return "steered mid-run."
@@ -758,9 +786,13 @@ class RoomManager:
         with _omp_lock:
             entry = _omp_rooms.get(node_id)
         persistent = entry is not None and entry.get("rpc") is rpc
+        from observatory.omp_feed import TurnFrameDedupe
+
+        dedupe = TurnFrameDedupe()
         if persistent:
             seen = entry.setdefault("seen", set())
             seen.clear()
+            entry["dedupe"] = dedupe
         from observatory.thinking import thinking_done, thinking_started
 
         thinking_started(channel)
@@ -787,13 +819,13 @@ class RoomManager:
             pump_task = entry.get("feed_task") if persistent else None
             if feed is not None and (pump_task is None or pump_task.done()):
                 pump_task = _asyncio.get_running_loop().create_task(
-                    self._pump_live_omp_feed(feed, node_id, channel, {}, seen)
+                    self._pump_live_omp_feed(feed, node_id, channel, {}, seen, dedupe)
                 )
                 if persistent:
                     entry.update(feed=feed, feed_task=pump_task,
                                  feed_loop=_asyncio.get_running_loop())
             result = await _asyncio.to_thread(
-                rpc.run_task, f"[{sender} over IRC] {text}"
+                rpc.run_task, text if classify_omp_slash(text) == "omp" else f"[{sender} over IRC] {text}"
             )
         except Exception as exc:
             logger.debug("rooms: background omp task failed", exc_info=True)
@@ -827,20 +859,30 @@ class RoomManager:
             thinking_done(channel)
         try:
             summary = str((result or {}).get("summary") or "")
-            frames = (result or {}).get("turn_frames") or []
-            for frame in frames:
-                if _omp_room_skips_frame(frame):
-                    continue
-                try:
-                    from observatory.omp_feed import child_frame_key
+            from observatory.omp_feed import child_frame_key
 
-                    if child_frame_key(frame) in seen:
-                        continue
-                    seen.add(child_frame_key(frame))
-                except Exception:
-                    pass
+            frames = [f for f in (result or {}).get("turn_frames") or [] if not _omp_room_skips_frame(f)]
+            summary_frame = {"feed": "message", "role": "assistant", "text": summary, "subagent_id": ""}
+            summary_key = child_frame_key(summary_frame)
+            if summary and summary_key not in seen and not any(child_frame_key(f) == summary_key for f in frames):
+                frames.append(summary_frame)
+            for index in dedupe.replay_indexes([child_frame_key(f) for f in frames]):
+                frame = frames[index]
                 await self.publish_frame(channel, frame)
-            await self.publish(channel, summary or "(no output)", kind="assistant_reply")
+            if (result or {}).get("status") == "failed":
+                error = str((result or {}).get("error") or "OMP turn failed")
+                logger.warning("rooms: OMP turn failed in %s: %s", channel, error)
+                if (result or {}).get("exit_reason") == "aborted":
+                    notice = "Turn interrupted. Your session is preserved."
+                elif "usage_limit" in error.lower() or "usage limit" in error.lower():
+                    notice = "The model's usage limit has been reached. Use !model PROVIDER/MODEL to switch models."
+                else:
+                    from gateway.run import _gateway_provider_error_reply
+
+                    notice = _gateway_provider_error_reply(error)
+                await self.publish(channel, notice, kind="status")
+            elif not summary and not frames:
+                await self.publish(channel, "(no output)", kind="assistant_reply")
         except Exception as exc:
             logger.debug("rooms: omp reply failed", exc_info=True)
             try:
@@ -870,6 +912,7 @@ class RoomManager:
     async def _pump_live_omp_feed(
         self, feed: Any, node_id: str, channel: str,
         grands: dict[str, str], seen: set[str],
+        dedupe: Any = None,
     ) -> None:
         """Forward live feed frames, routing N>1 into their own rooms."""
         try:
@@ -891,9 +934,11 @@ class RoomManager:
                     continue
                 try:
                     key = child_frame_key(payload)
-                    if key in seen:
+                    current_dedupe = _omp_rooms.get(node_id, {}).get("dedupe", dedupe)
+                    if current_dedupe is not None and current_dedupe.live_hit(key):
                         continue
-                    seen.add(key)
+                    if key is not None:
+                        seen.add(key)
                 except Exception:
                     pass
                 try:
@@ -990,7 +1035,8 @@ class RoomManager:
                 if channel:
                     await self.publish_frame(channel, flat)
                 grands.pop(sid, None)
-                await self._retire_child_room(node_id)
+                await self._retire_child_room(node_id, summary=str(feed.get("summary") or ""),
+                                              status=str(feed.get("status") or "completed"))
         except Exception:
             pass
 
@@ -1000,12 +1046,11 @@ _current_manager: "RoomManager | None" = None
 
 
 def _omp_room_skips_frame(payload: Any) -> bool:
-    """Spawnomp rooms: drop user/assistant message frames.
+    """Spawnomp rooms: drop user echoes already present in chat.
 
     The user's own text is already visible (they sent it); the
-    assistant's text ships as the reply summary. Publishing either
-    looks like an echo or a double response. Tool/thought frames
-    always stream. Never raises.
+    Assistant messages, including automatic child-result follow-up turns,
+    always stream. Live/replay deduplication owns repeated final summaries.
     """
     try:
         if not isinstance(payload, dict):
@@ -1014,7 +1059,7 @@ def _omp_room_skips_frame(payload: Any) -> bool:
             return False
         if payload.get("subagent_id"):
             return False
-        return str(payload.get("role") or "") in ("user", "assistant")
+        return str(payload.get("role") or "") == "user"
     except Exception:
         return False
 

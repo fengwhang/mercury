@@ -88,6 +88,7 @@ class NodeEvent:
     session_file: Optional[str] = None
     parent_subagent_id: Optional[str] = None
     name: Optional[str] = None
+    summary: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -140,7 +141,18 @@ class MessageEvent:
     seq: int = 0
 
 
-FeedEvent = object  # NodeEvent | ActivityEvent | ToolEvent | ThoughtEvent | MessageEvent
+@dataclass(frozen=True)
+class StatusEvent:
+    """A user-facing tool, plan, compaction, or retry update."""
+
+    subagent_id: str
+    text: str
+    seq: int = 0
+
+
+FeedEvent = object  # NodeEvent | ActivityEvent | ToolEvent | ThoughtEvent | MessageEvent | StatusEvent
+STATUS_EVENT_TYPES = {"auto_compaction_start", "auto_compaction_end", "auto_retry_start", "auto_retry_end",
+                      "retry_fallback_applied", "retry_fallback_succeeded", "todo_reminder", "todo_auto_clear"}
 
 
 @dataclass
@@ -183,6 +195,8 @@ class OmpFeed:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._dispose_listener = None
         self._dispose_agent_listener = None
+        self._dispose_ui_listener = None
+        self._ui_status: dict[str, str] = {}
         self._seq = 0
         self._states: Dict[str, _SubagentState] = {}
         # Raw wire-frame counters by type (ops/diagnostics — the LIVE
@@ -249,6 +263,9 @@ class OmpFeed:
         # frames don't exist (the level gates them server-side).
         source = self._frame_source(self._child)
         self._dispose_listener = source.on_unknown_notification(self._on_notification)
+        on_notification = getattr(source, "on_notification", None)
+        if callable(on_notification):
+            self._dispose_ui_listener = on_notification(self._on_passive_ui)
         # Main-session agent events (the child's OWN tools/thinking — the
         # prompt-and-wait run_task has no other live source). Optional:
         # thin doubles exposing only on_unknown_notification skip this.
@@ -273,6 +290,9 @@ class OmpFeed:
                 agent_dispose()
             except Exception:
                 logger.debug("observatory omp_feed: agent-event detach failed", exc_info=True)
+        ui_dispose, self._dispose_ui_listener = self._dispose_ui_listener, None
+        if ui_dispose is not None:
+            ui_dispose()
         if self._loop is not None and not self._loop.is_closed():
             await asyncio.sleep(0)
             self._queue.put_nowait(None)  # type: ignore[arg-type]
@@ -389,6 +409,27 @@ class OmpFeed:
             return
         loop.call_soon_threadsafe(self._drain, events)
 
+    def _on_passive_ui(self, event: Any) -> None:
+        """Extension notices and display widgets are user-facing TUI output."""
+        if self._agent_field(event, "type") != "extension_ui_request":
+            return
+        method = self._agent_field(event, "method")
+        if method == "notify":
+            text = self._agent_field(event, "message")
+        elif method == "setStatus":
+            key = str(self._agent_field(event, "status_key", "statusKey") or "")
+            text = self._agent_field(event, "status_text", "statusText") or ""
+            if self._ui_status.get(key) == text:
+                return
+            self._ui_status[key] = text
+        elif method == "setWidget":
+            lines = self._agent_field(event, "widget_lines", "widgetLines") or []
+            text = "\n".join(str(line) for line in lines)
+        else:
+            return
+        if isinstance(text, str) and text.strip() and self._loop is not None and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._drain, [StatusEvent(subagent_id="", text=text)])
+
     # -- main-session translation (pure; unit-testable without a child) --
 
     @staticmethod
@@ -451,6 +492,10 @@ class OmpFeed:
                         self._agent_field(event, "args")),
                 )
             ]
+        if etype == "tool_execution_end":
+            return self._tool_completion("", event)
+        if etype in STATUS_EVENT_TYPES:
+            return self._status_event("", event)
         if etype == "message_update":
             inner = self._agent_field(
                 event, "assistant_message_event", "assistantMessageEvent", "event")
@@ -503,6 +548,14 @@ class OmpFeed:
         else:
             role = str(self._agent_field(message, "role") or "assistant")
             content = self._agent_field(message, "content")
+        if role == "toolResult":
+            role = "tool"
+            if self._agent_field(message, "toolName", "tool_name") == "todo":
+                from observatory.progress import todo_text
+
+                plan = todo_text(self._agent_field(message, "details"))
+                if plan and not self._agent_field(message, "isError", "is_error"):
+                    return [StatusEvent(subagent_id="", text=plan)]
         texts = []
         if isinstance(content, list):
             for block in content:
@@ -581,6 +634,7 @@ class OmpFeed:
                     session_file=state.session_file,
                     parent_subagent_id=_opt_str(payload.get("parentAgentId")),
                     name=_opt_str(payload.get("name")),
+                    summary=_opt_str(payload.get("output")) or _opt_str(payload.get("error")),
                 )
             ]
         return []
@@ -652,6 +706,10 @@ class OmpFeed:
         etype = event.get("type")
         if etype in ("agent_start", "agent_end"):
             return [ActivityEvent(subagent_id=sid, active=etype == "agent_start")]
+        if etype == "tool_execution_end":
+            return self._tool_completion(sid, event)
+        if etype in STATUS_EVENT_TYPES:
+            return self._status_event(sid, event)
         if etype == "message_update":
             return self._translate_thinking_delta(sid, event)
         if etype == "message_end":
@@ -695,6 +753,14 @@ class OmpFeed:
                 out.append(ThoughtEvent(subagent_id=sid, text=text))
         role = str(message.get("role") or "assistant")
         content = message.get("content")
+        if role == "toolResult":
+            role = "tool"
+            if message.get("toolName") == "todo":
+                from observatory.progress import todo_text
+
+                plan = todo_text(message.get("details"))
+                if plan and not message.get("isError"):
+                    return [StatusEvent(subagent_id=sid, text=plan)]
         texts = []
         if isinstance(content, list):
             for block in content:
@@ -709,6 +775,35 @@ class OmpFeed:
         )
         state.thinking.clear()
         return out
+
+    def _tool_completion(self, sid: str, event: Any):
+        tool = self._agent_field(event, "tool_name", "toolName") or "tool"
+        failed = self._agent_field(event, "is_error", "isError")
+        return [StatusEvent(subagent_id=sid, text=f"{'Tool failed' if failed else 'Tool completed'}: {tool}")]
+
+    def _status_event(self, sid: str, event: Any):
+        etype = self._agent_field(event, "type")
+        if etype == "auto_compaction_start":
+            text = "Compacting context…"
+        elif etype == "auto_compaction_end":
+            error = self._agent_field(event, "error_message", "errorMessage")
+            text = f"Context compaction failed: {error}" if error else (
+                "Context compaction cancelled" if self._agent_field(event, "aborted") else "Context compaction finished")
+        elif etype == "auto_retry_start":
+            text = f"Provider retry {self._agent_field(event, 'attempt')}/{self._agent_field(event, 'max_attempts', 'maxAttempts')}"
+        elif etype == "retry_fallback_applied":
+            text = f"Fallback: {self._agent_field(event, 'from_model', 'from')} → {self._agent_field(event, 'to_model', 'to')}"
+        elif etype == "retry_fallback_succeeded":
+            text = f"Fallback succeeded on {self._agent_field(event, 'model')}"
+        elif etype == "todo_auto_clear":
+            text = "To do list cleared"
+        elif etype == "todo_reminder":
+            items = self._agent_field(event, "todos") or []
+            texts = [self._agent_field(item, "content") for item in items]
+            text = "Unfinished tasks:\n" + "\n".join(f"• {item}" for item in texts if item)
+        else:
+            text = "Provider retry succeeded" if self._agent_field(event, "success") else "Provider retries failed"
+        return [StatusEvent(subagent_id=sid, text=text)]
 
 
 def _opt_int(value: Any) -> Optional[int]:
@@ -771,6 +866,9 @@ def agent_turn_frames(events: Any) -> list[dict[str, Any]]:
                         "feed": "message", "subagent_id": "",
                         "role": event.role, "text": event.text,
                     })
+                elif isinstance(event, StatusEvent):
+                    if event.text.strip():
+                        out.append({"feed": "status", "subagent_id": "", "text": event.text})
             except Exception:
                 continue
     return out
@@ -779,7 +877,7 @@ def agent_turn_frames(events: Any) -> list[dict[str, Any]]:
 def child_frame_key(frame: Any) -> tuple | None:
     """Identity for live-vs-replay multiset dedupe (None = not deduped).
 
-    Only tool/thought/message frames participate — node lifecycle frames are
+    Tool/thought/message/status frames participate — node lifecycle frames are
     unique by construction and grandchildren never replay."""
     try:
         if not isinstance(frame, Mapping):
@@ -800,11 +898,14 @@ def child_frame_key(frame: Any) -> tuple | None:
             if not isinstance(text, str) or not text.strip():
                 return None
             return ("thought", str(sid), text)
+        if kind == "status":
+            text = frame.get("text")
+            return ("status", str(sid), text) if isinstance(text, str) and text.strip() else None
         if kind == "message":
             text = frame.get("text")
             if not isinstance(text, str) or not text.strip():
                 return None
-            return ("message", str(sid), text)
+            return ("message", str(sid), str(frame.get("role") or "assistant"), text)
     except Exception:
         return None
     return None
@@ -831,7 +932,8 @@ class TurnFrameDedupe:
         if key is None:
             return False
         try:
-            if self._done and self._live.get(key, 0) < self._replayed.get(key, 0):
+            if self._done and self._replayed.get(key, 0) > 0:
+                self._replayed[key] -= 1
                 return True
             self._live[key] = self._live.get(key, 0) + 1
             return False

@@ -25,7 +25,7 @@ def frame_kind(feed: dict) -> str:
     kind = feed.get("feed")
     if kind == "message":
         role = feed.get("role")
-        if role in {"tool", "function"}:
+        if role in {"tool", "function", "toolResult"}:
             return "tool_output"
         return "user" if role == "user" else "assistant_reply"
     return {"tool": "tool_input", "thought": "thinking"}.get(kind, "status")

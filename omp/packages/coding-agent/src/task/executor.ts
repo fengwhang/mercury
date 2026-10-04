@@ -2357,6 +2357,8 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		agentSource: agent.source,
 		description: progress.description,
 		status: progress.status as "completed" | "failed" | "aborted",
+		output: truncatedOutput,
+		error: stderr || finalAbortReason,
 		sessionFile: args.sessionFile,
 		index,
 	};

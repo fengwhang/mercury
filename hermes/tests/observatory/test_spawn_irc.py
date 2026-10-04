@@ -261,6 +261,23 @@ async def test_spawn_same_name_gets_distinct_channels(tmp_path, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_spawn_reserves_name_until_previous_purge_is_confirmed(tmp_path, monkeypatch):
+    state = _real_state(tmp_path)
+    bot = FakeBot()
+    monkeypatch.setattr(spawn, "get_bot_sink", lambda: bot)
+    registry = OrchestratorRegistry()
+    original = await spawn_orchestrator("Ace", "hermes", state=state, registry=registry)
+    record = begin_exit(state, original["node_id"])
+    replacement = await spawn_orchestrator("Ace", "hermes", state=state, registry=registry)
+    assert replacement["room_id"] == "#ace-2"
+    assert await replay_purge_journal(state, bot=bot) == []
+    assert bot.destroyed == record.channels
+    assert replacement["room_id"] not in bot.destroyed
+    assert state.get(replacement["node_id"])["status"] == "live"
+    assert spawn._unique_slug("Ace", state) == "ace"
+
+
+@pytest.mark.asyncio
 async def test_spawn_invites_mlounge_user(tmp_path, monkeypatch) -> None:
     """Fresh spawns nudge The Lounge with an INVITE (tap, no typing)."""
     from observatory import provision as provision_mod

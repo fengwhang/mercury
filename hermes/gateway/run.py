@@ -4839,6 +4839,7 @@ class TurnRunner:
     def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
+        self._observatory_tool_args: dict[str, list[dict]] = {}
 
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
@@ -4850,25 +4851,39 @@ class TurnRunner:
         # manager). Never blocks the turn, never raises into the loop.
         try:
             _ctx0 = self._ctx
+            _still_current = getattr(_ctx0, "_run_still_current", None)
+            if callable(_still_current) and not _still_current():
+                return
             _src = getattr(_ctx0, "source", None)
             if getattr(_src, "platform", None) == Platform("irc"):
                 _chat = str(getattr(_src, "chat_id", "") or "")
                 if _chat.startswith("#"):
                     from observatory import rooms as _obs_rooms
+                    from observatory.message_format import frame_kind
+                    from observatory.progress import hermes_progress_frame
+
                     _line = None
+                    _frame = None
                     if (event_type == "tool.started" and tool_name
                             and tool_name != "_thinking"):
-                        _line = _obs_rooms.format_frame({
+                        self._observatory_tool_args.setdefault(tool_name, []).append(args or {})
+                        _frame = {
                             "feed": "tool", "tool": str(tool_name),
                             "args": preview if preview else (args or {}),
-                        })
+                        }
                     elif ((event_type == "_thinking" or tool_name == "_thinking")
                             and getattr(_ctx0, "_thinking_enabled", False)):
                         _txt = preview if tool_name == "_thinking" else tool_name
                         if _txt:
-                            _line = _obs_rooms.format_frame({
+                            _frame = {
                                 "feed": "thought", "text": str(_txt),
-                            })
+                            }
+                    else:
+                        _pending = self._observatory_tool_args.get(tool_name, [])
+                        _args = _pending.pop(0) if event_type == "tool.completed" and _pending else args
+                        _frame = hermes_progress_frame(event_type, tool_name, args=_args, **kwargs)
+                    if _frame:
+                        _line = _obs_rooms.format_frame(_frame)
                     if _line:
                         _bot = _obs_rooms.get_bot_sink()
                         _loop = getattr(_ctx0, "_loop_for_step", None)
@@ -4878,11 +4893,14 @@ class TurnRunner:
                                 logger.info(
                                     "observatory mirror live for %s", _chat)
                             safe_schedule_threadsafe(
-                                _bot.say(_chat, _line),
+                                _bot.say(_chat, _line, kind=frame_kind(_frame)),
                                 _loop,
                                 logger=logger,
                                 log_message="observatory mirror send failed",
                             )
+                    # MIRC has no editable progress bubbles. This direct
+                    # stream owns its events, including failure notices.
+                    return
         except Exception:
             pass
         ctx = self._ctx

@@ -58,7 +58,11 @@ export default <IrcEventHandler>function (irc, network) {
 			}
 
 			setTimeout(function () {
-				network.irc.join(chan.name, chan.key);
+				// A server-side expiry can remove an auto-joined room while
+				// reconnect restoration is still waiting in this timer.
+				if (network.channels.includes(chan)) {
+					network.irc.join(chan.name, chan.key);
+				}
 			}, delay);
 			delay += 1000;
 		});
