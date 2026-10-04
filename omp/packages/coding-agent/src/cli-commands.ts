@@ -87,6 +87,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.dryBalanceHelp,
 	},
 	{
+		name: "find",
+		load: () => import("./commands/find").then(m => m.default),
+		help: commandHelp.findHelp,
+	},
+	{
 		name: "gc",
 		load: () => import("./commands/gc").then(m => m.default),
 		help: commandHelp.gcHelp,
@@ -131,6 +136,11 @@ export const commands: CommandEntry[] = [
 		name: "join",
 		load: () => import("./commands/join").then(m => m.default),
 		help: commandHelp.joinHelp,
+	},
+	{
+		name: "login",
+		load: () => import("./commands/login").then(m => m.default),
+		help: commandHelp.loginHelp,
 	},
 	{
 		name: "models",

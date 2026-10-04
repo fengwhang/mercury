@@ -44,6 +44,10 @@ export const configHelp = { description: "Manage configuration settings" } satis
 export const dryBalanceHelp = {
 	description: "Dry-run OAuth account balancing across random session ids",
 } satisfies CommandMetadata;
+export const findHelp = {
+	description: "Semantic search: describe a behavior, get the files and line ranges that implement it",
+} satisfies CommandMetadata;
+
 
 export const galleryHelp = {
 	description: "Preview tool, composer, and status-line renderers in a deterministic visual gallery",
@@ -73,6 +77,10 @@ export const installHelp = {
 } satisfies CommandMetadata;
 
 export const joinHelp = { description: "Join a shared collab session (same as /join)" } satisfies CommandMetadata;
+export const loginHelp = {
+	description: "Log in to a model provider via the Mercury credential bridge (counterpart of /login)",
+} satisfies CommandMetadata;
+
 
 export const modelsHelp = { description: "List, search, and refresh available models" } satisfies CommandMetadata;
 

@@ -1677,3 +1677,23 @@ export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<To
 		immutableSourcePaths,
 	};
 }
+
+/**
+ * Search root for a parsed base path. Upstream also accepts registered
+ * internal-URL scopes; this tree resolves host paths only (`omp find` is
+ * host-scoped — see `internal-urls/url-filesystem.ts`).
+ */
+export function resolveSearchBase(basePath: string, cwd: string): string {
+	return resolveToCwd(basePath, cwd);
+}
+
+/**
+ * Absolute spelling of a native search result `rel` (root-relative
+ * `/`-separated raw entry names; `""` names the root itself) under the
+ * search root `base`. Absolute paths pass through.
+ */
+export function resolveSearchResultPath(base: string, rel: string): string {
+	if (rel === "") return base;
+	if (path.isAbsolute(rel)) return rel;
+	return path.resolve(base, rel);
+}
