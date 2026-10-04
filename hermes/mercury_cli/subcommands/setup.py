@@ -19,7 +19,7 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
         help="Interactive setup wizard",
         description="Configure Mercury with an interactive wizard. "
         "Run a specific section: "
-        "mercury setup model|tts|terminal|gateway|observatory|tools|telemetry|agent|context|approvals|hermes-approvals|omp-approvals",
+        "mercury setup model|tts|stt|terminal|gateway|observatory|tools|telemetry|agent|context|approvals|hermes-approvals|omp-approvals",
     )
     setup_parser.add_argument(
         "section",
@@ -27,6 +27,7 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
         choices=[
             "model",
             "tts",
+            "stt",
             "terminal",
             "gateway",
             "observatory",
@@ -81,5 +82,40 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
         help="With 'observatory': create rooms WITHOUT end-to-end encryption "
         "(explicit plaintext opt-in — Matrix traffic including prompts is "
  "unencrypted on the tailnet; headless default stays encrypted)",
+    )
+    setup_parser.add_argument(
+        "--stt-provider",
+        default="",
+        help="With 'stt': qwen3-asr | parakeet | openai (or MERCURY_STT_PROVIDER)",
+    )
+    setup_parser.add_argument(
+        "--stt-model",
+        default="",
+        help="With 'stt': model/checkpoint label (or MERCURY_STT_MODEL)",
+    )
+    setup_parser.add_argument(
+        "--stt-endpoint",
+        default="",
+        help="With 'stt': ASR server endpoint or API base URL (or MERCURY_STT_ENDPOINT)",
+    )
+    setup_parser.add_argument(
+        "--stt-language",
+        default="",
+        help="With 'stt': language code, e.g. en (or MERCURY_STT_LANGUAGE)",
+    )
+    setup_parser.add_argument(
+        "--mirc-url",
+        default="",
+        help="With 'stt': MIRC host base URL (or MERCURY_MIRC_URL)",
+    )
+    setup_parser.add_argument(
+        "--mlounge-url",
+        default="",
+        help="With 'stt': mLounge host URL (or MERCURY_MLOUNGE_URL)",
+    )
+    setup_parser.add_argument(
+        "--sidecar-url",
+        default="",
+        help="With 'stt': STT sidecar URL on the mLounge host (or MERCURY_STT_SIDECAR_URL)",
     )
     setup_parser.set_defaults(func=cmd_setup)

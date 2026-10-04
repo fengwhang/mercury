@@ -753,6 +753,15 @@ def _print_setup_summary(config: dict, mercury_home):
         tool_status.append(("Speech-to-Text (xAI)", True, None))
     elif stt_provider == "deepinfra" and get_env_value("DEEPINFRA_API_KEY"):
         tool_status.append(("Speech-to-Text (DeepInfra)", True, None))
+    elif stt_provider in ("qwen3-asr", "parakeet"):
+        _stt_cli = _voice_call_stt_cli_available(config, stt_provider)
+        _stt_label = VOICE_CALL_STT_LABELS.get(stt_provider, stt_provider)
+        if _stt_cli is False:
+            tool_status.append(
+                (f"Speech-to-Text ({_stt_label} — CLI not found)", False, "run 'mercury setup stt'")
+            )
+        else:
+            tool_status.append((f"Speech-to-Text ({_stt_label})", True, None))
     else:
         try:
             fw_ok = importlib.util.find_spec("faster_whisper") is not None
@@ -1993,6 +2002,394 @@ def _setup_tts_provider(config: dict):
 def setup_tts(config: dict):
     """Standalone TTS setup (for 'mercury setup tts')."""
     _setup_tts_provider(config)
+# =============================================================================
+# Section: Speech-to-Text (voice-call STT starting options)
+# =============================================================================
+
+#: First-class voice-call STT options. Keys are ``stt.provider`` values. The
+#: two local options resolve through the generic ``stt.providers.<name>``
+#: command registry (no native backend, no new dependency); ``openai`` uses
+#: the existing Whisper API handler with a key from ``.env`` (never the repo).
+VOICE_CALL_STT_OPTIONS = (
+    "qwen3-asr",
+    "parakeet",
+    "openai",
+)
+
+VOICE_CALL_STT_LABELS = {
+    "qwen3-asr": "Qwen3-ASR (local, on-device, no API key)",
+    "parakeet": "NVIDIA Parakeet (local, on-device, no API key)",
+    "openai": "OpenAI Whisper (API, needs key in .env)",
+}
+
+VOICE_CALL_STT_DESCRIPTIONS = {
+    "qwen3-asr": "Local Qwen3-ASR checkpoint behind a CLI. Audio never leaves the mLounge host.",
+    "parakeet": "Local NVIDIA NeMo Parakeet transducer behind a CLI. Audio never leaves the mLounge host.",
+    "openai": "Whisper API. The key lives in ~/.mercury/.env and is never committed.",
+}
+
+#: Starting defaults offered by the picker. The Qwen label is the checkpoint
+#: family the local CLI resolves; Parakeet pins a public NeMo model id.
+DEFAULT_QWEN3_ASR_MODEL = "Qwen3-ASR-1.7B"
+DEFAULT_QWEN3_ASR_COMMAND = (
+    "qwen3-asr transcribe --model {model} --language {language}"
+    " --output-dir {output_dir} {input_path}"
+)
+DEFAULT_PARAKEET_MODEL = "parakeet-tdt-0.6b-v2"
+DEFAULT_PARAKEET_COMMAND = (
+    "parakeet-transcribe --model {model} --language {language}"
+    " --output-dir {output_dir} {input_path}"
+)
+DEFAULT_VOICE_CALL_STT_LANGUAGE = "en"
+
+#: Env overrides for the local CLI templates (power users; the picker writes
+#: config instead).
+QWEN3_ASR_COMMAND_ENV = "HERMES_QWEN3_ASR_COMMAND"
+PARAKEET_COMMAND_ENV = "HERMES_PARAKEET_COMMAND"
+
+#: Non-interactive selectors, in precedence order: CLI flags, then these.
+STT_PROVIDER_ENV = "MERCURY_STT_PROVIDER"
+STT_MODEL_ENV = "MERCURY_STT_MODEL"
+STT_ENDPOINT_ENV = "MERCURY_STT_ENDPOINT"
+STT_LANGUAGE_ENV = "MERCURY_STT_LANGUAGE"
+
+
+def normalize_voice_call_stt_provider(value: object) -> str | None:
+    """Canonicalize an STT provider name to a voice-call option, else None."""
+    if not isinstance(value, str):
+        return None
+    key = value.strip().lower()
+    if key in VOICE_CALL_STT_OPTIONS:
+        return key
+    aliases = {
+        "qwen": "qwen3-asr",
+        "qwen3": "qwen3-asr",
+        "qwen3_asr": "qwen3-asr",
+        "nvidia": "parakeet",
+        "nemo": "parakeet",
+        "whisper": "openai",
+        "whisper-api": "openai",
+        "whisper_api": "openai",
+    }
+    return aliases.get(key)
+
+
+def _voice_call_stt_default_model(provider: str) -> str:
+    if provider == "qwen3-asr":
+        return DEFAULT_QWEN3_ASR_MODEL
+    if provider == "parakeet":
+        return DEFAULT_PARAKEET_MODEL
+    return "whisper-1"
+
+
+def _voice_call_stt_default_command(provider: str) -> str:
+    if provider == "qwen3-asr":
+        return os.environ.get(QWEN3_ASR_COMMAND_ENV, "") or DEFAULT_QWEN3_ASR_COMMAND
+    if provider == "parakeet":
+        return os.environ.get(PARAKEET_COMMAND_ENV, "") or DEFAULT_PARAKEET_COMMAND
+    return ""
+
+
+def apply_voice_call_stt_selection(
+    config: dict,
+    *,
+    provider: str,
+    model: str = "",
+    endpoint: str = "",
+    language: str = "",
+    command: str = "",
+) -> str:
+    """Persist a voice-call STT selection into ``config`` (pure, no I/O).
+
+    Writes ``stt.provider`` plus the per-provider ``{model, language,
+    endpoint}`` block. The two local options additionally gain an
+    ``stt.providers.<name>`` command entry (``local: true`` keeps them
+    exempt from the remote upload cap) so ``transcribe_audio`` serves them
+    today with zero new backends. ``endpoint`` for a local option is baked
+    into its command template as ``--endpoint`` and kept as a plain key for
+    the mLounge-host sidecar; for ``openai`` it is mirrored to
+    ``stt.openai.base_url`` (the caller saves ``STT_OPENAI_BASE_URL``).
+
+    Returns the canonical provider. Raises ``ValueError`` on unknown names.
+    """
+    canonical = normalize_voice_call_stt_provider(provider)
+    if canonical is None:
+        raise ValueError(
+            f"Unknown STT provider {provider!r} "
+            f"(choose from: {', '.join(VOICE_CALL_STT_OPTIONS)})"
+        )
+    model = (model or "").strip() or _voice_call_stt_default_model(canonical)
+    language = (language or "").strip() or DEFAULT_VOICE_CALL_STT_LANGUAGE
+    endpoint = (endpoint or "").strip()
+
+    stt = config.setdefault("stt", {})
+    stt["provider"] = canonical
+    section = stt.setdefault(canonical, {})
+    section["model"] = model
+    section["language"] = language
+    if endpoint:
+        section["endpoint"] = endpoint
+    else:
+        section.pop("endpoint", None)
+
+    if canonical in ("qwen3-asr", "parakeet"):
+        template = (command or "").strip() or _voice_call_stt_default_command(canonical)
+        if endpoint and "--endpoint" not in template:
+            import shlex as _shlex
+
+            template = f"{template} --endpoint {_shlex.quote(endpoint)}"
+        providers = stt.setdefault("providers", {})
+        entry = providers.setdefault(canonical, {})
+        entry["type"] = "command"
+        entry["local"] = True
+        entry["command"] = template
+        entry["model"] = model
+        entry["language"] = language
+        entry["format"] = entry.get("format", "txt")
+    elif canonical == "openai" and endpoint:
+        section["base_url"] = endpoint
+    return canonical
+
+
+def resolve_voice_call_stt_noninteractive(args=None, *, env_getter=None) -> dict | None:
+    """Resolve ``{provider, model, endpoint, language}`` without prompting.
+
+    Precedence: ``mercury setup stt`` flags, then ``MERCURY_STT_*`` env vars,
+    then the stored config. Returns None when nothing selects a provider.
+    """
+    get = env_getter or os.environ.get
+    provider = (getattr(args, "stt_provider", None) or "").strip() if args else ""
+    model = (getattr(args, "stt_model", None) or "").strip() if args else ""
+    endpoint = (getattr(args, "stt_endpoint", None) or "").strip() if args else ""
+    language = (getattr(args, "stt_language", None) or "").strip() if args else ""
+    provider = provider or (get(STT_PROVIDER_ENV) or "").strip()
+    model = model or (get(STT_MODEL_ENV) or "").strip()
+    endpoint = endpoint or (get(STT_ENDPOINT_ENV) or "").strip()
+    language = language or (get(STT_LANGUAGE_ENV) or "").strip()
+    if not provider:
+        return None
+    canonical = normalize_voice_call_stt_provider(provider)
+    if canonical is None:
+        raise ValueError(
+            f"Unknown STT provider {provider!r} "
+            f"(choose from: {', '.join(VOICE_CALL_STT_OPTIONS)})"
+        )
+    return {
+        "provider": canonical,
+        "model": model,
+        "endpoint": endpoint,
+        "language": language,
+    }
+
+
+def _voice_call_stt_cli_available(config: dict, provider: str) -> bool | None:
+    """Best-effort presence check for a local STT CLI. None = unknown."""
+    try:
+        entry = ((config.get("stt") or {}).get("providers") or {}).get(provider) or {}
+        template = str(entry.get("command") or "").strip()
+        if not template:
+            return None
+        binary = template.split()[0].strip("'\"")
+        if "/" in binary or binary.startswith("{"):
+            return None
+        return shutil.which(binary) is not None
+    except Exception:
+        return None
+
+
+def setup_stt(config: dict, args=None) -> None:
+    """Standalone STT setup (for 'mercury setup stt'). Re-runnable."""
+    stt_config = config.get("stt", {}) if isinstance(config.get("stt"), dict) else {}
+    current_provider = normalize_voice_call_stt_provider(stt_config.get("provider", "")) or ""
+    current_label = VOICE_CALL_STT_LABELS.get(current_provider, current_provider or "none")
+
+    non_interactive = bool(getattr(args, "non_interactive", False)) or not is_interactive_stdin()
+    if non_interactive:
+        try:
+            selection = resolve_voice_call_stt_noninteractive(args)
+        except ValueError as exc:
+            print_error(str(exc))
+            return
+        if selection is None:
+            if current_provider:
+                print_info(f"STT provider unchanged: {current_label}")
+                resolved = resolve_voice_call_hosts_noninteractive(args)
+                if resolved:
+                    apply_voice_call_hosts(config, **resolved)
+                    save_config(config)
+                    print_success(f"Voice-call hosts set: {', '.join(f'{k}={v}' for k, v in resolved.items())}")
+                return
+            selection = {"provider": "openai", "model": "", "endpoint": "", "language": ""}
+            print_info("No STT selector given; keeping the starting default (OpenAI Whisper).")
+        try:
+            canonical = apply_voice_call_stt_selection(config, **selection)
+        except ValueError as exc:
+            print_error(str(exc))
+            return
+        if canonical == "openai":
+            endpoint = selection.get("endpoint", "")
+            if endpoint:
+                save_env_value("STT_OPENAI_BASE_URL", endpoint)
+            if not (get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")):
+                print_warning(
+                    "OpenAI Whisper selected but no API key found in .env "
+                    "(VOICE_TOOLS_OPENAI_KEY / OPENAI_API_KEY)."
+                )
+        save_config(config)
+        print_success(f"STT provider set to: {VOICE_CALL_STT_LABELS.get(canonical, canonical)}")
+        resolved = resolve_voice_call_hosts_noninteractive(args)
+        if resolved:
+            apply_voice_call_hosts(config, **resolved)
+            save_config(config)
+            print_success(f"Voice-call hosts set: {', '.join(f'{k}={v}' for k, v in resolved.items())}")
+        return
+
+    print()
+    print_header("Speech-to-Text Provider (voice calls)")
+    print_info(f"Current: {current_label}")
+    for key in VOICE_CALL_STT_OPTIONS:
+        print_info(f"  - {VOICE_CALL_STT_LABELS[key]}: {VOICE_CALL_STT_DESCRIPTIONS[key]}")
+    print()
+
+    choices = [VOICE_CALL_STT_LABELS[key] for key in VOICE_CALL_STT_OPTIONS]
+    choices.append(f"Keep current ({current_label})")
+    keep_current_idx = len(choices) - 1
+    default_idx = keep_current_idx
+    if current_provider in VOICE_CALL_STT_OPTIONS:
+        default_idx = VOICE_CALL_STT_OPTIONS.index(current_provider)
+    idx = prompt_choice("Select STT provider:", choices, default_idx)
+    if idx == keep_current_idx:
+        return
+    selected = VOICE_CALL_STT_OPTIONS[idx]
+
+    section = stt_config.get(selected, {}) if isinstance(stt_config.get(selected), dict) else {}
+    model_default = str(section.get("model") or _voice_call_stt_default_model(selected))
+    language_default = str(section.get("language") or DEFAULT_VOICE_CALL_STT_LANGUAGE)
+    endpoint_default = str(section.get("endpoint") or "")
+
+    print()
+    model = prompt(f"{VOICE_CALL_STT_LABELS[selected]} model", model_default).strip() or model_default
+    language = prompt("Language code (en, es, ...)", language_default).strip() or language_default
+    if selected in ("qwen3-asr", "parakeet"):
+        endpoint = prompt(
+            "ASR server endpoint (empty = CLI default; appended as --endpoint)",
+            endpoint_default,
+        ).strip()
+        current_template = ""
+        providers = stt_config.get("providers", {}) if isinstance(stt_config.get("providers"), dict) else {}
+        if isinstance(providers.get(selected), dict):
+            current_template = str(providers[selected].get("command") or "")
+        template_default = current_template or _voice_call_stt_default_command(selected)
+        print_info("Command template placeholders: {input_path} {output_dir} {language} {model}")
+        command = prompt("Command template", template_default).strip() or template_default
+    else:
+        endpoint = prompt(
+            "API endpoint override (empty = https://api.openai.com/v1)",
+            endpoint_default,
+        ).strip()
+        command = ""
+        existing = get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
+        if not existing:
+            print()
+            api_key = prompt("OpenAI API key for Whisper", password=True)
+            if api_key:
+                save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
+                print_success("OpenAI Whisper API key saved to .env (never committed)")
+            else:
+                print_warning("No API key provided. The provider is saved; add the key later.")
+        else:
+            print_success("OpenAI Whisper will use the key already in .env")
+        if endpoint:
+            save_env_value("STT_OPENAI_BASE_URL", endpoint)
+            print_success("STT endpoint override saved to .env")
+
+    canonical = apply_voice_call_stt_selection(
+        config, provider=selected, model=model, endpoint=endpoint, language=language, command=command,
+    )
+    save_config(config)
+    print_success(f"STT provider set to: {VOICE_CALL_STT_LABELS.get(canonical, canonical)}")
+    _setup_voice_call_hosts(config)
+    save_config(config)
+
+
+#: Explicit split-host URLs for voice calls. Empty default everywhere: the
+#: call UI refuses to start until these are set. Same-machine still works —
+#: point them at the one box — but localhost is never assumed.
+VOICE_CALL_HOST_KEYS = ("mirc_host_url", "mlounge_host_url", "stt_sidecar_url")
+VOICE_CALL_HOST_LABELS = {
+    "mirc_host_url": "MIRC host base URL (gateway: /api/voice-call/*, /api/audio/speak)",
+    "mlounge_host_url": "mLounge host URL (serves the browser UI)",
+    "stt_sidecar_url": "STT sidecar URL (browser socket + relay, on the mLounge host)",
+}
+VOICE_CALL_HOST_PLACEHOLDERS = {
+    "mirc_host_url": "http://mirc-host:8000",
+    "mlounge_host_url": "http://mlounge-host:9000",
+    "stt_sidecar_url": "http://mlounge-host:8765",
+}
+VOICE_CALL_HOST_ENVS = {
+    "mirc_host_url": "MERCURY_MIRC_URL",
+    "mlounge_host_url": "MERCURY_MLOUNGE_URL",
+    "stt_sidecar_url": "MERCURY_STT_SIDECAR_URL",
+}
+
+
+def apply_voice_call_hosts(config: dict, *, mirc_host_url: str = "", mlounge_host_url: str = "",
+                           stt_sidecar_url: str = "") -> dict:
+    """Persist non-empty voice-call host URLs (pure, no I/O). Returns the section."""
+    section = config.setdefault("voice_call", {})
+    for key, value in (
+        ("mirc_host_url", mirc_host_url),
+        ("mlounge_host_url", mlounge_host_url),
+        ("stt_sidecar_url", stt_sidecar_url),
+    ):
+        cleaned = (value or "").strip().rstrip("/")
+        if cleaned:
+            section[key] = cleaned
+    return section
+
+
+def resolve_voice_call_hosts_noninteractive(args=None, *, env_getter=None) -> dict:
+    """Read host URLs from ``mercury setup stt`` flags, then ``MERCURY_*`` env."""
+    get = env_getter or os.environ.get
+    flag_names = {"mirc_host_url": "mirc_url", "mlounge_host_url": "mlounge_url",
+                  "stt_sidecar_url": "sidecar_url"}
+    resolved: dict = {}
+    for key in VOICE_CALL_HOST_KEYS:
+        value = ""
+        if args is not None:
+            value = (getattr(args, flag_names[key], None) or "").strip()
+        if not value:
+            value = (get(VOICE_CALL_HOST_ENVS[key]) or "").strip()
+        if value:
+            resolved[key] = value
+    return resolved
+
+
+def _setup_voice_call_hosts(config: dict, args=None) -> None:
+    """Configure the explicit split-host URLs (re-runnable, no localhost)."""
+    non_interactive = bool(getattr(args, "non_interactive", False)) or not is_interactive_stdin()
+    if non_interactive:
+        resolved = resolve_voice_call_hosts_noninteractive(args)
+        if resolved:
+            apply_voice_call_hosts(config, **resolved)
+            print_success(f"Voice-call hosts set: {', '.join(f'{k}={v}' for k, v in resolved.items())}")
+        return
+    print()
+    print_header("Voice-call hosts (explicit — no localhost assumed)")
+    print_info("Browser <-> mLounge host (STT) <-> MIRC host (TTS + Hermes loop).")
+    print_info("All three may be different machines; use reachable host URLs.")
+    for key in VOICE_CALL_HOST_KEYS:
+        current = str(section.get(key) or "")
+        answer = prompt(
+            f"{VOICE_CALL_HOST_LABELS[key]} (empty = leave unset)",
+            current or VOICE_CALL_HOST_PLACEHOLDERS[key],
+        ).strip()
+        # A bare Enter on the placeholder must not persist the example URL.
+        if answer and answer != VOICE_CALL_HOST_PLACEHOLDERS[key]:
+            section[key] = answer.rstrip("/")
+        elif not answer:
+            section.pop(key, None)
+    config["voice_call"] = section
 
 
 # =============================================================================
@@ -5267,9 +5664,30 @@ def _offer_openclaw_migration(mercury_home: Path) -> bool:
 # Main Wizard Orchestrator
 # =============================================================================
 
+def _call_setup_section(func: Callable, config: dict, args) -> None:
+    """Invoke a setup section, passing CLI ``args`` when the section takes them.
+
+    Sections default to ``(config)``; flag-driven sections such as ``stt``
+    declare ``(config, args=None)`` and read their non-interactive selectors
+    from it. Arity is probed once — no try/except around the call, so real
+    errors inside a section still surface.
+    """
+    try:
+        import inspect as _inspect
+
+        takes_args = len(_inspect.signature(func).parameters) >= 2
+    except (TypeError, ValueError):
+        takes_args = False
+    if takes_args:
+        func(config, args)
+    else:
+        func(config)
+
+
 SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
     ("tts", "Text-to-Speech", setup_tts),
+    ("stt", "Speech-to-Text", setup_stt),
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("observatory", "IRC Observatory (bundled)", setup_observatory),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
@@ -5518,6 +5936,7 @@ def _run_setup_wizard_impl(args):
       mercury setup           — full or quick (auto-detected)
       mercury setup model     — just model/provider
       mercury setup tts       — just text-to-speech
+      mercury setup stt       — just speech-to-text (voice calls)
       mercury setup terminal  — just terminal backend
       mercury setup gateway   — just messaging platforms
       mercury setup observatory — just the MIRC observatory (bundled)
@@ -5574,11 +5993,13 @@ def _run_setup_wizard_impl(args):
         if getattr(args, "section", None) == "observatory":
             run_headless_observatory_setup()
             return
-        print_noninteractive_setup_guidance(
-            "Running in a non-interactive environment (no TTY detected)."
-        )
-        print_noninteractive_observatory_guidance()
-        return
+        if getattr(args, "section", None) != "stt":
+            print_noninteractive_setup_guidance(
+                "Running in a non-interactive environment (no TTY detected)."
+            )
+            print_noninteractive_observatory_guidance()
+            return
+        # 'stt' is flag/env driven — fall through to the section dispatch below.
 
     # --portal: one-shot Nous Portal setup. Skips the rest of the wizard.
     if bool(getattr(args, "portal", False)):
@@ -5605,7 +6026,7 @@ def _run_setup_wizard_impl(args):
                     )
                 )
                 _run_setup_steps(
-                    [(label, lambda setup_func=func: setup_func(config))]
+                    [(label, lambda setup_func=func: _call_setup_section(setup_func, config, args))]
                 )
                 save_config(config)
                 print()

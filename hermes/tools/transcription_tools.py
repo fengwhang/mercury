@@ -489,6 +489,14 @@ def _is_local_stt_provider(provider: str, stt_config: Dict[str, Any]) -> bool:
     key = (provider or "").lower().strip()
     if key in {"local", "local_command"}:
         return True
+    # Command providers that run on-device (voice-call ASR on the mLounge
+    # host) opt out explicitly: ``stt.providers.<name>.local: true``.
+    try:
+        entry = ((stt_config or {}).get("providers") or {}).get(key) or {}
+        if isinstance(entry, dict) and entry.get("local") is True:
+            return True
+    except Exception:
+        pass
     return False
 
 

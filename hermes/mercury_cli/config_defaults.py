@@ -1885,6 +1885,9 @@ DEFAULT_CONFIG = {
         # made a fresh install indistinguishable from a user choice. The
         # autodetect ladder covers unset. Valid values when set:
         # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
+        # | "qwen3-asr" (local Qwen3-ASR via stt.providers command) | "parakeet" (local NeMo Parakeet via stt.providers command).
+        # The last two are the voice-call starting options written by
+        # `mercury setup stt`; see the providers Qwen3-ASR / Parakeet blocks below.
         # Global language hint applied to EVERY provider unless a per-provider
         # language overrides it. Defaults to "en" — Whisper auto-detection
         # frequently misidentifies short/accented clips, which reads as
@@ -1936,6 +1939,38 @@ DEFAULT_CONFIG = {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # "base_url": "",  # override DEEPINFRA_BASE_URL for STT only
         },
+        # Voice-call starting options (written by `mercury setup stt`).
+        # Local command providers: {input_path} {output_dir} {language} {model}
+        # placeholders; `local: true` exempts them from the remote upload cap.
+        # `endpoint` is baked into `command` as --endpoint by setup when set.
+        "qwen3-asr": {
+            "model": "Qwen3-ASR-1.7B",
+            "language": "en",
+            # "endpoint": "",  # optional ASR server URL; setup appends --endpoint
+        },
+        "parakeet": {
+            "model": "parakeet-tdt-0.6b-v2",
+            "language": "en",
+            # "endpoint": "",  # optional ASR server URL; setup appends --endpoint
+        },
+        "providers": {
+            "qwen3-asr": {
+                "type": "command",
+                "local": True,
+                "command": "qwen3-asr transcribe --model {model} --language {language} --output-dir {output_dir} {input_path}",
+                "model": "Qwen3-ASR-1.7B",
+                "language": "en",
+                "format": "txt",
+            },
+            "parakeet": {
+                "type": "command",
+                "local": True,
+                "command": "parakeet-transcribe --model {model} --language {language} --output-dir {output_dir} {input_path}",
+                "model": "parakeet-tdt-0.6b-v2",
+                "language": "en",
+                "format": "txt",
+            },
+        },
     },
 
     "voice": {
@@ -1960,6 +1995,21 @@ DEFAULT_CONFIG = {
         # voice chat instead of being sent to the agent. Case-insensitive,
         # surrounding punctuation ignored. Set [] to disable.
         "stop_phrases": ["stop"],
+    },
+    # First-class voice calls (mLounge <-> MIRC), Hermes engines only.
+    # Split-host by design: STT (mic + ASR) runs on the mLounge host and
+    # streams transcripts to the agent; TTS synthesis runs on the MIRC host
+    # (gateway) with the configured tts.provider and streams audio back to
+    # mLounge for playback. Same-machine works, but nothing here assumes
+    # localhost: both URLs are explicit and empty by default — the call UI
+    # refuses to start until they are set (via `mercury setup stt` for the
+    # ASR side and the voice-call settings for the hosts).
+    "voice_call": {
+        "enabled": True,
+        "mirc_host_url": "",  # e.g. http://mirc-host:8000 — MIRC/gateway host serving /api/voice-call/*
+        "mlounge_host_url": "",  # e.g. http://mlounge-host:9000 — host serving the mLounge UI
+        "stt_sidecar_url": "",  # e.g. http://mlounge-host:8765 — STT sidecar on the mLounge host
+        "language": "en",
     },
 
     # "Hey Mercury" hands-free wake word. Always-on, on-device hotword

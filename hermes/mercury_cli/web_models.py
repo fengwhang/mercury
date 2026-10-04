@@ -97,6 +97,12 @@ class AudioTranscriptionRequest(BaseModel):
     mime_type: Optional[str] = None
 
 
+class VoiceCallActionRequest(BaseModel):
+    action: str = ""  # start | end | mute | unmute
+    channel: str = ""
+    engine: Optional[str] = None  # caller hint; the server re-resolves
+
+
 class ManagedFileUpload(BaseModel):
     path: str
     data_url: str
