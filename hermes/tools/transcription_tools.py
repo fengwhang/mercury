@@ -1147,7 +1147,7 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
-        return provider  # Unknown — let it fail downstream
+        return provider  # Unknown — plugin dispatch or provider_not_registered downstream
 
     # --- Auto-detect (no explicit provider):
     #     local > groq > openai > mistral > xai > elevenlabs > deepinfra ---
