@@ -153,6 +153,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.sayHelp,
 	},
 	{
+		name: "play",
+		load: () => import("./commands/play").then(m => m.default),
+		help: commandHelp.playHelp,
+	},
+	{
 		name: "share",
 		load: () => import("./commands/share").then(m => m.default),
 		help: commandHelp.shareHelp,
@@ -206,6 +211,11 @@ export const commands: CommandEntry[] = [
 		name: "token",
 		load: () => import("./commands/token").then(m => m.default),
 		help: commandHelp.tokenHelp,
+	},
+	{
+		name: "toks",
+		load: () => import("./commands/toks").then(m => m.default),
+		help: commandHelp.toksHelp,
 	},
 	{
 		name: "ttsr",

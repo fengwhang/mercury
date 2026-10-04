@@ -94,6 +94,10 @@ export const sayHelp = {
 } satisfies CommandMetadata;
 
 export const searchHelp = { description: "Test web search providers" } satisfies CommandMetadata;
+export const playHelp = {
+	description: "Replay a /record session recording in the terminal (space pauses, q quits)",
+} satisfies CommandMetadata;
+
 
 export const shareHelp = {
 	description: "Share a saved session via an encrypted link (same as /share)",
@@ -114,6 +118,10 @@ export const tinyModelsHelp = {
 } satisfies CommandMetadata;
 
 export const tokenHelp = { description: "Get the API key or OAuth token for a provider" } satisfies CommandMetadata;
+export const toksHelp = {
+	description: "Count a file or text with every embedded offline tokenizer (OpenAI, Claude, Qwen, …)",
+} satisfies CommandMetadata;
+
 
 export const ttsrHelp = {
 	description: "Inspect and test Time-Traveling Stream Rules (TTSR)",

@@ -11,6 +11,8 @@
  * JSON boundary and every `switch` keeps a tolerant `default:` branch.
  */
 
+export * from "./stream";
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Content blocks
 // ═══════════════════════════════════════════════════════════════════════════

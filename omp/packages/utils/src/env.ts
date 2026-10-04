@@ -182,6 +182,31 @@ export function filterChildShellEnv(
 	return result;
 }
 
+/** Return every value defined by `cwd`'s dotenv files, plus environment values that came from them. */
+export function getDotenvEnvValues(
+	cwd: string = getProjectDir(),
+	env: Record<string, string | undefined> = process.env,
+): string[] {
+	const values = new Set<string>();
+	const launchNodeEnv = launchEnvValues ? launchEnvValues.get("NODE_ENV") : env.NODE_ENV;
+	const nodeEnvName = `.env.${launchNodeEnv || "development"}`;
+	for (const file of [
+		path.join(cwd, ".env"),
+		path.join(cwd, nodeEnvName),
+		path.join(cwd, ".env.local"),
+		path.join(cwd, `${nodeEnvName}.local`),
+	]) {
+		const parsed = parseEnvFile(file);
+		for (const key in parsed) {
+			const fileValue = parsed[key];
+			if (fileValue !== undefined) values.add(fileValue);
+			const envValue = env[key];
+			if (envValue !== undefined) values.add(envValue);
+		}
+	}
+	return [...values];
+}
+
 /**
  * Parse one dotenv line with Bun-compatible semantics: an optional `export`
  * prefix, full-line `#` comments, inline `#` comments after whitespace on

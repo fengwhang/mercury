@@ -102,9 +102,27 @@ export interface RenderScheduler {
 	scheduleRender(callback: () => void, delayMs: number): RenderTimer;
 }
 
+export interface TuiPaint {
+	/** Rows painted by one TUI frame, observed for local `.ompcast` recording. */
+	readonly history: readonly string[];
+	/** Complete live viewport after this paint: one prepared ANSI string per row. */
+	readonly viewport: readonly string[];
+	/** True when this paint erased scrollback and repainted from row zero. */
+	readonly reset: boolean;
+	/** True when `viewport` is an alternate-screen overlay; history is untouched. */
+	readonly alt: boolean;
+	readonly columns: number;
+	readonly rows: number;
+}
+
+/** Observer of completed terminal paints; see {@link TUI.addPaintListener}. */
+export type PaintListener = (paint: TuiPaint) => void;
+
 export interface TUIOptions {
 	renderScheduler?: RenderScheduler;
+	onPaint?: PaintListener;
 }
+
 /** Physical terminal dimensions supplied to a frame provider. */
 export interface ViewportSize {
 	readonly columns: number;
@@ -650,6 +668,7 @@ export class TUI extends Container {
 	terminal: Terminal;
 	#frameProvider: TerminalFrameProvider | undefined;
 	#acceptedHistoryBatchId = 0;
+	#paintListeners = new Set<PaintListener>();
 	// Screen row where the provider's mutable viewport begins (0-based); rows
 	// above it hold history still visible on the physical screen.
 	#providerViewportTop = 0;
@@ -840,8 +859,30 @@ export class TUI extends Container {
 		super();
 		this.terminal = terminal;
 		this.#renderScheduler = options?.renderScheduler ?? DEFAULT_RENDER_SCHEDULER;
+		if (options?.onPaint) this.#paintListeners.add(options.onPaint);
 		this.#showHardwareCursor = showHardwareCursor === undefined ? this.#showHardwareCursor : showHardwareCursor;
 		this.#watchdog = new LoopWatchdog();
+	}
+
+	/**
+	 * Observe completed terminal paints; returns the unsubscribe. Independent
+	 * observers (local session recorder) coexist. No-op overhead when empty.
+	 */
+	addPaintListener(listener: PaintListener): () => void {
+		this.#paintListeners.add(listener);
+		return () => {
+			this.#paintListeners.delete(listener);
+		};
+	}
+
+	#notifyPaint(paint: TuiPaint): void {
+		for (const listener of this.#paintListeners) {
+			try {
+				listener(paint);
+			} catch (err) {
+				logger.error("TUI paint listener failed", { err });
+			}
+		}
 	}
 	static #initialResizeScrollbackMode(): ResizeScrollbackMode {
 		const mode = Bun.env.PI_TUI_RESIZE_SCROLLBACK;
@@ -1446,7 +1487,8 @@ export class TUI extends Container {
 		} while (this.#imageBudget.endPass());
 		const viewport = rendered.length > height ? rendered.slice(rendered.length - height) : Array.from(rendered);
 		this.#extractCursorMarkers(viewport);
-		this.#emitAltFrame(this.#prepareLinesArray(viewport, width), width, height);
+		// The borrowed resize buffer is transient, not a streamable session paint.
+		this.#emitAltFrame(this.#prepareLinesArray(viewport, width), width, height, false);
 	}
 
 	/**
@@ -2562,6 +2604,16 @@ export class TUI extends Container {
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#hasEverRendered = true;
 		this.#resizeReplaySize = undefined;
+		// Only `preparedHistory` rows crossed above the viewport into native
+		// scrollback; `prepared` is the complete live viewport after this paint.
+		this.#notifyPaint({
+			history: preparedHistory,
+			viewport: prepared,
+			reset: destructiveReset || history?.kind === "replay",
+			alt: false,
+			columns: width,
+			rows: height,
+		});
 		if (history !== undefined) {
 			this.#acceptedHistoryBatchId = history.id;
 			provider?.acknowledgeHistory(history.id);
@@ -2966,7 +3018,7 @@ export class TUI extends Container {
 		let lines = this.#compositeOverlaysIntoWindow(base, width, height);
 		this.#extractCursorMarkers(lines);
 		lines = this.#prepareLinesArray(lines, width);
-		this.#emitAltFrame(lines, width, height);
+		this.#emitAltFrame(lines, width, height, true);
 	}
 
 	/**
@@ -2974,7 +3026,7 @@ export class TUI extends Container {
 	 * brackets, a cursor home, and per-row rewrites — never ED3 or any
 	 * native-scrollback byte. The hardware cursor stays hidden here.
 	 */
-	#emitAltFrame(lines: string[], width: number, height: number): void {
+	#emitAltFrame(lines: string[], width: number, height: number, notifyPaint: boolean): void {
 		// oxlint-disable-next-line unicorn/no-new-array -- alt-frame length preallocation
 		const fitted: string[] = new Array(height);
 		for (let r = 0; r < height; r++) fitted[r] = lines[r] ?? "";
@@ -3016,5 +3068,8 @@ export class TUI extends Container {
 		this.#altPreviousLines = fitted;
 		this.#debugPaint = { lines: fitted, windowTop: 0, altScreen: true };
 		this.#fullRedrawCount += 1;
+		if (notifyPaint) {
+			this.#notifyPaint({ history: [], viewport: fitted, reset: false, alt: true, columns: width, rows: height });
+		}
 	}
 }
