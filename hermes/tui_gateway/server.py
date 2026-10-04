@@ -17921,6 +17921,8 @@ from . import (  # noqa: E402
     methods_profiles as _methods_profiles,
     methods_prompt as _methods_prompt,
     methods_session as _methods_session,
+    methods_connectors as _methods_connectors,
+    methods_connectors_account as _methods_connectors_account,
     methods_tools as _methods_tools,
 )
 
@@ -17928,6 +17930,8 @@ for _m in (
     _methods_browser_control,
     _methods_session,
     _methods_prompt,
+    _methods_connectors,
+    _methods_connectors_account,
     _methods_config,
     _methods_complete,
     _methods_tools,

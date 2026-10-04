@@ -18,9 +18,16 @@ def dispatch_connector_call(name, arguments, tool_call_id):
                       ensure_ascii=False)
 
 
-def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
+def dispatch_connector_batch(calls, ids=None, *, task_id=None, tool_call_id=None,
+                             session_id=None, turn_id=None, api_request_id=None,
+                             user_task, enabled_tools,
                              middleware_trace, enabled_toolsets, disabled_toolsets):
-    from model_tools import handle_function_call
+    if ids is None:
+        ids = {"task_id": task_id, "tool_call_id": tool_call_id,
+               "session_id": session_id, "turn_id": turn_id,
+               "api_request_id": api_request_id}
+    else:
+        ids = asdict(ids)
     from tools.interrupt import is_interrupted
 
     if len(calls) > MAX_CALLS_PER_DISPATCH:
@@ -40,7 +47,7 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
             break
         # Each entry must run its own policy and middleware.
         payload = handle_function_call(
-            plan.name, plan.arguments, **asdict(ids), user_task=user_task,
+            plan.name, plan.arguments, **ids, user_task=user_task,
             enabled_tools=enabled_tools, tool_request_middleware_trace=list(middleware_trace),
             skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
             skip_tool_execution_middleware=False,

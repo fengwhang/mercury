@@ -1373,6 +1373,21 @@ def handle_function_call(
             _probe_err = _ts_mod.validate_deferred_call_args(underlying_name, underlying_args)
             if _probe_err is not None:
                 return _return_bridge_result(_probe_err)
+            from tools.connectors import CONNECTOR_BATCH_SENTINEL
+            if underlying_name == CONNECTOR_BATCH_SENTINEL:
+                from tools.connectors import dispatch_connector_batch
+                return _return_bridge_result(
+                    dispatch_connector_batch(
+                        (underlying_args or {}).get("calls", []),
+                        task_id=task_id, tool_call_id=tool_call_id,
+                        session_id=session_id, turn_id=turn_id,
+                        api_request_id=api_request_id, user_task=user_task,
+                        enabled_tools=enabled_tools,
+                        middleware_trace=list(_tool_middleware_trace),
+                        enabled_toolsets=enabled_toolsets,
+                        disabled_toolsets=disabled_toolsets,
+                    )
+                )
             # Recurse with the underlying tool. All hooks fire against the
             # real tool name. The bridge is invisible to hooks by design.
             return handle_function_call(
@@ -1392,6 +1407,17 @@ def handle_function_call(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
             )
+
+    from tools.connectors import is_connector_name
+    from tools.connectors.gateway.names import parse_connector_name
+    if function_name == "manage_connections" or is_connector_name(function_name):
+        _conn_toolset = registry.get_tool_to_toolset_map().get("manage_connections")
+        _conn_in_scope = enabled_toolsets is None or _conn_toolset in (enabled_toolsets or [])
+        _conn_excluded = bool(disabled_toolsets) and _conn_toolset in (disabled_toolsets or [])
+        if not _conn_in_scope or _conn_excluded:
+            return tool_error("Connectors are not available in this session.")
+        if is_connector_name(function_name) and parse_connector_name(function_name) is None:
+            return tool_error("Malformed connector tool name; expected connectors__<connector>__<tool>.")
 
     _tool_original_args = dict(function_args)
     if not skip_tool_request_middleware:
@@ -1542,6 +1568,9 @@ def handle_function_call(
                 # the parent's tool set via the process-global.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    from tools.connectors import dispatch_connector_call, is_connector_name
+                    if is_connector_name(function_name):
+                        return dispatch_connector_call(function_name, next_args, tool_call_id)
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
@@ -1550,6 +1579,9 @@ def handle_function_call(
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    from tools.connectors import dispatch_connector_call, is_connector_name
+                    if is_connector_name(function_name):
+                        return dispatch_connector_call(function_name, next_args, tool_call_id)
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
