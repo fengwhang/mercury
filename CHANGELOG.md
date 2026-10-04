@@ -5,6 +5,8 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.20] — nightly
+
 - Inherit all four installation model slots in new profiles, including gateway
   model selection and fallback refresh. Keep native permissions/profile state local.
 - Add `mercury profile models NAME` with the setup model, reasoning and context
