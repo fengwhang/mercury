@@ -5,6 +5,8 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+## [0.3.21] — nightly
+
 - Fix `!model` in profile-spawned MIRC rooms when gateway multiplexing is
   disabled: read the active profile's inherited or explicit model settings
   instead of the startup home. Report invalid overrides without attaching
