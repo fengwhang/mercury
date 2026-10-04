@@ -276,3 +276,8 @@ def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
     if max_chars is not None and max_chars > 0 and len(spoken) > max_chars:
         spoken = spoken[:max_chars].rstrip()
     return spoken
+
+
+def _strip_markdown_for_tts(text: str) -> str:
+    """``prepare_spoken_text`` without a length cap (``tts_tool`` compatibility name)."""
+    return prepare_spoken_text(text, max_chars=None)

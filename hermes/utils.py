@@ -343,6 +343,67 @@ def atomic_write_text(
         raise
 
 
+def atomic_write_bytes(
+    path: Union[str, Path],
+    content: bytes,
+    *,
+    tmp_prefix: str = ".tmp_",
+    mode: "int | None" = None,
+    fsync_dir: bool = False,
+) -> None:
+    """Write *content* (bytes) to *path* via temp file + fsync + atomic rename.
+
+    Bytes variant of ``atomic_write_text`` for encrypted blobs and key
+    material.  ``mkstemp`` creates the temp file at 0600 regardless of
+    umask, so a secret is never readable at process umask, not even between
+    create and chmod; *mode* is fchmod'd onto the temp fd BEFORE the
+    replace so the target never transits through a broader mode.  With no
+    *mode* an existing target keeps its permission bits (and owner) across
+    the replace, and a new target keeps mkstemp's 0600.  *fsync_dir* also
+    fsyncs the resolved target's parent directory so the rename itself is
+    durable.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    effective_mode = mode if mode is not None else _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=tmp_prefix, suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            if effective_mode is not None and hasattr(os, "fchmod"):
+                os.fchmod(handle.fileno(), effective_mode)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        real_path = Path(atomic_replace(tmp_path, path))
+        _restore_file_owner(real_path, original_owner)
+        if effective_mode is not None and not hasattr(os, "fchmod"):
+            _restore_file_mode(real_path, effective_mode)
+        if fsync_dir and os.name != "nt":
+            # Best-effort fsync of the rename's directory entry: durability
+            # is never worth failing a write already replaced into place.
+            try:
+                dir_fd = os.open(
+                    str(real_path.parent), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                )
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def atomic_json_write(
     path: Union[str, Path],
     data: Any,

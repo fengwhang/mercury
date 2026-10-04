@@ -3512,6 +3512,12 @@ def _is_cjk_token_dense_char(ch: str) -> bool:
     )
 
 
+# CJK/Hangul/Kana codepoints (~1 token each), counted in one C-level regex pass: Hangul
+# Jamo (+Ext-A), CJK radicals/ideographs (+compat), Hangul syllables, fullwidth/halfwidth.
+# Rough chars-per-token ratio for ASCII text; the single source for every "N tokens ≈ N*4 chars"
+# budget conversion (context files, tool-output budgets, whisper prompt cap, compressor metadata).
+CHARS_PER_TOKEN = 4
+
 # Same codepoint ranges as _is_cjk_token_dense_char, as a compiled character
 # class so dense-char counting runs in C (``len(text) - len(re.sub(...))``)
 # instead of a per-char Python loop.  MUST stay in sync with

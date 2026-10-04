@@ -44,7 +44,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, FrozenSet, List, MutableMapping, Optional, Sequence
+from typing import Any, Dict, FrozenSet, List, MutableMapping, Optional, Sequence
 
 # Bump ONLY for breaking changes to the required contract surface
 # (abstract-method signatures, FetchResult required fields).  Additive
@@ -273,6 +273,21 @@ def is_valid_env_name(name: str) -> bool:
 def scrub_ansi(text: str) -> str:
     """Strip ANSI escape sequences (whole CSI/OSC sequences, not just ESC)."""
     return _ANSI_RE.sub("", text or "")
+
+
+def run_cli(argv: Sequence[str], *, env: Dict[str, str], timeout: float, label: str,
+            timeout_message: str, stdin: Any = subprocess.DEVNULL) -> subprocess.CompletedProcess:
+    """``subprocess.run`` an argv list (never a shell), capturing utf-8 text; timeout
+    and spawn failure become ``RuntimeError``. Callers own returncode interpretation."""
+    try:
+        return subprocess.run(  # noqa: S603 — argv list, no shell
+            list(argv), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, stdin=stdin,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(timeout_message) from exc
+    except OSError as exc:
+        raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
 
 
 def run_secret_cli(
