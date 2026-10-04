@@ -70,6 +70,10 @@ class TestFailoverReason:
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
+            # Stock-Hermes members carried by the parity-ported turn_* family
+            # (turn_failure_copy / turn_api_error recovery keys).
+            "upstream_blocked", "incomplete_response",
+            "reasoning_mandatory", "role_alternation",
             "unknown",
         }
         actual = {r.value for r in FailoverReason}

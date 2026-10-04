@@ -333,9 +333,11 @@ class TestCheckFnExceptionHandling:
 class TestBuiltinDiscovery:
     def test_discovers_all_real_self_registering_builtin_tool_modules(self):
         tools_dir = Path(__file__).resolve().parents[2] / "tools"
+        # The discovery contract covers ``tools/*.py`` plus the package
+        # convention ``tools/*/tool.py`` (e.g. tools/connectors/tool.py).
         expected = [
-            f"tools.{path.stem}"
-            for path in sorted(tools_dir.glob("*.py"))
+            ".".join(("tools", *path.relative_to(tools_dir).with_suffix("").parts))
+            for path in sorted([*tools_dir.glob("*.py"), *tools_dir.glob("*/tool.py")])
             if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
             and _module_registers_tools(path)
         ]

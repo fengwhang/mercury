@@ -1076,3 +1076,114 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
 # The one genuinely shared image POLICY — removing images when a server
 # rejects them while preserving tool_call_id pairing — already has a single
 # owner here: ``_strip_images_from_messages`` above.
+
+
+def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
+    """Send-path image strip for a model that rejected image content (see turn_recovery).
+
+    Runs on the per-call ``api_messages`` copy in Hermes's own message format, BEFORE the
+    provider-specific conversion: the part types this stripper knows are that format's, and a
+    converted payload (Bedrock Converse ``{"image": ...}`` blocks carry no ``type``) would slip
+    past it. History is never touched. Keyed on each rejecting (provider, model), so a model
+    that accepts images gets them again.
+    """
+    # Lazy: vision_message_prep imports keep this module free of their chain.
+    from agent.vision_message_prep import _provider_model_key
+
+    if _provider_model_key(agent) not in agent._image_rejecting_models:
+        return False
+    return isinstance(api_messages, list) and _strip_images_from_messages(api_messages)
+
+
+def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
+    """Outbound-request chokepoint for every built kwargs dict (main loop and iteration summary).
+
+    Tool descriptions, extra_body and kwargs strings can carry invalid code points that
+    providers reject with a non-retryable 400 (#50959); one in-place walk makes the whole
+    payload json.dumps()-safe. The ASCII strip is opt-in via the recovery flag set after an
+    ASCII-codec rejection.
+    """
+    _sanitize_structure_surrogates(api_kwargs)
+    if agent._force_ascii_payload:
+        # ``tools`` is built from ``agent.tools`` per attempt and usually aliases it; detach
+        # before the in-place strip so the retry never rewrites the canonical tool schemas.
+        # A structural clone suffices: ``_sanitize_structure`` only rebinds str leaves
+        # inside dict/list containers.
+        if api_kwargs.get("tools") is not None and api_kwargs["tools"] is getattr(agent, "tools", None):
+            # Lazy: conversation_loop imports this module (cycle).
+            from agent.conversation_loop import _clone_message_for_send
+
+            api_kwargs["tools"] = _clone_message_for_send(api_kwargs["tools"])
+        _sanitize_structure_non_ascii(api_kwargs)
+
+
+_PROVIDER_TOOL_ID_PREFIXES = ("chatcmpl-tool-",)
+
+
+def _tc_field(tc: Any, key: str) -> Any:
+    """Read ``key`` from a tool-call entry that may be a dict or an SDK object."""
+    return tc.get(key) if isinstance(tc, dict) else getattr(tc, key, None)
+
+
+def _tc_set(tc: Any, key: str, value: Any) -> None:
+    tc.__setitem__(key, value) if isinstance(tc, dict) else setattr(tc, key, value)
+
+
+def normalize_provider_tool_call_ids(tool_calls: list) -> list:
+    """Rewrite known provider ids when a parallel batch would be rejected on replay.
+
+    The digest is deterministic so persisted messages and prompt-cache prefixes remain
+    stable. Composite Responses ids retain their response-item half.
+    """
+    if len(tool_calls or []) < 2:
+        return tool_calls
+    # Gate on the effective id serialization and result pairing use (stripped, blank call_id
+    # falls back to id), not on raw fields.
+    if not all(coalesce_tool_call_id(tc).startswith(_PROVIDER_TOOL_ID_PREFIXES) for tc in tool_calls):
+        return tool_calls
+    logger.warning("Normalized provider-minted parallel tool-call ids for replay compatibility")
+    for tc in tool_calls:
+        # Rewrite each field's call half separately: ``id`` may carry the response-item
+        # half while ``call_id`` is bare, and that half must survive.
+        for key in ("id", "call_id"):
+            value = _tc_field(tc, key)
+            if not isinstance(value, str):
+                continue
+            primary, sep, item = value.strip().partition("|")
+            primary = primary.strip()
+            if not primary.startswith(_PROVIDER_TOOL_ID_PREFIXES):
+                continue
+            # surrogatepass: provider JSON can carry lone surrogates; strict utf-8 would raise,
+            # and errors=replace would collapse distinct ids onto one digest.
+            digest = hashlib.sha256(primary.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+            _set_provider_tool_id(tc, key, f"call_{digest}{sep}{item}")
+    return tool_calls
+
+
+def _set_provider_tool_id(tc: Any, key: str, value: str) -> None:
+    # transports.types.ToolCall exposes call_id as a read-only view of provider_data;
+    # write the backing value so id and call_id stay in agreement.
+    if isinstance(getattr(type(tc), key, None), property) and isinstance(getattr(tc, "provider_data", None), dict):
+        tc.provider_data[key] = value
+    else:
+        _tc_set(tc, key, value)
+
+
+_IMAGE_CORRUPT_PHRASES = (
+    # ChatGPT-account Codex backend's wording for corrupt/unsupported native image payloads.
+    "image data you provided does not represent a valid image",
+    # Kimi/Moonshot et al. reject truncated/corrupt image bytes baked into history.
+    # Kimi / Moonshot / other OpenAI-compatible Chinese providers reject truncated or corrupt image bytes
+    # with HTTP 400 "Invalid request: prepare image failed ... failed to decode image: invalid or
+    # unsupported image format". Like the Codex case above, the bad bytes are baked into immutable
+    # conversation history and re-sent on every retry, wedging the session. Strip the images so the turn
+    # recovers instead of exhausting retries. (issue #76884; complements the proactive full-decode
+    # validation in tools/vision_tools._normalize_to_supported_image)
+    "failed to decode image",
+)
+
+
+def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
+    """Return True when the rejection is about a bad image payload, not the model's capability."""
+    body = str(error_body or "").lower()
+    return any(phrase in body for phrase in _IMAGE_CORRUPT_PHRASES)

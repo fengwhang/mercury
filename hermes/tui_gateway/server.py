@@ -6013,6 +6013,27 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
     return surfaces
 
 
+def _with_role_toolsets(selection) -> list[str]:
+    """*selection* minus toolsets reserved for another role, plus the ones its
+    PROFILE's role reserves (``toolsets.profile_role_toolsets`` — the backend-
+    written profile.yaml under the session's home override). Mirrors stock
+    Hermes' ``_with_session_toolsets`` role half: the ``setup`` toolset reaches
+    only the setup profile and is stripped everywhere else whatever the config,
+    env pin or client asked for. Role-reserved grants survive
+    ``agent.disabled_toolsets`` subtraction downstream in
+    model_tools._compute_tool_definitions only if not disabled there — the
+    disabled subtraction always wins, as in stock."""
+    try:
+        from toolsets import profile_role_toolsets
+
+        granted, denied = profile_role_toolsets()
+    except Exception:
+        return list(selection)
+    kept = [name for name in selection if name not in denied]
+    fold_in = granted - set(kept)
+    return [*kept, *sorted(fold_in)]
+
+
 def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     session_platform = platform or _resolve_session_platform()
     explicit = [
@@ -6039,7 +6060,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
                 # coding posture returns before the fallback path that normally
                 # adds them — without this the desktop loses its pane/project
                 # tools exactly when sitting in a repo (see below).
-                return sorted({*selection, *_gui_surface_toolsets(session_platform)})
+                return sorted(_with_role_toolsets({*selection, *_gui_surface_toolsets(session_platform)}))
         except Exception:
             pass
 
@@ -6127,7 +6148,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             )
 
         if valid:
-            return valid
+            return _with_role_toolsets(valid)
 
         fallback_notice = (
             "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
@@ -6156,7 +6177,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding them in here is the gate that exposes them on exactly the
         # surface that can answer them.
-        return sorted(enabled | _gui_surface_toolsets(session_platform))
+        return sorted(_with_role_toolsets(enabled | _gui_surface_toolsets(session_platform)))
     except Exception:
         if fallback_notice is not None:
             print(

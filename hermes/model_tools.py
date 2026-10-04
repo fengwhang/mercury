@@ -449,6 +449,13 @@ def _compute_tool_definitions(
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    # A role-reserved toolset (``setup``) reaches only a profile carrying that
+    # role, whatever the config, CLI flag, env pin or "all" asked for; this is
+    # the one point every surface's selection passes.
+    from toolsets import profile_role_toolsets
+    for ts_name in profile_role_toolsets()[1]:
+        tools_to_include.difference_update(resolve_toolset(ts_name))
+
     # Always apply disabled toolsets as a subtraction step at the end.
     # This ensures that even if a composite toolset (like mercury-cli)
     # is enabled, any tools belonging to a disabled toolset are strictly

@@ -29,7 +29,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
@@ -42,7 +42,11 @@ from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
-from agent.message_metadata import append_message, stamp_message_timestamp
+from agent.message_metadata import (
+    PERSISTENCE_ONLY_MESSAGE_FIELDS,
+    append_message,
+    stamp_message_timestamp,
+)
 from agent.model_metadata import (
     anchored_context_tokens,
     estimate_messages_tokens_rough,
@@ -417,6 +421,32 @@ def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
         "Context compression timed out before it could commit while the request "
         f"was still approximately {request_tokens:,} tokens. The provider call "
         "was not sent. Run /compress and wait for it to finish, then retry."
+    )
+
+
+def _fail_closed_on_insufficient_progress(agent, request_tokens: int) -> None:
+    """Stop an over-window turn the moment preflight proves it cannot shrink the session, with
+    "start a new session" guidance, instead of sending a request the model cannot accept.
+
+    ``_fail_closed_after_preflight_timeout`` only stops a turn whose compression wait timed out. A
+    pass that ran and reclaimed nothing (or under 5%) on a request still above the model window used
+    to fall through to the provider call: the provider rejected it, the overflow handler forced
+    another compression pass, and each pass re-waited its budget while the UI sat blocked (#116472:
+    ~356k tokens on a 131k window). Only a ``True`` verdict fails closed — an unknown window or a
+    fitting request keeps the send-as-is behaviour — and a pass skipped by the summary-failure
+    cooldown is a defer, not proof of incompressibility, so it keeps its typed cooldown result.
+    """
+    from agent.conversation_compression import compression_blocked_transiently, request_exceeds_model_window
+
+    if request_exceeds_model_window(agent, request_tokens) is not True:
+        return
+    if compression_blocked_transiently(agent):
+        return
+    window = agent.context_compressor.context_length
+    raise PreflightCompressionTimedOut(
+        "Context compression could not bring this session under the model's context window "
+        f"(~{request_tokens:,} tokens vs {window:,}). The provider call was not "
+        "sent. Start a new session with /new; this session is too large to compress further."
     )
 
 
@@ -1618,3 +1648,134 @@ def build_turn_context(
         ext_prefetch_cache=ext_prefetch_cache,
         preflight_compression_blocked=_preflight_compression_blocked,
     )
+
+
+def _sanitize_model_for(agent: Any, moa_config: Any) -> Any:
+    """Model name for strict-API tool-call sanitization. In MoA mode ``agent.model`` is
+    the virtual preset name; use the resolved aggregator so Gemini keeps
+    thought_signature (extra_content)."""
+    _sanitize_model = agent.model
+    if agent.provider == "moa":
+        if moa_config:
+            _agg = moa_config.get("aggregator") or {}
+            if _agg.get("model"):
+                _sanitize_model = _agg["model"]
+        if _sanitize_model == agent.model:
+            # Virtual-provider mode: no moa_config is threaded through; ask the facade
+            # for the aggregator slot from the previous create().
+            _agg_slot = getattr(getattr(agent, "client", None), "last_aggregator_slot", None)
+            if _agg_slot and _agg_slot.get("model"):
+                _sanitize_model = _agg_slot["model"]
+    return _sanitize_model
+
+
+def build_api_messages(
+    agent: Any, messages: List[Dict[str, Any]], *, current_turn_user_idx: Any,
+    ext_prefetch_cache: Any, plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Build the wire copy of ``messages`` for one API call plus the effective system
+    message. Returns ``(api_messages, effective_system)``.
+
+    Prompt-cache invariant: historical user/assistant rows replay their ``api_content``
+    sidecar (the exact bytes sent live) so the prefix stays byte-stable; the current
+    user turn reuses the prologue's stamp (or composes live when a caller bypassed the
+    prologue). Ephemeral context (prefetch, ``pre_llm_call`` hooks,
+    ``ephemeral_system_prompt``) is added at API time only — ``messages`` stays untouched
+    beyond the sidecar stamp, and the system prompt is built ONCE per session and
+    replayed verbatim."""
+    from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
+    from agent.conversation_loop import _clone_message_for_send
+    from agent.replay_cleanup import canonicalize_replay_history
+
+    has_current = isinstance(current_turn_user_idx, int) and 0 <= current_turn_user_idx < len(messages)
+    current_turn_message = messages[current_turn_user_idx] if has_current else None
+
+    # Replay consumers canonicalize the persisted prefix on read; the request copy must
+    # carry the same bytes or a resume diverges mid-prefix. Only the rows BEFORE this
+    # turn's user message are the replayed prefix — rows this turn appended (its tool
+    # calls/results) are live and must never be rewritten between iterations. The
+    # expiry clock is the turn's admission time, frozen in _reset_per_turn_agent_state.
+    # Without an anchor (compaction found no surviving user row) there is no provable
+    # persisted prefix, so nothing is canonicalized. The clock is stamped once per turn in
+    # _reset_per_turn_agent_state; a caller that skipped the prologue fails loudly here
+    # rather than silently un-freezing it.
+    turn_now = agent._current_turn_timestamp
+    split = current_turn_user_idx if has_current else 0
+    canonical_messages = canonicalize_replay_history(messages[:split], now=turn_now) + messages[split:]
+
+    api_messages = []
+    for idx, msg in enumerate(canonical_messages):
+        # Structural clone, NOT msg.copy(): in-place transforms below must not reach
+        # persisted history via nested containers; see _clone_message_for_send.
+        api_msg = _clone_message_for_send(msg)
+        # api_content is bookkeeping (exact bytes sent), never a provider field — pop
+        # it from EVERY outgoing copy. Persistence/display fields (display_*, _row_id,
+        # timestamp) are local bookkeeping: strict OpenAI backends reject unknown keys
+        # and only chat-completions strips underscore keys. The token estimator drops
+        # the same set, so it never prices bytes the provider never receives.
+        _api_content = api_msg.pop("api_content", None)
+        for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
+            api_msg.pop(key, None)
+
+        # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
+        # at API time only; `messages` is untouched beyond the api_content stamp.
+        if msg is current_turn_message and msg.get("role") == "user":
+            if isinstance(_api_content, str) and _api_content:
+                # Reuse the prologue's stamp so sidecar and wire cannot drift
+                # and every pass this turn sends identical bytes.
+                api_msg["content"] = _api_content
+            else:
+                # Callers that bypass the prologue stamping: compose live.
+                _composed = compose_user_api_content(
+                    api_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+                )
+                if _composed is not None:
+                    api_msg["content"] = _composed
+        elif (
+            isinstance(_api_content, str) and _api_content
+            and msg.get("role") in ("user", "assistant")
+        ):
+            # Historical row: replay the exact bytes sent live so the prompt-cache
+            # prefix stays byte-stable. User rows carry the injection sidecar; user
+            # and assistant rows may carry a sanitize-divergence sidecar.
+            api_msg["content"] = _api_content
+
+        # Pass reasoning back to the API for ALL assistant messages so multi-turn
+        # reasoning context is preserved.
+        agent._copy_reasoning_content_for_api(msg, api_msg)
+        # 'reasoning' is trajectory-only (copied to 'reasoning_content' above);
+        # finish_reason is rejected by strict APIs (e.g. Mistral).
+        api_msg.pop("reasoning", None)
+        api_msg.pop("finish_reason", None)
+        # Fill empty non-final user/assistant wire copies so the pre-call sanitizer
+        # stops re-healing and flooding errors.log; durable history is untouched.
+        # After the reasoning copy so thinking-only turns keep payload.
+        fill_empty_non_final_wire_payload(api_msg, is_final=(idx == len(canonical_messages) - 1))
+        # _thinking_prefill survives intentionally: the drop pass below needs it.
+        # Strip length-continuation marks; some transports keep underscore keys.
+        api_msg.pop("_length_continuation_fragment", None)
+        api_msg.pop("_length_continuation_nudge", None)
+        # Strip Codex Responses fields (call_id, response_item_id): strict providers
+        # reject unknown fields. New dicts keep the internal list intact for Codex.
+        if agent._should_sanitize_tool_calls():
+            agent._sanitize_tool_calls_for_strict_api(
+                api_msg, model=_sanitize_model_for(agent, moa_config)
+            )
+        # 'reasoning_details' is kept here; the chat-completions transport drops it on the
+        # wire for every route that does not replay it (OpenRouter/Nous do).
+        api_messages.append(api_msg)
+
+    # A provider-rejected Anthropic signature is suppressed outside canonical history and
+    # survives fresh request construction / process resume via session model_config.
+    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+    apply_rejected_thinking_suppression(agent, api_messages)
+
+    # Final system message = cached prompt + ephemeral additions (API-time only).
+    # Plugin/recall context goes into the user message, never the system prompt: the
+    # prompt is built ONCE per session and replayed verbatim (stable cache prefix).
+    effective_system = active_system_prompt or ""
+    if agent.ephemeral_system_prompt:
+        effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+    if effective_system:
+        api_messages = [{"role": "system", "content": effective_system}] + api_messages
+    return api_messages, effective_system

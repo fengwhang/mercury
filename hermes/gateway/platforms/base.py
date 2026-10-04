@@ -1295,6 +1295,26 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
 )
 
 
+def _sqlite_files(name: str) -> tuple[str, ...]:
+    """A SQLite store plus its WAL/SHM/rollback-journal sidecars."""
+    return (name, f"{name}-wal", f"{name}-shm", f"{name}-journal")
+
+
+# Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
+# files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
+# agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
+# recency window); pairing/ and mcp-tokens/ (live OAuth tokens) are denied as whole trees.
+_ROOT_CREDENTIAL_PATHS = (
+    ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
+    "google_token.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
+    "webhook_subscriptions.json", os.path.join("cache", "bws_cache.json"),
+    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens",
+    # Whole conversation history (every secret ever pasted into a chat) and the copied browser
+    # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
+    # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
+    "sessions", "browser-profile", *_sqlite_files("state.db"))
+
+
 # Canonical cache subdirectories that hold deliverable artifacts. Used both
 # for the top-level safe roots above and to enumerate per-profile cache roots
 # at check time (see _media_delivery_allowed_roots).

@@ -2617,8 +2617,13 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"kanban", "memory", "project"} <= set(result)
-    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert {"memory", "project"} <= set(result)
+    # `kanban` was deleted from the Mercury distribution (MERCURY-OMP PATCH B2)
+    # and no longer auto-recovers. Non-configurable toolsets of the current
+    # universe (e.g. `connections`, whose tools ride _HERMES_CORE_TOOLS) are
+    # recovered by _get_platform_tools and must be allowed here.
+    extras = set(result) - {"memory", "project"}
+    assert extras <= {"connections"} | set(_RECENTLY_SHIPPED_TOOLSETS)
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -2643,8 +2648,13 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"kanban", "memory", "project"} <= set(result)
-    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert {"memory", "project"} <= set(result)
+    # `kanban` was deleted from the Mercury distribution (MERCURY-OMP PATCH B2)
+    # and no longer auto-recovers. Non-configurable toolsets of the current
+    # universe (e.g. `connections`, whose tools ride _HERMES_CORE_TOOLS) are
+    # recovered by _get_platform_tools and must be allowed here.
+    extras = set(result) - {"memory", "project"}
+    assert extras <= {"connections"} | set(_RECENTLY_SHIPPED_TOOLSETS)
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 

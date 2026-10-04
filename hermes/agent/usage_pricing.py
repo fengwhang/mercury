@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
@@ -1288,6 +1288,15 @@ def get_pricing_entry(
         if entry:
             return entry
     return _lookup_official_docs_pricing(route)
+
+
+def with_served_service_tier(usage: CanonicalUsage, response: Any) -> CanonicalUsage:
+    """``usage`` with the response's served ``service_tier`` folded into ``raw_usage``. OpenAI reports
+    the tier on the response, not inside ``usage``, and pricing reads it from ``raw_usage``."""
+    tier = getattr(response, "service_tier", None)
+    if not isinstance(tier, str) or not tier.strip():
+        return usage
+    return replace(usage, raw_usage={**(usage.raw_usage or {}), "service_tier": tier.strip().lower()})
 
 
 def normalize_usage(

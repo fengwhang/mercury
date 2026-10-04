@@ -2223,6 +2223,27 @@ def _validate_job_mode_invariants(
             )
 
 
+def _oneshot_past_grace_error(run_at: Any) -> ValueError:
+    return ValueError(
+        f"Requested one-shot time {run_at} is more than "
+        f"{ONESHOT_GRACE_SECONDS}s in the past and cannot be scheduled.")
+
+
+def _next_run_or_reject_past_oneshot(
+    parsed_schedule: Dict[str, Any], label: str, fallback_run_at: Any, what: str,
+) -> Optional[str]:
+    """``compute_next_run`` that raises (after a warning log) for a one-shot outside the grace
+    window, so a ghost job with ``next_run_at=None`` can never be stored."""
+    next_run_at = compute_next_run(parsed_schedule)
+    if parsed_schedule.get("kind") == "once" and next_run_at is None:
+        run_at = parsed_schedule.get("run_at") or fallback_run_at
+        logger.warning(
+            "Rejecting one-shot cron job %s'%s': run_at %s is outside the %ss grace window",
+            what, label, run_at, ONESHOT_GRACE_SECONDS)
+        raise _oneshot_past_grace_error(run_at)
+    return next_run_at
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -2536,6 +2557,19 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     for job in jobs:
         job["latest_execution"] = latest.get(job.get("id", ""))
     return jobs
+
+
+def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job_id: str) -> None:
+    """Parse a string schedule, refresh ``schedule_display`` and (unless paused) ``next_run_at``."""
+    updated_schedule = updated["schedule"]
+    if isinstance(updated_schedule, str):
+        updated_schedule = parse_schedule(updated_schedule)
+        updated["schedule"] = updated_schedule
+    updated["schedule_display"] = updates.get(
+        "schedule_display", updated_schedule.get("display", updated.get("schedule_display")))
+    if updated.get("state") != "paused":
+        updated["next_run_at"] = _next_run_or_reject_past_oneshot(
+            updated_schedule, updated.get("name", job_id), updated_schedule, "update ")
 
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:

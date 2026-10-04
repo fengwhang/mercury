@@ -239,6 +239,17 @@ _EXPIRED_CONFIRMATION_SENTINEL = (
 )
 
 
+def canonicalize_replay_history(
+    agent_history: List[Dict[str, Any]], *, now: Optional[float] = None
+) -> List[Dict[str, Any]]:
+    """The canonical form of the replayed prefix: interrupted tool tails stripped, the
+    dangling tool-call tail dropped, stale dangerous confirmations neutralized. Consumers
+    reading persisted history and the live request copy must agree byte-for-byte on it."""
+    cleaned = strip_interrupted_tool_tails(agent_history)
+    cleaned = strip_dangling_tool_call_tail(cleaned)
+    return strip_stale_dangerous_confirmations(cleaned, now=now)
+
+
 def is_dangerous_confirmation(content: Any) -> bool:
     """Return True if a user-message text matches a known dangerous confirmation.
 
