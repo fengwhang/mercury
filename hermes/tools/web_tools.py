@@ -92,6 +92,27 @@ from tools.tool_backend_helpers import (  # noqa: F401
 from tools.url_safety import async_is_safe_url, normalize_url_for_request, sensitive_query_param_name
 import sys
 
+# Ported web_* split helpers (tools.web_tools_{rescue,truncate,extract}):
+# ``_rescue_search`` / ``convert_base64_images_to_links`` replace the identical
+# inline defs below; the rest are re-exported so ported callers and tests keep
+# reaching the full helper surface on tools.web_tools.
+from tools.web_tools_rescue import _managed_search_fallback, _rescue_search  # noqa: F401 — _managed_search_fallback re-exported for ported callers
+from tools.web_tools_truncate import (  # noqa: F401 — _effective_char_limit/_trim_results/_truncate_results re-exported for ported callers
+    _effective_char_limit,
+    _trim_results,
+    _truncate_results,
+    convert_base64_images_to_links,
+)
+from tools.web_tools_extract import (  # noqa: F401 — re-exported for ported callers
+    _extract_safe_urls,
+    _merge_in_order,
+    _no_provider_error,
+    _resolve_extract_provider,
+    _result_entry,
+    _strict_selection_error,
+    _validate_extract_urls,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -466,42 +487,6 @@ def _rescue_eligible(provider) -> bool:
         return False
 
 
-def _rescue_search(provider_name: str, original_error: str, query: str, limit: int) -> dict:
-    """One-shot keyless-ring rescue for a failed keyed/configured search.
-
-    Stateless by design: this call alone routes to the free-tier ring; the
-    NEXT web_search call attempts the chosen backend again. The result is
-    annotated with the original backend failure so the model (and the
-    user) can see the configured backend needs attention.
-    """
-    from plugins.web.keyless_mcp import search_with_failover
-
-    logger.warning(
-        "web_search backend '%s' failed (%s); one-shot keyless rescue",
-        provider_name, (original_error or "")[:200],
-    )
-    rescued = search_with_failover(provider_name, query, limit)
-    if rescued.get("success"):
-        data = rescued.setdefault("data", {})
-        data["rescued_from"] = provider_name
-        data["backend_error"] = (
-            f"Configured backend '{provider_name}' failed this call "
-            f"({(original_error or 'unknown error')[:300]}); result served "
-            "by the keyless free tier. The next call will use "
-            f"'{provider_name}' again."
-        )
-        return rescued
-    # Ring also failed: surface the ORIGINAL backend error (it names the
-    # user's configured setup) with the rescue note appended.
-    return {
-        "success": False,
-        "error": (
-            f"{original_error or 'search failed'} "
-            f"(keyless rescue also failed: {rescued.get('error', 'unknown')})"
-        ),
-    }
-
-
 def _policy_blocked_result(result: dict) -> bool:
     """True when an extract result failed because of the user's website
     policy — an intentional refusal, never a backend outage. Policy blocks
@@ -638,36 +623,6 @@ def _get_extract_char_limit() -> int:
     except (TypeError, ValueError):
         pass
     return DEFAULT_EXTRACT_CHAR_LIMIT
-
-
-def convert_base64_images_to_links(text: str) -> str:
-    """Replace inline base64 image blobs with labeled markdown links.
-
-    base64 image payloads are token bombs (a single inline PNG can be tens of
-    thousands of characters), so we never send the raw bytes to the model. But
-    we preserve the fact that an image was there, and its alt text, as an
-    inspectable placeholder. Real (http/https) markdown image links are left
-    untouched so the agent can ``web_extract`` / ``vision_analyze`` them.
-
-    Transformations:
-      ``![alt](data:image/png;base64,AAAA...)``  -> ``[IMAGE: alt](base64 image omitted)``
-      ``(data:image/png;base64,AAAA...)``        -> ``[IMAGE]``
-      bare ``data:image/...;base64,AAAA...``     -> ``[IMAGE]``
-    """
-    # 1. Markdown image with base64 source -> keep alt text, drop the blob.
-    def _md_repl(m: "re.Match[str]") -> str:
-        alt = (m.group("alt") or "").strip()
-        return f"[IMAGE: {alt}]" if alt else "[IMAGE]"
-
-    md_b64 = re.compile(
-        r"!\[(?P<alt>[^\]]*)\]\(\s*data:image/[^;]+;base64,[A-Za-z0-9+/=\s]+\)"
-    )
-    out = md_b64.sub(_md_repl, text)
-
-    # 2. Parenthesised base64 (non-markdown) and 3. bare base64 -> [IMAGE].
-    out = re.sub(r"\(\s*data:image/[^;]+;base64,[A-Za-z0-9+/=\s]+\)", "[IMAGE]", out)
-    out = re.sub(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+", "[IMAGE]", out)
-    return out
 
 
 def _store_full_text(url: str, content: str) -> Optional[str]:

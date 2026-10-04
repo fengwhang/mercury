@@ -201,6 +201,45 @@ try:
 except ImportError:
     _is_browser_use_cli_mode = lambda: False  # noqa: E731
 
+# Wired from the extracted browser_tool_* splits: these replace behavior-identical
+# inline defs (verified functionally identical, transitive chains included); call
+# sites are unchanged. Everything genuinely diverged from the splits stays inline.
+from tools.browser_tool_cdp import _get_dialog_policy_config, _stop_cdp_supervisor
+from tools.browser_tool_cloud import _ensure_browser_plugins_loaded
+from tools.browser_tool_eval_policy import (
+    _camofox_current_page_private_url,
+    _decode_js_string_literal,
+    _decoded_js_string_literals,
+    _expression_targets_private_url,
+    _risky_browser_eval_reason,
+    _sensitive_browser_eval_token_reason,
+)
+from tools.browser_tool_install import _discover_homebrew_node_dirs, _running_in_docker
+from tools.browser_tool_lightpanda_fallback import (
+    _annotate_lightpanda_fallback,
+    _copy_fallback_warning,
+    _lightpanda_fallback_reason,
+    _needs_lightpanda_fallback,
+)
+from tools.browser_tool_lifecycle import (
+    _cleanup_old_screenshots,
+    _kill_process_tree,
+    _legacy_kill_process_tree,
+    _session_expiry_timestamp,
+    _session_has_expired,
+    _socket_dir_idle_seconds,
+    _write_owner_pid,
+)
+from tools.browser_tool_session import (
+    _apply_chromium_sandbox_args,
+    _browser_daemon_responsive,
+    _create_cdp_session,
+    _local_backend_process_dead,
+    _needs_chromium_sandbox_bypass,
+    _unlink_command_output_files,
+)
+from tools.browser_tool_snapshot import _extract_screenshot_path_from_text, _store_full_snapshot
+
 logger = logging.getLogger(__name__)
 
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
@@ -219,29 +258,6 @@ _SANE_PATH_DIRS = (
     "/bin",
 )
 _SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)
-
-
-@functools.lru_cache(maxsize=1)
-def _discover_homebrew_node_dirs() -> tuple[str, ...]:
-    """Find Homebrew versioned Node.js bin directories (e.g. node@20, node@24).
-
-    When Node is installed via ``brew install node@24`` and NOT linked into
-    /opt/homebrew/bin, agent-browser isn't discoverable on the default PATH.
-    This function finds those directories so they can be prepended.
-    """
-    dirs: list[str] = []
-    homebrew_opt = "/opt/homebrew/opt"
-    if not os.path.isdir(homebrew_opt):
-        return tuple(dirs)
-    try:
-        for entry in os.listdir(homebrew_opt):
-            if entry.startswith("node") and entry != "node":
-                bin_dir = os.path.join(homebrew_opt, entry, "bin")
-                if os.path.isdir(bin_dir):
-                    dirs.append(bin_dir)
-    except OSError:
-        pass
-    return tuple(dirs)
 
 
 def _browser_candidate_path_dirs() -> list[str]:
@@ -395,36 +411,6 @@ def _get_open_command_timeout(*, first_open: bool = False) -> int:
     return max(base, floor)
 
 
-def _needs_chromium_sandbox_bypass() -> bool:
-    """Return True when Chromium needs --no-sandbox to start reliably."""
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        return True
-    if _running_in_docker():
-        return True
-    userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
-    try:
-        with open(userns_restrict, encoding="utf-8") as f:
-            if f.read().strip() == "1":
-                return True
-    except OSError:
-        pass
-    return False
-
-
-def _apply_chromium_sandbox_args(browser_env: Dict[str, str]) -> None:
-    """Add required Chromium sandbox flags without overriding user settings."""
-    if (
-        "AGENT_BROWSER_ARGS" not in browser_env
-        and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
-        and _needs_chromium_sandbox_bypass()
-    ):
-        logger.debug(
-            "browser: sandbox bypass needed (root/docker/AppArmor userns) — "
-            "injecting --no-sandbox"
-        )
-        browser_env["AGENT_BROWSER_ARGS"] = "--no-sandbox,--disable-dev-shm-usage"
-
-
 def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:
     """Best-effort read of agent-browser stdout/stderr temp files."""
     stdout = stderr = ""
@@ -439,14 +425,6 @@ def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str,
         else:
             stderr = text
     return stdout, stderr
-
-
-def _unlink_command_output_files(*paths: str) -> None:
-    for path in paths:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
 
 
 def _format_browser_timeout_error(
@@ -617,42 +595,6 @@ def _get_cdp_override() -> str:
     return _resolve_cdp_override(raw)
 
 
-def _get_dialog_policy_config() -> Tuple[str, float]:
-    """Read ``browser.dialog_policy`` + ``browser.dialog_timeout_s`` from config.
-
-    Returns a ``(policy, timeout_s)`` tuple, falling back to the supervisor's
-    defaults when keys are absent or invalid.
-    """
-    # Defer imports so browser_tool can be imported in minimal environments.
-    from tools.browser_supervisor import (
-        DEFAULT_DIALOG_POLICY,
-        DEFAULT_DIALOG_TIMEOUT_S,
-        _VALID_POLICIES,
-    )
-
-    try:
-        from mercury_cli.config import read_raw_config
-
-        cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
-        if not isinstance(browser_cfg, dict):
-            return DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S
-        policy = str(browser_cfg.get("dialog_policy") or DEFAULT_DIALOG_POLICY)
-        if policy not in _VALID_POLICIES:
-            logger.debug("Invalid browser.dialog_policy=%r; using default", policy)
-            policy = DEFAULT_DIALOG_POLICY
-        timeout_raw = browser_cfg.get("dialog_timeout_s")
-        try:
-            timeout_s = float(timeout_raw) if timeout_raw is not None else DEFAULT_DIALOG_TIMEOUT_S
-            if timeout_s <= 0:
-                timeout_s = DEFAULT_DIALOG_TIMEOUT_S
-        except (TypeError, ValueError):
-            timeout_s = DEFAULT_DIALOG_TIMEOUT_S
-        return policy, timeout_s
-    except Exception:
-        return DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S
-
-
 def _ensure_cdp_supervisor(task_id: str) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
@@ -699,16 +641,6 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
             task_id,
             exc,
         )
-
-
-def _stop_cdp_supervisor(task_id: str) -> None:
-    """Stop the CDP supervisor for ``task_id`` if one exists. No-op otherwise."""
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
-
-        SUPERVISOR_REGISTRY.stop(task_id)
-    except Exception as exc:
-        logger.debug("CDP supervisor stop for task=%s failed (non-fatal): %s", task_id, exc)
 
 
 # ============================================================================
@@ -778,25 +710,6 @@ def _is_legacy_provider_registry_overridden() -> bool:
         return len(_PROVIDER_REGISTRY) != len(_DEFAULT_PROVIDER_REGISTRY)
     except Exception:
         return False
-
-
-def _ensure_browser_plugins_loaded() -> None:
-    """Idempotently trigger plugin discovery so the browser registry is populated.
-
-    Normally `model_tools` is imported early in any session and that
-    triggers `discover_plugins()` as a side effect. But `_get_cloud_provider`
-    can be called from contexts that haven't gone through `model_tools` —
-    standalone scripts, certain unit-test paths, the parity-sweep harness.
-    Make discovery idempotent and side-effect-only here so users always
-    see registered plugins regardless of import order. Cheap: subsequent
-    calls early-return inside `_ensure_plugins_discovered`.
-    """
-    try:
-        from mercury_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-    except Exception as exc:
-        logger.debug("Browser plugin discovery failed (non-fatal): %s", exc)
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
@@ -1200,99 +1113,6 @@ def lightpanda_engine_status() -> Tuple[bool, str]:
     if bu_mode:
         return True, "Browser Use mode: Mercury spawns `lightpanda serve` per session"
     return True, "built-in browser tools: agent-browser --engine lightpanda"
-
-
-def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any]) -> Optional[str]:
-    """Return the user-visible reason a Lightpanda result needs Chrome fallback.
-
-    ``None`` means no fallback should run.  The returned string is copied into
-    the fallback result so CLI/TUI/gateway users can see when Mercury silently
-    switched from Lightpanda to Chrome for completeness.
-    """
-    if engine != "lightpanda":
-        return None
-
-    # Only retry commands where Chrome can meaningfully produce a different
-    # result. Session-management commands (close, record) are tied to the
-    # engine's daemon and can't be retried on a different engine.
-    _FALLBACK_ELIGIBLE = {"open", "snapshot", "screenshot", "eval", "click",
-                          "fill", "scroll", "back", "press", "console", "errors"}
-    if command not in _FALLBACK_ELIGIBLE:
-        return None
-
-    # Explicit failure
-    if not result.get("success"):
-        error = str(result.get("error") or "command failed").strip()
-        return f"Lightpanda {command!r} failed ({error}); retried with Chrome."
-
-    data = result.get("data", {})
-
-    if command == "snapshot":
-        snap = data.get("snapshot", "")
-        # Empty or near-empty snapshots indicate Lightpanda couldn't render
-        if not snap or len(snap.strip()) < 20:
-            return "Lightpanda returned an empty/too-short snapshot; retried with Chrome."
-
-    if command == "screenshot":
-        # Lightpanda returns a placeholder PNG with its panda logo.
-        # Since LP PR #1766 resized it to 1920x1080, the placeholder is
-        # ~17 KB.  Real Chromium screenshots are typically 100 KB+.
-        path = data.get("path", "")
-        if path:
-            try:
-                size = os.path.getsize(path)
-                if size < 20480:
-                    logger.debug("Lightpanda screenshot is suspiciously small (%d bytes), "
-                                 "triggering Chrome fallback", size)
-                    return (
-                        f"Lightpanda screenshot was suspiciously small ({size} bytes); "
-                        "retried with Chrome."
-                    )
-            except OSError:
-                return "Lightpanda screenshot file was missing/unreadable; retried with Chrome."
-
-    return None
-
-
-def _needs_lightpanda_fallback(engine: str, command: str, result: Dict[str, Any]) -> bool:
-    """Check if a Lightpanda result should trigger an automatic Chrome fallback."""
-    return _lightpanda_fallback_reason(engine, command, result) is not None
-
-
-def _annotate_lightpanda_fallback(result: Dict[str, Any], reason: str) -> Dict[str, Any]:
-    """Add a user-visible Chrome fallback warning to a browser command result."""
-    warning = (
-        "⚠ Lightpanda fallback: Chrome was used for this browser action. "
-        f"{reason}"
-    )
-    annotated = dict(result)
-    annotated["fallback_warning"] = warning
-    annotated["browser_engine"] = "chrome"
-    annotated["browser_engine_fallback"] = {
-        "from": "lightpanda",
-        "to": "chrome",
-        "reason": reason,
-    }
-    data = annotated.get("data")
-    if isinstance(data, dict):
-        data = dict(data)
-        data.setdefault("fallback_warning", warning)
-        data.setdefault("browser_engine", "chrome")
-        data.setdefault(
-            "browser_engine_fallback",
-            {"from": "lightpanda", "to": "chrome", "reason": reason},
-        )
-        annotated["data"] = data
-    return annotated
-
-
-def _copy_fallback_warning(target: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
-    """Copy browser fallback metadata from an internal result into a tool response."""
-    if result.get("fallback_warning"):
-        target["fallback_warning"] = result["fallback_warning"]
-        target["browser_engine"] = result.get("browser_engine")
-        target["browser_engine_fallback"] = result.get("browser_engine_fallback")
-    return target
 
 
 def _run_chrome_fallback_command(
@@ -2270,42 +2090,6 @@ _cleanup_running = False
 _cleanup_lock = threading.Lock()
 
 
-def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
-    """Return a provider-authoritative session expiry as epoch seconds.
-
-    Cloud providers may omit ``expires_at``. Unknown or malformed values are
-    therefore treated as having no known expiry, preserving the existing
-    lifecycle for local browsers and providers without an expiry contract.
-    """
-    value = session_info.get("expires_at")
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    if not isinstance(value, str) or not value.strip():
-        return None
-
-    normalized = value.strip()
-    if normalized.endswith(("Z", "z")):
-        normalized = f"{normalized[:-1]}+00:00"
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        logger.warning("Ignoring invalid cloud browser session expiry timestamp")
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.timestamp()
-
-
-def _session_has_expired(
-    session_info: Dict[str, Any], *, now: Optional[float] = None
-) -> bool:
-    """Return whether a cached browser session crossed its provider deadline."""
-    expires_at = _session_expiry_timestamp(session_info)
-    if expires_at is None:
-        return False
-    return (time.time() if now is None else now) >= expires_at
-
-
 def _emergency_cleanup_all_sessions():
     """
     Emergency cleanup of all active browser sessions.
@@ -2401,24 +2185,6 @@ def _cleanup_inactive_browser_sessions():
             logger.warning("Error cleaning up inactive session %s: %s", task_id, e)
 
 
-def _write_owner_pid(socket_dir: str, session_name: str) -> None:
-    """Record the current mercury PID as the owner of a browser socket dir.
-
-    Written atomically to ``<socket_dir>/<session_name>.owner_pid`` so the
-    orphan reaper can distinguish daemons owned by a live mercury process
-    (don't reap) from daemons whose owner crashed (reap).  Best-effort —
-    an OSError here just falls back to the legacy ``tracked_names``
-    heuristic in the reaper.
-    """
-    try:
-        path = os.path.join(socket_dir, f"{session_name}.owner_pid")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(str(os.getpid()))
-    except OSError as exc:
-        logger.debug("Could not write owner_pid file for %s: %s",
-                     session_name, exc)
-
-
 def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
                                     session_name: str) -> bool:
     """Confirm a live PID is genuinely *this* session's agent-browser daemon.
@@ -2503,40 +2269,6 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
         return False
 
     return True
-
-
-def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
-    """Seconds since anything in ``socket_dir`` was last written.
-
-    Every browser command writes ``_stdout_<cmd>`` / ``_stderr_<cmd>`` temp
-    files into the session's socket dir, so the newest mtime under that dir is
-    a last-activity marker that — unlike ``_session_last_activity`` — survives
-    mercury restarts and does not depend on in-memory bookkeeping surviving an
-    exception path.
-
-    The directory's own mtime is not sufficient: command names repeat, so
-    rewriting an existing ``_stdout_click`` updates that file's mtime but not
-    the directory's.  Scan the entries too.
-
-    Returns ``None`` when the age cannot be determined, so callers can fail
-    safe (treat unknown age as "too young to reap").
-    """
-    try:
-        latest = os.path.getmtime(socket_dir)
-    except OSError:
-        return None
-
-    try:
-        with os.scandir(socket_dir) as entries:
-            for entry in entries:
-                try:
-                    latest = max(latest, entry.stat().st_mtime)
-                except OSError:
-                    continue
-    except OSError:
-        pass  # dir mtime alone is still a usable lower bound
-
-    return max(0.0, time.time() - latest)
 
 
 def _reap_orphaned_browser_sessions():
@@ -3014,30 +2746,6 @@ def _create_lightpanda_session(task_id: str) -> Dict[str, Any]:
     }
 
 
-def _local_backend_process_dead(session_info: Dict[str, Any]) -> bool:
-    """True for a Lightpanda session whose ``lightpanda serve`` is gone."""
-    if not (session_info.get("features") or {}).get("lightpanda"):
-        return False
-    from tools.browser_lightpanda import get_server
-
-    server = get_server(session_info.get("session_name", ""))
-    return server is None or not server.is_alive()
-
-
-def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
-    """Create a session that connects to a user-supplied CDP endpoint."""
-    import uuid
-    session_name = f"cdp_{uuid.uuid4().hex[:10]}"
-    logger.info("Created CDP browser session %s → %s for task %s",
-                session_name, _sanitize_url_for_logs(cdp_url), task_id)
-    return {
-        "session_name": session_name,
-        "bb_session_id": None,
-        "cdp_url": cdp_url,
-        "features": {"cdp_override": True},
-    }
-
-
 def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Get or create session info for the given session key.
@@ -3340,87 +3048,6 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     )
 
 
-def _kill_process_tree(proc: "subprocess.Popen") -> None:
-    """Best-effort kill of *proc* and any descendants it spawned.
-
-    ``Popen.kill()`` only signals the direct child PID. npm/npx routinely
-    fork further processes (registry-fetch helpers, npm's own lifecycle
-    runner, agent-browser's own detached daemon grandchild) that can survive
-    a plain ``kill()`` of the top-level PID and keep a ``capture_output``-style
-    pipe open, hanging the caller's ``communicate()`` past the nominal
-    timeout — the same orphaned-pipe hazard already hit in production on
-    POSIX (see ``tools/process_registry.py``'s ``_reader_loop``, issue
-    #68915: a backgrounded grandchild inheriting a pipe's write end kept it
-    from ever reaching EOF). That hazard is cross-platform, not
-    Windows-specific; what *is* Windows-specific is the lack of a remedy
-    other than killing the tree — anonymous pipes there don't support
-    overlapped I/O, so there's no ``select()``-style non-blocking read to
-    poll around a stuck grandchild the way POSIX can. Killing the whole
-    process group/tree the child was launched into reaches those
-    descendants on both platforms.
-
-    Fires SIGTERM then SIGKILL back-to-back with no grace period between
-    them (unlike ``tools/mcp_stdio_watchdog.py``'s ``_terminate_process_group``,
-    which waits between signals because it's reacting to a live daemon being
-    orphaned). By the time this is called, the caller has already burned its
-    full timeout budget waiting for a graceful exit — there's nothing to gain
-    from waiting again here, only more delay on an already-timed-out call.
-
-    Delegates to :func:`agent.deadline.kill_process_tree` (#85125 4d): same
-    ``taskkill /T /F`` on Windows and killpg-when-group-leader on POSIX, plus
-    a psutil descendant sweep that also reaches descendants that ``setsid``'d
-    into their own session (agent-browser's detached daemon grandchild).
-    SIGKILL-only instead of the old zero-grace SIGTERM→SIGKILL pair — the
-    grace period was already zero, so the observable effect is identical.
-    Any delegation failure falls back to the original local implementation
-    (:func:`_legacy_kill_process_tree`); never raises either way.
-    """
-    try:
-        from agent.deadline import kill_process_tree as _deadline_kill_tree
-
-        _deadline_kill_tree(proc.pid)
-    except Exception:
-        _legacy_kill_process_tree(proc)
-
-
-def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
-    """Pre-#85125 local tree-kill — fallback when agent.deadline is unavailable."""
-    if os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                check=False,
-                capture_output=True,
-                stdin=subprocess.DEVNULL,
-            )
-        except Exception:
-            pass
-        return
-    # os.killpg/signal.SIGKILL don't exist on Windows; this branch is
-    # POSIX-only (the `os.name == "nt"` check above already returns first
-    # on Windows), but resolve them defensively via getattr anyway so an
-    # accidental future refactor that drops that guard degrades to a plain
-    # kill() instead of AttributeError — same discipline as
-    # tools/mcp_stdio_watchdog.py's _terminate_process_group.
-    killpg = getattr(os, "killpg", None)
-    if killpg is None:  # windows-footgun: ok - non-POSIX fallback
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):
-        return
-    sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-    for sig in (signal.SIGTERM, sigkill):
-        try:
-            killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
-            return
-
-
 def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
     """Best-effort pre-fetch of the agent-browser npm package via npx.
 
@@ -3501,27 +3128,6 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
         return False
 
 
-def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
-    """Extract a screenshot file path from agent-browser human-readable output."""
-    if not text:
-        return None
-
-    patterns = [
-        r"Screenshot saved to ['\"](?P<path>/[^'\"]+?\.png)['\"]",
-        r"Screenshot saved to (?P<path>/\S+?\.png)(?:\s|$)",
-        r"(?P<path>/\S+?\.png)(?:\s|$)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            path = match.group("path").strip().strip("'\"")
-            if path:
-                return path
-
-    return None
-
-
 def _discard_timed_out_browser_session(
     task_id: str,
     session_info: Dict[str, Any],
@@ -3574,41 +3180,6 @@ def _read_browser_daemon_pid(task_socket_dir: str, session_name: str) -> Optiona
         return int(Path(pid_file).read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
-
-
-def _browser_daemon_responsive(task_socket_dir: str, probe_timeout_s: float = 1.0) -> bool:
-    """Cheap liveness probe: can we connect to the daemon's control socket?
-
-    The agent-browser daemon listens on a unix socket inside the session's
-    socket dir.  A successful connect proves the daemon's accept loop is
-    alive (the timed-out command was wedged on the page/CDP side, not the
-    daemon).  A refused / missing / timed-out connect means the daemon is
-    wedged or dead.  Windows agent-browser uses named pipes, not unix
-    sockets — no probe is possible there, so we conservatively report
-    unresponsive (tree-kill + respawn is the safe recovery).
-    """
-    if os.name == "nt":
-        return False
-    import socket as socket_mod
-
-    if not hasattr(socket_mod, "AF_UNIX"):
-        return False
-    try:
-        entries = os.listdir(task_socket_dir)
-    except OSError:
-        return False
-    sock_paths = [
-        os.path.join(task_socket_dir, e) for e in entries if e.endswith(".sock")
-    ]
-    for sock_path in sock_paths:
-        try:
-            with socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM) as s:
-                s.settimeout(probe_timeout_s)
-                s.connect(sock_path)
-                return True
-        except OSError:
-            continue
-    return False
 
 
 def _handle_browser_command_timeout(
@@ -4026,54 +3597,6 @@ def _run_browser_command(
         return _annotate_lightpanda_fallback(fallback_result, fallback_reason)
 
     return result
-
-
-def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
-    """Write a full page snapshot to cache/web and return its absolute path.
-
-    Called whenever a snapshot exceeds SNAPSHOT_SUMMARIZE_THRESHOLD and the
-    model is about to receive a truncated or LLM-summarized view. Mirrors
-    ``web_tools._store_full_text``: the file lands in the same cache/web
-    directory (mounted read-only into remote backends via
-    credential_files._CACHE_DIRS) so the agent's read_file/terminal tools can
-    page through the complete accessibility tree — including element refs that
-    the truncated view dropped — on any backend.
-
-    The stored copy is secret-redacted (same force-redaction boundary as
-    ``_redact_browser_output``) since page-rendered API keys or tokens must
-    not be written to disk unmasked. The filename is keyed on a content hash,
-    so repeated snapshots of the same page state dedupe to one file. Returns
-    None on failure (storage is best-effort; the truncated view is still
-    returned to the model).
-    """
-    try:
-        import hashlib
-        from mercury_constants import get_hermes_dir
-        from agent.redact import redact_sensitive_text
-
-        content = redact_sensitive_text(snapshot_text, force=True)
-        if len(content) > MAX_STORED_SNAPSHOT_CHARS:
-            content = (
-                content[:MAX_STORED_SNAPSHOT_CHARS]
-                + f"\n\n[... stored copy truncated at {MAX_STORED_SNAPSHOT_CHARS:,} chars "
-                f"of {len(content):,} ...]"
-            )
-        from tools.spill_safety import ensure_spill_dir, write_text_exclusive
-
-        cache_dir = get_hermes_dir("cache/web", "web_cache")
-        ensure_spill_dir(cache_dir, private=False)
-        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:10]
-        path = cache_dir / f"browser-snapshot-{digest}.txt"
-        # Deterministic filename in a well-known dir: refuse symlinks via
-        # lstat-unlink + exclusive create. Re-snapshotting the same page
-        # state legitimately overwrites (same content-hash name). Not
-        # private: cache/web is bind-mounted into remote backends whose
-        # container UID must be able to read it.
-        write_text_exclusive(path, content, private=False, overwrite=True)
-        return str(path)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Failed to store full browser snapshot: %s", exc)
-        return None
 
 
 def _truncate_snapshot(snapshot_text: str, max_chars: Optional[int] = None) -> str:
@@ -4869,23 +4392,6 @@ def _eval_ssrf_guard_active(effective_task_id: str) -> bool:
 _JS_URL_LITERAL_RE = re.compile(r"""https?://[^\s'"`)\]<>]+""", re.IGNORECASE)
 
 
-def _expression_targets_private_url(expression: str) -> Optional[str]:
-    """Return the first private/always-blocked URL literal in a JS expression.
-
-    Best-effort: scans for ``http(s)://...`` literals (fetch/XHR/navigation
-    targets the agent may have embedded) and returns the first one that targets
-    a private/internal address or the always-blocked cloud-metadata floor.
-    Returns ``None`` when no such literal is found.
-    """
-    if not isinstance(expression, str):
-        return None
-    for match in _JS_URL_LITERAL_RE.findall(expression):
-        candidate = match.rstrip(".,;")
-        if _is_always_blocked_url(candidate) or not _is_safe_url(candidate):
-            return candidate
-    return None
-
-
 def _current_page_private_url(effective_task_id: str) -> Optional[str]:
     """Return the current page URL when it targets a private/internal address.
 
@@ -4984,61 +4490,6 @@ def _restrict_browser_evaluate() -> bool:
     except Exception as e:
         logger.debug("Could not read browser.restrict_evaluate from config: %s", e)
         return False
-
-
-def _decode_js_string_literal(literal: str) -> str:
-    """Best-effort decode of a JavaScript string literal for policy checks.
-
-    This is not a JS parser.  It only normalizes common escaped property names
-    such as ``document["co\\x6fkie"]`` before the fail-closed sensitive-token
-    check below.
-    """
-    if len(literal) < 2:
-        return literal
-    body = literal[1:-1]
-    try:
-        return bytes(body, "utf-8").decode("unicode_escape")
-    except Exception:
-        return body
-
-
-def _decoded_js_string_literals(expression: str) -> list[str]:
-    return [_decode_js_string_literal(match.group(0)) for match in _JS_STRING_LITERAL_RE.finditer(expression)]
-
-
-def _sensitive_browser_eval_token_reason(expression: str) -> Optional[str]:
-    """Return a risk reason for direct or quoted sensitive browser primitives.
-
-    ``browser_console(expression=...)`` executes in the page origin.  A denylist
-    that only searches direct spellings like ``document.cookie`` and ``fetch(``
-    misses equivalent JavaScript property access such as ``document["cookie"]``
-    or ``globalThis["fetch"](...)``.  Treat sensitive primitive names as risky
-    whether they appear as identifiers or decoded string-literal property names.
-    Concatenating all string literals catches simple obfuscations like
-    ``document["coo" + "kie"]`` while the config opt-in preserves the escape
-    hatch for trusted pages.
-    """
-    string_literals = _decoded_js_string_literals(expression)
-    concatenated_literals = "".join(string_literals).lower()
-    for token, reason in _SENSITIVE_BROWSER_EVAL_TOKENS:
-        if re.search(rf"\b{re.escape(token)}\b", expression, re.I):
-            return reason
-        token_lower = token.lower()
-        if any(token_lower in literal.lower() for literal in string_literals):
-            return reason
-        if token_lower in concatenated_literals:
-            return reason
-    return None
-
-
-def _risky_browser_eval_reason(expression: str) -> Optional[str]:
-    """Return a human-readable reason if a JS expression uses risky primitives."""
-    if not expression:
-        return None
-    for pattern, reason in _RISKY_BROWSER_EVAL_PATTERNS:
-        if pattern.search(expression):
-            return reason
-    return _sensitive_browser_eval_token_reason(expression)
 
 
 def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
@@ -5221,31 +4672,6 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                 ),
             }, ensure_ascii=False)
     return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False, default=str)
-
-
-def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str]:
-    """Return the Camofox page URL when it targets a private/internal address.
-
-    Camofox analogue of ``_current_page_private_url`` (evaluate endpoint instead
-    of the agent-browser CLI).  Returns ``None`` when the page is public, the URL
-    can't be determined, or the probe errors (fail-open on probe failure,
-    matching the snapshot/vision guards — do not change to fail-closed without
-    also changing the sibling).
-    """
-    try:
-        from tools.browser_camofox import _post
-
-        data = _post(
-            f"/tabs/{tab_id}/evaluate",
-            body={"expression": "window.location.href", "userId": user_id},
-        )
-        current_url = str(data.get("result") if isinstance(data, dict) else data or "")
-        current_url = current_url.strip().strip('"').strip("'")
-        if current_url and (_is_always_blocked_url(current_url) or not _is_safe_url(current_url)):
-            return current_url
-    except Exception as exc:
-        logger.debug("_camofox_current_page_private_url: probe failed (%s)", exc)
-    return None
 
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
@@ -5750,30 +5176,6 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         return json.dumps(error_info, ensure_ascii=False)
 
 
-def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
-    """Remove browser screenshots older than max_age_hours to prevent disk bloat.
-
-    Throttled to run at most once per hour per directory to avoid repeated
-    scans on screenshot-heavy workflows.
-    """
-    key = str(screenshots_dir)
-    now = time.time()
-    if now - _last_screenshot_cleanup_by_dir.get(key, 0.0) < 3600:
-        return
-    _last_screenshot_cleanup_by_dir[key] = now
-
-    try:
-        cutoff = time.time() - (max_age_hours * 3600)
-        for f in screenshots_dir.glob("browser_screenshot_*.png"):
-            try:
-                if f.stat().st_mtime < cutoff:
-                    f.unlink()
-            except Exception as e:
-                logger.debug("Failed to clean old screenshot %s: %s", f, e)
-    except Exception as e:
-        logger.debug("Screenshot cleanup error (non-critical): %s", e)
-
-
 def _cleanup_old_recordings(max_age_hours=72):
     """Remove browser recordings older than max_age_hours to prevent disk bloat."""
     try:
@@ -6167,17 +5569,6 @@ def _maybe_autoinstall_chromium() -> bool:
     global _cached_chromium_installed
     _cached_chromium_installed = None
     return _chromium_installed()
-
-
-def _running_in_docker() -> bool:
-    """Best-effort detection of whether we're inside a Docker container."""
-    if os.path.exists("/.dockerenv"):
-        return True
-    try:
-        with open("/proc/1/cgroup", "rt", encoding="utf-8") as fp:
-            return "docker" in fp.read()
-    except OSError:
-        return False
 
 
 def check_browser_requirements() -> bool:

@@ -28,6 +28,22 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
+# Dialog/frame data model + policy constants live in the ported split modules
+# (shared with ``DialogSupervisionMixin`` / ``FrameTrackingMixin``); imported
+# here so snapshot consumers keep importing them from ``tools.browser_supervisor``.
+from tools.browser_supervisor_dialogs import (
+    DEFAULT_DIALOG_POLICY,
+    DEFAULT_DIALOG_TIMEOUT_S,
+    DIALOG_POLICY_AUTO_ACCEPT,
+    DIALOG_POLICY_AUTO_DISMISS,
+    DIALOG_POLICY_MUST_RESPOND,
+    RECENT_DIALOGS_MAX,
+    _VALID_POLICIES,
+    DialogRecord,
+    PendingDialog,
+)
+from tools.browser_supervisor_frames import FRAME_TREE_MAX_ENTRIES, FRAME_TREE_MAX_OOPIF_DEPTH, FrameInfo
+
 # ``websockets`` costs ~22 ms at import and is only needed when a supervisor
 # actually connects to a CDP endpoint (``_connect_ws``). With
 # ``from __future__ import annotations`` in force the ``ClientConnection``
@@ -57,37 +73,10 @@ def _redact_cdp_error_text(exc: object) -> str:
         return "<error redacted>"
 
 
-def _redact_supervisor_text(value: str) -> str:
-    """Redact page-originated text before exposing supervisor snapshots."""
-    from agent.redact import redact_sensitive_text
-
-    return redact_sensitive_text(value, force=True)
-
-
 # ── Config defaults ───────────────────────────────────────────────────────────
-
-DIALOG_POLICY_MUST_RESPOND = "must_respond"
-DIALOG_POLICY_AUTO_DISMISS = "auto_dismiss"
-DIALOG_POLICY_AUTO_ACCEPT = "auto_accept"
-
-_VALID_POLICIES = frozenset(
-    {DIALOG_POLICY_MUST_RESPOND, DIALOG_POLICY_AUTO_DISMISS, DIALOG_POLICY_AUTO_ACCEPT}
-)
-
-DEFAULT_DIALOG_POLICY = DIALOG_POLICY_MUST_RESPOND
-DEFAULT_DIALOG_TIMEOUT_S = 300.0
-
-# Snapshot caps for frame_tree — keep payloads bounded on ad-heavy pages.
-FRAME_TREE_MAX_ENTRIES = 30
-FRAME_TREE_MAX_OOPIF_DEPTH = 2
 
 # Ring buffer of recent console-level events (used later by PR 2 diagnostics).
 CONSOLE_HISTORY_MAX = 50
-
-# Keep the last N closed dialogs in ``recent_dialogs`` so agents on backends
-# that auto-dismiss server-side (e.g. Browserbase) can still observe that a
-# dialog fired, even if they couldn't respond to it in time.
-RECENT_DIALOGS_MAX = 20
 
 # Magic host the injected dialog bridge XHRs to.  Intercepted via the CDP
 # Fetch domain before any network resolution happens, so the hostname never
@@ -155,95 +144,6 @@ _DIALOG_BRIDGE_SCRIPT = r"""
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
-
-
-@dataclass
-class PendingDialog:
-    """A JS dialog currently open on some frame's session."""
-
-    id: str
-    type: str  # "alert" | "confirm" | "prompt" | "beforeunload"
-    message: str
-    default_prompt: str
-    opened_at: float
-    cdp_session_id: str  # which attached CDP session the dialog fired in
-    frame_id: Optional[str] = None
-    # When set, the dialog was captured via the bridge XHR path (Fetch domain).
-    # Response must be delivered via Fetch.fulfillRequest, NOT
-    # Page.handleJavaScriptDialog — the native dialog never fired.
-    bridge_request_id: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "type": self.type,
-            "message": _redact_supervisor_text(self.message),
-            "default_prompt": _redact_supervisor_text(self.default_prompt),
-            "opened_at": self.opened_at,
-            "frame_id": self.frame_id,
-        }
-
-
-@dataclass
-class DialogRecord:
-    """A historical record of a dialog that was opened and then handled.
-
-    Retained in ``recent_dialogs`` for a short window so agents on backends
-    that auto-dismiss dialogs server-side (Browserbase) can still observe
-    that a dialog fired, even though they couldn't respond to it.
-    """
-
-    id: str
-    type: str
-    message: str
-    opened_at: float
-    closed_at: float
-    closed_by: str  # "agent" | "auto_policy" | "remote" | "watchdog"
-    frame_id: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "type": self.type,
-            "message": _redact_supervisor_text(self.message),
-            "opened_at": self.opened_at,
-            "closed_at": self.closed_at,
-            "closed_by": self.closed_by,
-            "frame_id": self.frame_id,
-        }
-
-
-@dataclass
-class FrameInfo:
-    """One frame in the page's frame tree.
-
-    ``is_oopif`` means the frame has its own CDP target (separate process,
-    reachable via ``cdp_session_id``). Same-origin / srcdoc iframes share
-    the parent process and have ``is_oopif=False`` + ``cdp_session_id=None``.
-    """
-
-    frame_id: str
-    url: str
-    origin: str
-    parent_frame_id: Optional[str]
-    is_oopif: bool
-    cdp_session_id: Optional[str] = None
-    name: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        d = {
-            "frame_id": self.frame_id,
-            "url": self.url,
-            "origin": self.origin,
-            "is_oopif": self.is_oopif,
-        }
-        if self.cdp_session_id:
-            d["session_id"] = self.cdp_session_id
-        if self.parent_frame_id:
-            d["parent_frame_id"] = self.parent_frame_id
-        if self.name:
-            d["name"] = self.name
-        return d
 
 
 @dataclass
