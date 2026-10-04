@@ -427,6 +427,8 @@ export interface CreateAgentSessionOptions {
 	systemPrompt?: string | string[] | ((defaultPrompt: string[]) => string | string[]);
 	/** Already-loaded custom prompt text rendered through the bundled custom system prompt template. */
 	customSystemPrompt?: string;
+	/** Already-loaded Handlebars system-prompt template rendered with the default prompt's live context. */
+	systemPromptTemplate?: string;
 	/** Already-loaded text appended through the bundled system prompt templates. */
 	appendSystemPrompt?: string;
 	/**
@@ -1447,6 +1449,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		options.thinkingLevel !== undefined ||
 		options.systemPrompt !== undefined ||
 		options.customSystemPrompt !== undefined ||
+		options.systemPromptTemplate !== undefined ||
 		options.appendSystemPrompt !== undefined ||
 		options.toolNames !== undefined ||
 		options.customTools !== undefined;
@@ -3153,6 +3156,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					? xdevDocsAll(toolSession.xdev, settings.get("tools.xdevDocs"), settings.get("tools.xdevInlineDevices"))
 					: "",
 				resolvedCustomPrompt: options.customSystemPrompt,
+				systemPromptTemplate: options.systemPromptTemplate,
 				skills: settings.get("skillful") ? (session?.skills ?? skills) : [],
 				contextFiles,
 				tools: promptTools,

@@ -3397,6 +3397,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	/** Enter goal mode for a `--goal` startup objective and submit it immediately. */
+	async startGoalAtStartup(objective: string): Promise<void> {
+		await this.#enterGoalMode({ objective, silent: true });
+		if (!this.goalModeEnabled) return;
+		this.#resetGoalContinuationSuppression();
+		using _keepalive = new EventLoopKeepalive();
+		await this.session.prompt(objective, { streamingBehavior: "steer" });
+	}
+
 	async #enterGoalMode(options: { objective?: string; resume?: boolean; silent?: boolean }): Promise<void> {
 		if (this.goalModeEnabled) {
 			return;

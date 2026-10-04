@@ -895,6 +895,7 @@ export async function runRpcMode(
 	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
 	subagentEventBus?: EventBus,
 	input: ReadableStream<Uint8Array> = claimRpcInput(),
+	headless = false,
 ): Promise<never> {
 	// Signal to RPC clients that the server is ready to accept commands
 	// Suppress terminal notifications: they write \x07 (BEL) or OSC sequences directly to
@@ -1165,7 +1166,8 @@ export async function runRpcMode(
 		trackAgentInvokingMessage: task => {
 			extensionUserMessageTracker.trackAgentMessageTask(task);
 		},
-		uiContext: rpcUiContext,
+		// Headless hosts get the extension runner's no-op UI: hasUI=false, dialogs resolve to defaults.
+		uiContext: headless ? undefined : rpcUiContext,
 	});
 
 	// Output all agent events as JSON

@@ -142,6 +142,10 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	"--model": (result, value) => {
 		result.model = value;
 	},
+	"--goal": (result, value) => {
+		if (!value.trim()) throw new CliUsageError("--goal requires a non-empty objective.");
+		result.goal = value.trim();
+	},
 	// HERMES-OMP PATCH: --smol/--slow/--plan DELETED (model roles do not
 	// exist in Mercury). They are not tombstoned — unknown-flag handling
 	// rejects them like any other unrecognized argument.
@@ -167,6 +171,9 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	},
 	"--system-prompt": (result, value) => {
 		result.systemPrompt = value;
+	},
+	"--system-prompt-template": (result, value) => {
+		result.systemPromptTemplate = value;
 	},
 	"--append-system-prompt": (result, value) => {
 		result.appendSystemPrompt = value;
@@ -308,7 +315,8 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--advisor",
 	"--external-thinking",
 	"--prewalk",
-	"--no-prewalk",
+	"--no-title",
+	"--no-ui",
 	"--plan-yolo",
 	"--print",
 	"--print-thoughts",

@@ -24,7 +24,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { reset as resetCapabilities } from "./capability";
-import { type Args, reportUnrecognizedFlags, validateToolNames } from "./cli/args";
+import { type Args, reportUnrecognizedFlags, validateGoalLaunch, validateGoalStartup, validateToolNames } from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
 import { processFileArguments } from "./cli/file-processor";
 import { buildInitialMessage } from "./cli/initial-message";
@@ -117,6 +117,7 @@ type RunRpcMode = (
 	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
 	subagentEventBus?: EventBus,
 	input?: ReadableStream<Uint8Array>,
+	headless?: boolean,
 ) => Promise<never>;
 
 export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string): void {
@@ -511,6 +512,7 @@ async function runInteractiveMode(
 	joinLink?: string,
 	startBackgroundModelDiscovery?: () => Promise<void>,
 	startupLease?: ComposerLease,
+	startupGoal?: string,
 ): Promise<void> {
 	let mode: InteractiveMode;
 	try {
@@ -613,6 +615,15 @@ async function runInteractiveMode(
 	// `/join` so collab guards and error rendering stay in one place.
 	if (joinLink !== undefined) {
 		await executeBuiltinSlashCommand(`/join ${joinLink}`, { ctx: mode });
+	}
+
+	if (startupGoal !== undefined) {
+		session.maybeStartTitleGeneration(startupGoal);
+		try {
+			await mode.startGoalAtStartup(startupGoal);
+		} catch (error: unknown) {
+			mode.showError(error instanceof Error ? error.message : "Unknown error occurred");
+		}
 	}
 
 	if (initialMessage !== undefined) {
@@ -956,6 +967,23 @@ function resumeHint(): string {
 	return `Run \`${base} --resume\` without an argument to pick from recent sessions, or \`${base}\` to start a new one.`;
 }
 
+/** `--no-ui` only applies to RPC modes; reject it elsewhere (exit 1). */
+function rejectNoUiWithoutRpc(args: Pick<Args, "noUi" | "mode">): void {
+	if (!args.noUi || args.mode === "rpc" || args.mode === "rpc-ui") return;
+	process.stderr.write(`${chalk.red("Error: --no-ui requires --mode rpc or --mode rpc-ui")}\n`);
+	process.exit(1);
+}
+
+function validateSessionPersistenceArgs(parsed: Pick<Args, "continue" | "noSession" | "resume">): void {
+	if (!parsed.noSession) return;
+	if (parsed.resume !== undefined) {
+		throw new SessionResolutionError("--resume requires session persistence");
+	}
+	if (parsed.continue) {
+		throw new SessionResolutionError("--continue requires session persistence");
+	}
+}
+
 /** Resolves CLI session flags into an existing, forked, in-memory, or cancelled session manager. */
 export async function createSessionManager(
 	parsed: Args,
@@ -979,6 +1007,7 @@ export async function createSessionManager(
 	}
 
 	if (parsed.noSession) {
+		validateSessionPersistenceArgs(parsed);
 		return SessionManager.inMemory();
 	}
 	normalizeContinueSessionArgs(parsed);
@@ -1036,7 +1065,8 @@ export async function createSessionManager(
 	// session exists. When a prior session is resumed, mark parsed.continue so
 	// buildSessionOptions restores the session's model/thinking instead of
 	// overriding them with CLI defaults.
-	if (activeSettings.get("autoResume")) {
+	// An explicit startup goal starts fresh even when implicit auto-resume is configured.
+	if (parsed.goal === undefined && activeSettings.get("autoResume")) {
 		const manager = await SessionManager.continueRecent(cwd, parsed.sessionDir);
 		if (manager.getEntries().length > 0) {
 			parsed.continue = true;
@@ -1080,9 +1110,13 @@ export function applyResolvedSystemPromptInputs(
 	options: CreateAgentSessionOptions,
 	resolvedSystemPrompt: string | undefined,
 	resolvedAppendPrompt: string | undefined,
+	resolvedSystemPromptTemplate?: string,
 ): void {
 	if (resolvedSystemPrompt) {
 		options.customSystemPrompt = resolvedSystemPrompt;
+	}
+	if (resolvedSystemPromptTemplate) {
+		options.systemPromptTemplate = resolvedSystemPromptTemplate;
 	}
 	if (resolvedAppendPrompt) {
 		options.appendSystemPrompt = resolvedAppendPrompt;
@@ -1116,13 +1150,16 @@ export async function buildSessionOptions(
 
 	// Auto-discover SYSTEM.md if no CLI system prompt provided
 	const systemPromptSource = parsed.systemPrompt ?? discoverSystemPromptFile();
+	const systemPromptTemplateSource = parsed.systemPromptTemplate;
 	const appendPromptSource = parsed.appendSystemPrompt ?? discoverAppendSystemPromptFile();
 	const titleSystemPromptSource = discoverTitleSystemPromptFile();
-	const [resolvedSystemPrompt, resolvedAppendPrompt, titleSystemPrompt] = await Promise.all([
-		resolvePromptInput(systemPromptSource, "system prompt"),
-		resolvePromptInput(appendPromptSource, "append system prompt"),
-		resolvePromptInput(titleSystemPromptSource, "title system prompt"),
-	]);
+	const [resolvedSystemPrompt, resolvedSystemPromptTemplate, resolvedAppendPrompt, titleSystemPrompt] =
+		await Promise.all([
+			resolvePromptInput(systemPromptSource, "system prompt"),
+			resolvePromptInput(systemPromptTemplateSource, "system prompt template"),
+			resolvePromptInput(appendPromptSource, "append system prompt"),
+			resolvePromptInput(titleSystemPromptSource, "title system prompt"),
+		]);
 
 	if (sessionManager) {
 		options.sessionManager = sessionManager;
@@ -1141,6 +1178,7 @@ export async function buildSessionOptions(
 			parsed.model !== undefined ||
 			parsed.thinking !== undefined ||
 			parsed.systemPrompt !== undefined ||
+			parsed.systemPromptTemplate !== undefined ||
 			parsed.appendSystemPrompt !== undefined ||
 			parsed.tools !== undefined ||
 			parsed.noTools === true;
@@ -1342,7 +1380,7 @@ export async function buildSessionOptions(
 	// (handled by caller before createAgentSession)
 
 	// System prompt
-	applyResolvedSystemPromptInputs(options, resolvedSystemPrompt, resolvedAppendPrompt);
+	applyResolvedSystemPromptInputs(options, resolvedSystemPrompt, resolvedAppendPrompt, resolvedSystemPromptTemplate);
 	// Replan-driven title refresh resolves the override from this same field on
 	// `AgentSession`, so threading it through `CreateAgentSessionOptions` keeps
 	// both first-input titling (`input-controller.ts`) and replan refresh
@@ -1483,6 +1521,7 @@ export async function runRootCommand(
 			}
 		}
 		const mode = parsedArgs.mode || "text";
+		rejectNoUiWithoutRpc(parsedArgs);
 		// RPC owns stdin. Claim its singleton stream before plugin/extension discovery can load an in-process consumer.
 		const rpcInput = mode === "rpc" || mode === "rpc-ui" ? claimRpcInput() : undefined;
 
@@ -1521,6 +1560,10 @@ export async function runRootCommand(
 		const pipedInput = isProtocolMode ? undefined : await logger.time("readPipedInput", readPipedInput);
 		const autoPrint = pipedInput !== undefined && !parsedArgs.print && parsedArgs.mode === undefined;
 		const isInteractive = !parsedArgs.print && !autoPrint && parsedArgs.mode === undefined;
+		// Before session resolution: resume, fork, and import act on these same
+		// startup-parse flags, so rejecting later would leave forked or imported
+		// transcripts (or an opened picker) behind a usage error.
+		validateGoalLaunch(parsedArgs, isInteractive);
 		// Only the interactive host renders a focusable Agent Hub / subagent session
 		// tree; declare it so headless subagent optimizations (e.g. skipping replan
 		// title refresh) can tell a focusable process from a print/RPC/eval one.
@@ -1952,6 +1995,15 @@ export async function runRootCommand(
 			if (reportUnrecognizedFlags(initialArgs)) {
 				process.exit(2);
 			}
+			rejectNoUiWithoutRpc(parsedArgs);
+			if (initialArgs.goal !== undefined) {
+				validateGoalStartup(
+					initialArgs,
+					settingsInstance.get("goal.enabled"),
+					pipedInput,
+					settingsInstance.get("plan.defaultOnStartup") && settingsInstance.get("plan.enabled"),
+				);
+			}
 			const processedFiles =
 				initialArgs.fileArgs.length > 0
 					? await logger.time("processFileArguments", () =>
@@ -2074,7 +2126,7 @@ export async function runRootCommand(
 				// Branch-only protocol runner: keep RPC host code out of normal interactive startup.
 				const runRpcMode: RunRpcMode = (await import("./modes/rpc/rpc-mode")).runRpcMode;
 				stopStartupWatchdog();
-				await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, subagentEventBus, rpcInput);
+				await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, subagentEventBus, rpcInput, parsedArgs.noUi === true);
 			} else if (isInteractive) {
 				const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
 				const startupChangelog = await startupChangelogPromise;
@@ -2120,6 +2172,7 @@ export async function runRootCommand(
 						parsedArgs.join,
 						startBackgroundModelDiscovery,
 						startupLease,
+						initialArgs.goal,
 					);
 				} finally {
 					startupLease?.dispose();

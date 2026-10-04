@@ -78,6 +78,9 @@ Argument handling:
 | `--export <session>` | Export a session file to HTML and exit. |
 | `--no-title` | Disable title auto-generation (equivalent to the `PI_NO_TITLE` [environment variable](./environment-variables.md)). |
 
+`--continue`, `--resume`, `--fork`, and session imports require persistence and cannot be combined with `--no-session`.
+
+
 #### Model selection
 
 | Flag | Description |
@@ -112,6 +115,7 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | `--no-prewalk` | Disable prewalk even if `prewalk.enabled` is set. |
 | `--prewalk-into <id>` | Target model for prewalk (default the `smol` role). |
 | `--plan-yolo` | Force read-only plan mode at start, auto-approve the plan on the model's first resolve call, then switch to `--plan-yolo-into` to implement it. |
+| `--goal <objective>` | Start a fresh interactive session in goal mode and begin working on the objective. Requires `goal.enabled`; interactive only; bypasses `autoResume`. Rejected with a positional prompt, `@file` or stdin input, `--resume`/`--continue`/`--fork`/imports, `--plan-yolo`, or `--no-tools`. |
 | `--plan-yolo-into <id>` | Target model for plan-yolo execution (default the `smol` role). |
 
 #### Tools, approvals, and runtime
@@ -146,12 +150,15 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | --- | --- |
 | `--system-prompt <text\|file>` | System prompt (default: coding assistant prompt). See [system prompt customization](./system-prompt-customization.md). |
 | `--append-system-prompt <text\|file>` | Append text or file contents to the system prompt. |
+| `--system-prompt-template <path>` | Strictly read `<path>` as a Handlebars system-prompt template; mutually exclusive with `--system-prompt`. See [system prompt customization](./system-prompt-customization.md). |
 
 #### Output mode
 
 | Flag | Description |
 | --- | --- |
 | `--mode <mode>` | Output/transport mode: `text` (default), `json`, `rpc`, `acp`, or `rpc-ui`. See [output modes](#output-modes---mode). |
+| `--print`, `-p` | Process prompts non-interactively and exit. |
+| `--no-ui` | With `rpc`/`rpc-ui`, make extensions headless without disabling rpc-ui tool UI. |
 
 #### Information
 
@@ -219,6 +226,7 @@ Run `omp <command> --help` for each command's own flags and examples.
 | `compress` | Rewrite a text file into the dense prompt register, reporting what it drops. | |
 | `config` | Manage configuration settings. | [config usage](./config-usage.md), [settings](./settings.md) |
 | `dry-balance` | Dry-run OAuth account balancing across random session ids. | |
+| `find` | Semantic search for implementing files and line ranges. | |
 | `gc` | Run storage garbage collection. | |
 | `grep` | Test the grep tool from the CLI. (The [`grep` tool](./tools/grep.md) is a separate agent tool.) | |
 | `gallery` | Preview tool renderers across streaming, in-progress, success, and failure states. | |
@@ -228,10 +236,12 @@ Run `omp <command> --help` for each command's own flags and examples.
 | `images`, `img` | Inspect, diagnose, probe, and purge image publication backends. | |
 | `install` | Install or link an extension package (alias of `plugin install` / `plugin link`). | [extensions](./extensions.md) |
 | `join` | Join a shared collab session (same as `/join`). | [collab](./collab.md) |
+| `login` | Log in to a model provider via the Mercury credential bridge (counterpart of `/login`). | |
 | `models` | List, search, and refresh available models. | [models](./models.md) |
 | `plugin` | Manage plugins (install, uninstall, list, etc.). | [extensions](./extensions.md), [marketplace](./marketplace.md) |
 | `ps` | List and control daemon-supervised background processes (logs, stop, kill, restart). | |
 | `say` | Synthesize text with the local TTS engine and play it through the speakers. | [tts tool](./tools/tts.md) |
+| `play` | Replay a `/record` recording in the terminal; Space pauses and `q` quits. | |
 | `share` | Share a saved session via an encrypted link (same as the `/share` slash command). | [session operations](./session-operations-export-share-fork-resume.md) |
 | `setup` | Run onboarding setup or install dependencies for optional features. | |
 | `shell` | Interactive shell console. | |
@@ -243,6 +253,7 @@ Run `omp <command> --help` for each command's own flags and examples.
 | `usage` | Show provider usage limits for every authenticated account; `usage clients` breaks token burn down per client (with `--days`), `usage invalidate` drops cached reports. | |
 | `tiny-models` | Download tiny local models (session titles + memory). | [local models](./local-models.md) |
 | `token` | Get the API key or OAuth token for a provider. | [secrets](./secrets.md) |
+| `toks` | Count file or text tokens with the embedded offline tokenizers. | |
 | `ttsr` | Inspect and test Time-Traveling Stream Rules (TTSR). (Covers the CLI command; the [TTSR feature](./ttsr-injection-lifecycle.md) is documented separately.) | |
 | `worktree`, `wt` | List or clear agent-managed git worktrees (`~/.omp/wt`). | |
 | `search`, `q` | Test web search providers from the CLI. | [web_search tool](./tools/web_search.md) |
