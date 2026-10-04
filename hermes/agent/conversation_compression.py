@@ -1900,6 +1900,18 @@ def compression_skipped_due_to_lock(agent: Any) -> bool:
     return _sig is True or isinstance(_sig, str)
 
 
+def request_exceeds_model_window(agent: Any, request_tokens: Any) -> Optional[bool]:
+    """Whether a ~``request_tokens`` request cannot be sent at all (above the model's context window).
+    ``None`` when either side is unknown (no compressor / unresolvable window / no estimate), so callers
+    keep their conservative default instead of treating "unknown" as "fits"."""
+    window = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+        return None
+    if isinstance(request_tokens, bool) or not isinstance(request_tokens, int):
+        return None
+    return request_tokens > window
+
+
 def compression_blocked_transiently(agent: Any) -> bool:
     """Type-pinned read of the transient-block signal (#97488).
 

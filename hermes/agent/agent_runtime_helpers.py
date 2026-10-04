@@ -3857,6 +3857,17 @@ def _tool_call_id_variants(tc: Any) -> set:
 _INTERRUPTED_PLACEHOLDER = "[response interrupted]"
 
 
+def fill_empty_non_final_wire_payload(msg: Dict[str, Any], *, is_final: bool) -> bool:
+    """Write the interrupted placeholder onto an empty non-final wire copy; True when filled.
+    Pass the per-call copy only; durable history must not be mutated."""
+    if is_final or not isinstance(msg, dict) or msg.get("role") not in ("user", "assistant"):
+        return False
+    if _msg_has_payload(msg):
+        return False
+    msg["content"] = _INTERRUPTED_PLACEHOLDER
+    return True
+
+
 def _msg_has_payload(msg: Dict[str, Any]) -> bool:
     """True if ``msg`` carries anything the API treats as non-empty content.
 
