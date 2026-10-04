@@ -3,7 +3,7 @@
 This is Mercury's product history. Vendored upstream changelogs document
 their original projects and are not Mercury release announcements.
 
-## [Unreleased]
+## [0.3.22] — stable and nightly
 
 - Remove completed level-1 agent rooms and their descendants from MIRC and
   every connected mLounge browser. Wait for daemon confirmation, retry
