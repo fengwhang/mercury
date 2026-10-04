@@ -271,3 +271,119 @@ code,
 .user.color-30 {
 	color: #ffc078;
 }
+
+/* First-class voice calls (Hermes engines): browser mic/speakers, STT on the
+ * mLounge host, TTS on the MIRC host. Barge-in/mute/hangup are browser-side. */
+.voice-call {
+	position: relative;
+}
+
+#chat .header .voice-call .call-toggle {
+	color: var(--mercury-tomato);
+	font-size: 1.1em;
+}
+
+#chat .header .voice-call .call-toggle.active {
+	color: #7dff9a;
+}
+
+#chat .header .voice-call .call-toggle.connecting {
+	color: var(--mercury-ember);
+}
+
+.voice-call-panel {
+	position: absolute;
+	top: 100%;
+	right: 0;
+	z-index: 40;
+	width: 280px;
+	padding: 10px;
+	background-color: var(--mercury-row);
+	border: 1px solid var(--mercury-border);
+	border-radius: 6px;
+}
+
+.voice-call-status {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 6px;
+}
+
+.voice-dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	background-color: var(--body-color-muted);
+}
+
+.voice-dot.live {
+	background-color: #7dff9a;
+}
+
+.voice-dot.connecting {
+	background-color: var(--mercury-ember);
+}
+
+.voice-dot.error {
+	background-color: #ff4d4d;
+}
+
+.voice-waveform {
+	width: 100%;
+	height: 48px;
+	border: 1px solid var(--mercury-border-muted);
+	border-radius: 4px;
+}
+
+.voice-level {
+	height: 6px;
+	margin: 6px 0;
+	background-color: var(--mercury-border-muted);
+	border-radius: 3px;
+	overflow: hidden;
+}
+
+.voice-level-fill {
+	height: 100%;
+	background-color: var(--mercury-tomato);
+}
+
+.voice-controls {
+	display: flex;
+	gap: 8px;
+}
+
+.voice-controls button.muted {
+	opacity: 0.55;
+}
+
+.voice-settings label {
+	display: block;
+	margin: 6px 0;
+}
+
+.voice-settings input {
+	width: 100%;
+}
+
+.voice-error {
+	margin-top: 6px;
+	color: #ff4d4d;
+}
+
+.voice-transcripts {
+	max-height: 120px;
+	overflow-y: auto;
+	margin: 6px 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.voice-transcripts li.said::before {
+	content: "🎙 ";
+}
+
+.voice-transcripts li.heard::before {
+	content: "🔊 ";
+}

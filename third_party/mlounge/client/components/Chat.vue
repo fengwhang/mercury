@@ -63,6 +63,11 @@
 						aria-label="Open the context menu"
 						@click="openContextMenu"
 					/>
+				<VoiceCall
+					v-if="['channel', 'query'].includes(channel.type)"
+					:network="network"
+					:channel="channel"
+				/>
 					<span
 						v-if="channel.type === 'channel'"
 						class="rt-tooltip tooltipped tooltipped-w"
@@ -124,6 +129,7 @@
 import socket from "../js/socket";
 import eventbus from "../js/eventbus";
 import ParsedMessage from "./ParsedMessage.vue";
+import VoiceCall from "./VoiceCall.vue";
 import MessageList from "./MessageList.vue";
 import ChatInput from "./ChatInput.vue";
 import ChatUserList from "./ChatUserList.vue";
@@ -146,6 +152,7 @@ export default defineComponent({
 		MessageList,
 		ChatInput,
 		ChatUserList,
+		VoiceCall,
 		SidebarToggle,
 		MessageSearchForm,
 	},

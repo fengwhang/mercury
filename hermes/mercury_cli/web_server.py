@@ -1785,6 +1785,7 @@ from mercury_cli.web_models import (  # noqa: F401
     WhatsAppOnboardingStart,
     WhatsAppOnboardingApply,
     AudioTranscriptionRequest,
+    VoiceCallActionRequest,
     ManagedFileUpload,
     ChatImageUpload,
     ManagedDirectoryCreate,
@@ -5809,6 +5810,64 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         pump.cancel()
         with contextlib.suppress(Exception):
             await ws.close()
+
+@app.get("/api/voice-call/status")
+async def voice_call_status(channel: str = "", profile: Optional[str] = None):
+    """Voice-call status for a MIRC channel (Hermes engines only).
+
+    Served on the MIRC host for the mLounge-host sidecar. Resolves the
+    channel's engine through the live room manager when this process owns
+    one (co-located gateway); otherwise reports ``unknown`` and fails open
+    with a note — OMP rooms are refused only on positive identification.
+    TTS audio itself flows over the existing ``/api/audio/speak`` endpoint.
+    """
+    from observatory import voice_call as _voice_call
+
+    name = (channel or "").strip()
+    engine = _voice_call.resolve_channel_engine(name) if name else "hermes"
+    allowed, reason = _voice_call.check_engine_allowed(engine)
+    call = _voice_call.default_store().status(name)
+    response: Dict[str, Any] = {
+        "ok": True,
+        "channel": name,
+        "engine": engine,
+        "allowed": allowed,
+        "call": call,
+    }
+    if reason:
+        response["reason"] = reason
+    return response
+
+
+@app.post("/api/voice-call/call")
+async def voice_call_action(payload: VoiceCallActionRequest, profile: Optional[str] = None):
+    """Open/close/mute a voice call on a MIRC channel (Hermes engines only)."""
+    from observatory import voice_call as _voice_call
+
+    action = (payload.action or "").strip().lower()
+    channel = (payload.channel or "").strip()
+    if action not in ("start", "end", "mute", "unmute"):
+        raise HTTPException(status_code=400, detail="action must be start|end|mute|unmute")
+    if not channel:
+        raise HTTPException(status_code=400, detail="channel is required")
+    store = _voice_call.default_store()
+    if action == "end":
+        ended = store.end(channel)
+        return {"ok": True, "action": action, "channel": channel, "ended": ended}
+    engine = (payload.engine or "").strip().lower() or _voice_call.resolve_channel_engine(channel)
+    allowed, reason = _voice_call.check_engine_allowed(engine)
+    if not allowed:
+        raise HTTPException(status_code=409, detail=reason)
+    try:
+        if action == "start":
+            record = store.start(channel, engine=engine)
+        else:
+            record = store.set_muted(channel, action == "mute")
+            if record is None:
+                raise HTTPException(status_code=404, detail="no active call on channel")
+    except _voice_call.VoiceCallEngineError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"ok": True, "action": action, "channel": channel, "engine": engine, "call": record}
 
 
 @app.get("/api/actions/{name}/status")
