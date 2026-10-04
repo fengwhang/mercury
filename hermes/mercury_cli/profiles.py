@@ -1000,9 +1000,9 @@ def _seed_model_config(profile_dir: Path) -> None:
         if managed_profile:
             from mercury_cli.model_settings import canonical_model_document
             seed = canonical_model_document(seed)
-            seed["models"] = {}
+            seed.pop("models", None)
             seed["hermes"].pop("model_options", None)
-            seed["profile"] = {"inherit_models": True, "inherit_credentials": True}
+            seed["profile"] = {"inherit_credentials": True}
         if "memory" in hermes_config:
             seed.get("hermes", seed)["memory"] = hermes_config["memory"]
         config_path.write_text(
@@ -1561,6 +1561,21 @@ def create_profile(
     ensure_profile_prompt_files(profile_dir, source_dir=source_dir)
     from mercury_cli.memory_settings import ensure_profile_memory
     ensure_profile_memory(profile_dir, source_dir=source_dir, copy_state=clone_all)
+    if source_dir is not None:
+        from mercury_cli.profile_defaults import main_profile_root, transfer_profile_models
+        if main_profile_root(profile_dir) is not None:
+            # A clone of an explicit named-profile selection retains it;
+            # cloning an inheriting profile continues to inherit live defaults.
+            transfer_profile_models(source_dir, profile_dir, copy=True)
+            from mercury_cli.model_settings import canonical_model_document
+            from mercury_cli.config import read_user_config_raw
+            from utils import atomic_yaml_write
+            config_path = profile_dir / "config.yaml"
+            cloned = canonical_model_document(read_user_config_raw(config_path))
+            cloned.pop("models", None)
+            cloned.pop("profile_models", None)
+            atomic_yaml_write(config_path, cloned)
+
 
     # Opt-out profiles receive only the essential operating manual, both
     # during creation and in the all-profile update sync.
@@ -2140,6 +2155,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if remove_error is not None:
         raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
 
+    from mercury_cli.profile_defaults import transfer_profile_models
+    transfer_profile_models(profile_dir)
+
     print(f"\nProfile '{canon}' deleted.")
     return profile_dir
 
@@ -2572,6 +2590,8 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
             ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
         )
         ensure_profile_prompt_files(staged)
+        from mercury_cli.profile_defaults import stage_profile_models
+        stage_profile_models(profile_dir, staged)
         _stage_extras(staged)
         _scrub_export_secrets(staged)
         result = make_targz(base, tmpdir, canon)
@@ -2639,6 +2659,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         shutil.move(str(final_source), str(profile_dir))
 
     ensure_profile_prompt_files(profile_dir)
+    from mercury_cli.profile_defaults import import_profile_models
+    import_profile_models(profile_dir)
     from mercury_cli.memory_settings import ensure_profile_memory
     ensure_profile_memory(profile_dir)
     return profile_dir
@@ -2753,6 +2775,8 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
     # 2. Rename directory
     old_dir.rename(new_dir)
+    from mercury_cli.profile_defaults import transfer_profile_models
+    transfer_profile_models(old_dir, new_dir)
     _rebase_profile_skill_links(new_dir, old_dir)
     from mercury_cli.memory_settings import ensure_profile_memory
     ensure_profile_memory(new_dir, source_dir=old_dir)

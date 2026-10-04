@@ -4173,6 +4173,11 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
                 config = _deep_merge(config, user_config)
             except Exception as e:
+                from mercury_cli.profile_defaults import ProfileModelError, main_profile_root
+                if isinstance(e, ProfileModelError):
+                    raise
+                if main_profile_root(config_path.parent) is not None:
+                    raise ProfileModelError(f"Cannot load profile models from {config_path}: {e}") from e
                 # Last-known-good fallback (port of openai/codex#31188's
                 # invariant: a parse failure in a policy/config file must not
                 # silently replace the effective policy with an empty/default
@@ -4465,6 +4470,8 @@ def save_config(
             ))
             from mercury_cli.profile_defaults import keep_local_transport_settings
             normalized = keep_local_transport_settings(normalized, existing_shared, previous, config_path)
+            from mercury_cli.profile_defaults import persist_profile_model_edits
+            normalized = persist_profile_model_edits(normalized, existing_shared, config_path)
 
         atomic_yaml_write(
             config_path,
@@ -6018,7 +6025,7 @@ def set_config_value(key: str, value: str, force: bool = False):
                 from mercury_cli.model_settings import shared_models
                 user_config.setdefault("omp", {})[alias] = copy.deepcopy(shared_models(user_config).get(shared_key) or {})
     if isinstance(user_config.get("hermes"), dict) and key.split(".", 1)[0] not in {
-        "models", "omp", "hermes", "approvals", "profile",
+        "models", "profile_models", "omp", "hermes", "approvals", "profile",
     }:
         unified_document = user_config
         from mercury_cli.model_settings import hermes_model_view
@@ -6202,6 +6209,8 @@ def set_config_value(key: str, value: str, force: bool = False):
     if previous_native_view is not None:
         from mercury_cli.profile_defaults import keep_local_transport_settings
         document = keep_local_transport_settings(document, original_user_config, previous_native_view, config_path)
+    from mercury_cli.profile_defaults import persist_profile_model_edits
+    document = persist_profile_model_edits(document, original_user_config, config_path)
     atomic_yaml_write(config_path, document, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.

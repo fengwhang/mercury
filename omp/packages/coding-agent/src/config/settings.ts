@@ -46,7 +46,7 @@ import { INSPECT_IMAGE_MODES } from "../utils/inspect-image-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import { stringifyYamlConfig } from "./config-file";
 import { MercuryApprovalPolicy } from "./mercury-approval-policy";
-import { persistMercuryModels, projectMercuryModels } from "./mercury-model-settings";
+import { persistMercuryModelDocument, projectMercuryModels } from "./mercury-model-settings";
 import {
 	type BashInterceptorRule,
 	type GroupPrefix,
@@ -2746,7 +2746,7 @@ export class Settings {
 			const raw = await this.#loadYamlIfPresent(mercuryPath, false);
 			const parsed = this.#unwrapYamlLoadResult(mercuryPath, raw);
 			if (parsed && typeof parsed === "object") existing = parsed as Record<string, unknown>;
-			toWrite = persistMercuryModels(existing, settings, mercuryPath);
+			toWrite = await persistMercuryModelDocument(existing, settings, mercuryPath);
 		}
 		const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
 		let removeTemp = false;

@@ -628,6 +628,11 @@ def load_cli_config() -> Dict[str, Any]:
             ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
+            from mercury_cli.profile_defaults import ProfileModelError, main_profile_root
+            if isinstance(e, ProfileModelError):
+                raise
+            if main_profile_root(config_path.parent) is not None:
+                raise ProfileModelError(f"Cannot load profile models from {config_path}: {e}") from e
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
     # Expand ${ENV_VAR} references in config values before bridging to env vars.

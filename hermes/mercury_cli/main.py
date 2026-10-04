@@ -11177,6 +11177,14 @@ def cmd_profile(args):
             print(f"Error: {e}")
             sys.exit(1)
 
+    elif action == "models":
+        from mercury_cli.profile_defaults import configure_profile_models
+        try:
+            configure_profile_models(args.profile_name, inherit=args.inherit)
+        except (ValueError, FileNotFoundError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+
     elif action == "create":
         name = args.profile_name
         clone = getattr(args, "clone", False)

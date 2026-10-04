@@ -4148,7 +4148,7 @@ def _gateway_config_home() -> Path:
 
 
 def _load_gateway_config(config_path: "Path | None" = None) -> dict:
-    """Load and parse a gateway config.yaml, returning {} on any error.
+    """Load gateway config; named-profile model errors fail closed.
 
     Defaults to the active gateway home (so tests that monkeypatch
     ``_hermes_home`` still see their fixture). Callers handling multiplexed
@@ -4158,19 +4158,28 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
 
     Managed scope is overlaid on the result (via the shared helper) so the
     gateway honors administrator-pinned values — neither read_raw_config nor a
-    direct yaml.safe_load carries the managed merge on its own. Fail-open.
+    direct yaml.safe_load carries the managed merge on its own. Legacy
+    non-profile reads retain their fail-open behavior.
     """
     if config_path is None:
         config_path = _gateway_config_home() / 'config.yaml'
     raw: dict = {}
     used_canonical = False
+    from mercury_cli.profile_defaults import main_profile_root, resolve_model_defaults, _document
+    managed_profile = main_profile_root(config_path.parent) is not None
+    if managed_profile:
+        # Raw Hermes-subtree reads discard the shared slots before inheritance
+        # can run. Resolve the whole document just as CLI and OMP do.
+        from mercury_cli.model_settings import hermes_model_view
+        raw = hermes_model_view(resolve_model_defaults(_document(config_path), config_path))
+        used_canonical = True
     try:
         from mercury_cli.config import get_config_path, read_raw_config
         # Fast path: if _hermes_home agrees with the canonical config
         # location, reuse the shared cache. Otherwise fall through to a
         # direct read (keeps test fixtures with a monkeypatched
         # _hermes_home working).
-        if config_path == get_config_path():
+        if not managed_profile and config_path == get_config_path():
             raw = read_raw_config()
             used_canonical = True
     except Exception:
@@ -4217,7 +4226,7 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
         _model_cfg = raw.get("model") if isinstance(raw, dict) else None
         _has_default = isinstance(_model_cfg, dict) and str(_model_cfg.get("default") or "").strip()
         _unified = bool(os.environ.get("MERCURY_CONFIG", "").strip())
-        if not _has_default and not used_canonical and _unified:
+        if not managed_profile and not _has_default and not used_canonical and _unified:
             from mercury_cli.config import get_config_path, read_raw_config
             _canon = get_config_path()
             if _canon != config_path:
@@ -10704,8 +10713,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             fb = get_fallback_chain(cfg)
             if fb:
                 return fb
-        except Exception:
-            pass
+        except Exception as exc:
+            from mercury_cli.profile_defaults import ProfileModelError
+            if isinstance(exc, ProfileModelError):
+                raise
         return None
 
     def _refresh_fallback_model(self) -> list | None:
@@ -10724,7 +10735,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """
         try:
             from mercury_cli.config import read_user_config_raw
-            cfg_path = _hermes_home / "config.yaml"
+            cfg_path = _gateway_config_home() / "config.yaml"
             if not cfg_path.exists():
                 self._fallback_model = None
                 return self._fallback_model
@@ -10733,6 +10744,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # write and WIPE the last known-good chain. The overlay/expansion
             # below fixes the managed-scope/${VAR} drift without losing that.
             cfg = read_user_config_raw(cfg_path)
+            from mercury_cli.profile_defaults import resolve_model_defaults
+            from mercury_cli.config import unwrap_hermes_subtree
+            cfg = unwrap_hermes_subtree(resolve_model_defaults(cfg, cfg_path))
             try:
                 from mercury_cli import managed_scope
                 cfg = managed_scope.apply_managed_overlay(cfg)
@@ -10745,7 +10759,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     cfg = expanded
             except Exception:
                 pass
-        except Exception:
+        except Exception as exc:
+            from mercury_cli.profile_defaults import ProfileModelError
+            if isinstance(exc, ProfileModelError):
+                raise
             # Transient failure — keep last known-good chain.
             logger.debug(
                 "fallback_providers refresh: config.yaml read failed; "

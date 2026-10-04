@@ -26,6 +26,14 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     )
     profile_use.add_argument("profile_name", help="Profile name (or 'default')")
 
+    profile_models = profile_subparsers.add_parser(
+        "models", help="Pick this profile's four models and reasoning settings"
+    )
+    profile_models.add_argument("profile_name", help="Named profile to configure")
+    profile_models.add_argument(
+        "--inherit", action="store_true", help="Remove the override and use the installation's main models"
+    )
+
     profile_create = profile_subparsers.add_parser(
         "create", help="Create a new profile"
     )

@@ -343,8 +343,14 @@ Cloning copies instructions once, so subsequent edits stay independent;
 export/import and the profile editors use the same layout.
 
 New profiles inherit the main profile's models, fallbacks, reasoning/context
-settings, and provider logins. Local `models:` entries override those defaults;
-changing the main model updates profiles that haven't overridden it. OAuth
+settings, and provider logins. No model override is created for a fresh profile;
+changing the main models updates every profile that inherits them. Run
+`mercury profile models coder` to select default, fallback, delegate, and delegate
+fallback models, with provider-specific reasoning and context choices after each
+selection. Both engines read the same complete override from
+`profile_models.coder` in the installation's main `config.yaml`. An explicit
+entry never borrows missing slots or falls back to the main models when invalid.
+OAuth
 tokens stay in the main auth store, including refreshes from either engine.
 Profiles retain their own prompts, memory, sessions, channel credentials, and
 native permission settings. Each named profile uses its own
@@ -370,13 +376,31 @@ configuration. Fresh profiles receive stock skills, including the memory
 skill; clones preserve their source's custom skills and intentional removals.
 
 Nightly profiles inherit only from nightly.
-Set `profile.inherit_models: false` or `profile.inherit_credentials: false` in
-a profile's config to configure those independently. Older profiles keep
-their explicit model selections but inherit the main login automatically.
+Use `mercury profile models coder --inherit` to remove its override. Legacy
+profile-local `models:` mirrors and `profile.inherit_models` no longer select
+models; use the central picker for deliberate overrides. Provider logins still
+inherit by default; set `profile.inherit_credentials: false` in the profile's
+config only when it needs independent credentials.
+
+```yaml
+# In the installation's config.yaml; omit a profile to inherit main models.
+profile_models:
+  coder:
+    default: openai-codex/gpt-6.1-sol
+    fallback: nous/xiaomi/mimo-v2.6-pro
+    delegate_model: openai-codex/gpt-6.1-sol
+    delegate_fallback: nous/xiaomi/mimo-v2.6-pro
+    reasoning_overrides:
+      openai-codex/gpt-6.1-sol: high
+```
+
+Cloning copies an explicit source-profile override; renaming moves its entry.
+Export/import preserves an explicit override, and deletion removes its entry.
+An inheriting clone or export continues to inherit.
 
 ```bash
 mercury profile create coder
-mercury -p coder setup
+mercury profile models coder  # optional; otherwise inherit the main models
 mercury omp -p coder
 ```
 

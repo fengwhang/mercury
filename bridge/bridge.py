@@ -502,11 +502,11 @@ def render_omp_subtree(slots, target=None):
     from utils import atomic_write_text
     document = canonical_model_document(yaml.safe_load(text) or {})
     from pathlib import Path
-    from mercury_cli.profile_defaults import inherits
-    if inherits(Path(target).parent, "models", whole_config):
+    from mercury_cli.profile_defaults import main_profile_root
+    if main_profile_root(Path(target).parent) is not None:
         # Generated OMP projections must not turn live inherited defaults
         # into a permanent local model selection when an agent is spawned.
-        document["models"] = canonical_model_document(whole_config)["models"]
+        document.pop("models", None)
     text = yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
     text = text.replace("omp:\n", "omp:\n  # Mercury inherited deny patterns: " + json.dumps(inherited_now) + "\n", 1)
     os.makedirs(os.path.dirname(target), exist_ok=True)

@@ -5,7 +5,7 @@ Use the same installation command throughout: `mercury` for stable or
 
 ```bash
 mercury profile create coder
-mercury -p coder setup
+mercury profile models coder  # optional four-slot override
 mercury profile show coder
 mercury -p coder chat
 mercury omp -p coder
@@ -17,12 +17,24 @@ bundled Markdown defaults and inherit main-profile inference defaults. They do n
 default profile's personal Markdown at runtime.
 
 Models, fallbacks, reasoning levels and context budgets inherit live from the
-main profile; local `models:` entries override selected defaults. Provider API
+main profile. New profiles have no model override. Use
+`mercury profile models NAME` (or `mercury-nightly profile models NAME`) for the
+setup model picker, including reasoning and context immediately after each of
+four selections: default, fallback, delegate, delegate fallback. Overrides live
+under `profile_models.NAME` in the installation's main `config.yaml` and apply
+to both engines. The picker commits the complete entry only when finished;
+cancellation leaves settings unchanged. Optional fallbacks may be empty.
+Explicit entries are absolute: invalid settings raise an error instead of
+borrowing main-model slots or silently selecting a main model. Use
+`mercury profile models NAME --inherit` to remove an override. Legacy local
+`models:` and `profile.inherit_models` no longer control model selection.
+Provider API
 keys and OAuth logins inherit from the same installation. OAuth refreshes write
 to the main login owner, so Hermes and OMP do not duplicate rotating grants.
-To use independent models or logins, set `profile.inherit_models: false` or
-`profile.inherit_credentials: false` in the named profile's `config.yaml`.
-Older explicit model selections remain overrides; remove them to inherit.
+To use independent logins, set `profile.inherit_credentials: false` in the
+named profile's `config.yaml`. Model overrides remain separate from credentials.
+Clone, rename, export/import and delete preserve or remove the matching central
+entry; inheriting profiles remain unpinned.
 Prompts, sessions, native approvals and messaging credentials remain local.
 
 Each named profile owns `$MERCURY_HOME/hermes/profiles/<name>/config/`:

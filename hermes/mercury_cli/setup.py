@@ -1066,7 +1066,8 @@ def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
 def _read_model_slots() -> dict:
     """Read four model slots, including legacy nested configuration.
 
-    Missing or invalid files produce empty slots. Prefer the shared top-level
+    Missing files produce empty slots; named-profile model errors propagate.
+    Prefer the shared top-level
     models block; older installations may keep it under the Hermes subtree.
     """
     import os as _os
@@ -1089,6 +1090,8 @@ def _read_model_slots() -> dict:
         import yaml as _yaml
 
         whole = _yaml.safe_load(path.read_text()) or {}
+        from mercury_cli.profile_defaults import resolve_model_defaults
+        whole = resolve_model_defaults(whole, path)
         models = whole.get("models") or {}
         if not isinstance(models, dict):
             models = {}
@@ -1102,8 +1105,10 @@ def _read_model_slots() -> dict:
             value = str(models.get(key) or "").strip()
             if value:
                 slots[key] = value
-    except Exception:
-        pass
+    except Exception as exc:
+        from mercury_cli.profile_defaults import ProfileModelError
+        if isinstance(exc, ProfileModelError):
+            raise
     return slots
 
 
@@ -1212,21 +1217,21 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     _prompt_mercury_slots(config)
 
 
-def _prompt_mercury_slots(config: dict) -> None:
-    """Ask for fallback/delegate model slots (fallbacks optional).
+def _prompt_mercury_slots(config: dict, *, draft: dict | None = None) -> dict | None:
+    """Pick setup slots, or all four slots in an unpersisted profile draft.
 
-    The default slot was just set by the provider flow; these prompts fill
+    Without a draft, the default slot was just set by the provider flow; these prompts fill
     the remaining three. Every answer seeds the shared ``models:`` block
     in the unified config, which both engines read.
     """
     from mercury_cli.omp_sync import qualify_omp_model as _qualify_omp_model
     from mercury_cli.omp_sync import derive_slot_provider as _derive_slot_provider
 
-    slots = _read_model_slots()
+    slots = {key: str(draft.get(key) or "") for key in ("default", "fallback", "delegate_model", "delegate_fallback")} if draft is not None else _read_model_slots()
 
     # Default from the just-saved hermes view (provider-qualified)
     try:
-        model_cfg = (load_config() or {}).get("model") or {}
+        model_cfg = (config if draft is not None else load_config()).get("model") or {}
         default = str(model_cfg.get("default") or "").strip()
         provider = str(model_cfg.get("provider") or "").strip()
         default_qualified = _qualify_omp_model(default, provider, provider_relative=True)
@@ -1237,7 +1242,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     if default_qualified:
         slots["default"] = default_qualified
 
-    if not slots["default"]:
+    if not slots["default"] and draft is None:
         # Nothing configured (user skipped the provider flow) — nothing to
         # anchor a fallback against; the omp-sync tail will say the same.
         print_info("No default model configured — skipping slot prompts (run 'mercury setup model' later).")
@@ -1258,7 +1263,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     from mercury_cli.omp_sync import _current_chains
 
     provider = provider or _derive_slot_provider(slots["default"])
-    chains = _current_chains()
+    chains = {key: draft.get(key) or [] for key in ("fallback_chain", "delegate_fallback_chain")} if draft is not None else _current_chains()
 
     def _choose_provider(title: str, default_provider: str) -> str:
         slugs = [p.slug for p in CANONICAL_PROVIDERS]
@@ -1307,6 +1312,23 @@ def _prompt_mercury_slots(config: dict) -> None:
         # skip -> delegate_fallback_chain duplicates -> bridge abort).
         return chosen if chosen is not None else ""
 
+    def _reasoning_context(selector: str, **slot) -> None:
+        if draft is None:
+            _prompt_slot_reasoning(config, **slot)
+            _prompt_model_context(config, selector)
+        else:
+            _prompt_slot_reasoning(config, draft=draft, **slot)
+            _prompt_model_context(config, selector, draft=draft)
+
+    if draft is not None:
+        provider = _choose_provider("Select default provider:", provider)
+        current, catalog, pricing = _model_data(provider, slots["default"])
+        selected = _pick("Select default model:", current, catalog, pricing)
+        if not selected:
+            raise _SetupCancelled()
+        slots["default"] = _qualify_omp_model(selected, provider, provider_relative=True)
+        _reasoning_context(slots["default"], default_model=slots["default"])
+
     # Fallback — OPTIONAL (user directive 2026-09-05: "i should be able to
     # skip the first order fallback too"): cancel/skip leaves it unset; a
     # configured fallback must differ from the default. Skipping the
@@ -1330,8 +1352,7 @@ def _prompt_mercury_slots(config: dict) -> None:
         break
 
     if fallback:
-        _prompt_slot_reasoning(config, fallback_model=fallback)
-        _prompt_model_context(config, fallback)
+        _reasoning_context(fallback, fallback_model=fallback)
 
     # Extra retries are configured by hand, never added by this wizard.
     # Changing a primary fallback clears its old chain. Keeping that fallback
@@ -1364,8 +1385,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     delegate_model = _pick("Select delegate model (the model omp SUBAGENTS run on):", delegate_current, delegate_catalog, delegate_pricing)
     delegate_model = _qualify_omp_model(delegate_model, delegate_provider, provider_relative=True)
     if delegate_model:
-        _prompt_slot_reasoning(config, delegate_model=delegate_model)
-        _prompt_model_context(config, delegate_model)
+        _reasoning_context(delegate_model, delegate_model=delegate_model)
 
     # Delegate fallback — OPTIONAL (user directive 2026-09-05); cancel/skip
     # leaves it unset. NO seeding (user directive). Bounded retries: one
@@ -1395,12 +1415,17 @@ def _prompt_mercury_slots(config: dict) -> None:
         break
 
     if delegate_fallback:
-        _prompt_slot_reasoning(config, delegate_fallback=delegate_fallback)
-        _prompt_model_context(config, delegate_fallback)
+        _reasoning_context(delegate_fallback, delegate_fallback=delegate_fallback)
 
     delegate_chain = _preserve_extra_fallbacks(
         chains["delegate_fallback_chain"], delegate_fallback, delegate_model,
     )
+
+    if draft is not None:
+        draft.update(default=slots["default"], fallback=fallback,
+                     delegate_model=delegate_model, delegate_fallback=delegate_fallback,
+                     fallback_chain=fallback_chain, delegate_fallback_chain=delegate_chain)
+        return draft
 
     # Write the shared models: block (line-oriented, omp_sync-compatible).
     from mercury_cli.omp_sync import _write_slots
@@ -1428,7 +1453,7 @@ def _prompt_mercury_slots(config: dict) -> None:
     print_info(f"Main model fallback chain: {fb_txt}.")
 
 
-def _prompt_model_context(config: dict, selector: str) -> None:
+def _prompt_model_context(config: dict, selector: str, *, draft: dict | None = None) -> None:
     """Choose a per-model budget after effort, bounded by provider metadata."""
     if is_noninteractive() or not is_interactive_stdin():
         return
@@ -1442,8 +1467,13 @@ def _prompt_model_context(config: dict, selector: str) -> None:
     except Exception as exc:
         logger.debug("Context metadata unavailable for %s: %s", selector, exc)
         windows = None
-    whole = yaml.safe_load(_unified_path().read_text()) if _unified_path().exists() else {}
-    saved = dict(((whole or {}).get("models") or {}).get("context_windows") or {})
+    if draft is None:
+        from mercury_cli.profile_defaults import resolve_model_defaults
+        whole = yaml.safe_load(_unified_path().read_text()) if _unified_path().exists() else {}
+        models = resolve_model_defaults(whole or {}, _unified_path()).get("models") or {}
+    else:
+        models = draft
+    saved = dict(models.get("context_windows") or {})
     current = saved.get(selector)
     print_header("Context Window")
     if windows:
@@ -1483,7 +1513,10 @@ def _prompt_model_context(config: dict, selector: str) -> None:
         saved.pop(selector, None)
     else:
         saved[selector] = selected
-    _write_slots({"context_windows": saved})
+    if draft is None:
+        _write_slots({"context_windows": saved})
+    else:
+        draft["context_windows"] = saved
     # The wizard later saves its in-memory view; keep the effective override
     # current so that save cannot reinstate a stale per-model pin.
     if selector == (str((config.get("model") or {}).get("provider") or "") + "/" + str((config.get("model") or {}).get("default") or "")):
@@ -1534,7 +1567,7 @@ def _prompt_compaction(config: dict) -> None:
 
 def _prompt_slot_reasoning(
     config: dict, default_model: str = "", fallback_model: str = "",
-    delegate_model: str = "", delegate_fallback: str = "",
+    delegate_model: str = "", delegate_fallback: str = "", *, draft: dict | None = None,
 ) -> None:
     """Ask effort after each model selection and write only per-model settings."""
     from mercury_cli.omp_sync import _current_reasoning_overrides, _write_slots
@@ -1543,7 +1576,7 @@ def _prompt_slot_reasoning(
     print_info("Effort belongs to the provider/model and is shared by both engines; Esc keeps it.")
     print()
     overrides = (config.get("agent") or {}).get("reasoning_overrides") or {}
-    shared = _current_reasoning_overrides()
+    shared = _current_reasoning_overrides() if draft is None else dict(draft.get("reasoning_overrides") or {})
     updates = {}
     for label, selector in (("DEFAULT", default_model), ("FALLBACK", fallback_model),
                             ("DELEGATE", delegate_model), ("DELEGATE FALLBACK", delegate_fallback)):
@@ -1557,11 +1590,14 @@ def _prompt_slot_reasoning(
         if chosen is not None:
             updates[selector] = chosen
     if updates:
-        _write_slots({"reasoning_overrides": {**shared, **updates}})
+        if draft is None:
+            _write_slots({"reasoning_overrides": {**shared, **updates}})
+        else:
+            draft["reasoning_overrides"] = {**shared, **updates}
         config.setdefault("agent", {}).setdefault("reasoning_overrides", {}).update(
             {selector: _hermes_reasoning_value(level) for selector, level in updates.items()}
         )
-        print_success(f"Reasoning effort written for {len(updates)} model(s).")
+        print_success(f"Reasoning effort selected for {len(updates)} model(s).")
     else:
         print_info("Reasoning effort unchanged (all slots skipped).")
 

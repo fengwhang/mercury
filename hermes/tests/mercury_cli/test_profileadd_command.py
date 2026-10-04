@@ -91,7 +91,7 @@ async def test_profileadd_creates_complete_profile_without_switching(install, su
     assert not (root / "skills").exists()
     assert (home / ".env").is_file()
     config = yaml.safe_load((home / "config.yaml").read_text())
-    assert "default" not in config["models"]
+    assert "models" not in config
     from mercury_cli.profile_defaults import resolve_model_defaults
     assert resolve_model_defaults(config, home / "config.yaml")["models"]["default"] == "openrouter/default-chat"
     wrapper = Path.home() / ".local" / "bin" / "research"

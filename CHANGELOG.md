@@ -5,6 +5,15 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
+- Inherit all four installation model slots in new profiles, including gateway
+  model selection and fallback refresh. Keep native permissions/profile state local.
+- Add `mercury profile models NAME` with the setup model, reasoning and context
+  pickers; store complete overrides under `profile_models.NAME` in the main config.
+  Invalid explicit settings fail instead of reverting to main models. Use
+  `--inherit` to restore live inheritance. Both engines use the same authority.
+- Preserve central model overrides across profile clone, rename and export/import;
+  remove them on profile deletion. Unrelated settings saves never pin defaults.
+
 ## [0.3.19] — nightly
 
 - Make Mnemosyne memory available by default in Hermes, preserving explicit

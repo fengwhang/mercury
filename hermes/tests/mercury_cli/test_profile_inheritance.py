@@ -55,7 +55,7 @@ def test_existing_profile_uses_main_login_and_refresh_owner(installation):
     assert not (home / "auth.json").exists()
 
 
-def test_live_models_local_overrides_and_native_save(installation):
+def test_live_models_central_overrides_and_native_save(installation):
     root, home = installation
     cfg = load_config()
     assert cfg["model"]["default"] == "chat"
@@ -66,13 +66,13 @@ def test_live_models_local_overrides_and_native_save(installation):
     cfg["display"]["skin"] = "test-skin"
     save_config(cfg)
     raw = yaml.safe_load((home / "config.yaml").read_text())
-    assert "default" not in raw["models"]
+    assert "models" not in raw
     main = yaml.safe_load((root / "config.yaml").read_text())
     main["models"]["default"] = "openrouter/next-chat"
     (root / "config.yaml").write_text(yaml.safe_dump(main))
     assert load_config()["model"]["default"] == "next-chat"
-    raw["models"]["default"] = "openrouter/local-chat"
-    (home / "config.yaml").write_text(yaml.safe_dump(raw))
+    from mercury_cli.profile_defaults import save_profile_models
+    save_profile_models(home, {**main["models"], "default": "openrouter/local-chat"})
     assert load_config()["model"]["default"] == "local-chat"
     from mercury_cli.profile_defaults import resolve_model_defaults
     effective = resolve_model_defaults(raw, home / "config.yaml")
@@ -102,7 +102,8 @@ def test_opt_out_keeps_own_login_and_model(installation):
     _, home = installation
     cfg = yaml.safe_load((home / "config.yaml").read_text())
     cfg["profile"] = {"inherit_models": False, "inherit_credentials": False}
-    cfg["models"]["default"] = "openrouter/private-model"
+    from mercury_cli.profile_defaults import save_profile_models
+    save_profile_models(home, {"default": "openrouter/private-model", "delegate_model": "openrouter/private-code"})
     (home / "config.yaml").write_text(yaml.safe_dump(cfg))
     assert auth._auth_file_path() == home / "auth.json"
     assert auth._global_auth_file_path() is None
@@ -135,8 +136,7 @@ def test_post_setup_and_spawn_bridge_preserve_inheritance(installation, monkeypa
     before = (root / "config.yaml").read_bytes()
     assert sync_omp_from_setup(quiet=True)
     raw = yaml.safe_load((home / "config.yaml").read_text())
-    for slot in ("default", "fallback", "delegate_model", "delegate_fallback"):
-        assert slot not in raw["models"]
+    assert "models" not in raw
     assert "delegateModel" not in raw["omp"]
     assert (root / "config.yaml").read_bytes() == before
 
@@ -159,18 +159,18 @@ def test_gateway_turn_inherits_provider_keys_without_channel_or_prompt_leaks(ins
         set_multiplex_active(False)
 
 
-def test_native_model_and_reasoning_edits_become_local_overrides(installation):
+def test_native_model_and_reasoning_edits_become_central_profile_overrides(installation):
     root, home = installation
     from mercury_cli.config import set_config_value
-    before = (root / "config.yaml").read_bytes()
+    before = yaml.safe_load((root / "config.yaml").read_text())
     set_config_value("hermes.agent.reasoning_effort", "xhigh")
     raw = yaml.safe_load((home / "config.yaml").read_text())
-    assert raw["models"]["reasoning_overrides"]["openai-codex/chat"] == "xhigh"
-    assert "default" not in raw["models"]
+    assert yaml.safe_load((root / "config.yaml").read_text())["profile_models"]["research"]["reasoning_overrides"]["openai-codex/chat"] == "xhigh"
+    assert "models" not in raw
     set_config_value("hermes.model.default", "custom-chat")
     raw = yaml.safe_load((home / "config.yaml").read_text())
-    assert raw["models"]["default"] == "openai-codex/custom-chat"
-    assert (root / "config.yaml").read_bytes() == before
+    assert yaml.safe_load((root / "config.yaml").read_text())["profile_models"]["research"]["default"] == "openai-codex/custom-chat"
+    assert yaml.safe_load((root / "config.yaml").read_text())["models"] == before["models"]
 
 
 def test_provider_endpoints_also_remain_live_after_unrelated_saves(installation):

@@ -43,6 +43,8 @@ test("a named profile inherits live model defaults without freezing them on nati
 	process.env.MERCURY_CONFIG = file;
 	const main = {
 		models: {
+			default: "openai-codex/chat",
+			fallback: "",
 			delegate_model: "openai-codex/gpt-6.1-sol",
 			delegate_fallback: "nous/xiaomi/mimo-v2.6-pro",
 			reasoning_overrides: { "openai-codex/gpt-6.1-sol": "high" },
@@ -59,16 +61,20 @@ test("a named profile inherits live model defaults without freezing them on nati
 	settings.set("tools.approvalMode", "always-ask");
 	await settings.flush();
 	const saved = YAML.parse(await Bun.file(file).text()) as StoredDocument;
-	expect(saved.models.delegate_model).toBeUndefined();
-	expect(saved.models.reasoning_overrides).toBeUndefined();
+	expect(saved.models).toBeUndefined();
+	expect(
+		(YAML.parse(await Bun.file(temp.join("config.yaml")).text()) as Record<string, unknown>).profile_models,
+	).toBeUndefined();
 	main.models.delegate_model = "nous/xiaomi/mimo-v2.6-pro";
 	await Bun.write(temp.join("config.yaml"), YAML.stringify(main));
 	await settings.reloadFromDisk();
 	expect(settings.getModelRole("task")).toBe(main.models.delegate_model);
 	settings.setModelRole("task", "openai-codex/gpt-6.1-sol");
 	await settings.flush();
-	const overridden = YAML.parse(await Bun.file(file).text()) as StoredDocument;
-	expect(overridden.models.delegate_model).toBe("openai-codex/gpt-6.1-sol");
+	const overridden = YAML.parse(await Bun.file(temp.join("config.yaml")).text()) as {
+		profile_models: Record<string, StoredDocument["models"]>;
+	};
+	expect(overridden.profile_models.research.delegate_model).toBe("openai-codex/gpt-6.1-sol");
 	expect((YAML.parse(await Bun.file(temp.join("config.yaml")).text()) as StoredDocument).models.delegate_model).toBe(
 		main.models.delegate_model,
 	);
@@ -146,3 +152,67 @@ test.each(["alpha", "beta"])("profile %s rebases legacy main-bank pins on load a
 	const saved = YAML.parse(await Bun.file(file).text()) as { omp: { mnemopi: { dbPath: string } } };
 	expect(saved.omp.mnemopi.dbPath).toBe(local);
 });
+
+test("a complete central override controls native retries, effort and context without main-slot leakage", async () => {
+	process.env.MERCURY_HOME = temp.path();
+	const file = temp.join("hermes/profiles/research/config.yaml");
+	process.env.MERCURY_CONFIG = file;
+	const main = {
+		models: {
+			default: "openrouter/main-chat",
+			delegate_model: "openrouter/main-code",
+			delegate_fallback: "openrouter/main-retry",
+		},
+		profile_models: {
+			research: {
+				default: "nous/vendor/chat",
+				fallback: "",
+				delegate_model: "nous/vendor/code",
+				delegate_fallback: "",
+				reasoning_overrides: { "nous/vendor/code": "medium" },
+				context_windows: { "nous/vendor/code": 200000 },
+			},
+		},
+	};
+	await Bun.write(temp.join("config.yaml"), YAML.stringify(main));
+	await Bun.write(
+		file,
+		YAML.stringify({
+			models: { delegate_model: "openrouter/stale" },
+			hermes: {},
+			omp: { delegateModel: "openrouter/native-stale", tools: { approvalMode: "write" } },
+		}),
+	);
+	const settings = await Settings.init({ agentDir: temp.join("hermes/profiles/research/omp"), cwd: temp.path() });
+	expect(settings.getModelRole("task")).toBe("nous/vendor/code");
+	expect(settings.get("retry.fallbackChains")).toEqual({ "nous/vendor/code": [] });
+	expect(settings.get("defaultThinkingLevel")).toBe(Effort.Medium);
+	expect(settings.get("modelContextWindows")["nous/vendor/code"]).toBe(200000);
+	settings.set("tools.approvalMode", "yolo");
+	await settings.flush();
+	expect(YAML.parse(await Bun.file(temp.join("config.yaml")).text())).toEqual(main);
+	settings.setModelRole("task", "openai-codex/new-code");
+	await settings.flush();
+	const saved = YAML.parse(await Bun.file(temp.join("config.yaml")).text()) as typeof main;
+	expect(saved.models).toEqual(main.models);
+	expect(saved.profile_models.research.default).toBe("nous/vendor/chat");
+	expect(saved.profile_models.research.delegate_model).toBe("openai-codex/new-code");
+	expect((YAML.parse(await Bun.file(file).text()) as Record<string, unknown>).models).toBeUndefined();
+});
+
+test.each([null, {}, { default: "nous/chat" }, { default: "broken", delegate_model: "nous/code" }])(
+	"an invalid explicit profile configuration fails instead of selecting a main model: %j",
+	async invalid => {
+		process.env.MERCURY_HOME = temp.path();
+		const file = temp.join("hermes/profiles/research/config.yaml");
+		process.env.MERCURY_CONFIG = file;
+		await Bun.write(
+			temp.join("config.yaml"),
+			YAML.stringify({ models: { delegate_model: "openrouter/main" }, profile_models: { research: invalid } }),
+		);
+		await Bun.write(file, YAML.stringify({ hermes: {}, omp: {} }));
+		await expect(
+			Settings.init({ agentDir: temp.join("hermes/profiles/research/omp"), cwd: temp.path() }),
+		).rejects.toThrow("profile_models.research");
+	},
+);

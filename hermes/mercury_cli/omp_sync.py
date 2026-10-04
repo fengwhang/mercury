@@ -139,8 +139,10 @@ def _current_slots() -> dict[str, str]:
             v = str(models.get(k) or "").strip()
             if v:
                 slots[k] = v
-    except Exception:
-        pass
+    except Exception as exc:
+        from mercury_cli.profile_defaults import ProfileModelError
+        if isinstance(exc, ProfileModelError):
+            raise
     return slots
 
 
@@ -157,8 +159,10 @@ def _current_chains() -> dict[str, list[str]]:
             v = models.get(k) or []
             if isinstance(v, (list, tuple)):
                 chains[k] = [str(x).strip() for x in v if str(x).strip()]
-    except Exception:
-        pass
+    except Exception as exc:
+        from mercury_cli.profile_defaults import ProfileModelError
+        if isinstance(exc, ProfileModelError):
+            raise
     return chains
 
 
@@ -176,8 +180,10 @@ def _current_reasoning_overrides() -> dict[str, str]:
         overrides = (whole.get("models") or {}).get("reasoning_overrides") or {}
         if isinstance(overrides, dict):
             return {str(k): str(v) for k, v in overrides.items() if isinstance(v, str)}
-    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
-        pass
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError) as exc:
+        from mercury_cli.profile_defaults import ProfileModelError
+        if isinstance(exc, ProfileModelError):
+            raise
     return {}
 
 
@@ -229,6 +235,16 @@ def _write_slots(update: dict[str, Any]) -> bool:
     path = _unified_path()
     text = path.read_text() if path.exists() else ""
     whole = yaml.safe_load(text) or {}
+    from mercury_cli.profile_defaults import main_profile_root, resolve_model_defaults, save_profile_models
+    if main_profile_root(path.parent) is not None:
+        models = resolve_model_defaults(whole, path)["models"]
+        for key, value in update.items():
+            if value is None:
+                models.pop(key, None)
+            else:
+                models[key] = value
+        save_profile_models(path.parent, models)
+        return True
     models = dict(whole.get("models") or {})
     for key, value in update.items():
         if value is None:
