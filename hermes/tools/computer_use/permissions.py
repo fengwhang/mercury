@@ -34,6 +34,7 @@ from mercury_cli._subprocess_compat import windows_hide_flags
 # Platforms with a cua-driver runtime backend (mirrors the toolset platform_gate).
 _RUNTIME_PLATFORMS = frozenset({"darwin", "win32", "linux"})
 _BOOLS = ("accessibility", "screen_recording", "screen_recording_capturable")
+CUA_DRIVER_BUNDLE_ID = "com.trycua.driver"  # the only identity TCC rows and the private daemon are keyed to
 
 
 def _resolve_driver_cmd(override: Optional[str]) -> Optional[str]:

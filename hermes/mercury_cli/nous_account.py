@@ -812,3 +812,9 @@ def _coerce_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def resolve_nous_portal_base_url() -> str:
+    from mercury_cli.auth import _nous_portal_base_url, get_provider_auth_state
+
+    return _nous_portal_base_url(get_provider_auth_state("nous") or {})

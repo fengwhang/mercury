@@ -23,7 +23,7 @@ from tools.connectors.portal.wire import (
     ConnectorPolicyWriteResponse,
     ConnectorToolsListing,
 )
-from tools.managed_gateway_auth import read_nous_access_token
+from tools.managed_tool_gateway import read_nous_access_token
 
 
 DEFAULT_TIMEOUT_SECONDS = 30.0

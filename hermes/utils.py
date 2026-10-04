@@ -343,6 +343,18 @@ def atomic_write_text(
         raise
 
 
+def read_json_or_empty(path: Union[str, Path]) -> dict:
+    """The JSON object at *path*, or ``{}`` when the file is missing, unreadable, malformed or
+    not an object. The read half of every ``read → merge → atomic_json_write`` config store
+    (memory-provider ``save_config``), so a corrupt sidecar degrades to defaults instead of
+    taking the provider down."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8-sig"))  # utf-8-sig: a Windows-editor BOM must not wipe the config
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def atomic_json_write(
     path: Union[str, Path],
     data: Any,
