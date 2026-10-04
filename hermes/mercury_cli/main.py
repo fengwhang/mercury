@@ -487,6 +487,7 @@ from mercury_cli.subcommands.pairing import build_pairing_parser
 from mercury_cli.subcommands.plugins import build_plugins_parser
 from mercury_cli.subcommands.mcp import build_mcp_parser
 from mercury_cli.subcommands.claw import build_claw_parser
+from mercury_cli.subcommands.vault import build_vault_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -12475,6 +12476,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
         "verify",
@@ -14843,6 +14845,7 @@ def main():
     # claw command  (parser built in mercury_cli/subcommands/claw.py)
     # =========================================================================
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
+    build_vault_parser(subparsers)
 
     # NOTE: the `mercury version` subcommand was removed — `mercury --version`
     # / `-V` now carries the full output including update status.

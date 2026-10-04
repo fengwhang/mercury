@@ -23,6 +23,7 @@ Usage:
     all_tools = resolve_toolset("full_stack")
 """
 
+from pathlib import Path
 from typing import Dict, List, Any, Set, Optional, Tuple
 
 
@@ -51,6 +52,8 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_vault_list", "browser_vault_unlock", "browser_vault_fill",
+    "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
     # replaces other tools when browser.backend is "browser-use"
     "browser_exec",
     # Text-to-speech
@@ -78,6 +81,8 @@ _HERMES_CORE_TOOLS = [
     # stale configs naming it are skipped by validate_toolset.
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Service-gated connector account status and authorization links.
+    "manage_connections",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -179,7 +184,10 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "browser_exec", "web_search"
+            "browser_dialog",
+            "browser_vault_list", "browser_vault_unlock", "browser_vault_fill",
+            "browser_vault_save_login", "browser_vault_enter_code",
+            "browser_exec", "web_search"
         ],
         "includes": []
     },
@@ -227,6 +235,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "connections": {
+        "description": "Remote connector discovery, execution, and account authorization",
+        "tools": ["manage_connections"],
+        "includes": []
+    },
+
     "project": {
         "description": "Desktop Projects — create/switch named workspaces (GUI sessions only)",
         "tools": ["desktop_project"],
@@ -258,6 +272,22 @@ TOOLSETS = {
             "setup_mcp", "tour", "tip",
         ],
         "includes": []
+    },
+
+    # Enabled per SESSION whose PROFILE carries ``role: setup`` in its
+    # backend-written profile.yaml (tui_gateway/server.py::
+    # _load_enabled_toolsets); stripped from every other profile's selection
+    # whatever the config, env pin or client asked for
+    # (model_tools._compute_tool_definitions). Never configurable, never in
+    # `mercury tools`.
+    "setup": {
+        "description": (
+            "Onboarding-only surface for the setup profile: catalog plugin/skill "
+            "install requests through the approval card"
+        ),
+        "tools": ["manage_catalog"],
+        "includes": [],
+        "role": "setup",
     },
     
     "clarify": {
@@ -924,6 +954,18 @@ def get_toolset_names() -> List[str]:
     return sorted(names)
 
 
+
+
+def profile_role_toolsets(profile_home: Optional[Path] = None) -> Tuple[Set[str], Set[str]]:
+    """``(granted, denied)`` for the profile at *profile_home* (default: the in-scope home; a session's
+    home override, when bound, IS its profile dir): toolsets reserved for the role in its backend-written
+    ``profile.yaml``, and toolsets reserved for any other role. An ordinary profile is granted none."""
+    from mercury_cli.profiles import read_profile_meta
+    from mercury_constants import get_hermes_home
+    role = read_profile_meta(Path(profile_home or get_hermes_home())).get("role")
+    granted = {name for name, spec in TOOLSETS.items() if role is not None and spec.get("role") == role}
+    denied = {name for name, spec in TOOLSETS.items() if spec.get("role") not in (None, role)}
+    return granted, denied
 
 
 def validate_toolset(name: str) -> bool:
