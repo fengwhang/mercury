@@ -383,6 +383,8 @@ class PromptTurn:
     messages: tuple[AgentMessage, ...]
     assistant_message: AssistantMessage | None
     assistant_text: str | None
+    command_output: tuple[str, ...] = ()
+    agent_invoked: bool = True
 
     def require_assistant_text(self) -> str:
         if self.assistant_text is None:
@@ -655,6 +657,7 @@ class RpcClient:
             _DEFAULT_ERROR_HISTORY_LIMIT
         )
         self._prompt_lifecycle = _PromptLifecycleCoordinator()
+        self._prompt_request_lock = threading.Lock()
 
         self._notification_listeners: list[NotificationListener] = []
         self._event_listeners: list[AgentEventListener] = []
@@ -1273,7 +1276,9 @@ class RpcClient:
         images: Sequence[ImageContent] | None = None,
         streaming_behavior: StreamingBehavior | None = None,
         _ack_timeout: float | None = None,
-    ) -> None:
+        _command_output: list[str] | None = None,
+    ) -> bool:
+        """Schedule input; return False when the harness handled it locally."""
         # HERMES-OMP PATCH (unbounded event ring): enroll BEFORE writing
         # the prompt. The reader thread can append this run's whole turn
         # (terminal agent_end included) before the requester thread
@@ -1281,18 +1286,35 @@ class RpcClient:
         # exist when the completion fires — otherwise completion pairing
         # could retire the wrong run's entry and let the release trim
         # into a genuinely flying run. A failed request rolls back.
-        run = self._enroll_agent_run()
-        try:
-            self._request(
-                "prompt",
-                _timeout=_ack_timeout,
-                message=message,
-                images=list(images) if images is not None else None,
-                streamingBehavior=streaming_behavior,
-            )
-        except BaseException:
-            self._unenroll_agent_run(run)
-            raise
+        # Command output has no request ID on the wire. Hold the request
+        # lock only through acknowledgement, never through a provider turn,
+        # so concurrent local commands cannot borrow each other's output.
+        with self._prompt_request_lock:
+            def capture(notification: UnknownNotification) -> None:
+                payload = notification.payload
+                if (_command_output is not None and payload.get("type") == "command_output"
+                        and isinstance(payload.get("text"), str)):
+                    _command_output.append(cast(str, payload["text"]))
+
+            release_output = self.on_unknown_notification(capture)
+            run = self._enroll_agent_run()
+            try:
+                response = self._request(
+                    "prompt",
+                    _timeout=_ack_timeout,
+                    message=message,
+                    images=list(images) if images is not None else None,
+                    streamingBehavior=streaming_behavior,
+                )
+                if response.get("agentInvoked") is False:
+                    self._unenroll_agent_run(run)
+                    return False
+                return True
+            except BaseException:
+                self._unenroll_agent_run(run)
+                raise
+            finally:
+                release_output()
 
     def steer(
         self, message: str, *, images: Sequence[ImageContent] | None = None
@@ -1341,6 +1363,7 @@ class RpcClient:
     ) -> PromptTurn:
         operation = "prompt_and_wait"
         self._prompt_lifecycle.acquire(operation)
+        command_output: list[str] = []
         try:
             start_index = self._current_event_index()
             start_async_error_index = self._current_async_error_index()
@@ -1349,10 +1372,14 @@ class RpcClient:
             # request timeout — under cold starts + concurrency (WSL2 first
             # native extraction, parallel delegate fan-out) the ack can
             # legitimately exceed 30s while the child stays healthy.
-            self.prompt(
+            invoked = self.prompt(
                 message, images=images, streaming_behavior=streaming_behavior,
                 _ack_timeout=timeout,
+                _command_output=command_output,
             )
+            if not invoked:
+                return PromptTurn(events=(), messages=(), assistant_message=None,
+                                  assistant_text=None, command_output=tuple(command_output), agent_invoked=False)
             events = self._wait_for_agent_end(
                 start_index, start_async_error_index, timeout=timeout
             )
@@ -1363,7 +1390,9 @@ class RpcClient:
             # need pre-turn ring history, so bounded-within-turn memory
             # semantics release the ring here.
             self._release_consumed_turn_events()
-            return turn
+            return PromptTurn(events=turn.events, messages=turn.messages,
+                              assistant_message=turn.assistant_message, assistant_text=turn.assistant_text,
+                              command_output=tuple(command_output))
         finally:
             self._prompt_lifecycle.release(operation)
 

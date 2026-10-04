@@ -117,6 +117,16 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isMisplacedSuccessReport(value: string): boolean {
+	// Observed Muse/OpenRouter yields serialize the success envelope into
+	// `error`, often with broken JSON delimiters. Ask for a corrected call;
+	// never repair its JSON or silently declare an error payload successful.
+	if (!/^\s*\{\s*"data"\s*:/.test(value)) return false;
+	const parsed = parseJsonContainerString(value);
+	if (parsed === undefined) return true;
+	return isPlainRecord(parsed) && Object.keys(parsed).length === 1 && parsed.data !== null;
+}
+
 /**
  * Resolve the `result` record from raw yield arguments, losslessly salvaging
  * the envelope deviations weak tool callers actually produce (observed in
@@ -331,9 +341,19 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				dataSchema = withSectionVariants(resolved);
 			} else {
 				this.strict = false;
-				dataSchema = looseRecordSchema(
-					schemaError ? schemaDescription : "Structured JSON output (no schema specified)",
-				);
+				dataSchema = schemaError
+					? looseRecordSchema(schemaDescription)
+					: {
+							description:
+								"Task output: plain text or a JSON value. Use data for successful reports, never error.",
+							anyOf: [
+								looseRecordSchema("Structured report"),
+								{ type: "string" },
+								{ type: "array", items: {} },
+								{ type: "number" },
+								{ type: "boolean" },
+							],
+						};
 			}
 			parameters = wrapYieldParameters(dataSchema);
 			JSON.stringify(parameters);
@@ -380,6 +400,13 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 
 		if (errorMessage !== undefined && data !== undefined) {
 			throw new Error("result cannot contain both data and error");
+		}
+		if (errorMessage !== undefined && isMisplacedSuccessReport(errorMessage)) {
+			throw new Error(
+				"This looks like a success report serialized into result.error. " +
+					"Submit the report in result.data instead; plain text is allowed when no output schema is declared. " +
+					"Use result.error only for an actual failure reason. This call has not ended the task.",
+			);
 		}
 		if (errorMessage === undefined && data === undefined && yieldType === undefined) {
 			this.#emptyResultFailures++;

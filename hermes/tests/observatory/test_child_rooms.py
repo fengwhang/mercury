@@ -35,8 +35,12 @@ class FakeBot:
 
 def _manager(tmp_path, monkeypatch):
     from observatory import provision as provision_mod
+    from observatory import identity
+    from unittest.mock import AsyncMock
 
     monkeypatch.setattr(provision_mod, "live_server_name", lambda home=None: "vm")
+    monkeypatch.setattr(identity, "ensure_identity", AsyncMock(return_value=True))
+    monkeypatch.setattr(identity, "drop_identity", AsyncMock(return_value=True))
     state = ObservatoryState(tmp_path / "state.db")
     bot = FakeBot()
     subscribed: list[str] = []
@@ -190,14 +194,22 @@ async def test_omp_room_streams_live_then_replays_surplus(
             while rooms_mod._omp_rooms["bravo-node"]["busy"]:
                 await _asyncio.sleep(0.02)
     finally:
-        rooms_mod._omp_rooms.pop("bravo-node", None)
+        entry = rooms_mod._omp_rooms.get("bravo-node", {})
+        pending = [entry["feed_task"]] if entry.get("feed_task") else []
+        for task in _asyncio.all_tasks():
+            if task.get_name() == "observatory-omp-room-bravo-node":
+                task.cancel()
+                pending.append(task)
+        rooms_mod.drop_omp_room("bravo-node")
+        await _asyncio.sleep(0)
+        await _asyncio.gather(*pending, return_exceptions=True)
         _FakeFeed.live_payloads = []
     said = [text for ch, text in bot.said if ch == "#vm_bravo"]
     assert any("live hmm" in s for s in said)
     assert any("bash" in s for s in said)
     assert sum("live hmm" in s for s in said) == 1
     assert not any("[owner over IRC]" in s for s in said)
-    # Assistant frame filtered: the summary below is the only "done".
+    # The assistant frame and final summary represent the same reply.
     assert sum(s.strip() == "done" for s in said) == 1
 
 
@@ -234,7 +246,7 @@ def test_omp_room_skip_predicate() -> None:
     from observatory.rooms import _omp_room_skips_frame as skip
 
     assert skip({"feed": "message", "role": "user", "text": "hi"}) is True
-    assert skip({"feed": "message", "role": "assistant", "text": "hi"}) is True
+    assert skip({"feed": "message", "role": "assistant", "text": "hi"}) is False
     assert skip({"feed": "message", "role": "system", "text": "hi"}) is False
     assert skip({"feed": "message", "text": "no role"}) is False
     assert skip({"feed": "tool", "tool": "bash"}) is False
@@ -315,6 +327,43 @@ async def test_omp_root_child_ends_on_completion(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_feed_keeps_lifecycle_after_non_deduplicable_frames(tmp_path, monkeypatch):
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
+    monkeypatch.setattr(_FakeFeed, "live_payloads", [
+        {"feed": "activity", "active": False, "subagent_id": ""},
+        {"feed": "node", "kind": "add", "subagent_id": "worker", "name": "worker", "status": "running"},
+        {"feed": "status", "text": "To do list:\n• [completed] Verify", "subagent_id": "worker"},
+        {"feed": "node", "kind": "death", "subagent_id": "worker", "status": "completed", "summary": "Verified"},
+        {"feed": "message", "role": "assistant", "subagent_id": "", "text": "Parent continues"},
+    ])
+    await mgr._pump_live_omp_feed(_FakeFeed(None), "alpha-node", "#vm_alpha", {}, set())
+    assert "#vm_alpha-worker" in bot.destroyed
+    with pytest.raises(KeyError):
+        state.get("alpha-node/sub-worker")
+    assert state.get("alpha-node")["status"] == "live"
+    assert any(c == "#vm_alpha" and "Delegate task completed" in t and "Verified" in t for c, t in bot.said)
+    assert ("#vm_alpha", "Parent continues") in bot.said
+
+
+@pytest.mark.asyncio
+async def test_pending_purge_cannot_destroy_same_named_successor(tmp_path, monkeypatch):
+    from observatory.spawn import begin_exit, replay_purge_journal
+
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
+    original = await mgr._ensure_child_room_for("old", {"name": "worker", "parent_name": "alpha-node"})
+    begin_exit(state, "old")
+    replacement = await mgr._ensure_child_room_for("new", {"name": "worker", "parent_name": "alpha-node"})
+    assert replacement == original + "-2"
+    assert await replay_purge_journal(state, bot=bot) == []
+    assert bot.destroyed == [original]
+    assert state.get("new")["status"] == "live"
+    # The unsuffixed name becomes reusable once its purge is confirmed.
+    assert await mgr._ensure_child_room_for("third", {"name": "worker", "parent_name": "alpha-node"}) == original
+
+
+@pytest.mark.asyncio
 async def test_unresolvable_parent_does_not_fabricate_gateway_ancestry(tmp_path, monkeypatch) -> None:
     """Unknown session ancestry must never be silently assigned to gateway."""
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
@@ -346,3 +395,66 @@ async def test_child_room_gets_own_identity(tmp_path, monkeypatch) -> None:
     channel = await mgr._ensure_child_room_for(
         "d1", {"name": "bravo", "parent_name": "alpha-node", "engine": "omp"})
     assert seen == [("vm_alpha-bravo", channel)]
+
+
+@pytest.mark.asyncio
+async def test_native_completion_reports_before_level_one_family_is_removed(tmp_path, monkeypatch):
+    from observatory.gateway_session import _feed_event_to_dict
+    from observatory.omp_feed import OmpFeed
+
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    _spawn_row(state, "root", "coder", "#vm_coder")
+    feed = OmpFeed(None)
+    cache = {}
+
+    async def send(sid, parent, status, output=None):
+        wire = {"type": "subagent_lifecycle", "payload": {
+            "id": sid, "name": sid, "parentAgentId": parent,
+            "agent": "task", "status": status, "output": output,
+        }}
+        for event in feed._translate(wire):
+            await mgr._publish_routed_frame("root", "#vm_coder", _feed_event_to_dict(event), cache)
+
+    await send("worker", "Main", "started")
+    await send("helper", "worker", "started")
+    await send("helper", "worker", "completed", "Verified the change")
+    assert state.get("root/sub-helper")["depth"] == 2
+    assert any(ch == "#vm_coder-worker" and "Verified the change" in text
+               for ch, text in bot.said)
+    assert "#vm_coder-worker-helper" not in bot.destroyed
+
+    await send("worker", "Main", "completed", "Change complete; helper verified it")
+    assert any(ch == "#vm_coder" and "Change complete; helper verified it" in text
+               for ch, text in bot.said)
+    with pytest.raises(KeyError):
+        state.get("root/sub-worker")
+    with pytest.raises(KeyError):
+        state.get("root/sub-helper")
+    assert state.get("root")["status"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_no_delegate_is_created_as_an_immortal_root_without_a_parent(tmp_path, monkeypatch):
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    channel = await mgr._ensure_child_room_for("orphan", {"name": "worker", "engine": "omp"})
+    assert channel == ""
+    assert state.get_live() == []
+    assert bot.joined == []
+
+
+@pytest.mark.asyncio
+async def test_idle_omp_parent_publishes_automatic_result_followup(tmp_path, monkeypatch):
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    _spawn_row(state, "root", "coder", "#vm_coder")
+    _FakeFeed.live_payloads = [
+        {"feed": "message", "role": "assistant", "subagent_id": "",
+         "text": "My child reported success; continuing the orchestration"},
+    ]
+    rooms_mod.register_omp_room("root", "#vm_coder", object())
+    try:
+        await mgr._pump_live_omp_feed(_FakeFeed(None), "root", "#vm_coder", {}, set())
+        assert any(ch == "#vm_coder" and "continuing the orchestration" in text
+                   for ch, text in bot.said)
+    finally:
+        rooms_mod.drop_omp_room("root")
+        _FakeFeed.live_payloads = []

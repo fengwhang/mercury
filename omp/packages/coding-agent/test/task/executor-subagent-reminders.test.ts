@@ -13,6 +13,8 @@ import {
 	SUBAGENT_WARNING_MISSING_YIELD,
 } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { YieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { logger } from "@oh-my-pi/pi-utils";
 
@@ -697,6 +699,48 @@ describe("runSubprocess yield reminders", () => {
 		const result = await runSubprocess({ ...baseOptions, id: "subagent-aborted-yield" });
 		expect(result.aborted).toBe(true);
 		expect(result.abortReason).toBe("blocked by permissions");
+	});
+
+	it("returns a completed parent report after a child corrects a report misplaced in error", async () => {
+		const toolSession: ToolSession = {
+			cwd: "/tmp",
+			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+			settings: Settings.isolated(),
+		};
+		const tool = new YieldTool(toolSession);
+		let attempts = 0;
+		const session = createMockSession(async ({ promptIndex, emit, state }) => {
+			attempts++;
+			const message = createAssistantStopMessage("The assigned work is complete.");
+			state.messages.push(message);
+			emit({ type: "message_end", message });
+			try {
+				const result = await tool.execute(
+					"yield-report",
+					promptIndex === 1
+						? { result: { error: '{"data":{"report":"Work completed"}' } }
+						: { result: { data: "Work completed; all checks passed." } },
+				);
+				emit({ type: "tool_execution_end", toolCallId: "yield-report", toolName: "yield", result, isError: false });
+			} catch (error) {
+				emit({
+					type: "tool_execution_end",
+					toolCallId: "yield-report",
+					toolName: "yield",
+					result: { content: [{ type: "text", text: String(error) }] },
+					isError: true,
+				});
+			}
+		});
+		mockCreateAgentSession(session);
+		const result = await runSubprocess({ ...baseOptions, id: "subagent-corrected-report" });
+		expect(attempts).toBe(2);
+		expect(result.exitCode).toBe(0);
+		expect(result.aborted).toBe(false);
+		expect(result.abortReason).toBeUndefined();
+		expect(result.output).toContain("Work completed; all checks passed.");
 	});
 
 	it("marks pre-aborted subprocess with a concrete reason", async () => {

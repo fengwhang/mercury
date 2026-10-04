@@ -61,6 +61,42 @@ describe("YieldTool", () => {
 		expect(result.details).toEqual({ data: { ok: true }, status: "success", error: undefined });
 	});
 
+	it("lets unstructured reports use success data in the provider's advertised schema", async () => {
+		const tool = new YieldTool(createSession());
+		const definition: Tool = {
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters,
+			strict: tool.strict,
+		};
+		const [converted] = convertOpenAICodexResponsesTools([definition], makeCodexModel());
+		if (converted.type !== "function") throw new Error("expected a function tool payload");
+		const wireDefinition: Tool = { ...definition, parameters: converted.parameters };
+		for (const data of ["Hello from the subagent!", '{"report":"done"}', [{ finding: "done" }], 0, false]) {
+			const args = { result: { data } };
+			validateToolArguments(wireDefinition, { type: "toolCall", id: "report", name: "yield", arguments: args });
+			const result = await tool.execute("report", args);
+			expect(result.details?.status).toBe("success");
+			expect(result.details?.data).toEqual(data);
+		}
+	});
+
+	it("asks for a corrected yield when success reports are serialized into error", async () => {
+		const tool = new YieldTool(createSession());
+		// The malformed forms mirror observed report strings with missing braces,
+		// delimiters or extra trailing braces. Do not repair or reinterpret them.
+		for (const error of [
+			'{"data":{"report":"done"}}',
+			'{"data":{"report":"done"}',
+			'{"data":{"report":"done" "files":[]}}',
+			'{"data":{"report":"done"}}}',
+		]) {
+			await expect(tool.execute("misplaced", { result: { error } })).rejects.toThrow("result.data");
+		}
+		const corrected = await tool.execute("corrected", { result: { data: "Work completed; report attached." } });
+		expect(corrected.details?.status).toBe("success");
+	});
+
 	it("commits a terminal yield emitted before parent steering lands (#10645)", async () => {
 		// The parent's `hub send` arrives while the child is still streaming its
 		// yield call. The already-generated yield must execute and settle the
@@ -116,6 +152,10 @@ describe("YieldTool", () => {
 		const tool = new YieldTool(createSession());
 		const result = await tool.execute("call-2", { result: { error: "blocked" } } as never);
 		expect(result.details).toEqual({ data: undefined, status: "aborted", error: "blocked" });
+		const diagnostic = '{"data":{"partial":"saved"},"error":"provider failed"}';
+		const failed = await tool.execute("json-diagnostic", { result: { error: diagnostic } });
+		expect(failed.details?.status).toBe("aborted");
+		expect(failed.details?.error).toBe(diagnostic);
 	});
 
 	it("accepts typed success without data as a last-turn result", async () => {

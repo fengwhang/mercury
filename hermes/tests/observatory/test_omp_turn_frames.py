@@ -115,6 +115,16 @@ def test_dedupe_genuine_repeats_survive():
     assert dd2.replay_indexes([a, a]) == [1]  # the missed repeat replays
 
 
+def test_dedupe_consumes_late_replay_coverage_before_parent_followup():
+    dd = TurnFrameDedupe()
+    key = ("status", "", "Tool completed: bash")
+    assert dd.replay_indexes([key, key]) == [0, 1]
+    assert dd.live_hit(key) is True
+    assert dd.live_hit(key) is True
+    # A subsequent completion in the parent's follow-up is new work.
+    assert dd.live_hit(key) is False
+
+
 @pytest.fixture()
 def _clean_registries():
     for table in (gs._child_dedupe, gs._child_live_feeds):

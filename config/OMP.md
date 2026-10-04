@@ -21,6 +21,10 @@ hermes half orchestrates you; you execute.
   in parallel in one `task` call instead of running them serially
   yourself; reserve doing the work yourself for steps that depend on
   each other or need one shared context.
+- When finishing a subagent task, submit your report with
+  `yield({"result":{"data": <report>}})`. Reserve `result.error` for an
+  actual failure: putting a completed report or a JSON-encoded success
+  envelope there marks the task aborted and reports failure to the parent.
 - Session model = the configured delegate slot; model selection is
   explicit or session-wide (there is no role system).
 - Shared state: SOUL.md, MEMORY.md, USER.md, and AGENTS.md at ~/.mercury/config

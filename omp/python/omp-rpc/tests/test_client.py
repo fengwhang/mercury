@@ -405,6 +405,10 @@ FAKE_SERVER = textwrap.dedent(
         elif command_type in {"steer", "follow_up", "abort"}:
             respond(request_id, command_type, {})
         elif command_type in {"prompt", "abort_and_prompt"}:
+            if command["message"] == "/model":
+                print(json.dumps({"type": "command_output", "text": "Current model: anthropic/mock"}), flush=True)
+                respond(request_id, command_type, {"agentInvoked": False})
+                continue
             respond(request_id, command_type, {})
             message = command["message"]
             if message == "needs ui":
@@ -1136,6 +1140,16 @@ class RpcClientTests(unittest.TestCase):
             turn = client.prompt_and_wait("say hello", timeout=2.0)
             self.assertEqual(turn.require_assistant_text(), "pong")
             self.assertGreaterEqual(len(turn.events), 3)
+
+    def test_local_command_returns_without_agent_end_and_preserves_next_turn(self) -> None:
+        with self.make_client() as client:
+            turn = client.prompt_and_wait("/model", timeout=2.0)
+            self.assertFalse(turn.agent_invoked)
+            self.assertEqual(turn.command_output, ("Current model: anthropic/mock",))
+            self.assertEqual(turn.events, ())
+            self.assertEqual(client._scheduled_agent_runs, 0)
+            next_turn = client.prompt_and_wait("say hello", timeout=2.0)
+            self.assertEqual(next_turn.require_assistant_text(), "pong")
 
     def test_prompt_and_wait_reconstructs_compacted_terminal_messages(self) -> None:
         with self.make_client() as client:
@@ -1927,11 +1941,12 @@ class EventRingMemoryContractTests(unittest.TestCase):
                 # Final messages remain correct across turns.
                 self.assertEqual(turn.require_assistant_text(), f"pong-{turn_number}")
                 self.assertEqual(len(turn.messages), 1)
-                # Within-turn completeness: full turn from agent_start to
-                # the terminal agent_end — 6 framing events + deltas.
+                # Live listeners receive all deltas, while reconstruction
+                # keeps only the latest cumulative streaming snapshot.
                 self.assertEqual(turn.events[0].type, "agent_start")
                 self.assertEqual(turn.events[-1].type, "agent_end")
-                self.assertEqual(len(turn.events), deltas + 6)
+                snapshots = [event for event in turn.events if event.type == "message_update"]
+                self.assertEqual(len(snapshots), 1)
                 self.assertEqual(len(client._events.items), 0)
                 self.assertEqual(client._events.offset, 0)
                 self.assertEqual(client._events.terminal_agent_end_index, -1)
@@ -1972,7 +1987,9 @@ class EventRingMemoryContractTests(unittest.TestCase):
         self.assertIn("pong-2", message_end_texts)
 
     def test_ring_overflow_valve_drops_oldest_half_and_counts(self) -> None:
-        with self.make_client(max_event_ring_ceiling=8) as client:
+        # Below the non-coalescible framing count, so overflow still occurs
+        # when repeated streaming updates share one stored snapshot.
+        with self.make_client(max_event_ring_ceiling=4) as client:
             self.assertEqual(client.ring_overflow, 0)
             turn = client.prompt_and_wait("burst", timeout=5.0)
 

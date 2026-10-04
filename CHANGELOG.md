@@ -3,7 +3,25 @@
 This is Mercury's product history. Vendored upstream changelogs document
 their original projects and are not Mercury release announcements.
 
-## [Unreleased]
+## [0.3.23] — stable
+
+- Prevent OMP completed reports submitted in the yield tool's error field
+  from immediately aborting the task: request a corrected submission and
+  advertise plain-text success reports, while preserving actual failures.
+
+## [0.3.22] — stable and nightly
+
+- Remove completed level-1 agent rooms and their descendants from MIRC and
+  every connected mLounge browser. Wait for daemon confirmation, retry
+  failed cleanup automatically, and prevent cached joins from reviving
+  expired rooms. Deeper agents remain until their parent ends.
+- Stream tool completion labels, full todo lists, delegation results,
+  compaction, retries, fallback changes and extension notices into chat.
+  Preserve plaintext tool output, hide Hermes reasoning by default, and
+  retain OMP parent follow-up replies without duplicating final replies.
+- Execute OMP room commands through their local harness. Keep `!model`
+  available during active turns and after provider usage exhaustion;
+  show failed-turn notices instead of an unexplained `(no output)`.
 
 ## [0.3.21] — stable and nightly
 
