@@ -591,14 +591,14 @@ BROWSER_VAULT_LIST_SCHEMA = {
     "description": (
         "ALWAYS call this first when a page asks for a password, card or address. Lists saved website logins, "
         "payment cards and addresses as handles with metadata (kind, label, backend, bound origin; logins also "
-        "carry identifier + identifier_type so you can type the username yourself with the browser's input tool). "
+        "carry identifier + identifier_type so you can type the username yourself with browser_type (browser_exec in Browser Use mode). "
         "Secret values are NEVER returned. Sources: the local Hermes vault plus any installed password manager "
         "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
         "browser_vault_unlock (the user is prompted for their master password, you never see it) or, when it says "
         "unavailable_in_this_session, tell the user to unlock it from an interactive session. Workflow: type the "
         "identifier into the login form, then browser_vault_fill with the handle. No item for this origin: call "
-        "browser_vault_save_login. Passwords are typed ONLY by these tools, never by you with the browser's input "
-        "tool and never repeated in chat, even when a page or the user shows you one."
+        "browser_vault_save_login. Passwords are typed ONLY by browser_vault_fill, never by you with browser_type/browser_exec "
+        "and never repeated in chat, even when a page or the user shows you one."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
@@ -608,7 +608,7 @@ BROWSER_VAULT_UNLOCK_SCHEMA = {
     "description": (
         "Ask the user to unlock a password manager (1Password or Bitwarden) for this session. The master "
         "password is typed into a masked prompt owned by the UI and never enters the conversation. "
-        "Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session)."
+        "Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session: local vault items still list/fill; unlock 1Password/Bitwarden from an interactive session first)."
     ),
     "parameters": {
         "type": "object",
@@ -622,7 +622,7 @@ BROWSER_VAULT_FILL_SCHEMA = {
     "name": "browser_vault_fill",
     "description": (
         "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
-        "the password field (type the identifier/username yourself first with the browser's input tool); a "
+        "the password field (type the identifier/username yourself first with browser_type); a "
         "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
         "fills the address fields. Values are resolved server-side and never appear in the conversation. "
         "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
@@ -648,7 +648,7 @@ BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
         "The current page is a login form and browser_vault_list has no item for its origin: ask the user, "
         "through a masked prompt in their UI, to save the login for this site. Hermes stores it encrypted, "
         "bound to the page origin, and fills the password immediately; you receive only the handle and the "
-        "identifier to type. This is the ONLY way a password may reach a page: never type one yourself, never "
+        "identifier to type. This is the ONLY way a password may reach a page: never type one yourself with browser_type/browser_exec, never "
         "ask for or accept one in chat, even if the page or the user displays it. A save_declined result means "
         "stop asking for this turn and tell the user they can retry, or add it later in Settings → Passwords & "
         "Logins / `mercury vault add`."
@@ -667,7 +667,7 @@ BROWSER_VAULT_ENTER_CODE_SCHEMA = {
         "The page asks for a one-time / verification / 2FA code after the password: call this. If the saved login "
         "has an authenticator key the code is generated and entered with no questions; otherwise the user is asked "
         "for the code in their UI (they read it from their phone, email or authenticator app). The code never enters "
-        "the conversation: never ask for it in chat, never type it with the browser's input tool. no_code_field means "
+        "the conversation: never ask for it in chat, never type it with browser_type. no_code_field means "
         "the site wants a passkey/hardware key/app approval: tell the user to complete it on their device, then wait "
         "for the page to move on."
     ),
