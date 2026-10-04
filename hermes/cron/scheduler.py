@@ -5116,7 +5116,8 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
         or str((_cron_cfg or {}).get("model_provider") or "").strip()
         or None
     )
-    model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+    from cron.env_settings import cron_env_setting
+    model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
     from mercury_cli.auth import AuthError
 
@@ -6068,13 +6069,16 @@ def run_job(
                 else str(delivery_target["thread_id"])
             )
 
-        # Model resolution precedence: per-job override > cron.model (the
-        # cron-fleet default) > HERMES_MODEL env > config.yaml ``model:``
-        # (string or ``{default: ...}``). The per-job value is intentionally
-        # re-read from storage every tick so a ``mercury cron edit --model``
-        # after a failed run takes effect on the next tick — there is no
-        # in-memory cache.
-        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        # Model resolution precedence: per-job override > HERMES_CRON_MODEL env
+        # > cron.model (the cron-fleet default) > config.yaml ``model:``
+        # (string or ``{default: ...}``) > HERMES_MODEL env. The per-job value
+        # is intentionally re-read from storage every tick so a
+        # ``mercury cron edit --model`` after a failed run takes effect on the
+        # next tick — there is no in-memory cache. Reads go through
+        # cron_env_setting so multiplex profiles resolve their own .env.
+        from cron.env_settings import cron_env_setting
+        _env_cron_model = cron_env_setting("HERMES_CRON_MODEL")
+        model = job.get("model") or _env_cron_model or cron_env_setting("HERMES_MODEL") or ""
 
         # cron.model / cron.model_provider: a deliberate cron-fleet default
         # so unattended jobs stop shadowing chat `/model` switches. When an
@@ -6112,8 +6116,13 @@ def run_job(
                     _cron_default_provider = str(
                         _cron_cfg_for_model.get("model_provider") or ""
                     ).strip()
+                    _env_cron_provider = cron_env_setting("HERMES_CRON_MODEL_PROVIDER")
+                    if _env_cron_provider:
+                        _cron_default_provider = _env_cron_provider
                 if not job.get("model"):
-                    if _cron_default_model:
+                    if _env_cron_model:
+                        model = _env_cron_model
+                    elif _cron_default_model:
                         # Cron-fleet default beats the global chat model: it is
                         # the user's explicit "cron runs on this" setting.
                         model = _cron_default_model
@@ -6132,7 +6141,7 @@ def run_job(
             raise RuntimeError(
                 f"Cron job '{job_name}' has no model configured "
                 f"(job.model={job.get('model')!r}, "
-                f"HERMES_MODEL={os.getenv('HERMES_MODEL', '')!r}, "
+                f"HERMES_CRON_MODEL={_env_cron_model!r}, HERMES_MODEL={cron_env_setting('HERMES_MODEL')!r}, "
                 "config.yaml model.default missing or empty). "
                 f"Set a per-job model via "
                 f"`mercury cron edit {job_id} --model <name>` or set a "
