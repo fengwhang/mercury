@@ -18,9 +18,8 @@ while it works. Use the terminal at your desk and the Observatory from
 your phone. Your host runs the agents; you choose their supported model
 providers.
 
-The current stable release is **[v0.3.7](https://github.com/fengwhang/mercury/releases/tag/v0.3.7)**.
-The standard installer below includes the same thinking kaomoji across Hermes
-and OMP rooms, program-preserving steering, and shared approval settings.
+The current stable release is **[v0.3.21](https://github.com/fengwhang/mercury/releases/tag/v0.3.21)**.
+Stable and nightly currently ship the same tested v0.3.21 builds.
 
 ## Why Mercury?
 
@@ -103,8 +102,8 @@ For a nightly installation:
 curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install-nightly.sh | bash
 ```
 
-Stable is **[v0.3.7](https://github.com/fengwhang/mercury/releases/tag/v0.3.7)**.
-The latest nightly is **[v0.3.11-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.11-nightly)**.
+Stable is **[v0.3.21](https://github.com/fengwhang/mercury/releases/tag/v0.3.21)**.
+The latest nightly is **[v0.3.21-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.21-nightly)**.
 The nightly installer selects the newest published prerelease. Stable remains
 on its own update channel; nightly is selected explicitly by this wrapper or
 `--channel nightly`.

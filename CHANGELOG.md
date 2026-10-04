@@ -5,7 +5,10 @@ their original projects and are not Mercury release announcements.
 
 ## [Unreleased]
 
-## [0.3.21] — nightly
+## [0.3.21] — stable and nightly
+
+- Promote the verified v0.3.21 nightly packages to stable without rebuilding;
+  both release channels use the same source revision and archive bytes.
 
 - Fix `!model` in profile-spawned MIRC rooms when gateway multiplexing is
   disabled: read the active profile's inherited or explicit model settings
