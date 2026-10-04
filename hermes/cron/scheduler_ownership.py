@@ -22,7 +22,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from mercury_constants import get_hermes_home, hermes_home_key
+from mercury_constants import get_hermes_home, mercury_home_key
 
 # Home key -> home path for every profile this process ticks, republished each ticker cycle so a
 # profile created or tombstoned mid-run is reflected without a restart.
@@ -40,7 +40,7 @@ def register_ticked_homes(homes) -> None:
     resolved = {}
     for home in homes:
         path = Path(home)
-        resolved[hermes_home_key(path)] = path
+        resolved[mercury_home_key(path)] = path
     with _ticked_lock:
         departed = set(_ticked_homes) - set(resolved)
         _ticked_homes.clear()
@@ -60,7 +60,7 @@ def ticked_homes() -> dict:
 
 def serves_profile(home: Optional[Union[Path, str]] = None) -> bool:
     """True when THIS process's cron ticker owns ``home`` (default: the active cron scope)."""
-    key = hermes_home_key(home if home is not None else get_hermes_home())
+    key = mercury_home_key(home if home is not None else get_hermes_home())
     with _ticked_lock:
         return key in _ticked_homes
 

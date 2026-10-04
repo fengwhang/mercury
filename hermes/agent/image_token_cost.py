@@ -55,14 +55,14 @@ def _read_cache() -> Dict[str, int]:
 def _table() -> Dict[str, int]:
     """The active profile's learned table, loaded lazily from its cache file."""
     global _LOADED
-    from mercury_constants import get_hermes_home_override, hermes_home_key
+    from mercury_constants import get_hermes_home_override, mercury_home_key
 
     if get_hermes_home_override() is None:
         if not _LOADED:
             _LOADED = True
             _LEARNED.update(_read_cache())
         return _LEARNED
-    home_key = hermes_home_key()
+    home_key = mercury_home_key()
     table = _LEARNED_BY_HOME.get(home_key)
     if table is None:
         table = _LEARNED_BY_HOME[home_key] = _read_cache()

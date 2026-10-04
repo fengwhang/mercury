@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from tools.tts_tool_delivery import _origin, _section, _wrap_pcm_as_wav, _write_wav_bytes_as
-from tools.xai_http import hermes_xai_user_agent
+from tools.xai_http import mercury_xai_user_agent
 
 logger = logging.getLogger("tools.tts_tool")
 
@@ -336,7 +336,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         payload["text_normalization"] = True
     response = _post_json(f"{base_url}/tts", payload, {
         "Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
-        "User-Agent": hermes_xai_user_agent()})
+        "User-Agent": mercury_xai_user_agent()})
     response.raise_for_status()
     return _write_bytes(output_path, _read_tts_response_bytes(response, label="xAI TTS"))
 
