@@ -532,6 +532,9 @@ models, selected settings, MCP/SSH definitions, and themes.
 
 ## Development
 
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the repository map, isolated
+development setup, testing conventions, and nightly/stable release procedures.
+
 The engines are vendored and patched. [PINS.txt](PINS.txt) records their
 upstream bases; consult the applicable `AGENTS.md` before changing them.
 The integration lives in `bridge/`, `hermes/tools/omp_*`,
@@ -547,11 +550,10 @@ Bun, and mLounge checks through Vitest. The
 [September 2026 review](docs/code-review-2026-09-30.md) records the reviewed
 paths, reproducible findings, and current test results.
 
-Release builds must bump and commit the Mercury version **before**
-compiling OMP. Build both OMP architectures and the Hermes TUI, run
-`scripts/build-mlounge-fork.sh`, then `scripts/make-dist.sh`. Packaging
-checks the baked OMP version, native-library version, and mLounge source
-fingerprint. Published bundles include the prebuilt components.
+Release builds must bump and commit the Mercury version **before** compiling
+OMP. Releases cover x64 and ARM64 with both glibc and musl, plus the prebuilt
+Hermes TUI and mLounge. Follow the [release procedure](CONTRIBUTING.md#release-channels-and-ownership)
+and [portable Linux build guide](docs/linux-release-builds.md).
 
 ## Credits and licenses
 
