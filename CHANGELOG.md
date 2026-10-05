@@ -3,6 +3,16 @@
 This is Mercury's product history. Vendored upstream changelogs document
 their original projects and are not Mercury release announcements.
 
+## [0.4.1] — nightly
+
+- The terminal backend selected during setup now applies to Hermes, OMP bash
+  commands, OMP TUI shell commands, and all OMP descendants. Remote working
+  directories resolve remotely, streaming output survives steering, and backend
+  failures cannot silently run commands on the local host.
+- SSH setup saves the current endpoint in shared config and correctly restores
+  port 22 or clears an obsolete key path. Native engine approval policies remain
+  independent. Dedicated OMP file tools, LSPs, eval, and hub programs remain local.
+
 ## [0.4.0] — experimental nightly
 
 - Release the audited integration branch as a nightly; stable remains v0.3.24.
