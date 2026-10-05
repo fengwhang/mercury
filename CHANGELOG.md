@@ -14,6 +14,8 @@ their original projects and are not Mercury release announcements.
 - Add a Speech-to-Text provider configuration option in the CLI Tools menu,
   including setup and subsequent provider changes, without adding STT schemas
   to model context.
+- Bypass transport retries for explicit exhausted quotas so configured model
+  fallback starts promptly; ordinary request-rate throttles retain backoff.
 
 ## [0.4.2] — nightly
 

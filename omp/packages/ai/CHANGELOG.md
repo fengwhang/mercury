@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Surface exhausted OpenAI-compatible provider quotas immediately to session fallback instead of repeating the same HTTP request.
+
 - Requests honor discovered reasoning capabilities, including mandatory reasoning and models without an effort selector.
 - Mercury provider logins and OAuth refreshes now share credentials with the Hermes engine within the selected profile.
 
