@@ -123,3 +123,53 @@ class TestPostSetup:
         from mercury_cli.tools_config import _POST_SETUP_READY
 
         assert "faster_whisper" in _POST_SETUP_READY
+
+
+def test_cli_checklist_opens_stt_provider_picker_and_saves_without_tool_schema(monkeypatch):
+    from mercury_cli import tools_config as tc
+
+    config = {"stt": {"provider": "local"}, "platform_toolsets": {"cli": ["terminal"]}}
+    local = _stt_provider_named("Local Whisper")
+    groq = _stt_provider_named("Groq")
+    saved = []
+    monkeypatch.setattr(tc, "_estimate_tool_tokens", lambda: {})
+    monkeypatch.setattr(tc, "_get_effective_configurable_toolsets", lambda: [
+        ("terminal", "Terminal", "shell commands"), ("stt", "Speech-to-Text", "voice")])
+    monkeypatch.setattr(tc, "_toolset_has_keys", lambda *args, **kwargs: True)
+    monkeypatch.setattr(tc, "_visible_providers", lambda *args, **kwargs: [local, groq])
+    monkeypatch.setattr(tc, "_hidden_nous_gateway_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tc, "_detect_active_provider_index", lambda *args, **kwargs: 0)
+
+    def select_provider(title, choices, default):
+        assert any("Groq" in choice for choice in choices)
+        return next(i for i, choice in enumerate(choices) if "Groq" in choice)
+
+    monkeypatch.setattr(tc, "_prompt_choice", select_provider)
+    monkeypatch.setattr(tc, "_reconfigure_provider", lambda provider, config, **kwargs:
+                        tc._write_provider_config(provider, config, managed_feature=None))
+    monkeypatch.setattr(tc, "save_config", lambda cfg: saved.append(cfg["stt"]["provider"]))
+
+    def choose_stt(title, labels, selected, **kwargs):
+        assert "CLI" in title
+        return selected | {next(i for i, label in enumerate(labels) if "Speech-to-Text provider" in label)}
+
+    monkeypatch.setattr("mercury_cli.curses_ui.curses_checklist", choose_stt)
+    selected = tc._prompt_toolset_checklist("🖥 CLI", {"terminal"}, config=config, force_fresh=False)
+    assert selected == {"terminal"}
+    assert config["stt"]["provider"] == "groq"
+    assert saved == ["groq"]
+    assert config["platform_toolsets"]["cli"] == ["terminal"]
+
+
+def test_cancel_cli_checklist_preserves_stt_and_platform_tools(monkeypatch):
+    from mercury_cli import tools_config as tc
+
+    config = {"stt": {"provider": "groq"}}
+    monkeypatch.setattr(tc, "_estimate_tool_tokens", lambda: {})
+    monkeypatch.setattr(tc, "_get_effective_configurable_toolsets", lambda: [("terminal", "Terminal", "shell commands")])
+    monkeypatch.setattr(tc, "_toolset_has_keys", lambda *args, **kwargs: True)
+    monkeypatch.setattr("mercury_cli.curses_ui.curses_checklist", lambda title, labels, selected, **kwargs: kwargs["cancel_returns"])
+    monkeypatch.setattr(tc, "save_config", lambda cfg: pytest.fail("cancel saved a configuration"))
+    selected = tc._prompt_toolset_checklist("🖥 CLI", {"terminal"}, config=config, force_fresh=False)
+    assert selected == {"terminal"}
+    assert config == {"stt": {"provider": "groq"}}

@@ -3,6 +3,18 @@
 This is Mercury's product history. Vendored upstream changelogs document
 their original projects and are not Mercury release announcements.
 
+## [Unreleased]
+
+- Remove expired subagent rooms even when MIRC destruction needs a retry, and
+  reconcile existing orphan rooms at startup while preserving live agents,
+  the configured gateway room, and session history.
+- Use configured Hermes and OMP fallback models on exhausted provider quotas,
+  including responses that specify a future reset; shared model settings
+  remain authoritative over stale native mirrors.
+- Add a Speech-to-Text provider configuration option in the CLI Tools menu,
+  including setup and subsequent provider changes, without adding STT schemas
+  to model context.
+
 ## [0.4.2] — nightly
 
 - Declining model/provider reconfiguration during setup now keeps all four

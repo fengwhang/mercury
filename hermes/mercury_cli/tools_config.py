@@ -162,9 +162,8 @@ _DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin",
 # Config-only capabilities: they appear in `mercury tools` for provider/API-key
 # configuration (TOOL_CATEGORIES) but are NOT model toolsets — they ship zero
 # tool schemas and their on/off switch lives in their own config section
-# (e.g. ``stt.enabled``), not ``platform_toolsets``. Excluded from the
-# per-platform enable/disable checklist; configured via the "Reconfigure an
-# existing tool" flow and the GUI provider matrix instead.
+# (e.g. ``stt.enabled``), not ``platform_toolsets``. The CLI checklist offers
+# a provider configuration action for STT without adding a model toolset.
 _CONFIG_ONLY_TOOLSETS = {"stt"}
 
 
@@ -3172,6 +3171,7 @@ def _prompt_toolset_checklist(
     platform: str = "cli",
     *,
     force_fresh: bool = True,
+    config: dict | None = None,
 ) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from mercury_cli.curses_ui import curses_checklist
@@ -3188,6 +3188,11 @@ def _prompt_toolset_checklist(
         if _toolset_allowed_for_platform(k, platform)
         and k not in _CONFIG_ONLY_TOOLSETS
     ]
+    # STT belongs to the voice interfaces, so it has no model-tool checkbox.
+    # Offer an explicit configuration action here where setup users look for
+    # audio providers, including on an already-configured installation.
+    if platform == "cli":
+        effective.append(("stt", "🎙️ Speech-to-Text provider", "select to configure voice transcription"))
 
     # HERMES-OMP PATCH (checklist hang, 2026-09-06): the label loop used to
     # call _toolset_has_keys(force_fresh=True) PER TOOLSET — 24 sequential
@@ -3223,7 +3228,7 @@ def _prompt_toolset_checklist(
 
     pre_selected = {
         i for i, (ts_key, _, _) in enumerate(effective)
-        if ts_key in enabled
+        if ts_key in enabled and ts_key not in _CONFIG_ONLY_TOOLSETS
     }
 
     # Build a live status function that shows deduplicated total token cost.
@@ -3235,7 +3240,8 @@ def _prompt_toolset_checklist(
             # Collect unique tool names across all selected toolsets
             all_tools: set = set()
             for idx in chosen:
-                all_tools.update(resolve_toolset(ts_keys[idx]))
+                if ts_keys[idx] not in _CONFIG_ONLY_TOOLSETS:
+                    all_tools.update(resolve_toolset(ts_keys[idx]))
             total = sum(tool_tokens.get(name, 0) for name in all_tools)
             if total >= 1000:
                 return f"Est. tool context: ~{total / 1000:.1f}k tokens"
@@ -3248,7 +3254,12 @@ def _prompt_toolset_checklist(
         cancel_returns=pre_selected,
         status_fn=status_fn,
     )
-    return {effective[i][0] for i in chosen}
+    selected = {effective[i][0] for i in chosen}
+    if "stt" in selected:
+        config = config if config is not None else load_config()
+        _configure_tool_category_for_reconfig("stt", TOOL_CATEGORIES["stt"], config, force_fresh=force_fresh)
+        save_config(config)
+    return selected - _CONFIG_ONLY_TOOLSETS
 
 
 # ─── Provider-Aware Configuration ────────────────────────────────────────────
@@ -5716,7 +5727,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
 
             # Show checklist
-            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected, pkey)
+            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected, pkey, config=config)
 
             # Only diff against toolsets the checklist actually offered. The
             # resolved ``current_enabled`` can include non-configurable toolsets
@@ -5834,6 +5845,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                 "All platforms",
                 all_current,
                 force_fresh=True,
+                config=config,
             )
             selected_to_configure = [
                 ts_key for ts_key in sorted(new_enabled)
@@ -5913,7 +5925,9 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         new_enabled = _prompt_toolset_checklist(
             pinfo["label"],
             current_enabled,
+            pkey,
             force_fresh=True,
+            config=config,
         )
 
         # Selected toolsets still missing provider/API-key setup must open
