@@ -114,7 +114,12 @@ def hermes_model_view(whole: dict) -> dict:
         chain = models.get("fallback_chain") or ([models["fallback"]] if models.get("fallback") else [])
         native["fallback_providers"] = []
         for selector in chain:
-            provider, _, model_id = selector.partition("/")
+            provider, sep, model_id = selector.partition("/")
+            if not sep:
+                provider = str(models.get("default") or "").partition("/")[0] if "/" in str(models.get("default") or "") else ""
+                model_id = selector
+            if not provider or not model_id:
+                continue
             options = (native.get("model_options") or {}).get(selector) or {}
             native["fallback_providers"].append({**options, "provider": provider, "model": model_id})
         native.pop("fallback_model", None)
