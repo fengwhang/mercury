@@ -98,7 +98,11 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 		// A proxy concurrency-admission 429 (`rate_limit_type: max_parallel_requests`)
 		// surfaces immediately instead of being slept-and-retried here; session
 		// recovery owns its backoff/fallback (issue #8854).
-		shouldRetryResponse: (response, bodyText) => !isConcurrencyAdmissionRejection(response, bodyText),
+		shouldRetryResponse: (response, bodyText) =>
+			!isConcurrencyAdmissionRejection(response, bodyText) &&
+			// Exhausted quotas belong to session credential/model recovery, not
+			// six identical HTTP requests. Opaque 429s retain transport backoff.
+			(AIError.isOpaqueStatusBody(bodyText) || !AIError.isUsageLimitOutcome(response.status, bodyText)),
 		// Bun's native fetch enforces a hard ~300s pre-response timeout (issue #2422).
 		// Cold large-context streams legitimately exceed it; the caller's
 		// `firstEventTimeoutMs`/`AbortSignal` already govern stuck requests.

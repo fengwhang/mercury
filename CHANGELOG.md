@@ -11,6 +11,8 @@ their original projects and are not Mercury release announcements.
 - Use configured Hermes and OMP fallback models on exhausted provider quotas,
   including responses that specify a future reset; shared model settings
   remain authoritative over stale native mirrors.
+- Bypass transport retries for explicit exhausted quotas so configured model
+  fallback starts promptly; ordinary request-rate throttles retain backoff.
 
 ## [0.3.26] — stable
 
