@@ -11,6 +11,14 @@ import pytest
 from mercury_cli.subcommands import observatory as obs_mod
 
 
+@pytest.fixture(autouse=True)
+def isolated_restart_cleanup(monkeypatch):
+    # These tests isolate service ordering/verification; the actual durable
+    # cleanup and CLI seam run against temporary databases in Observatory tests.
+    monkeypatch.setattr("observatory.restart.prepare_room_cleanup",
+                        lambda home=None: {"expired_agents": 0})
+
+
 def _login_args(*extra):
     parser = argparse.ArgumentParser()
     obs_mod.build_observatory_parser(parser.add_subparsers(dest="cmd"))

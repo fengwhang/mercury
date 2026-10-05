@@ -167,8 +167,12 @@ def _cmd_restart(args) -> int:
 
     args._observatory_restart_epoch = time.time()
     try:
+        from observatory.restart import prepare_room_cleanup
         from observatory.provision import ensure_observatory_unit
 
+        cleanup = prepare_room_cleanup(getattr(args, "home", None))
+        print(f"rooms: expiring {cleanup['expired_agents']} descendant/dead agent(s); "
+              "keeping level-0 sessions and the configured gateway", flush=True)
         unit_result = str(ensure_observatory_unit())
     except Exception as exc:
         print(f"observatory unavailable: {exc}", file=sys.stderr)

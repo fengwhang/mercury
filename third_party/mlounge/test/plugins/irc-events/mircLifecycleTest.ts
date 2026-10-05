@@ -58,6 +58,19 @@ function harness(mercury = true) {
 }
 
 describe("MIRC room restoration", () => {
+	it("removes a saved orphan room when MIRC refuses its cached JOIN", async () => {
+		const {network, room, client, pushed, read} = harness();
+		Object.assign(client, {mentions: []});
+		client.part.mockImplementation((targetNetwork, targetRoom) => {
+			Client.prototype.part.call(client as unknown as Client, targetNetwork, targetRoom);
+		});
+		// This room was never joined on the new connection and has no agent.
+		read(":owner!owner@vm PART #room :room expired");
+		await vi.waitFor(() => expect(network.getChannel("#room")).toBeUndefined());
+		expect(client.save).toHaveBeenCalledOnce();
+		expect(client.emit).toHaveBeenCalledWith("part", {chan: room.id});
+		expect(pushed).toHaveLength(0);
+	});
 	it("removes an expired room from the network, saved account, and all browser clients", async () => {
 		const {network, room, client, pushed, read} = harness();
 		Object.assign(client, {mentions: []});

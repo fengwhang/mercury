@@ -1,7 +1,8 @@
 """Agent-tree SQLite store for the MIRC observatory.
 
 One row per live agent session (any depth, any engine). The gateway is
-the ONLY writer; readers are the room manager and boot resync.
+the agent-tree writer; restart cleanup journals expiries, and MIRC records
+closed rooms so cached frontend joins cannot resurrect them.
 
 ``room_id`` is the MIRC channel, ``mxid`` the agent nick, ``space_id``
 unused (kept for schema stability).
@@ -37,6 +38,7 @@ SCHEMA_VERSION = 1
 
 STATE_DB_FILENAME = "state.db"
 CLOSED_ROOMS_META_KEY = "closed-rooms"
+MANAGED_ROOMS_META_KEY = "managed-rooms-only"
 
 #: Valid values for ``nodes.engine`` (spec: sidecar mirrors both engines).
 ENGINES = ("hermes", "omp")
