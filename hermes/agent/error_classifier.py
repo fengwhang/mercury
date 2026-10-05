@@ -256,16 +256,22 @@ def is_usage_limit_exhausted(
     retry budget before dying, which is what made a configured fallback look
     like it did nothing.
 
-    Mirrors the billing-verdict guard in :func:`classify`: a usage limit is a
-    hard wall UNLESS the body is itself an explicit rate-limit phrase (then it
-    is a request-rate throttle that rotation can survive) or carries a
-    reset/retry signal (a periodic quota that will refill).
+    Explicit exhausted-quota responses stay exhausted even when the provider
+    includes a future reset time. Generic quota wording still needs the
+    classifier's transient/rate-limit disambiguation.
     """
     haystack = " ".join(
         str((error_context or {}).get(key) or "").lower()
         for key in ("reason", "message", "code", "error")
     ).strip()
     hay = f"{haystack} {str(message or '').lower()} {str(error_code or '').lower()}"
+
+    if "usage_limit_reached" in hay or "gousagelimit" in hay:
+        return True
+    if "usage limit" in hay and not any(
+        phrase in hay for phrase in ("rate limit", "rate_limit", "requests per minute", "tokens per minute")
+    ):
+        return True
 
     has_usage_limit = (
         error_code.lower() == "usage_limit_reached"

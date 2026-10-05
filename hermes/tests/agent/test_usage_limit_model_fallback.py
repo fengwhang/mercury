@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from agent.error_classifier import is_usage_limit_exhausted
 from mercury_cli.fallback_config import (
-    _split_model_selector,
     get_fallback_chain,
 )
 
@@ -40,17 +39,6 @@ def test_live_config_shape_yields_a_non_empty_chain() -> None:
     chain = get_fallback_chain(config)
     assert chain, "models.fallback must produce a fallback entry"
     assert chain[0] == {"provider": "nous", "model": "xiaomi/mimo-v2.6-pro"}
-
-
-def test_model_ids_with_internal_slashes_split_on_the_first_slash_only() -> None:
-    assert _split_model_selector("nous/xiaomi/mimo-v2.6-pro") == (
-        "nous",
-        "xiaomi/mimo-v2.6-pro",
-    )
-    assert _split_model_selector("openai-codex/gpt-6.1-sol") == (
-        "openai-codex",
-        "gpt-6.1-sol",
-    )
 
 
 def test_fallback_chain_entries_follow_the_declared_order() -> None:
@@ -92,7 +80,7 @@ def test_stock_fallback_providers_still_resolve() -> None:
     ]
 
 
-def test_stock_and_mercury_shapes_merge_and_dedupe() -> None:
+def test_shared_models_override_stale_native_mirrors() -> None:
     config = {
         "models": {"default": "a/b", "fallback": "n/dup", "fallback_chain": []},
         "fallback_providers": [
@@ -103,7 +91,6 @@ def test_stock_and_mercury_shapes_merge_and_dedupe() -> None:
     chain = get_fallback_chain(config)
     assert [(e["provider"], e["model"]) for e in chain] == [
         ("n", "dup"),
-        ("z", "other"),
     ]
 
 
@@ -159,11 +146,11 @@ def test_explicit_rate_limit_wording_is_not_a_plan_wide_wall() -> None:
     )
 
 
-def test_transient_reset_signal_is_not_a_plan_wide_wall() -> None:
-    """A periodic quota that names its reset window will refill — retry it."""
+def test_explicit_usage_limit_uses_fallback_despite_reset_hint() -> None:
+    """A future reset does not make the exhausted plan usable this turn."""
     assert (
         is_usage_limit_exhausted(message="usage limit reached, try again in 2 hours")
-        is False
+        is True
     )
 
 
@@ -172,3 +159,15 @@ def test_ordinary_errors_are_not_usage_limits() -> None:
     assert is_usage_limit_exhausted(None) is False
     assert is_usage_limit_exhausted(message="connection refused") is False
     assert is_usage_limit_exhausted(message="invalid api key") is False
+
+
+def test_explicit_empty_shared_fallback_suppresses_legacy_mirror():
+    assert get_fallback_chain({"models": {"default": "a/b", "fallback": ""},
+                               "fallback_providers": [{"provider": "z", "model": "stale"}]}) == []
+
+
+def test_shared_fallback_retains_native_transport_options():
+    assert get_fallback_chain({"models": {"default": "a/b", "fallback": "nous/xiaomi/mimo-v2.6-pro"},
+                              "hermes": {"model_options": {"nous/xiaomi/mimo-v2.6-pro": {
+                                  "base_url": "https://example.invalid/v1", "key_env": "TEST_KEY"}}}}) == [
+        {"provider": "nous", "model": "xiaomi/mimo-v2.6-pro", "base_url": "https://example.invalid/v1", "key_env": "TEST_KEY"}]
