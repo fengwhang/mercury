@@ -56,18 +56,22 @@ def _default_transport() -> Transport:
 
 def _default_endpoint_resolver() -> Optional[str]:
     """Resolve the connector deployment origin directly, not as a vendor passthrough."""
-    from tools.managed_gateway_auth import connector_gateway_origin
+    from tools.managed_tool_gateway import build_vendor_gateway_url
 
     try:
-        return connector_gateway_origin() or None
+        return build_vendor_gateway_url("connector") or None
     except ValueError:
         return None
 
 
 def _default_header_provider(url: str) -> dict:
-    from tools.managed_gateway_auth import managed_gateway_auth_headers
+    from tools.managed_tool_gateway import build_vendor_gateway_url, managed_gateway_auth_headers
 
-    return managed_gateway_auth_headers(url)
+    # The connector deployment is separate from the media/vendor tool gateway.
+    # Reuse the existing refresh and exact-origin guard for that selected host.
+    return managed_gateway_auth_headers(
+        url, gateway_builder=lambda _vendor: build_vendor_gateway_url("connector")
+    )
 
 
 class ConnectorClient:

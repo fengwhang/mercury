@@ -30,6 +30,8 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -51,6 +53,7 @@ _MANIFEST_VERSION = 1
 
 # Substituted at install time inside `transport.command` / `transport.args`.
 _INSTALL_DIR_VAR = "${INSTALL_DIR}"
+logger = logging.getLogger(__name__)
 
 
 # ─── Data classes ────────────────────────────────────────────────────────────
@@ -73,6 +76,7 @@ class AuthSpec:
     provider: Optional[str] = None
     scopes: List[str] = field(default_factory=list)
     env_var: Optional[str] = None
+    oauth: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -254,12 +258,16 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     if not isinstance(env_list_raw, list):
         raise CatalogError(f"{path}: auth.env must be a list")
     env_list = [_parse_env_spec(e) for e in env_list_raw]
+    oauth_raw = auth_raw.get("oauth") or {}
+    if not isinstance(oauth_raw, dict):
+        raise CatalogError(f"{path}: auth.oauth must be a mapping")
     auth = AuthSpec(
         type=a_type,
         env=env_list,
         provider=auth_raw.get("provider"),
         scopes=list(auth_raw.get("scopes") or []),
         env_var=auth_raw.get("env_var"),
+        oauth=dict(oauth_raw),
     )
     if t_type == "http" and a_type == "api_key":
         # _build_server_config emits an Authorization header referencing
@@ -598,11 +606,57 @@ def _build_server_config(
         cfg["url"] = t.url
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
+            if entry.auth.oauth:
+                cfg["oauth"] = dict(entry.auth.oauth)
         elif entry.auth.type == "api_key":
             from mercury_cli.mcp_config import _bearer_auth_headers
 
             cfg["headers"] = _bearer_auth_headers(entry.name)
     return cfg
+
+
+def _inline_non_secret_value(obj: Any, name: str, value: str) -> Any:
+    if isinstance(obj, str):
+        return obj.replace("${" + name + "}", value)
+    if isinstance(obj, dict):
+        return {key: _inline_non_secret_value(item, name, value) for key, item in obj.items()}
+    if isinstance(obj, list):
+        return [_inline_non_secret_value(item, name, value) for item in obj]
+    return obj
+
+
+def card_install_config(entry: CatalogEntry) -> dict:
+    """Prepare an install without persisting config or prompting on stdin."""
+    directory = _do_git_install(entry) if entry.install is not None else None
+    cfg = _build_server_config(entry, directory)
+    cfg["enabled"] = True
+    include = _read_prior_tool_selection(entry.name)
+    exclude = _read_prior_tool_exclude(entry.name)
+    if include is None and exclude is None:
+        include, exclude = entry.tools.default_enabled, entry.tools.default_excluded
+    if include is not None:
+        cfg["tools"] = {"include": list(include)}
+    elif exclude is not None:
+        cfg["tools"] = {"exclude": list(exclude)}
+    return cfg
+
+
+def record_mcp_install(source: str, name: Optional[str], outcome: str) -> None:
+    """Local diagnostics only; installing an extension never opts into telemetry."""
+    logger.info("MCP install source=%s name=%s outcome=%s", source, name, outcome)
+
+
+@contextmanager
+def recorded_catalog_install(name: str):
+    fresh = not is_installed(name)
+    try:
+        yield
+    except Exception:
+        if fresh:
+            record_mcp_install("catalog", name, "failed")
+        raise
+    if fresh:
+        record_mcp_install("catalog", name, "success")
 
 
 def _read_prior_tool_selection(name: str) -> Optional[List[str]]:

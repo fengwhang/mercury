@@ -4,7 +4,7 @@ Every pm venv sync — startup, plugin install, update rebuild — writes a
 receipt with the SAME schema the updater's receipts use
 (mercury_cli.update_receipt), into the same
 ``<HERMES_HOME>/logs/update_receipts/`` dir with a ``kind`` field
-separating kinds. One reader (``hermes pm status``, desktop IPC) serves
+separating kinds. One reader (``mercury pm status``, desktop IPC) serves
 every surface: a failed venv rebuild is as reportable as a failed
 update.
 
@@ -277,7 +277,7 @@ def last_for_update(update_id: Optional[str], *, consume: bool = False) -> Optio
 
 def latest() -> Optional[dict[str, Any]]:
     """The newest receipt (any kind) — the reader surface for
-    ``hermes pm status`` + the desktop. Pure read: never creates the
+    ``mercury pm status`` + the desktop. Pure read: never creates the
     receipts dir."""
     try:
         point = _receipt_dir() / "latest.json"

@@ -396,7 +396,7 @@ def _operation_view(operation):
 
 
 def _connection_update(operation, change, snapshot):
-    from hermes_constants import get_process_hermes_home, hermes_home_key
+    from mercury_constants import get_process_hermes_home, mercury_home_key
     from tui_gateway import server
     from tui_gateway.connector_payload import connector_ui_payload
 
@@ -417,7 +417,7 @@ def _connection_update(operation, change, snapshot):
                 sid
                 for sid, session in server._sessions.items()
                 if session.get("session_key") == operation.session_key
-                and hermes_home_key(session.get("profile_home") or get_process_hermes_home()) == operation.profile_key
+                and mercury_home_key(session.get("profile_home") or get_process_hermes_home()) == operation.profile_key
             ),
             None,
         )

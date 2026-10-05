@@ -21,22 +21,22 @@ _ITEM_KEYS = frozenset({"kind", "id"})
 SEARCH_LIMIT = 10
 
 NOT_HERE = (
-    "manage_catalog is available only in the Hermes desktop app, where the approval card can be drawn. "
-    "Tell the user to install from a terminal instead: `hermes plugins install <id>` for a plugin, "
-    "`hermes skills install <id>` for a skill."
+    "manage_catalog requires a Mercury session with catalog approval cards enabled. "
+    "Tell the user to install from a terminal: `mercury plugins install <id>` for a plugin, "
+    "`mercury skills install <id>` for a skill (use mercury-nightly for a nightly installation)."
 )
 
 NOTE = (
     "Settled once; do not re-offer a row the user skipped. Each installed row names target_profile: "
-    "its tools and skills are live now in that profile's open chats and in every new chat of it; "
-    "they are callable in this chat only when this chat runs in that profile. A failed row carries "
+    "its tools and skills belong to that profile. Existing chats may need a restart to load new "
+    "plugin dependencies; only confirmed activation is reported as live. A failed row carries "
     "the reason in detail."
 )
 
 MANAGE_CATALOG_SCHEMA = {
     "name": "manage_catalog",
     "description": (
-        "Find and install Hermes catalog plugins and hub skills for the user. 'search' lists matches "
+        "Find and install Mercury catalog plugins and hub skills for the user. 'search' lists matches "
         "(id, kind, display, tier, platforms, installed) and changes nothing. 'install' shows the user "
         "one approval card with a row per item and blocks until every row is installed, skipped, or "
         "the card is closed; the host installs each approved row into the user's default profile at "
@@ -157,7 +157,7 @@ def search(query: str, kind: Optional[str], *, installer: Any = None) -> Dict[st
 
 
 def _plugin_rows(query: str) -> List[Dict[str, Any]]:
-    from mercury_cli.plugin_catalog import filter_entries, load_catalog_live
+    from mercury_cli.plugin_catalog import filter_entries, load_catalog
     from mercury_cli.plugins_cmd import PluginOperationError, _read_install_metadata
     from tools.connectors.catalog import _display
 
@@ -168,13 +168,12 @@ def _plugin_rows(query: str) -> List[Dict[str, Any]]:
         installed = set()
     return [{"id": e.name, "kind": "plugin", "display": _display(e.name), "tier": e.tier,
              "platforms": list(e.platforms), "installed": e.name in installed}
-            for e in filter_entries(load_catalog_live(), query)[:SEARCH_LIMIT]]
+            for e in filter_entries(load_catalog(), query)[:SEARCH_LIMIT]]
 
 
 def _skill_rows(query: str) -> List[Dict[str, Any]]:
     from tools.skills_hub import HubLockFile
-    from tools.skills_hub_github import GitHubAuth
-    from tools.skills_hub_search import create_source_router, unified_search
+    from tools.skills_hub import GitHubAuth, create_source_router, unified_search
 
     installed = {str(e.get("identifier")) for e in HubLockFile().list_installed()}
     return [{"id": r.identifier, "kind": "skill", "display": r.name,

@@ -1,0 +1,326 @@
+[
+  {
+    "missing_module": "agent.auxiliary_reasoning_floor",
+    "referenced_by": [
+      "hermes/agent/turn_recovery.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "agent.conversation_compression_archive",
+    "referenced_by": [
+      "hermes/agent/micro_compaction.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "agent.conversation_compression_manual",
+    "referenced_by": [
+      "hermes/acp_adapter/commands.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "agent.fallback_cooldown",
+    "referenced_by": [
+      "hermes/agent/turn_api_error.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "agent.interrupt_scope",
+    "referenced_by": [
+      "hermes/agent/turn_facade.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "agent.nous_wire",
+    "referenced_by": [
+      "hermes/agent/turn_iteration_prep.py",
+      "hermes/agent/turn_usage.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "agent.relay_cwd",
+    "referenced_by": [
+      "hermes/agent/turn_facade.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "agent.rich_output",
+    "referenced_by": [
+      "hermes/tui_gateway/render.py"
+    ],
+    "reachable_from_entrypoint": [
+      "tui_gateway.render"
+    ],
+    "classification": "optional backend with guarded fallback"
+  },
+  {
+    "missing_module": "agent.session_persistence",
+    "referenced_by": [
+      "hermes/agent/turn_facade_lease.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "agent.subagent_lifecycle",
+    "referenced_by": [
+      "hermes/agent/turn_facade.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "agent.tool_call_batches",
+    "referenced_by": [
+      "hermes/agent/turn_tool_round.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "gateway.config_loader",
+    "referenced_by": [
+      "hermes/cron/scheduler_preflight.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "gateway.session_identity",
+    "referenced_by": [
+      "hermes/gateway/run_voice.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "gateway.warning_notifications",
+    "referenced_by": [
+      "hermes/agent/turn_recovery.py",
+      "hermes/cron/bot_chat_delivery.py",
+      "hermes/cron/scheduler_delivery.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.anon_auth",
+    "referenced_by": [
+      "hermes/agent/turn_api_call.py",
+      "hermes/agent/turn_recovery.py",
+      "hermes/agent/turn_response_check.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.backend_retirement",
+    "referenced_by": [
+      "hermes/cron/bot_chat_delivery.py",
+      "hermes/cron/scheduler_tick.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.config_effective",
+    "referenced_by": [
+      "hermes/cron/bot_chat_delivery.py",
+      "hermes/cron/scheduler_delivery.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.local_runtime.capabilities",
+    "referenced_by": [
+      "hermes/tools/vision_tools_image_prep.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "optional backend with guarded fallback"
+  },
+  {
+    "missing_module": "mercury_cli.local_runtime.supervisor",
+    "referenced_by": [
+      "hermes/agent/review_idle_queue.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "optional backend with guarded fallback"
+  },
+  {
+    "missing_module": "mercury_cli.model_switch_providers",
+    "referenced_by": [
+      "hermes/acp_adapter/model_catalog.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.models_local",
+    "referenced_by": [
+      "hermes/acp_adapter/model_catalog.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.models_reasoning_caps",
+    "referenced_by": [
+      "hermes/agent/turn_recovery.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.observability.shared_metrics_events",
+    "referenced_by": [
+      "hermes/acp_adapter/commands.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.observability.shared_metrics_harness",
+    "referenced_by": [
+      "hermes/agent/turn_response_check.py",
+      "hermes/agent/turn_response_intake.py",
+      "hermes/agent/turn_tool_round.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.observability.shared_metrics_model",
+    "referenced_by": [
+      "hermes/agent/turn_tool_validation.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.observability.shared_metrics_process",
+    "referenced_by": [
+      "hermes/agent/turn_facade_lease.py",
+      "hermes/agent/turn_liveness.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.quiet_single_query",
+    "referenced_by": [
+      "hermes/cron/scheduler_delivery.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.runtime_provider_backends",
+    "referenced_by": [
+      "hermes/agent/turn_api_call.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "mercury_cli.version_info",
+    "referenced_by": [
+      "hermes/acp_adapter/commands.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "tools.approval_context",
+    "referenced_by": [
+      "hermes/gateway/platforms/base_exec_approval.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "tools.bot_desktop",
+    "referenced_by": [
+      "hermes/tools/browser_tool_session.py",
+      "hermes/tools/browser_vault_tool.py"
+    ],
+    "reachable_from_entrypoint": [
+      "tools.browser_tool_session"
+    ],
+    "classification": "optional backend with guarded fallback"
+  },
+  {
+    "missing_module": "tools.bot_desktop.runtime",
+    "referenced_by": [
+      "hermes/tools/browser_tool_session.py"
+    ],
+    "reachable_from_entrypoint": [
+      "tools.browser_tool_session"
+    ],
+    "classification": "optional backend with guarded fallback"
+  },
+  {
+    "missing_module": "tools.bot_live_delivery",
+    "referenced_by": [
+      "hermes/cron/bot_chat_delivery.py",
+      "hermes/cron/scheduler_delivery.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "tools.cronjob_prompt_scan",
+    "referenced_by": [
+      "hermes/cron/scheduler_prompt.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "tools.file_tools_paths",
+    "referenced_by": [
+      "hermes/agent/turn_explainers.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "tools.mcp_liveness",
+    "referenced_by": [
+      "hermes/tools/tool_search_catalog.py"
+    ],
+    "reachable_from_entrypoint": [
+      "tools.tool_search_catalog"
+    ],
+    "classification": "optional backend with guarded fallback"
+  },
+  {
+    "missing_module": "tools.mcp_tool_discovery",
+    "referenced_by": [
+      "hermes/cron/scheduler_preflight.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  },
+  {
+    "missing_module": "tools.terminal_tool_lifecycle",
+    "referenced_by": [
+      "hermes/gateway/media_fetch.py"
+    ],
+    "reachable_from_entrypoint": [],
+    "classification": "inactive extraction; not integrated into Mercury entrypoints"
+  }
+]

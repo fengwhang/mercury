@@ -32,6 +32,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -49,6 +50,10 @@ _RECEIPT_KEEP = 20  # keep the last N receipts per profile home
 _current: Optional["UpdateReceipt"] = None
 
 
+def current_correlation_id() -> Optional[str]:
+    return _current.data.get("update_id") if _current is not None else None
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -59,6 +64,7 @@ class UpdateReceipt:
     def __init__(self) -> None:
         self.data: dict[str, Any] = {
             "schema": 1,
+            "update_id": uuid.uuid4().hex,
             "started_at": _utc_now_iso(),
             "finished_at": None,
             "argv": list(sys.argv),

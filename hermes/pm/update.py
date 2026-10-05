@@ -1,4 +1,4 @@
-"""hermes pm update: resolve the latest versions and re-pin the lockfile.
+"""mercury pm update: resolve the latest versions and re-pin the lockfile.
 
 Each Package subclass declares how to find its own latest via
 ``latest_versions(target)`` (see pm/package.py); this module is the driver:

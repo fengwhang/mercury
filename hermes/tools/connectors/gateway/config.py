@@ -87,20 +87,13 @@ def connectors_available(
 
     The one gate for the connectors surface, and the tool's ``check_fn``: outside it the tool is
     not in the schema at all, so the model never narrates a gateway 404 to a user the portal has
-    not enabled. Free-tier identities are always in; accounts are in only when the portal says so
-    via the token claim."""
+    not enabled. Accounts are in only when the portal says so via the token claim."""
     try:
         resolved_loader = config_loader or load_config
         if not resolved_loader().enabled:
             return False
         if entitlement_check is None:
-            from mercury_cli.anon_auth import is_guest_state
-            from tools.managed_tool_gateway import _read_nous_provider_state
-
-            # Availability must not mint or refresh an identity.
-            if is_guest_state(_read_nous_provider_state()):
-                return True
-
+            # Mercury uses the existing account claim, without minting an identity.
             entitlement_check = managed_tools_rolled_out
         return bool(entitlement_check())
     except Exception as e:

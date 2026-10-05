@@ -35,8 +35,7 @@ def dispatch_connector_batch(calls, ids=None, *, task_id=None, tool_call_id=None
                           "Retry with fewer calls per batch.")
     partition = partition_calls(calls)
     if partition.local:
-        from tools.tool_search_validation import local_batch_error
-        return tool_error(local_batch_error(calls))
+        return tool_error("Connector batches accept only connector tools; run local tools separately.")
     entries = list(partition.errors)
     for offset, plan in enumerate(partition.remote):
         if is_interrupted():

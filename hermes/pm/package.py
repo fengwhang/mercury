@@ -16,7 +16,7 @@ class InstallError(RuntimeError):
     def __init__(self, package: str, cause: str, remedy: str = ""):
         self.package = package
         self.cause = cause
-        self.remedy = remedy or "retry, or run `hermes pm doctor`"
+        self.remedy = remedy or "retry, or run `mercury pm doctor`"
         super().__init__(f"{package}: {cause} — {self.remedy}")
 
 
@@ -90,7 +90,7 @@ class Package:
 
     def latest_versions(self, target: str, locked: Optional[str] = None) -> list[str]:
         """Newest-first candidate versions for `target` — the "how do I find
-        latest" hook for `hermes pm update`. Empty list = this package has
+        latest" hook for `mercury pm update`. Empty list = this package has
         no auto-update source (chromium follows agent-browser; venv is a
         state; Playwright browsers are revision-pinned by playwright).
 

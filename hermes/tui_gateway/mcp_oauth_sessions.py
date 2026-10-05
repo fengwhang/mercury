@@ -62,6 +62,26 @@ _SESSION_TTL_SECONDS = 900
 _MAX_PENDING = 12
 
 
+def register_flow(flow, *, httpd=None) -> None:
+    """Expose a connection-card flow to the existing callback/poll RPCs."""
+    _gc_sessions()
+    with _sessions_lock:
+        if sum(not row["flow"].worker_done for row in _sessions.values()) >= _MAX_PENDING:
+            raise RuntimeError("Too many MCP OAuth flows are already in progress")
+        _sessions[flow.flow_id] = {
+            "session_id": flow.flow_id, "server_name": flow.server_name,
+            "mercury_home": flow.mercury_home, "flow": flow,
+            "httpd": httpd, "created_at": time.time(),
+        }
+
+
+def finish_flow(session_id: str) -> None:
+    with _sessions_lock:
+        row = _sessions.get(session_id)
+    if row is not None:
+        _shutdown_listener(row)
+
+
 def _gc_sessions() -> None:
     """Drop expired sessions. Called opportunistically on start."""
     cutoff = time.time() - _SESSION_TTL_SECONDS

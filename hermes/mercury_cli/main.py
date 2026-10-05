@@ -13234,6 +13234,10 @@ def main():
     # after it is omp's, verbatim; no argparse sees it. `--`-guarded
     # (--print-cmd handled here too).
     _argv = sys.argv[1:]
+    if _argv[:1] == ["pm"]:
+        from pm.cli import main as pm_main
+
+        raise SystemExit(pm_main(_argv[1:]))
     # Find `omp` as a STANDALONE positional token (not a flag value). We walk
     # argv tracking value-taking top-level flags so `-p omp`/`--profile omp`
     # (a profile NAMED omp) doesn't trigger the intercept. When found, split
@@ -14317,6 +14321,7 @@ def main():
     # mcp command  (parser built in mercury_cli/subcommands/mcp.py)
     # =========================================================================
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
+    subparsers.add_parser("pm", help="Manage pinned tools and isolated dependency environments")
 
     # =========================================================================
     # sessions command

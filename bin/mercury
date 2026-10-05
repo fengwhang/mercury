@@ -137,6 +137,33 @@ else
     fi
 fi
 
+# A dependency install publishes its generation for the next launch. Select
+# only committed state here; this read never downloads, repairs or switches
+# dependencies in an already-running process. Explicit MERCURY_PYTHON wins.
+if [[ -z "${MERCURY_PYTHON:-}" ]]; then
+    _PM_PY="$(PYTHONPATH="$REPO/hermes" "$PY" -c '
+from pathlib import Path
+from pm.environments import committed_venv, venv_python
+import os
+import sys
+root = Path(os.environ["MERCURY_REPO"]) / "hermes"
+environment = committed_venv(root)
+if environment is not None:
+    from pm.install import venv_is_current
+    if not venv_is_current(project_root=root):
+        command = os.environ.get("MERCURY_CMD", "mercury")
+        print(f"mercury: dependency generation predates current code/config; using installer runtime. Run {command} pm install venv to refresh it.", file=sys.stderr)
+    else:
+        executable = venv_python(environment)
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise SystemExit(f"mercury: committed dependency interpreter is unavailable: {executable}")
+        print(executable)
+')"
+    if [[ -n "$_PM_PY" ]]; then
+        PY="$_PM_PY"
+    fi
+fi
+
 # The OMP credential bridge must use the same dependency-complete interpreter.
 export MERCURY_PYTHON="$PY"
 

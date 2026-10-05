@@ -883,7 +883,7 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 		expect(recovery.resolveRetryFallbackRole(selector, model)).toBe("default");
 	});
 
-	it("uses the live vision role when that role shares a model with default", () => {
+	it("ignores a legacy vision role when it shares the active task model", () => {
 		const visionFallback = getBundledModel("openai", "gpt-4o-mini");
 		if (!visionFallback) throw new Error("Expected bundled model gpt-4o-mini");
 		const selector = `${model.provider}/${model.id}`;
@@ -900,7 +900,7 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 				},
 			}),
 		);
-		expect(recovery.resolveRetryFallbackRole(selector, model)).toBe("vision");
+		expect(recovery.resolveRetryFallbackRole(selector, model)).toBe("default");
 	});
 
 	it("ignores a recorded role whose assignment no longer matches the active model", () => {

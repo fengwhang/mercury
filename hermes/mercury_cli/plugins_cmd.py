@@ -718,6 +718,7 @@ def _install_plugin_core(
     force: bool,
     ref: Optional[str] = None,
     scan_decision_cb=None,
+    catalog: Optional[dict[str, str]] = None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision."""
     requested_revision = _normalize_exact_revision(ref) if ref is not None else None
@@ -858,6 +859,8 @@ def _install_plugin_core(
             "revision": installed_revision,
             "source": source,
         }
+        if catalog is not None:
+            new_metadata[plugin_name]["catalog"] = dict(catalog)
         backup = Path(tmp) / "previous-plugin"
         replaced_existing = target.exists()
         if replaced_existing:
@@ -2641,9 +2644,23 @@ def dashboard_install_plugin(
     *,
     force: bool,
     enable: bool,
+    catalog_name: Optional[str] = None,
+    ref: Optional[str] = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the web dashboard. Returns a JSON-serializable dict."""
     warnings: list[str] = []
+    catalog_metadata = None
+    if catalog_name is not None:
+        from tools.connectors.catalog import HostInstaller
+        entry = HostInstaller().plugin_entry(catalog_name)
+        if entry is None:
+            return {"ok": False, "error": f"Unknown plugin catalog entry '{catalog_name}'"}
+        try:
+            HostInstaller().refuse(entry)
+        except PluginOperationError as exc:
+            return {"ok": False, "error": str(exc)}
+        identifier, ref = entry.install_identifier, ref or entry.sha
+        catalog_metadata = {"name": entry.name, "sha": ref, "tier": entry.tier}
     try:
         git_url, _subdir = _resolve_git_url(identifier)
         if git_url.startswith(("http://", "file://")):
@@ -2657,6 +2674,8 @@ def dashboard_install_plugin(
         target, installed_manifest, installed_name = _install_plugin_core(
             identifier,
             force=force,
+            ref=ref,
+            **({"catalog": catalog_metadata} if catalog_metadata is not None else {}),
         )
     except PluginScanBlocked as exc:
         findings = []
@@ -2701,6 +2720,7 @@ def dashboard_install_plugin(
         "plugin_name": installed_name,
         "warnings": warnings,
         "missing_env": missing_env,
+        "python_dependencies": installed_manifest.get("python_dependencies") or [],
         "after_install_path": hint,
         "enabled": enable,
     }

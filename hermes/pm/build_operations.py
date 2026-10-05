@@ -10,6 +10,7 @@ from types import MappingProxyType
 from pm.install import InstalledPackage
 from pm.lock import Lockfile
 from pm.package import InstallError
+from pm.application_python import project_python
 
 
 def check_project_lock(
@@ -32,7 +33,7 @@ def check_project_lock(
     if not (source / "pyproject.toml").is_file():
         raise InstallError("venv", f"project manifest is missing: {source}")
     environment = managed_environment(
-        source / ".venv", python=Path(python) if python is not None else None,
+        source / ".venv", python=project_python(source, python),
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=None if quiet else sys.stderr,
     )
@@ -54,7 +55,7 @@ def export_requirements(
     if not (source / "uv.lock").is_file():
         raise InstallError("venv", f"frozen export requires a lock: {source / 'uv.lock'}")
     environment = managed_environment(
-        source / ".venv", python=Path(python) if python is not None else None,
+        source / ".venv", python=project_python(source, python),
         cache=Path(cache) if cache is not None else None, env=env,
         explicit=explicit, output=sys.stderr,
     )

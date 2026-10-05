@@ -133,6 +133,29 @@ def test_exact_ref_installs_old_commit_and_normalizes_uppercase(monkeypatch, tmp
     }
 
 
+def test_catalog_install_uses_reviewed_pin_and_is_reported_installed(monkeypatch, tmp_path):
+    from mercury_cli import plugin_catalog, plugins_cmd
+    from tools.connectors.catalog_tool import _plugin_rows
+
+    repo, old_sha, new_sha = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("MERCURY_HOME", raising=False)
+    monkeypatch.delenv("MERCURY_CONFIG", raising=False)
+    entry = plugin_catalog.PluginCatalogEntry(
+        name="demo", repo=repo.as_uri(), sha=old_sha,
+        description="Local pinned install fixture", maintainer="test")
+    monkeypatch.setattr(plugin_catalog, "get_live_catalog_entry", lambda name: entry)
+    monkeypatch.setattr(plugin_catalog, "load_catalog", lambda: [entry])
+    result = plugins_cmd.dashboard_install_plugin("", force=False, enable=False, catalog_name="demo")
+    assert result["ok"]
+    target = home / "plugins" / "demo"
+    assert _git(target, "rev-parse", "HEAD") == old_sha
+    assert old_sha != new_sha
+    assert _metadata(home)["demo"]["catalog"] == {"name": "demo", "sha": old_sha, "tier": "community"}
+    assert _plugin_rows("demo")[0]["installed"] is True
+
+
 @pytest.mark.parametrize("ref", ["", "main", "abc", "g" * 40, "a" * 39, "a" * 41])
 def test_invalid_ref_is_rejected_before_any_install_state(monkeypatch, tmp_path, ref):
     from mercury_cli.plugins_cmd import PluginOperationError, _install_plugin_core

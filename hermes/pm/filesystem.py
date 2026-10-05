@@ -14,8 +14,22 @@ import stat
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 
 _LOCK_POLL_SECONDS = 0.05
+
+
+@contextmanager
+def file_lock(path: Path, *, timeout: float | None = None):
+    """Share the installer's kernel-lock contract without application imports."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if not lock_fd(fd, wait=True, timeout=timeout):
+            raise TimeoutError(f"Timed out waiting for lock: {path}")
+        yield
+    finally:
+        os.close(fd)
 
 
 def is_junction(path: Path) -> bool:

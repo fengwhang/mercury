@@ -117,27 +117,32 @@ class _CatalogBackend:
 
     def installs_with_oauth(self, name: str) -> bool:
         """A catalog entry whose own OAuth the card must run. Provider-mediated OAuth is not one:
-        its token comes from ``hermes auth <provider>``, so the plain probe covers it."""
+        its token comes from ``mercury auth <provider>``, so the plain probe covers it."""
         auth = _catalog_entry(name).auth
         return auth.type == "oauth" and not auth.provider
 
     def start_install_oauth(self, name: str, env: Dict[str, str]) -> Any:
         """Install an OAuth entry through the card's flow. The configuration is built in memory and
         lands, together with the setup values, only when ``initialize`` accepts the token."""
-        from mercury_cli.mcp_catalog import card_install_config, is_installed, record_mcp_install
+        from mercury_cli.mcp_catalog import card_install_config, is_installed, record_mcp_install, _inline_non_secret_value
         from tools.connectors import mcp_oauth
 
         fresh = not is_installed(name)
+        entry = _catalog_entry(name)
+        _check_declared(name, entry, env)
+        secret_names = {spec.name for spec in entry.auth.env if spec.secret}
 
         def commit() -> None:
-            _save_env(env)
+            _save_env({key: value for key, value in env.items() if key in secret_names})
             if fresh:
                 record_mcp_install("catalog", name, "success")
 
         try:
-            entry = _catalog_entry(name)
-            _check_declared(name, entry, env)
-            return mcp_oauth.start(name, cfg=card_install_config(entry), env=env, on_commit=commit)
+            cfg = card_install_config(entry)
+            for key, value in env.items():
+                if key not in secret_names:
+                    cfg = _inline_non_secret_value(cfg, key, value)
+            return mcp_oauth.start(name, cfg=cfg, env=env, on_commit=commit)
         except Exception:
             # An abandoned browser authorization is a cancel, not a failed install: only a flow
             # that cannot start is counted here.
@@ -156,7 +161,7 @@ class _CatalogBackend:
 
     def _install(self, name: str, env: Dict[str, str]) -> List[str]:
         from agent.secret_scope import (
-            current_secret_scope, current_secret_scope_home, reset_secret_scope, set_secret_scope)
+            current_secret_scope, reset_secret_scope, set_secret_scope)
         from mercury_cli.mcp_catalog import _inline_non_secret_value, card_install_config
         from mercury_cli.mcp_config import _probe_single_server, _save_mcp_server
 
@@ -169,18 +174,17 @@ class _CatalogBackend:
         for key, value in env.items():
             if key not in secret_names and value:
                 cfg = _inline_non_secret_value(cfg, key, value)
-        # The merged scope keeps the bound scope's home stamp: dropping it would
-        # reopen the env fallthrough under a routed profile with multiplex off.
-        token = set_secret_scope(
-            {**dict(current_secret_scope() or {}), **env},
-            profile_home=current_secret_scope_home())
+        token = set_secret_scope({**dict(current_secret_scope() or {}), **env})
         try:
             tools = [str(tool[0]) for tool in (_probe_single_server(name, cfg) or [])]
         finally:
             reset_secret_scope(token)
-        if not _save_mcp_server(name, cfg):
-            raise RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
-        _save_env({k: v for k, v in env.items() if k in secret_names})
+        from mercury_cli.config_mutation import connector_config_transaction
+
+        with connector_config_transaction():
+            if not _save_mcp_server(name, cfg):
+                raise RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
+            _save_env({k: v for k, v in env.items() if k in secret_names})
         return tools
 
     def enable(self, name: str) -> None:
@@ -188,7 +192,7 @@ class _CatalogBackend:
         (``PUT /api/mcp/servers/{name}/enabled``): the two read-modify-write paths run in one
         process, so an unserialised write here drops whichever landed first."""
         from mercury_cli.config import load_config, save_config
-        from mercury_cli.web_routers._common import config_write_scope
+        from mercury_cli.config_mutation import config_write_scope
 
         with config_write_scope(None):
             config = load_config()
@@ -213,10 +217,12 @@ def _check_declared(name: str, entry: Any, env: Dict[str, str]) -> None:
 
 def _save_env(env: Dict[str, str]) -> None:
     from mercury_cli.config import save_env_value
+    from mercury_cli.config_mutation import connector_config_transaction
 
-    for key, value in env.items():
-        if value:
-            save_env_value(key, value)
+    with connector_config_transaction(env_keys=env):
+        for key, value in env.items():
+            if value:
+                save_env_value(key, value)
 
 
 def _default_backend() -> Any:
@@ -375,8 +381,7 @@ def adopt_late_connections(agent: Any) -> List[str]:
         if snapshot["status"] != "approved" or snapshot.get("discovery_error"):
             continue
         try:
-            from tools.mcp_tool_config import _load_mcp_config
-            from tools.mcp_tool_discovery import register_mcp_servers
+            from tools.mcp_tool import _load_mcp_config, register_mcp_servers
 
             config = _load_mcp_config().get(name)
             if isinstance(config, dict):
@@ -464,8 +469,7 @@ def _fail(operation: ConnectionOperation, target: Target, detail: str) -> None:
 def _register_connected(runner: _Runner, target: Target, name: str) -> tuple[List[str], str]:
     """Register one committed server in the current profile scope and report its callable names."""
     try:
-        from tools.mcp_tool_config import _load_mcp_config
-        from tools.mcp_tool_discovery import register_mcp_servers
+        from tools.mcp_tool import _load_mcp_config, register_mcp_servers
 
         config = _load_mcp_config().get(name)
         if not isinstance(config, dict):
@@ -485,11 +489,10 @@ def _registered_tool_names(name: str, wait_seconds: float = 30.0) -> List[str]:
     before they were registered. A server that failed discovery earlier is parked with no tools
     and is woken once. A server that finished registering with no tools is a valid empty list."""
     from tools import mcp_tool as _core
-    from tools.mcp_tool_loop import reconnect_mcp_server
-    from tools.mcp_tool_scope import _resolve_server_key
+    from tools.mcp_tool import reconnect_mcp_server
     from tools.registry import registry
 
-    key = _resolve_server_key(name)
+    key = name  # Mercury's MCP facade keys its live servers by configured name.
     deadline = time.time() + wait_seconds
     woken = False
     while True:

@@ -65,7 +65,7 @@ def test_artifact_build_rejects_nix_development_shell_environment(kind, tmp_path
 
 @pytest.mark.parametrize(
     ("kind", "artifact_glob"),
-    [("sdist", "mercury_agent-*.tar.gz"), ("wheel", "mercury_agent-*.whl")],
+    [("sdist", "hermes_agent-*.tar.gz"), ("wheel", "hermes_agent-*.whl")],
 )
 def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_glob, tmp_path):
     result = _build_artifact(kind, tmp_path, nix_build=True)
@@ -80,6 +80,8 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
         for path in (PROJECT_ROOT / "plugins").rglob(pattern)
     }
     assert expected, "expected bundled plugin manifests under plugins/"
+    expected.update({"observatory/ircd.py", "pm/worker.py", "pm/lock.json",
+                     "pm/pyproject.toml", "pm/uv.lock"})
 
     if kind == "wheel":
         with zipfile.ZipFile(artifacts[0]) as wheel:

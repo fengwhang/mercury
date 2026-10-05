@@ -454,6 +454,21 @@ def _write_json(path: Path, data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+def login_connect_timeout(config: dict) -> float:
+    """Allow the user's OAuth callback window plus time for token exchange."""
+    def seconds(value, default):
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return default
+
+    oauth = config.get("oauth") or {}
+    if not isinstance(oauth, dict):
+        raise ValueError("MCP oauth configuration must be a mapping")
+    return max(seconds(config.get("connect_timeout"), 0),
+               seconds(oauth.get("timeout"), 300) + 15)
+
+
 class HermesTokenStorage:
     """Persist OAuth tokens and client registration to JSON files.
 

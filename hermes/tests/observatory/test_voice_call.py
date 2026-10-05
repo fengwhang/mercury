@@ -14,11 +14,11 @@ def test_engine_guard_hermes_only() -> None:
     assert ok is False
     assert "Hermes" in reason
     ok, _ = vc.check_engine_allowed("weird-future-engine")
-    assert ok is True  # fail open: only positive OMP evidence denies
+    assert ok is False
 
 
-def test_resolve_channel_engine_no_manager_fails_open() -> None:
-    assert vc.resolve_channel_engine("#anything") == "hermes"
+def test_resolve_channel_engine_without_live_room_is_unknown() -> None:
+    assert vc.resolve_channel_engine("#anything") == "unknown"
 
 
 def test_resolve_channel_engine_routes(monkeypatch) -> None:
@@ -32,16 +32,35 @@ def test_resolve_channel_engine_routes(monkeypatch) -> None:
 
     import observatory.rooms as rooms
 
-    monkeypatch.setattr(rooms, "get_room_manager", lambda: Manager("spawn-omp", {}))
+    monkeypatch.setattr(rooms, "get_room_manager", lambda: Manager("spawn-omp", {"engine": "omp"}))
     assert vc.resolve_channel_engine("#x") == "omp"
-    monkeypatch.setattr(rooms, "get_room_manager", lambda: Manager("spawn-hermes", {}))
+    monkeypatch.setattr(rooms, "get_room_manager", lambda: Manager("spawn-hermes", {"engine": "hermes"}))
     assert vc.resolve_channel_engine("#x") == "hermes"
     monkeypatch.setattr(rooms, "get_room_manager", lambda: Manager("child", {"engine": "omp"}))
     assert vc.resolve_channel_engine("#x") == "omp"
     monkeypatch.setattr(rooms, "get_room_manager", lambda: Manager("child", {"engine": "hermes"}))
     assert vc.resolve_channel_engine("#x") == "hermes"
     monkeypatch.setattr(rooms, "get_room_manager", lambda: None)
-    assert vc.resolve_channel_engine("#x") == "hermes"
+    assert vc.resolve_channel_engine("#x") == "unknown"
+
+
+def test_separate_web_process_resolves_live_gateway_tree(tmp_path, monkeypatch):
+    from observatory import rooms, state
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(rooms, "get_room_manager", lambda: None)
+    monkeypatch.setattr(state, "default_state_db_path", lambda: db_path)
+    assert vc.resolve_channel_engine("#coder") == "unknown"
+    assert not db_path.exists()  # dashboard requests must not create state
+    with state.ObservatoryState(db_path) as tree:
+        for name, engine in [("coder", "omp"), ("chat", "hermes")]:
+            tree.add_node(name, engine=engine, name=name, slug=name,
+                          mxid=name, session_ref=name)
+            tree.set_room_id(name, "#" + name)
+        assert vc.resolve_channel_engine("#CODER") == "omp"
+        assert vc.resolve_channel_engine("#chat") == "hermes"
+        tree.mark_dead("coder")
+        assert vc.resolve_channel_engine("#coder") == "unknown"
 
 
 def test_store_lifecycle() -> None:

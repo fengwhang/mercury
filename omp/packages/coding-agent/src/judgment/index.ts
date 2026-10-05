@@ -1,17 +1,5 @@
-/**
- * Resolves the {@link Judge} that answers typed judgments. Mercury has no
- * `judge` model role (session model = delegate slot), so the chain is drawn
- * from the registry pool instead of a role chain: calibrated native System
- * One models first, then the configured default, then everything else in pool
- * order. The chain is re-resolved at most every {@link CANDIDATE_TTL_MS} so
- * live catalog discovery and credential changes take effect without
- * recreating feature consumers.
- *
- * Every provider attempt is attributed exactly once: native System One
- * requests by {@link nativeJudge}, prompted chat attempts by the chat
- * backend's `onAttempt`. Each report reaches both {@link JudgeDeps.onUsage}
- * (the session ledger) and one `judgment` telemetry span, so a judgment backed
- * by a chat model is never billed again from its aggregated result.
+/** Typed judgments use Mercury's single task model and its configured fallbacks.
+ * Each provider attempt is attributed once to the usage ledger and telemetry.
  */
 import {
 	type AgentTelemetry,
@@ -43,8 +31,13 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { formatModelStringWithRouting, pickDefaultAvailableModel } from "../config/model-resolver";
+import { formatModelStringWithRouting } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
+import {
+	findRetryFallbackCandidates,
+	parseRetryFallbackSelector,
+	resolveRetryFallbackChainKey,
+} from "../session/retry-fallback-chains";
 import type { SessionManager } from "../session/session-manager";
 import { getTinyLocalModelSpec } from "../tiny/models";
 import localPromptTemplate from "../prompts/system/judgment-local.md" with { type: "text" };
@@ -57,7 +50,7 @@ export * from "./cache";
 export interface JudgmentUsage {
 	/** Why the judgment ran; see {@link JudgeDeps.purpose}. */
 	purpose: string;
-	/** Model role the call resolved through, or `typesafe` for native judgments. */
+	/** The single task model attribution, including native judgments. */
 	role: string;
 	api: string;
 	provider: string;
@@ -70,7 +63,7 @@ export interface JudgmentUsage {
 export interface JudgeDeps {
 	settings: Settings;
 	registry: ModelRegistry;
-	/** The session's active model, appended when the judge role does not already route to it. */
+	/** The active task model when a session is present; otherwise use configured delegate settings. */
 	sessionModel?: Model;
 	sessionId?: string;
 	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
@@ -135,120 +128,96 @@ const LOCAL_REASONING_MAX_TOKENS = 1024;
  * credential-rotation round trip before reaching the next candidate.
  */
 const CANDIDATE_REJECTION_COOLDOWN_MS = 5 * 60 * 1000;
-/**
- * How long a resolved role chain is reused. Resolution filters the full
- * catalog (thousands of models) synchronously — milliseconds per call, which a
- * concurrent fan-out turns into sustained event-loop stalls. The chain is
- * shared by every judge built over the same settings and registry, since
- * per-call consumers (auto-thinking, subagent starts) resolve a fresh judge.
- */
-const CANDIDATE_TTL_MS = 1_000;
-/** Skip-until timestamps keyed by routed model identity, carried by the registry that produced the rejection. */
+/** Skip-until timestamps keyed by routed model identity. */
 const kRejections = Symbol("judgment.rejections");
-/** Last resolved judge role chain, carried by the registry it was drawn from. */
-const kRoleChain = Symbol("judgment.roleChain");
 interface RegistryWithRejections extends ModelRegistry {
 	[kRejections]?: Map<string, number>;
-	[kRoleChain]?: { settings: Settings; list: RoleChainCandidate[]; expiresAt: number };
 }
 
-/** {@link judgeRoleChain}, reused for {@link CANDIDATE_TTL_MS} across judges over the same settings and registry. */
-function cachedJudgeRoleChain(settings: Settings, registry: RegistryWithRejections): RoleChainCandidate[] {
-	const now = Date.now();
-	const cached = registry[kRoleChain];
-	if (cached && cached.settings === settings && now < cached.expiresAt) return cached.list;
-	const list = judgeRoleChain(settings, registry);
-	registry[kRoleChain] = { settings, list, expiresAt: now + CANDIDATE_TTL_MS };
-	return list;
-}
-
-/** Append the session model when no candidate is native and the chain does not already route to it. */
-function withSessionFallback(candidates: RoleChainCandidate[], sessionModel: Model | undefined): RoleChainCandidate[] {
-	if (!sessionModel || candidates.some(candidate => kindOf(candidate) === "native")) return candidates;
-	const sessionIdentity = formatModelStringWithRouting(sessionModel);
-	if (candidates.some(candidate => formatModelStringWithRouting(candidate.model) === sessionIdentity)) {
-		return candidates;
-	}
-	return [...candidates, { model: sessionModel, explicit: false }];
-}
-
-/** Which backend a judge-role candidate routes to: native System One decisions, on-device keywords, or a chat model. */
+/** Which backend a configured judgment candidate routes to: native System One decisions, on-device keywords, or a chat model. */
 export type JudgeKind = "native" | "local" | "online";
 
-/** Classify a role candidate by model API, never by provider identity. */
-export function kindOf(candidate: RoleChainCandidate): JudgeKind;
+/** Classify a configured candidate by model API, never by provider identity. */
+export function kindOf(candidate: JudgmentCandidate): JudgeKind;
 export function kindOf(model: Model): JudgeKind;
-export function kindOf(value: RoleChainCandidate | Model): JudgeKind {
+export function kindOf(value: JudgmentCandidate | Model): JudgeKind {
 	const model = "model" in value ? value.model : value;
 	if (isJudgmentApi(model.api)) return "native";
 	if (model.api === "local-inference") return "local";
 	return "online";
 }
 
-/**
- * The `judge` role's candidates in attempt order, drawn from credentialed
- * judge-capable models. From the first native candidate on, only native
- * candidates remain: a prompted model never stands in for a failed native
- * judgment, whose calibrated probabilities it cannot reproduce.
- */
-/** One judge candidate: the model plus whether it was explicitly configured. */
-export interface RoleChainCandidate {
+/** A model explicitly selected by the task configuration or its fallback chain. */
+export interface JudgmentCandidate {
 	model: Model;
 	explicit: boolean;
 }
 
-/**
- * Judge candidates in attempt order. Upstream resolves the `judge` role chain;
- * Mercury has no such role, so: native System One models first (a prompted
- * model never stands in for a failed native judgment, whose calibrated
- * probabilities it cannot reproduce), then the configured default model, then
- * the rest of the pool. Credential-less candidates are skipped per attempt in
- * {@link ChainJudge.withCandidate}, so an uncredentialed pool fails fast with
- * "no judge model available" instead of billing.
- */
-function judgeRoleChain(_settings: Settings, registry: ModelRegistry): RoleChainCandidate[] {
-	const pool = registry.getAvailable();
-	const seen = new Set<string>();
-	const ordered: RoleChainCandidate[] = [];
-	const push = (model: Model, explicit: boolean): void => {
-		const key = formatModelStringWithRouting(model);
-		if (seen.has(key)) return;
-		seen.add(key);
-		ordered.push({ model, explicit });
+/** Semantic search uses the same task model and permitted fallbacks as the engine. */
+export function configuredJudgmentCandidates(
+	settings: Settings,
+	registry: ModelRegistry,
+	sessionModel?: Model,
+): JudgmentCandidate[] {
+	const selector = sessionModel ? formatModelStringWithRouting(sessionModel) : settings.get("delegateModel");
+	if (!selector) throw new Error("judgment: configure Mercury's delegate model before running semantic search");
+	const parsed = parseRetryFallbackSelector(selector, registry);
+	const primary = sessionModel ?? (parsed ? registry.find(parsed.provider, parsed.id) : undefined);
+	if (!primary) throw new Error(`judgment: configured task model '${selector}' is unavailable`);
+	const candidates: JudgmentCandidate[] = [{ model: primary, explicit: true }];
+	if (!settings.get("retry.modelFallback")) return candidates;
+	const context = {
+		chains: settings.get("retry.fallbackChains"),
+		getModelRole: (role: string) => settings.getModelRole(role),
+		modelLookup: registry,
 	};
-	for (const model of pool) if (isJudgmentApi(model.api)) push(model, false);
-	const fallback = pickDefaultAvailableModel(pool);
-	if (fallback) push(fallback, false);
-	for (const model of pool) push(model, false);
-	return ordered;
+	const key = resolveRetryFallbackChainKey(context, selector, primary, "task");
+	const fallbacks = key
+		? findRetryFallbackCandidates(context, key, selector, primary, { allowMissingPrimary: true })
+		: [];
+	const fallbackSelector = settings.get("delegateFallback");
+	if (!key && fallbackSelector) {
+		const fallback = parseRetryFallbackSelector(fallbackSelector, registry);
+		if (fallback) fallbacks.push(fallback);
+	}
+	const seen = new Set([formatModelStringWithRouting(primary)]);
+	for (const fallback of fallbacks) {
+		const model = registry.find(fallback.provider, fallback.id);
+		if (!model) throw new Error(`judgment: configured fallback '${fallback.raw}' is unavailable`);
+		const identity = formatModelStringWithRouting(model);
+		if (!seen.has(identity)) {
+			candidates.push({ model, explicit: true });
+			seen.add(identity);
+		}
+	}
+	return candidates;
 }
 
 /**
- * Whether the `judge` role resolves first to a native System One backend
+ * Whether the task configuration resolves first to a native System One backend
  * (TypeSafe jev, directly or through OpenRouter) rather than a prompted
  * on-device or chat model. Judge-heavy features gate on it, e.g. the `find`
  * tool under `find.enabled: auto`.
  */
 export function hasNativeJudge(settings: Settings, registry: ModelRegistry): boolean {
-	const [primary] = judgeRoleChain(settings, registry);
+	const [primary] = configuredJudgmentCandidates(settings, registry);
 	return primary !== undefined && kindOf(primary) === "native";
 }
 
-/** Resolve a live judge-role chain. Candidates resolve lazily and are reused for {@link CANDIDATE_TTL_MS}. */
+/** Resolve the task model and its declared fallback chain for this invocation. */
 export function resolveJudge(deps: JudgeDeps): ChainJudge {
 	return new ChainJudge(deps);
 }
 
 /**
- * Judge facade that falls through the live `judge` role chain. `withCandidate`
+ * Judge facade that falls through the configured task model chain. `withCandidate`
  * lets a caller choose candidate-specific questions while retaining the exact
  * same credential, failure, timeout, and abort semantics as ordinary `judge`.
  */
 export class ChainJudge implements Judge {
-	readonly label = "judge role chain";
+	readonly label = "configured task models";
 	readonly #deps: JudgeDeps;
 	readonly #telemetry: AgentTelemetry | undefined;
-	#candidates: { chain: RoleChainCandidate[]; list: RoleChainCandidate[] } | undefined;
 
 	constructor(deps: JudgeDeps) {
 		this.#deps = deps;
@@ -263,7 +232,7 @@ export class ChainJudge implements Judge {
 	}
 
 	/**
-	 * Model of the first judge-role candidate, i.e. the one a judgment routes to
+	 * Model of the first configured judgment candidate, i.e. the one a judgment routes to
 	 * when it is credentialed and healthy. Used to price work before running it;
 	 * undefined when no candidate resolves.
 	 */
@@ -341,16 +310,11 @@ export class ChainJudge implements Judge {
 		return (registry[kRejections] ??= new Map());
 	}
 
-	#resolveCandidates(): RoleChainCandidate[] {
-		const { settings, registry, sessionModel } = this.#deps;
-		const candidates = cachedJudgeRoleChain(settings, registry);
-		if (candidates === this.#candidates?.chain) return this.#candidates.list;
-		const list = withSessionFallback(candidates, sessionModel);
-		this.#candidates = { chain: candidates, list };
-		return list;
+	#resolveCandidates(): JudgmentCandidate[] {
+		return configuredJudgmentCandidates(this.#deps.settings, this.#deps.registry, this.#deps.sessionModel);
 	}
 
-	async #createJudge(candidate: RoleChainCandidate, signal: AbortSignal | undefined): Promise<Judge | undefined> {
+	async #createJudge(candidate: JudgmentCandidate, signal: AbortSignal | undefined): Promise<Judge | undefined> {
 		const model = candidate.model;
 		if (model.api === "local-inference") return new TextJudge(new LocalTextBackend(model.id));
 		if (!(await this.#deps.registry.getApiKey(model, this.#deps.sessionId, { signal }))) return undefined;
@@ -379,7 +343,7 @@ export class ChainJudge implements Judge {
 			// aggregates these same attempts and must never be billed again.
 			onAttempt: attempt =>
 				this.#report({
-					role: "judge",
+					role: "task",
 					api: attempt.api,
 					provider: attempt.provider,
 					model: attempt.model,
@@ -456,7 +420,7 @@ function nativeJudge(
 				pendingCount++;
 			}
 			const attempt = {
-				role: TYPESAFE_PROVIDER,
+				role: "task",
 				api: judge.api,
 				provider: judge.provider,
 				model: judge.model,

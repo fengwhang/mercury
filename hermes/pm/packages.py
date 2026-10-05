@@ -380,9 +380,13 @@ class Venv(StatePackage):
         python = (lock.version("python"), target,
                   [artifact["sha256"] for artifact in lock.artifacts("python", target)])
         h = hashlib.sha256()
+        h.update((self.project_root() / "pyproject.toml").read_bytes())
         h.update(_uv_lock_digest(self.project_root() / "uv.lock"))
         h.update(",".join(sorted(extras)).encode())
         h.update(json.dumps(python).encode())
+        from pm.application_python import application_python
+        executable, version = application_python(self.project_root())
+        h.update(json.dumps([str(executable), version]).encode())
         # Plugin members union into the venv — a changed member set must
         # re-sync even when extras and core lock are unchanged.
         from pm.workspace import enabled_member_dirs, members_stamp
@@ -405,9 +409,12 @@ class Venv(StatePackage):
         from pm.workspace import enabled_member_dirs, lock_and_sync
 
         project = self.project_root()
+        from pm.application_python import application_python
+        application_interpreter, _ = application_python(project)
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
         candidate = generation / "venv"
-        environment = managed_environment(candidate, env=source_build_environment(project),
+        environment = managed_environment(candidate, python=application_interpreter,
+                                          env=source_build_environment(project),
                                           explicit=explicit or repair, output=sys.stderr)
         if not repair:
             # Inspection may skip a broken secondary profile, but publishing a replacement
@@ -730,7 +737,7 @@ class Gh(BinaryPackage):
 class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     """FFmpeg builds for supported targets; BtbN Linux archives require glibc.
     optional=False: ffmpeg is a required runtime tool where supported. Sealed bundles ship
-    it baked into the payload; every `hermes update` and `hermes pm install`
+    it baked into the payload; every `hermes update` and `mercury pm install`
     re-ensures it from the new lockfile before the venv sync
     (pm.client.ensure_tools_for_sync), so a pin bump lands. Windows + Linux:
     BtbN/FFmpeg-Builds (month-end autobuild tag, kept two years; ships ffprobe too).

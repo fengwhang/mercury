@@ -51,7 +51,7 @@ def _needs_chromium_sandbox_bypass() -> bool:
     """True when Chromium needs --no-sandbox to start reliably (root, Docker, AppArmor userns)."""
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         return True
-    if _install._running_in_docker():
+    if _bt._running_in_docker():
         return True
     return apparmor_restricts_unprivileged_userns()
 
@@ -59,7 +59,7 @@ def _needs_chromium_sandbox_bypass() -> bool:
 def _apply_chromium_sandbox_args(browser_env: Dict[str, str]) -> None:
     """Add required Chromium sandbox flags without overriding user settings."""
     if ("AGENT_BROWSER_ARGS" not in browser_env and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
-            and _needs_chromium_sandbox_bypass()):
+            and _bt._needs_chromium_sandbox_bypass()):
         _bt.logger.debug("browser: sandbox bypass needed (root/docker/AppArmor userns) — injecting --no-sandbox")
         browser_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)
 
@@ -806,7 +806,14 @@ def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
     A human lease with the screen already gone (dead Xvnc) still fences — computer_use does the same."""
     if not (session_info.get("features") or {}).get("local"):
         return False
-    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    try:
+        from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    except ModuleNotFoundError as exc:
+        if exc.name == "tools.bot_desktop":
+            # Mercury does not ship Bot Desktop. Ordinary local sessions do
+            # not acquire its lease; never hide a failure inside an installed backend.
+            return False
+        raise
     return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
 
 

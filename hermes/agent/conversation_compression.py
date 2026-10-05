@@ -5845,7 +5845,7 @@ def _reset_read_dedup_caches(task_id: str, *, session_id: str = "") -> None:
     The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
     """
     with contextlib.suppress(Exception):
-        from tools.file_tools_read_tracking import reset_file_dedup
+        from tools.file_tools import reset_file_dedup
         reset_file_dedup(task_id)
     if session_id:
         with contextlib.suppress(Exception):

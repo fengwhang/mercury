@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from typing import Dict, Optional, Tuple
 
-from mercury_constants import get_process_hermes_home, mercury_home_key
+from mercury_constants import get_hermes_home, mercury_home_key
 from tools.connectors.operation import ConnectionOperation
 
 
@@ -27,7 +27,7 @@ _lock = threading.Lock()
 def _profile_key(profile_home: Optional[str]) -> str:
     """A session record names its profile home only for a non-default profile; the tool thread sees
     the same home through its turn override, and the default profile through the process home."""
-    return mercury_home_key(profile_home or get_process_hermes_home())
+    return mercury_home_key(profile_home or get_hermes_home())
 
 
 def _key(session_key: str, profile_home: Optional[str]) -> Tuple[str, str]:

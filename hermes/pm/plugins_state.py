@@ -12,11 +12,38 @@ import logging
 LOG = logging.getLogger(__name__)
 
 
+def engine_selection_config(config: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Select the Hermes section without touching Mercury's shared models or OMP settings."""
+    if "hermes" not in config:
+        return config  # Legacy/profile files may already contain the engine view.
+    engine = config["hermes"]
+    if not isinstance(engine, dict):
+        raise ValueError(f"hermes must be a mapping: {path}")
+    return engine
+
+
 def _profiles_root() -> Path:
     # Plugin discovery and dependency publication must use the same home root.
+    return default_engine_home() / "profiles"
+
+
+def default_engine_home() -> Path:
+    import os
     from pm.environments import dependency_home_root
 
-    return dependency_home_root() / "profiles"
+    root = dependency_home_root()
+    installation = os.environ.get("MERCURY_HOME", "").strip()
+    return root / "hermes" if installation and root.resolve() == Path(installation).resolve() else root
+
+
+def config_for_home(home: Path) -> Path:
+    """The default engine's plugins live under hermes; its config is shared."""
+    import os
+
+    installation = os.environ.get("MERCURY_HOME", "").strip()
+    if installation and home.resolve() == (Path(installation) / "hermes").resolve():
+        return Path(os.environ.get("MERCURY_CONFIG") or Path(installation) / "config.yaml")
+    return home / "config.yaml"
 
 
 def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
@@ -26,7 +53,7 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     An unreadable selection raises rather than shrinking the next dependency generation;
     empty YAML is an explicit empty configuration, as in the CLI loader.
     """
-    config_path = home / "config.yaml"
+    config_path = config_for_home(home)
     try:
         text = config_path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
@@ -35,17 +62,20 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
         raise ValueError(f"could not read plugin selection: {config_path}") from exc
 
     # Missing YAML support is a broken runtime, not an empty plugin selection.
-    import utils
+    from ruamel.yaml import YAML
     from ruamel.yaml.error import YAMLError
 
     try:
-        config = utils.fast_safe_load(text)
+        reader = YAML(typ="safe")
+        reader.version = (1, 1)  # Match Mercury's existing configuration parser.
+        config = reader.load(text)
     except YAMLError as exc:
         raise ValueError(f"could not parse plugin selection: {config_path}") from exc
     if config is None:
         return {}
     if not isinstance(config, dict):
         raise ValueError(f"configuration must be a mapping: {config_path}")
+    config = engine_selection_config(config, config_path)
     for section in ("plugins", "memory"):
         if config.get(section) is not None and not isinstance(config[section], dict):
             raise ValueError(f"{section} must be a mapping: {config_path}")
@@ -98,10 +128,11 @@ def dependency_homes() -> list[Path]:
     marker and no tombstone. Staging dirs (``.work.staging-*``), deleted profiles and stray
     marker-less dirs must not put plugins into the shared environment.
     """
-    from mercury_constants import PROFILE_ID_RE, named_profile_is_live
+    import re
+    from mercury_constants import named_profile_is_deleted
     from pm.environments import dependency_home_root
 
-    homes = [dependency_home_root()]
+    homes = [default_engine_home()]
     root = _profiles_root()
     try:
         profiles = sorted(root.iterdir(), key=str)
@@ -111,7 +142,9 @@ def dependency_homes() -> list[Path]:
         raise ValueError(f"could not enumerate profiles: {root}") from exc
     homes.extend(profile for profile in profiles
                  if _is_directory(profile) and profile.name != "default"
-                 and PROFILE_ID_RE.match(profile.name) and named_profile_is_live(profile))
+                 and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", profile.name)
+                 and not named_profile_is_deleted(profile)
+                 and any((profile / marker).is_file() for marker in ("config.yaml", "profile.yaml", ".env")))
     return homes
 
 

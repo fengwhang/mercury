@@ -38,6 +38,21 @@ from mercury_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
+
+def verify_release_provenance(directory, log) -> tuple[bool, str]:
+    """Verify already-pinned artifacts; no second downloader or dependency install."""
+    if not shutil.which("cosign"):
+        return False, ""
+    signature = directory / "checksums.txt.sig"
+    certificate = directory / "checksums.txt.pem"
+    if not signature.is_file() or not certificate.is_file():
+        return False, ""
+    verified = _verify_cosign(str(directory / "checksums.txt"), str(signature), str(certificate))
+    if verified is False:
+        log("tirith install aborted: cosign provenance verification failed")
+        return False, "cosign_verification_failed"
+    return verified is True, ""
+
 _REPO = "sheeki03/tirith"
 
 # Cosign provenance verification — pinned to the specific release workflow

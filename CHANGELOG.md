@@ -3,6 +3,28 @@
 This is Mercury's product history. Vendored upstream changelogs document
 their original projects and are not Mercury release announcements.
 
+## [0.4.0] — experimental nightly
+
+- Release the audited integration branch as a nightly; stable remains v0.3.24.
+- Add `mercury pm` for managed Python dependency generations, with a separate
+  pinned manager runtime, application-compatible interpreters, generation
+  leases, and interrupted-publication recovery.
+- Integrate connector/MCP setup cards with Mercury configuration and OAuth,
+  including profile-scoped credentials, failure rollback, and reviewed
+  catalog installs. Plugin dependencies can require a refreshed generation
+  and a new session before activation.
+- Add opt-in experimental Hermes voice calls in mLounge, with authenticated
+  sidecar transport, bounded transcription/speech workers, and independent
+  browser audio segments. Real microphone, Safari/iOS playback, acoustic
+  echo and live-provider latency still require acceptance testing.
+- Keep semantic-search model selection within the user's active task/delegate
+  configuration and declared fallbacks; OMP retains only the `task` model role.
+- Preserve unified models and profiles in plugin configuration, repair the
+  extracted browser/vault integrations, and include all v0.3.24 room-expiry
+  and restart protections.
+- Document the integration audit and known baseline test failures; imported
+  helper modules do not imply complete upstream feature parity.
+
 ## [0.3.24] — stable and nightly
 
 - Observatory restart preserves registered level-0 agents and the configured

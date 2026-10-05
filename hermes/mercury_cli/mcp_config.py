@@ -98,9 +98,12 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
             _warning(issue)
         _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
         return False
-    config = load_config()
-    config.setdefault("mcp_servers", {})[name] = server_config
-    save_config(config)
+    from mercury_cli.config_mutation import config_write_scope
+
+    with config_write_scope():
+        config = load_config()
+        config.setdefault("mcp_servers", {})[name] = server_config
+        save_config(config)
     return True
 
 
@@ -297,6 +300,7 @@ def _probe_single_server(
         _connect_server,
         _stop_mcp_loop_if_idle,
         _parse_boolish,
+        _connect_server_claim,
     )
 
     config = _resolve_mcp_server_config(config)
@@ -311,9 +315,22 @@ def _probe_single_server(
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():
-        server = await asyncio.wait_for(
-            _connect_server(name, config), timeout=connect_timeout
-        )
+        claimed = []
+        claim_token = _connect_server_claim.set(claimed.append)
+        try:
+            server = await asyncio.wait_for(
+                _connect_server(name, config), timeout=connect_timeout
+            )
+        except BaseException:
+            for candidate in claimed:
+                await candidate.shutdown()
+            raise
+        finally:
+            _connect_server_claim.reset(claim_token)
+            if details is not None:
+                details["initialized"] = any(
+                    getattr(candidate, "initialize_result", None) is not None
+                    for candidate in claimed)
         try:
             for t in server._tools:
                 desc = getattr(t, "description", "") or ""

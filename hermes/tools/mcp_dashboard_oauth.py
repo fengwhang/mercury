@@ -18,6 +18,11 @@ from typing import Iterator
 from urllib.parse import parse_qs, urlparse
 
 
+def exception_message(exc: BaseException) -> str:
+    """Keep a visible cause even when an exception has no message."""
+    return str(exc) or type(exc).__name__
+
+
 @dataclass
 class DashboardOAuthFlow:
     flow_id: str

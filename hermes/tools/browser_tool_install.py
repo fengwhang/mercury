@@ -48,7 +48,8 @@ def _merge_browser_path(existing_path: str = "") -> str:
 def _browser_install_hint() -> str:
     if _is_termux_environment():
         return "npm install -g agent-browser && agent-browser install"
-    return "hermes pm install agent-browser (system libraries: npx playwright install-deps chromium)"
+    from mercury_constants import cli_invocation_name
+    return f"{cli_invocation_name()} pm install agent-browser (system libraries: npx playwright install-deps chromium)"
 
 
 def _agent_browser_candidate_present(path: str | None) -> bool:

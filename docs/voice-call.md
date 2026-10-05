@@ -1,7 +1,7 @@
 # mLounge voice calls (Hermes engines only)
 
-First-class voice-call UX for Hermes-agent rooms: tap-to-call, live
-waveform, barge-in, mute/hangup, low-latency duplex — inspired by the
+Experimental voice-call UX for Hermes-agent rooms: tap-to-call, live
+waveform, barge-in, mute/hangup — inspired by the
 OpenAI Dots Voice interaction model, implemented from scratch against
 Mercury's own stack (no proprietary code).
 
@@ -72,7 +72,7 @@ box; localhost is never filled in for you.
   (`/api/voice-call/*`, `/api/audio/speak`). Consumed by the sidecar.
 - `voice_call.mlounge_host_url` — host serving the mLounge UI.
 - `voice_call.stt_sidecar_url` — sidecar base the browser uses
-  (e.g. `http://mlounge-host:8765`); stored per-browser in the call
+  (e.g. `https://voice.example.ts.net`); stored per-browser in the call
   settings popover when it differs.
 - `voice_call.language`, `voice_call.enabled`.
 
@@ -94,32 +94,60 @@ stored STT config in memory. `--token` (or `VOICE_CALL_SIDECAR_TOKEN`)
 gates every route except `/stt/health`; without it the port transcribes
 for anyone who can reach it — bind loopback or firewall accordingly.
 
+Set `VOICE_CALL_MIRC_TOKEN` to the same secret in the **MIRC web-server
+process** and the **sidecar process** (or pass `--mirc-token` to the
+sidecar). This authenticates the sidecar only to the dashboard's three
+voice/audio routes. It does not grant access to configuration or other
+dashboard endpoints. The browser receives only the distinct sidecar token.
+Restart the two processes after adding the service secret.
+
+For a remote browser, serve mLounge over HTTPS and put the sidecar behind
+an HTTPS reverse proxy that supports WebSocket upgrades; use its HTTPS
+URL in the panel. The sidecar itself serves HTTP. A plain tailnet HTTP
+hostname is not a browser secure context for microphone access, and an
+HTTPS page cannot use an insecure `ws://` sidecar. Tailscale Serve or an
+equivalent proxy can provide the HTTPS endpoints.
+
 ## Call protocol (sidecar `/call` socket)
 
-- Browser → sidecar: `{type: hello, channel}` first; then binary Opus
-  chunks (MediaRecorder slices, ~2s), `{type: tts, text, token}`,
+- Browser → sidecar: `{type: hello, channel, mime}` first; then complete
+  independently recorded audio files (at least 2s, waiting for a speech
+  pause up to a 12s cap; WebM/Ogg/MP4 depending on
+  browser support), `{type: tts, text, token}`,
   `{type: mute, muted}`, `{type: hangup}`, `{type: ping}`.
 - Sidecar → browser: `{type: ready, callId, engine, sttProvider}`,
-  `{type: refused, reason}` (OMP rooms, unknown channels fail open),
+  `{type: refused, reason}` (OMP and unidentified/expired rooms),
   `{type: transcript, text}`, `{type: audio, token, mime, dataUrl}`,
   `{type: muted}`, `{type: ended}`, `{type: error}`.
 - Transcripts return to the browser, which sends them as plain channel
   input — the normal MIRC inbound path into the Hermes loop. No new
   message kind on the MIRC side.
-- Agent replies are watched in-channel by the call panel; each new
-  agent message is POSTed (via the socket) to the sidecar, which
+- Agent replies tagged `assistant_reply` are watched in-channel by the
+  call panel; tool output, thinking, status and user messages are skipped.
+  Each new reply is sent via the socket to the sidecar, which
   proxies MIRC `/api/audio/speak` and streams the data URL back down
   the same socket for browser playback.
 
 ## Hermes-only scope
 
 `observatory/voice_call.py` resolves the channel engine through the
-live room manager and refuses OMP rooms positively (spawn-omp route,
-omp-engine child rows); co-located processes identify positively,
-split processes fail open with the engine reported as-is. The 📞
+live room manager, or the read-only durable Observatory tree when the
+web server runs in another process. Only a confirmed live Hermes room
+can start a call. The 📞
 button mounts on channel/query views; starting a call against an OMP
 room surfaces the refusal in the panel. OMP engines are deferred —
 no OMP code path was touched.
+
+## Validation limits
+
+Automated tests cover the actual HTTP/WebSocket upgrade, service auth,
+engine selection across processes, audio-container signaling, transcript
+and TTS delivery, and hangup while transcription is blocked. Provider
+audio quality, real browser microphone/playback, and uninterrupted
+speech across recording boundaries still need an end-to-end hardware test.
+Calls remain experimental and require explicit sidecar setup; ordinary
+Observatory chat does not depend on voice services. Automated checks do not
+establish production audio quality or Safari/iOS hardware acceptance.
 
 ## Files
 

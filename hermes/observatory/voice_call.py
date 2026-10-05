@@ -19,14 +19,15 @@ every hop reads explicit host URLs from the ``voice_call`` config
 section — this module never falls back to localhost.
 
 Hermes-only scope: ``check_engine_allowed`` / ``resolve_channel_engine``
-deny OMP rooms positively (spawn-omp route, omp-engine child rows) and
-fail open otherwise (gateway sessions and fresh channels are Hermes).
+allow only confirmed live Hermes rooms, using the durable tree when the
+dashboard and gateway run in separate processes. OMP and unknown rooms are refused.
 Nothing here imports omp machinery.
 """
 
 from __future__ import annotations
 
 import threading
+import sqlite3
 from typing import Any, Dict, List, Optional
 
 #: Engines permitted to take voice calls. OMP rooms are refused loudly.
@@ -58,18 +59,32 @@ class VoiceCallEngineError(RuntimeError):
 def resolve_channel_engine(channel: str) -> str:
     """Return ``"hermes"`` or ``"omp"`` for a MIRC channel (never raises).
 
-    Reads the live room manager when one is registered and denies only on
-    positive OMP evidence (spawn-omp route, omp-engine child row). Gateway
-    sessions, Hermes rooms, and unknown channels resolve to Hermes — the
-    gateway turn runner is Hermes machinery.
+    Reads the live room manager or its durable tree. Missing, expired and
+    unidentifiable rooms return ``"unknown"`` and cannot start a call.
     """
     try:
         from observatory.rooms import get_room_manager
 
         manager = get_room_manager()
         if manager is None:
-            return "hermes"
+            # `mercury serve` and the gateway normally run in different
+            # processes. Read the gateway's durable tree without creating or
+            # migrating its database from a dashboard request.
+            from observatory.state import default_state_db_path
+
+            path = default_state_db_path()
+            if not path.is_file():
+                return "unknown"
+            with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+                row = db.execute(
+                    "SELECT engine FROM nodes WHERE lower(room_id) = lower(?) "
+                    "AND status = 'live' ORDER BY created_epoch DESC LIMIT 1",
+                    (channel or "",),
+                ).fetchone()
+            return str(row[0]) if row else "unknown"
         route, row = manager.inbound_route(channel or "")
+        if row is None:
+            return "unknown"
         if route == "spawn-omp":
             return "omp"
         if route == "child":
@@ -81,7 +96,7 @@ def resolve_channel_engine(channel: str) -> str:
             return "hermes"
         return "hermes"
     except Exception:
-        return "hermes"
+        return "unknown"
 
 
 def check_engine_allowed(engine: str) -> tuple[bool, str]:
@@ -91,9 +106,7 @@ def check_engine_allowed(engine: str) -> tuple[bool, str]:
         return True, ""
     if key == "omp":
         return False, OMP_VOICE_CALL_REFUSAL
-    # Unknown engine labels fail open with a note — the room routes that
-    # matter (spawn-omp) resolve positively above.
-    return True, ""
+    return False, "Cannot identify this room's engine. Start a call in a live Hermes agent room."
 
 
 # ---------------------------------------------------------------------------
@@ -235,5 +248,3 @@ def transcript_envelope(channel: str, text: str) -> Dict[str, Any]:
         "source": VOICE_CALL_SOURCE,
         "engine": "hermes",
     }
-
-

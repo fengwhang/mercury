@@ -1,4 +1,4 @@
-"""hermes pm: lock / install / repair / env / doctor / gc / bundle."""
+"""mercury pm: lock / install / repair / env / doctor / gc."""
 
 from __future__ import annotations
 
@@ -304,7 +304,7 @@ def _install_defaults(names: list[str], *, verify: bool) -> None:
     for name in names:
         if _install_names([name], verify=verify):
             print(f"⚠ optional {name} was not installed; its tools stay unavailable until "
-                  f"`hermes pm install {name}` succeeds", flush=True)
+                  f"`mercury pm install {name}` succeeds", flush=True)
 
 
 def _install_python_environments(extras: list[str], *, sync: bool, test_environment) -> int:
@@ -444,7 +444,7 @@ def cmd_doctor(args) -> int:
         ):
             # Legacy fact: pre-dates digest-bound identity; installed()
             # treats it as not installed and forces one reinstall.
-            print(f"{'?' if soft else '✗'} {name}: legacy fact: no recorded identity, run `hermes pm install`")
+            print(f"{'?' if soft else '✗'} {name}: legacy fact: no recorded identity, run `mercury pm install`")
             bad += 0 if soft else 1
             continue
         if not facts.installed(name, lockfile.version(name), store.root, identity):
@@ -618,7 +618,7 @@ def _refresh_npm_lock() -> int:
     npm = installed_package("npm")
     node = installed_package("node")
     if npm is None or npm.binary is None or node is None or node.binary is None:
-        print("✗ npm or Node: not installed; run `hermes pm install`")
+        print("✗ npm or Node: not installed; run `mercury pm install`")
         return 1
     env = npm_env(writable_store_root() / ".npm-cache", env_for("npm"))
     code, tail = _run_live([str(npm.binary), "update"], cwd=str(repo_root()), env=env)
@@ -630,7 +630,7 @@ def _refresh_npm_lock() -> int:
 
 
 def cmd_update(args) -> int:
-    """`hermes pm update [names...] [--check] [--target T] [--uv] [--npm] [--termux]`.
+    """`mercury pm update [names...] [--check] [--target T] [--uv] [--npm] [--termux]`.
 
     Resolve each package's latest via its own latest_versions() hook,
     intersect across targets, and (real mode) re-pin the lockfile + install
@@ -754,19 +754,12 @@ def cmd_status(args) -> int:
 
 
 def cmd_repair(args) -> int:
-    from mercury_cli._early_recovery import recover_if_needed
+    from pm.recovery import repair_dependencies
     from pm.paths import repo_root
 
-    if not recover_if_needed(repo_root(), explicit=True):
-        return 1
-    print("Restart Hermes to use the repaired dependency environment.")
+    repair_dependencies(repo_root())
+    print("Restart Mercury to use the repaired dependency environment.")
     return 0
-
-
-def cmd_bundle(args) -> int:
-    from scripts.bundles.native import stage_native
-    return stage_native(args)
-
 
 
 def main(argv=None) -> int:
@@ -779,7 +772,7 @@ def main(argv=None) -> int:
             stream.reconfigure(errors="replace", line_buffering=True)
         except (AttributeError, OSError):
             pass
-    parser = argparse.ArgumentParser(prog="hermes pm")
+    parser = argparse.ArgumentParser(prog="mercury pm")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     lock_parser = p = sub.add_parser(
@@ -798,7 +791,7 @@ def main(argv=None) -> int:
                    help="enable a declared dependency extra in the venv (repeatable)")
     p.add_argument("--without", action="append", default=[], metavar="NAME",
                    help="leave an optional default package (agent-browser, cua-driver) out of this and every later "
-                        "default install and update; `hermes pm install NAME` opts back in (repeatable)")
+                        "default install and update; `mercury pm install NAME` opts back in (repeatable)")
     p.add_argument("--tools-only", action="store_true",
                    help="install the tool closure, put it on PATH, and stop before the venv sync")
     p.add_argument("--trust-recorded", action="store_true",
@@ -826,12 +819,6 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("gc", help="remove store entries nothing references")
     p.set_defaults(func=cmd_gc)
-
-    p = sub.add_parser("bundle", help="stage a payload (repo+store+facts+relocatable venv) into --out")
-    p.add_argument("--out", required=True)
-    p.add_argument("--ref", help="git ref for the repo snapshot (default HEAD)")
-    p.add_argument("--cache", type=Path, help="persistent build cache (default: UV_CACHE_DIR or PM's shared cache)")
-    p.set_defaults(func=cmd_bundle)
 
     p = sub.add_parser("status", help="print the latest pm sync receipt (machine-readable)")
     p.set_defaults(func=cmd_status)

@@ -25,9 +25,13 @@ def install_key(project_root: Path) -> str:
 def dependency_home_root() -> Path:
     """Scope dependency state like a process launched in the active home."""
     from mercury_constants import get_default_hermes_root, get_hermes_home_override
+    from mercury_cli.profile_defaults import main_profile_root
 
     override = get_hermes_home_override()
-    return get_default_hermes_root(home=override) if override else get_default_hermes_root()
+    if override:
+        home = Path(override)
+        return main_profile_root(home) or home
+    return get_default_hermes_root()
 
 
 def installs_root() -> Path:
@@ -76,8 +80,8 @@ def _launcher_bound_root(project_root: Path, candidates: list[Path]) -> Path | N
     """The candidate whose ``tools/`` holds the live interpreter the checkout's launcher execs."""
     from mercury_cli._launchers import _launcher_python
 
-    local = project_root / ".hermes" / "bin"
-    for name in (("hermes.exe", "hermes.cmd") if os.name == "nt" else ("hermes",)):
+    local = project_root / ".mercury" / "bin"
+    for name in (("mercury.exe", "mercury.cmd") if os.name == "nt" else ("mercury",)):
         python = _launcher_python(local / name)
         if python is None or not python.is_file():
             continue
@@ -251,7 +255,8 @@ def committed_venv(project_root: Path) -> Path | None:
 
     Unlike ``selected_venv`` this never answers with the in-tree ``venv``/``.venv``: that tree
     predates PM and is built for whichever interpreter created it, so loading it from PM's store
-    Python mixes ABIs (compiled modules vanish) and PM deletes it once a generation is committed.
+    Python mixes ABIs (compiled modules vanish). Mercury retains its installer venv as a
+    fallback after code updates; selecting a dependency generation never deletes that venv.
     """
     return _recorded_venv(project_root) or payload_venv(project_root)
 

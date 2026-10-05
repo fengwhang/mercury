@@ -78,7 +78,8 @@ class PluginEviction:
     """Config edits disabling the plugins in *reasons*; published like a plugin selection."""
 
     def __init__(self, entries: list[Entry], reasons: dict[Path, str]):
-        from hermes_yaml import roundtrip_yaml
+        from ruamel.yaml import YAML
+        from pm.plugins_state import engine_selection_config
         from pm.publication import selection_snapshot
 
         self.configs = selection_snapshot()
@@ -88,18 +89,21 @@ class PluginEviction:
                 by_home.setdefault(plugins_dir.parent, []).append(name)
         self.edits: list[tuple[Path, bytes | None, bytes]] = []
         for home, names in by_home.items():
-            path = home / "config.yaml"
+            from pm.plugins_state import config_for_home
+            path = config_for_home(home)
             previous = read_bytes_or_none(path)
-            yaml = roundtrip_yaml()
+            yaml = YAML()
+            yaml.preserve_quotes = True
             config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
             # read_home_selection already proved plugins/memory are mappings and the lists are lists.
-            plugins = config.get("plugins")
+            engine = engine_selection_config(config, path)
+            plugins = engine.get("plugins")
             if plugins is None:
-                plugins = config["plugins"] = {}
+                plugins = engine["plugins"] = {}
             disabled = plugins.get("disabled")
             if disabled is None:
                 disabled = plugins["disabled"] = []
-            memory = config.get("memory")
+            memory = engine.get("memory")
             for name in names:
                 if name not in disabled:
                     disabled.append(name)

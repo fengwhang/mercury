@@ -175,6 +175,20 @@ def lazy_installs_allowed() -> bool:
         "yes",
     ):
         return False
+    from pm.runtime import is_runtime
+    if is_runtime():
+        # PM's repair interpreter deliberately has no application dependencies.
+        # Read the same engine view using its own YAML runtime instead of
+        # importing Mercury's config loader (dotenv/PyYAML/rich).
+        from mercury_constants import get_config_path
+        from pm.plugins_state import read_home_selection
+
+        try:
+            config = read_home_selection(get_config_path().parent) or {}
+            security = config.get("security") or {}
+            return isinstance(security, dict) and security.get("allow_lazy_installs", True) is True
+        except Exception:
+            return False
     try:
         from mercury_cli.config import cfg_get, load_config_readonly, require_readable_config_before_write
     except ModuleNotFoundError as exc:
@@ -212,7 +226,7 @@ def _refuse_lazy(name: str, what: str) -> InstallError:
     error = InstallError(
         name,
         f"not installed and lazy installs are disabled: {what}",
-        "enable security.allow_lazy_installs or run `hermes pm install`",
+        "enable security.allow_lazy_installs or run `mercury pm install`",
     )
     receipt.record_refusal("lazy-install", str(error))
     return error
@@ -253,7 +267,7 @@ def _discard_entry(store: Store, entry_name: str) -> None:
     as broken (#124807). Windows still allows renaming a tree with mapped
     images, so it moves to a `.reclaim-*` name: its slot is free for the next
     publish, no restore ever picks it up, and the next install or
-    `hermes pm gc` deletes it once the hold is gone.
+    `mercury pm gc` deletes it once the hold is gone.
     """
     import uuid
 
@@ -267,7 +281,7 @@ def _discard_entry(store: Store, entry_name: str) -> None:
     except OSError:
         LOG.warning("could not remove or set aside %s: %s", entry_name, error)
         return
-    LOG.warning("%s is still in use (%s); set aside for the next install or `hermes pm gc`",
+    LOG.warning("%s is still in use (%s); set aside for the next install or `mercury pm gc`",
                 entry_name, error)
 
 
@@ -401,7 +415,7 @@ def _install(
     version = lockfile.version(package.name)
     if version is None:
         raise InstallError(
-            package.name, "not in the lockfile", "add it with `hermes pm lock --bump`"
+            package.name, "not in the lockfile", "add it with `mercury pm lock --bump`"
         )
 
     reason = package.missing_reason(target)
@@ -432,7 +446,7 @@ def _install(
             raise InstallError(
                 package.name,
                 f"no artifact for {target} in the lockfile",
-                "run `hermes pm lock --bump` for this package",
+                "run `mercury pm lock --bump` for this package",
             )
         with store.scratch() as scratch:
             staged = scratch / "tree"
@@ -520,7 +534,7 @@ def ensure(
     _operation: _InstallOperation | None = None,
 ) -> Runner:
     """``explicit`` marks a deliberate install command (`hermes pm
-    install`, `hermes pm bundle`) — those ARE the remedy the lazy-install
+    install`, `mercury pm bundle`) — those ARE the remedy the lazy-install
     policy names, so the policy does not apply to them.
 
     ``verify`` re-hashes an already-recorded entry and repairs it when the
@@ -705,7 +719,7 @@ def _venv_install_lock(*, patient: bool):
             error = InstallError(
                 "venv",
                 f"another Hermes process is installing dependencies (waited {INSTALL_LOCK_TIMEOUT_SECONDS:.0f}s)",
-                "retry in a moment, or run `hermes pm install` to install explicitly",
+                "retry in a moment, or run `mercury pm install` to install explicitly",
             )
             receipt.record_refusal("install-busy", str(error))
             raise error
@@ -786,7 +800,7 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
     the installed state (one ledger); no-op when the stamp already matches.
     ``repair`` restores the recorded dependency graph into a fresh generation,
     bypassing both that shortcut and config discovery. It cannot add features.
-    ``explicit`` marks a deliberate install command (`hermes pm install`,
+    ``explicit`` marks a deliberate install command (`mercury pm install`,
     `hermes update`) — those are the remedy the lazy-install policy points
     at, so the policy does not apply to them. ``plugins`` names the one
     source of plugin members (see pm.plugin_inputs); None discovers them from config.

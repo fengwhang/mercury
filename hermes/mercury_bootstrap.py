@@ -226,6 +226,27 @@ def activate_durable_lazy_target() -> None:
         pass
 
 
+def lease_dependency_generation() -> None:
+    """Keep the environment of a running agent until its process exits.
+
+    Ordinary installed/developer venvs have no marker and retain their current
+    launch behavior. A PM update never changes this process's dependencies.
+    """
+    from pathlib import Path
+
+    environment = Path(sys.prefix)
+    if not (environment.parent / ".lease-managed").is_file():
+        return
+    from pm.environments import install_state_dir
+    from mercury_cli.runtime_state import runtime_lock, lease_generation
+
+    project = Path(__file__).resolve().parent
+    if environment.parent.parent.resolve() != (install_state_dir(project) / "environments").resolve():
+        return
+    with runtime_lock(project):
+        lease_generation(environment)
+
+
 # Apply on import — entry points just need ``import mercury_bootstrap``
 # (or ``from mercury_bootstrap import apply_windows_utf8_bootstrap``) at
 # the very top of their module, before importing anything else.  The
@@ -237,3 +258,4 @@ suppress_platform_ver_console()
 # packages installed into the data volume on a previous run are importable
 # this run, before any backend module imports its SDK. No-op when unset.
 activate_durable_lazy_target()
+lease_dependency_generation()

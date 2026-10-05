@@ -39,9 +39,11 @@ import argparse
 import base64
 import contextlib
 import hashlib
+import hmac
 import json
 import logging
 import os
+import queue
 import shutil
 import socket
 import struct
@@ -123,6 +125,8 @@ def ws_decode_frame(rfile: Any) -> tuple[bool, int, bytes]:
     fin = bool(first & 0x80)
     opcode = first & 0x0F
     masked = bool(second & 0x80)
+    if first & 0x70 or not masked:
+        raise ValueError("client websocket frames must be masked without reserved bits")
     length = second & 0x7F
     if length == 126:
         (length,) = struct.unpack("!H", _read_exact(rfile, 2))
@@ -130,6 +134,8 @@ def ws_decode_frame(rfile: Any) -> tuple[bool, int, bytes]:
         (length,) = struct.unpack("!Q", _read_exact(rfile, 8))
     if length > WS_MAX_MESSAGE_BYTES:
         raise ValueError("websocket frame too large")
+    if opcode >= 0x8 and (not fin or length > 125):
+        raise ValueError("invalid websocket control frame")
     mask = _read_exact(rfile, 4) if masked else b""
     payload = _read_exact(rfile, length) if length else b""
     if masked:
@@ -140,9 +146,9 @@ def ws_decode_frame(rfile: Any) -> tuple[bool, int, bytes]:
 class WsConnection:
     """Blocking server-side connection over an hijacked HTTP socket."""
 
-    def __init__(self, conn: socket.socket) -> None:
+    def __init__(self, conn: socket.socket, rfile=None) -> None:
         self.conn = conn
-        self.rfile = conn.makefile("rb")
+        self.rfile = rfile if rfile is not None else conn.makefile("rb")
         self.lock = threading.Lock()
         self.closed = False
 
@@ -160,6 +166,7 @@ class WsConnection:
         """Next complete message as (kind, payload): text|binary|close."""
         fragments: list[bytes] = []
         text_mode: Optional[bool] = None
+        message_bytes = 0
         while True:
             fin, opcode, payload = ws_decode_frame(self.rfile)
             if opcode == 0x8:  # close
@@ -174,9 +181,16 @@ class WsConnection:
             if opcode == 0xA:  # pong
                 continue
             if opcode in (0x1, 0x2):
+                if text_mode is not None:
+                    raise ValueError("new websocket message before final continuation")
                 text_mode = opcode == 0x1
             elif opcode != 0x0:
                 raise ValueError(f"unsupported websocket opcode {opcode}")
+            elif text_mode is None:
+                raise ValueError("websocket continuation without message")
+            message_bytes += len(payload)
+            if message_bytes > WS_MAX_MESSAGE_BYTES:
+                raise ValueError("websocket message too large")
             fragments.append(payload)
             if fin:
                 kind = "text" if text_mode else "binary"
@@ -213,12 +227,15 @@ def mirc_request(
     payload: Optional[Dict[str, Any]] = None,
     *,
     timeout: float = 60.0,
+    token: str = "",
 ) -> Dict[str, Any]:
     """POST/GET JSON against the MIRC host. Never raises: errors → dict."""
     url = mirc_url.rstrip("/") + path
     try:
         data = None
         headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         method = "GET"
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
@@ -357,10 +374,12 @@ class SidecarState:
         mirc_url: str,
         stt_config: Dict[str, Any],
         token: str = "",
+        mirc_token: str = "",
     ) -> None:
         self.mirc_url = mirc_url.rstrip("/")
         self.stt_config = stt_config
         self.token = token
+        self.mirc_token = mirc_token
         self.calls: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.Lock()
         self.call_seq = 0
@@ -377,7 +396,10 @@ class SidecarState:
             presented = (handler.headers.get("X-Voice-Call-Token") or "").strip()
         if presented.startswith("Bearer "):
             presented = presented[len("Bearer "):].strip()
-        return presented == self.token
+        return hmac.compare_digest(presented.encode(), self.token.encode())
+
+    def request(self, path: str, payload=None, *, timeout=60.0):
+        return mirc_request(self.mirc_url, path, payload, timeout=timeout, token=self.mirc_token)
 
     def next_call_id(self) -> str:
         with self.lock:
@@ -388,6 +410,7 @@ class SidecarState:
 class SidecarHandler(BaseHTTPRequestHandler):
     state: SidecarState
     server_version = "VoiceCallSTT/1"
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         logger.info("%s - %s", self.address_string(), fmt % args)
@@ -427,8 +450,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 return
             query = urllib.parse.parse_qs(parsed.query)
             channel = (query.get("channel") or [""])[0]
-            result = mirc_request(
-                self.state.mirc_url,
+            result = self.state.request(
                 f"/api/voice-call/status?channel={urllib.parse.quote(channel)}",
                 None,
                 timeout=10.0,
@@ -495,8 +517,8 @@ class SidecarHandler(BaseHTTPRequestHandler):
         if not text:
             self._send_json({"ok": False, "error": "text is required"}, 400)
             return
-        result = mirc_request(
-            self.state.mirc_url, "/api/audio/speak", {"text": text}, timeout=90.0,
+        result = self.state.request(
+                "/api/audio/speak", {"text": text}, timeout=90.0,
         )
         self._send_json(result, 200 if result.get("ok") else 502)
 
@@ -506,9 +528,8 @@ class SidecarHandler(BaseHTTPRequestHandler):
         if action not in ("start", "end", "mute", "unmute") or not channel:
             self._send_json({"ok": False, "error": "action must be start|end|mute|unmute with channel"}, 400)
             return
-        result = mirc_request(
-            self.state.mirc_url,
-            "/api/voice-call/call",
+        result = self.state.request(
+                "/api/voice-call/call",
             {"action": action, "channel": channel},
             timeout=10.0,
         )
@@ -524,6 +545,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
         if not self.state.check_token(self):
             self.send_response(401)
             self._cors()
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
         accept = ws_accept_key(key)
@@ -534,7 +556,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
         self.end_headers()
         conn = self.connection
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        ws = WsConnection(conn)
+        ws = WsConnection(conn, self.rfile)
         # Detach from http.server bookkeeping: the frame loop owns the
         # socket now; suppress the handler's finish/close dance.
         self.close_connection = True
@@ -563,12 +585,15 @@ class SidecarHandler(BaseHTTPRequestHandler):
             ws.send_json({"type": "error", "message": "first frame must be {type: hello, channel}"})
             return
         channel = str(hello.get("channel") or "").strip()
+        mime = str(hello.get("mime") or "audio/webm").split(";")[0].lower()
+        if mime not in CHUNK_SUFFIX_BY_MIME:
+            ws.send_json({"type": "error", "message": "unsupported audio container"})
+            return
         if not channel:
             ws.send_json({"type": "error", "message": "hello.channel is required"})
             return
-        status = mirc_request(
-            self.state.mirc_url,
-            f"/api/voice-call/status?channel={urllib.parse.quote(channel)}",
+        status = self.state.request(
+                f"/api/voice-call/status?channel={urllib.parse.quote(channel)}",
             None,
             timeout=10.0,
         )
@@ -579,9 +604,8 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 "reason": str(status.get("reason") or status.get("error") or "call not allowed"),
             })
             return
-        started = mirc_request(
-            self.state.mirc_url,
-            "/api/voice-call/call",
+        started = self.state.request(
+                "/api/voice-call/call",
             {"action": "start", "channel": channel, "engine": engine},
             timeout=10.0,
         )
@@ -593,7 +617,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             return
         call_id = self.state.next_call_id()
         with self.state.lock:
-            self.state.calls[call_id] = {"channel": channel, "engine": engine}
+            self.state.calls[call_id] = {"channel": channel, "engine": engine, "mime": mime}
         ws.send_json({
             "type": "ready",
             "callId": call_id,
@@ -601,21 +625,53 @@ class SidecarHandler(BaseHTTPRequestHandler):
             "engine": engine,
             "sttProvider": active_stt_provider(self.state.stt_config),
         })
+        # STT and synthesis can each block on a provider. Keep the socket
+        # reader free for microphone traffic, ping, mute, and hangup, with
+        # bounded queues and one worker per stream to preserve reply order.
+        done = threading.Event()
+        audio_jobs = queue.Queue(maxsize=4)
+        speech_jobs = queue.Queue(maxsize=8)
+
+        def worker(jobs, operation):
+            while not done.is_set():
+                try:
+                    data = jobs.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if not done.is_set():
+                    operation(ws, call_id, data)
+
+        for jobs, operation in ((audio_jobs, self._on_audio_chunk), (speech_jobs, self._on_control)):
+            threading.Thread(target=worker, args=(jobs, operation), daemon=True).start()
+
+        def enqueue(jobs, data):
+            try:
+                jobs.put_nowait(data)
+            except queue.Full:
+                ws.send_json({"type": "error", "message": "Voice provider is too slow; audio queue is full."})
+
         try:
             while True:
                 kind, payload = ws.recv_message()
                 if kind == "close":
                     break
                 if kind == "binary":
-                    self._on_audio_chunk(ws, call_id, payload)
+                    enqueue(audio_jobs, payload)
                 else:
+                    try:
+                        control = json.loads(payload)
+                    except (ValueError, UnicodeDecodeError):
+                        control = None
+                    if isinstance(control, dict) and control.get("type") == "tts":
+                        enqueue(speech_jobs, payload)
+                        continue
                     if self._on_control(ws, call_id, payload):
                         break
         finally:
+            done.set()
             with self.state.lock:
                 self.state.calls.pop(call_id, None)
-            mirc_request(
-                self.state.mirc_url,
+            self.state.request(
                 "/api/voice-call/call",
                 {"action": "end", "channel": channel},
                 timeout=10.0,
@@ -633,7 +689,11 @@ class SidecarHandler(BaseHTTPRequestHandler):
         channel = self._call_channel(call_id)
         if not channel:
             return
-        result = transcribe_chunk(payload, "audio/webm", self.state.stt_config)
+        with self.state.lock:
+            mime = (self.state.calls.get(call_id) or {}).get("mime", "audio/webm")
+        result = transcribe_chunk(payload, mime, self.state.stt_config)
+        if not self._call_channel(call_id):
+            return
         if result.get("success"):
             text = str(result.get("transcript") or "").strip()
             if text:
@@ -645,7 +705,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
                     "provider": str(result.get("provider") or ""),
                 })
         else:
-            logger.info("chunk rejected: %s", str(result.get("error") or "")[:160])
+            ws.send_json({"type": "error", "message": str(result.get("error") or "transcription failed")})
 
     def _on_control(self, ws: WsConnection, call_id: str, payload: bytes) -> bool:
         """Handle a control frame. True = hang up (break the loop)."""
@@ -663,9 +723,11 @@ class SidecarHandler(BaseHTTPRequestHandler):
             if not text:
                 ws.send_json({"type": "error", "message": "tts.text is required"})
                 return False
-            result = mirc_request(
-                self.state.mirc_url, "/api/audio/speak", {"text": text}, timeout=90.0,
+            result = self.state.request(
+                "/api/audio/speak", {"text": text}, timeout=90.0,
             )
+            if not self._call_channel(call_id):
+                return False
             if result.get("ok"):
                 ws.send_json({
                     "type": "audio",
@@ -684,8 +746,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             return False
         if kind == "mute":
             muted = bool(message.get("muted", True))
-            mirc_request(
-                self.state.mirc_url,
+            self.state.request(
                 "/api/voice-call/call",
                 {"action": "mute" if muted else "unmute", "channel": channel},
                 timeout=10.0,
@@ -730,6 +791,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--language", default="", help="STT language overlay")
     parser.add_argument("--endpoint", default="", help="STT endpoint overlay")
     parser.add_argument("--token", default="", help="Shared bearer token (or VOICE_CALL_SIDECAR_TOKEN)")
+    parser.add_argument("--mirc-token", default="", help="MIRC voice service secret (or VOICE_CALL_MIRC_TOKEN)")
     parser.add_argument("--home", default="", help="Mercury home override (sets MERCURY_HOME/HERMES_HOME)")
     return parser
 
@@ -761,7 +823,8 @@ def main(argv: Optional[list] = None) -> int:
         print(f"error: cannot load STT config: {exc}", file=sys.stderr)
         return 2
     provider = active_stt_provider(stt_config)
-    state = SidecarState(mirc_url=mirc_url, stt_config=stt_config, token=token)
+    mirc_token = (args.mirc_token or os.environ.get("VOICE_CALL_MIRC_TOKEN") or "").strip()
+    state = SidecarState(mirc_url=mirc_url, stt_config=stt_config, token=token, mirc_token=mirc_token)
     SidecarHandler.state = state
     server = ThreadingHTTPServer((args.host, args.port), SidecarHandler)
     server.daemon_threads = True

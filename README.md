@@ -19,7 +19,7 @@ your phone. Your host runs the agents; you choose their supported model
 providers.
 
 The current stable release is **[v0.3.24](https://github.com/fengwhang/mercury/releases/tag/v0.3.24)**.
-The matching nightly is **[v0.3.24-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.24-nightly)**. Both channels include the Observatory zombie-room fix.
+The experimental nightly is **[v0.4.0-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.4.0-nightly)**, built from the integration branch. It includes the stable Observatory room-cleanup fixes, managed Python dependencies, connector setup cards, and opt-in browser voice calls. Voice still needs real-device acceptance testing; see the [integration audit](docs/integration-audit-2026-10-04.md) for tested behavior and remaining limits.
 
 ## Why Mercury?
 
@@ -103,7 +103,7 @@ curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install-nigh
 ```
 
 Stable is **[v0.3.24](https://github.com/fengwhang/mercury/releases/tag/v0.3.24)**.
-The latest nightly is **[v0.3.24-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.3.24-nightly)**.
+The latest nightly is **[v0.4.0-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.4.0-nightly)** (experimental integration build).
 The nightly installer selects the newest published prerelease. Stable remains
 on its own update channel; nightly is selected explicitly by this wrapper or
 `--channel nightly`.
@@ -557,7 +557,9 @@ and actual IRC protocol/dependency names retain their original names.
 Run Python checks through `hermes/scripts/run_tests.sh`, OMP checks through
 Bun, and mLounge checks through Vitest. The
 [September 2026 review](docs/code-review-2026-09-30.md) records the reviewed
-paths, reproducible findings, and current test results.
+paths and reproducible findings. The [integration audit](docs/integration-audit-2026-10-04.md)
+records the nightly candidate's fixes, verification and remaining acceptance limits.
+See [managed dependencies](docs/managed-dependencies.md) for the `mercury pm` workflow.
 
 Release builds must bump and commit the Mercury version **before** compiling
 OMP. Releases cover x64 and ARM64 with both glibc and musl, plus the prebuilt

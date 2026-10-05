@@ -16,6 +16,7 @@ import sys
 import uuid
 
 from pm.package import InstallError
+from pm.application_python import project_python
 
 
 def _require_install_allowed(explicit: bool) -> None:
@@ -55,7 +56,7 @@ def build_environment(
     if env is None:
         env = source_build_environment(source)
     environment = managed_environment(
-        out, python=Path(python) if python is not None else None,
+        out, python=project_python(source, python),
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=sys.stderr,
     )
@@ -78,7 +79,7 @@ def lock_project(
         raise InstallError("venv", f"project manifest is missing: {source}")
     _require_install_allowed(explicit)
     environment = managed_environment(
-        source / ".venv", python=Path(python) if python is not None else None,
+        source / ".venv", python=project_python(source, python),
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=sys.stderr,
     )

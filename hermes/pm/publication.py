@@ -45,8 +45,8 @@ def candidate_members(extra_dirs=(), **selection):
 
 
 def selection_snapshot() -> dict[Path, bytes | None]:
-    from pm.plugins_state import dependency_homes
-    return {home / "config.yaml": read_bytes_or_none(home / "config.yaml") for home in dependency_homes()}
+    from pm.plugins_state import dependency_homes, config_for_home
+    return {config_for_home(home): read_bytes_or_none(config_for_home(home)) for home in dependency_homes()}
 
 
 def validate_manifest(source: Path) -> dict:
@@ -61,25 +61,28 @@ def validate_manifest(source: Path) -> dict:
 
 class PluginSelection:
     def __init__(self, selection: dict):
-        from hermes_yaml import roundtrip_yaml
+        from ruamel.yaml import YAML
+        from pm.plugins_state import engine_selection_config
 
         self.configs = selection_snapshot()
         self.home = Path(selection["home"]).resolve()
         if not self.home.is_relative_to(dependency_home_root().resolve()):
             raise ValueError("config path is outside Hermes state")
-        self.path = self.home / "config.yaml"
+        from pm.plugins_state import config_for_home
+        self.path = config_for_home(self.home)
         self.previous = read_bytes_or_none(self.path)
         expected = selection.get("expected_config")
         actual = hashlib.sha256(self.previous).hexdigest() if self.previous is not None else "missing"
         if expected is not None and expected != actual:
             raise ValueError("Plugin configuration changed since this selection was read; retry.")
-        yaml = roundtrip_yaml()
+        yaml = YAML()
+        yaml.preserve_quotes = True
         config = yaml.load(self.previous.decode("utf-8-sig")) if self.previous else {}
         if config is None:
             config = {}
         if not isinstance(config, dict):
             raise ValueError(f"configuration must be a mapping: {self.path}")
-        plugins = config.setdefault("plugins", {})
+        plugins = engine_selection_config(config, self.path).setdefault("plugins", {})
         if not isinstance(plugins, dict):
             raise ValueError(f"plugins must be a mapping in {self.path}")
         plugins["enabled"] = sorted(selection["enabled"])
@@ -142,7 +145,7 @@ class StagedPlugin:
     def publish(self, project: Path) -> None:
         import os
         import uuid
-        from mercury_cli.auth import _file_lock
+        from pm.filesystem import file_lock
         from pm.store import tree_digest
 
         if selection_snapshot() != self.configs:
@@ -150,8 +153,7 @@ class StagedPlugin:
         if tree_digest(self.staged) != self.staged_digest:
             raise ValueError("Staged plugin files changed while preparing the update; retry.")
         lock = self.metadata.with_name(f"{self.metadata.name}.lock")
-        with _file_lock(lock, _METADATA_LOCK_HOLDER, 10.0,
-                        "Timed out waiting for the plugin install metadata lock"):
+        with file_lock(lock, timeout=10.0):
             previous = read_bytes_or_none(self.metadata)
             metadata = _metadata_records(previous)
             if metadata.get(self.target.name) != self.old_record:

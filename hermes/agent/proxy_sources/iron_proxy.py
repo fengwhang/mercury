@@ -2102,6 +2102,11 @@ def _kill_and_wait(proc: "subprocess.Popen", *, grace_seconds: int = 2) -> None:
             pass
 
 
+def allowlisted_env() -> Dict[str, str]:
+    """Infrastructure only for a version probe; never forward provider credentials."""
+    return {name: os.environ[name] for name in _PROXY_SUBPROCESS_ENV_ALLOWLIST if name in os.environ}
+
+
 def _build_proxy_subprocess_env(
     *,
     extra_env: Optional[Dict[str, str]] = None,

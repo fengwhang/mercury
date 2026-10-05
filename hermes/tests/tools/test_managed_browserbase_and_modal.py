@@ -96,14 +96,15 @@ def _install_fake_tools_package():
     sys.modules["tools.environments"] = env_package
 
     agent_package = types.ModuleType("agent")
-    agent_package.__path__ = []  # type: ignore[attr-defined]
+    # Extraction modules need real security helpers (proxy bypass, secret scope).
+    # Keep the deliberate provider stubs below, but allow unstubbed helpers to load.
+    agent_package.__path__ = [str(REPO_ROOT / "agent")]  # type: ignore[attr-defined]
     sys.modules["agent"] = agent_package
     sys.modules["agent.auxiliary_client"] = types.SimpleNamespace(
         call_llm=lambda *args, **kwargs: "",
     )
-    # The fake `agent` package has an empty __path__, so every real
-    # agent.* submodule that production code imports needs an explicit
-    # stand-in here. tools.browser_tool imports redact_cdp_url;
+    # Keep the original isolated persistence/redaction interfaces.
+    # tools.browser_tool imports redact_cdp_url;
     # mercury_cli.auth (imported transitively by nous_account /
     # tool_backend_helpers) imports sanitize_borrowed_credential_payload.
     sys.modules["agent.redact"] = types.SimpleNamespace(
@@ -114,8 +115,7 @@ def _install_fake_tools_package():
     )
 
     # Stubs for the browser-provider plugin layer introduced in PR #25214.
-    # The fake `agent` package has an empty __path__ so real submodules
-    # aren't reachable; we install just enough stand-ins to satisfy
+    # Install the provider boundary stand-ins needed to satisfy
     # ``tools.browser_tool``'s top-level imports. The actual lifecycle
     # tests instantiate the real plugin classes via _load_tool_module
     # below, so the stubs only need to satisfy import + isinstance.

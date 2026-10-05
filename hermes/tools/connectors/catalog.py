@@ -55,11 +55,10 @@ def target_scope(profile: str):
     home override is bound for the launch profile too: the calling thread carries the setup
     profile's override, and an unbound launch scope would leave it in place."""
     from tui_gateway import server
-    from tui_gateway.launch_profile_policy import launch_profile_runtime_scope
 
     home = server._profile_home(profile)  # None = the launch profile; raises for a missing one
-    scope = (launch_profile_runtime_scope(server._hermes_home) if home is None
-             else server._session_profile_runtime_scope({"profile_home": str(home)}))
+    scope = server._session_profile_runtime_scope(
+        {"profile_home": str(server._hermes_home if home is None else home)})
     with scope:
         yield
 
@@ -75,10 +74,23 @@ class HostInstaller:
 
     def refuse(self, entry: Any) -> None:
         """Raise with the installer's own text when the catalog would refuse this entry here."""
-        from mercury_cli.plugins_cmd_catalog import _refuse_unsupported_catalog_platform, raise_if_removed
+        import platform
+        from mercury_cli.plugin_catalog import find_removed
+        from mercury_cli.plugins_manifest import requires_hermes_error
+        from mercury_cli.plugins_cmd import PluginOperationError
 
-        raise_if_removed(entry.name, entry.repo)
-        _refuse_unsupported_catalog_platform(entry)
+        removed = find_removed(entry.name) or find_removed(entry.repo)
+        if removed is not None:
+            raise PluginOperationError(f"Plugin '{entry.name}' was removed: {removed.reason}")
+        reason = requires_hermes_error(entry)
+        if reason:
+            raise PluginOperationError(f"Plugin '{entry.name}' {reason}")
+        aliases = {"macos": "darwin", "osx": "darwin", "win32": "windows"}
+        allowed = {aliases.get(value.lower(), value.lower()) for value in entry.platforms}
+        current = platform.system().lower()
+        if allowed and current not in allowed:
+            raise PluginOperationError(f"Plugin '{entry.name}' is unavailable on {current}; "
+                                       f"supported platforms: {', '.join(entry.platforms)}")
 
     def install_plugin(self, name: str, *, force: bool, enable: bool, ref: Optional[str]) -> Dict[str, Any]:
         from mercury_cli.plugins_cmd import dashboard_install_plugin
@@ -87,11 +99,10 @@ class HostInstaller:
 
     def skill_meta(self, identifier: str) -> Optional[Dict[str, Any]]:
         """The first hub source that knows the identifier; metadata only, no bundle download."""
-        from mercury_cli.skills_hub import _sources
-        from tools.skills_hub import skills_hub_http_session
+        from tools.skills_hub import skills_hub_http_session, create_source_router, GitHubAuth
 
         with skills_hub_http_session():
-            for source in _sources():
+            for source in create_source_router(GitHubAuth()):
                 try:
                     meta = source.inspect(identifier)
                 except Exception:
@@ -161,7 +172,7 @@ class _Runner:
         if target.kind == "plugin":
             entry = self.installer.plugin_entry(target.name)
             if entry is None:
-                raise LookupError(f"'{target.name}' is not in the Hermes plugin catalog")
+                raise LookupError(f"'{target.name}' is not in the Mercury plugin catalog")
             self.facts[target.name] = entry
             target.extra = _plugin_row(entry)
             target.required_env = [{"name": name, "required": False, "secret": True, "default": ""}
@@ -228,17 +239,24 @@ class _Runner:
                          name=f"catalog-install-{target.name}").start()
 
     def _install(self, target: Target, env: Dict[str, str]) -> Dict[str, Any]:
+        from mercury_cli.config_mutation import connector_config_transaction
+
         profile = (env.get("target_profile") or DEFAULT_PROFILE).strip()
         force = _flag(env.get("force"), False)
+        credentials = {k: v for k, v in env.items() if k not in _OPTION_KEYS and v}
         with target_scope(profile):
-            _save_credentials({k: v for k, v in env.items() if k not in _OPTION_KEYS and v})
             if target.kind == "skill":
                 identifier = str(self.facts[target.name].get("identifier") or target.name)
-                return {"profile": profile, **self.installer.install_skill(identifier, force=force)}
+                result = self.installer.install_skill(identifier, force=force)
+                with connector_config_transaction(env_keys=credentials):
+                    _save_credentials(credentials)
+                return {"profile": profile, **result}
             enable = _flag(env.get("enable"), True)
             result = self.installer.install_plugin(target.name, force=force, enable=enable, ref=env.get("ref") or None)
-        if not result.get("ok"):
-            raise RuntimeError(result.get("error") or "the install failed")
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error") or "the install failed")
+            with connector_config_transaction(env_keys=credentials):
+                _save_credentials(credentials)
         return {"profile": profile, "enabled": enable, **result}
 
     # -- the watcher --------------------------------------------------------------------------------
@@ -277,7 +295,6 @@ def target_declared_env(fact: Any) -> List[str]:
 def _plugin_row(entry: Any) -> Dict[str, Any]:
     requirements = [f"Hermes {entry.requires_hermes}"] if entry.requires_hermes else []
     requirements += [f"{name} environment variable" for name in entry.capabilities.requires_env]
-    from mercury_cli.plugin_catalog_presence import presence
 
     row: Dict[str, Any] = {
         "display": getattr(entry, "title", "") or _display(entry.name),
@@ -288,7 +305,9 @@ def _plugin_row(entry: Any) -> Dict[str, Any]:
         "requirements": requirements,
         "has_desktop_half": False,
         "target_profile": DEFAULT_PROFILE,
-        "app_state": presence(entry).state,
+        # Mercury does not ship the stock desktop-app resolver. A plugin's OS
+        # requirement is enforced before install; app presence stays unknown.
+        "app_state": "unknown",
     }
     if entry.platforms:
         row["platforms"] = list(entry.platforms)
@@ -309,6 +328,10 @@ def _installed_row(target: Target, outcome: Dict[str, Any]) -> tuple:
     tools = [name for server in servers if server.get("connected") for name in server.get("tools") or ()]
     notes = [f"MCP server {s['name']} not connected: {s.get('error') or 'unknown error'}"
              for s in servers if not s.get("connected")]
+    if not outcome.get("activation") and outcome.get("enabled", True):
+        notes.append("enabled; start a new session or restart the Observatory to load the plugin")
+    if outcome.get("python_dependencies"):
+        notes.append("run mercury pm install venv (mercury-nightly for nightly) to prepare plugin dependencies")
     if not outcome.get("enabled", True):
         notes.append("installed but not enabled")
     if outcome.get("missing_env"):

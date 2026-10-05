@@ -583,10 +583,11 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "mercury_cli", "mercury_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "mercury_cli", "mercury_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "pm", "observatory", "observatory.*"]
 
 [tool.setuptools.package-data]
 mercury_cli = ["observability/schemas/*.json", "data/*.json"]
+pm = ["lock.json", "artifact-mirror.json", "termux_runtime_libs.json", "pyproject.toml", "uv.lock"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram

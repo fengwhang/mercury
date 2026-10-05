@@ -501,7 +501,7 @@ def _kill_process_tree(proc: "subprocess.Popen") -> None:
 
         _deadline_kill_tree(proc.pid)
     except Exception:
-        _legacy_kill_process_tree(proc)
+        _bt._legacy_kill_process_tree(proc)
 
 
 def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:

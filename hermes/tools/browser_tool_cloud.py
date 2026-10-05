@@ -179,8 +179,9 @@ def _is_local_backend() -> bool:
     # Scope-aware: under gateway multiplexing the routed profile's terminal backend lives in the per-turn scope.
     # When terminal runs in a container, browser on host can access internal networks the terminal can't →
     # treat as non-local. See #68559.
-    from tools.terminal_scope import terminal_env
-    return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+    from tools.terminal_tool import _ensure_terminal_env_bridged
+    _ensure_terminal_env_bridged()
+    return os.getenv("TERMINAL_ENV", "local").strip().lower() in ("local", "")
 
 
 def browser_backend_name() -> str:

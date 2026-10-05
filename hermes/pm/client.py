@@ -239,7 +239,7 @@ def ensure_tools_for_sync() -> None:
     through its own dependency, so a bumped ripgrep/ffmpeg/node pin was never
     installed and activation skipped the managed tool dirs on every start.
     Publishing tools first also lets native builds resolve compilers and git
-    from the pinned store instead of the host (as `hermes pm install` does).
+    from the pinned store instead of the host (as `mercury pm install` does).
     An update is an explicit user action, so the lazy-install policy does not
     gate it; a failed download fails the update.
     """

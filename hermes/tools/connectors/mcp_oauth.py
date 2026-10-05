@@ -31,7 +31,7 @@ def probe_with_rollback(
     from tools.mcp_oauth import HermesTokenStorage, login_connect_timeout
     from tools.mcp_oauth_manager import get_manager
     manager = get_manager()
-    storage = HermesTokenStorage(server_name)
+    storage = HermesTokenStorage(server_name, mercury_home=hermes_home)
     # An attempt that replaced a still-running one starts from that one's half-written files, so
     # it carries the older attempt's snapshot: the state from before either of them.
     backup = getattr(flow, "inherited_backup", None) or storage.snapshot()
@@ -49,10 +49,10 @@ def probe_with_rollback(
         if flow is not None and _ACTIVE.get((hermes_home, server_name)) not in (None, flow):
             return
         storage.restore(backup)
-        manager.restore_entry(server_name, previous_entry, hermes_home=hermes_home)
+        manager.restore_entry(server_name, previous_entry, mercury_home=hermes_home)
 
     try:
-        previous_entry = manager.remove(server_name, hermes_home=hermes_home)
+        previous_entry = manager.remove(server_name, mercury_home=hermes_home)
         tools = _probe_single_server(
             server_name, cfg, connect_timeout=login_connect_timeout(cfg), details=details)
         if not _oauth_tokens_present(server_name):
@@ -67,7 +67,7 @@ def probe_with_rollback(
         tools, discovery_error = [], exception_message(exc)
     try:
         _commit(server_name, cfg, on_commit, flow)
-    except AttemptCanceled:
+    except Exception:
         undo()
         raise
     if flow is not None:
@@ -77,7 +77,7 @@ def probe_with_rollback(
     if discovery_error:
         return
     if reconnect_live:
-        from tools.mcp_tool_loop import reconnect_mcp_server
+        from tools.mcp_tool import reconnect_mcp_server
         reconnect_mcp_server(server_name)
 
 
@@ -101,20 +101,22 @@ def cancel_attempt(flow) -> bool:
             return True
         flow.cancelled = True
     # Wakes a worker that is still waiting for the browser; a cancelled flow is never re-minted.
-    flow.mark_error("canceled", cancelled=True)
+    flow.mark_error("canceled")
     return False
 
 
 def _commit(server_name: str, cfg: dict, on_commit: Optional[Callable[[], None]], flow=None) -> None:
     from mercury_cli.mcp_config import _save_mcp_server
+    from mercury_cli.config_mutation import connector_config_transaction
 
     with _COMMIT_GUARD:
         if flow is not None and getattr(flow, "cancelled", False):
             raise AttemptCanceled("canceled")
-        if not _save_mcp_server(server_name, cfg):
-            raise RuntimeError(f"'{server_name}' was rejected: suspicious command/args configuration")
-        if on_commit is not None:
-            on_commit()
+        with connector_config_transaction():
+            if not _save_mcp_server(server_name, cfg):
+                raise RuntimeError(f"'{server_name}' was rejected: suspicious command/args configuration")
+            if on_commit is not None:
+                on_commit()
         if flow is not None:
             flow.committed = True
 
@@ -166,7 +168,7 @@ def run_worker(
         try:
             home_token = set_hermes_home_override(hermes_home)
             secret_token = set_secret_scope(
-                {**build_profile_secret_scope(Path(hermes_home)), **(env or {})}, profile_home=hermes_home)
+                {**build_profile_secret_scope(Path(hermes_home)), **(env or {})})
             if not (reuse_saved and flow is not None
                     and _reuse_saved_authorization(server_name, cfg, flow, on_commit)):
                 with force_interactive_oauth(), dashboard_oauth_flow(flow):
@@ -210,7 +212,7 @@ def _validate_client_redirect_uri(uri: str) -> str:
 
 def _start_loopback_receiver(flow) -> "http.server.HTTPServer":
     """Bind the single backend-hosted one-shot receiver and feed its callback into ``flow``."""
-    from tools.mcp_oauth import _parse_redirect_query
+    from urllib.parse import parse_qs
 
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
@@ -219,10 +221,12 @@ def _start_loopback_receiver(flow) -> "http.server.HTTPServer":
                 self.send_response(404)
                 self.end_headers()
                 return
-            body = b"<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>"
+            body = b"<h1>Authorization received</h1><p>You can close this tab and return to Mercury.</p>"
             status = 200
             try:
-                flow.deliver_callback(**_parse_redirect_query(parsed.query))
+                query = parse_qs(parsed.query)
+                flow.deliver_callback(**{key: query.get(key, [None])[0]
+                                         for key in ("code", "state", "error")})
             except Exception:
                 body = b"<h1>OAuth callback rejected</h1><p>The callback was invalid or already used.</p>"
                 status = 400
@@ -269,9 +273,10 @@ def choose_callback_receiver(flow, cfg: dict, client_redirect_uri: Optional[str]
 def _ssh_detail(redirect_uri: str) -> str:
     if not (os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY")) or not redirect_uri:
         return ""
-    from tools.mcp_oauth import _SSH_HINT_LOOPBACK
     parsed = urlparse(redirect_uri)
-    return _SSH_HINT_LOOPBACK.format(host=parsed.hostname or "127.0.0.1", port=parsed.port or 0).strip()
+    port = parsed.port or 0
+    return (f"This callback is on the Mercury host. Forward its port from the browser's machine: "
+            f"ssh -N -L {port}:127.0.0.1:{port} <user>@<mercury-host>")
 
 
 @dataclass
@@ -315,15 +320,26 @@ def start(
     hermes_home = str(get_hermes_home().expanduser().resolve(strict=False))
     flow = DashboardOAuthFlow(
         flow_id=secrets.token_urlsafe(24), server_name=server_name, profile=None,
-        hermes_home=hermes_home, redirect_uri="", reconnect_live=False)
+        mercury_home=hermes_home, redirect_uri="", reconnect_live=False)
     with _COMMIT_GUARD:
         older = _ACTIVE.get((hermes_home, server_name))
         _ACTIVE[(hermes_home, server_name)] = flow
     if older is not None and not older.worker_done:
         flow.inherited_backup = getattr(older, "backup", None)
         cancel_attempt(older)
-    httpd = choose_callback_receiver(flow, cfg, client_redirect_uri)
-    mcp_oauth_sessions.register_flow(flow, httpd=httpd)
+    httpd = None
+    try:
+        httpd = choose_callback_receiver(flow, cfg, client_redirect_uri)
+        mcp_oauth_sessions.register_flow(flow, httpd=httpd)
+    except Exception:
+        cancel_attempt(flow)
+        with _COMMIT_GUARD:
+            if _ACTIVE.get((hermes_home, server_name)) is flow:
+                _ACTIVE.pop((hermes_home, server_name), None)
+        if httpd is not None:
+            httpd.shutdown()
+            httpd.server_close()
+        raise
     threading.Thread(
         target=run_worker, args=(hermes_home, server_name, cfg, False),
         kwargs={"flow": flow, "on_done": lambda: mcp_oauth_sessions.finish_flow(flow.flow_id),
@@ -342,5 +358,6 @@ def start(
         if snapshot.get("status") == "error":
             raise RuntimeError(snapshot.get("error") or "the OAuth flow failed before authorization")
         time.sleep(0.05)
-    flow.mark_error("Timed out waiting for MCP authorization URL")
+    cancel_attempt(flow)
+    mcp_oauth_sessions.finish_flow(flow.flow_id)
     raise TimeoutError(f"timed out waiting for the authorization URL for '{server_name}'")

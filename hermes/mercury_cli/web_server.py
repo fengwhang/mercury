@@ -1098,6 +1098,17 @@ async def _token_auth_seam(request: Request, call_next):
     cookie/session gates skip enforcement. Non-token routes pass straight
     through untouched.
     """
+    # The sidecar is a service caller without a browser login cookie. Its
+    # separate secret grants only the three voice routes, never dashboard
+    # administration. Ordinary dashboard requests retain their existing auth.
+    if request.url.path in {"/api/voice-call/status", "/api/voice-call/call", "/api/audio/speak"}:
+        expected = os.environ.get("VOICE_CALL_MIRC_TOKEN", "")
+        presented = request.headers.get("authorization", "")
+        if expected and hmac.compare_digest(
+            presented.encode(), f"Bearer {expected}".encode()
+        ):
+            request.state.token_authenticated = True
+            return await call_next(request)
     from mercury_cli.dashboard_auth.token_auth import token_auth_middleware
     return await token_auth_middleware(request, call_next)
 
@@ -3622,7 +3633,7 @@ def get_install_id() -> Optional[str]:
 # load→mutate→save and silently drop one another's writes. Held only in
 # worker threads, so it can never block the event loop. RLock so a locked
 # section that calls helpers which also take it can't self-deadlock.
-_CONFIG_MUTATION_LOCK = threading.RLock()
+from mercury_cli.config_mutation import CONFIG_MUTATION_LOCK as _CONFIG_MUTATION_LOCK
 
 
 def _topology_cache_get(fn: Any) -> Optional[Dict[str, Any]]:
@@ -5854,7 +5865,8 @@ async def voice_call_action(payload: VoiceCallActionRequest, profile: Optional[s
     if action == "end":
         ended = store.end(channel)
         return {"ok": True, "action": action, "channel": channel, "ended": ended}
-    engine = (payload.engine or "").strip().lower() or _voice_call.resolve_channel_engine(channel)
+    # Caller hints cannot override the server's room engine.
+    engine = _voice_call.resolve_channel_engine(channel)
     allowed, reason = _voice_call.check_engine_allowed(engine)
     if not allowed:
         raise HTTPException(status_code=409, detail=reason)
