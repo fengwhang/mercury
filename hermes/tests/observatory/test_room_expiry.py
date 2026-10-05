@@ -91,7 +91,14 @@ async def test_automatic_expiry_ejects_all_users_even_during_slow_message_handli
 
 
 @pytest.mark.asyncio
-async def test_refused_destroy_keeps_cleanup_journal_until_daemon_confirms(tmp_path, monkeypatch):
+async def test_refused_destroy_frees_row_now_and_retries_channel_later(tmp_path, monkeypatch):
+    """A refused OPER costs a retry, never a permanent zombie.
+
+    Previously the node row was held until ``OPER DESTROY`` converged, so a
+    wrong/absent oper password left ``status='dead'`` rows and empty rooms
+    behind forever. The contract now: the row and the sidebar entry are
+    released at death time; only the channel destroy stays queued.
+    """
     from observatory import identity
 
     monkeypatch.setattr(identity, "drop_identity", AsyncMock())
@@ -108,18 +115,32 @@ async def test_refused_destroy_keeps_cleanup_journal_until_daemon_confirms(tmp_p
         try:
             assert await adapter.connect()
             assert await adapter.join_channel("#test-child")
+            # join_channel reports intent; wait for the daemon to actually
+            # materialise the room so the assertions below are deterministic
+            # under full-suite load.
+            async with asyncio.timeout(5):
+                while "#test-child" not in daemon.channel_names():
+                    await asyncio.sleep(0.01)
             await manager._retire_child_room("child")
-            assert read_purge_journal(state)
-            assert state.get("child")["status"] == "dead"
+
+            # THE FIX: the row is already gone although the destroy failed.
+            with pytest.raises(StateError):
+                state.get("child")
+            assert state.get("root")["status"] == "live"
+            # Only the channel destroy is still owed.
+            entries = read_purge_journal(state)
+            assert entries, "channel destroy must stay queued for retry"
+            assert entries[0]["rows"] == []
+            assert entries[0]["channels"] == ["#test-child"]
             assert "#test-child" in daemon.channel_names()
+
+            # Fix the oper secret and let the background retry converge.
             adapter.oper_password = "test-secret"
             async with asyncio.timeout(5):
                 while read_purge_journal(state):
                     await asyncio.sleep(0.02)
             assert read_purge_journal(state) == []
             assert "#test-child" not in daemon.channel_names()
-            with pytest.raises(StateError):
-                state.get("child")
         finally:
             await adapter.disconnect()
             state.close()

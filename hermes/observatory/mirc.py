@@ -179,6 +179,11 @@ class DaemonConfig:
     tls_key: str = ""
     password: str = ""  # required PASS on the server listener when set
     agent_password: str = ""  # required PASS on the agent listener when set
+    # Legacy/alias secret: older installs (and provision's back-compat
+    # mirror) expose only IRC_SERVER_PASSWORD. The gateway bot carries that
+    # value as its OPER password, so OPER must accept it or every room
+    # destroy dies with 481 and dead agents leave zombie rooms behind.
+    server_password: str = ""
     state_dir: Path | str = ""
     network_name: str = "mercury"
 
@@ -989,14 +994,30 @@ class MircDaemon:
     async def _cmd_oper(self, client: _Client, arg: str) -> None:
         """OPER <password> — grant channel-destroy rights to the gateway bot.
 
-        Either listener secret works. The old single-secret check
-        compared only the agent password, so the bot (which authenticates
-        with the server password) got 464 forever and every DESTROY died
-        with 481 — rooms lingered after agent death.
+        Any secret this install actually issues works. Two generations of
+        this check got it wrong and left zombie rooms behind:
+
+        1. It compared only the agent password, but the bot authenticates
+           with the server password — 464 forever, every DESTROY died with
+           481, rooms lingered after agent death.
+        2. Widening it to ``(agent_password, password)`` still missed
+           ``IRC_SERVER_PASSWORD``, which is the ONE key older installs
+           carry (provision only later began mirroring the client/agent
+           pair). The accepted set was empty, so OPER was refused for every
+           bot on those installs — same symptom.
+
+        Accept the union of every listener/alias secret. An empty set still
+        refuses everything (fail closed) rather than opening OPER wide.
         """
         secret = arg.split(" ", 1)[0].lstrip(":")
         secrets = {
-            s for s in (self.config.agent_password, self.config.password) if s
+            s
+            for s in (
+                self.config.agent_password,
+                self.config.password,
+                self.config.server_password,
+            )
+            if s
         }
         if secret and secret in secrets:
             client.oper = True
@@ -1369,6 +1390,9 @@ def _resolve_daemon_config(args: Any) -> DaemonConfig:
     agent_password = getattr(args, "agent_password", None)
     if agent_password is None:
         agent_password = _os.environ.get("IRC_AGENT_PASSWORD", "")
+    server_password = getattr(args, "server_password", None)
+    if server_password is None:
+        server_password = _os.environ.get("IRC_SERVER_PASSWORD", "")
     state_dir = str(getattr(args, "state_dir", "") or "")
     tls_cert = getattr(args, "tls_cert", None) or ""
     tls_key = getattr(args, "tls_key", None) or ""
@@ -1408,6 +1432,7 @@ def _resolve_daemon_config(args: Any) -> DaemonConfig:
         server_name=_pick("server_name", "mercury"),
         password=password or "",
         agent_password=agent_password or "",
+        server_password=server_password or "",
         state_dir=state_dir,
     )
 

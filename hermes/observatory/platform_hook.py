@@ -308,6 +308,24 @@ async def boot_resync(
             report["deferred_purges"] = deferred
         except Exception as exc:
             report["failed"].append(f"journal replay: {exc}")
+        try:
+            # Boot self-heal (the zombie migration). The old teardown held
+            # row deletion hostage to OPER DESTROY convergence, so an
+            # upgraded install still carries dead rows and stale sidebar
+            # entries. Reconcile them here so existing zombies are fixed,
+            # not just future ones. Idempotent; never touches history.
+            import asyncio as _asyncio2
+
+            from observatory.room_reaper import reap_orphan_rooms
+
+            report["reaped"] = await _asyncio2.to_thread(
+                reap_orphan_rooms,
+                state,
+                mercury_home=home_for_children,
+                live_channels=report.get("joined") or [],
+            )
+        except Exception as exc:
+            report["failed"].append(f"room reap: {exc}")
     except Exception as exc:  # noqa: BLE001 — resync never breaks the gateway
         report["failed"].append(str(exc))
     try:

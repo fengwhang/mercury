@@ -653,7 +653,15 @@ class RoomManager:
                 )
             except Exception:
                 pass
-        if int(row["depth"]) == 1:
+        from observatory.state import purge_on_death
+
+        if purge_on_death(int(row["depth"])):
+            # D8 deletion timing, single source of truth
+            # (``observatory.state.purge_on_death``): depth 1 dies with its
+            # task, depth >= 2 shares its parent's lifetime and is torn down
+            # in that parent's subtree cascade, depth 0 only on /exit. Using
+            # the predicate rather than an inline ``depth == 1`` is what keeps
+            # those two rules from drifting apart.
             from observatory.spawn import exit_orchestrator
 
             self._retired_nodes.update(

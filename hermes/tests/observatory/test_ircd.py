@@ -279,6 +279,61 @@ async def test_oper_destroy_kills_room(tmp_path) -> None:
             await mem.close()
 
 
+@pytest.mark.asyncio
+async def test_oper_accepts_the_legacy_server_password(tmp_path) -> None:
+    """An ``IRC_SERVER_PASSWORD``-only install can still destroy rooms.
+
+    Older installs carry only ``IRC_SERVER_PASSWORD`` (provision only later
+    began mirroring the client/agent pair into the env). The gateway bot
+    falls back to exactly that value as its OPER password, so the daemon has
+    to accept it. Missing it meant every OPER got 464, every DESTROY died
+    with 481, and dead agents left zombie rooms behind forever.
+    """
+    async with running_daemon(tmp_path, server_password="legacy-secret") as (
+        d,
+        agent_port,
+        _,
+    ):
+        bot = RawClient()
+        await bot.connect(agent_port)
+        try:
+            await bot.register("bot")
+            await bot.send("JOIN #doomed")
+            await bot.next_match("JOIN #doomed")
+            # Fail closed first: a wrong secret is still refused.
+            await bot.send("OPER wrong-secret")
+            await bot.next_match("464")
+            assert "#doomed" in d.channel_names()
+            # The legacy secret is accepted and destruction works.
+            await bot.send("OPER legacy-secret")
+            await bot.next_match("381")
+            await bot.send("DESTROY #doomed")
+            await bot.next_match("200")
+            assert "#doomed" not in d.channel_names()
+        finally:
+            await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_oper_fails_closed_when_no_secret_is_configured(tmp_path) -> None:
+    """An empty secret set must refuse everything — never open OPER wide."""
+    async with running_daemon(tmp_path) as (d, agent_port, _):
+        bot = RawClient()
+        await bot.connect(agent_port)
+        try:
+            await bot.register("bot")
+            await bot.send("JOIN #doomed")
+            await bot.next_match("JOIN #doomed")
+            for attempt in ("anything", ""):
+                await bot.send(f"OPER {attempt}".strip())
+                await bot.next_match("464")
+            await bot.send("DESTROY #doomed")
+            await bot.next_match("481")
+            assert "#doomed" in d.channel_names()
+        finally:
+            await bot.close()
+
+
 def _args(**kw):
     import types
 
