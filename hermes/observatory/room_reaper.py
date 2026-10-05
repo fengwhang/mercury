@@ -19,8 +19,8 @@ channel.
 This module makes the VISIBLE cleanup independent of the channel destroy:
 
 - :func:`prune_mlounge_channels` drops the channel from every mLounge user's
-  persisted per-network channel list. It is a plain file edit: no OPER, no
-  daemon, no bot sink. This is what actually frees the sidebar.
+  saved channel list for this MIRC connection. This prevents stale rejoins;
+  connected clients receive a self-PART when daemon destruction succeeds.
 - :func:`reap_orphan_rooms` reconciles state on boot and on demand: every
   non-``live`` node row is purged, and every channel in ``closed-rooms`` with
   no live row is reported for destruction. Idempotent, and never touches
@@ -37,6 +37,8 @@ import json
 import logging
 import os
 import tempfile
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -83,12 +85,12 @@ def prune_mlounge_channels(
 ) -> dict[str, int]:
     """Remove ``channels`` from every mLounge user's saved channel lists.
 
-    This is the sidebar fix: TheLounge persists a user's channels in
+    This removes stale reconnect entries: mLounge persists a user's channels in
     ``users/<name>.json`` and only drops one when it sees a self-PART for a
     channel it tries to JOIN. A room destroyed while the client is already
     joined therefore lingers in the sidebar forever. Editing the persisted
-    list here is independent of IRC entirely, so it works even when the
-    daemon is down or ``OPER`` is refused.
+    list prevents rejoining on the next frontend restart. A connected browser
+    is removed by the daemon's self-PART when destruction converges.
 
     Returns ``{"users": <files changed>, "removed": <entries dropped>}``.
     Never raises: a pruning failure must not block a room teardown.
@@ -97,6 +99,14 @@ def prune_mlounge_channels(
     if not doomed:
         return {"users": 0, "removed": 0}
 
+    from observatory.provision import read_config, server_key
+
+    cfg = read_config(mercury_home)
+    if not cfg:
+        return {"users": 0, "removed": 0}
+    hosts = {"localhost", "127.0.0.1", "::1", str(server_key(cfg, "server_host", "")).lower()}
+    hosts -= {"", "0.0.0.0", "::"}
+    ports = {int(server_key(cfg, "server_port", 6670)), int(cfg.get("tls_port") or 6697)}
     users_dir = mlounge_users_dir(mercury_home)
     changed_users = 0
     removed = 0
@@ -121,6 +131,14 @@ def prune_mlounge_channels(
         touched = False
         for net in networks:
             if not isinstance(net, dict):
+                continue
+            # Channel names are only unique within a network. Never remove a
+            # same-named room on another machine in the user's tailnet.
+            try:
+                local = str(net.get("host") or "").lower() in hosts and int(net.get("port") or 6667) in ports
+            except (ValueError, TypeError):
+                local = False
+            if not local:
                 continue
             saved = net.get("channels")
             if not isinstance(saved, list):
@@ -200,6 +218,11 @@ def reap_orphan_rooms(
     }
 
     pinned = {_norm(c) for c in live_channels if _norm(c).startswith("#")}
+    from observatory.provision import read_config
+    from observatory.rooms import gateway_channel
+
+    cfg = read_config(mercury_home) or {}
+    pinned.add(gateway_channel(str(cfg.get("server_name") or "mercury")).lower())
 
     try:
         live_rows = list(state.get_live())
@@ -211,7 +234,7 @@ def reap_orphan_rooms(
     try:
         with state.locked() as db:
             for raw in db.execute(
-                "SELECT node_id, depth, room_id, status FROM nodes WHERE status != 'live'"
+                "SELECT node_id, depth, room_id, status FROM nodes WHERE status != 'live' ORDER BY depth DESC"
             ).fetchall():
                 dead_rows.append(dict(raw))
     except Exception:
@@ -225,6 +248,8 @@ def reap_orphan_rooms(
 
     doomed: set[str] = set()
     for row in dead_rows:
+        if _norm(row.get("room_id")) in pinned:
+            continue
         result["rows_purged"].append(row["node_id"])
         channel = _norm(row.get("room_id"))
         if channel.startswith("#"):
@@ -235,7 +260,7 @@ def reap_orphan_rooms(
             with state.locked() as db:
                 with db:
                     for node_id in result["rows_purged"]:
-                        db.execute("DELETE FROM nodes WHERE node_id = ?", (node_id,))
+                        db.execute("DELETE FROM nodes WHERE node_id = ? AND status != 'live'", (node_id,))
         except Exception:
             logger.warning("room-reaper: row purge failed", exc_info=True)
 
@@ -268,6 +293,23 @@ def reap_orphan_rooms(
                         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                         (CLOSED_ROOMS_META_KEY, json.dumps(sorted(closed))),
                     )
+                    from observatory.spawn import ExitRecord, PURGE_JOURNAL_KEY, read_purge_journal
+
+                    journal = read_purge_journal(state)
+                    queued = {_norm(c) for entry in journal for c in entry.get("channels", [])}
+                    missing = sorted(doomed - queued)
+                    if missing:
+                        record = ExitRecord(
+                            journal_id=f"pj-{uuid.uuid4().hex[:8]}", node_id="room-reaper",
+                            status="completed", summary=None, created_epoch=time.time(),
+                            rows=[], channels=missing,
+                        )
+                        journal.append(record.to_entry())
+                        db.execute(
+                            "INSERT INTO meta (key, value) VALUES (?, ?) "
+                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            (PURGE_JOURNAL_KEY, json.dumps(journal)),
+                        )
         except Exception:
             logger.debug("room-reaper: closed-room update failed", exc_info=True)
         try:
