@@ -905,6 +905,7 @@ class PurgeOutcome:
     records: list[dict[str, Any]] = field(default_factory=list)
     fatal: list[str] = field(default_factory=list)
     soft: list[str] = field(default_factory=list)
+    failed_channels: list[str] = field(default_factory=list)
 
 async def _execute_channel_destroy(bot: Any, channels: list[str]) -> PurgeOutcome:
     """Destroy channels server-side via the bot sink (idempotent)."""
@@ -913,10 +914,12 @@ async def _execute_channel_destroy(bot: Any, channels: list[str]) -> PurgeOutcom
         try:
             if bot is None:
                 out.fatal.append(f"{channel}: no bot sink (daemon down?)")
+                out.failed_channels.append(str(channel))
                 continue
             ok = await bot.destroy_channel(str(channel))
             if not ok:
                 out.fatal.append(f"{channel}: daemon did not acknowledge channel destruction")
+                out.failed_channels.append(str(channel))
                 continue
             try:
                 from observatory.identity import drop_identity
@@ -928,14 +931,29 @@ async def _execute_channel_destroy(bot: Any, channels: list[str]) -> PurgeOutcom
                                 "gone": True, "ok": bool(ok)})
         except Exception as exc:  # noqa: BLE001 — classified, not swallowed
             out.fatal.append(f"{channel}: {exc}")
+            out.failed_channels.append(str(channel))
     return out
 
 
-def finish_exit(state: ObservatoryState, record: ExitRecord) -> None:
+def finish_exit(
+    state: ObservatoryState,
+    record: ExitRecord,
+    *,
+    pending_channels: list[str] | None = None,
+) -> None:
     """Complete one journal entry: delete its rows (deepest-first — FKs
     point child→parent and the journal's row list is BFS top-down) and
     drop the entry, in ONE transaction: no tombstone survives to
-    leak state into a same-named successor."""
+    leak state into a same-named successor.
+
+    ``pending_channels`` keeps a row-less retry record alive when the MIRC
+    channel destroy did not converge. This is the zombie fix: the node rows
+    (and the mLounge sidebar entry, pruned by the caller) go away at death
+    time regardless, while the channel itself keeps retrying in the
+    background. A journal entry with no rows reserves no names and blocks
+    nothing — it is purely a destroy to-do list.
+    """
+    pending = [str(c) for c in (pending_channels or []) if str(c)]
     with state.locked() as db:
         with db:
             remaining = [
@@ -946,11 +964,40 @@ def finish_exit(state: ObservatoryState, record: ExitRecord) -> None:
                 db.execute(
                     "DELETE FROM nodes WHERE node_id = ?", (r["node_id"],)
                 )
+            if pending:
+                remaining.append(
+                    {
+                        "journal_id": record.journal_id,
+                        "node_id": record.node_id,
+                        "status": record.status,
+                        "summary": record.summary,
+                        "created_epoch": record.created_epoch,
+                        "rows": [],
+                        "channels": pending,
+                    }
+                )
             db.execute(
                 "INSERT INTO meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (PURGE_JOURNAL_KEY, json.dumps(remaining, ensure_ascii=False)),
             )
+
+
+async def _prune_sidebar(channels: list[str]) -> None:
+    """Drop ``channels`` from every mLounge user's saved channel list.
+
+    Independent of IRC, OPER, and the bot sink: this is the edit that
+    actually frees the sidebar the user is looking at, so it runs at death
+    time even when the channel destroy cannot converge. Never raises.
+    """
+    if not channels:
+        return
+    try:
+        from observatory.room_reaper import prune_mlounge_channels
+
+        await asyncio.to_thread(prune_mlounge_channels, channels)
+    except Exception:  # noqa: BLE001 — teardown must not fail on a prune
+        logger.debug("spawn: mLounge sidebar prune failed", exc_info=True)
 
 
 async def replay_purge_journal(
@@ -1088,14 +1135,23 @@ async def exit_orchestrator(
     records: list[dict[str, Any]] = []
     deferred: list[str] = []
     bot = bot if bot is not None else get_bot_sink()
-    if bot is not None and record.channels:
-        outcome = await _execute_channel_destroy(bot, record.channels)
-        records, deferred = outcome.records, outcome.fatal
-    elif record.channels:
-        deferred = ["no bot sink attached (IRC down?)"]
-    if not deferred:
-        finish_exit(state, record)
-    else:
+    failed_channels: list[str] = []
+    if record.channels:
+        if bot is not None:
+            outcome = await _execute_channel_destroy(bot, record.channels)
+            records, deferred = outcome.records, outcome.fatal
+            failed_channels = outcome.failed_channels
+        else:
+            deferred = [f"{c}: no bot sink attached (IRC down?)" for c in record.channels]
+            failed_channels = [str(c) for c in record.channels]
+    # The ZOMBIE fix: visible cleanup is never hostage to OPER. Free the
+    # mLounge sidebar and delete the node rows now; only the MIRC channel
+    # destroy stays queued for background retry. Holding the rows until the
+    # destroy converges is what turned one refused OPER into a permanent
+    # empty room in both MIRC and mLounge.
+    await _prune_sidebar(record.channels)
+    finish_exit(state, record, pending_channels=failed_channels)
+    if failed_channels:
         retry_deferred_purges(state, bot)
     return {"record": record, "records": records, "deferred": deferred}
 
