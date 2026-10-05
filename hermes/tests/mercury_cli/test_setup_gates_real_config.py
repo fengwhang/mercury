@@ -14,9 +14,8 @@ summaries on the loaded result:
   mcp_servers) without any of the three env keys — previously forced a
   full tool reconfiguration with no gate;
 - fresh defaults stay silent (no gate, section runs);
-- ``_read_model_slots`` finds the ``models:`` block nested under
-  ``hermes:`` as ``save_config`` writes it (the delegate gate's probe was
-  blind on real files).
+- ``_read_model_slots`` reads the shared ``models:`` authority on disk;
+  the Hermes runtime view intentionally contains no duplicated models block.
 
 Ambient credential leakage is neutralized narrowly (env reads + active
 provider) so the assertions pin the *config-file* signal; the config
@@ -53,7 +52,13 @@ def no_ambient_credentials(monkeypatch):
 
 
 def _save_and_load(config: dict) -> dict:
+    from mercury_cli.omp_sync import _write_slots
+
     save_config(config)
+    # Shared model settings have their own writer; save_config persists the
+    # Hermes view and deliberately ignores a duplicated native models block.
+    if config.get("models"):
+        assert _write_slots(config["models"])
     return load_config()
 
 
@@ -82,7 +87,7 @@ def test_model_gate_fires_for_oauth_style_real_config(
     assert setup_mod._model_section_is_configured(loaded) is True
     assert (
         setup_mod._get_section_config_summary(loaded, "model")
-        == "nous/hermes-test"
+        == "hermes-test"
     )
 
 
@@ -96,7 +101,7 @@ def test_model_gate_fires_for_models_block_only_real_config(
     assert setup_mod._model_section_is_configured(loaded) is True
     assert (
         setup_mod._get_section_config_summary(loaded, "model")
-        == "openrouter/test-model"
+        == "test-model"
     )
 
 
@@ -129,6 +134,52 @@ def test_model_gate_end_to_end_skip_on_real_config(
         "  Reconfigure model & provider?"
     ]
     assert asked[0][1] is False  # default NO is load-bearing
+
+
+def test_declining_model_reconfigure_preserves_all_slots_and_settings(
+    real_home, no_ambient_credentials, monkeypatch
+):
+    import copy
+    import mercury_cli.main as main_mod
+
+    config = _configured_model_config()
+    config["models"].update({
+        "fallback": "nous/fallback-test",
+        "delegate_fallback": "nous/delegate-fallback-test",
+        "reasoning_overrides": {"nous/hermes-test": "high"},
+        "context_windows": {"nous/hermes-test": 100000},
+    })
+    loaded = _save_and_load(config)
+    assert setup_mod._read_model_slots() == {
+        key: config["models"][key]
+        for key in ("default", "fallback", "delegate_model", "delegate_fallback")
+    }
+    before_config = copy.deepcopy(loaded)
+    config_path = real_home / "config.yaml"
+    before_file = config_path.read_bytes()
+    env_path = real_home / ".env"
+    env_path.write_text("EXISTING_TEST_KEY=keep-me\n")
+    before_env = env_path.read_bytes()
+    asked = []
+    monkeypatch.setattr(setup_mod, "is_interactive_stdin", lambda: True)
+    monkeypatch.setattr(
+        setup_mod, "prompt_yes_no",
+        lambda question, default=True: asked.append(question) or False,
+    )
+
+    def unexpected_picker(*args, **kwargs):
+        pytest.fail("Declining reconfiguration must skip every model setting picker")
+
+    monkeypatch.setattr(main_mod, "select_provider_and_model", unexpected_picker)
+    monkeypatch.setattr(setup_mod, "_prompt_mercury_slots", unexpected_picker)
+    monkeypatch.setattr(setup_mod, "_prompt_slot_reasoning", unexpected_picker)
+    monkeypatch.setattr(setup_mod, "_prompt_model_context", unexpected_picker)
+    setup_mod.setup_model_provider(loaded)
+
+    assert len(asked) == 1 and "Reconfigure" in asked[0]
+    assert loaded == before_config
+    assert config_path.read_bytes() == before_file
+    assert env_path.read_bytes() == before_env
 
 
 # ---------------------------------------------------------------------------
@@ -204,13 +255,14 @@ def test_tools_gate_end_to_end_skip_on_real_config(
 
 
 # ---------------------------------------------------------------------------
-# delegate probe: nested models block on real files
+# model slots: shared authority on real files
 # ---------------------------------------------------------------------------
 
 
-def test_read_model_slots_finds_nested_block_on_real_file(real_home):
+def test_read_model_slots_finds_shared_block_on_real_file(real_home):
     loaded = _save_and_load(_configured_model_config())
-    assert loaded["models"]["default"] == "nous/hermes-test"
+    assert "models" not in loaded  # models are shared, not duplicated in Hermes
+    assert loaded["model"] == {"provider": "nous", "default": "hermes-test"}
     slots = setup_mod._read_model_slots()
     assert slots["default"] == "nous/hermes-test"
     assert slots["delegate_model"] == "nous/hermes-test"

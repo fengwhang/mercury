@@ -1,7 +1,7 @@
 """Reconfigure gates: each already-configured setup section asks first.
 
 Covers ``mercury setup`` re-runs for independently gated sections
-(model+provider, tools, observatory); the three follow-up model slots always run:
+(all model slots and providers, tools, observatory):
 
 - configured + "no"  → section skipped (nothing runs, nothing written)
 - configured + "yes" → section runs normally
@@ -91,7 +91,7 @@ class TestModelProviderGate:
         slots = stack.enter_context(patch.object(setup_mod, "_prompt_mercury_slots"))
         return select, slots
 
-    def test_configured_no_skips_provider_flow_but_offers_slots(self, monkeypatch):
+    def test_configured_no_skips_all_model_selectors(self, monkeypatch):
         from contextlib import ExitStack
 
         asked = _interactive(monkeypatch, [False])
@@ -103,7 +103,7 @@ class TestModelProviderGate:
         assert _gate_questions(asked) == ["  Reconfigure model & provider?"]
         assert asked[0][1] is False  # default NO is load-bearing
         select.assert_not_called()
-        slots.assert_called_once()  # keep the main model, still offer follow-up slots
+        slots.assert_not_called()
 
     def test_configured_yes_runs_provider_flow(self, monkeypatch):
         from contextlib import ExitStack
