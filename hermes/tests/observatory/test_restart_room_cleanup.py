@@ -34,9 +34,13 @@ def provision_family(tmp_path, monkeypatch):
 async def test_restart_removes_descendants_and_orphans_not_custom_gateway(tmp_path, monkeypatch):
     home, folder, state = provision_family(tmp_path, monkeypatch)
     try:
-        stale = ("#mercury_gateway", "#nixpad_ghost", "#nixpad_child", "#nixpad_grandchild", "#nixpad_dead-root")
+        state.add_node("legacy-child", engine="omp", name="legacy", slug="legacy", mxid="legacy",
+                       session_ref="old-delegation", extra={"kind": "delegate"})
+        state.set_room_id("legacy-child", "#nixpad_legacy")
+        assert state.get("legacy-child")["depth"] == 0
+        stale = ("#mercury_gateway", "#nixpad_ghost", "#nixpad_child", "#nixpad_grandchild", "#nixpad_dead-root", "#nixpad_legacy")
         cleanup = prepare_room_cleanup(home)
-        assert cleanup["expired_agents"] == 3
+        assert cleanup["expired_agents"] == 4
         assert cleanup["gateway"] == "#nixpad_gateway"
         assert {row["node_id"] for row in state.get_live()} == {"gw", "hermes-root", "omp-root"}
         assert read_purge_journal(state)
@@ -67,7 +71,7 @@ async def test_restart_removes_descendants_and_orphans_not_custom_gateway(tmp_pa
                         await observer.close()
         sink = SimpleNamespace(destroy_channel=AsyncMock(return_value=True))
         assert await replay_purge_journal(state, bot=sink) == []
-        for node in ("child", "grandchild", "dead-root"):
+        for node in ("child", "grandchild", "dead-root", "legacy-child"):
             with pytest.raises(StateError):
                 state.get(node)
         state.add_node("replacement", engine="omp", name="child", slug="child", mxid="child",

@@ -44,13 +44,14 @@ def prepare_room_cleanup(mercury_home=None) -> dict:
         ensure_gateway_node_in_state(state, server_name=server)
         with state.locked() as db, db:
             rows = db.execute(
-                "SELECT node_id, parent_node_id, depth, status, room_id FROM nodes "
+                "SELECT node_id, parent_node_id, depth, status, room_id, extra_json FROM nodes "
                 "ORDER BY depth, created_epoch, node_id"
             ).fetchall()
             entries = read_purge_journal(state)
             protected = {row["node_id"] for row in rows if row["node_id"] == GATEWAY_NODE_ID
                          or (row["status"] == "live" and row["depth"] == 0
-                             and row["parent_node_id"] is None)}
+                             and row["parent_node_id"] is None
+                             and json.loads(row["extra_json"]).get("kind") != "delegate")}
             protected_channels = {gateway} | {row["room_id"].lower() for row in rows
                                                if row["node_id"] in protected and row["room_id"]}
             # Old journals must not annihilate a protected room or a newly
@@ -60,10 +61,10 @@ def prepare_room_cleanup(mercury_home=None) -> dict:
                 entry["channels"] = [channel for channel in entry.get("channels", [])
                                      if channel.lower() not in protected_channels]
             pending = {row["node_id"] for entry in entries for row in entry.get("rows", [])}
-            removed = [dict(row) for row in rows if row["node_id"] not in pending
-                       and row["node_id"] != GATEWAY_NODE_ID
-                       and not (row["status"] == "live" and row["depth"] == 0
-                                and row["parent_node_id"] is None)]
+            # Older delegation bugs left kind=delegate rows at depth zero.
+            # They are not explicit root sessions and must not be resurrected.
+            removed = [dict(row) for row in rows
+                       if row["node_id"] not in pending and row["node_id"] not in protected]
             channels = sorted({str(row["room_id"]) for row in removed
                                if row["room_id"] and row["room_id"].lower() != gateway})
             prior = db.execute("SELECT value FROM meta WHERE key = ?", (CLOSED_ROOMS_META_KEY,)).fetchone()
