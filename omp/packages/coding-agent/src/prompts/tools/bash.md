@@ -1,7 +1,15 @@
 Runs commands in a persistent shell.
 
+{{#if remoteBackend}}
+Mercury shell backend: {{remoteBackend}}. Commands and cwd run in this environment.
+Omit cwd to keep its configured/persistent directory; explicit cwd is resolved remotely.
+Use bash for remote file reads, searches, edits, scripts, and remote programs.
+Local file tools, eval, hub programs, and agent/session storage stay on the Mercury host.
+Interactive PTY sessions are unavailable through this bridge; use noninteractive commands.
+{{else}}
 Use ONLY for one binary or a short pipeline that computes a fact (`wc -l`, `sort | uniq -c`, `diff`).
 {{#if hasEval}}Inline scripts, heredocs, `$(…)`, complex control flow/quoting, and non-trivial pipelines → `eval`.{{else}}Inline scripts, heredocs, `$(…)`, and complex control flow → a purpose-built tool or checked-in script.{{/if}}
+{{/if}}
 
 <instruction>
 - Set `cwd` instead of `cd`; use `env: { NAME: "…" }` for multiline/quote-heavy values.
@@ -13,10 +21,12 @@ Use ONLY for one binary or a short pipeline that computes a fact (`wc -l`, `sort
 </instruction>
 
 <critical>
+{{#unless remoteBackend}}
 {{#if hasGrep}}- NEVER use shell `grep`/`rg`; use built-in `grep`.{{/if}}
 {{#if hasRead}}{{#if hasGlob}}- List directories with `read` and find paths with `glob`; NEVER use `ls`/`find`.{{/if}}{{/if}}
 - Avoid `head`, `tail`, and redirection: output is captured, truncated, and linked as `artifact://<id>`.
 {{#if hasLaunch}}- Services, watchers, debuggers, and REPLs MUST use `hub` (`op:"start"`).{{/if}}
+{{/unless}}
 </critical>
 
 {{#if autoBackgroundEnabled}}Long foreground calls may auto-background by the configured threshold and deliver later.

@@ -105,7 +105,8 @@ class _BoundedOutputCollector:
     # (marker appended); protects disk from pathological runaway output.
     _SPILL_CAP_CHARS = 5_000_000
 
-    def __init__(self, max_chars: int, spill_path: "Path | None" = None):
+    def __init__(self, max_chars: int, spill_path: "Path | None" = None,
+                 on_output: Callable[[str], None] | None = None):
         self.max_chars = max(1, int(max_chars))
         self._head_limit = int(self.max_chars * 0.4)
         self._tail_limit = self.max_chars - self._head_limit
@@ -115,6 +116,7 @@ class _BoundedOutputCollector:
         self._tail_chars = 0
         self._total_chars = 0
         self._lock = threading.Lock()
+        self._on_output = on_output
         self._spill_path = spill_path
         self._spill_fh: IO[str] | None = None
         self._spill_chars = 0
@@ -177,6 +179,8 @@ class _BoundedOutputCollector:
     def append(self, text: str) -> None:
         if not text:
             return
+        if self._on_output is not None:
+            self._on_output(text)
         with self._lock:
             text_len = len(text)
             # Spill tee: activates at the first overflow (backfilling what's
@@ -1013,6 +1017,7 @@ class BaseEnvironment(ABC):
         *,
         bounded_capture: bool = False,
         watch_interrupt_tid: int | None = None,
+        on_output: Callable[[str], None] | None = None,
     ) -> dict:
         """Poll-based wait with interrupt checking and stdout draining.
 
@@ -1073,7 +1078,7 @@ class BaseEnvironment(ABC):
                             pass
             except Exception:
                 spill_path = None
-        output = _BoundedOutputCollector(capture_limit, spill_path=spill_path)
+        output = _BoundedOutputCollector(capture_limit, spill_path=spill_path, on_output=on_output)
 
         # Non-blocking drain via select().
         #
@@ -1201,7 +1206,7 @@ class BaseEnvironment(ABC):
 
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout if timeout else float("inf")
         _now = time.monotonic()
         _activity_state = {
             "last_touch": _now,
@@ -1451,8 +1456,12 @@ class BaseEnvironment(ABC):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
+        on_output: Callable[[str], None] | None = None,
     ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}.
+
+        ``timeout=0`` disables the command deadline; ``None`` uses the backend
+        default. Explicit cancellation remains scoped to the calling thread.
 
         ``bounded_capture=True`` caps stdout/stderr retention at
         ``tool_output.max_bytes`` WHILE the stream is drained (head/tail
@@ -1476,7 +1485,7 @@ class BaseEnvironment(ABC):
         if rewrite_compound_background:
             from tools.terminal_tool import _rewrite_compound_background
             exec_command = _rewrite_compound_background(exec_command)
-        effective_timeout = timeout or self.timeout
+        effective_timeout = self.timeout if timeout is None else timeout
         effective_cwd = cwd or self.cwd
 
         # Merge sudo stdin with caller stdin
@@ -1517,6 +1526,7 @@ class BaseEnvironment(ABC):
                 timeout=effective_timeout,
                 bounded_capture=bounded_capture,
                 watch_interrupt_tid=parent_tid,
+                **({"on_output": on_output} if on_output is not None else {}),
             )
 
         def _on_timeout() -> None:
@@ -1560,6 +1570,11 @@ class BaseEnvironment(ABC):
             # backstop (that would recreate the unbounded wait this bound
             # exists to prevent). Fall back to the module's 120s wait default.
             bound_s = 120.0 + _EXECUTE_WAIT_BOUND_GRACE_S
+
+        if effective_timeout == 0:
+            result = _spawn_and_wait()
+            self._update_cwd(result)
+            return result
 
         try:
             bounded = run_bounded_sync(

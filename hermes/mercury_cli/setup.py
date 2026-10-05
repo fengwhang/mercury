@@ -2323,15 +2323,19 @@ def setup_terminal_backend(config: dict):
         # SSH port
         current_port = get_env_value("TERMINAL_SSH_PORT") or "22"
         port = prompt("  SSH port", current_port)
-        if port and port != "22":
+        if port:
             save_env_value("TERMINAL_SSH_PORT", port)
 
         # SSH key
         current_key = get_env_value("TERMINAL_SSH_KEY") or ""
         default_key = str(Path.home() / ".ssh" / "id_rsa")
         ssh_key = prompt("  SSH private key path", current_key or default_key)
-        if ssh_key:
-            save_env_value("TERMINAL_SSH_KEY", ssh_key)
+        save_env_value("TERMINAL_SSH_KEY", ssh_key or "")
+        config["terminal"].update({
+            "ssh_host": host, "ssh_user": user, "ssh_port": int(port or "22"),
+            "ssh_key": ssh_key or "",
+        })
+        print_info("  This shell backend also applies to OMP and its subagents.")
 
         # Test connection
         if host and prompt_yes_no("  Test SSH connection?", True):
