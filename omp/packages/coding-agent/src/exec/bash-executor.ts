@@ -13,6 +13,7 @@ import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/ou
 import { getOrCreateSnapshot } from "../utils/shell-snapshot";
 import { loadDirenvEnv } from "./direnv";
 import { buildNonInteractiveEnv } from "./non-interactive-env";
+import { executeMercuryTerminal, mercuryTerminalBackend } from "./mercury-terminal";
 
 export interface BashExecutorOptions {
 	cwd?: string;
@@ -452,6 +453,7 @@ async function executeUserShellPty(run: {
 }
 
 export async function executeBash(command: string, options?: BashExecutorOptions): Promise<BashResult> {
+	if (mercuryTerminalBackend() !== "local") return executeMercuryTerminal(command, options);
 	const settings = await Settings.init();
 	const baseShellConfig = settings.getShellConfig();
 	const shellConfig =

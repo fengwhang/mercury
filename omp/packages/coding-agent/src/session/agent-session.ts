@@ -116,6 +116,7 @@ import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { getEditStore } from "../edit/store";
 import type { PythonResult } from "../eval/py/executor";
 import type { BashPtyOptions, BashResult } from "../exec/bash-executor";
+import { closeMercuryTerminals } from "../exec/mercury-terminal";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { CustomTool } from "../extensibility/custom-tools/types";
@@ -4506,6 +4507,7 @@ export class AgentSession {
 		}
 
 		this.#releasePowerAssertion();
+		closeMercuryTerminals(this.sessionManager.getSessionId());
 		await cleanupEmptyMoveSession(this.sessionManager, this.#movedFromEmptySessionFile);
 		this.#movedFromEmptySessionFile = undefined;
 		this.#closeAllProviderSessions("dispose");

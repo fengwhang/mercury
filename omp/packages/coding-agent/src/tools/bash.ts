@@ -18,6 +18,7 @@ import {
 } from "../async";
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
+import { mercuryTerminalBackend } from "../exec/mercury-terminal";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
@@ -607,7 +608,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	get description(): string {
 		const evalBackends = resolveEvalBackends(this.session);
 		const isToolActive = (name: string, fallback: boolean): boolean => this.session.isToolActive?.(name) ?? fallback;
+		const backend = mercuryTerminalBackend();
 		return prompt.render(bashDescription, {
+			remoteBackend: backend === "local" ? undefined : backend,
 			asyncEnabled: this.#asyncEnabled,
 			autoBackgroundEnabled: this.#autoBackgroundEnabled,
 			autoBackgroundThresholdSeconds: Math.max(0, Math.floor(this.#autoBackgroundThresholdMs / 1000)),
@@ -973,7 +976,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// Check both the original command and the cwd-normalized command so
 		// leading `cd ... &&` wrappers do not hide either shell-navigation rules
 		// or the dedicated-tool command that follows the directory change.
-		if (this.session.settings.get("bashInterceptor.enabled")) {
+		const remoteTerminal = mercuryTerminalBackend() !== "local";
+		if (!remoteTerminal && this.session.settings.get("bashInterceptor.enabled")) {
 			const rules = this.session.settings.getBashInterceptorRules();
 			const commandsToCheck = rawCommand === command ? [command] : [rawCommand, command];
 			for (const commandToCheck of commandsToCheck) {
@@ -984,7 +988,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			}
 		}
 
-		if (this.session.settings.get("worktree.clone")) {
+		if (!remoteTerminal && this.session.settings.get("worktree.clone")) {
 			command = rewriteGitWorktreeAdd(command, resolveCliEntryCmd());
 		}
 
@@ -1027,18 +1031,20 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// instead of the cached pre-mutation snapshot.
 		invalidateGithubCacheForBashCommand(command);
 
-		const commandCwd = cwd ? resolveToCwd(cwd, this.session.cwd) : this.session.cwd;
-		let cwdStat: fs.Stats;
-		try {
-			cwdStat = await fs.promises.stat(commandCwd);
-		} catch (err) {
-			if (isEnoent(err)) {
-				throw new ToolError(`Working directory does not exist: ${commandCwd}`);
+		const commandCwd = remoteTerminal ? (cwd ?? "") : cwd ? resolveToCwd(cwd, this.session.cwd) : this.session.cwd;
+		if (!remoteTerminal) {
+			let cwdStat: fs.Stats;
+			try {
+				cwdStat = await fs.promises.stat(commandCwd);
+			} catch (err) {
+				if (isEnoent(err)) {
+					throw new ToolError(`Working directory does not exist: ${commandCwd}`);
+				}
+				throw err;
 			}
-			throw err;
-		}
-		if (!cwdStat.isDirectory()) {
-			throw new ToolError(`Working directory is not a directory: ${commandCwd}`);
+			if (!cwdStat.isDirectory()) {
+				throw new ToolError(`Working directory is not a directory: ${commandCwd}`);
+			}
 		}
 
 		// A timeout of 0 is an explicit long-running-command contract: the user
@@ -1081,7 +1087,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// auto-background would otherwise silently disable the terminal route).
 		const clientBridge = this.session.getClientBridge?.();
 		const bridgeTerminalAvailable = Boolean(
-			clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty,
+			!remoteTerminal && clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty,
 		);
 
 		const autoBgManager = this.session.asyncJobManager;
@@ -1163,8 +1169,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// (the backend's own timeout is installed only after this await), matching
 		// the executeBash branch so a cold `.envrc` can't outlast a short call.
 		const backendPreflight =
-			(clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty) ||
-			canUseInteractiveBashPty(pty, ctx)
+			!remoteTerminal &&
+			((clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty) ||
+				canUseInteractiveBashPty(pty, ctx))
 				? await applyDirenvPreflight(command, commandCwd, {
 						callerEnv: resolvedEnv,
 						signal,
@@ -1176,7 +1183,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		// Route through the client terminal when the client advertises the terminal capability.
 		// Skip when pty=true (PTY needs the local terminal UI).
-		if (clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty) {
+		if (!remoteTerminal && clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty) {
 			// Invariant (ACP terminal bridge): createTerminal has no signal in its
 			// contract; allocation cannot be cancelled retroactively. Guard before
 			// allocation. Shared timeout helper / pure AbortSignal fusion rejected:
@@ -1433,7 +1440,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// Allocate artifact for truncated output storage
 		const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 
-		const interactiveUi = canUseInteractiveBashPty(pty, ctx) ? ctx?.ui : undefined;
+		const interactiveUi = !remoteTerminal && canUseInteractiveBashPty(pty, ctx) ? ctx?.ui : undefined;
 		if (pty && !interactiveUi) {
 			pendingNotices.push("pty requested but unavailable in this environment; ran without a terminal");
 		}

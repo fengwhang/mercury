@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Run Mercury OMP shell commands and descendant shell commands on the terminal backend selected during setup, including SSH, without silently falling back to local execution.
 - Honor Mercury's per-model context-window choices and shared compaction percentage, including removal of stale fixed-token thresholds.
 - Reasoning controls follow the selected model's advertised levels, and Mercury profile launches load their own persona, memory, and OMP instructions together.
 - Mercury Linux binaries use explicit portable Bun targets, including separate musl builds and native addon caches. Release packaging rejects Nix store loader paths and mismatched native addon ABIs.

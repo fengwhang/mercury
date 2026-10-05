@@ -3,6 +3,7 @@ import type { Agent } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import { type BashPtyOptions, type BashResult, executeBash as executeBashCommand } from "../exec/bash-executor";
+import { mercuryTerminalBackend } from "../exec/mercury-terminal";
 import type { ExtensionRunner } from "../extensibility/extensions";
 import { outputMeta } from "../tools/output-meta";
 import { clampTimeout } from "../tools/tool-timeouts";
@@ -74,7 +75,7 @@ export class BashRunner {
 		const target = this.#captureSessionTarget();
 		let targetTransferred = false;
 		const excludeFromContext = options?.excludeFromContext === true;
-		const cwd = this.#host.sessionManager.getCwd();
+		const cwd = mercuryTerminalBackend() === "local" ? this.#host.sessionManager.getCwd() : "";
 		try {
 			const extensionRunner = this.#host.extensionRunner();
 			if (extensionRunner?.hasHandlers("user_bash")) {

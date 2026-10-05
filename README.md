@@ -21,6 +21,20 @@ providers.
 The current stable release is **[v0.3.24](https://github.com/fengwhang/mercury/releases/tag/v0.3.24)**.
 The experimental nightly is **[v0.4.0-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.4.0-nightly)**, built from the integration branch. It includes the stable Observatory room-cleanup fixes, managed Python dependencies, connector setup cards, and opt-in browser voice calls. Voice still needs real-device acceptance testing; see the [integration audit](docs/integration-audit-2026-10-04.md) for tested behavior and remaining limits.
 
+## Shared shell backend
+
+The terminal backend selected in `mercury setup` or `mercury-nightly setup`
+applies to Hermes, OMP, and OMP descendants. With SSH selected, OMP's bash tool
+and TUI shell commands execute on that SSH host, using its configured working
+directory. Each agent keeps its own remote working directory. Connection or
+configuration errors fail the command instead of executing it locally.
+
+This setting controls shell execution. OMP's dedicated filesystem tools, eval,
+LSPs, and hub programs still run on the agent host; use bash to operate on files
+and programs in the remote environment. Remote shell execution retains OMP's
+own approval settings. Steering leaves running shell commands alive, and
+interactive PTY sessions are unavailable through the shared backend bridge.
+
 ## Why Mercury?
 
 Mercury's contribution is the wiring between the three engines and surfaces:
