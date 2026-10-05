@@ -3,6 +3,12 @@
 This is Mercury's product history. Vendored upstream changelogs document
 their original projects and are not Mercury release announcements.
 
+## [0.3.26] — stable
+
+- Declining model/provider reconfiguration during setup now keeps all four
+  model slots and skips the fallback, delegate, delegate fallback, reasoning,
+  and context selectors. Current model settings and credentials are preserved.
+
 ## [0.3.25] — stable
 
 - The terminal backend selected during setup now applies to Hermes, OMP bash
