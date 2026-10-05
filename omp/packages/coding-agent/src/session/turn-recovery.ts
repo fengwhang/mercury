@@ -2170,6 +2170,14 @@ export class TurnRecovery {
 		const staleOpenAIResponsesReplayError = AIError.is(id, AIError.Flag.StaleResponsesItem);
 		const accountPolicyDenial = AIError.is(id, AIError.Flag.AccountPolicy);
 		const recordedUsageLimitOutcome = await this.#usageLimitOutcomes.get(message);
+		// An explicit exhausted-quota response should use the user's chain before
+		// rotating accounts or waiting for a reset. Keep credential recovery when
+		// there is no chain, and for opaque 402 billing errors.
+		const preferUsageLimitFallback =
+			options?.allowModelFallback !== false &&
+			AIError.is(id, AIError.Flag.UsageLimit) &&
+			AIError.matchesUsageLimitText(errorMessage) &&
+			this.isHardErrorFallbackEligible(message);
 		const parsedRetryAfterMs = this.#parseRetryAfterMsFromError(errorMessage);
 		let delayMs = staleOpenAIResponsesReplayError
 			? 0
@@ -2203,7 +2211,12 @@ export class TurnRecovery {
 			this.#host.resetCurrentResponsesProviderSession("stale replay error");
 		}
 
-		if (!retryBudgetExhausted && !staleOpenAIResponsesReplayError && recordedUsageLimitOutcome) {
+		if (
+			!preferUsageLimitFallback &&
+			!retryBudgetExhausted &&
+			!staleOpenAIResponsesReplayError &&
+			recordedUsageLimitOutcome
+		) {
 			if (
 				recordedUsageLimitOutcome.switchedCredential ||
 				// Convert the parsed hint to an absolute timestamp NOW, before the
@@ -2263,6 +2276,7 @@ export class TurnRecovery {
 						siblingAvailabilityWaitMs,
 					));
 		const waitForSiblingCredential =
+			!preferUsageLimitFallback &&
 			siblingAvailabilityWaitMs !== undefined &&
 			effectiveUsageLimitWaitMs !== undefined &&
 			effectiveUsageLimitWaitMs <= retrySettings.maxDelayMs;

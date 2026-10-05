@@ -36,8 +36,7 @@ const USAGE: Usage = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-const USAGE_LIMIT_MESSAGE =
-	"The usage limit has been reached (code=usage_limit_reached)";
+const USAGE_LIMIT_MESSAGE = "The usage limit has been reached (code=usage_limit_reached)";
 
 function makeErrorMessage(model: Model, errorMessage: string): AssistantMessage {
 	return {
@@ -62,7 +61,7 @@ function createHost(
 	} = {},
 ): TurnRecoveryHost {
 	const settings = Settings.isolated({
-		...(options.fallbackChains ? { "retry.fallbackChains": options.fallbackChains } : {}),
+		"retry.fallbackChains": options.fallbackChains ?? {},
 	});
 	return {
 		agent: { state: { messages: options.messages ?? [] } } as never,
@@ -141,7 +140,6 @@ describe("usage limits must reach the fallback chain", () => {
 				fallbackChains: { [primarySelector]: [fallbackSelector] },
 			}),
 		);
-		const message = makeErrorMessage(primary, USAGE_LIMIT_MESSAGE);
 		const keys = recovery.retryFallbackChainKeys(primarySelector);
 		expect(keys.length).toBeGreaterThan(0);
 		const candidates = recovery.findRetryFallbackCandidates(keys[0], primarySelector);

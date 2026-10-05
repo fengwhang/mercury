@@ -2150,7 +2150,55 @@ describe("AgentSession retry fallback", () => {
 		]);
 	});
 
-	it("falls back to the chain when credential rotation exhausts the retry budget", async () => {
+	it.each([true, false])(
+		"uses the configured fallback immediately on a Codex usage limit (sibling=%s)",
+		async switched => {
+			const primaryModel = getBundledModel("openai-codex", "gpt-5.4");
+			const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+			if (!primaryModel || !fallbackModel) throw new Error("Expected bundled test models");
+			const requestedModels: string[] = [];
+			const mock = createMockModel();
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+				streamFn: (model, context, options) => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					mock.push(
+						model.provider === primaryModel.provider
+							? { throw: "429 usage_limit_reached: You have hit your usage limit. Try again in 3600 seconds." }
+							: { content: ["Recovered on the configured fallback"] },
+					);
+					return mock.stream(model, context, options);
+				},
+			});
+			vi.spyOn(modelRegistry.authStorage, "markUsageLimitReached").mockResolvedValue({
+				switched,
+				retryAtMs: Date.now() + 100,
+			});
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 1,
+				"retry.maxRetries": 1,
+				"retry.fallbackChains": {
+					[`${primaryModel.provider}/${primaryModel.id}`]: [`${fallbackModel.provider}/${fallbackModel.id}`],
+				},
+			});
+			session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+			const { retryEndEvents } = trackRetryEvents(session);
+			await session.prompt("Continue the delegated task on its configured fallback");
+			await session.waitForIdle();
+			expect(requestedModels).toEqual([
+				`${primaryModel.provider}/${primaryModel.id}`,
+				`${fallbackModel.provider}/${fallbackModel.id}`,
+			]);
+			expect(getLastAssistantMessage(session).content).toEqual([
+				{ type: "text", text: "Recovered on the configured fallback" },
+			]);
+			expect(retryEndEvents).toEqual([expect.objectContaining({ success: true })]);
+		},
+	);
+
+	it("prefers the configured chain before retrying an exhausted plan", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
 		if (!primaryModel || !fallbackModel) {
@@ -2203,18 +2251,15 @@ describe("AgentSession retry fallback", () => {
 		await session.prompt("Exhaust rotation, then fail over");
 		await session.waitForIdle();
 
-		// Two rotation retries burn the budget on the primary; the exhausted
-		// attempt consults the chain instead of giving up.
+		// Exhausted-plan recovery consults the chain before repeating the primary.
 		expect(requestedModels).toEqual([
-			`${primaryModel.provider}/${primaryModel.id}`,
-			`${primaryModel.provider}/${primaryModel.id}`,
 			`${primaryModel.provider}/${primaryModel.id}`,
 			`${fallbackModel.provider}/${fallbackModel.id}`,
 		]);
 		expect(session.model?.provider).toBe(fallbackModel.provider);
 		expect(session.model?.id).toBe(fallbackModel.id);
 		// The fallback model gets a fresh retry budget (attempt resets to 1).
-		expect(retryStartEvents.map(event => event.attempt)).toEqual([1, 2, 1]);
+		expect(retryStartEvents.map(event => event.attempt)).toEqual([1]);
 		expect(retryEndEvents).toHaveLength(1);
 		expect(retryEndEvents[0]).toMatchObject({ success: true });
 	});
