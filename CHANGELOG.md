@@ -3,7 +3,7 @@
 This is Mercury's product history. Vendored upstream changelogs document
 their original projects and are not Mercury release announcements.
 
-## [Unreleased]
+## [0.3.27] — stable
 
 - Remove expired subagent rooms even when MIRC destruction needs a retry, and
   reconcile existing orphan rooms at startup while preserving live agents,
