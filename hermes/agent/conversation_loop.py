@@ -39,7 +39,11 @@ from agent.conversation_compression import (
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
-from agent.error_classifier import FailoverReason, classify_api_error
+from agent.error_classifier import (
+    FailoverReason,
+    classify_api_error,
+    is_usage_limit_exhausted,
+)
 from agent.message_metadata import append_message
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
@@ -5603,8 +5607,18 @@ def run_conversation(
                     # etc.) is throttling OpenRouter, so always fall back to a
                     # different model regardless of pool state.
                     _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
+                    # A usage limit is charged to the PLAN, not to one API key:
+                    # another credential in the same pool hits the same wall, so
+                    # rotation cannot recover and the only recovery is a
+                    # different MODEL. Skipping the pool guard here is what lets
+                    # `models.fallback` actually run instead of the loop burning
+                    # its retry budget rotating keys before dying.
+                    _is_usage_limit = is_usage_limit_exhausted(
+                        getattr(classified, "error_context", None) or {},
+                        message=error_msg,
+                    )
                     pool_may_recover = (
-                        False if _is_upstream
+                        False if (_is_upstream or _is_usage_limit)
                         else _ra()._pool_may_recover_from_rate_limit(
                             agent._credential_pool,
                         )
@@ -5616,6 +5630,11 @@ def run_conversation(
                             )
                             agent._buffer_status(
                                 f"⚠️ Upstream {_upstream_name} rate-limited — "
+                                "switching to fallback model..."
+                            )
+                        elif _is_usage_limit:
+                            agent._buffer_status(
+                                "⚠️ Model usage limit reached on this plan — "
                                 "switching to fallback model..."
                             )
                         elif classified.reason == FailoverReason.billing:

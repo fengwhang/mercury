@@ -240,6 +240,45 @@ _USAGE_LIMIT_PATTERNS = [
     "key limit exceeded",
 ]
 
+
+def is_usage_limit_exhausted(
+    error_context: Optional[Dict[str, Any]] = None,
+    *,
+    message: str = "",
+    error_code: str = "",
+) -> bool:
+    """True when the provider reports a plan/account-wide usage limit.
+
+    A usage limit is charged to the PLAN, not to one API key, so rotating to
+    another credential in the same pool cannot help — recovery has to move to
+    a different model/provider (``models.fallback``). Without this the retry
+    loop rotated keys against the same exhausted quota and burned the whole
+    retry budget before dying, which is what made a configured fallback look
+    like it did nothing.
+
+    Mirrors the billing-verdict guard in :func:`classify`: a usage limit is a
+    hard wall UNLESS the body is itself an explicit rate-limit phrase (then it
+    is a request-rate throttle that rotation can survive) or carries a
+    reset/retry signal (a periodic quota that will refill).
+    """
+    haystack = " ".join(
+        str((error_context or {}).get(key) or "").lower()
+        for key in ("reason", "message", "code", "error")
+    ).strip()
+    hay = f"{haystack} {str(message or '').lower()} {str(error_code or '').lower()}"
+
+    has_usage_limit = (
+        error_code.lower() == "usage_limit_reached"
+        or "usage_limit_reached" in hay
+        or "gousagelimit" in hay
+        or any(pattern in hay for pattern in _USAGE_LIMIT_PATTERNS)
+    )
+    if not has_usage_limit:
+        return False
+    if any(pattern in hay for pattern in _RATE_LIMIT_PATTERNS):
+        return False
+    return not _has_usage_limit_transient_signal(hay, {}, None)
+
 # Patterns confirming usage limit is transient (not billing)
 _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "try again",
