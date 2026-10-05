@@ -602,6 +602,7 @@ def _unique_slug(clean: str, state: ObservatoryState) -> str:
     import re as _re
     reserved: set[str] = set()
     for entry in read_purge_journal(state):
+        reserved.update(str(channel).partition("_")[2] for channel in entry.get("channels", []))
         for row in entry.get("rows", []):
             try:
                 reserved.add(str(state.get(row["node_id"])["slug"]))
@@ -962,7 +963,7 @@ def finish_exit(
             ]
             for r in reversed(record.rows):
                 db.execute(
-                    "DELETE FROM nodes WHERE node_id = ?", (r["node_id"],)
+                    "DELETE FROM nodes WHERE node_id = ? AND status != 'live'", (r["node_id"],)
                 )
             if pending:
                 remaining.append(
@@ -983,7 +984,7 @@ def finish_exit(
             )
 
 
-async def _prune_sidebar(channels: list[str]) -> None:
+async def _prune_sidebar(channels: list[str], mercury_home: str | Path | None = None) -> None:
     """Drop ``channels`` from every mLounge user's saved channel list.
 
     Independent of IRC, OPER, and the bot sink: this is the edit that
@@ -995,7 +996,7 @@ async def _prune_sidebar(channels: list[str]) -> None:
     try:
         from observatory.room_reaper import prune_mlounge_channels
 
-        await asyncio.to_thread(prune_mlounge_channels, channels)
+        await asyncio.to_thread(prune_mlounge_channels, channels, mercury_home)
     except Exception:  # noqa: BLE001 — teardown must not fail on a prune
         logger.debug("spawn: mLounge sidebar prune failed", exc_info=True)
 
@@ -1013,7 +1014,15 @@ async def replay_purge_journal(
     bot = bot if bot is not None else get_bot_sink()
     for entry in read_purge_journal(state):
         record = ExitRecord.from_entry(entry)
-        channels = [str(c) for c in (record.channels or [])]
+        # A previous lifetime's retry must never destroy a live successor or
+        # the actual network gateway. Rows may already have been released.
+        from observatory.rooms import gateway_channel
+        from observatory.provision import read_config
+
+        cfg = read_config(state.db_path.parent.parent) or {}
+        protected = {gateway_channel(str(cfg.get('server_name') or 'mercury')).lower()}
+        protected.update(str(row.get('room_id') or '').lower() for row in state.get_live())
+        channels = [str(c) for c in (record.channels or []) if str(c).lower() not in protected]
         fatal: list[str] = []
         if bot is not None and channels:
             outcome = await _execute_channel_destroy(bot, channels)
@@ -1030,7 +1039,10 @@ async def replay_purge_journal(
                 "purge journal: entry %s deferred (%s)",
                 record.journal_id, "; ".join(fatal),
             )
+            await _prune_sidebar(channels, state.db_path.parent.parent)
+            finish_exit(state, record, pending_channels=outcome.failed_channels if bot is not None else channels)
             continue
+        await _prune_sidebar(channels, state.db_path.parent.parent)
         finish_exit(state, record)
         logger.info(
             "purge journal: entry %s replayed (%d channels, %d rows deleted)",
@@ -1149,7 +1161,7 @@ async def exit_orchestrator(
     # destroy stays queued for background retry. Holding the rows until the
     # destroy converges is what turned one refused OPER into a permanent
     # empty room in both MIRC and mLounge.
-    await _prune_sidebar(record.channels)
+    await _prune_sidebar(record.channels, state.db_path.parent.parent)
     finish_exit(state, record, pending_channels=failed_channels)
     if failed_channels:
         retry_deferred_purges(state, bot)

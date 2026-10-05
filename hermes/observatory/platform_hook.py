@@ -304,11 +304,6 @@ async def boot_resync(
             except Exception:
                 continue
         try:
-            deferred = await replay_purge_journal(state)
-            report["deferred_purges"] = deferred
-        except Exception as exc:
-            report["failed"].append(f"journal replay: {exc}")
-        try:
             # Boot self-heal (the zombie migration). The old teardown held
             # row deletion hostage to OPER DESTROY convergence, so an
             # upgraded install still carries dead rows and stale sidebar
@@ -326,6 +321,11 @@ async def boot_resync(
             )
         except Exception as exc:
             report["failed"].append(f"room reap: {exc}")
+        try:
+            deferred = await replay_purge_journal(state)
+            report["deferred_purges"] = deferred
+        except Exception as exc:
+            report["failed"].append(f"journal replay: {exc}")
     except Exception as exc:  # noqa: BLE001 — resync never breaks the gateway
         report["failed"].append(str(exc))
     try:

@@ -87,6 +87,7 @@ def test_finish_exit_deletes_rows_when_destroy_did_not_converge(tmp_path) -> Non
     state.set_meta("purge-journal", json.dumps([record.to_entry()]))
 
     # Destroy did NOT converge -> only the channel stays queued.
+    state.mark_dead("deleg_1")
     finish_exit(state, record, pending_channels=["#srv_root-child"])
 
     # Row is gone immediately...
@@ -117,6 +118,7 @@ def test_finish_exit_drops_entry_when_nothing_pends(tmp_path) -> None:
     )
     state.set_meta("purge-journal", json.dumps([record.to_entry()]))
 
+    state.mark_dead("deleg_1")
     finish_exit(state, record)
 
     assert read_purge_journal(state) == []
@@ -131,6 +133,12 @@ def test_finish_exit_drops_entry_when_nothing_pends(tmp_path) -> None:
 def _write_user(home: Path, name: str, networks: list) -> Path:
     users = home / "observatory" / "lounge" / "home" / "users"
     users.mkdir(parents=True, exist_ok=True)
+    from observatory.config_gen import ObservatoryPaths
+
+    ObservatoryPaths(home).config_file.write_text(json.dumps({"server_name": "nixpad", "server_host": "127.0.0.1", "server_port": 6670}))
+    for net in networks:
+        net.setdefault("host", "127.0.0.1" if net.get("name") == "nixpad" else "100.64.0.2")
+        net.setdefault("port", 6670)
     path = users / f"{name}.json"
     path.write_text(json.dumps({"password": "x", "networks": networks}), encoding="utf-8")
     return path
@@ -151,7 +159,7 @@ def test_prune_mlounge_channels_removes_only_the_named_rooms(tmp_path) -> None:
             },
             {
                 "name": "other-net",
-                "channels": [{"name": "#elsewhere", "muted": False, "key": ""}],
+                "channels": [{"name": "#elsewhere", "muted": False, "key": ""}, {"name": "#srv_root-child"}],
             },
         ],
     )
@@ -165,7 +173,7 @@ def test_prune_mlounge_channels_removes_only_the_named_rooms(tmp_path) -> None:
         (tmp_path / "observatory/lounge/home/users/owner.json").read_text(encoding="utf-8")
     )
     kept = {c["name"] for n in data["networks"] for c in n["channels"]}
-    assert kept == {"#srv_root", "#elsewhere"}, "unrelated networks/channels must survive"
+    assert kept == {"#srv_root", "#elsewhere", "#srv_root-child"}, "unrelated networks/channels must survive"
 
 
 def test_prune_mlounge_channels_matches_case_insensitively(tmp_path) -> None:
@@ -327,3 +335,50 @@ def test_reap_never_touches_a_live_room_pinned_by_the_caller(tmp_path) -> None:
     )
 
     assert "#srv_pinned" not in result["channels_queued"]
+
+@pytest.mark.asyncio
+async def test_boot_reap_durably_retries_destroy_without_a_node_row(tmp_path):
+    from observatory.spawn import replay_purge_journal
+
+    state = ObservatoryState(tmp_path / "observatory/state.db")
+    _seed(state, "root", depth=0, room="#nixpad_root", parent=None)
+    _seed(state, "child", depth=1, room="#nixpad_root-child", parent="root", status="dead")
+    _write_user(tmp_path, "owner", [{"name": "nixpad", "channels": [{"name": "#nixpad_root-child"}]}])
+    reap_orphan_rooms(state, mercury_home=tmp_path)
+    reap_orphan_rooms(state, mercury_home=tmp_path)
+    assert len(read_purge_journal(state)) == 1
+    assert read_purge_journal(state)[0]["rows"] == []
+
+    class Bot:
+        channels = []
+
+        async def destroy_channel(self, channel):
+            self.channels.append(channel)
+            return True
+
+    bot = Bot()
+    assert await replay_purge_journal(state, bot=bot) == []
+    assert bot.channels == ["#nixpad_root-child"]
+    assert read_purge_journal(state) == []
+
+
+@pytest.mark.asyncio
+async def test_old_destroy_retry_protects_live_successor_and_network_gateway(tmp_path):
+    from observatory.spawn import replay_purge_journal
+
+    state = ObservatoryState(tmp_path / "observatory/state.db")
+    _write_user(tmp_path, "owner", [{"name": "nixpad", "channels": [{"name": "#nixpad_child"}, {"name": "#nixpad_gateway"}]}])
+    _seed(state, "new-child", depth=0, room="#nixpad_child", parent=None)
+    record = ExitRecord(journal_id="pj-old", node_id="old-child", status="completed", summary=None,
+                        created_epoch=0, rows=[], channels=["#nixpad_child", "#nixpad_gateway"])
+    state.set_meta("purge-journal", json.dumps([record.to_entry()]))
+
+    class Bot:
+        async def destroy_channel(self, channel):
+            pytest.fail(f"destroyed protected room {channel}")
+
+    assert await replay_purge_journal(state, bot=Bot()) == []
+    assert state.get("new-child")["status"] == "live"
+    assert read_purge_journal(state) == []
+    saved = json.loads((tmp_path / "observatory/lounge/home/users/owner.json").read_text())
+    assert len(saved["networks"][0]["channels"]) == 2
