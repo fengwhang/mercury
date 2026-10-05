@@ -1161,10 +1161,9 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     """
     from mercury_cli.config import load_config, save_config
 
-    # An already-configured main model can be kept. The remaining three
-    # slots are still offered in order, including the main fallback.
+    # The reconfigure gate covers all four model slots and their settings.
+    # Keeping the current configuration skips every model/provider picker.
     if _skip_configured_section(config, "model", "Model & Provider"):
-        _prompt_mercury_slots(config)
         return
 
     print_header("Inference Provider")
