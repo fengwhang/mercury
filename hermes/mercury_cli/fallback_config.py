@@ -77,25 +77,88 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _split_model_selector(value: Any) -> tuple[str, str]:
+    """``provider/model`` -> ``(provider, model)``; bare names -> ``("", name)``.
+
+    Mirrors ``omp_sync.derive_slot_provider``: the provider is the text before
+    the FIRST slash and the model is everything after it, because model ids
+    themselves carry slashes (``nous/xiaomi/mimo-v2.6-pro`` is provider
+    ``nous`` + model ``xiaomi/mimo-v2.6-pro``).
+    """
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    if "/" not in text:
+        return "", text
+    provider, model = text.split("/", 1)
+    return provider.strip(), model.strip()
+
+
+def _entries_from_model_slots(models: dict[str, Any]) -> list[dict[str, Any]]:
+    """Mercury's flat ``models.fallback`` / ``models.fallback_chain`` slots.
+
+    Mercury names a fallback as ONE selector string (``nous/xiaomi/mimo-v2.6-pro``)
+    rather than the stock ``{provider, model}`` dict, so the dict-only chain
+    builder saw an EMPTY chain and never failed over — a usage limit then
+    killed the agent even though the user had configured a fallback. Bridge
+    validation requires ``models.fallback_chain`` to begin with
+    ``models.fallback``, so the declared order is ``fallback`` followed by the
+    rest of the chain.
+
+    A bare model name (no provider prefix) borrows the provider from
+    ``models.default`` so it can still become a usable entry.
+    """
+    if not isinstance(models, dict):
+        return []
+    default_provider, _ = _split_model_selector(models.get("default"))
+
+    ordered: list[Any] = []
+    head = models.get("fallback")
+    if head:
+        ordered.append(head)
+    chain = models.get("fallback_chain")
+    if isinstance(chain, list):
+        ordered.extend(item for item in chain if item)
+
+    entries: list[dict[str, Any]] = []
+    for item in ordered:
+        provider, model = _split_model_selector(item)
+        if not provider:
+            provider = default_provider
+        if not provider or not model:
+            continue
+        entries.append({"provider": provider, "model": model})
+    return entries
+
+
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 
-    ``fallback_providers`` remains the primary source of truth and keeps its
-    order. Legacy ``fallback_model`` entries are appended afterwards unless
-    they target the same provider/model/base_url route as an earlier entry.
-    The returned list always contains fresh dict copies.
+    Mercury's flat ``models.fallback`` / ``models.fallback_chain`` slots lead
+    (they are the user's declared first-order fallback), then stock
+    ``fallback_providers`` in its own order, then legacy ``fallback_model`` —
+    each appended only when it does not target the same provider/model/base_url
+    route as an earlier entry. The returned list always contains fresh dict
+    copies.
     """
 
     config = config or {}
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
 
+    def _append(entry: dict[str, Any]) -> None:
+        identity = _entry_identity(entry)
+        if identity in seen:
+            return
+        seen.add(identity)
+        chain.append(entry)
+
+    models = config.get("models")
+    for entry in _entries_from_model_slots(models if isinstance(models, dict) else {}):
+        _append(entry)
+
     for key in ("fallback_providers", "fallback_model"):
         for entry in _iter_fallback_entries(config.get(key)):
-            identity = _entry_identity(entry)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            chain.append(entry)
+            _append(entry)
 
     return chain
