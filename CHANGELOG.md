@@ -3,6 +3,18 @@
 This is Mercury's product history. Vendored upstream changelogs document
 their original projects and are not Mercury release announcements.
 
+## [0.3.24] — stable and nightly
+
+- Observatory restart preserves registered level-0 agents and the configured
+  network's gateway room, expires all descendants and dead agents, and prevents
+  cached mLounge joins from recreating orphan rooms such as an obsolete
+  `#mercury_gateway` on a differently named network.
+- Persist room destruction before removing every member; serialize JOIN
+  notifications with deletion so late fanout cannot revive a deleted sidebar
+  entry. Replayed cleanup journals cannot delete protected root rooms.
+- Warn against Observatory restart during delegated work. Ordinary reconnects
+  retain the established depth-based lifecycle, and mLounge remains optional.
+
 ## [0.3.23] — stable
 
 - Prevent OMP completed reports submitted in the yield tool's error field
