@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Switch to the configured Mercury fallback immediately on an explicit exhausted quota instead of burning retries on the same model.
+
 - Run Mercury OMP shell commands and descendant shell commands on the terminal backend selected during setup, including SSH, without silently falling back to local execution.
 - Honor Mercury's per-model context-window choices and shared compaction percentage, including removal of stale fixed-token thresholds.
 - Reasoning controls follow the selected model's advertised levels, and Mercury profile launches load their own persona, memory, and OMP instructions together.
