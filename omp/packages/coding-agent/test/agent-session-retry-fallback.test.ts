@@ -1494,6 +1494,46 @@ describe("AgentSession retry fallback", () => {
 		expect(agent.state.isStreaming).toBe(false);
 	});
 
+	it("dispatches the selected fallback before restoring a primary whose cooldown expired during recovery", async () => {
+		const primary = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const fallback = getBundledModel("openai", "gpt-4o-mini")!;
+		const requestedModels: string[] = [];
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 1,
+			"retry.fallbackChains": {
+				[`${primary.provider}/${primary.id}`]: [`${fallback.provider}/${fallback.id}`],
+			},
+		});
+		session = new AgentSession({
+			agent: createFallbackAgent(primary, requestedModels, {
+				firstError: "rate limit exceeded retry-after-ms=200",
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_applied") {
+				vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1_000);
+			}
+		});
+		await session.prompt("Recover even if setup outlasts the cooldown");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primary.provider}/${primary.id}`,
+			`${fallback.provider}/${fallback.id}`,
+		]);
+		expect(getLastAssistantMessage(session).content).toContainEqual({
+			type: "text",
+			text: `ok:${fallback.provider}/${fallback.id}`,
+		});
+
+		await session.prompt("Restore the primary on the next independent turn");
+		await session.waitForIdle();
+		expect(requestedModels.at(-1)).toBe(`${primary.provider}/${primary.id}`);
+	});
+
 	it.each(["chain", "abort-aware chain", "Fast degrade"])(
 		"does not apply late task fallback credentials after cancellation (%s)",
 		async recovery => {

@@ -2023,6 +2023,9 @@ export class TurnRecovery {
 
 	async #maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
 		if (!this.#activeRetryFallback) return false;
+		// Complete the current recovery on its selected route. A short primary
+		// cooldown can expire during setup, before the fallback gets any request.
+		if (this.isRetrying) return false;
 		if (this.#activeRetryFallback.pinned) return false;
 		if (this.#getRetryFallbackRevertPolicy() !== "cooldown-expiry") return false;
 
