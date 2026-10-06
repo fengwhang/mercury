@@ -3,6 +3,35 @@
 This is Mercury's product history. Vendored upstream changelogs document
 their original projects and are not Mercury release announcements.
 
+## [0.4.4] — nightly
+
+- Make mLounge's phone button open a full Hermes in-call screen: registered
+  agent identity, rose-to-burgundy background, elapsed timer, persistent PiP,
+  browser output switching, microphone mute, and immediate hangup. Calls work
+  from agent channels and queries; unavailable output routes are identified
+  honestly. Microphone capture and playback remain exclusively in the browser.
+- Keep calls independent across simultaneous browser sessions, discard muted
+  and obsolete transcription work, and unblock hangup during synthesis,
+  transport backpressure, expired rooms, and lost startup acknowledgements.
+  OMP and unidentified rooms remain positively refused.
+- Reconcile expired rooms for connected mLounge clients even when OPER fails,
+  reject stale registration joins and native transcript generations, and stop
+  pending descendants atomically when their parent exits. History is preserved.
+- Prevent cancelled fallback lookups from changing the selected billing route,
+  let the chosen fallback serve before restoring a cooled primary, and stop
+  replaying the final exhausted provider after its configured chain is spent.
+- Isolate direct nightly installs, reject unsupported Python fallback, require
+  baseline x64 native addons, and propagate the explicit voice sidecar URL
+  without exporting service credentials to the browser.
+- Remove hosted OMP defaults and outbound QA publishing while retaining local
+  issue recording, trace export, and explicitly configured self-hosted routes.
+  Hugging Face provider routes require a self-hosted endpoint; cached vendor
+  endpoints cannot restore blocked inference or discovery requests.
+- Require complete, pre-provisioned local speech, embedding, wake-word and
+  tokenizer assets instead of downloading weights at runtime. Use bundled or
+  cached model metadata at ordinary startup; deliberate provider discovery and
+  operator refresh remain available.
+
 ## [0.4.3] — nightly
 
 - Remove expired subagent rooms even when MIRC destruction needs a retry, and
