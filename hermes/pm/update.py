@@ -206,8 +206,6 @@ def _index_headers(url: str) -> dict:
     origin = url_origin(url)
     if origin == ("https", "api.github.com", 443):
         return _github_headers()
-    if origin == ("https", "huggingface.co", 443):
-        return {**_UA, **_hf_headers()}
     return dict(_UA)
 
 
@@ -254,74 +252,19 @@ def _get_text(url: str, headers: Optional[dict] = None) -> str:
     return retry_network(request)
 
 
-# ── llama.app installer bucket (ggml-org/install.sh) ──────────────────────
-# The llama-install.sh installer resolves its build version from
-# `.../resolve/latest` (a short tag like b10679) and downloads prebuilt
-# llama-app binaries from the HF bucket tree {ARCH}/{OS}/{backend}/{CONFIG}/
-# llama-app[.exe].zst. pm does NOT fetch those binaries (CONFIG codes are
-# hardware-probe-derived, not precomputable, and the llama.cpp GitHub
-# releases are our artifact source) — but the bucket's version index is a
-# better "what should we be on" signal than scraping every GitHub release:
-# it is the installer's own updater pointer, needs no API token, and is
-# not rate-limited. We resolve versions from it and still fetch artifacts
-# from the llama.cpp GitHub releases (every bucket tag corresponds 1:1 to
-# a GitHub release tag, so a bump always has our per-target assets).
-
-_LLAMA_BUCKET = "ggml-org/install.sh"
-_LLAMA_BUCKET_API = f"https://huggingface.co/api/buckets/{_LLAMA_BUCKET}"
-_LLAMA_BUCKET_RESOLVE = f"https://huggingface.co/buckets/{_LLAMA_BUCKET}/resolve"
 
 
-def _hf_headers() -> dict:
-    """Optional bearer auth for HF bucket fetches (HF_TOKEN), like the
-    installer's own requests."""
-    headers = {}
-    token = os.environ.get("HF_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
-def llama_app_latest() -> Optional[str]:
-    """The build tag the llama.app installer's `latest` pointer currently
-    resolves to — the updater's "next version". Returns the bare build
-    number ("10679") or None when unreachable."""
-    try:
-        text = _get_text(f"{_LLAMA_BUCKET_RESOLVE}/latest", headers=_hf_headers())
-    except Exception:
-        return None
-    # The tag is b<digits> (b10679) — the first digit run is the build
-    # number. A \b boundary would fail between the 'b' and the digits.
-    m = re.search(r"(\d+)", text)
-    return m.group(1) if m else None
-
-
-def llama_app_bucket_versions() -> list[str]:
-    """Build numbers visible in the llama.app bucket, newest-first.
-
-    The HF bucket tree API IGNORES the offset param (verified: every
-    offset returns the same first page — the oldest ~1000 paths, sorted
-    by path ascending). So the tree can only ever enumerate the OLDEST
-    builds, never the newest — the `latest` pointer (llama_app_latest)
-    is the authoritative "next version" source. This helper returns what
-    the tree CAN see (deduped, sorted by build number descending) as a
-    bounded supplement; callers should put llama_app_latest() first.
-    """
-    versions = []
-    seen = set()
-    try:
-        data = _get_json(f"{_LLAMA_BUCKET_API}/tree?limit=1000&offset=0")
-    except Exception:
-        return []
-    for entry in data or []:
-        m = re.match(r"^(b\d+)/", entry.get("path", ""))
-        if m:
-            tag = m.group(1)[1:]  # strip the leading 'b'
-            if tag not in seen:
-                seen.add(tag)
-                versions.append(int(tag))
-    versions.sort(reverse=True)
-    return [str(v) for v in versions]
+def github_releases(repo: str) -> Iterator[dict]:
+    """Stable releases with their asset metadata, newest-first (up to 90)."""
+    for page in range(1, 4):
+        data = _get_json(f"https://api.github.com/repos/{repo}/releases?per_page=30&page={page}")
+        if not data:
+            break
+        for release in data:
+            if not release.get("draft") and not release.get("prerelease"):
+                yield release
+        if len(data) < 30:
+            break
 
 
 def github_release_tags(repo: str, *, strip_prefix: str = "") -> list[str]:
@@ -332,23 +275,15 @@ def github_release_tags(repo: str, *, strip_prefix: str = "") -> list[str]:
     sandbox/experimental builds (cua-driver-rs-vsandbox-v0.4.3) that must
     never appear as update candidates."""
     tags = []
-    for page in range(1, 4):  # up to 90 releases — far beyond any cadence
-        data = _get_json(f"https://api.github.com/repos/{repo}/releases?per_page=30&page={page}")
-        if not data:
-            break
-        for release in data:
-            if release.get("draft") or release.get("prerelease"):
-                continue
-            tag = release.get("tag_name", "")
-            if tag == "latest":
-                continue
-            if strip_prefix and tag.startswith(strip_prefix):
-                tag = tag[len(strip_prefix):]
-            if not tag or not tag[0].isdigit():
-                continue
-            tags.append(tag)
-        if len(data) < 30:
-            break
+    for release in github_releases(repo):
+        tag = release.get("tag_name", "")
+        if tag == "latest":
+            continue
+        if strip_prefix and tag.startswith(strip_prefix):
+            tag = tag[len(strip_prefix):]
+        if not tag or not tag[0].isdigit():
+            continue
+        tags.append(tag)
     return tags
 
 

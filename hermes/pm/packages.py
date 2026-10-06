@@ -27,8 +27,7 @@ from pm.update import (
     btbn_index,
     btbn_versions,
     github_release_tags,
-    llama_app_bucket_versions,
-    llama_app_latest,
+    github_releases,
     martin_riedl_index,
     martin_riedl_versions,
     node_latest_versions,
@@ -1101,17 +1100,23 @@ class LlamaCpp(BinaryPackage):
         return self.fetch_urls(version, target)[0]
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        # Resolve from the llama.app installer bucket (the installer's own
-        # updater pointer + version index — no API token, no rate limit):
-        # the `latest` pointer is the authoritative "next version"; the
-        # bucket tree supplies the full candidate list. Artifacts still
-        # come from the llama.cpp GitHub releases (1:1 tag correspondence).
-        latest = llama_app_latest()
-        if latest is not None:
-            return [latest, *llama_app_bucket_versions()]
-        return llama_app_bucket_versions() or github_release_tags(
-            "ggml-org/llama.cpp", strip_prefix="b"
-        )
+        if target not in self.assets:
+            return []
+        versions = []
+        for release in github_releases("ggml-org/llama.cpp"):
+            tag = release.get("tag_name", "")
+            if not tag.startswith("b") or not tag[1:].isdigit():
+                continue
+            version = tag[1:]
+            # A tag alone does not promise this platform/backend exists.
+            # CUDA also needs the matching cudart archive; libgomp stays pinned
+            # independently of the llama.cpp release.
+            assets = {asset["name"] for asset in release.get("assets", [])}
+            if all(name in assets for name in self._asset_names(version, target)):
+                versions.append(version)
+        if not versions:
+            raise InstallError(self.name, f"no compatible GitHub release assets for {target}")
+        return versions
 
     def known_sha256(self, version: str, url: str) -> Optional[str]:
         """GitHub's release API serves every asset's digest, so pinning a
