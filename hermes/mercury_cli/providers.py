@@ -536,7 +536,8 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
             name=mdev_info.name,
             transport=transport,
             api_key_env_vars=tuple(env_vars),
-            base_url=base_url_override or mdev_info.api,
+            # Catalog metadata is not endpoint authority for the self-host-only HF provider.
+            base_url="" if canonical == "huggingface" else (base_url_override or mdev_info.api),
             base_url_env_var=base_url_env,
             is_aggregator=is_agg,
             auth_type=auth,

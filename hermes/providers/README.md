@@ -59,6 +59,12 @@ layer reads from it:
 See `plugins/model-providers/README.md` — drop a new directory there (or
 under `$HERMES_HOME/plugins/model-providers/` for a private plugin).
 
+The bundled `huggingface` provider has no hosted endpoint default. Inference,
+live model discovery, and doctor require an explicitly configured HTTP(S)
+self-hosted endpoint via `HF_BASE_URL` or `model.base_url` with
+`model.provider: huggingface`. Hugging Face's hosted domain and subdomains are
+refused before a request; static model metadata remains available offline.
+
 ---
 
 ## Hooks you can override on `ProviderProfile`

@@ -257,6 +257,10 @@ class ProviderProfile:
         when this returns None.
         """
         caller_base = (base_url or "").strip()
+        if self.name == "huggingface":
+            from mercury_cli.auth import resolve_huggingface_base_url
+
+            caller_base = resolve_huggingface_base_url(caller_base)
         effective_base = caller_base or self.base_url
         custom_base = bool(caller_base) and (
             caller_base.rstrip("/") != (self.base_url or "").rstrip("/")
@@ -269,6 +273,11 @@ class ProviderProfile:
                 if not effective_base:
                     return None
                 url = effective_base.rstrip("/") + "/models"
+
+        if self.name == "huggingface":
+            from mercury_cli.auth import validate_huggingface_base_url
+
+            url = validate_huggingface_base_url(url)
 
         import json
         import urllib.request

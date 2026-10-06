@@ -1,5 +1,5 @@
 name: huggingface-provider
 kind: model-provider
 version: 1.0.0
-description: HuggingFace Inference Providers
+description: Self-hosted HuggingFace-compatible API (HF_BASE_URL required)
 author: Nous Research

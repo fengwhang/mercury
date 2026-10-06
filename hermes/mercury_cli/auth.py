@@ -517,7 +517,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="huggingface",
         name="Hugging Face",
         auth_type="api_key",
-        inference_base_url="https://router.huggingface.co/v1",
+        inference_base_url="",
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
@@ -7459,7 +7459,46 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
     return info
 
 
-def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
+def validate_huggingface_base_url(base_url: str) -> str:
+    """Require an explicit HTTP(S) self-host, never Hugging Face's service."""
+    url = str(base_url or "").strip().rstrip("/")
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        valid = (
+            parsed.scheme in {"http", "https"} and bool(host)
+            and not parsed.username and not parsed.password
+            and not parsed.query and not parsed.fragment
+            and host != "huggingface.co" and not host.endswith(".huggingface.co")
+        )
+        parsed.port  # Reject malformed ports before a client can be constructed.
+    except ValueError:
+        valid = False
+    if not valid:
+        raise AuthError(
+            "Hugging Face requires a self-hosted HTTP(S) endpoint. Set HF_BASE_URL "
+            "or model.base_url for provider huggingface; hosted Hugging Face endpoints are disabled.",
+            provider="huggingface", code="invalid_base_url",
+        )
+    return url
+
+
+def resolve_huggingface_base_url(base_url: Optional[str] = None) -> str:
+    """Resolve existing explicit/env/model options without a remote default."""
+    url = base_url or os.getenv("HF_BASE_URL", "").strip()
+    if not url:
+        config = read_raw_config()
+        model = config.get("model") or {}
+        if isinstance(model, dict) and model.get("provider") in {
+            "huggingface", "hf", "hugging-face", "huggingface-hub",
+        }:
+            url = model.get("base_url") or ""
+    return validate_huggingface_base_url(url)
+
+
+def resolve_api_key_provider_credentials(
+    provider_id: str, *, explicit_base_url: Optional[str] = None,
+) -> Dict[str, Any]:
     """Resolve API key and base URL for an API-key provider.
 
     Returns dict with: provider, api_key, base_url, source.
@@ -7521,6 +7560,9 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     if provider_id == "actual":
         base_url = normalize_actual_base_url(base_url)
+
+    if provider_id == "huggingface":
+        base_url = resolve_huggingface_base_url(explicit_base_url or base_url)
 
     # Last-resort guard: an API-key provider must never hand back an empty
     # base URL (a set-but-empty COPILOT_API_BASE_URL or similar env override
