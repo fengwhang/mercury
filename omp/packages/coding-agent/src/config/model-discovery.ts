@@ -22,6 +22,7 @@ import {
 	resolveLiteLLMApi,
 } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
 import type { ModelSpec, OpenAICompat } from "@oh-my-pi/pi-catalog/types";
+import { assertHuggingfaceEndpoint } from "@oh-my-pi/pi-catalog/wire/huggingface";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ProviderDiscovery } from "./models-config-schema";
 
@@ -472,6 +473,7 @@ export async function discoverOllamaModels(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
 ): Promise<Model<Api>[]> {
+	assertHuggingfaceEndpoint(providerConfig.provider, providerConfig.baseUrl);
 	const endpoint = normalizeOllamaBaseUrl(providerConfig.baseUrl);
 	const tagsUrl = `${endpoint}/api/tags`;
 	const headers = { ...providerConfig.headers };
@@ -597,6 +599,7 @@ export async function discoverLlamaCppModels(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
 ): Promise<Model<Api>[]> {
+	assertHuggingfaceEndpoint(providerConfig.provider, providerConfig.baseUrl);
 	const baseUrl = normalizeLlamaCppBaseUrl(providerConfig.baseUrl);
 	const modelsUrl = `${baseUrl}/models`;
 
@@ -670,6 +673,7 @@ export async function discoverLlamaCppModelRuntimeMetadata(
 	ctx: DiscoveryContext,
 	customTimeoutMs?: number,
 ): Promise<DiscoveredModelRuntimeMetadata | undefined> {
+	assertHuggingfaceEndpoint(model.provider, model.baseUrl);
 	const baseUrl = normalizeLlamaCppBaseUrl(model.baseUrl);
 	// Probe the native `/models` endpoint (not the OpenAI-compatible `/v1/models`)
 	// so the runtime `meta`, `status.args`, and `architecture.input_modalities`
@@ -748,6 +752,7 @@ export async function discoverLmStudioModelRuntimeMetadata(
 	ctx: DiscoveryContext,
 	customTimeoutMs?: number,
 ): Promise<DiscoveredModelRuntimeMetadata | undefined> {
+	assertHuggingfaceEndpoint(model.provider, model.baseUrl);
 	const baseUrl = normalizeOpenAIModelsListBaseUrl(model.baseUrl);
 	const timeoutMs = customTimeoutMs ?? 10_000;
 	const baseHeaders: Record<string, string> = { ...model.headers };
@@ -808,6 +813,7 @@ export async function discoverOpenAIModelsList(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
 ): Promise<Model<Api>[]> {
+	assertHuggingfaceEndpoint(providerConfig.provider, providerConfig.baseUrl);
 	const injectV1 = providerConfig.discovery.injectV1 ?? true;
 	// `injectV1: false` resolves `/models` against the configured base URL
 	// verbatim — no `/v1` suffix is injected. Gateways that root their
@@ -931,6 +937,7 @@ export async function discoverLiteLLMModels(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
 ): Promise<Model<Api>[]> {
+	assertHuggingfaceEndpoint(providerConfig.provider, providerConfig.baseUrl);
 	const baseUrl = normalizeLiteLLMDiscoveryBaseUrl(providerConfig.baseUrl);
 	const references = getBundledModelReferenceIndex();
 	const resolveReference = (id: string) => resolveModelReference(id, references) as ModelSpec<Api> | undefined;
@@ -1003,6 +1010,7 @@ export async function discoverProxyModels(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
 ): Promise<Model<Api>[]> {
+	assertHuggingfaceEndpoint(providerConfig.provider, providerConfig.baseUrl);
 	const baseUrl = normalizeOpenAIModelsListBaseUrl(providerConfig.baseUrl);
 	const modelsUrl = `${baseUrl}/models`;
 

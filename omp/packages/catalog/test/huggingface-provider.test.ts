@@ -15,6 +15,10 @@ const prohibited = [
 	"https://ROUTER.HUGGINGFACE.CO.:443/v1",
 	"https://endpoint.endpoints.huggingface.cloud/v1",
 	"https://hf.co/v1",
+	"https://hf.space/v1",
+	"https://APP.HF.SPACE.:443/v1",
+	"https://hfusercontent.com/v1",
+	"https://ASSET.HFUSERCONTENT.COM.:443/v1",
 ];
 
 describe("Hugging Face self-hosted discovery", () => {

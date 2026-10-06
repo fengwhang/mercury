@@ -13,6 +13,10 @@ const forbidden = [
 	"https://router.huggingface.co/v1",
 	"https://api-inference.huggingface.co/v1",
 	"https://ROUTER.HUGGINGFACE.CO.:443/v1",
+	"https://hf.space/v1",
+	"https://APP.HF.SPACE.:443/v1",
+	"https://hfusercontent.com/v1",
+	"https://ASSET.HFUSERCONTENT.COM.:443/v1",
 ];
 const context = { messages: [{ role: "user" as const, content: "ping", timestamp: 0 }] };
 

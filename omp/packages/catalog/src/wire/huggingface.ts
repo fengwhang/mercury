@@ -1,4 +1,4 @@
-const HOSTED_HUGGINGFACE_HOST = /(?:^|\.)(?:huggingface\.co|hf\.co|huggingface\.cloud)$/;
+const HOSTED_HUGGINGFACE_HOST = /(?:^|\.)(?:huggingface\.co|hf\.co|huggingface\.cloud|hf\.space|hfusercontent\.com)$/;
 
 /** Provider HTTP policy, not a restriction on general web access. */
 export function assertHuggingfaceEndpoint(provider: string, baseUrl: string | undefined): void {

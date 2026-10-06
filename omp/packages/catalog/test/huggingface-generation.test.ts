@@ -8,7 +8,14 @@ const descriptor = PROVIDER_DESCRIPTORS.find(entry => entry.providerId === "hugg
 if (!isCatalogDescriptor(descriptor)) throw new Error("Missing Hugging Face catalog descriptor");
 
 describe("gen:models Hugging Face refresh seam (offline)", () => {
-	for (const baseUrl of [undefined, "https://router.huggingface.co/v1"]) {
+	for (const baseUrl of [
+		undefined,
+		"https://router.huggingface.co/v1",
+		"https://hf.space/v1",
+		"https://APP.HF.SPACE.:443/v1",
+		"https://hfusercontent.com/v1",
+		"https://ASSET.HFUSERCONTENT.COM.:443/v1",
+	]) {
 		test(`refuses ${baseUrl ?? "credential-only configuration"} visibly before HTTP`, async () => {
 			let requests = 0;
 			const fetch: FetchImpl = async () => {

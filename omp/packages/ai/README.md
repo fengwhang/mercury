@@ -985,7 +985,7 @@ Provider endpoint defaults for the current OpenAI-compatible integrations:
 - NanoGPT: `https://nano-gpt.com/api/v1`
 - Novita: `https://api.novita.ai/openai/v1`
 - DeepInfra: `https://api.deepinfra.com/v1/openai`
-- Hugging Face: no built-in endpoint. Set an explicit self-hosted `baseUrl` through the existing model/provider override. Hosted Hugging Face endpoints are refused for discovery, authentication probes, and inference, including old cached/bundled model URLs. `/login huggingface` only stores the supplied key; it does not open a hosted token page or send a validation request. `gen:models` reports discovery failure when only a Hugging Face credential is available, retaining fallback models rather than claiming a fresh catalog.
+- Hugging Face: no built-in endpoint. Set an explicit self-hosted `baseUrl` through the existing model/provider override. Hosted `huggingface.co`, `hf.co`, `huggingface.cloud`, `hf.space`, and `hfusercontent.com` endpoint families are refused for provider discovery, authentication probes, and inference, including configured custom aliases, effective endpoint overrides, and old cached/bundled model URLs. `/login huggingface` only stores the supplied key; it does not open a hosted token page or send a validation request. `gen:models` reports discovery failure when only a Hugging Face credential is available, retaining fallback models rather than claiming a fresh catalog. This provider policy does not restrict generic web access.
 - Venice: `https://api.venice.ai/api/v1`
 - Xiaomi MiMo: `https://api.xiaomimimo.com/anthropic`
 - ZenMux (OpenAI): `https://zenmux.ai/api/v1`
