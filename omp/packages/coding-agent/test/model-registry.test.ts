@@ -737,7 +737,7 @@ describe("ModelRegistry", () => {
 			expect(getReplayUnsignedThinking(registry.find("anthropic", "claude-sonnet-5"))).toBe(false);
 		});
 
-		test("catalog metrics enrich models discovered through a custom provider", async () => {
+		test("local cached catalog metrics enrich models discovered through a custom provider", async () => {
 			writeRawModelsJson({
 				cliproxy: {
 					baseUrl: "https://proxy.example/v1",
@@ -747,25 +747,16 @@ describe("ModelRegistry", () => {
 					models: [],
 				},
 			});
+			const reference = getBundledModels("openai").find(model => model.id === "gpt-5.6-sol");
+			if (!reference) throw new Error("Bundled OpenAI reference missing");
+			writeModelCache(
+				"openai", Date.now(), [{ ...reference, int: 60.9, tps: 70.4 }],
+				true, fingerprintStaticModels(getBundledModels("openai")), path.join(tempDir, "models.db"),
+			);
+			const requestedUrls: string[] = [];
 			const fetchMock: FetchImpl = async input => {
 				const url = String(input);
-				if (url === "https://catalog.stencil.so/models.json.zstd") {
-					return Response.json({
-						openai: {
-							id: "openai",
-							name: "OpenAI",
-							models: {
-								"gpt-5.6-sol": {
-									id: "gpt-5.6-sol",
-									name: "GPT-5.6 Sol",
-									tool_call: true,
-									int: 60.9,
-									tps: 70.4,
-								},
-							},
-						},
-					});
-				}
+				requestedUrls.push(url);
 				if (url === "https://proxy.example/v1/models") {
 					return Response.json({ data: [{ id: "gpt-5.6-sol" }] });
 				}
@@ -778,6 +769,7 @@ describe("ModelRegistry", () => {
 			const model = registry.find("cliproxy", "gpt-5.6-sol");
 			expect(model?.int).toBe(60.9);
 			expect(model?.tps).toBe(70.4);
+			expect(requestedUrls).not.toContain("https://catalog.stencil.so/models.json.zstd");
 		});
 
 		test("custom Responses providers can disable original image detail", () => {

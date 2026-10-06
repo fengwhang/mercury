@@ -252,7 +252,6 @@ export const CATALOG_PROVIDERS = [
 		id: "google-vertex",
 		defaultModel: "gemini-3.1-pro-preview",
 		createModelManagerOptions: (config: ModelManagerConfig) => googleVertexModelManagerOptions(config),
-		allowUnauthenticated: true,
 	},
 	{
 		id: "groq",
@@ -292,7 +291,6 @@ export const CATALOG_PROVIDERS = [
 		defaultModel: "llama-3-8b",
 		envVars: ["LM_STUDIO_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => lmStudioModelManagerOptions(config),
-		allowUnauthenticated: true,
 	},
 	{
 		id: "minimax",
@@ -358,7 +356,6 @@ export const CATALOG_PROVIDERS = [
 		defaultModel: "gpt-oss:20b",
 		envVars: ["OLLAMA_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => ollamaModelManagerOptions(config),
-		allowUnauthenticated: true,
 	},
 	{
 		id: "ollama-cloud",
@@ -569,7 +566,6 @@ export const CATALOG_PROVIDERS = [
 		defaultModel: "anthropic/claude-opus-4.8",
 		envVars: ["ZENMUX_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => zenmuxModelManagerOptions(config),
-		allowUnauthenticated: true,
 		catalogDiscovery: { label: "ZenMux", allowUnauthenticated: true },
 	},
 	{
@@ -602,7 +598,6 @@ export const PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = CATALOG_ENTRY
 			providerId: provider.id,
 			defaultModel: provider.defaultModel,
 			createModelManagerOptions: provider.createModelManagerOptions,
-			allowUnauthenticated: provider.allowUnauthenticated,
 			dynamicModelsAuthoritative: provider.dynamicModelsAuthoritative,
 			catalogDiscovery: provider.catalogDiscovery
 				? { ...provider.catalogDiscovery, envVars: provider.catalogDiscovery.envVars ?? provider.envVars ?? [] }

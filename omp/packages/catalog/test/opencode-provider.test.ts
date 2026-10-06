@@ -11,12 +11,12 @@ import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
 import {
-	fetchWellKnownModels,
+	mapModelsDevToModels,
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
-	modelsDevCatalogFallback,
 	opencodeGoModelManagerOptions,
 	opencodeZenModelManagerOptions,
 } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
+import { filterModelsDevCatalogRows } from "@oh-my-pi/pi-catalog/provider-models/models-dev-policies";
 import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import type { FetchImpl } from "@oh-my-pi/pi-utils";
 import { mergePreviousSnapshotModels } from "../scripts/generate-models";
@@ -38,8 +38,8 @@ function modelListResponse(ids: readonly string[]): Response {
 	});
 }
 
-describe("Shared models.dev catalog fallback", () => {
-	test("adds newly published models for a bundled provider and reuses the cached snapshot", async () => {
+describe("Caller-owned local metadata overlay", () => {
+	test("adds locally supplied models for a bundled provider and reuses the cached snapshot", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-models-dev-fallback-"));
 		try {
 			const bundledModels = getBundledModels("zai");
@@ -53,10 +53,11 @@ describe("Shared models.dev catalog fallback", () => {
 				throw new Error(`${newlyPublishedId} is bundled; pick a new un-bundled fixture id`);
 			}
 			let fetches = 0;
-			const fallback = modelsDevCatalogFallback("zai");
-			if (!fallback) throw new Error("ZAI did not configure a models.dev fallback");
 			const modelsDev = {
-				...fallback,
+				additiveOnly: true,
+				map: (payload: Record<string, unknown>) =>
+					filterModelsDevCatalogRows(mapModelsDevToModels(payload, MODELS_DEV_PROVIDER_DESCRIPTORS))
+						.filter(model => model.provider === "zai"),
 				fetch: async () => {
 					fetches++;
 					return {
@@ -168,14 +169,15 @@ describe("Shared models.dev catalog fallback", () => {
 		] as const;
 		try {
 			for (const { providerId, invalidId, validId, npm } of cases) {
-				const fallback = modelsDevCatalogFallback(providerId);
-				if (!fallback) throw new Error(`${providerId} did not configure a models.dev fallback`);
 				const options = {
 					providerId,
 					cacheDbPath: path.join(tempDir, `${providerId}.db`),
 					staticModels: [],
 					modelsDev: {
-						...fallback,
+						additiveOnly: true,
+						map: (payload: Record<string, unknown>) =>
+							filterModelsDevCatalogRows(mapModelsDevToModels(payload, MODELS_DEV_PROVIDER_DESCRIPTORS))
+								.filter(model => model.provider === providerId),
 						fetch: async () => ({
 							[providerId]: {
 								models: {
@@ -381,113 +383,6 @@ describe("Shared models.dev catalog fallback", () => {
 		}
 	});
 
-	test("isolates conditional catalog sessions by fetch context", async () => {
-		let firstFetches = 0;
-		let secondFetches = 0;
-		const firstFetch: FetchImpl = async () => {
-			firstFetches++;
-			return Response.json({ source: "first" }, { headers: { etag: '"first"' } });
-		};
-		const secondFetch: FetchImpl = async () => {
-			secondFetches++;
-			return Response.json({ source: "second" }, { headers: { etag: '"second"' } });
-		};
-
-		const [first, second] = await Promise.all([fetchWellKnownModels(firstFetch), fetchWellKnownModels(secondFetch)]);
-		expect(first).toEqual({ source: "first" });
-		expect(second).toEqual({ source: "second" });
-		expect(firstFetches).toBe(1);
-		expect(secondFetches).toBe(1);
-	});
-
-	test("reports a stale cache when conditional catalog revalidation fails", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-revalidation-fallback-"));
-		try {
-			const bundledModels = getBundledModels("zai");
-			let catalogAvailable = true;
-			let fetches = 0;
-			const fetchImpl: FetchImpl = async () => {
-				fetches++;
-				if (!catalogAvailable) throw new Error("models.dev unavailable");
-				return Response.json(
-					{
-						zai: {
-							models: {
-								"shared-only": {
-									id: "shared-only",
-									name: "Shared Only",
-									tool_call: true,
-									reasoning: false,
-									limit: { context: 128_000, output: 8_192 },
-									modalities: { input: ["text"], output: ["text"] },
-									provider: { npm: "@ai-sdk/anthropic" },
-								},
-							},
-						},
-					},
-					{ headers: { etag: '"catalog-v1"' } },
-				);
-			};
-			const fallback = modelsDevCatalogFallback("zai", fetchImpl);
-			if (!fallback) throw new Error("ZAI did not configure a models.dev fallback");
-			const options = {
-				providerId: "zai" as const,
-				cacheDbPath: path.join(tempDir, "models.db"),
-				staticModels: bundledModels,
-				modelsDev: fallback,
-			};
-
-			const initial = await resolveProviderModels(options, "online");
-			expect(initial.source).toBe("models.dev");
-			expect(initial.stale).toBe(false);
-			expect(initial.models.some(model => model.id === "shared-only")).toBe(true);
-
-			catalogAvailable = false;
-			const failedRevalidation = await resolveProviderModels(options, "online");
-			expect(failedRevalidation.source).toBe("cache");
-			expect(failedRevalidation.stale).toBe(true);
-			expect(failedRevalidation.updatedAt).toBe(initial.updatedAt);
-			expect(failedRevalidation.models.some(model => model.id === "shared-only")).toBe(true);
-			expect(fetches).toBe(2);
-		} finally {
-			await fs.rm(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	test("applies subscriber deadlines without aborting a joined catalog request", async () => {
-		let aborted = false;
-		let fetches = 0;
-		const transport = Promise.withResolvers<Response>();
-		const stalledFetch: FetchImpl = (_input, init) => {
-			fetches++;
-			const signal = init?.signal;
-			if (!signal) throw new Error("catalog fetch did not receive an abort signal");
-			const rejectAborted = () => {
-				aborted = true;
-				transport.reject(signal.reason);
-			};
-			if (signal.aborted) {
-				rejectAborted();
-			} else {
-				signal.addEventListener("abort", rejectAborted, { once: true });
-			}
-			return transport.promise;
-		};
-		const shortFallback = modelsDevCatalogFallback("zai", stalledFetch, 5);
-		const longFallback = modelsDevCatalogFallback("zai", stalledFetch, 5_000);
-		if (!shortFallback || !longFallback) throw new Error("ZAI did not configure a models.dev fallback");
-
-		const shortRequest = shortFallback.fetch();
-		const longRequest = longFallback.fetch();
-		await expect(shortRequest).rejects.toThrow(/timed out/i);
-		expect(aborted).toBe(false);
-		expect(fetches).toBe(1);
-
-		const payload = { source: "shared-transport" };
-		transport.resolve(Response.json(payload));
-		expect(await longRequest).toEqual(payload);
-		expect(aborted).toBe(false);
-	});
 });
 
 describe("OpenCode provider discovery", () => {
@@ -751,61 +646,38 @@ describe("OpenCode provider discovery", () => {
 		expect(apiById.get("brand-new-model")).toBe("openai-completions");
 	});
 
-	test("enriches gateway-first ids from stencil without changing their route", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-opencode-zen-gateway-first-"));
+	test("retains local capabilities and endpoint ids from cache when the selected provider is unavailable", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-opencode-zen-local-cache-"));
 		try {
-			const options = opencodeZenModelManagerOptions({
-				apiKey: "zen-account-key",
-				fetch: async () => modelListResponse(["brand-new-stencil-model"]),
-			});
-			const modelsDev = options.modelsDev;
-			if (!modelsDev) throw new Error("OpenCode model manager did not configure stencil fallback");
-			const catalog = {
-				opencode: {
-					models: {
-						"brand-new-stencil-model": {
-							id: "brand-new-stencil-model",
-							name: "Gateway First Test Model",
-							tool_call: true,
-							reasoning: true,
-							limit: { context: 1_000_000, output: 131_072 },
-							modalities: { input: ["text", "image", "video"], output: ["text"] },
-							provider: { npm: "@ai-sdk/anthropic" },
-						},
+			const reference = getBundledModels("opencode-zen").find(model => model.reasoning && model.contextWindow != null);
+			if (!reference) throw new Error("Bundled gateway reference missing");
+			const urls: string[] = [];
+			let available = true;
+			const options = {
+				...opencodeZenModelManagerOptions({
+					apiKey: "zen-account-key",
+					fetch: async input => {
+						urls.push(String(input));
+						if (!available) throw new Error("selected provider unavailable");
+						return modelListResponse([reference.id, "brand-new-provider-model"]);
 					},
-				},
-			};
-			const managerOptions = {
-				...options,
+				}),
 				cacheDbPath: path.join(tempDir, "models.db"),
-				modelsDev: { ...modelsDev, fetch: async () => catalog },
 			};
-			const online = await resolveProviderModels(managerOptions, "online");
-			const model = online.models.find(candidate => candidate.id === "brand-new-stencil-model");
-			expect(model).toMatchObject({
-				name: "Gateway First Test Model",
-				api: "openai-completions",
-				baseUrl: "https://opencode.ai/zen/v1",
-				contextWindow: 1_000_000,
-				maxTokens: 131_072,
-				reasoning: true,
-				input: ["text", "image"],
+			const online = await resolveProviderModels(options, "online");
+			expect(online.models.find(model => model.id === reference.id)).toMatchObject({
+				contextWindow: reference.contextWindow, reasoning: reference.reasoning, input: reference.input,
 			});
-			if (!model) throw new Error("Gateway-first model was not resolved");
-			expect(getSupportedEfforts(model)).toEqual([
-				Effort.Minimal,
-				Effort.Low,
-				Effort.Medium,
-				Effort.High,
-				Effort.XHigh,
-			]);
-
-			const cached = await resolveProviderModels(managerOptions, "online-if-uncached");
-			expect(cached.models.find(candidate => candidate.id === model.id)).toMatchObject({
-				contextWindow: 1_000_000,
-				maxTokens: 131_072,
-				reasoning: true,
+			expect(online.models.some(model => model.id === "brand-new-provider-model")).toBe(true);
+			available = false;
+			const fallback = await resolveProviderModels(options, "online");
+			expect(fallback.stale).toBe(true);
+			expect(fallback.source).toBe("cache");
+			expect(fallback.models.find(model => model.id === reference.id)).toMatchObject({
+				contextWindow: reference.contextWindow, reasoning: reference.reasoning, input: reference.input,
 			});
+			expect(fallback.models.some(model => model.id === "brand-new-provider-model")).toBe(true);
+			expect(urls).toEqual(["https://opencode.ai/zen/v1/models", "https://opencode.ai/zen/v1/models"]);
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
@@ -842,7 +714,6 @@ describe("OpenCode provider discovery", () => {
 			const freeOptions = opencodeZenModelManagerOptions({
 				apiKey: "free-account-key",
 				fetch: async input => {
-					if (String(input).includes("catalog.stencil.so")) return Response.json({});
 					freeFetches++;
 					return modelListResponse(LIVE_FREE_MODEL_IDS);
 				},
@@ -856,7 +727,6 @@ describe("OpenCode provider discovery", () => {
 			const paidOptions = opencodeZenModelManagerOptions({
 				apiKey: "paid-account-key",
 				fetch: async input => {
-					if (String(input).includes("catalog.stencil.so")) return Response.json({});
 					paidFetches++;
 					return modelListResponse(LIVE_PAID_MODEL_IDS);
 				},

@@ -65,7 +65,6 @@ describe("ClinePass catalog", () => {
 				allowUnauthenticated: true,
 			},
 		});
-		expect(descriptor?.allowUnauthenticated).toBeUndefined();
 		expect(model).toMatchObject({
 			id: "kimi-k3",
 			name: "Kimi K3",
