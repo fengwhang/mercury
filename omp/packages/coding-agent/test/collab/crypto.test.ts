@@ -215,22 +215,10 @@ describe("collab link format", () => {
 		const rootLink = formatCollabWebLink(relayUrl, roomId, key, undefined, " https://web.example/ ");
 		expect(rootLink.startsWith("https://web.example/#")).toBe(true);
 
-		const pathLink = formatCollabWebLink(
-			relayUrl,
-			roomId,
-			key,
-			undefined,
-			"https://web.example:8443/collab///",
-		);
+		const pathLink = formatCollabWebLink(relayUrl, roomId, key, undefined, "https://web.example:8443/collab///");
 		expect(pathLink.startsWith("https://web.example:8443/collab/#")).toBe(true);
 
-		const localHttpLink = formatCollabWebLink(
-			relayUrl,
-			roomId,
-			key,
-			undefined,
-			"http://localhost:5173/app/",
-		);
+		const localHttpLink = formatCollabWebLink(relayUrl, roomId, key, undefined, "http://localhost:5173/app/");
 		expect(localHttpLink.startsWith("http://localhost:5173/app/#")).toBe(true);
 	});
 

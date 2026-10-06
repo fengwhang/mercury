@@ -8,8 +8,10 @@ import { fetchReadUrl } from "@oh-my-pi/pi-coding-agent/tools/fetch";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { asGlobalFetch } from "../helpers/fetch-mock";
 
-const PAGE_HTML = "<html><head><title>Resource page</title></head><body><main>Explicitly requested page</main></body></html>";
-const PAGE_MARKDOWN = "# Resource page\n\nThis content comes from the explicitly requested page using ordinary HTTP content negotiation, not a vendor API or raw README endpoint.";
+const PAGE_HTML =
+	"<html><head><title>Resource page</title></head><body><main>Explicitly requested page</main></body></html>";
+const PAGE_MARKDOWN =
+	"# Resource page\n\nThis content comes from the explicitly requested page using ordinary HTTP content negotiation, not a vendor API or raw README endpoint.";
 
 function pageResponse(url: string, body: string, contentType: string, status = 200): Response {
 	const response = new Response(body, { status, headers: { "Content-Type": contentType } });

@@ -43,12 +43,20 @@ describe("local metadata discovery", () => {
 			if (url !== "https://anthropic.operator.test/v1/models") return new Response("unexpected", { status: 404 });
 			return Response.json({ data: [{ id: reference.id, display_name: "Operator Opus" }] });
 		};
-		const options = anthropicModelManagerOptions({ apiKey: "test-key", baseUrl: "https://anthropic.operator.test", fetch: transport });
+		const options = anthropicModelManagerOptions({
+			apiKey: "test-key",
+			baseUrl: "https://anthropic.operator.test",
+			fetch: transport,
+		});
 		const models = await options.fetchDynamicModels?.();
 		expect(urls).toEqual(["https://anthropic.operator.test/v1/models"]);
 		expect(models?.find(model => model.id === reference.id)).toMatchObject({
-			input: reference.input, reasoning: reference.reasoning, contextWindow: reference.contextWindow,
-			maxTokens: reference.maxTokens, cost: reference.cost, baseUrl: "https://anthropic.operator.test",
+			input: reference.input,
+			reasoning: reference.reasoning,
+			contextWindow: reference.contextWindow,
+			maxTokens: reference.maxTokens,
+			cost: reference.cost,
+			baseUrl: "https://anthropic.operator.test",
 		});
 	});
 
@@ -63,9 +71,18 @@ describe("local metadata discovery", () => {
 			if (url !== "https://siliconflow.operator.test/v1/models") return new Response("unexpected", { status: 404 });
 			return Response.json({ data: [{ id }] });
 		};
-		const models = await siliconflowModelManagerOptions({ apiKey: "test-key", baseUrl: "https://siliconflow.operator.test/v1", fetch: transport }).fetchDynamicModels?.();
+		const models = await siliconflowModelManagerOptions({
+			apiKey: "test-key",
+			baseUrl: "https://siliconflow.operator.test/v1",
+			fetch: transport,
+		}).fetchDynamicModels?.();
 		expect(urls).toEqual(["https://siliconflow.operator.test/v1/models"]);
-		expect(models?.[0]).toMatchObject({ id, reasoning: true, contextWindow: reference.contextWindow, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+		expect(models?.[0]).toMatchObject({
+			id,
+			reasoning: true,
+			contextWindow: reference.contextWindow,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		});
 	});
 
 	test("OpenCode preserves bundled metadata and operator routing with provider-only discovery", async () => {
@@ -76,11 +93,19 @@ describe("local metadata discovery", () => {
 			urls.push(String(input));
 			return Response.json({ data: [{ id: reference.id }] });
 		};
-		const options = opencodeZenModelManagerOptions({ apiKey: "test-key", baseUrl: "https://opencode.operator.test/v1", fetch: transport });
+		const options = opencodeZenModelManagerOptions({
+			apiKey: "test-key",
+			baseUrl: "https://opencode.operator.test/v1",
+			fetch: transport,
+		});
 		const models = await options.fetchDynamicModels?.();
 		expect(options.modelsDev).toBeUndefined();
 		expect(urls).toEqual(["https://opencode.operator.test/v1/models"]);
-		expect(models?.[0]).toMatchObject({ id: reference.id, reasoning: reference.reasoning, contextWindow: reference.contextWindow });
+		expect(models?.[0]).toMatchObject({
+			id: reference.id,
+			reasoning: reference.reasoning,
+			contextWindow: reference.contextWindow,
+		});
 	});
 
 	test("LiteLLM fallback keeps local canonical metadata and only queries the selected proxy", async () => {
@@ -94,7 +119,10 @@ describe("local metadata discovery", () => {
 			if (url === "https://litellm.operator.test/v1/models") return Response.json({ data: [{ id }] });
 			return new Response("no management metadata", { status: 404 });
 		};
-		const models = await litellmModelManagerOptions({ baseUrl: "https://litellm.operator.test/v1", fetch: transport }).fetchDynamicModels?.();
+		const models = await litellmModelManagerOptions({
+			baseUrl: "https://litellm.operator.test/v1",
+			fetch: transport,
+		}).fetchDynamicModels?.();
 		expect(urls.length).toBeGreaterThan(0);
 		expect(urls.every(url => new URL(url).hostname === "litellm.operator.test")).toBe(true);
 		expect(models?.[0]).toMatchObject({ id, reasoning: true, contextWindow: reference.contextWindow });

@@ -135,12 +135,14 @@ const BUNDLED_CATALOG_PROVIDER_ID_LOOKUP: Readonly<Record<string, true>> = Objec
 );
 const ADDITIVE_BUNDLED_CATALOG_PROVIDER_ID_LOOKUP: Readonly<Record<string, true>> = Object.freeze(
 	Object.fromEntries(
-		getBundledProviders().filter(
-			providerId =>
-				!PROVIDER_DESCRIPTORS.some(
-					descriptor => descriptor.providerId === providerId && descriptor.dynamicModelsAuthoritative,
-				),
-		).map(providerId => [providerId, true as const]),
+		getBundledProviders()
+			.filter(
+				providerId =>
+					!PROVIDER_DESCRIPTORS.some(
+						descriptor => descriptor.providerId === providerId && descriptor.dynamicModelsAuthoritative,
+					),
+			)
+			.map(providerId => [providerId, true as const]),
 	),
 );
 
@@ -1928,8 +1930,7 @@ export class ModelRegistry {
 				fetch: this.#fetch,
 			};
 			const preparedConfig =
-				getProviderDefinition(descriptor.providerId)?.prepareModelDiscovery?.(discoveryConfig) ??
-				discoveryConfig;
+				getProviderDefinition(descriptor.providerId)?.prepareModelDiscovery?.(discoveryConfig) ?? discoveryConfig;
 			options.push(descriptor.createModelManagerOptions(preparedConfig));
 		}
 

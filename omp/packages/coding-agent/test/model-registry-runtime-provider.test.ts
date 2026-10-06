@@ -137,7 +137,9 @@ describe("ModelRegistry runtime provider registration", () => {
 		}
 
 		expect(fetchRequests.filter(url => new URL(url).hostname === "catalog.stencil.so")).toEqual([]);
-		expect(fetchRequests.filter(url => !["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname))).toEqual([]);
+		expect(fetchRequests.filter(url => !["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname))).toEqual(
+			[],
+		);
 		expect(registry.getAll().length).toBeGreaterThan(100);
 		expect(registry.find("anthropic", "claude-opus-5")?.input).toContain("image");
 		expect(getProviderModels(registry, "zai").length).toBeGreaterThan(0);

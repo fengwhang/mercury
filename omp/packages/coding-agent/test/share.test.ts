@@ -590,7 +590,9 @@ describe("shareSession", () => {
 		for (const serverUrl of ["https://my.omp.sh/s", "https://omp.sh/s", "https://skills.omp.sh./s"]) {
 			await expect(shareSession(sm, { serverUrl })).rejects.toThrow("self-hosted");
 		}
-		await expect(shareSession(sm, { serverUrl: "https://my.omp.sh/s", store: "gist" })).rejects.toThrow("self-hosted");
+		await expect(shareSession(sm, { serverUrl: "https://my.omp.sh/s", store: "gist" })).rejects.toThrow(
+			"self-hosted",
+		);
 		expect(gh).not.toHaveBeenCalled();
 		expect(network).not.toHaveBeenCalled();
 	});
@@ -613,13 +615,16 @@ describe("shareSession", () => {
 		const originalPath = process.env.PATH;
 		const gh = path.join(dir, "gh");
 		const gistId = "abcdef0123456789abcd";
-		await Bun.write(gh, `#!${process.execPath}
+		await Bun.write(
+			gh,
+			`#!${process.execPath}
 if (process.argv[2] === "auth") process.exit(0);
 if (process.argv[2] !== "gist") process.exit(1);
 const sealed = Buffer.from(await Bun.file(process.argv.at(-1)).text(), "base64");
 if (sealed.length < 28) process.exit(1);
 console.log("https://gist.github.com/fake/${gistId}");
-`);
+`,
+		);
 		await fs.chmod(gh, 0o700);
 		vi.spyOn(utils, "$which").mockReturnValue(gh);
 		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
@@ -637,10 +642,13 @@ console.log("https://gist.github.com/fake/${gistId}");
 			expect(result.gistUrl).toBe(`https://gist.github.com/fake/${gistId}`);
 			expect(result.url).toMatch(new RegExp(`^https://share\\.example/s/${gistId}#[A-Za-z0-9_-]+$`));
 			expect(network).not.toHaveBeenCalled();
-			await Bun.write(gh, `#!${process.execPath}
+			await Bun.write(
+				gh,
+				`#!${process.execPath}
 if (process.argv[2] === "auth") process.exit(0);
 process.exit(1);
-`);
+`,
+			);
 			await expect(shareSession(sm, { store: "gist", serverUrl: "https://share.example/s" })).rejects.toThrow(
 				"Gist creation failed",
 			);

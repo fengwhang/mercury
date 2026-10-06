@@ -281,7 +281,7 @@ describe("LiteLLM provider discovery", () => {
 	test("routes only OpenAI-backed rich models through Responses", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -339,7 +339,7 @@ describe("LiteLLM provider discovery", () => {
 	test("uses rich LiteLLM metadata before /v1/models", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 			const url = inputUrl(input);
-			
+
 			expect(init?.headers).toMatchObject({
 				Accept: "application/json",
 				Authorization: "Bearer sk-rich",
@@ -394,7 +394,7 @@ describe("LiteLLM provider discovery", () => {
 	test("warns once when forbidden rich metadata forces /v1/models fallback", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			
+
 			if (url === "http://forbidden:4000/v1/models") {
 				return Response.json({ data: [{ id: "hosted_vllm/private-model" }] });
 			}
@@ -543,7 +543,7 @@ describe("LiteLLM provider discovery", () => {
 	test("uses LiteLLM tool support metadata when rich endpoints succeed", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -577,7 +577,7 @@ describe("LiteLLM provider discovery", () => {
 			const fetchMock = vi.fn(async (input: string | URL | Request) => {
 				const url = inputUrl(input);
 				calls.push(url);
-				
+
 				if (url === "http://primary:4000/model_group/info") {
 					return Response.json({ data: [makeLiteLLMSentinelPlaceholder(sentinelModelId)] });
 				}
@@ -628,7 +628,7 @@ describe("LiteLLM provider discovery", () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
 			calls.push(url);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -679,7 +679,7 @@ describe("LiteLLM provider discovery", () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
 			calls.push(url);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return new Response("{}", { status: 404 });
 			}
@@ -727,7 +727,7 @@ describe("LiteLLM provider discovery", () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
 			calls.push(url);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -773,7 +773,7 @@ describe("LiteLLM provider discovery", () => {
 	test("ignores zero placeholder prices from later rich metadata", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -817,7 +817,7 @@ describe("LiteLLM provider discovery", () => {
 	test("preserves cache prices reported before base prices", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -862,7 +862,7 @@ describe("LiteLLM provider discovery", () => {
 	test("merges API routing evidence across rich metadata endpoints", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [{ model_group: "aliased-openai" }, { model_group: "mixed-backend", providers: ["openai"] }],
@@ -903,7 +903,7 @@ describe("LiteLLM provider discovery", () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
 			calls.push(url);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [{ model_group: "opaque-alias", supports_vision: false }],
@@ -935,7 +935,7 @@ describe("LiteLLM provider discovery", () => {
 	test("merges mixed-provider routing evidence within one rich endpoint", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -963,7 +963,7 @@ describe("LiteLLM provider discovery", () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
 			calls.push(url);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -1055,7 +1055,7 @@ describe("LiteLLM provider discovery", () => {
 	test("drops reseller usage suffix from LiteLLM rich model names", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			
+
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [

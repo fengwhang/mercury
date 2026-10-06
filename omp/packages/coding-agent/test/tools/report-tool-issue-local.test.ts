@@ -26,7 +26,11 @@ async function isolatedRun(script: string, extraEnv: Record<string, string> = {}
 			...extraEnv,
 		};
 		const proc = Bun.spawn([process.execPath, "--eval", script], { env, cwd: home, stdout: "pipe", stderr: "pipe" });
-		const [stdout, stderr, exitCode] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
 		expect(stderr).toBe("");
 		expect(exitCode).toBe(0);
 		return JSON.parse(stdout);
@@ -41,7 +45,8 @@ describe("local report issue entrypoint", () => {
 	for (const consent of ["unset", "granted", "denied"]) {
 		for (const push of ["0", "1", "absent"]) {
 			it(`records locally with legacy consent=${consent} and push=${push}`, async () => {
-				const result = await isolatedRun(`${denyNetwork}
+				const result = await isolatedRun(
+					`${denyNetwork}
 					// Fake transport must be installed before these module-loading boundaries.
 					const { getAutoQaDbPath } = await import(${JSON.stringify(pathToFileURL(path.resolve(source, "../../utils/src/dirs.ts")).href)});
 					if (!getAutoQaDbPath().startsWith(process.env.HOME + "/")) throw new Error("Unisolated QA database");
@@ -53,9 +58,18 @@ describe("local report issue entrypoint", () => {
 					const rows = db.prepare("SELECT model, tool, report, created_at FROM grievances").all();
 					db.close();
 					console.log(JSON.stringify({ rows, fetchCalls, response }));
-				`, { ...(push === "absent" ? {} : { PI_AUTO_QA_PUSH: push }), PI_AUTO_QA_PUSH_URL: "https://qa.invalid/override" });
+				`,
+					{
+						...(push === "absent" ? {} : { PI_AUTO_QA_PUSH: push }),
+						PI_AUTO_QA_PUSH_URL: "https://qa.invalid/override",
+					},
+				);
 				expect(result.rows).toHaveLength(1);
-				expect(result.rows[0]).toMatchObject({ model: "local/test-model", tool: "read", report: "selector lost a line" });
+				expect(result.rows[0]).toMatchObject({
+					model: "local/test-model",
+					tool: "read",
+					report: "selector lost a line",
+				});
 				expect(result.rows[0].created_at).toBeTruthy();
 				expect(result.fetchCalls).toBe(0);
 				expect(result.response.result.content).toEqual([{ type: "text", text: "Recorded locally." }]);
@@ -66,7 +80,8 @@ describe("local report issue entrypoint", () => {
 
 describe("local grievances parser", () => {
 	it("rejects the removed push action without invoking fetch", async () => {
-		const result = await isolatedRun(`${denyNetwork}
+		const result = await isolatedRun(
+			`${denyNetwork}
 			// Install fake transport before loading the real command/parser.
 			const { default: Grievances } = await import(${JSON.stringify(moduleUrl("commands/grievances.ts"))});
 			let error;
@@ -76,7 +91,9 @@ describe("local grievances parser", () => {
 				error = { name: caught.name, message: caught.message };
 			}
 			console.log(JSON.stringify({ error, fetchCalls }));
-		`, { PI_AUTO_QA_PUSH: "1", PI_AUTO_QA_PUSH_URL: "https://qa.invalid/override" });
+		`,
+			{ PI_AUTO_QA_PUSH: "1", PI_AUTO_QA_PUSH_URL: "https://qa.invalid/override" },
+		);
 		expect(result.error).toMatchObject({ name: "CliUsageError" });
 		expect(result.error.message).toContain('Expected action to be one of: list, clean; got "push"');
 		expect(result.fetchCalls).toBe(0);

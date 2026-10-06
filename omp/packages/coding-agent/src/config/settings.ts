@@ -2588,7 +2588,13 @@ export class Settings {
 			delete devObj.autoqaPush;
 			if (isRecord(devObj.autoqa)) delete devObj.autoqa;
 		}
-		for (const key of ["dev.autoqa.consent", "dev.autoqaConsent", "dev.autoqaPush", "dev.autoqaPush.endpoint", "dev.autoqaPush.token"]) {
+		for (const key of [
+			"dev.autoqa.consent",
+			"dev.autoqaConsent",
+			"dev.autoqaPush",
+			"dev.autoqaPush.endpoint",
+			"dev.autoqaPush.token",
+		]) {
 			delete raw[key];
 		}
 		if (isRecord(raw["dev.autoqa"])) delete raw["dev.autoqa"];

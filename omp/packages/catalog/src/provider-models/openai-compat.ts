@@ -123,7 +123,6 @@ function toInputCapabilities(value: unknown): ("text" | "image")[] {
 	return supportsImage ? ["text", "image"] : ["text"];
 }
 
-
 function buildAnthropicDiscoveryHeaders(apiKey: string): Record<string, string> {
 	const oauthToken = isAnthropicOAuthToken(apiKey);
 	const headers: Record<string, string> = {
@@ -138,7 +137,6 @@ function buildAnthropicDiscoveryHeaders(apiKey: string): Record<string, string> 
 	}
 	return headers;
 }
-
 
 /**
  * Curated Anthropic models that are live or limited-availability on the
@@ -1727,7 +1725,6 @@ export function isLikelySiliconFlowChatModelId(id: string): boolean {
 	}
 	return !isExcludedModel("siliconflow", normalized);
 }
-
 
 function createSiliconFlowModelManagerOptions(
 	providerId: "siliconflow" | "siliconflow-cn",
@@ -6878,4 +6875,3 @@ export const MODELS_DEV_PROVIDER_DESCRIPTORS: readonly ModelsDevProviderDescript
 	...MODELS_DEV_PROVIDER_DESCRIPTORS_CODING_PLANS,
 	...MODELS_DEV_PROVIDER_DESCRIPTORS_SPECIALIZED,
 ];
-

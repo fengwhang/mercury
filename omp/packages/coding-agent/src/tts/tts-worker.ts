@@ -165,8 +165,14 @@ function loadKokoroRuntime(
 		// and throws on missing files; only its browser branch fetches voices.
 		for (const voice of getTtsLocalModelSpec(modelKey)?.voices ?? []) {
 			const file = path.resolve(path.dirname(kokoroEntry), "../voices", `${voice.id}.bin`);
-			const present = await fs.stat(file).then(stat => stat.isFile() && stat.size > 0).catch(() => false);
-			if (!present) throw new Error(`Local TTS voice assets missing: ${file}. Install the complete kokoro-js runtime locally or configure a TTS provider.`);
+			const present = await fs
+				.stat(file)
+				.then(stat => stat.isFile() && stat.size > 0)
+				.catch(() => false);
+			if (!present)
+				throw new Error(
+					`Local TTS voice assets missing: ${file}. Install the complete kokoro-js runtime locally or configure a TTS provider.`,
+				);
 		}
 		configureTransformers(runtimeRequire(transformersEntry) as TransformersEnv);
 		return runtimeRequire(kokoroEntry) as KokoroRuntime;

@@ -510,10 +510,14 @@ export async function shareSession(sm: SessionManager, options?: ShareSessionOpt
 export function normalizeShareServerUrl(serverUrl?: string): string {
 	const base = (serverUrl ?? DEFAULT_SHARE_URL).trim().replace(/\/+$/, "");
 	if (!base) {
-		throw new Error("No share URL configured. Set share.serverUrl to your self-hosted share viewer/upload endpoint in /settings.");
+		throw new Error(
+			"No share URL configured. Set share.serverUrl to your self-hosted share viewer/upload endpoint in /settings.",
+		);
 	}
 	if (isUpstreamHostedHostname(new URL(base).hostname)) {
-		throw new Error("Upstream hosted sharing is not supported. Set share.serverUrl to your self-hosted share endpoint.");
+		throw new Error(
+			"Upstream hosted sharing is not supported. Set share.serverUrl to your self-hosted share endpoint.",
+		);
 	}
 	return base;
 }
@@ -613,7 +617,10 @@ function capLongStrings(value: unknown, cap: number): void {
 
 /** Create the explicitly selected secret gist; never fall back to another store. */
 async function createGist(sealed: Uint8Array): Promise<{ id: string; url: string }> {
-	if (!$which("gh")) throw new Error("Gist sharing requires gh. Install and authenticate gh, or select share.store=blob with your self-hosted share.serverUrl.");
+	if (!$which("gh"))
+		throw new Error(
+			"Gist sharing requires gh. Install and authenticate gh, or select share.store=blob with your self-hosted share.serverUrl.",
+		);
 	const auth = await $`gh auth status`.quiet().nothrow();
 	if (auth.exitCode !== 0) {
 		throw new Error("Gist sharing requires authenticated gh. Run gh auth login, or select share.store=blob.");

@@ -1,10 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	COLLAB_PROMPT_MESSAGE_TYPE,
-	COLLAB_PROTO,
-	ENVELOPE_HEADER_LENGTH,
-	ROOM_ID_BYTES,
-} from "../src";
+import { COLLAB_PROMPT_MESSAGE_TYPE, COLLAB_PROTO, ENVELOPE_HEADER_LENGTH, ROOM_ID_BYTES } from "../src";
 
 describe("collab wire constants", () => {
 	it("exports the protocol constants consumed by host, guest, and relay links", () => {

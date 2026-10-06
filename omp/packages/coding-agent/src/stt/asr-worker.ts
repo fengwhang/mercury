@@ -262,8 +262,14 @@ async function ensureSherpaModelFiles(
 	for (const role in spec.files) {
 		const key = role as keyof typeof spec.files;
 		const dest = path.join(dir, spec.files[key]);
-		const present = await fs.stat(dest).then(stat => stat.isFile() && stat.size > 0).catch(() => false);
-		if (!present) throw new Error(`Local STT assets missing: ${dest}. Provision all encoder/decoder/joiner/tokens files locally, or configure an STT provider. Mercury does not download model weights.`);
+		const present = await fs
+			.stat(dest)
+			.then(stat => stat.isFile() && stat.size > 0)
+			.catch(() => false);
+		if (!present)
+			throw new Error(
+				`Local STT assets missing: ${dest}. Provision all encoder/decoder/joiner/tokens files locally, or configure an STT provider. Mercury does not download model weights.`,
+			);
 		resolved[key] = dest;
 	}
 	return resolved;

@@ -18,7 +18,6 @@ import { anthropicModelManagerOptions } from "@oh-my-pi/pi-catalog/provider-mode
 
 const PROVIDER_BASE_URL = "https://api.anthropic.com";
 
-
 function anthropicModelsResponse(): Response {
 	const body = {
 		data: [

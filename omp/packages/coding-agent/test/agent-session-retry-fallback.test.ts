@@ -1520,10 +1520,7 @@ describe("AgentSession retry fallback", () => {
 		});
 		await session.prompt("Recover even if setup outlasts the cooldown");
 		await session.waitForIdle();
-		expect(requestedModels).toEqual([
-			`${primary.provider}/${primary.id}`,
-			`${fallback.provider}/${fallback.id}`,
-		]);
+		expect(requestedModels).toEqual([`${primary.provider}/${primary.id}`, `${fallback.provider}/${fallback.id}`]);
 		expect(getLastAssistantMessage(session).content).toContainEqual({
 			type: "text",
 			text: `ok:${fallback.provider}/${fallback.id}`,
@@ -1541,9 +1538,7 @@ describe("AgentSession retry fallback", () => {
 			const primary = fast
 				? getBundledModel("fireworks", "kimi-k2.6-fast")!
 				: getBundledModel("anthropic", "claude-sonnet-4-5")!;
-			const fallback = fast
-				? getBundledModel("fireworks", "kimi-k2.6")!
-				: getBundledModel("openai", "gpt-4o-mini")!;
+			const fallback = fast ? getBundledModel("fireworks", "kimi-k2.6")! : getBundledModel("openai", "gpt-4o-mini")!;
 			const requestedModels: string[] = [];
 			const credentialStarted = Promise.withResolvers<void>();
 			const releaseCredential = Promise.withResolvers<void>();
@@ -1591,10 +1586,7 @@ describe("AgentSession retry fallback", () => {
 			// A cancelled recovery settles the turn, not the root session.
 			await session.prompt("Continue the same session after cancellation");
 			await session.waitForIdle();
-			expect(requestedModels).toEqual([
-				`${primary.provider}/${primary.id}`,
-				`${primary.provider}/${primary.id}`,
-			]);
+			expect(requestedModels).toEqual([`${primary.provider}/${primary.id}`, `${primary.provider}/${primary.id}`]);
 			expect(getLastAssistantMessage(session).stopReason).toBe("stop");
 		},
 	);

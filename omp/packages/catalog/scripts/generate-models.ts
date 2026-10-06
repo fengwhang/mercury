@@ -250,10 +250,7 @@ function createGlobalSnapshotReferenceMap(snapshotModels: readonly ModelSpec[]):
 	return references;
 }
 
-function applyGlobalSnapshotFallback(
-	models: readonly ModelSpec[],
-	snapshotModels: readonly ModelSpec[],
-): ModelSpec[] {
+function applyGlobalSnapshotFallback(models: readonly ModelSpec[], snapshotModels: readonly ModelSpec[]): ModelSpec[] {
 	const providerScopedKeys = new Set(snapshotModels.map(model => `${model.provider}/${model.id}`));
 	const globalReferences = createGlobalSnapshotReferenceMap(snapshotModels);
 	return models.map(model => {

@@ -76,10 +76,7 @@ describe("Hugging Face self-hosted discovery", () => {
 	test("authoritative metadata descriptor cannot regenerate the public endpoint", () => {
 		const descriptor = MODELS_DEV_PROVIDER_DESCRIPTORS.find(entry => entry.providerId === "huggingface")!;
 		expect(descriptor.baseUrl).toBe("");
-		const models = mapModelsDevToModels(
-			{ huggingface: { models: { local: { tool_call: true } } } },
-			[descriptor],
-		);
+		const models = mapModelsDevToModels({ huggingface: { models: { local: { tool_call: true } } } }, [descriptor]);
 		expect(models[0]?.baseUrl).toBe("");
 	});
 });

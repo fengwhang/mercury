@@ -151,7 +151,9 @@ export function parseCollabLink(link: string): ParsedCollabLink | { error: strin
 	let text = link.trim().replace(/%23/gi, "#");
 	// Bare room secrets do not identify a relay; never infer a hosted endpoint.
 	if (BARE_LINK_RE.test(text)) {
-		return { error: "Collab link is missing a relay URL. Ask the host for a full relay.example.com/r/<roomId>.<key> link." };
+		return {
+			error: "Collab link is missing a relay URL. Ask the host for a full relay.example.com/r/<roomId>.<key> link.",
+		};
 	}
 	// Scheme-less `host[:port]/r/…` → wss.
 	if (!text.includes("://")) text = `wss://${text}`;

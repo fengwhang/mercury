@@ -53,7 +53,10 @@ export async function isSttModelCached(key: string): Promise<boolean> {
 		try {
 			for (const role in spec.files) {
 				const file = path.join(repoDir, spec.files[role as keyof typeof spec.files]);
-				const present = await fs.stat(file).then(stat => stat.isFile() && stat.size > 0).catch(() => false);
+				const present = await fs
+					.stat(file)
+					.then(stat => stat.isFile() && stat.size > 0)
+					.catch(() => false);
 				if (!present) return false;
 			}
 			return true;
@@ -86,7 +89,10 @@ export async function downloadSttModel(
 ): Promise<void> {
 	const spec = resolveSttModelSpec(key);
 	if (spec.engine === "transformers") await requireLocalModelAssets(spec.repo);
-	else if (!(await isSttModelCached(spec.key))) throw new Error(`Local STT assets missing: ${path.join(getTinyModelsCacheDir(), spec.repo)}. Provision all encoder/decoder/joiner/tokens files locally or configure an STT provider. Model downloads are disabled.`);
+	else if (!(await isSttModelCached(spec.key)))
+		throw new Error(
+			`Local STT assets missing: ${path.join(getTinyModelsCacheDir(), spec.repo)}. Provision all encoder/decoder/joiner/tokens files locally or configure an STT provider. Model downloads are disabled.`,
+		);
 	const files = new Map<string, { loaded: number; total: number }>();
 	const result = await sttClient.downloadModel(spec.key, {
 		signal: options?.signal,

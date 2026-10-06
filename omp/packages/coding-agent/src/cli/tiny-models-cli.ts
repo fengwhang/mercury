@@ -16,8 +16,14 @@ export interface TinyModelsCommandArgs {
 
 export function resolveModels(model: string | undefined): TinyLocalModelKey[] {
 	if (!model) return [DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY];
-	if (model === "all") return TINY_LOCAL_MODELS.filter(spec => !("unsupportedReason" in spec) || !spec.unsupportedReason).map(spec => spec.key);
-	if (!isTinyLocalModelKey(model)) throw new Error(`Unknown tiny local model: ${model}. Expected one of: ${TINY_LOCAL_MODELS.map(spec => spec.key).join(", ")}, all`);
+	if (model === "all")
+		return TINY_LOCAL_MODELS.filter(spec => !("unsupportedReason" in spec) || !spec.unsupportedReason).map(
+			spec => spec.key,
+		);
+	if (!isTinyLocalModelKey(model))
+		throw new Error(
+			`Unknown tiny local model: ${model}. Expected one of: ${TINY_LOCAL_MODELS.map(spec => spec.key).join(", ")}, all`,
+		);
 	return [model];
 }
 

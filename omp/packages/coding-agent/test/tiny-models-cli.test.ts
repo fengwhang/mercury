@@ -18,9 +18,14 @@ describe("tiny-models local-only command", () => {
 	});
 	it("refuses downloads with honest JSON failure and no worker call", async () => {
 		const output: string[] = [];
-		spyOn(process.stdout, "write").mockImplementation(chunk => { output.push(String(chunk)); return true; });
+		spyOn(process.stdout, "write").mockImplementation(chunk => {
+			output.push(String(chunk));
+			return true;
+		});
 		const download = spyOn(tinyTitleClient, "downloadModel").mockRejectedValue(new Error("must not start worker"));
-		await expect(runTinyModelsCommand({ action: "download", model: "lfm2.5-350m", flags: { json: true } })).rejects.toThrow("Model downloads are disabled");
+		await expect(
+			runTinyModelsCommand({ action: "download", model: "lfm2.5-350m", flags: { json: true } }),
+		).rejects.toThrow("Model downloads are disabled");
 		const result = JSON.parse(output.join(""));
 		expect(result.results[0].ok).toBe(false);
 		expect(result.results[0].error).toContain("Provision complete local assets");
@@ -28,7 +33,9 @@ describe("tiny-models local-only command", () => {
 	});
 	it("refuses text-mode downloads instead of reporting success", async () => {
 		const download = spyOn(tinyTitleClient, "downloadModel").mockRejectedValue(new Error("must not start worker"));
-		await expect(runTinyModelsCommand({ action: "download", flags: {} })).rejects.toThrow("Model downloads are disabled");
+		await expect(runTinyModelsCommand({ action: "download", flags: {} })).rejects.toThrow(
+			"Model downloads are disabled",
+		);
 		expect(download).not.toHaveBeenCalled();
 	});
 });

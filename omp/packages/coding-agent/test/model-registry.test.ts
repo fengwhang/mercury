@@ -750,8 +750,12 @@ describe("ModelRegistry", () => {
 			const reference = getBundledModels("openai").find(model => model.id === "gpt-5.6-sol");
 			if (!reference) throw new Error("Bundled OpenAI reference missing");
 			writeModelCache(
-				"openai", Date.now(), [{ ...reference, int: 60.9, tps: 70.4 }],
-				true, fingerprintStaticModels(getBundledModels("openai")), path.join(tempDir, "models.db"),
+				"openai",
+				Date.now(),
+				[{ ...reference, int: 60.9, tps: 70.4 }],
+				true,
+				fingerprintStaticModels(getBundledModels("openai")),
+				path.join(tempDir, "models.db"),
 			);
 			const requestedUrls: string[] = [];
 			const fetchMock: FetchImpl = async input => {

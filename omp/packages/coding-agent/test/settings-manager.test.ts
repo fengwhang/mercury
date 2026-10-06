@@ -2003,7 +2003,12 @@ describe("Settings", () => {
 			expect(dev.autoqaConsent).toBeUndefined();
 			expect(dev.autoqaPush).toBeUndefined();
 			expect(dev.autoqa).toBeUndefined();
-			for (const key of ["dev.autoqa.consent", "dev.autoqaConsent", "dev.autoqaPush.endpoint", "dev.autoqaPush.token"]) {
+			for (const key of [
+				"dev.autoqa.consent",
+				"dev.autoqaConsent",
+				"dev.autoqaPush.endpoint",
+				"dev.autoqaPush.token",
+			]) {
 				expect(onDisk[key]).toBeUndefined();
 			}
 			const reloaded = await Settings.loadIsolated({ cwd: projectDir, agentDir });

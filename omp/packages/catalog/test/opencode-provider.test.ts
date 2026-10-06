@@ -7,7 +7,6 @@ import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { readModelCache, writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
-import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
 import {
@@ -18,7 +17,6 @@ import {
 } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
 import { filterModelsDevCatalogRows } from "@oh-my-pi/pi-catalog/provider-models/models-dev-policies";
 import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
-import type { FetchImpl } from "@oh-my-pi/pi-utils";
 import { mergePreviousSnapshotModels } from "../scripts/generate-models";
 
 const LIVE_FREE_MODEL_IDS = [
@@ -56,8 +54,9 @@ describe("Caller-owned local metadata overlay", () => {
 			const modelsDev = {
 				additiveOnly: true,
 				map: (payload: Record<string, unknown>) =>
-					filterModelsDevCatalogRows(mapModelsDevToModels(payload, MODELS_DEV_PROVIDER_DESCRIPTORS))
-						.filter(model => model.provider === "zai"),
+					filterModelsDevCatalogRows(mapModelsDevToModels(payload, MODELS_DEV_PROVIDER_DESCRIPTORS)).filter(
+						model => model.provider === "zai",
+					),
 				fetch: async () => {
 					fetches++;
 					return {
@@ -176,8 +175,9 @@ describe("Caller-owned local metadata overlay", () => {
 					modelsDev: {
 						additiveOnly: true,
 						map: (payload: Record<string, unknown>) =>
-							filterModelsDevCatalogRows(mapModelsDevToModels(payload, MODELS_DEV_PROVIDER_DESCRIPTORS))
-								.filter(model => model.provider === providerId),
+							filterModelsDevCatalogRows(mapModelsDevToModels(payload, MODELS_DEV_PROVIDER_DESCRIPTORS)).filter(
+								model => model.provider === providerId,
+							),
 						fetch: async () => ({
 							[providerId]: {
 								models: {
@@ -382,7 +382,6 @@ describe("Caller-owned local metadata overlay", () => {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
 	});
-
 });
 
 describe("OpenCode provider discovery", () => {
@@ -649,7 +648,9 @@ describe("OpenCode provider discovery", () => {
 	test("retains local capabilities and endpoint ids from cache when the selected provider is unavailable", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-opencode-zen-local-cache-"));
 		try {
-			const reference = getBundledModels("opencode-zen").find(model => model.reasoning && model.contextWindow != null);
+			const reference = getBundledModels("opencode-zen").find(
+				model => model.reasoning && model.contextWindow != null,
+			);
 			if (!reference) throw new Error("Bundled gateway reference missing");
 			const urls: string[] = [];
 			let available = true;
@@ -666,7 +667,9 @@ describe("OpenCode provider discovery", () => {
 			};
 			const online = await resolveProviderModels(options, "online");
 			expect(online.models.find(model => model.id === reference.id)).toMatchObject({
-				contextWindow: reference.contextWindow, reasoning: reference.reasoning, input: reference.input,
+				contextWindow: reference.contextWindow,
+				reasoning: reference.reasoning,
+				input: reference.input,
 			});
 			expect(online.models.some(model => model.id === "brand-new-provider-model")).toBe(true);
 			available = false;
@@ -674,7 +677,9 @@ describe("OpenCode provider discovery", () => {
 			expect(fallback.stale).toBe(true);
 			expect(fallback.source).toBe("cache");
 			expect(fallback.models.find(model => model.id === reference.id)).toMatchObject({
-				contextWindow: reference.contextWindow, reasoning: reference.reasoning, input: reference.input,
+				contextWindow: reference.contextWindow,
+				reasoning: reference.reasoning,
+				input: reference.input,
 			});
 			expect(fallback.models.some(model => model.id === "brand-new-provider-model")).toBe(true);
 			expect(urls).toEqual(["https://opencode.ai/zen/v1/models", "https://opencode.ai/zen/v1/models"]);
@@ -713,7 +718,7 @@ describe("OpenCode provider discovery", () => {
 			let freeFetches = 0;
 			const freeOptions = opencodeZenModelManagerOptions({
 				apiKey: "free-account-key",
-				fetch: async input => {
+				fetch: async () => {
 					freeFetches++;
 					return modelListResponse(LIVE_FREE_MODEL_IDS);
 				},
@@ -726,7 +731,7 @@ describe("OpenCode provider discovery", () => {
 			let paidFetches = 0;
 			const paidOptions = opencodeZenModelManagerOptions({
 				apiKey: "paid-account-key",
-				fetch: async input => {
+				fetch: async () => {
 					paidFetches++;
 					return modelListResponse(LIVE_PAID_MODEL_IDS);
 				},

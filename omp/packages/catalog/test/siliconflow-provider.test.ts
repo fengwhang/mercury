@@ -30,7 +30,6 @@ function withEnv(key: string, value: string, run: () => void): void {
 	}
 }
 
-
 describe("siliconflow built-in providers", () => {
 	test("registers dynamic-authoritative runtime descriptors with env-key discovery", () => {
 		const intl = PROVIDER_DESCRIPTORS.find(item => item.providerId === "siliconflow");
@@ -107,9 +106,10 @@ describe("siliconflow built-in providers", () => {
 			expect(model).toMatchObject({
 				reasoning: canonical?.reasoning,
 				contextWindow: canonical?.contextWindow,
-				maxTokens: canonical?.maxTokens != null && canonical.contextWindow != null
-					? Math.min(canonical.maxTokens, canonical.contextWindow)
-					: (canonical?.maxTokens ?? null),
+				maxTokens:
+					canonical?.maxTokens != null && canonical.contextWindow != null
+						? Math.min(canonical.maxTokens, canonical.contextWindow)
+						: (canonical?.maxTokens ?? null),
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "siliconflow",
 				baseUrl: "https://api.siliconflow.com/v1",
@@ -125,10 +125,14 @@ describe("siliconflow built-in providers", () => {
 			urls.push(String(input));
 			return Response.json({ data: [{ id: "Pro/zai-org/GLM-5.1" }] });
 		};
-		const models = await siliconflowCnModelManagerOptions({ apiKey: "sk-test", fetch: stubFetch }).fetchDynamicModels?.();
+		const models = await siliconflowCnModelManagerOptions({
+			apiKey: "sk-test",
+			fetch: stubFetch,
+		}).fetchDynamicModels?.();
 		expect(models).toHaveLength(1);
 		expect(models?.[0]).toMatchObject({
-			id: "Pro/zai-org/GLM-5.1", reasoning: true,
+			id: "Pro/zai-org/GLM-5.1",
+			reasoning: true,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			baseUrl: "https://api.siliconflow.cn/v1",
 		});
