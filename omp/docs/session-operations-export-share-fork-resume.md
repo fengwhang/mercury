@@ -130,6 +130,8 @@ For headless execution, or in the TUI only when no custom share handler is found
 
 `share.serverUrl` has no built-in default. Configure your self-hosted upload/viewer endpoint before sharing; missing or blank values fail before building the snapshot or making a network request, including when `gist` is explicitly selected.
 
+Retained upstream `omp.sh` share URLs, including subdomains, are refused before upload or gist authentication. Update `share.serverUrl` to your self-hosted viewer/upload URL; an explicitly selected authenticated gist remains available with that viewer.
+
 1. Builds the session snapshot (`header`, `entries`, `leafId`, plus current
    `systemPrompt` and tool descriptions from agent state).
 2. If `share.redactSecrets` is enabled (default) and the obfuscator has configured or regex-discovered secrets, a typed per-field redaction pass rewrites text-bearing header, prompt, tool, entry, sub-session, and message fields. Inline image bytes remain for the later size pass. Opaque provider replay fields and untyped extension payloads (`details`, `data`, `outputSchema`, compaction preserve data) are dropped rather than traversed.

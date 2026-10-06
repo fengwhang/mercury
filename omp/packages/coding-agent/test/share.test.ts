@@ -575,6 +575,25 @@ describe("shareSession", () => {
 		expect(gh).not.toHaveBeenCalled();
 		expect(network).not.toHaveBeenCalled();
 	});
+	test("rejects persisted upstream share endpoints before fetch or gh", async () => {
+		const gh = vi.spyOn(utils, "$which").mockImplementation(() => {
+			throw new Error("unexpected gh operation");
+		});
+		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+			throw new Error("unexpected network");
+		});
+		const sm = {
+			getHeader: () => sessionData([], "x").header,
+			getEntries: () => [],
+			getLeafId: () => "x",
+		} as unknown as SessionManager;
+		for (const serverUrl of ["https://my.omp.sh/s", "https://omp.sh/s", "https://skills.omp.sh./s"]) {
+			await expect(shareSession(sm, { serverUrl })).rejects.toThrow("self-hosted");
+		}
+		await expect(shareSession(sm, { serverUrl: "https://my.omp.sh/s", store: "gist" })).rejects.toThrow("self-hosted");
+		expect(gh).not.toHaveBeenCalled();
+		expect(network).not.toHaveBeenCalled();
+	});
 	test("an explicitly selected unavailable gist fails without uploading to another store", async () => {
 		vi.spyOn(utils, "$which").mockReturnValue(null);
 		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {

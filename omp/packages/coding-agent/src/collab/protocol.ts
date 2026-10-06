@@ -20,6 +20,7 @@ import type {
 import {
 	DEFAULT_RELAY_URL,
 	ENVELOPE_HEADER_LENGTH,
+	isUpstreamHostedHostname,
 	ROOM_ID_BYTES,
 	ROOM_KEY_BYTES,
 	WRITE_TOKEN_BYTES,
@@ -156,6 +157,9 @@ function normalizeRelayOrigin(relayUrl: string): { origin: string } | { error: s
 	} catch {
 		return { error: `Invalid relay URL: ${relayUrl}` };
 	}
+	if (isUpstreamHostedHostname(url.hostname)) {
+		return { error: "Upstream hosted relays are not supported. Set collab.relayUrl to a self-hosted relay." };
+	}
 	let scheme: string;
 	switch (url.protocol) {
 		case "wss:":
@@ -218,6 +222,9 @@ function normalizeCollabWebBaseUrl(relayUrl: string, webUrl?: string): string {
 	} catch {
 		throw new Error("collab.webUrl must start with http:// or https://");
 	}
+	if (isUpstreamHostedHostname(url.hostname)) {
+		throw new Error("Upstream hosted web clients are not supported. Set collab.webUrl to your self-hosted client.");
+	}
 	if (url.protocol !== "http:" && url.protocol !== "https:") {
 		throw new Error("collab.webUrl must start with http:// or https://");
 	}
@@ -261,6 +268,9 @@ export function parseCollabLink(link: string): ParsedCollabLink | { error: strin
 		url = new URL(text);
 	} catch {
 		return { error: `Invalid collab link: ${link}` };
+	}
+	if (isUpstreamHostedHostname(url.hostname)) {
+		return { error: "Upstream hosted collab links are not supported. Ask the host for a self-hosted relay link." };
 	}
 	if ((url.protocol === "http:" || url.protocol === "https:") && url.hash) {
 		const inner = url.hash.startsWith("#") ? url.hash.slice(1) : url.hash;

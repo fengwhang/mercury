@@ -59,6 +59,8 @@ https://web.example/collab/#relay.example.com/r/<roomId>.<key>   → web UI and 
 
 Bare `<roomId>.<key>` and legacy `<roomId>#<key>` links do not identify a relay and are refused before opening a WebSocket. Ask the host for a new link containing its explicit relay endpoint. `/collab` with no inline relay requires `collab.relayUrl`; otherwise it reports how to configure one without making a request.
 
+Former upstream `omp.sh` endpoints (including its subdomains) are rejected even when retained in settings or explicitly supplied in links. Replace old `collab.relayUrl`, `collab.webUrl`, and `share.serverUrl` values with your self-hosted endpoints; no connection is attempted to the retired hosts.
+
 The trailing `.<key>` or `#<key>` part is the room secret, base64url-encoded, in one of two strengths:
 
 - **Full link** — 48 bytes: the 32-byte AES-256-GCM room key followed by a 16-byte write token. Grants prompting, interrupting, and subagent control.

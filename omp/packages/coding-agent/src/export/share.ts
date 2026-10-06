@@ -22,7 +22,7 @@ import * as path from "node:path";
 import type { AgentMessage, AgentState } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { $which } from "@oh-my-pi/pi-utils";
-import { DEFAULT_SHARE_URL } from "@oh-my-pi/pi-wire";
+import { DEFAULT_SHARE_URL, isUpstreamHostedHostname } from "@oh-my-pi/pi-wire";
 import { $ } from "bun";
 import { obfuscateToolArguments } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
@@ -511,6 +511,9 @@ export function normalizeShareServerUrl(serverUrl?: string): string {
 	const base = (serverUrl ?? DEFAULT_SHARE_URL).trim().replace(/\/+$/, "");
 	if (!base) {
 		throw new Error("No share URL configured. Set share.serverUrl to your self-hosted share viewer/upload endpoint in /settings.");
+	}
+	if (isUpstreamHostedHostname(new URL(base).hostname)) {
+		throw new Error("Upstream hosted sharing is not supported. Set share.serverUrl to your self-hosted share endpoint.");
 	}
 	return base;
 }

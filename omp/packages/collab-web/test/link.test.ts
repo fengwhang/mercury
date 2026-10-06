@@ -33,6 +33,19 @@ describe("collab link parsing", () => {
 		});
 	});
 
+	it("rejects upstream relay and browser endpoints without rejecting lookalike self-host names", () => {
+		for (const link of [
+			`wss://my.omp.sh/r/${ROOM}.${KEY_TEXT}`,
+			`https://my.omp.sh/#relay.example.com/r/${ROOM}.${KEY_TEXT}`,
+		]) {
+			const parsed = parseCollabLink(link);
+			expect("error" in parsed && parsed.error).toContain("self-hosted");
+		}
+		const selfHosted = parseCollabLink(`wss://my.omp.sh.example/r/${ROOM}.${KEY_TEXT}`);
+		if ("error" in selfHosted) throw new Error(selfHosted.error);
+		expect(selfHosted.wsUrl).toBe(`wss://my.omp.sh.example/r/${ROOM}`);
+	});
+
 	it("infers wss for scheme-less custom hosts", () => {
 		const parsed = parseCollabLink(`relay.example.com:8443/r/${ROOM}#${KEY_TEXT}`);
 		if ("error" in parsed) throw new Error(parsed.error);

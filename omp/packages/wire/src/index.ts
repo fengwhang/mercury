@@ -426,6 +426,12 @@ export const DEFAULT_RELAY_URL = "";
 /** No built-in share viewer/upload endpoint. Configure share.serverUrl explicitly. */
 export const DEFAULT_SHARE_URL = "";
 
+/** Retired upstream collaboration/share hosts are not valid Mercury endpoints. */
+export function isUpstreamHostedHostname(hostname: string): boolean {
+	const host = hostname.endsWith(".") ? hostname.slice(0, -1) : hostname;
+	return host === "omp.sh" || host.endsWith(".omp.sh");
+}
+
 export interface ParsedCollabLink {
 	/** wss://host[:port]/r/<roomId> — no query, no fragment. */
 	wsUrl: string;

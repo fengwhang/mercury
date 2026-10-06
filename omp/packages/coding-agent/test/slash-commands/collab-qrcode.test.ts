@@ -3,7 +3,9 @@ import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 import {
+	BUILTIN_SLASH_COMMANDS_INTERNAL,
 	type BuiltinSlashCommandRuntime,
 	executeBuiltinSlashCommand,
 } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
@@ -99,6 +101,59 @@ describe("collaboration offline entrypoints", () => {
 		const key = Buffer.alloc(32, 1).toString("base64url");
 		await executeBuiltinSlashCommand(`/join abcdefghijklmnop.${key}`, harness.runtime);
 		expect(harness.showError.mock.calls[0]?.[0]).toContain("relay URL");
+		expect(network).not.toHaveBeenCalled();
+	});
+
+	it("rejects persisted and inline upstream collab endpoints before WebSocket", async () => {
+		const network = vi.spyOn(globalThis, "WebSocket").mockImplementation(() => {
+			throw new Error("unexpected network");
+		});
+		const harness = createRuntimeHarness();
+		harness.ctx.settings = Settings.isolated({ "collab.relayUrl": "wss://my.omp.sh" });
+		await executeBuiltinSlashCommand("/collab", harness.runtime);
+		expect(harness.showError.mock.calls.at(-1)?.[0]).toContain("self-hosted");
+		await executeBuiltinSlashCommand("/collab wss://omp.sh", harness.runtime);
+		expect(harness.showError.mock.calls.at(-1)?.[0]).toContain("self-hosted");
+		harness.ctx.settings = Settings.isolated({
+			"collab.relayUrl": "wss://relay.example.com",
+			"collab.webUrl": "https://my.omp.sh",
+		});
+		await executeBuiltinSlashCommand("/collab", harness.runtime);
+		expect(harness.showError.mock.calls.at(-1)?.[0]).toContain("self-hosted");
+		expect(network).not.toHaveBeenCalled();
+	});
+
+	it("rejects an explicit upstream /join link before WebSocket", async () => {
+		const network = vi.spyOn(globalThis, "WebSocket").mockImplementation(() => {
+			throw new Error("unexpected network");
+		});
+		const harness = createRuntimeHarness();
+		const key = Buffer.alloc(32, 1).toString("base64url");
+		for (const link of [
+			`wss://my.omp.sh/r/abcdefghijklmnop.${key}`,
+			`https://my.omp.sh/#my.omp.sh/r/abcdefghijklmnop.${key}`,
+			`wss://live.omp.sh./r/abcdefghijklmnop.${key}`,
+		]) {
+			await executeBuiltinSlashCommand(`/join ${link}`, harness.runtime);
+			expect(harness.showError.mock.calls.at(-1)?.[0]).toContain("self-hosted");
+		}
+		expect(network).not.toHaveBeenCalled();
+	});
+
+	it("refuses /share with an inherited upstream serverUrl before upload", async () => {
+		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+			throw new Error("unexpected network");
+		});
+		const output = vi.fn();
+		const runtime = {
+			settings: Settings.isolated({ "share.serverUrl": "https://my.omp.sh/s" }),
+			session: { state: { systemPrompt: [], tools: [] }, obfuscator: undefined },
+			sessionManager: { getHeader: () => null, getEntries: () => [], getLeafId: () => null },
+			output,
+		} as unknown as SlashCommandRuntime;
+		const share = BUILTIN_SLASH_COMMANDS_INTERNAL.find(command => command.name === "share")!;
+		await share.handle!({ name: "share", args: "", text: "/share" }, runtime);
+		expect(output.mock.calls.at(-1)?.[0]).toContain("share.serverUrl");
 		expect(network).not.toHaveBeenCalled();
 	});
 
