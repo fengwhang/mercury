@@ -109,13 +109,6 @@ gateway:
     turnhold_deferred:     "ℹ️ 上下文壓縮已延後 — 摘要仍在產生中。本回合將不壓縮繼續。"
     failed:                "壓縮失敗：{error}"
 
-  debug:
-    upload_failed:         "✗ 無法上傳除錯報告：{error}"
-    header:                "**除錯報告已上傳：**"
-    auto_delete:           "⏱ 貼上的內容將於 6 小時後自動刪除。"
-    full_logs_hint:        "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share`。"
-    share_hint:            "請將這些連結分享給 Hermes 團隊以取得支援。"
-
   deny:
     stale:                 "❌ 指令已拒絕（批准已過期）。"
     no_pending:            "沒有待拒絕的指令。"

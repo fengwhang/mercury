@@ -109,13 +109,6 @@ gateway:
     turnhold_deferred:     "ℹ️ Compressão de contexto adiada — o resumo ainda está em transmissão. Continuando sem compressão neste turno."
     failed:                "Compressão falhou: {error}"
 
-  debug:
-    upload_failed:         "✗ Falha ao carregar relatório de depuração: {error}"
-    header:                "**Relatório de depuração carregado:**"
-    auto_delete:           "⏱ Os pastes serão eliminados automaticamente em 6 horas."
-    full_logs_hint:        "Para enviar logs completos, usa `hermes debug share` a partir da CLI."
-    share_hint:            "Partilha estes links com a equipa do Hermes para obter suporte."
-
   deny:
     stale:                 "❌ Comando negado (a aprovação tinha expirado)."
     no_pending:            "Não há nenhum comando pendente para negar."

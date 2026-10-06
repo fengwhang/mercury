@@ -5983,7 +5983,7 @@ def cmd_dump(args):
 
 
 def cmd_debug(args):
-    """Debug tools (share report, etc.)."""
+    """Generate or export local diagnostics."""
     from mercury_cli.debug import run_debug
 
     run_debug(args)

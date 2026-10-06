@@ -109,13 +109,6 @@ gateway:
     turnhold_deferred:     "ℹ️ Compressione del contesto rinviata — il riepilogo è ancora in streaming. Si continua senza compressione per questo turno."
     failed:                "Compressione non riuscita: {error}"
 
-  debug:
-    upload_failed:         "✗ Caricamento del report di debug non riuscito: {error}"
-    header:                "**Report di debug caricato:**"
-    auto_delete:           "⏱ I paste verranno eliminati automaticamente tra 6 ore."
-    full_logs_hint:        "Per il caricamento dei log completi, usa `hermes debug share` dalla CLI."
-    share_hint:            "Condividi questi link con il team Hermes per ricevere supporto."
-
   deny:
     stale:                 "❌ Comando negato (l'approvazione era obsoleta)."
     no_pending:            "Nessun comando in attesa da negare."

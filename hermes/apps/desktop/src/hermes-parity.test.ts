@@ -8,7 +8,6 @@ import {
   getToolsetModels,
   installSkillFromHub,
   resetMemory,
-  runDebugShare,
   searchSkillsHub,
   selectToolsetModel,
   setCuratorPaused,
@@ -110,13 +109,6 @@ describe('Hermes REST parity helpers (hub / mcp / maintenance)', () => {
     )
   })
 
-  it('runs debug share synchronously with an upload-tolerant timeout', async () => {
-    await runDebugShare()
-
-    expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({ path: '/api/ops/debug-share', method: 'POST', timeoutMs: 120_000 })
-    )
-  })
 
   it('reads a backend model catalog scoped to a provider row', async () => {
     await getToolsetModels('image_gen', 'FAL.ai')

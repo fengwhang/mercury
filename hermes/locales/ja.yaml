@@ -109,13 +109,6 @@ gateway:
     turnhold_deferred:     "ℹ️ コンテキスト圧縮を延期しました — 要約はまだストリーミング中です。このターンは圧縮せずに続行します。"
     failed:                "圧縮に失敗しました: {error}"
 
-  debug:
-    upload_failed:         "✗ デバッグレポートのアップロードに失敗しました: {error}"
-    header:                "**デバッグレポートをアップロードしました:**"
-    auto_delete:           "⏱ ペーストは 6 時間後に自動削除されます。"
-    full_logs_hint:        "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
-    share_hint:            "サポートを受けるには、このリンクを Hermes チームに共有してください。"
-
   deny:
     stale:                 "❌ コマンドを拒否しました (承認は期限切れでした)。"
     no_pending:            "拒否待ちのコマンドはありません。"

@@ -628,5 +628,5 @@ if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; the
 fi
 
 if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete."
-else FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."; fi
+else FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run mercury debug report in a terminal for local diagnostics."; fi
 exit "$FINAL_CODE"

@@ -58,7 +58,7 @@ test('redactSecrets handles null/undefined and non-secret text untouched', () =>
 
 test('redactSecrets masks a credential glued into an ssh target string', () => {
   // Real incident: password typed into the host field surfaced verbatim in
-  // desktop.log and a public debug share.
+  // desktop.log and a diagnostic report.
   const line = 'connecting (no-mux) to root@100.84.204.123:Luisclawy2026:22'
   const out = redactSecrets(line)
   assert.ok(!out.includes('Luisclawy2026'), 'credential must be masked')

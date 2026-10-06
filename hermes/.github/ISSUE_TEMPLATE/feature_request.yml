@@ -77,9 +77,9 @@ body:
     attributes:
       label: Debug Report (optional)
       description: |
-        If this feature request is related to a problem you're experiencing, run `hermes debug share` and paste the links here.
-        In an interactive chat session, you can use `/debug` instead.
-        This helps us understand your environment and any related logs.
+        If this request relates to a problem, generate a local report with
+        `mercury debug report --output report.txt`. Mercury never uploads it.
+        Review its contents before deciding whether to attach an excerpt.
       placeholder: |
-        Report   https://paste.rs/abc123
+        Local report excerpt (reviewed before posting)
       render: shell

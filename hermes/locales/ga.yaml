@@ -113,13 +113,6 @@ gateway:
     turnhold_deferred:     "ℹ️ Cuireadh comhbhrú comhthéacs siar — tá an achoimre fós á sruthú. Ag leanúint ar aghaidh gan chomhbhrú don seal seo."
     failed:                "Theip ar dhlúthú: {error}"
 
-  debug:
-    upload_failed:         "✗ Theip ar uaslódáil tuairisce dífhabhtaithe: {error}"
-    header:                "**Tuairisc dhífhabhtaithe uaslódáilte:**"
-    auto_delete:           "⏱ Scriosfar na pastes go huathoibríoch i 6 huaire."
-    full_logs_hint:        "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
-    share_hint:            "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
-
   deny:
     stale:                 "❌ Ordú diúltaithe (bhí an cead imithe i léig)."
     no_pending:            "Níl aon ordú ag fanacht le diúltú."

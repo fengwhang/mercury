@@ -121,7 +121,7 @@ Examples:
     mercury logs -f                Follow agent.log in real time
     mercury logs errors            View errors.log
     mercury logs --since 1h        Lines from the last hour
-    mercury debug share             Upload debug report for support
+    mercury debug report            Print local diagnostics
     mercury console                Open the safe Mercury command console
     mercury update                 Update to latest version
     mercury dashboard              Start web UI dashboard (port 9119)

@@ -1512,14 +1512,6 @@ export interface CuratorStatusResponse {
   archive_after_days: number | null
 }
 
-/** `POST /api/ops/debug-share` — shareable diagnostics upload result. */
-export interface DebugShareResponse {
-  ok: boolean
-  urls: Record<string, string>
-  failures: Record<string, string>
-  redacted: boolean
-  auto_delete_seconds: number | null
-}
 
 export interface ModelAssignmentResponse {
   /** Persisted endpoint URL for custom/local providers (echoed back). */
