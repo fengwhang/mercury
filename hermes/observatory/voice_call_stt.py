@@ -216,10 +216,10 @@ class WsConnection:
     def close(
         self, code: int = 1000, reason: str = "", *, message: Optional[Dict[str, Any]] = None,
     ) -> None:
-        # Never wait for a provider worker holding the send lock. Shutdown
-        # interrupts its sendall; an uncontended close gets a bounded chance
-        # to deliver the final notice and RFC close frame first.
-        locked = self.lock.acquire(blocking=False)
+        # Give a finishing writer a bounded chance to release the lock so a
+        # normal hangup delivers its final notice and RFC close frame. A
+        # backpressured writer still gets interrupted by shutdown below.
+        locked = self.lock.acquire(timeout=0.1)
         was_closed = self.closed
         self.closed = True
         try:

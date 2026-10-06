@@ -144,3 +144,49 @@ def test_close_interrupts_a_blocked_socket_writer():
         released.set()
         sender.join(2)
         closer.join(2)
+
+
+def test_close_delivers_ended_after_finishing_writer_releases_lock():
+    import json
+    import threading
+
+    attempted = threading.Event()
+    lock = threading.Lock()
+
+    class ObservedLock:
+        def acquire(self, blocking=True, timeout=-1):
+            if not blocking:
+                acquired = lock.acquire(blocking=False)
+                attempted.set()
+                return acquired
+            attempted.set()
+            return lock.acquire(timeout=timeout)
+
+        def release(self):
+            lock.release()
+
+    client, server = socket.socketpair()
+    client.settimeout(1)
+    ws = WsConnection(server)
+    ws.lock = ObservedLock()
+    # A writer has completed its send, but has not released its lock yet.
+    lock.acquire()
+    closer = threading.Thread(
+        target=ws.close, kwargs={"message": {"type": "ended"}}, daemon=True,
+    )
+    closer.start()
+    try:
+        assert attempted.wait(1)
+        lock.release()
+        closer.join(1)
+        assert not closer.is_alive()
+        expected = ws_encode_frame(json.dumps({"type": "ended"}).encode())
+        expected += ws_encode_frame(struct.pack("!H", 1000), 0x8)
+        with client.makefile("rb") as frames:
+            assert frames.read(len(expected)) == expected
+    finally:
+        if lock.locked():
+            lock.release()
+        closer.join(1)
+        client.close()
+        server.close()
