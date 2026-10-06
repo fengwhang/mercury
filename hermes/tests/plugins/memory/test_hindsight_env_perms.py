@@ -78,3 +78,41 @@ def test_secret_file_removed_when_permission_validation_fails(monkeypatch):
     assert not _embedded_profile_env_path(_CONFIG).exists(), (
         "secret env file must be cleaned up when validation fails"
     )
+
+
+def test_embedded_daemon_profile_forces_local_model_assets(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "0")
+    profile_env = _materialize_embedded_profile_env(_CONFIG, llm_api_key="")
+    from plugins.memory.hindsight import _load_simple_env
+
+    daemon_env = dict(os.environ, **_load_simple_env(profile_env))
+    assert daemon_env["HF_HUB_OFFLINE"] == "1"
+    assert daemon_env["TRANSFORMERS_OFFLINE"] == "1"
+
+
+def test_embedded_client_import_cannot_enable_weight_downloads(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from plugins.memory.hindsight import HindsightMemoryProvider
+
+    observed = {}
+
+    class LocalEmbeddedClient:
+        def __init__(self, **kwargs):
+            observed["HF_HUB_OFFLINE"] = os.environ.get("HF_HUB_OFFLINE")
+            observed["TRANSFORMERS_OFFLINE"] = os.environ.get("TRANSFORMERS_OFFLINE")
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "0")
+    monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=LocalEmbeddedClient))
+    monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+    provider = HindsightMemoryProvider()
+    provider._mode = "local_embedded"
+    provider._config = _CONFIG.copy()
+    provider._llm_base_url = ""
+
+    provider._get_client()
+
+    assert observed == {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}

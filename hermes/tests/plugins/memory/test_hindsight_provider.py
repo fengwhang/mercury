@@ -428,6 +428,8 @@ class TestPostSetup:
         profile_env = user_home / ".hindsight" / "profiles" / "mercury.env"
         assert profile_env.exists()
         assert profile_env.read_text() == (
+            "HF_HUB_OFFLINE=1\n"
+            "TRANSFORMERS_OFFLINE=1\n"
             "HINDSIGHT_API_LLM_PROVIDER=openai\n"
             "HINDSIGHT_API_LLM_API_KEY=sk-local-test\n"
             "HINDSIGHT_API_LLM_MODEL=gpt-4o-mini\n"

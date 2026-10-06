@@ -151,6 +151,11 @@ def _export_port_health_grace_timeout(config: dict[str, Any]) -> None:
     os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, repr(seconds))
 
 
+# These libraries read offline policy at import time as well as in the daemon.
+# Missing pre-provisioned embedding assets must fail locally, never fetch weights.
+_LOCAL_MODEL_ENV = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
+
+
 def _check_local_runtime() -> tuple[bool, str | None]:
     """Return whether local embedded Hindsight imports cleanly.
 
@@ -167,6 +172,7 @@ def _check_local_runtime() -> tuple[bool, str | None]:
     aborts at startup on every retain/recall. Import it too so the probe (and
     status) reports the real ImportError.
     """
+    os.environ.update(_LOCAL_MODEL_ENV)
     try:
         importlib.import_module("hindsight")
         importlib.import_module("hindsight_embed.daemon_embed_manager")
@@ -605,6 +611,7 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     daemon_provider = "openai" if current_provider in {"openai_compatible", "openrouter"} else current_provider
 
     env_values = {
+        **_LOCAL_MODEL_ENV,
         "HINDSIGHT_API_LLM_PROVIDER": str(daemon_provider),
         "HINDSIGHT_API_LLM_API_KEY": str(current_key or ""),
         "HINDSIGHT_API_LLM_MODEL": str(current_model),
@@ -966,7 +973,7 @@ class HindsightMemoryProvider(MemoryProvider):
         mode_values = ["cloud", "local_embedded", "local_external"]
         mode_items = [
             ("Cloud", "Hindsight Cloud API (lightweight, just needs an API key)"),
-            ("Local Embedded", "Run Hindsight locally (downloads ~200MB, needs LLM key)"),
+            ("Local Embedded", "Run Hindsight locally (pre-provisioned embeddings required, needs LLM key)"),
             ("Local External", "Connect to an existing Hindsight instance"),
         ]
         existing_mode = existing_config.get("mode")
@@ -1234,6 +1241,7 @@ class HindsightMemoryProvider(MemoryProvider):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
             if self._mode == "local_embedded":
+                os.environ.update(_LOCAL_MODEL_ENV)
                 available, reason = _check_local_runtime()
                 if not available:
                     raise RuntimeError(
