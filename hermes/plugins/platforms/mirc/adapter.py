@@ -1215,6 +1215,17 @@ class MIRCAdapter(BasePlatformAdapter):
             await self._send_raw(f"NICK {self._current_nick}")
             return
 
+        # The daemon self-PARTs expired rooms, including rejected cached JOINs.
+        # Forget that room's reconnect intent without changing the gateway.
+        if command == "PART" and params:
+            if _extract_nick(msg["prefix"]).lower() == self._current_nick.lower():
+                channel = params[0].lower()
+                self.extra_channels.difference_update(
+                    [c for c in self.extra_channels if c.lower() == channel]
+                )
+                self._observatory_online_channels.discard(channel)
+            return
+
         # BATCH frames (draft/multiline reassembly)
         if command == "BATCH":
             await self._close_in_batch(params)
