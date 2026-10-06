@@ -104,8 +104,11 @@ Install JavaScript dependencies for the components you will change:
 ```bash
 (cd omp && bun install)
 (cd hermes/ui-tui && npm install)
-(cd third_party/mlounge && npm ci)
+(cd third_party/mlounge && npx --yes yarn@1.22.22 install --frozen-lockfile --non-interactive)
 ```
+
+mLounge commits `yarn.lock`, not `package-lock.json`; `npm ci` cannot install
+that checkout. Keep its committed lockfile when preparing development checks.
 
 Review any lockfile changes. Avoid OMP's `bun run setup` for isolated work: it
 also links the CLI globally. Use component build scripts instead. A local OMP
@@ -238,7 +241,7 @@ bash scripts/bump-version.sh "$release_version"
 
 Update [CHANGELOG.md](CHANGELOG.md), review, and commit before compiling. The
 bump helper updates Mercury's CLI version, OMP product identity and mLounge
-package metadata, including its lockfile. Internal OMP/native package versions
+package metadata (and an npm lockfile when present). Internal OMP/native package versions
 such as `18.x` describe upstream ABI/dependency compatibility; do not bulk-bump
 them to the Mercury version.
 
