@@ -107,6 +107,13 @@ def _entry(name: str):
 # ---------------------------------------------------------------------------
 
 
+def test_bundled_catalog_cannot_install_hosted_hugging_face(monkeypatch):
+    from mercury_cli.mcp_catalog import get_entry
+
+    monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+    assert get_entry("official/hugging_face") is None
+
+
 class TestManifestParsing:
     def test_minimal_valid(self, catalog_dir):
         _write_manifest(catalog_dir, "demo", _basic_manifest())

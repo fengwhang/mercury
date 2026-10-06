@@ -124,15 +124,6 @@ export const MCP_DIRECTORY: McpDirectoryEntry[] = [
     url: 'https://netlify-mcp.netlify.app/mcp'
   },
   {
-    description: 'Models, datasets, Spaces, and papers from the Hugging Face Hub.',
-    docs: 'https://huggingface.co/docs/hub/agents-mcp',
-    hosts: ['huggingface.co', 'hf.co'],
-    keywords: ['hugging face', 'huggingface'],
-    // Underscored so prettyName renders "Hugging Face", not "Huggingface".
-    name: 'hugging_face',
-    url: 'https://huggingface.co/mcp'
-  },
-  {
     description: 'Tasks, projects, and goals from your Asana workspace.',
     docs: 'https://developers.asana.com/docs/using-asanas-mcp-server',
     hosts: ['asana.com'],
