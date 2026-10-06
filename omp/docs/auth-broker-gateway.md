@@ -80,9 +80,11 @@ omp auth-broker status    [--json]
 | `DELETE` | `/v1/credential/:id/blocks`  | bearer | Delete all rate-limit blocks for a credential                      |
 | `GET`    | `/v1/usage`                  | bearer | Aggregate current `UsageReport[]` across credentials               |
 | `GET`    | `/v1/usage/history`          | bearer | Persisted usage history; optional `sinceMs` and `provider` filters |
-| `POST`   | `/v1/usage/observed`         | bearer | Record usage observed by a broker client                           |
-| `GET`    | `/v1/usage/clients`          | bearer | Summarize client-observed usage since optional `sinceMs`           |
 | `POST`   | `/v1/usage/stale`            | bearer | Invalidate the broker's current usage cache                        |
+
+Client request token counts, costs, installation IDs, and hostnames are not
+reported to the broker. Usage endpoints expose provider quota data needed for
+credential selection and local usage displays, not per-client telemetry.
 
 Requests use `Authorization: Bearer <token>`. The server compares against an in-memory token allow-list; the gateway’s implementation uses a timing-safe comparison.
 

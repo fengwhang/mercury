@@ -7,8 +7,7 @@
  * usage reports cache TTL is 5 minutes per credential, so durability across
  * runs isn't required.
  */
-import * as os from "node:os";
-import { getAppName, getInstallId, logger } from "@oh-my-pi/pi-utils";
+import { logger } from "@oh-my-pi/pi-utils";
 import {
 	type AuthCredential,
 	type AuthCredentialSnapshotEntry,
@@ -22,7 +21,7 @@ import {
 import * as AIError from "../error";
 import type { OAuthCredentials } from "../registry/oauth/types";
 import type { Provider } from "../types";
-import type { ClientUsageIdentity, ObservedUsageEntry, UsageReport } from "../usage";
+import type { UsageReport } from "../usage";
 import { type AuthBrokerClient, AuthBrokerError, AuthBrokerStreamUnsupportedError } from "./client";
 import type {
 	CredentialBlockSnapshot,
@@ -235,8 +234,6 @@ export interface RemoteAuthCredentialStoreOptions {
 	 * routing policy, not broker authorization.
 	 */
 	accountPool?: AuthBrokerAccountPool;
-	/** Flush cadence for batched observed-usage reports. Default 10s. */
-	observedUsageFlushMs?: number;
 	/**
 	 * Idle window after the last foreground store use before background
 	 * snapshot sync (SSE stream / long-poll) disconnects and parks. A parked
@@ -284,17 +281,10 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	#streamingActive = false;
 	/** Latched once the broker has answered 404 — never try the stream again. */
 	#streamingUnsupported = false;
-	/** Pending observed usage keyed by `installId\u0000app\u0000provider\u0000model`, merged until flush. */
-	#observedUsage = new Map<string, { client: ClientUsageIdentity; entry: ObservedUsageEntry }>();
-	#observedUsageTimer: Timer | undefined;
-	readonly #observedUsageFlushMs: number;
-	/** Latched once the broker answered 404 — old broker, never report again. */
-	#observedUsageUnsupported = false;
 
 	constructor(opts: RemoteAuthCredentialStoreOptions) {
 		this.#client = opts.client;
 		this.#streamSnapshots = opts.streamSnapshots ?? true;
-		this.#observedUsageFlushMs = opts.observedUsageFlushMs ?? 10_000;
 		this.#backgroundIdleMs = opts.backgroundIdleMs ?? BACKGROUND_IDLE_MS;
 		this.#accountPool = opts.accountPool
 			? new Map([...opts.accountPool].map(([provider, identities]) => [provider, new Set(identities)]))
@@ -1262,93 +1252,12 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		return inflight;
 	}
 
-	/**
-	 * Fold locally observed request usage into the pending report and schedule
-	 * a flush. One `POST /v1/usage/observed` at most per flush interval; on
-	 * failure the batch is retained and retried with the next flush. A 404
-	 * (pre-endpoint broker) disables reporting for the life of this store.
-	 *
-	 * `client` overrides the reporting identity — the auth-gateway attributes
-	 * each request to the originating install/app instead of the gateway host.
-	 */
-	recordObservedUsage(entries: ObservedUsageEntry[], client?: ClientUsageIdentity): void {
-		if (this.#closed || this.#observedUsageUnsupported) return;
-		const identity = client ?? { installId: getInstallId(), hostname: os.hostname(), app: getAppName() };
-		for (const entry of entries) {
-			const key = `${identity.installId}\u0000${identity.app ?? ""}\u0000${entry.provider}\u0000${entry.model}`;
-			const pending = this.#observedUsage.get(key);
-			if (pending) {
-				pending.entry.at = Math.max(pending.entry.at, entry.at);
-				pending.entry.requests += entry.requests;
-				pending.entry.inputTokens += entry.inputTokens;
-				pending.entry.outputTokens += entry.outputTokens;
-				pending.entry.cacheReadTokens += entry.cacheReadTokens;
-				pending.entry.cacheWriteTokens += entry.cacheWriteTokens;
-				pending.entry.costUsd += entry.costUsd;
-			} else {
-				this.#observedUsage.set(key, { client: identity, entry: { ...entry } });
-			}
-		}
-		if (this.#observedUsage.size > 0 && this.#observedUsageTimer === undefined) {
-			this.#observedUsageTimer = setTimeout(() => {
-				this.#observedUsageTimer = undefined;
-				void this.#flushObservedUsage();
-			}, this.#observedUsageFlushMs);
-			this.#observedUsageTimer.unref?.();
-		}
-	}
-
-	async #flushObservedUsage(): Promise<void> {
-		if (this.#observedUsage.size === 0 || this.#observedUsageUnsupported) return;
-		const batch = [...this.#observedUsage.values()];
-		this.#observedUsage.clear();
-		// One report per distinct client identity — usually one (this install),
-		// plus one per attributed gateway caller when running inside the gateway.
-		const groups = new Map<string, { client: ClientUsageIdentity; entries: ObservedUsageEntry[] }>();
-		for (const { client, entry } of batch) {
-			const key = `${client.installId}\u0000${client.app ?? ""}`;
-			const group = groups.get(key);
-			if (group) group.entries.push(entry);
-			else groups.set(key, { client, entries: [entry] });
-		}
-		for (const { client, entries } of groups.values()) {
-			try {
-				await this.#client.reportClientUsage({
-					installId: client.installId,
-					hostname: client.hostname,
-					app: client.app,
-					entries,
-				});
-			} catch (error) {
-				const status = error instanceof AuthBrokerError ? error.status : undefined;
-				if (status === 400 || status === 404 || status === 501) {
-					// Broker predates the endpoint or its request schema (or the store
-					// can't persist) — stop trying for the life of this process.
-					this.#observedUsageUnsupported = true;
-					logger.debug("auth-broker does not accept observed usage; reporting disabled", { status });
-					return;
-				}
-				logger.debug("auth-broker observed usage flush failed; retrying next flush", { error: String(error) });
-				// Merge the failed group back under the (possibly refilled) buffer so
-				// nothing is lost; bounded because entries are keyed per
-				// (identity, provider, model).
-				if (!this.#closed) this.recordObservedUsage(entries, client);
-			}
-		}
-	}
-
 	close(): void {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#backgroundAbort.abort();
 		this.#activityWakeup?.resolve();
 		this.#activityWakeup = null;
-		if (this.#observedUsageTimer !== undefined) {
-			clearTimeout(this.#observedUsageTimer);
-			this.#observedUsageTimer = undefined;
-		}
-		// Best-effort final flush; failures are dropped (the process is exiting).
-		if (this.#observedUsage.size > 0) void this.#flushObservedUsage();
 		this.#cache.clear();
 		this.#usageOverlays.clear();
 	}

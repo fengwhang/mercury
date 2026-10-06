@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Removed automatic auth-broker client usage telemetry, including per-install reports, shipping queues, and client tracking tables. Provider quota queries and local usage statistics remain available.
+
 ### Fixed
 
 - Surface exhausted OpenAI-compatible provider quotas immediately to session fallback instead of repeating the same HTTP request.
@@ -133,10 +137,6 @@
 - Fixed Cursor replay rejecting sessions with orphaned tool results while preserving their output as assistant context.
 
 ## [18.0.7] - 2026-08-26
-
-### Added
-
-- Added application-level usage attribution for billing and usage reporting, with per-application aggregation and automatic client identification. Applications can set their label with `OMP_APP_NAME` (default: `omp`); update the broker before clients to support the new usage reports.
 
 ### Fixed
 
@@ -691,7 +691,6 @@
 ### Added
 
 - Added `GET /v1/usage/history` to the auth broker (recorded usage-limit snapshots with `sinceMs`/`provider` filters) and `AuthBrokerClient.fetchUsageHistory` — in broker deployments the broker host performs every upstream usage fetch, so its durable history is the only complete utilization record
-- Added per-client burn tracking to the auth broker: clients batch observed request usage per (provider, model) and flush it to `POST /v1/usage/observed` every 10 seconds (install id as client key, hostname as display name); the broker persists 5-minute buckets in `client_usage`/`clients` and serves aggregates from `GET /v1/usage/clients`. Brokers without the endpoint disable reporting for the process lifetime
 
 ### Changed
 

@@ -28,13 +28,7 @@ import type {
 import * as AIError from "../error";
 import type { OAuthCredentials } from "../registry/oauth/types";
 import type { Provider } from "../types";
-import type {
-	ClientProviderUsage,
-	ClientUsageReport,
-	ClientUsageSummary,
-	UsageHistoryEntry,
-	UsageHistoryQuery,
-} from "../usage";
+import type { UsageHistoryEntry, UsageHistoryQuery } from "../usage";
 
 // 5 min stale tolerance. Anthropic / OpenAI rate-limit /usage hard at the IP
 // level so we can't fetch all N credentials every cycle; with a long cache
@@ -49,13 +43,6 @@ export const USAGE_REPORT_TTL_MS = 5 * 60_000;
  * unnecessary — 1 row/hour is ~9k rows per account window per year.
  */
 const USAGE_HISTORY_BUCKET_MS = 60 * 60_000;
-
-/**
- * Merge client observed-usage flushes into at most one row per 5 minutes per
- * (install, provider, model): ~300 rows/day per active model per client
- * instead of one row per 10s flush.
- */
-const CLIENT_USAGE_BUCKET_MS = 5 * 60_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SqliteAuthCredentialStore
@@ -629,30 +616,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			);
 			CREATE INDEX IF NOT EXISTS idx_usage_history_series ON usage_history(provider, account_key, limit_id, recorded_at);
 			CREATE INDEX IF NOT EXISTS idx_usage_history_recorded ON usage_history(recorded_at);
-			CREATE TABLE IF NOT EXISTS clients (
-				install_id TEXT PRIMARY KEY,
-				hostname TEXT,
-				first_seen INTEGER NOT NULL,
-				last_seen INTEGER NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS client_usage (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				recorded_at INTEGER NOT NULL,
-				install_id TEXT NOT NULL,
-				app TEXT NOT NULL DEFAULT '',
-				provider TEXT NOT NULL,
-				model TEXT NOT NULL,
-				requests INTEGER NOT NULL,
-				input_tokens INTEGER NOT NULL,
-				output_tokens INTEGER NOT NULL,
-				cache_read_tokens INTEGER NOT NULL,
-				cache_write_tokens INTEGER NOT NULL,
-				cost_usd REAL NOT NULL DEFAULT 0
-			);
-			CREATE INDEX IF NOT EXISTS idx_client_usage_series ON client_usage(install_id, provider, model, recorded_at);
-			CREATE INDEX IF NOT EXISTS idx_client_usage_recorded ON client_usage(recorded_at);
 		`);
-		this.#ensureClientUsageAppColumn();
 
 		if (!this.#authCredentialsTableExists()) {
 			this.#createAuthCredentialsTable();
@@ -1756,129 +1720,6 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		} catch {
 			return [];
 		}
-	}
-
-	/**
-	 * Add the `app` attribution column to `client_usage` tables created before
-	 * it existed. `CREATE TABLE IF NOT EXISTS` skips established broker DBs, so
-	 * the column arrives via ALTER; legacy rows keep the `''` (unlabeled) app.
-	 */
-	#ensureClientUsageAppColumn(): void {
-		const columns = this.#db.query("PRAGMA table_info(client_usage)").all() as Array<{ name: string }>;
-		if (!columns.some(column => column.name === "app")) {
-			this.#db.run("ALTER TABLE client_usage ADD COLUMN app TEXT NOT NULL DEFAULT ''");
-		}
-	}
-
-	recordClientUsage(report: ClientUsageReport): void {
-		const now = Date.now();
-		this.#db
-			.query(
-				`INSERT INTO clients (install_id, hostname, first_seen, last_seen) VALUES (?, ?, ?, ?)
-				 ON CONFLICT(install_id) DO UPDATE SET hostname = COALESCE(excluded.hostname, hostname), last_seen = excluded.last_seen`,
-			)
-			.run(report.installId, report.hostname ?? null, now, now);
-		const app = report.app?.trim() ?? "";
-		const findBucket = this.#db.query(
-			`SELECT id FROM client_usage
-			 WHERE install_id = ? AND app = ? AND provider = ? AND model = ? AND recorded_at >= ?
-			 ORDER BY recorded_at DESC LIMIT 1`,
-		);
-		const merge = this.#db.query(
-			`UPDATE client_usage SET recorded_at = ?, requests = requests + ?, input_tokens = input_tokens + ?,
-				output_tokens = output_tokens + ?, cache_read_tokens = cache_read_tokens + ?,
-				cache_write_tokens = cache_write_tokens + ?, cost_usd = cost_usd + ? WHERE id = ?`,
-		);
-		const insert = this.#db.query(
-			`INSERT INTO client_usage (recorded_at, install_id, app, provider, model, requests, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		);
-		for (const entry of report.entries) {
-			// Merge into the newest row of the same (install, provider, model)
-			// bucket so 10s client flushes don't accrete one row apiece forever.
-			const bucketFloor = entry.at - CLIENT_USAGE_BUCKET_MS;
-			const existing = findBucket.get(report.installId, app, entry.provider, entry.model, bucketFloor) as {
-				id: number;
-			} | null;
-			if (existing) {
-				merge.run(
-					entry.at,
-					entry.requests,
-					entry.inputTokens,
-					entry.outputTokens,
-					entry.cacheReadTokens,
-					entry.cacheWriteTokens,
-					entry.costUsd,
-					existing.id,
-				);
-				continue;
-			}
-			insert.run(
-				entry.at,
-				report.installId,
-				app,
-				entry.provider,
-				entry.model,
-				entry.requests,
-				entry.inputTokens,
-				entry.outputTokens,
-				entry.cacheReadTokens,
-				entry.cacheWriteTokens,
-				entry.costUsd,
-			);
-		}
-	}
-
-	getClientUsageSummary(sinceMs: number): ClientUsageSummary {
-		const clients = this.#db
-			.query("SELECT install_id, hostname, first_seen, last_seen FROM clients ORDER BY last_seen DESC")
-			.all() as Array<{ install_id: string; hostname: string | null; first_seen: number; last_seen: number }>;
-		const aggregates = this.#db
-			.query(
-				`SELECT install_id, app, provider, SUM(requests) requests, SUM(input_tokens) input_tokens,
-					SUM(output_tokens) output_tokens, SUM(cache_read_tokens) cache_read_tokens,
-					SUM(cache_write_tokens) cache_write_tokens, SUM(cost_usd) cost_usd
-				 FROM client_usage WHERE recorded_at >= ? GROUP BY install_id, app, provider
-				 ORDER BY install_id, SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) DESC`,
-			)
-			.all(sinceMs) as Array<{
-			install_id: string;
-			app: string;
-			provider: string;
-			requests: number;
-			input_tokens: number;
-			output_tokens: number;
-			cache_read_tokens: number;
-			cache_write_tokens: number;
-			cost_usd: number;
-		}>;
-		const providersByInstall = new Map<string, ClientProviderUsage[]>();
-		for (const row of aggregates) {
-			let list = providersByInstall.get(row.install_id);
-			if (!list) {
-				list = [];
-				providersByInstall.set(row.install_id, list);
-			}
-			list.push({
-				app: row.app === "" ? undefined : row.app,
-				provider: row.provider,
-				requests: row.requests,
-				inputTokens: row.input_tokens,
-				outputTokens: row.output_tokens,
-				cacheReadTokens: row.cache_read_tokens,
-				cacheWriteTokens: row.cache_write_tokens,
-				costUsd: row.cost_usd,
-			});
-		}
-		return {
-			clients: clients.map(client => ({
-				installId: client.install_id,
-				hostname: client.hostname ?? undefined,
-				firstSeen: client.first_seen,
-				lastSeen: client.last_seen,
-				providers: providersByInstall.get(client.install_id) ?? [],
-			})),
-		};
 	}
 
 	// ─── Convenience methods for CLI ────────────────────────────────────────

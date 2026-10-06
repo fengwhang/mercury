@@ -8,7 +8,6 @@ import type { MessageStats } from "@oh-my-pi/omp-stats/types";
 import {
 	computeUsageWindowStats,
 	readUsageSnapshots,
-	sumFleetTokens,
 	type UsageSnapshotRow,
 } from "@oh-my-pi/omp-stats/usage-windows";
 import { getAgentDbPath } from "@oh-my-pi/pi-utils";
@@ -230,36 +229,6 @@ describe("computeUsageWindowStats", () => {
 			"Usage (Google) · Daily",
 			"Usage (Google) · Weekly",
 		]);
-	});
-});
-
-describe("sumFleetTokens", () => {
-	it("sums all four token components per provider across clients, null when empty", () => {
-		const client = (installId: string, provider: string, tokens: [number, number, number, number]) => ({
-			installId,
-			firstSeen: T0,
-			lastSeen: T0,
-			providers: [
-				{
-					provider,
-					requests: 1,
-					inputTokens: tokens[0],
-					outputTokens: tokens[1],
-					cacheReadTokens: tokens[2],
-					cacheWriteTokens: tokens[3],
-					costUsd: 0,
-				},
-			],
-		});
-		const tokens = sumFleetTokens([
-			client("install-1", "prov-a", [100, 20, 300, 4]),
-			client("install-2", "prov-a", [1, 2, 3, 4]),
-			client("install-3", "prov-b", [10, 0, 0, 0]),
-		]);
-		expect(tokens?.get("prov-a")).toBe(434);
-		expect(tokens?.get("prov-b")).toBe(10);
-		// No reports must read as "no data" (fall back to local stats), not zero burn.
-		expect(sumFleetTokens([])).toBeNull();
 	});
 });
 

@@ -77,18 +77,6 @@ const USAGE_REPORT = {
 	raw: { providerPayload: true },
 	providerExtension: "kept",
 };
-const OBSERVED_USAGE = {
-	at: 1_000,
-	provider: "anthropic",
-	model: "claude",
-	requests: 1,
-	inputTokens: 2,
-	outputTokens: 3,
-	cacheReadTokens: 4,
-	cacheWriteTokens: 5,
-	costUsd: 0.01,
-};
-
 const schemaNames = [
 	"oauthCredentialSchema",
 	"remoteOauthCredentialSchema",
@@ -107,9 +95,6 @@ const schemaNames = [
 	"healthzResponseSchema",
 	"usageResponseSchema",
 	"usageHistoryResponseSchema",
-	"clientUsageReportRequestSchema",
-	"clientUsageReportResponseSchema",
-	"clientUsageSummaryResponseSchema",
 	"credentialRefreshResponseSchema",
 	"credentialDisableRequestSchema",
 	"credentialDisableResponseSchema",
@@ -154,20 +139,6 @@ const validSamples: Record<SchemaName, unknown> = {
 				label: "Rolling window",
 				usedFraction: 0.1,
 				status: "ok",
-			},
-		],
-	},
-	clientUsageReportRequestSchema: { installId: "install", hostname: "host", app: "robomp", entries: [OBSERVED_USAGE] },
-	clientUsageReportResponseSchema: { ok: true },
-	clientUsageSummaryResponseSchema: {
-		generatedAt: 2_000,
-		clients: [
-			{
-				installId: "install",
-				hostname: "host",
-				firstSeen: 1_000,
-				lastSeen: 2_000,
-				providers: [{ ...OBSERVED_USAGE, app: "robomp", firstSeen: undefined, at: undefined, model: undefined }],
 			},
 		],
 	},

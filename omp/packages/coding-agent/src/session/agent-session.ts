@@ -3042,20 +3042,6 @@ export class AgentSession {
 					this.#skippedPostTurnSpeculationCompletion = this.#maintenance.speculationCompletion;
 				}
 				await this.#recovery.onAssistantSettledSuccessfully(assistantMsg);
-				// Broker deployments: report this request's burn so the broker can
-				// attribute token usage per install. No-op with a local auth store.
-				this.#modelRegistry.authStorage.recordObservedUsage({
-					provider: assistantMsg.provider,
-					model: assistantMsg.model,
-					at: assistantMsg.timestamp,
-					usage: {
-						input: assistantMsg.usage.input,
-						output: assistantMsg.usage.output,
-						cacheRead: assistantMsg.usage.cacheRead,
-						cacheWrite: assistantMsg.usage.cacheWrite,
-					},
-					costUsd: assistantMsg.usage.cost.total,
-				});
 				// Persist which account served this turn so a resumed process can
 				// re-pin it and keep the provider's account-scoped prompt cache
 				// warm (broker-mode sticky routing is process-local).

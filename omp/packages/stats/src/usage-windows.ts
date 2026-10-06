@@ -14,7 +14,6 @@
  */
 import { Database } from "bun:sqlite";
 import { AuthBrokerClient, resolveAuthBrokerConfig } from "@oh-my-pi/pi-ai/auth-broker";
-import type { ClientUsageClientSummary } from "@oh-my-pi/pi-ai/usage";
 import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
 import type { ProviderWindowInsight, UsageWindowPoint, UsageWindowSeries } from "./shared-types";
 
@@ -41,17 +40,9 @@ export interface UsageWindowStats {
 	windowInsights: ProviderWindowInsight[];
 }
 
-/** Usage snapshots plus, in broker mode, fleet-wide token burn per provider. */
+/** Provider usage-limit snapshots from the broker or local auth store. */
 export interface UsageDataSnapshot {
 	rows: UsageSnapshotRow[];
-	/**
-	 * Total tokens (input + output + cache read/write) per provider summed
-	 * across every install reporting to the auth broker, or `null` when no
-	 * broker is configured or no client reports exist for the range. Matches
-	 * the fleet-wide window fractions in `rows`, unlike local message stats
-	 * which only see this install's burn.
-	 */
-	fleetTokensByProvider: Map<string, number> | null;
 }
 
 /** A used-fraction drop smaller than this is jitter, not a window reset. */
@@ -115,22 +106,16 @@ export function readUsageSnapshots(sinceMs: number, dbPath = getAgentDbPath()): 
 }
 
 /**
- * Fetch usage data from wherever it actually accumulates: the auth broker's
- * durable history plus per-client observed-usage reports when a broker is
- * configured (the broker performs every upstream usage fetch in that mode, so
- * the local `usage_history` stays frozen), else the local agent DB. Broker
- * errors fall back to the local read so the dashboard degrades to
- * stale-but-present data instead of failing.
+ * Fetch usage-limit snapshots from the auth broker's durable history when
+ * configured, else the local agent DB. Broker errors fall back to the local
+ * read so the dashboard retains stale-but-present data instead of failing.
  */
 export async function fetchUsageData(sinceMs: number): Promise<UsageDataSnapshot> {
 	try {
 		const brokerConfig = await resolveAuthBrokerConfig();
 		if (brokerConfig) {
 			const client = new AuthBrokerClient({ url: brokerConfig.url, token: brokerConfig.token });
-			const [response, fleetTokensByProvider] = await Promise.all([
-				client.fetchUsageHistory({ sinceMs }),
-				fetchFleetTokens(client, sinceMs),
-			]);
+			const response = await client.fetchUsageHistory({ sinceMs });
 			return {
 				rows: response.entries.map(entry => ({
 					recordedAt: entry.recordedAt,
@@ -144,45 +129,12 @@ export async function fetchUsageData(sinceMs: number): Promise<UsageDataSnapshot
 					usedFraction: entry.usedFraction ?? null,
 					status: entry.status ?? null,
 				})),
-				fleetTokensByProvider,
 			};
 		}
 	} catch (err) {
 		logger.debug("broker usage history unavailable, falling back to local", { error: String(err) });
 	}
-	return { rows: readUsageSnapshots(sinceMs), fleetTokensByProvider: null };
-}
-
-/**
- * Sum broker-recorded client token burn per provider since `sinceMs`.
- * Returns `null` on fetch failure or when no client has reported usage, so
- * callers fall back to local message stats instead of zeroing estimates.
- */
-async function fetchFleetTokens(client: AuthBrokerClient, sinceMs: number): Promise<Map<string, number> | null> {
-	try {
-		const summary = await client.fetchClientUsageSummary({ sinceMs });
-		return sumFleetTokens(summary.clients);
-	} catch (err) {
-		logger.debug("broker client usage summary unavailable", { error: String(err) });
-		return null;
-	}
-}
-
-/**
- * Fold per-client provider aggregates into total tokens per provider
- * (input + output + cache read/write, matching message-stat `totalTokens`).
- * Returns `null` when no client reported anything, signalling "no data"
- * rather than "zero burn".
- */
-export function sumFleetTokens(clients: ClientUsageClientSummary[]): Map<string, number> | null {
-	const tokens = new Map<string, number>();
-	for (const client of clients) {
-		for (const p of client.providers) {
-			const total = p.inputTokens + p.outputTokens + p.cacheReadTokens + p.cacheWriteTokens;
-			tokens.set(p.provider, (tokens.get(p.provider) ?? 0) + total);
-		}
-	}
-	return tokens.size > 0 ? tokens : null;
+	return { rows: readUsageSnapshots(sinceMs) };
 }
 
 /** True when a snapshot reports an exhausted window, by status or by fraction. */
