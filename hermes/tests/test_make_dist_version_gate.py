@@ -184,3 +184,55 @@ def test_modern_only_x64_addon_refuses_pack(tmp_path):
     assert proc.returncode != 0
     assert "baseline" in proc.stderr
     assert not list((repo / "dist").glob("*.tar.gz"))
+
+
+def test_mlounge_build_preserves_committed_frontend_bytes(tmp_path, monkeypatch):
+    """The release-host dependency install must not rewrite archived source."""
+    repo = _sandbox_repo(tmp_path, VERSION)
+    build = repo / "scripts/build-mlounge-fork.sh"
+    shutil.copy2(REPO_ROOT / "scripts/build-mlounge-fork.sh", build)
+    source = repo / "third_party/mlounge"
+    (source / "package.json").write_text('{"version":"1.0.0","mercuryFork":true}')
+    (source / "yarn.lock").write_text("# committed dependency graph\n")
+    committed = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in source.iterdir()
+    }
+
+    # Keep this regression offline: emulate the installers' lockfile behavior
+    # at the external tool boundary, while running the real generating script.
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "node").write_text("#!/bin/bash\nexit 0\n")
+    (tools / "npx").write_text(
+        "#!/bin/bash\nset -eu\n"
+        'if [ "$*" = "--yes yarn@1.22.22 install --frozen-lockfile --non-interactive" ]; then\n'
+        "  exit 0\n"
+        "fi\n"
+        "printf 'unlocked yarn install\\n' > yarn.lock\n")
+    (tools / "npm").write_text(
+        "#!/bin/bash\nset -eu\n"
+        'if [ "$1" = install ]; then\n'
+        "  printf 'npm rewrote dependency graph\\n' > yarn.lock\n"
+        "  printf '{}\\n' > package-lock.json\n"
+        "  exit 0\n"
+        "fi\n"
+        '[ "$*" = "run build" ]\n'
+        "mkdir -p dist/server/plugins/inputs dist/server/plugins/irc-events public/assets\n"
+        "printf '// built\\n' > dist/server/index.js\n"
+        "printf 'draft/multiline\\n' > dist/server/plugins/inputs/msg.js\n"
+        "printf 'draft/multiline\\n' > dist/server/plugins/irc-events/message.js\n"
+        "printf '// built\\n' > public/assets/index-test.js\n")
+    for tool in tools.iterdir():
+        tool.chmod(0o755)
+    import os
+
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    result = subprocess.run(
+        ["bash", str(build)], cwd=repo, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = repo / "dist/mlounge-fork/tree"
+    for name, digest in committed.items():
+        assert hashlib.sha256((source / name).read_bytes()).hexdigest() == digest
+        assert hashlib.sha256((payload / name).read_bytes()).hexdigest() == digest, name
+    assert not (payload / "package-lock.json").exists()
