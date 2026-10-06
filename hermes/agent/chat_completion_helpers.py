@@ -2989,6 +2989,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             is_codex_backend=fb_provider == "openai-codex",
         )
         return True
+    except InterruptedError:
+        # Cancellation is not a provider failure and must never advance the
+        # configured chain or activate another billing route.
+        raise
     except Exception as e:
         if fb_provider == "nous":
             unavailable.add(fb_key)

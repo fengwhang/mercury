@@ -1429,6 +1429,10 @@ def init_agent(
                                 explicit_base_url=_fb.get("base_url"),
                                 explicit_api_key=_fb_explicit_key,
                             )
+                        except InterruptedError:
+                            # Startup cancellation must not select another
+                            # configured billing route.
+                            raise
                         except Exception as _fb_exc:
                             logger.debug(
                                 "Init-time fallback entry %s failed: %s",

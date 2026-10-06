@@ -67,3 +67,32 @@ def test_init_raises_when_no_fallback_configured():
                 skip_memory=True,
                 fallback_model=None,
             )
+
+
+def test_init_cancelled_fallback_resolution_never_tries_next_provider():
+    with (
+        patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=[
+                (None, None),
+                InterruptedError("cancelled during startup fallback"),
+                (_mock_client(base_url="https://fallback.invalid/v1"), "last"),
+            ],
+        ) as resolve,
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs()),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        patch("agent.context_compressor.get_model_context_length", return_value=200000),
+    ):
+        with pytest.raises(InterruptedError, match="cancelled"):
+            AIAgent(
+                provider="alibaba-coding-plan", model="primary",
+                api_key=None, base_url=None, quiet_mode=True,
+                skip_context_files=True, skip_memory=True,
+                fallback_model=[
+                    {"provider": "deepseek", "model": "first"},
+                    {"provider": "openrouter", "model": "last"},
+                ],
+            )
+    assert resolve.call_count == 2
