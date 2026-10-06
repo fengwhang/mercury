@@ -7,6 +7,10 @@ Server-side LLM fact extraction with semantic search and hybrid multi-signal ret
 - `pip install mem0ai`
 - Mem0 API key from [app.mem0.ai](https://app.mem0.ai)
 
+Mercury disables the Mem0 SDK's anonymous telemetry before loading the library;
+an inherited `MEM0_TELEMETRY` setting cannot enable it. Configured memory, LLM,
+embedding, and vector-store requests are unaffected.
+
 ## Setup
 
 ```bash

@@ -382,6 +382,24 @@ class TestOSSBackend:
         backend._memory = memory
         return backend, memory
 
+    def test_close_releases_provider_resources_without_flushing_reports(self):
+        events = []
+        backend = OSSBackend.__new__(OSSBackend)
+        backend._memory = SimpleNamespace(
+            close=lambda: events.append("memory.close"),
+            vector_store=SimpleNamespace(
+                close=lambda: events.append("store.close"),
+                client=SimpleNamespace(close=lambda: events.append("client.close")),
+            ),
+            telemetry=SimpleNamespace(
+                posthog=SimpleNamespace(shutdown=lambda: events.append("report.flush")),
+            ),
+        )
+
+        backend.close()
+
+        assert events == ["memory.close", "store.close", "client.close"]
+
 
     def test_legacy_api_base_aliases_are_normalized_before_mem0_init(self, monkeypatch):
         state, Memory, factory = _install_fake_mem0(monkeypatch)
@@ -402,6 +420,7 @@ class TestOSSBackend:
         }
         before = copy.deepcopy(raw)
         environment = dict(os.environ)
+        environment["MEM0_TELEMETRY"] = "false"
 
         OSSBackend(raw)
 

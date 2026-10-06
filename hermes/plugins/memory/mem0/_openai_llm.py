@@ -6,6 +6,9 @@ import logging
 import os
 from typing import Dict, List, Optional, Union
 
+# Direct imports must also disable Mem0's import-time PostHog initialization.
+os.environ["MEM0_TELEMETRY"] = "false"
+
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.configs.llms.openai import OpenAIConfig
 from mem0.llms.base import LLMBase

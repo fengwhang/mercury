@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -50,6 +51,8 @@ class PlatformBackend(Mem0Backend):
     """Wraps mem0.MemoryClient for Mem0 Platform (cloud API)."""
 
     def __init__(self, api_key: str):
+        # Mem0 caches this at import and creates its PostHog client immediately.
+        os.environ["MEM0_TELEMETRY"] = "false"
         from mem0 import MemoryClient
         self._client = MemoryClient(api_key=api_key)
 
@@ -183,7 +186,7 @@ class OSSBackend(Mem0Backend):
     """Wraps mem0.Memory for self-hosted (OSS) mode."""
 
     def __init__(self, oss_config: dict):
-        import os
+        os.environ["MEM0_TELEMETRY"] = "false"
         from mem0 import Memory
 
         def _provider_block(name: str) -> dict:
@@ -340,12 +343,6 @@ class OSSBackend(Mem0Backend):
 
     def close(self):
         try:
-            telemetry = getattr(self._memory, "telemetry", None)
-            if telemetry and hasattr(telemetry, "posthog"):
-                try:
-                    telemetry.posthog.shutdown()
-                except Exception:
-                    pass
             if hasattr(self._memory, "close"):
                 self._memory.close()
             vs = getattr(self._memory, "vector_store", None)

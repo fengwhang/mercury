@@ -16,7 +16,19 @@ from plugins.memory.mem0._setup import (
     _check_qdrant_path,
     _check_ollama,
     _check_pgvector,
+    _check_min_dep_version,
 )
+
+
+@pytest.mark.parametrize("installed, warns", [("2.0.6", True), ("2.0.10", False)])
+def test_dependency_version_check_preserves_warning_without_sdk_startup(
+    monkeypatch, capsys, installed, warns
+):
+    monkeypatch.setattr("importlib.metadata.version", lambda name: installed)
+
+    _check_min_dep_version()
+
+    assert ("Run: uv pip install" in capsys.readouterr().out) is warns
 
 
 def _inject_fake_hermes_cli(monkeypatch):

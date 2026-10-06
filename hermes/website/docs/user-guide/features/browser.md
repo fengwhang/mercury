@@ -91,6 +91,10 @@ browser:
 
 Browser Use's own cloud browsers need `browser-use auth login` or `BROWSER_USE_API_KEY`; other browser sources use their existing credentials unchanged.
 
+Mercury always launches the Browser Use CLI with anonymous telemetry disabled,
+overriding inherited `ANONYMIZED_TELEMETRY` values. Browser provider credentials
+and user-directed browser requests are unaffected.
+
 :::note
 Because Browser Use mode executes model-written Python on your machine, the
 `browser_exec` tool is only offered to sessions that also have terminal

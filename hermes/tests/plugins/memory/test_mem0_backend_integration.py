@@ -1,5 +1,6 @@
 """Integration coverage for Mercury' pinned Mem0 OSS boundary."""
 
+import importlib.util
 import copy
 import os
 from types import SimpleNamespace
@@ -7,10 +8,13 @@ from types import SimpleNamespace
 import pytest
 
 
-pytest.importorskip("mem0", reason="requires the existing mem0 extra")
+if importlib.util.find_spec("mem0") is None:
+    pytest.skip("requires the existing mem0 extra", allow_module_level=True)
 
 
 def test_openai_backend_uses_real_mem0_config_and_factory(monkeypatch, tmp_path):
+    # Disable the SDK before imports used to prepare its fake provider seams.
+    monkeypatch.setenv("MEM0_TELEMETRY", "false")
     mem0_dir = tmp_path / "mem0"
     monkeypatch.setenv("MEM0_DIR", str(mem0_dir))
     monkeypatch.setenv("OPENAI_API_KEY", "environment-openai-sentinel")
@@ -73,8 +77,6 @@ def test_openai_backend_uses_real_mem0_config_and_factory(monkeypatch, tmp_path)
         lambda *_args, **_kwargs: DummyVectorStore(),
     )
     monkeypatch.setattr(memory_main, "SQLiteManager", DummyDB)
-    monkeypatch.setattr(memory_main, "MEM0_TELEMETRY", False)
-    monkeypatch.setattr(memory_main, "capture_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         OSSBackend,
         "_recreate_collection_if_dims_changed",

@@ -101,6 +101,27 @@ class TestSubprocessEnvironment:
         env = bu_cli._base_subprocess_env()
         assert env["ANONYMIZED_TELEMETRY"] == "false"
 
+    @pytest.mark.parametrize("inherited", ["true", "1", "yes"])
+    def test_child_telemetry_disabled_despite_inherited_opt_in(
+        self, tmp_path, monkeypatch, inherited
+    ):
+        monkeypatch.setenv("ANONYMIZED_TELEMETRY", inherited)
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "provider-sentinel")
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {})
+        monkeypatch.setattr(bu_cli, "_resolve_backend_cdp", lambda *args, **kwargs: None)
+        monkeypatch.setattr(bu_cli, "_resolve_real_profile_cdp", lambda *args, **kwargs: None)
+        cli = _fake_cli(
+            tmp_path,
+            'cat > /dev/null\n'
+            'printf "telemetry:%s provider:%s\\n" "$ANONYMIZED_TELEMETRY" "$BROWSER_USE_API_KEY"\n',
+        )
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+
+        assert "error" not in result
+        assert "telemetry:false provider:provider-sentinel" in result["output"]
+
     def test_subprocess_env_strips_parent_python_import_paths(self, monkeypatch):
         """#83427/#84841/#86006/#86104: the browser-use CLI runs under its
         own Python — inherited PYTHONPATH/PYTHONHOME pointing at Mercury's
