@@ -1658,6 +1658,35 @@ def restore_primary_runtime(agent) -> bool:
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
 
+    # Startup can fail over before a primary client exists. Resolve that
+    # preferred route again without replacing the working fallback with an
+    # empty-key snapshot. Once available, the normal switch path establishes
+    # a real primary snapshot and refreshes the compressor and wire protocol.
+    startup_primary = getattr(agent, "_startup_primary_selection", None)
+    if startup_primary:
+        try:
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client(
+                startup_primary["provider"], model=startup_primary["model"],
+                raw_codex=True,
+                explicit_base_url=startup_primary.get("base_url") or None,
+                api_mode=startup_primary["api_mode"],
+            )
+            if client is None:
+                return False
+            agent.switch_model(
+                model or startup_primary["model"], startup_primary["provider"],
+                api_key=client.api_key, base_url=str(client.base_url),
+                api_mode=startup_primary["api_mode"],
+            )
+            return True
+        except InterruptedError:
+            raise
+        except Exception:
+            logger.debug("Startup primary is still unavailable", exc_info=True)
+            return False
+
     # ── Reset-aware gate ──
     # The 60s ``_rate_limited_until`` cooldown covers transient rate limits,
     # but subscription-style providers (Claude Pro/Max 5-hour windows, ChatGPT
@@ -3389,6 +3418,7 @@ def switch_model(
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
     agent._fallback_index = 0
+    agent._startup_primary_selection = None
 
     # Switching the primary does not edit the user's fallback policy.
     # Same-provider routes can name different models or endpoints; the
