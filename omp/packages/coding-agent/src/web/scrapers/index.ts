@@ -32,7 +32,6 @@ import { handleGoPkg } from "./go-pkg";
 import { handleHackage } from "./hackage";
 import { handleHackerNews } from "./hackernews";
 import { handleHex } from "./hex";
-import { handleHuggingFace } from "./huggingface";
 import { handleIacr } from "./iacr";
 import { handleJetBrainsMarketplace } from "./jetbrains-marketplace";
 import { handleLemmy } from "./lemmy";
@@ -113,7 +112,6 @@ export {
 	handleHackage,
 	handleHackerNews,
 	handleHex,
-	handleHuggingFace,
 	handleIacr,
 	handleJetBrainsMarketplace,
 	handleLemmy,
@@ -222,7 +220,6 @@ export const specialHandlers: SpecialHandler[] = [
 	handleRepology,
 	handleSnapcraft,
 	// ML/AI
-	handleHuggingFace,
 	handleOllama,
 	// Academic
 	handleArxiv,
