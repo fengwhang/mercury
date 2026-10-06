@@ -144,3 +144,84 @@ async def test_refused_destroy_frees_row_now_and_retries_channel_later(tmp_path,
         finally:
             await adapter.disconnect()
             state.close()
+
+
+@pytest.mark.asyncio
+async def test_registry_expiry_parts_connected_observer_when_oper_is_refused(tmp_path, monkeypatch):
+    """Disk pruning alone cannot remove mLounge's in-memory saved channels."""
+    from observatory import identity, spawn
+
+    monkeypatch.setattr(identity, "drop_identity", AsyncMock())
+    monkeypatch.setattr(spawn, "PURGE_RETRY_INTERVAL", 30)
+    async with running_daemon(tmp_path, agent_password="test-secret") as (daemon, port, server_port):
+        adapter = make_adapter(port, monkeypatch)
+        adapter.agent_password = "test-secret"
+        adapter.oper_password = "wrong-secret"
+        state = ObservatoryState(tmp_path / "state.db")
+        for node, parent in (("root", None), ("child", "root")):
+            state.add_node(node, engine="hermes", name=node, slug=node, mxid=node,
+                           session_ref=node, parent_node_id=parent)
+            state.set_room_id(node, f"#test-{node}")
+        history = tmp_path / "lounge/home/logs/owner/test/test-child.log"
+        history.parent.mkdir(parents=True)
+        history.write_text("retained transcript\n")
+        observer = RawClient()
+        try:
+            assert await adapter.connect()
+            await observer.connect(server_port)
+            await observer.register("desktop")
+            await observer.next_match("JOIN #test-child")
+            await RoomManager(state, adapter)._retire_child_room("child")
+            assert read_purge_journal(state)[0]["rows"] == []
+            # A real self-PART is what mLounge uses to evict its in-memory
+            # channel and persist the corrected list on its next save.
+            await observer.next_match(" PART #test-child :room expired", timeout=3)
+            assert "#test-child" not in daemon.channel_names()
+            assert "#test-root" in daemon.channel_names()
+            assert history.read_text() == "retained transcript\n"
+        finally:
+            await observer.close()
+            await adapter.disconnect()
+            pending = spawn._purge_retry_tasks.get(state)
+            if pending is not None:
+                pending.cancel()
+                try:
+                    await pending
+                except asyncio.CancelledError:
+                    pass
+            state.close()
+
+
+@pytest.mark.asyncio
+async def test_expiry_sweep_protects_live_replacement_gateway_and_unrelated_rooms(tmp_path):
+    import json
+    from observatory.state import CLOSED_ROOMS_META_KEY, MANAGED_ROOMS_META_KEY
+
+    state = ObservatoryState(tmp_path / "state.db")
+    state.add_node("replacement", engine="hermes", name="root", slug="root", mxid="root",
+                   session_ref="new-generation")
+    state.set_room_id("replacement", "#test-root")
+    async with running_daemon(tmp_path, server_name="test") as (daemon, port, _):
+        observer = RawClient()
+        try:
+            await observer.connect(port)
+            await observer.register("desktop")
+            for room in ("#test-root", "#unrelated", "#expired", "#test_gateway"):
+                await observer.send(f"JOIN {room}")
+                await observer.next_match(f"JOIN {room}")
+            state.set_meta(CLOSED_ROOMS_META_KEY, json.dumps(
+                ["#test-root", "#expired", "#test_gateway"]))
+            state.set_meta(MANAGED_ROOMS_META_KEY, "true")
+            await daemon._expire_closed_rooms()
+            await observer.next_match(" PART #expired :room expired")
+            assert set(daemon.channel_names()) == {"#test-root", "#unrelated", "#test_gateway"}
+            assert state.get("replacement")["status"] == "live"
+        finally:
+            await observer.close()
+            state.close()
+
+
+@pytest.mark.asyncio
+async def test_daemon_can_stop_before_expiry_worker_first_runs(tmp_path):
+    async with running_daemon(tmp_path):
+        pass
