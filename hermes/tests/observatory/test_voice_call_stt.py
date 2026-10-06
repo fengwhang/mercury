@@ -190,3 +190,36 @@ def test_close_delivers_ended_after_finishing_writer_releases_lock():
         closer.join(1)
         client.close()
         server.close()
+
+
+def test_explicit_sidecar_home_overrides_inherited_mercury_config(tmp_path, monkeypatch):
+    import json
+    from observatory import voice_call_stt as stt
+
+    home = tmp_path / "voice-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(json.dumps({
+        "stt": {"provider": "qwen3-asr"},
+        "voice_call": {"mirc_host_url": "http://explicit-mirc:8123"},
+    }))
+    inherited = tmp_path / "inherited.yaml"
+    inherited.write_text(json.dumps({
+        "stt": {"provider": "openai"},
+        "voice_call": {"mirc_host_url": "http://wrong-mirc:9123"},
+    }))
+    monkeypatch.setenv("MERCURY_CONFIG", str(inherited))
+    served = []
+
+    class Server:
+        def __init__(self, address, handler):
+            served.append((handler.state.mirc_url, handler.state.stt_config["provider"]))
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            pass
+
+    monkeypatch.setattr(stt, "ThreadingHTTPServer", Server)
+    assert stt.main(["--home", str(home)]) == 0
+    assert served == [("http://explicit-mirc:8123", "qwen3-asr")]

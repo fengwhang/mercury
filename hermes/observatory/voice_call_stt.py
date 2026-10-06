@@ -877,7 +877,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--endpoint", default="", help="STT endpoint overlay")
     parser.add_argument("--token", default="", help="Shared bearer token (or VOICE_CALL_SIDECAR_TOKEN)")
     parser.add_argument("--mirc-token", default="", help="MIRC voice service secret (or VOICE_CALL_MIRC_TOKEN)")
-    parser.add_argument("--home", default="", help="Mercury home override (sets MERCURY_HOME/HERMES_HOME)")
+    parser.add_argument("--home", default="", help="Mercury home override (including its config.yaml)")
     return parser
 
 
@@ -886,6 +886,7 @@ def main(argv: Optional[list] = None) -> int:
     if args.home:
         os.environ["MERCURY_HOME"] = args.home
         os.environ["HERMES_HOME"] = args.home
+        os.environ["MERCURY_CONFIG"] = os.path.join(args.home, "config.yaml")
     section = load_voice_call_section()
     mirc_url = (args.mirc_url or str(section.get("mirc_host_url") or "")).strip().rstrip("/")
     if not mirc_url:

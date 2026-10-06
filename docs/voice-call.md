@@ -184,6 +184,10 @@ voice/audio routes. It does not grant access to configuration or other
 dashboard endpoints. The browser receives only the distinct sidecar token.
 Restart the two processes after adding the service secret.
 
+`--home PATH` selects that home's `config.yaml` as well as its state directories,
+overriding an inherited `MERCURY_CONFIG`. Without `--home`, the launcher's active
+configuration remains authoritative.
+
 The separate sidecar token is entered in the browser's voice settings and kept
 in local browser storage. Service provisioning and public mLounge configuration
 never export the MIRC authentication token or automatically publish a sidecar
