@@ -50,7 +50,7 @@ import struct
 import sys
 import tempfile
 import threading
-import time
+import uuid
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -152,15 +152,17 @@ class WsConnection:
         self.lock = threading.Lock()
         self.closed = False
 
-    def send_json(self, message: Dict[str, Any]) -> None:
+    def send_json(self, message: Dict[str, Any], *, guard=None) -> None:
         raw = json.dumps(message).encode("utf-8")
         with self.lock:
-            if self.closed:
+            if self.closed or (guard is not None and not guard()):
                 return
             try:
                 self.conn.sendall(ws_encode_frame(raw, 0x1))
             except OSError:
                 self.closed = True
+        if self.closed:
+            self.close()
 
     def recv_message(self) -> tuple[str, bytes]:
         """Next complete message as (kind, payload): text|binary|close."""
@@ -196,24 +198,32 @@ class WsConnection:
                 kind = "text" if text_mode else "binary"
                 return kind, b"".join(fragments)
 
-    def close(self, code: int = 1000, reason: str = "") -> None:
-        payload = struct.pack("!H", code) + reason.encode("utf-8")
-        with self.lock:
-            if self.closed:
-                return
-            self.closed = True
-            try:
-                self.conn.sendall(ws_encode_frame(payload, 0x8))
-            except OSError:
-                pass
-            try:
+    def close(
+        self, code: int = 1000, reason: str = "", *, message: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        # Never wait for a provider worker holding the send lock. Shutdown
+        # interrupts its sendall; an uncontended close gets a bounded chance
+        # to deliver the final notice and RFC close frame first.
+        locked = self.lock.acquire(blocking=False)
+        was_closed = self.closed
+        self.closed = True
+        try:
+            if locked and not was_closed:
+                try:
+                    self.conn.settimeout(0.1)
+                    frame = ws_encode_frame(struct.pack("!H", code) + reason.encode("utf-8"), 0x8)
+                    if message is not None:
+                        frame = ws_encode_frame(json.dumps(message).encode("utf-8")) + frame
+                    self.conn.sendall(frame)
+                except OSError:
+                    pass
+        finally:
+            with contextlib.suppress(OSError):
                 self.conn.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
+            with contextlib.suppress(OSError):
                 self.conn.close()
-            except OSError:
-                pass
+            if locked:
+                self.lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +392,6 @@ class SidecarState:
         self.mirc_token = mirc_token
         self.calls: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.Lock()
-        self.call_seq = 0
 
     def check_token(self, handler: BaseHTTPRequestHandler) -> bool:
         if not self.token:
@@ -402,9 +411,7 @@ class SidecarState:
         return mirc_request(self.mirc_url, path, payload, timeout=timeout, token=self.mirc_token)
 
     def next_call_id(self) -> str:
-        with self.lock:
-            self.call_seq += 1
-            return f"call-{int(time.time())}-{self.call_seq}"
+        return f"call-{uuid.uuid4().hex}"
 
 
 class SidecarHandler(BaseHTTPRequestHandler):
@@ -604,9 +611,10 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 "reason": str(status.get("reason") or status.get("error") or "call not allowed"),
             })
             return
+        call_id = self.state.next_call_id()
         started = self.state.request(
                 "/api/voice-call/call",
-            {"action": "start", "channel": channel, "engine": engine},
+            {"action": "start", "channel": channel, "engine": engine, "call_id": call_id},
             timeout=10.0,
         )
         if not started.get("ok"):
@@ -615,22 +623,18 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 "reason": str(started.get("detail") or started.get("error") or "MIRC host refused the call"),
             })
             return
-        call_id = self.state.next_call_id()
         with self.state.lock:
-            self.state.calls[call_id] = {"channel": channel, "engine": engine, "mime": mime}
-        ws.send_json({
-            "type": "ready",
-            "callId": call_id,
-            "channel": channel,
-            "engine": engine,
-            "sttProvider": active_stt_provider(self.state.stt_config),
-        })
+            self.state.calls[call_id] = {
+                "channel": channel, "engine": engine, "mime": mime,
+                "muted": False, "audio_epoch": 0,
+            }
         # STT and synthesis can each block on a provider. Keep the socket
         # reader free for microphone traffic, ping, mute, and hangup, with
         # bounded queues and one worker per stream to preserve reply order.
         done = threading.Event()
         audio_jobs = queue.Queue(maxsize=4)
         speech_jobs = queue.Queue(maxsize=8)
+        registry_jobs = queue.Queue(maxsize=8)
 
         def worker(jobs, operation):
             while not done.is_set():
@@ -639,10 +643,16 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 except queue.Empty:
                     continue
                 if not done.is_set():
-                    operation(ws, call_id, data)
+                    try:
+                        operation(ws, call_id, data)
+                    except Exception:
+                        logger.exception("voice worker failed")
+                        done.set()
+                        with contextlib.suppress(Exception):
+                            ws.send_json({"type": "error", "message": "Voice worker failed; call ended."})
+                        ws.close()
+                        return
 
-        for jobs, operation in ((audio_jobs, self._on_audio_chunk), (speech_jobs, self._on_control)):
-            threading.Thread(target=worker, args=(jobs, operation), daemon=True).start()
 
         def enqueue(jobs, data):
             try:
@@ -651,12 +661,30 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 ws.send_json({"type": "error", "message": "Voice provider is too slow; audio queue is full."})
 
         try:
+            for jobs, operation in (
+                (audio_jobs, self._on_audio_chunk),
+                (speech_jobs, self._on_control),
+                (registry_jobs, self._sync_muted),
+            ):
+                threading.Thread(target=worker, args=(jobs, operation), daemon=True).start()
+            ws.send_json({
+                "type": "ready",
+                "callId": call_id,
+                "channel": channel,
+                "engine": engine,
+                "sttProvider": active_stt_provider(self.state.stt_config),
+            })
             while True:
                 kind, payload = ws.recv_message()
                 if kind == "close":
                     break
                 if kind == "binary":
-                    enqueue(audio_jobs, payload)
+                    with self.state.lock:
+                        call = self.state.calls.get(call_id) or {}
+                        if call.get("muted"):
+                            continue
+                        epoch = call.get("audio_epoch", 0)
+                    enqueue(audio_jobs, (epoch, payload))
                 else:
                     try:
                         control = json.loads(payload)
@@ -667,33 +695,42 @@ class SidecarHandler(BaseHTTPRequestHandler):
                         continue
                     if self._on_control(ws, call_id, payload):
                         break
+                    if isinstance(control, dict) and control.get("type") == "mute":
+                        enqueue(registry_jobs, payload)
         finally:
             done.set()
             with self.state.lock:
                 self.state.calls.pop(call_id, None)
+            ws.close(message={"type": "ended", "callId": call_id})
             self.state.request(
                 "/api/voice-call/call",
-                {"action": "end", "channel": channel},
+                {"action": "end", "channel": channel, "call_id": call_id},
                 timeout=10.0,
             )
-            with contextlib.suppress(Exception):
-                ws.send_json({"type": "ended", "callId": call_id})
 
     def _call_channel(self, call_id: str) -> str:
         with self.state.lock:
             return str((self.state.calls.get(call_id) or {}).get("channel") or "")
 
-    def _on_audio_chunk(self, ws: WsConnection, call_id: str, payload: bytes) -> None:
+    def _audio_current(self, call_id: str, epoch: int) -> bool:
+        with self.state.lock:
+            call = self.state.calls.get(call_id)
+            return bool(call and not call["muted"] and call["audio_epoch"] == epoch)
+
+    def _on_audio_chunk(self, ws: WsConnection, call_id: str, job: tuple[int, bytes]) -> None:
+        epoch, payload = job
         if not payload:
             return
-        channel = self._call_channel(call_id)
-        if not channel:
-            return
         with self.state.lock:
-            mime = (self.state.calls.get(call_id) or {}).get("mime", "audio/webm")
+            call = self.state.calls.get(call_id)
+            if not call or call["muted"] or call["audio_epoch"] != epoch:
+                return
+            channel, mime = call["channel"], call["mime"]
         result = transcribe_chunk(payload, mime, self.state.stt_config)
-        if not self._call_channel(call_id):
-            return
+        with self.state.lock:
+            call = self.state.calls.get(call_id)
+            if not call or call["muted"] or call["audio_epoch"] != epoch:
+                return
         if result.get("success"):
             text = str(result.get("transcript") or "").strip()
             if text:
@@ -703,9 +740,23 @@ class SidecarHandler(BaseHTTPRequestHandler):
                     "channel": channel,
                     "text": text,
                     "provider": str(result.get("provider") or ""),
-                })
+                }, guard=lambda: self._audio_current(call_id, epoch))
         else:
-            ws.send_json({"type": "error", "message": str(result.get("error") or "transcription failed")})
+            ws.send_json(
+                {"type": "error", "message": str(result.get("error") or "transcription failed")},
+                guard=lambda: self._audio_current(call_id, epoch),
+            )
+
+    def _sync_muted(self, ws: WsConnection, call_id: str, payload: bytes) -> None:
+        channel = self._call_channel(call_id)
+        if not channel:
+            return
+        muted = bool(json.loads(payload).get("muted", True))
+        self.state.request(
+            "/api/voice-call/call",
+            {"action": "mute" if muted else "unmute", "channel": channel, "call_id": call_id},
+            timeout=10.0,
+        )
 
     def _on_control(self, ws: WsConnection, call_id: str, payload: bytes) -> bool:
         """Handle a control frame. True = hang up (break the loop)."""
@@ -746,11 +797,12 @@ class SidecarHandler(BaseHTTPRequestHandler):
             return False
         if kind == "mute":
             muted = bool(message.get("muted", True))
-            self.state.request(
-                "/api/voice-call/call",
-                {"action": "mute" if muted else "unmute", "channel": channel},
-                timeout=10.0,
-            )
+            with self.state.lock:
+                call = self.state.calls.get(call_id)
+                if not call:
+                    return False
+                call["muted"] = muted
+                call["audio_epoch"] += 1
             ws.send_json({"type": "muted", "callId": call_id, "muted": muted})
             return False
         if kind == "hangup":

@@ -173,8 +173,10 @@ class VoiceCallStore:
         self._lock = threading.Lock()
         self._calls: Dict[str, Dict[str, Any]] = {}
 
-    def start(self, channel: str, *, engine: str = "hermes") -> Dict[str, Any]:
-        """Open (or rejoin) a call. Raises VoiceCallEngineError for OMP."""
+    def start(
+        self, channel: str, *, engine: str = "hermes", call_id: str = "",
+    ) -> Dict[str, Any]:
+        """Open or rejoin one socket-owned call on a channel."""
         allowed, reason = check_engine_allowed(engine)
         if not allowed:
             raise VoiceCallEngineError(reason)
@@ -184,27 +186,45 @@ class VoiceCallStore:
         with self._lock:
             record = self._calls.get(key)
             if record is None:
-                record = {"channel": key, "engine": engine, "muted": False}
+                record = {"channel": key, "engine": engine, "sessions": {}}
                 self._calls[key] = record
-            else:
-                record["engine"] = engine
-            return dict(record)
+            record["sessions"].setdefault(call_id, False)
+            return self._record_status(record)
 
-    def end(self, channel: str) -> bool:
-        """Close a call. True when one was active."""
+    def end(self, channel: str, *, call_id: Optional[str] = None) -> bool:
+        """Close one socket owner, or all owners for a channel-wide End."""
         key = (channel or "").strip()
         with self._lock:
-            return self._calls.pop(key, None) is not None
+            if call_id is None:
+                return self._calls.pop(key, None) is not None
+            record = self._calls.get(key)
+            if record is None or call_id not in record["sessions"]:
+                return False
+            del record["sessions"][call_id]
+            if not record["sessions"]:
+                del self._calls[key]
+            return True
 
-    def set_muted(self, channel: str, muted: bool) -> Optional[Dict[str, Any]]:
-        """Mute/unmute a call. None when no call is active."""
+    def set_muted(
+        self, channel: str, muted: bool, *, call_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update one socket owner, or every owner on the channel."""
         key = (channel or "").strip()
         with self._lock:
             record = self._calls.get(key)
-            if record is None:
+            if record is None or (call_id is not None and call_id not in record["sessions"]):
                 return None
-            record["muted"] = bool(muted)
-            return dict(record)
+            for owner in record["sessions"]:
+                if call_id is None or owner == call_id:
+                    record["sessions"][owner] = bool(muted)
+            return self._record_status(record)
+
+    @staticmethod
+    def _record_status(record: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "channel": record["channel"], "engine": record["engine"],
+            "muted": all(record["sessions"].values()),
+        }
 
     def status(self, channel: str) -> Dict[str, Any]:
         """Call state for *channel* (active False when idle)."""
@@ -213,7 +233,7 @@ class VoiceCallStore:
             record = self._calls.get(key)
             if record is None:
                 return {"channel": key, "active": False, "muted": False, "engine": "hermes"}
-            return {"channel": key, "active": True, **{k: v for k, v in record.items() if k != "channel"}}
+            return {"active": True, **self._record_status(record)}
 
     def active_channels(self) -> List[str]:
         """Every channel with an open call."""

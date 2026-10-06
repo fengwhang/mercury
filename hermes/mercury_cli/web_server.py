@@ -5583,7 +5583,22 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
                 return text_to_speech_tool(text)
 
         loop = asyncio.get_running_loop()
-        result_json = await loop.run_in_executor(None, _speak_scoped)
+        speech = loop.run_in_executor(None, _speak_scoped)
+
+        def _discard_cancelled_speech(completed):
+            # Providers cannot be interrupted once running. Keep ownership
+            # of their eventual file even when the HTTP task is cancelled.
+            with contextlib.suppress(Exception):
+                raw = completed.result()
+                late = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(late, dict) and late.get("file_path"):
+                    os.unlink(late["file_path"])
+
+        try:
+            result_json = await asyncio.shield(speech)
+        except asyncio.CancelledError:
+            speech.add_done_callback(_discard_cancelled_speech)
+            raise
     except HTTPException:
         # _config_profile_scope raises 400/404 for a bad profile — pass it
         # through instead of masking it as a 500 synthesis failure.
@@ -5828,8 +5843,8 @@ async def voice_call_status(channel: str = "", profile: Optional[str] = None):
 
     Served on the MIRC host for the mLounge-host sidecar. Resolves the
     channel's engine through the live room manager when this process owns
-    one (co-located gateway); otherwise reports ``unknown`` and fails open
-    with a note — OMP rooms are refused only on positive identification.
+    one; otherwise reads the gateway's durable live tree. Unknown engines
+    fail closed, just like OMP rooms.
     TTS audio itself flows over the existing ``/api/audio/speak`` endpoint.
     """
     from observatory import voice_call as _voice_call
@@ -5863,7 +5878,7 @@ async def voice_call_action(payload: VoiceCallActionRequest, profile: Optional[s
         raise HTTPException(status_code=400, detail="channel is required")
     store = _voice_call.default_store()
     if action == "end":
-        ended = store.end(channel)
+        ended = store.end(channel, call_id=payload.call_id)
         return {"ok": True, "action": action, "channel": channel, "ended": ended}
     # Caller hints cannot override the server's room engine.
     engine = _voice_call.resolve_channel_engine(channel)
@@ -5872,9 +5887,9 @@ async def voice_call_action(payload: VoiceCallActionRequest, profile: Optional[s
         raise HTTPException(status_code=409, detail=reason)
     try:
         if action == "start":
-            record = store.start(channel, engine=engine)
+            record = store.start(channel, engine=engine, call_id=payload.call_id or "")
         else:
-            record = store.set_muted(channel, action == "mute")
+            record = store.set_muted(channel, action == "mute", call_id=payload.call_id)
             if record is None:
                 raise HTTPException(status_code=404, detail="no active call on channel")
     except _voice_call.VoiceCallEngineError as exc:

@@ -61,6 +61,16 @@ def sidecar():
 def test_browser_codec_transcript_and_speech_roundtrip(sidecar, monkeypatch):
     url, requests, state = sidecar
     chunks = []
+    end_completed = threading.Event()
+    request = state.request
+
+    def track_end(path, payload=None, **kwargs):
+        result = request(path, payload, **kwargs)
+        if payload and payload.get("action") == "end":
+            end_completed.set()
+        return result
+
+    monkeypatch.setattr(state, "request", track_end)
 
     def transcribe(audio, mime, cfg):
         chunks.append((audio, mime))
@@ -78,8 +88,12 @@ def test_browser_codec_transcript_and_speech_roundtrip(sidecar, monkeypatch):
         ws.send(json.dumps({"type": "hangup"}))
         assert json.loads(ws.recv(timeout=2))["type"] == "ended"
     assert not state.calls
+    assert end_completed.wait(2)
     assert all(auth == "Bearer service-secret" for _, auth, _ in requests)
-    assert requests[-1][2] == {"action": "end", "channel": "#chat"}
+    ended = requests[-1][2]
+    assert ended["action"] == "end" and ended["channel"] == "#chat"
+    assert ended["call_id"] == next(body["call_id"] for _, _, body in requests
+                                   if body and body.get("action") == "start")
 
 
 def test_voice_service_auth_cannot_override_engine_or_admin(monkeypatch):
@@ -100,7 +114,8 @@ def test_voice_service_auth_cannot_override_engine_or_admin(monkeypatch):
     assert client.get("/api/config", headers=headers, follow_redirects=False).status_code != 200
 
 
-def test_hangup_and_ping_are_responsive_while_transcribing(sidecar, monkeypatch):
+@pytest.mark.parametrize("provider", ["stt", "tts"])
+def test_hangup_and_ping_are_responsive_while_provider_blocked(sidecar, monkeypatch, provider):
     url, _requests, state = sidecar
     entered, release = threading.Event(), threading.Event()
 
@@ -109,12 +124,23 @@ def test_hangup_and_ping_are_responsive_while_transcribing(sidecar, monkeypatch)
         assert release.wait(5)
         return {"success": True, "transcript": "late result must not steer"}
 
+    request = state.request
+
+    def slow_speech(path, payload=None, **kwargs):
+        if path == "/api/audio/speak":
+            entered.set()
+            assert release.wait(5)
+            return {"ok": True, "data_url": "data:audio/mpeg;base64,AA=="}
+        return request(path, payload, **kwargs)
+
     monkeypatch.setattr(stt, "transcribe_chunk", slow_transcription)
+    monkeypatch.setattr(state, "request", slow_speech)
     try:
         with connect(url) as ws:
             ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
             assert json.loads(ws.recv(timeout=2))["type"] == "ready"
-            ws.send(b"slow-audio")
+            ws.send(b"slow-audio" if provider == "stt" else
+                    json.dumps({"type": "tts", "text": "slow reply", "token": "reply"}))
             assert entered.wait(2)
             ws.send(json.dumps({"type": "ping"}))
             assert json.loads(ws.recv(timeout=2))["type"] == "pong"
@@ -123,3 +149,277 @@ def test_hangup_and_ping_are_responsive_while_transcribing(sidecar, monkeypatch)
             assert not state.calls
     finally:
         release.set()
+
+def test_muted_audio_never_reaches_stt(sidecar, monkeypatch):
+    url, _requests, _state = sidecar
+    chunks = []
+    monkeypatch.setattr(stt, "transcribe_chunk", lambda audio, *_: (
+        chunks.append(audio) or {"success": True, "transcript": "should not arrive"}
+    ))
+    with connect(url) as ws:
+        ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "ready"
+        ws.send(json.dumps({"type": "mute", "muted": True}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "muted"
+        ws.send(b"muted-microphone")
+        ws.send(json.dumps({"type": "ping"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "pong"
+        ws.send(json.dumps({"type": "hangup"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "ended"
+    assert chunks == []
+
+def test_hangup_closes_socket_before_blocked_registry_end(sidecar, monkeypatch):
+    from websockets.exceptions import ConnectionClosedOK
+
+    url, _requests, state = sidecar
+    entered, release = threading.Event(), threading.Event()
+    request = state.request
+
+    def slow_end(path, payload=None, **kwargs):
+        if payload and payload.get("action") == "end":
+            entered.set()
+            assert release.wait(5)
+        return request(path, payload, **kwargs)
+
+    monkeypatch.setattr(state, "request", slow_end)
+    try:
+        with connect(url) as ws:
+            ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
+            assert json.loads(ws.recv(timeout=2))["type"] == "ready"
+            ws.send(json.dumps({"type": "hangup"}))
+            assert entered.wait(2)
+            assert not state.calls
+            assert json.loads(ws.recv(timeout=0.5))["type"] == "ended"
+            with pytest.raises(ConnectionClosedOK):
+                ws.recv(timeout=0.5)
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("failure", ["ready", "worker-start"])
+def test_setup_failure_cleans_started_registry(monkeypatch, failure):
+    state = stt.SidecarState("http://unused", {})
+    actions = []
+    monkeypatch.setattr(state, "request", lambda _path, payload=None, **_: (
+        actions.append(payload) or {"ok": True, "allowed": True, "engine": "hermes"}
+    ))
+    handler = object.__new__(stt.SidecarHandler)
+    handler.state = state
+
+    class BrokenSocket:
+        def recv_message(self):
+            return "text", b'{"type":"hello","channel":"#chat"}'
+
+        def send_json(self, message):
+            if failure == "ready":
+                raise OSError("disconnected before ready")
+        def close(self, **_):
+            pass
+
+    if failure == "worker-start":
+        class BrokenThread:
+            def __init__(self, **_):
+                pass
+
+            def start(self):
+                raise OSError("cannot start worker")
+
+        monkeypatch.setattr(stt.threading, "Thread", BrokenThread)
+    with pytest.raises(OSError):
+        handler._call_loop(BrokenSocket())
+    assert not state.calls
+    assert [p["action"] for p in actions if p] == ["start", "end"]
+
+def test_simultaneous_socket_owners_do_not_end_each_other(monkeypatch):
+    from fastapi.testclient import TestClient
+    from mercury_cli import web_server
+
+    monkeypatch.setenv("VOICE_CALL_MIRC_TOKEN", "service-secret")
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+    monkeypatch.setattr(vc, "resolve_channel_engine", lambda _: "hermes")
+    store = vc.VoiceCallStore()
+    monkeypatch.setattr(vc, "default_store", lambda: store)
+    client = TestClient(web_server.app)
+    headers = {"Authorization": "Bearer service-secret"}
+
+    def action(kind, owner):
+        response = client.post("/api/voice-call/call", headers=headers, json={
+            "action": kind, "channel": "#chat", "call_id": owner,
+        })
+        assert response.status_code == 200
+        return response.json()
+
+    action("start", "browser-a")
+    action("start", "browser-b")
+    action("end", "browser-a")
+    assert store.status("#chat")["active"]
+    action("mute", "browser-b")
+    assert store.status("#chat")["muted"]
+    # Delayed teardown from A must not affect B, even on a reused channel.
+    assert not action("end", "browser-a")["ended"]
+    assert store.status("#chat")["active"]
+    action("end", "browser-b")
+    assert not store.status("#chat")["active"]
+
+def test_hangup_remains_responsive_during_mute_registry_request(sidecar, monkeypatch):
+    url, _requests, state = sidecar
+    entered, release = threading.Event(), threading.Event()
+    request = state.request
+
+    def blocked_mute(path, payload=None, **kwargs):
+        if payload and payload.get("action") == "mute":
+            entered.set()
+            release.wait(5)
+        return request(path, payload, **kwargs)
+
+    monkeypatch.setattr(state, "request", blocked_mute)
+    ws = connect(url)
+    try:
+        ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "ready"
+        ws.send(json.dumps({"type": "mute", "muted": True}))
+        assert entered.wait(2)
+        assert json.loads(ws.recv(timeout=0.5))["type"] == "muted"
+        ws.send(json.dumps({"type": "hangup"}))
+        assert json.loads(ws.recv(timeout=0.5))["type"] == "ended"
+        assert not state.calls
+    finally:
+        release.set()
+        ws.close()
+
+
+def test_mute_invalidates_queued_and_inflight_audio_after_unmute(sidecar, monkeypatch):
+    url, _requests, _state = sidecar
+    entered, release = threading.Event(), threading.Event()
+    chunks = []
+
+    def transcribe(audio, *_):
+        chunks.append(audio)
+        if audio == b"inflight":
+            entered.set()
+            release.wait(5)
+        return {"success": True, "transcript": audio.decode()}
+
+    monkeypatch.setattr(stt, "transcribe_chunk", transcribe)
+    ws = connect(url)
+    try:
+        ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "ready"
+        ws.send(b"inflight")
+        assert entered.wait(2)
+        ws.send(b"queued-before-mute")
+        ws.send(json.dumps({"type": "mute", "muted": True}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "muted"
+        ws.send(b"queued-while-muted")
+        ws.send(json.dumps({"type": "mute", "muted": False}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "muted"
+        release.set()
+        ws.send(b"fresh")
+        assert json.loads(ws.recv(timeout=2))["text"] == "fresh"
+        ws.send(json.dumps({"type": "hangup"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "ended"
+        assert chunks == [b"inflight", b"fresh"]
+    finally:
+        release.set()
+        ws.close()
+
+def test_worker_exception_closes_call_and_registry(sidecar, monkeypatch):
+    from websockets.exceptions import ConnectionClosed
+
+    url, requests, state = sidecar
+    ended = threading.Event()
+    request = state.request
+
+    def track_end(path, payload=None, **kwargs):
+        result = request(path, payload, **kwargs)
+        if payload and payload.get("action") == "end":
+            ended.set()
+        return result
+
+    monkeypatch.setattr(state, "request", track_end)
+
+    def broken_stt(*_):
+        raise RuntimeError("provider worker broke")
+
+    monkeypatch.setattr(stt, "transcribe_chunk", broken_stt)
+    ws = connect(url)
+    try:
+        ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "ready"
+        ws.send(b"audio")
+        assert json.loads(ws.recv(timeout=0.5))["type"] == "error"
+        with pytest.raises(ConnectionClosed):
+            ws.recv(timeout=0.5)
+        assert ended.wait(2)
+        assert not state.calls
+        assert requests[-1][2]["action"] == "end"
+    finally:
+        ws.close()
+
+@pytest.mark.asyncio
+async def test_cancelled_synthesis_removes_late_generated_audio(tmp_path, monkeypatch):
+    import asyncio
+    import contextlib
+    from mercury_cli import web_server
+    from mercury_cli.web_models import TTSSpeakRequest
+    from tools import tts_tool
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    audio = tmp_path / "late.mp3"
+
+    def synthesize(_text):
+        entered.set()
+        release.wait(5)
+        audio.write_bytes(b"fake-audio")
+        finished.set()
+        return {"success": True, "file_path": str(audio)}
+
+    monkeypatch.setattr(tts_tool, "text_to_speech_tool", synthesize)
+    monkeypatch.setattr(web_server, "_config_profile_scope", lambda _: contextlib.nullcontext())
+    task = asyncio.create_task(web_server.speak_text(TTSSpeakRequest(text="hello")))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 2)
+        # Let the executor's completion callback perform cancellation cleanup.
+        for _ in range(100):
+            if not audio.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert not audio.exists()
+    finally:
+        release.set()
+
+
+def test_mute_ack_prevents_already_completed_transcript_emission(sidecar, monkeypatch):
+    url, _requests, _state = sidecar
+    entered, release = threading.Event(), threading.Event()
+
+    class PausedTranscript:
+        def __str__(self):
+            entered.set()
+            release.wait(5)
+            return "stale transcript"
+
+    monkeypatch.setattr(stt, "transcribe_chunk", lambda *_: {
+        "success": True, "transcript": PausedTranscript(),
+    })
+    ws = connect(url)
+    try:
+        ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "ready"
+        ws.send(b"audio")
+        assert entered.wait(2)
+        ws.send(json.dumps({"type": "mute", "muted": True}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "muted"
+        release.set()
+        ws.send(json.dumps({"type": "ping"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "pong"
+        ws.send(json.dumps({"type": "hangup"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "ended"
+    finally:
+        release.set()
+        ws.close()

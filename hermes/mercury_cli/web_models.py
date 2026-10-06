@@ -101,6 +101,7 @@ class VoiceCallActionRequest(BaseModel):
     action: str = ""  # start | end | mute | unmute
     channel: str = ""
     engine: Optional[str] = None  # caller hint; the server re-resolves
+    call_id: Optional[str] = None  # sidecar socket owner; omitted means channel-wide
 
 
 class ManagedFileUpload(BaseModel):
