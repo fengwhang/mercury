@@ -1,11 +1,4 @@
-"""Regression test for TUI v2 blitz bug: explicit /model --provider switch
-silently fell back to the old primary provider on the next turn because the
-fallback chain — seeded from config at agent __init__ — kept entries for the
-provider the user just moved away from.
-
-Reported: "switched from openrouter provider to anthropic api key via mercury
-model and the tui keeps trying openrouter".
-"""
+"""Manual model switches must preserve the user's declared fallback routes."""
 
 from unittest.mock import MagicMock, patch
 
@@ -53,20 +46,18 @@ def _switch_to_anthropic(agent):
         )
 
 
-def test_switch_drops_old_primary_from_fallback_chain():
-    agent = _make_agent([
-        {"provider": "openrouter", "model": "x-ai/grok-4"},
-        {"provider": "nous", "model": "mercury-4"},
-    ])
+def test_switch_preserves_explicit_fallback_chain():
+    chain = [
+        {"provider": "openrouter", "model": "vendor/backup"},
+        {"provider": "anthropic", "model": "claude-backup"},
+        {"provider": "nous", "model": "xiaomi/mimo-v2.6-pro"},
+    ]
+    agent = _make_agent(chain)
 
     _switch_to_anthropic(agent)
 
-    providers = [entry["provider"] for entry in agent._fallback_chain]
-
-    assert "openrouter" not in providers, "old primary must be pruned"
-    assert "anthropic" not in providers, "new primary is redundant in the chain"
-    assert providers == ["nous"]
-    assert agent._fallback_model == {"provider": "nous", "model": "mercury-4"}
+    assert agent._fallback_chain == chain
+    assert agent._fallback_model == chain[0]
 
 
 def test_switch_with_empty_chain_stays_empty():

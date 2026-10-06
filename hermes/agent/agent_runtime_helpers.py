@@ -3390,21 +3390,10 @@ def switch_model(
     agent._provider_fallback_route = None
     agent._fallback_index = 0
 
-    # When the user deliberately swaps primary providers (e.g. openrouter
-    # → anthropic), drop any fallback entries that target the OLD primary
-    # or the NEW one.  The chain was seeded from config at agent init for
-    # the original provider — without pruning, a failed turn on the new
-    # primary silently re-activates the provider the user just rejected,
-    # which is exactly what was reported during TUI v2 blitz testing
-    # ("switched to anthropic, tui keeps trying openrouter").
-    old_norm = (old_provider or "").strip().lower()
-    new_norm = (new_provider or "").strip().lower()
+    # Switching the primary does not edit the user's fallback policy.
+    # Same-provider routes can name different models or endpoints; the
+    # activation path already skips the exact backend that just failed.
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
-    if old_norm and new_norm and old_norm != new_norm:
-        fallback_chain = [
-            entry for entry in fallback_chain
-            if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
-        ]
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
 
