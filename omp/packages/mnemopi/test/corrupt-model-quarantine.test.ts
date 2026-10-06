@@ -1,68 +1,25 @@
-// Contract: a "Protobuf parsing failed" init error quarantines EXACTLY the
-// model file named in the message (atomic rename to *.corrupt-<ts>) and
-// reports retry-safety; unrelated init errors never touch the filesystem.
-import { describe, expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { quarantineCorruptModelFile } from "../src/core/embeddings";
+import { defaultLocalModelInitializer } from "../src/core/embeddings";
+import * as runtime from "../src/core/fastembed-runtime";
 
-async function tempModelFile(): Promise<string> {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mnemopi-quarantine-"));
-	const file = path.join(dir, "model_optimized.onnx");
-	await fs.writeFile(file, "not a protobuf");
-	return file;
-}
-
-/** The helper only honors paths inside the given cache root. */
-function cacheRootOf(file: string): string {
-	return path.dirname(path.dirname(file));
-}
-
-describe("quarantineCorruptModelFile", () => {
-	test("renames the exact file named by a protobuf failure and allows retry", async () => {
-		const file = await tempModelFile();
-		const healed = await quarantineCorruptModelFile(
-			`Load model from ${file} failed:Protobuf parsing failed.`,
-			cacheRootOf(file),
-		);
-		expect(healed).toBe(true);
-		// Original gone, quarantined copy present.
-		await expect(fs.access(file)).rejects.toThrow();
-		const siblings = await fs.readdir(path.dirname(file));
-		expect(siblings.some(name => name.startsWith("model_optimized.onnx.corrupt-"))).toBe(true);
-		await fs.rm(path.dirname(file), { recursive: true, force: true });
-	});
-
-	test("does not treat unrelated init errors as corruption", async () => {
-		const file = await tempModelFile();
-		const healed = await quarantineCorruptModelFile(`Model file not found at ${file}`, cacheRootOf(file));
-		expect(healed).toBe(false);
-		// Untouched: no rename happened.
-		expect(await fs.access(file).then(() => true)).toBe(true);
-		await fs.rm(path.dirname(file), { recursive: true, force: true });
-	});
-
-	test("a missing file (concurrent heal) still reports retry-safe", async () => {
-		const ghost = path.join(os.tmpdir(), `mnemopi-ghost-${Date.now()}`, "model_optimized.onnx");
-		const healed = await quarantineCorruptModelFile(
-			`Load model from ${ghost} failed:Protobuf parsing failed.`,
-			path.dirname(path.dirname(ghost)),
-		);
-		expect(healed).toBe(true);
-	});
-
-	test("refuses to touch a file OUTSIDE the fastembed cache directory", async () => {
-		const file = await tempModelFile();
-		// Cache root that does NOT contain the file: containment must reject.
-		const foreignRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mnemopi-foreign-"));
-		const healed = await quarantineCorruptModelFile(
-			`Load model from ${file} failed:Protobuf parsing failed.`,
-			foreignRoot,
-		);
-		expect(healed).toBe(false);
-		expect(await fs.access(file).then(() => true)).toBe(true);
-		await fs.rm(path.dirname(file), { recursive: true, force: true });
-		await fs.rm(foreignRoot, { recursive: true, force: true });
-	});
+test("a corrupt provisioned model fails once without deleting assets or entering retrieval", async () => {
+	const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "mnemopi-corrupt-"));
+	const model = "fast-bge-small-en-v1.5";
+	const dir = path.join(cacheDir, model);
+	for (const name of ["model_optimized.onnx", "config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"]) await Bun.write(path.join(dir, name), "corrupt");
+	let calls = 0;
+	const backend = spyOn(runtime, "loadFastembed").mockResolvedValue({
+		EmbeddingModel: { CUSTOM: "custom" },
+		FlagEmbedding: { init: async () => { calls++; throw new Error("Protobuf parsing failed"); } },
+	} as never);
+	const network = spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not fetch"));
+	try {
+		await expect(defaultLocalModelInitializer({ model: model as never, cacheDir })).rejects.toThrow("Local embedding assets/backend could not load");
+		expect(calls).toBe(1);
+		expect(await Bun.file(path.join(dir, "model_optimized.onnx")).text()).toBe("corrupt");
+		expect(network).not.toHaveBeenCalled();
+	} finally { backend.mockRestore(); network.mockRestore(); await fs.rm(cacheDir, { recursive: true, force: true }); }
 });

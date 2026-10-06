@@ -37,6 +37,7 @@ describe("isSttModelCached completeness", () => {
 	it("treats a transformers model as cached only when both encoder and decoder onnx are present", async () => {
 		const repoDir = path.join(cacheDir, WHISPER_BASE_REPO);
 		await touch(path.join(repoDir, "config.json"));
+		await touch(path.join(repoDir, "tokenizer.json"));
 		await touch(path.join(repoDir, "onnx", "encoder_model.onnx"));
 		// Only the encoder shard landed — an interrupted Whisper download.
 		expect(await downloader.isSttModelCached("fast")).toBe(false);

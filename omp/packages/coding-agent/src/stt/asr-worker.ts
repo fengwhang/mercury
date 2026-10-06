@@ -21,6 +21,7 @@ import {
 	loadTransformersRuntime,
 	MemoizedRuntime,
 	replayCachedReady,
+	requireLocalModelAssets,
 	sendLog,
 	sendProgress,
 } from "../subprocess/worker-runtime";
@@ -46,11 +47,6 @@ const STRIDE_LENGTH_S = 5;
 // The client always resamples to 16 kHz mono float32 before sending; sherpa-onnx
 // is told the true input rate (it resamples internally to its feature config).
 const ASR_SAMPLE_RATE = 16_000;
-// Hub origin for raw sherpa-onnx model files (encoder/decoder/joiner/tokens).
-const HF_RESOLVE_BASE = "https://huggingface.co";
-// Coalesce download progress so streaming a multi-hundred-MB model file doesn't
-// flood the IPC channel with one event per chunk.
-const PROGRESS_EMIT_BYTES = 4_000_000;
 
 const sttModelDevicePreference = resolveTinyModelDevicePreference();
 const sttModelDtypeOverride = resolveTinyModelDtypeOverride();
@@ -74,6 +70,8 @@ interface TransformersRuntime {
 	env: {
 		cacheDir?: string;
 		allowLocalModels?: boolean;
+		allowRemoteModels?: boolean;
+		localModelPath?: string;
 		logLevel?: unknown;
 	};
 	LogLevel: {
@@ -84,6 +82,7 @@ interface TransformersRuntime {
 		model: string,
 		options: {
 			device: TinyModelDevice;
+			local_files_only: true;
 			dtype: TinyModelDtype;
 			progress_callback: (info: ProgressInfo) => void;
 		},
@@ -175,6 +174,7 @@ async function loadPipelineOnDevice(
 	device: TinyModelDevice,
 ): Promise<AutomaticSpeechRecognitionPipeline> {
 	return transformers.pipeline(ASR_TASK, spec.repo, {
+		local_files_only: true,
 		device,
 		dtype: sttModelDtypeOverride ?? spec.dtype,
 		progress_callback: info => sendProgress(transport, requestId, modelKey, info),
@@ -225,6 +225,7 @@ async function loadTransformersModel(
 	transport: SttTransport,
 	requestId: string,
 ): Promise<LoadedModel> {
+	await requireLocalModelAssets(spec.repo);
 	const transformers = await loadTransformersRuntime(
 		transformersRuntime,
 		transport,
@@ -252,86 +253,17 @@ async function loadTransformersModel(
 	return { engine: "transformers", pipeline };
 }
 
-/**
- * Stream a single sherpa-onnx model file from the Hub into the cache, writing to
- * a `.part` sidecar and renaming on completion so an interrupted fetch never
- * reads as cached. Emits coalesced per-file progress for the aggregating client.
- */
-async function downloadSherpaFile(
-	repo: string,
-	filename: string,
-	dest: string,
-	modelKey: SttModelKey,
-	transport: SttTransport,
-	requestId: string,
-): Promise<void> {
-	const url = `${HF_RESOLVE_BASE}/${repo}/resolve/main/${filename}`;
-	const response = await fetch(url, { redirect: "follow" });
-	if (!response.ok || !response.body) {
-		throw new Error(`Failed to download ${filename} (${repo}): HTTP ${response.status}`);
-	}
-	const total = Number(response.headers.get("content-length") ?? 0);
-	transport.send({
-		type: "progress",
-		id: requestId,
-		event: { modelKey, status: "download", name: `${repo}/${filename}`, file: filename },
-	});
-	const part = `${dest}.part`;
-	const handle = await fs.open(part, "w");
-	let loaded = 0;
-	let lastEmitted = 0;
-	const reader = response.body.getReader();
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (!value) continue;
-			await handle.write(value);
-			loaded += value.byteLength;
-			if (loaded - lastEmitted >= PROGRESS_EMIT_BYTES || (total > 0 && loaded >= total)) {
-				lastEmitted = loaded;
-				transport.send({
-					type: "progress",
-					id: requestId,
-					event: {
-						modelKey,
-						status: "progress",
-						name: `${repo}/${filename}`,
-						file: filename,
-						loaded,
-						total: total || loaded,
-					},
-				});
-			}
-		}
-	} finally {
-		await handle.close();
-	}
-	await fs.rename(part, dest);
-}
-
-/**
- * Ensure all sherpa-onnx model files for a tier are present in the cache,
- * downloading any that are missing, and return their absolute paths.
- */
+/** Resolve provisioned sherpa files only; the native recognizer never retrieves assets. */
 async function ensureSherpaModelFiles(
 	spec: SherpaSttModelSpec,
-	modelKey: SttModelKey,
-	transport: SttTransport,
-	requestId: string,
 ): Promise<{ encoder: string; decoder: string; joiner: string; tokens: string }> {
 	const dir = path.join(getTinyModelsCacheDir(), spec.repo);
-	await fs.mkdir(dir, { recursive: true });
 	const resolved = {} as { encoder: string; decoder: string; joiner: string; tokens: string };
 	for (const role in spec.files) {
 		const key = role as keyof typeof spec.files;
-		const filename = spec.files[key];
-		const dest = path.join(dir, filename);
-		const present = await fs
-			.stat(dest)
-			.then(stats => stats.size > 0)
-			.catch(() => false);
-		if (!present) await downloadSherpaFile(spec.repo, filename, dest, modelKey, transport, requestId);
+		const dest = path.join(dir, spec.files[key]);
+		const present = await fs.stat(dest).then(stat => stat.isFile() && stat.size > 0).catch(() => false);
+		if (!present) throw new Error(`Local STT assets missing: ${dest}. Provision all encoder/decoder/joiner/tokens files locally, or configure an STT provider. Mercury does not download model weights.`);
 		resolved[key] = dest;
 	}
 	return resolved;
@@ -343,8 +275,8 @@ async function loadSherpaModel(
 	transport: SttTransport,
 	requestId: string,
 ): Promise<LoadedModel> {
+	const files = await ensureSherpaModelFiles(spec);
 	const runtime = await loadSherpaRuntime(transport, requestId, modelKey);
-	const files = await ensureSherpaModelFiles(spec, modelKey, transport, requestId);
 	const startedAt = performance.now();
 	const numThreads = Math.max(1, Math.min(4, os.availableParallelism()));
 	const recognizer = await runtime.OfflineRecognizer.createAsync({

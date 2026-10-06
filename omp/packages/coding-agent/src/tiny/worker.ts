@@ -16,6 +16,7 @@ import {
 	MemoizedRuntime,
 	replayCachedReady,
 	sendLog,
+	requireLocalModelAssets,
 	sendProgress,
 	type TransformersRuntimeMetadata,
 } from "../subprocess/worker-runtime";
@@ -47,6 +48,8 @@ export interface TransformersRuntime extends TransformersRuntimeMetadata {
 	env: {
 		cacheDir?: string;
 		allowLocalModels?: boolean;
+		allowRemoteModels?: boolean;
+		localModelPath?: string;
 		logLevel?: unknown;
 	};
 	LogLevel: {
@@ -58,6 +61,7 @@ export interface TransformersRuntime extends TransformersRuntimeMetadata {
 		model: string,
 		options: {
 			device: TinyModelDevice;
+			local_files_only: true;
 			dtype: TinyModelDtype;
 			progress_callback: (info: ProgressInfo) => void;
 		},
@@ -128,6 +132,7 @@ async function loadPipelineOnDevice(
 	device: TinyModelDevice,
 ): Promise<TextGenerationPipeline> {
 	return transformers.pipeline("text-generation", spec.repo, {
+		local_files_only: true,
 		device,
 		dtype: tinyModelDtypeOverride ?? spec.dtype,
 		progress_callback: info => sendProgress(transport, requestId, modelKey, info),
@@ -191,6 +196,7 @@ async function loadPipeline(
 	const cached = replayCachedReady(pipelines, modelKey, transport, requestId, "text-generation", spec.repo);
 	if (cached) return cached;
 
+	await requireLocalModelAssets(spec.repo);
 	const transformers = await loadTransformersRuntime(
 		transformersRuntime,
 		transport,
