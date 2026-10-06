@@ -13803,14 +13803,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             )
         except Exception:
             pass
-        try:
-            from mercury_cli.config import load_config
-            from agent.monitoring.gateway_health_export import start_gateway_health_export
-            self._gateway_health_export_runtime = start_gateway_health_export(load_config())
-            if getattr(self._gateway_health_export_runtime, "enabled", False):
-                logger.info("Gateway health OTLP export: enabled")
-        except Exception:
-            logger.debug("gateway health OTLP export startup failed", exc_info=True)
 
         # Log any active supply-chain security advisories. Operators see this
         # in gateway.log and `mercury status` surfaces it; we do NOT block
@@ -16796,7 +16788,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 self._update_runtime_status("running", self._exit_reason)
             else:
                 self._update_runtime_status("stopped", self._exit_reason)
-            _shutdown_gateway_health_export(self)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())
@@ -32662,18 +32653,6 @@ async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0) -> bool:
     return done
 
 
-def _shutdown_gateway_health_export(runner: Any) -> None:
-    """Idempotently drain and detach Gateway Health OTLP export."""
-    runtime = getattr(runner, "_gateway_health_export_runtime", None)
-    if runtime is None:
-        return
-    runner._gateway_health_export_runtime = None
-    try:
-        runtime.shutdown()
-    except Exception:
-        logger.debug("gateway health OTLP export shutdown failed", exc_info=True)
-
-
 def _gateway_stderr_formatter() -> logging.Formatter:
     """Return the redacting formatter used by the gateway stderr stream."""
     from agent.redact import RedactingFormatter
@@ -33524,13 +33503,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         logger.debug("MCP tool discovery failed: %s", e)
 
     # Start the gateway
-    try:
-        success = await runner.start()
-    except BaseException:
-        _shutdown_gateway_health_export(runner)
-        raise
+    success = await runner.start()
     if not success:
-        _shutdown_gateway_health_export(runner)
         return False
     # Recover any pending messages flushed during a previous shutdown (#72680).
     try:
@@ -33543,7 +33517,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception:
         pass
     if runner.should_exit_cleanly:
-        _shutdown_gateway_health_export(runner)
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
         # A clean exit that carries an explicit exit code (e.g. a fatal
@@ -33559,21 +33532,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if not runner._running:
         # Startup was intentionally aborted by restart/shutdown before entering
         # running mode; preserve that lifecycle path without starting cron.
+        await runner.wait_for_shutdown()
+        if runner.should_exit_with_failure:
+            if runner.exit_reason:
+                logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+            return False
         try:
-            await runner.wait_for_shutdown()
-            if runner.should_exit_with_failure:
-                if runner.exit_reason:
-                    logger.error("Gateway exiting with failure: %s", runner.exit_reason)
-                return False
-            try:
-                await _shutdown_mcp_servers_nonblocking()
-            except Exception:
-                pass
-            if runner.exit_code is not None:
-                raise SystemExit(runner.exit_code)
-            return True
-        finally:
-            _shutdown_gateway_health_export(runner)
+            await _shutdown_mcp_servers_nonblocking()
+        except Exception:
+            pass
+        if runner.exit_code is not None:
+            raise SystemExit(runner.exit_code)
+        return True
 
     # Start the background cron scheduler via the resolved provider so
     # scheduled jobs fire automatically. The built-in provider is the

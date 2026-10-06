@@ -140,10 +140,10 @@ def test_capture_active_tool_dependencies_uses_tools_status_probes(monkeypatch):
     monkeypatch.setattr(
         tools_config,
         "_module_installed",
-        lambda module: module in {"langfuse", "ddgs"},
+        lambda module: module == "ddgs",
     )
 
-    assert m._capture_active_tool_dependencies() == ["ddgs", "langfuse"]
+    assert m._capture_active_tool_dependencies() == ["ddgs"]
 
 
 def test_restore_active_tool_dependencies_uses_static_allowlist(monkeypatch):
@@ -156,12 +156,12 @@ def test_restore_active_tool_dependencies_uses_static_allowlist(monkeypatch):
 
     env = {"VIRTUAL_ENV": "/tmp/venv"}
     m._restore_active_tool_dependencies(
-        ["langfuse", "not-allowlisted"],
+        ["ddgs", "not-allowlisted"],
         ["uv", "pip"],
         env=env,
     )
 
-    assert calls == [(["uv", "pip", "install", "langfuse", "--quiet"], env)]
+    assert calls == [(["uv", "pip", "install", "-U", "ddgs", "--quiet"], env)]
 
 
 def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
@@ -172,7 +172,7 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
 
     (tmp_path / ".git").mkdir()
     snapshot = ["platform.telegram"]
-    tool_snapshot = ["langfuse"]
+    tool_snapshot = ["ddgs"]
     refresh_calls = []
     restore_calls = []
 

@@ -171,8 +171,8 @@ class TestDiscoverAllPlugins:
         _make_category_plugin(bundled, "context_engine", "compressor", {
             "name": "compressor", "version": "1.0.0"
         })
-        _make_category_plugin(bundled, "observability", "langfuse", {
-            "name": "langfuse", "version": "1.0.0"
+        _make_category_plugin(bundled, "diagnostics", "local", {
+            "name": "local", "version": "1.0.0"
         })
         mock_user_dir.return_value = user
         mock_bundled_dir.return_value = bundled
@@ -182,7 +182,7 @@ class TestDiscoverAllPlugins:
         assert "model-providers/openrouter" not in keys
         assert "memory/letta" not in keys
         assert "context_engine/compressor" not in keys
-        assert "observability/langfuse" in keys
+        assert "diagnostics/local" in keys
 
     @patch("mercury_cli.plugins.get_bundled_plugins_dir")
     @patch("mercury_cli.plugins_cmd._plugins_dir")
