@@ -2921,7 +2921,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
     credentials, or (None, None) if none are configured.
     """
     try:
-        from mercury_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
+        from mercury_cli.auth import (
+            AuthError, PROVIDER_REGISTRY, get_api_key_provider_status,
+            resolve_api_key_provider_credentials,
+        )
     except ImportError:
         logger.debug("Could not import PROVIDER_REGISTRY for API-key fallback")
         return None, None
@@ -2985,7 +2988,18 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
             return _client, model
 
-        creds = resolve_api_key_provider_credentials(provider_id)
+        # Discovery is not an explicit HF selection: an absent credential or
+        # an ineligible self-hosted endpoint must not block later providers.
+        # Explicit routes still use the auth resolver's loud endpoint refusal.
+        if provider_id == "huggingface" and not get_api_key_provider_status(provider_id).get("configured"):
+            continue
+        try:
+            creds = resolve_api_key_provider_credentials(provider_id)
+        except AuthError as exc:
+            if provider_id != "huggingface" or exc.provider != "huggingface" or exc.code != "invalid_base_url":
+                raise
+            logger.debug("Auxiliary api-key chain: Hugging Face has no eligible self-hosted endpoint, skipping")
+            continue
         api_key = str(creds.get("api_key", "")).strip()
         if not api_key:
             continue

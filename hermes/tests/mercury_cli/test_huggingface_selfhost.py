@@ -201,3 +201,22 @@ def test_hf_named_alias_override_cannot_restore_hosted_endpoint(monkeypatch):
     monkeypatch.setattr(runtime_provider, "load_config", lambda: custom)
     with pytest.raises(auth.AuthError, match="self-hosted.*HF_BASE_URL"):
         runtime_provider.resolve_runtime_provider(requested="hf")
+
+
+@pytest.mark.parametrize("base", REFUSED_BASES)
+def test_hf_aux_auto_skips_ineligible_endpoint_for_next_api_key(monkeypatch, base):
+    from agent import auxiliary_client as aux
+
+    monkeypatch.setenv("TOKENHUB_API_KEY", "offline-next-key")
+    monkeypatch.setenv("HF_BASE_URL", base)
+    monkeypatch.setattr(aux, "_is_provider_unhealthy", lambda provider: False)
+    monkeypatch.setattr(aux, "_select_pool_entry", lambda provider: (False, None))
+    transport = Mock(side_effect=AssertionError("provider network attempted"))
+    monkeypatch.setattr("httpx.Client.send", transport)
+
+    client, model = aux._resolve_api_key_provider()
+
+    assert client.api_key == "offline-next-key"
+    assert str(client.base_url).rstrip("/") == auth.PROVIDER_REGISTRY["tencent-tokenhub"].inference_base_url
+    assert model == "hy4-preview"
+    transport.assert_not_called()
