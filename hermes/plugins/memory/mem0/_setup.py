@@ -947,8 +947,9 @@ def _run_connectivity_checks(oss_config: dict) -> None:
 def _check_min_dep_version() -> None:
     """Ensure mem0ai meets the minimum version from plugin.yaml."""
     try:
-        import mem0
-        installed_ver = getattr(mem0, "__version__", None)
+        from importlib.metadata import version
+
+        installed_ver = version("mem0ai")
         if not installed_ver:
             return
         installed_parts = tuple(int(x) for x in installed_ver.split(".")[:3])
