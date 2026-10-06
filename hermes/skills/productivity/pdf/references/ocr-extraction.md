@@ -86,6 +86,15 @@ python scripts/extract_marker.py --check
 pip install marker-pdf
 ```
 
+Provision complete local model directories first, then point every installed
+Surya `*_MODEL_CHECKPOINT` setting at its directory (readable `config.json`
+and model weights). For GGUF backends, also configure existing
+`SURYA_GGUF_LOCAL_MODEL_PATH` and `SURYA_GGUF_LOCAL_MMPROJ_PATH` files.
+The helper checks local asset admission before model construction and forces
+`HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`. A missing or unsupported
+asset configuration fails locally with a provisioning message; it never
+downloads weights.
+
 **Via helper script**:
 ```bash
 python scripts/extract_marker.py document.pdf                # Markdown
@@ -95,11 +104,8 @@ python scripts/extract_marker.py scanned.pdf                 # Scanned PDF (OCR)
 python scripts/extract_marker.py document.pdf --use_llm      # LLM-boosted accuracy
 ```
 
-**CLI** (installed with marker-pdf):
-```bash
-marker_single document.pdf --output_dir ./output
-marker /path/to/folder --workers 4    # Batch
-```
+Use the guarded helper rather than the upstream `marker` / `marker_single`
+commands, which can download missing model assets.
 
 ---
 
@@ -160,6 +166,6 @@ No extra dependencies needed — pymupdf covers split, merge, search, and text e
 - pymupdf is the safe default — instant, no models, works everywhere
 - marker-pdf is for OCR, scanned docs, equations, complex layouts — install only when needed
 - Both helper scripts accept `--help` for full usage
-- marker-pdf downloads ~2.5GB of models to `~/.cache/huggingface/` on first use
+- marker-pdf requires complete pre-provisioned local models; no first-use download is permitted
 - For Word docs: `pip install python-docx` (better than OCR — parses actual structure)
 - For PowerPoint: see the `powerpoint` skill (uses python-pptx)

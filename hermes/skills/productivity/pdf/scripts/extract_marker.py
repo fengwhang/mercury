@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract text from documents using marker-pdf. High-quality OCR + layout analysis.
 
-Requires ~3-5GB disk (PyTorch + models downloaded on first use).
+Requires pre-provisioned local OCR/layout model assets; never downloads weights.
 Supports: PDF, DOCX, PPTX, XLSX, HTML, EPUB, images.
 
 Usage:
@@ -15,8 +15,55 @@ Usage:
 """
 import sys
 import os
+from pathlib import Path
+
+
+def _require_local_models():
+    """Reject remote or incomplete model selectors before Marker starts loaders."""
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    from surya.settings import settings
+
+    checkpoints = [
+        name for name in dir(settings) if name.endswith("_MODEL_CHECKPOINT")
+    ]
+    hint = (
+        "Marker requires pre-provisioned local model assets. Configure every "
+        "Surya *_MODEL_CHECKPOINT as a local directory containing config.json "
+        "and model weights; provision local GGUF/model-projector files where "
+        "the installed Surya backend uses them. Mercury never downloads weights. "
+        "Use extract_pymupdf.py for ordinary local text extraction."
+    )
+    if not checkpoints:
+        raise RuntimeError(hint + " Cannot verify this Surya version's asset selectors.")
+    for name in checkpoints:
+        value = getattr(settings, name, None)
+        if not isinstance(value, str) or not value:
+            raise RuntimeError(hint + f" Missing {name}.")
+        directory = Path(value).expanduser()
+        if not directory.is_dir() or not (directory / "config.json").is_file():
+            raise RuntimeError(hint + f" Unavailable {name}: {value}.")
+        if not any(
+            file.is_file() and file.stat().st_size > 0
+            for suffix in (".safetensors", ".bin", ".pth", ".gguf")
+            for file in directory.glob(f"*{suffix}")
+        ):
+            raise RuntimeError(hint + f" No local weights for {name}: {directory}.")
+        resolved = str(directory.resolve())
+        setattr(settings, name, resolved)
+        os.environ[name] = resolved
+    for name in ("SURYA_GGUF_LOCAL_MODEL_PATH", "SURYA_GGUF_LOCAL_MMPROJ_PATH"):
+        if hasattr(settings, name):
+            value = getattr(settings, name)
+            if not isinstance(value, str) or not value or not Path(value).expanduser().is_file():
+                raise RuntimeError(hint + f" Unavailable {name}.")
+            resolved = str(Path(value).expanduser().resolve())
+            setattr(settings, name, resolved)
+            os.environ[name] = resolved
+
 
 def convert(path, output_dir=None, output_format="markdown", use_llm=False):
+    _require_local_models()
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict
     from marker.config.parser import ConfigParser

@@ -111,6 +111,13 @@ python scripts/extract_marker.py --check
 pip install marker-pdf
 ```
 
+请先在本地准备完整模型，将 Surya 的每个 `*_MODEL_CHECKPOINT`
+配置为含 `config.json` 和权重的本地目录。GGUF 后端还需配置已有的
+`SURYA_GGUF_LOCAL_MODEL_PATH` 和 `SURYA_GGUF_LOCAL_MMPROJ_PATH` 文件。
+辅助脚本在构建模型之前检查这些文件，并强制设置
+`HF_HUB_OFFLINE=1` 和 `TRANSFORMERS_OFFLINE=1`；缺失或无法验证的模型
+配置会在本地报错，不会下载权重。
+
 **通过辅助脚本**：
 ```bash
 python scripts/extract_marker.py document.pdf                # Markdown
@@ -120,11 +127,8 @@ python scripts/extract_marker.py scanned.pdf                 # 扫描 PDF（OCR�
 python scripts/extract_marker.py document.pdf --use_llm      # LLM 增强精度
 ```
 
-**CLI**（随 marker-pdf 一同安装）：
-```bash
-marker_single document.pdf --output_dir ./output
-marker /path/to/folder --workers 4    # 批量处理
-```
+使用经过本地资源检查的辅助脚本，不要使用可能下载缺失模型的上游
+`marker` / `marker_single` 命令。
 
 ---
 
@@ -185,6 +189,6 @@ for i, page in enumerate(doc):
 - pymupdf 是安全的默认选择——即时可用，无需模型，适用于所有环境
 - marker-pdf 用于 OCR、扫描文档、公式、复杂版面——仅在需要时安装
 - 两个辅助脚本均支持 `--help` 查看完整用法
-- marker-pdf 首次使用时会将约 2.5GB 的模型下载至 `~/.cache/huggingface/`
+- marker-pdf 需要预先准备完整本地模型，禁止首次运行时下载权重
 - 对于 Word 文档：`pip install python-docx`（优于 OCR——解析实际文档结构）
 - 对于 PowerPoint：参见 `powerpoint` skill（使用 python-pptx）
