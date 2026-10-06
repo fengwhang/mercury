@@ -12,12 +12,52 @@ describe("local-only fastembed initialization", () => {
 		const backend = spyOn(runtime, "loadFastembed").mockRejectedValue(new Error("backend must not load"));
 		const network = spyOn(globalThis, "fetch").mockRejectedValue(new Error("network must not run"));
 		try {
-			await expect(defaultLocalModelInitializer({ model: MODEL as never, cacheDir })).rejects.toThrow(/local.*assets/i);
+			await expect(defaultLocalModelInitializer({ model: MODEL as never, cacheDir })).rejects.toThrow(
+				/local.*assets/i,
+			);
 			expect(backend).not.toHaveBeenCalled();
 			expect(network).not.toHaveBeenCalled();
 		} finally {
-			backend.mockRestore(); network.mockRestore();
+			backend.mockRestore();
+			network.mockRestore();
 			await fs.rm(cacheDir, { recursive: true, force: true });
 		}
 	});
+	for (const name of [
+		"model.onnx",
+		"config.json",
+		"tokenizer.json",
+		"tokenizer_config.json",
+		"special_tokens_map.json",
+	]) {
+		for (const state of ["missing", "empty"]) {
+			it(`rejects ${state} ${name} before loading the backend or fetching`, async () => {
+				const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "mnemopi-offline-"));
+				const modelDir = path.join(cacheDir, MODEL);
+				for (const asset of [
+					"model.onnx",
+					"config.json",
+					"tokenizer.json",
+					"tokenizer_config.json",
+					"special_tokens_map.json",
+				]) {
+					if (asset === name && state === "missing") continue;
+					await Bun.write(path.join(modelDir, asset), asset === name ? "" : "fixture");
+				}
+				const backend = spyOn(runtime, "loadFastembed").mockRejectedValue(new Error("backend must not load"));
+				const network = spyOn(globalThis, "fetch").mockRejectedValue(new Error("network must not run"));
+				try {
+					await expect(defaultLocalModelInitializer({ model: MODEL as never, cacheDir })).rejects.toThrow(
+						path.join(modelDir, name),
+					);
+					expect(backend).not.toHaveBeenCalled();
+					expect(network).not.toHaveBeenCalled();
+				} finally {
+					backend.mockRestore();
+					network.mockRestore();
+					await fs.rm(cacheDir, { recursive: true, force: true });
+				}
+			});
+		}
+	}
 });

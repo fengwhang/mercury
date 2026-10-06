@@ -11,6 +11,8 @@ This package is the Bun/TypeScript port of the Mnemosyne memory engine. It provi
 
 The package does not bundle or download a local GGUF LLM. LLM paths are host-backend or OpenAI-compatible remote only; when no LLM is configured, deterministic heuristic paths are used.
 
+Local embeddings require a pre-provisioned model directory in the shared FastEmbed cache, including the ONNX model, its external data, `config.json`, `tokenizer.json`, `tokenizer_config.json`, and `special_tokens_map.json`. Mercury never downloads missing model assets or restores them from cached archives. Missing or empty model/config/tokenizer files fail before backend initialization. An ONNX protobuf parsing failure quarantines only the admitted model file as `*.corrupt-*`, preserves its sidecars and the original error cause, and does not retry. Repair the model locally or configure an embedding provider before trying again.
+
 ## Basic use
 
 ```ts

@@ -1,4 +1,6 @@
 import { mkdirSync } from "node:fs";
+import { rename } from "node:fs/promises";
+import { join } from "node:path";
 import { type ApiKey, getOpenRouterHeaders, withAuth } from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import { hostMatchesUrl } from "@oh-my-pi/pi-catalog/hosts";
@@ -80,7 +82,23 @@ export async function defaultLocalModelInitializer(options: LocalModelInitOption
 		inferenceModel.model = options.model;
 		return model;
 	} catch (error) {
-		throw new Error(`Local embedding assets/backend could not load from ${assets.modelAbsoluteDirPath}. Repair the local model and its ONNX external data, or configure an embedding provider. No download was attempted.`, { cause: error });
+		if (error instanceof Error && /protobuf parsing failed/i.test(error.message)) {
+			// Isolate only the admitted ONNX, never paths reported by the backend.
+			// Quarantine is terminal: a subsequent call must pass local admission again.
+			const modelFile = join(assets.modelAbsoluteDirPath, assets.modelName);
+			try {
+				await rename(modelFile, `${modelFile}.corrupt-${Date.now()}-${crypto.randomUUID()}`);
+			} catch (quarantineError) {
+				logger.warn("mnemopi: could not quarantine corrupt local embedding model", {
+					modelFile,
+					error: String(quarantineError),
+				});
+			}
+		}
+		throw new Error(
+			`Local embedding assets/backend could not load from ${assets.modelAbsoluteDirPath}. Repair the local model and its ONNX external data, or configure an embedding provider. No download was attempted.`,
+			{ cause: error },
+		);
 	}
 }
 
