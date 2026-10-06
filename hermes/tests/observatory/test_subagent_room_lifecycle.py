@@ -382,3 +382,48 @@ async def test_old_destroy_retry_protects_live_successor_and_network_gateway(tmp
     assert read_purge_journal(state) == []
     saved = json.loads((tmp_path / "observatory/lounge/home/users/owner.json").read_text())
     assert len(saved["networks"][0]["channels"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_boot_reap_expires_live_descendants_of_a_dead_parent(tmp_path, monkeypatch):
+    """Legacy partial teardown must not leave a live orphan behind its parent."""
+    from observatory import spawn
+    from observatory.spawn import replay_purge_journal
+
+    monkeypatch.setattr(spawn, "retry_deferred_purges", lambda *args: None)
+    state = ObservatoryState(tmp_path / "observatory/state.db")
+    try:
+        _seed(state, "root", depth=0, room="#nixpad_root", parent=None)
+        _seed(state, "parent", depth=1, room="#nixpad_parent", parent="root")
+        _seed(state, "child", depth=2, room="#nixpad_child", parent="parent")
+        _seed(state, "grandchild", depth=3, room="#nixpad_grandchild", parent="child")
+        state.mark_dead("parent")
+        doomed = {"#nixpad_parent", "#nixpad_child", "#nixpad_grandchild"}
+        saved = _write_user(tmp_path, "owner", [{"name": "nixpad", "channels": [
+            {"name": room} for room in ["#nixpad_root", *sorted(doomed)]
+        ]}])
+        history = tmp_path / "observatory/lounge/home/logs/owner/nixpad/child.log"
+        history.parent.mkdir(parents=True)
+        history.write_text("retained child transcript\n")
+
+        result = reap_orphan_rooms(state, mercury_home=tmp_path)
+
+        assert set(result["rows_purged"]) == {"parent", "child", "grandchild"}
+        assert [row["node_id"] for row in state.get_live()] == ["root"]
+        with state.locked() as db:
+            assert db.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] == 1
+        assert set(result["channels_queued"]) == doomed
+        assert {entry["name"] for entry in json.loads(saved.read_text())["networks"][0]["channels"]} == {"#nixpad_root"}
+        assert history.read_text() == "retained child transcript\n"
+
+        class RefusingBot:
+            async def destroy_channel(self, channel):
+                return False
+
+        assert await replay_purge_journal(state, bot=RefusingBot())
+        assert {channel for entry in read_purge_journal(state) for channel in entry["channels"]} == doomed
+        assert all(entry["rows"] == [] for entry in read_purge_journal(state))
+        assert reap_orphan_rooms(state, mercury_home=tmp_path)["rows_purged"] == []
+        assert history.read_text() == "retained child transcript\n"
+    finally:
+        state.close()

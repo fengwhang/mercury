@@ -196,12 +196,12 @@ def reap_orphan_rooms(
 
     Two independent leaks, both healed here:
 
-    1. **Tombstoned rows.** A node whose ``status`` is not ``live`` is by
-       construction already dead — ``begin_exit`` dead-marks then
-       ``finish_exit`` deletes, so a surviving non-live row means the delete
-       never ran (destroy convergence held it hostage, or the process died
-       mid-exit). Removing the row cannot lose history: transcripts live in
-       the mLounge log store and the Hermes session DB, neither touched here.
+    1. **Tombstoned families.** A node whose ``status`` is not ``live`` has
+       already ended its lifetime. Its descendants expire with it, even if
+       an older partial teardown left them marked live. Reap the complete
+       subtree deepest-first so parent foreign keys cannot strand either
+       generation. Transcripts live in the mLounge log store and Hermes
+       session DB, neither touched here.
     2. **Orphan channels.** Every channel in ``closed-rooms`` with no live
        node row must not exist. Returned for destruction — destroying a gone
        channel is success, so the caller's retry is idempotent.
@@ -224,45 +224,40 @@ def reap_orphan_rooms(
     cfg = read_config(mercury_home) or {}
     pinned.add(gateway_channel(str(cfg.get("server_name") or "mercury")).lower())
 
-    try:
-        live_rows = list(state.get_live())
-    except Exception:
-        logger.warning("room-reaper: node scan failed", exc_info=True)
-        return result
-
-    dead_rows: list[dict[str, Any]] = []
+    expired: dict[str, dict[str, Any]] = {}
     try:
         with state.locked() as db:
-            for raw in db.execute(
-                "SELECT node_id, depth, room_id, status FROM nodes WHERE status != 'live' ORDER BY depth DESC"
-            ).fetchall():
-                dead_rows.append(dict(raw))
+            live_rows = list(state.get_live())
+            dead_rows = db.execute(
+                "SELECT node_id, room_id FROM nodes WHERE status != 'live' ORDER BY depth DESC"
+            ).fetchall()
+            for raw in dead_rows:
+                if raw["node_id"] in expired or _norm(raw["room_id"]) in pinned:
+                    continue
+                for row in state.get_subtree(raw["node_id"]):
+                    if _norm(row.get("room_id")) not in pinned:
+                        expired[row["node_id"]] = row
+            # Hold admission closed through the snapshot and deletion. Live
+            # descendants of an expired parent share that parent's lifetime;
+            # leaving them behind also prevents its deletion via the FK.
+            with db:
+                for row in sorted(expired.values(), key=lambda row: row["depth"], reverse=True):
+                    db.execute("DELETE FROM nodes WHERE node_id = ?", (row["node_id"],))
     except Exception:
-        logger.warning("room-reaper: dead-row scan failed", exc_info=True)
+        logger.warning("room-reaper: family purge failed", exc_info=True)
+        return result
 
+    result["rows_purged"] = list(expired)
     live_channels_now = {
         _norm(r.get("room_id"))
         for r in live_rows
-        if _norm(r.get("room_id")).startswith("#")
+        if r["node_id"] not in expired and _norm(r.get("room_id")).startswith("#")
     } | pinned
-
-    doomed: set[str] = set()
-    for row in dead_rows:
-        if _norm(row.get("room_id")) in pinned:
-            continue
-        result["rows_purged"].append(row["node_id"])
-        channel = _norm(row.get("room_id"))
-        if channel.startswith("#"):
-            doomed.add(channel)
-
-    if result["rows_purged"]:
-        try:
-            with state.locked() as db:
-                with db:
-                    for node_id in result["rows_purged"]:
-                        db.execute("DELETE FROM nodes WHERE node_id = ? AND status != 'live'", (node_id,))
-        except Exception:
-            logger.warning("room-reaper: row purge failed", exc_info=True)
+    doomed = {
+        _norm(row.get("room_id"))
+        for row in expired.values()
+        if _norm(row.get("room_id")).startswith("#")
+    }
 
     try:
         for channel in closed_rooms(state):
