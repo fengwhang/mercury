@@ -61,16 +61,15 @@ def _installer(tmp_path: Path, arguments: list[str], tail: str, *, downloads=Fal
     ("v0.4.4-nightly", "musl", "musl-x64"),
     ("v0.4.4", "glibc", "x64"),
 ])
-def test_tag_selects_bare_product_version_asset(tmp_path, tag, libc, suffix):
+def test_tag_selects_published_asset_basename(tmp_path, tag, libc, suffix):
     result = _installer(tmp_path, ["--channel", "nightly", tag],
                         f'LIBC={libc}; uname() {{ echo x86_64; }}; '
                         'select_omp_binary() { :; }; fetch_tarball', downloads=True)
     assert result.returncode == 0, result.stdout + result.stderr
     requests = (tmp_path / "downloads.log").read_text()
-    expected = f"/download/{tag}/mercury-0.4.4-{suffix}.tar.gz"
+    expected = f"/download/{tag}/mercury-{tag[1:]}-{suffix}.tar.gz"
     assert expected in requests
-    if tag.endswith("-nightly"):
-        assert f"mercury-{tag[1:]}-" not in requests
+    assert expected + ".sha256" in requests
 
 
 @pytest.mark.parametrize("channel,name", [("stable", "mercury"), ("nightly", "mercury-nightly")])

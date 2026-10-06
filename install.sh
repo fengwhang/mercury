@@ -338,9 +338,7 @@ fetch_tarball() {
         if [ -n "${TAG_ARG:-}" ]; then
             # Versioned asset name (only stable releases carry the
             # version-less aliases; the arch rewrite below still applies).
-            local _asset_version="${TAG_ARG#v}"
-            _asset_version="${_asset_version%-nightly}"
-            TARBALL_URL="https://github.com/fengwhang/mercury/releases/download/${TAG_ARG}/mercury-${_asset_version}${_libc_suffix}-${_def_arch}.tar.gz"
+            TARBALL_URL="https://github.com/fengwhang/mercury/releases/download/${TAG_ARG}/mercury-${TAG_ARG#v}${_libc_suffix}-${_def_arch}.tar.gz"
             log_info "$_def_arch host — release $TAG_ARG tarball"
         elif [ "$MERCURY_CHANNEL" = "nightly" ]; then
             log_error "nightly installs need a release tag (no latest-nightly redirect exists)"
