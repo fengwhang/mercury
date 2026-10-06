@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Local embedding initialization now quarantines a protobuf-corrupt provisioned ONNX file without retrying or downloading replacements. Required sidecars and unrelated models are preserved; later attempts reject missing assets before loading the backend, and failures retain their original cause with local repair guidance.
+
 ## [18.0.11] - 2026-08-29
 
 ### Fixed
