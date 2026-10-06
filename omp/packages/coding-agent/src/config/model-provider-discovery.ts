@@ -1,10 +1,7 @@
 import type { Api, Model } from "@oh-my-pi/pi-ai/types";
 import type { ModelResolutionSource } from "@oh-my-pi/pi-catalog/model-manager";
-import {
-	MODELS_DEV_CATALOG_PROVIDER_IDS,
-	type OpenAICodexAccount,
-	PROVIDER_DESCRIPTORS,
-} from "@oh-my-pi/pi-catalog/provider-models";
+import { getBundledProviders } from "@oh-my-pi/pi-catalog/models";
+import { type OpenAICodexAccount, PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models";
 import type { AuthStorage, OAuthCredential } from "../session/auth-storage";
 
 /**
@@ -21,7 +18,7 @@ const STARTUP_MODEL_CACHE_PROVIDER_IDS_RECORD: Record<string, true> = Object.cre
 for (const providerId of [
 	...PROVIDER_DESCRIPTORS.map(descriptor => descriptor.providerId),
 	...SPECIAL_MODEL_MANAGER_PROVIDER_IDS,
-	...MODELS_DEV_CATALOG_PROVIDER_IDS,
+	...getBundledProviders(),
 ]) {
 	STARTUP_MODEL_CACHE_PROVIDER_IDS_RECORD[providerId] = true;
 }

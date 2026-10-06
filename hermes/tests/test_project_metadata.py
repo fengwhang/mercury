@@ -170,12 +170,6 @@ def test_dingtalk_extra_includes_qrcode_for_qr_auth():
 
 
 
-def _uv_lock_version(package: str) -> str:
-    """Resolved version of ``package`` in uv.lock, or fail loudly."""
-    versions = _uv_lock_versions(package)
-    assert versions, f"{package} not found in uv.lock"
-    assert len(versions) == 1, f"{package} resolves to multiple versions in uv.lock: {versions}"
-    return next(iter(versions))
 
 
 def _uv_lock_versions(package: str) -> set[str]:
@@ -238,54 +232,20 @@ def test_every_lazy_deps_exact_pin_matches_uv_lock():
     )
 
 
-def test_huggingface_hub_lazy_pin_matches_uv_lock():
-    """The whole tree must converge on ONE huggingface-hub version (#60783).
+def test_transitive_hub_does_not_enable_retired_trace_upload(monkeypatch):
+    import sys
+    import types
 
-    huggingface-hub is a shared dependency: the core lock resolves it (via
-    faster-whisper/tokenizers, and transformers/sentence-transformers when
-    local Hindsight embeddings are installed), and LAZY_DEPS
-    ['tool.trace_upload'] exact-pins it. Because active_features() activates
-    a feature from mere package presence, the `mercury update` lazy-refresh
-    pass re-asserts the LAZY_DEPS pin on every install where hub is present.
-    If that pin drifts from the lock's resolved version, every update churns
-    the shared package — and a pin below transformers' floor (>=1.5.0)
-    force-downgrades it and breaks the Hindsight local daemon on startup.
-    """
-    from tools.lazy_deps import LAZY_DEPS
+    from pm.extras import available
 
-    lazy_pin = _exact_pins(LAZY_DEPS["tool.trace_upload"]).get("huggingface-hub")
-    assert lazy_pin, "tool.trace_upload must exact-pin huggingface-hub"
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.ModuleType("huggingface_hub"))
+    assert available("trace-upload") is False
 
-    locked = _uv_lock_version("huggingface-hub")
-    assert lazy_pin == locked, (
-        "LAZY_DEPS['tool.trace_upload'] pins huggingface-hub=="
-        f"{lazy_pin} but uv.lock resolves {locked}. These must move in "
-        "lockstep (bump the pin AND run `uv lock --upgrade-package "
-        "huggingface-hub`), or `mercury update` will churn/downgrade the "
-        "shared package and break Hindsight local embeddings (#60783)."
+
+def test_legacy_hub_install_does_not_select_retired_trace_upload(tmp_path):
+    from pm.extras import legacy_selection
+
+    (tmp_path / "venv" / "lib" / "python3.13" / "site-packages" / "huggingface_hub").mkdir(
+        parents=True
     )
-
-
-def test_huggingface_hub_lazy_pin_inside_transformers_window():
-    """The hub pin must stay in transformers' accepted range (#60783).
-
-    transformers (pulled by sentence-transformers for Hindsight
-    local/local_embedded embeddings) requires huggingface-hub>=1.5.0,<2.
-    An exact pin outside that window makes the lazy-refresh downgrade the
-    shared package below what the embedding stack imports, and the
-    Hindsight daemon fails on startup. Contract, not a snapshot: any
-    future exact pin is fine as long as it stays inside the window.
-    """
-    from packaging.specifiers import SpecifierSet
-    from packaging.version import Version
-
-    from tools.lazy_deps import LAZY_DEPS
-
-    pin = _exact_pins(LAZY_DEPS["tool.trace_upload"]).get("huggingface-hub")
-    assert pin, "tool.trace_upload must exact-pin huggingface-hub"
-    transformers_window = SpecifierSet(">=1.5.0,<2")
-    assert Version(pin) in transformers_window, (
-        f"huggingface-hub=={pin} falls outside transformers' accepted "
-        "range (>=1.5.0,<2). The lazy refresh would downgrade the shared "
-        "package and break Hindsight local embeddings (#60783)."
-    )
+    assert legacy_selection(tmp_path) == ["all"]

@@ -11,7 +11,7 @@ import { GuestClient } from "../src/lib/client";
 import { encodeBase64Url } from "../src/lib/link";
 import { decideTranscriptPoll } from "../src/lib/transcript-poll";
 
-const LINK = `roomroomroom1234#${encodeBase64Url(new Uint8Array(32))}`;
+const LINK = `relay.example.com/r/roomroomroom1234.${encodeBase64Url(new Uint8Array(32))}`;
 
 function transcriptFrame(reqId: number, text: string, newSize: number, error?: string): HostFrame {
 	return { t: "transcript", reqId, text, newSize, error };

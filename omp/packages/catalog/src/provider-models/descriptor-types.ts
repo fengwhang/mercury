@@ -31,8 +31,6 @@ export interface ProviderDescriptor {
 	createModelManagerOptions(config: ModelManagerConfig): ModelManagerOptions<Api>;
 	/** Preferred model ID when no explicit selection is made. */
 	defaultModel: string;
-	/** When true, the runtime creates a model manager even without a valid API key (e.g. ollama). */
-	allowUnauthenticated?: boolean;
 	/** When true, successful runtime discovery replaces bundled provider models instead of merging fallback-only IDs. */
 	dynamicModelsAuthoritative?: boolean;
 	/** Catalog discovery configuration. Only providers with this field participate in generate-models.ts. */
@@ -49,7 +47,7 @@ export function isCatalogDescriptor(d: ProviderDescriptor): d is CatalogProvider
 
 /** Whether catalog discovery may run without provider credentials. */
 export function allowsUnauthenticatedCatalogDiscovery(descriptor: CatalogProviderDescriptor): boolean {
-	return descriptor.catalogDiscovery.allowUnauthenticated ?? descriptor.allowUnauthenticated ?? false;
+	return descriptor.catalogDiscovery.allowUnauthenticated ?? false;
 }
 
 /**
@@ -71,8 +69,6 @@ export interface ProviderCatalogEntry {
 	readonly envVars?: readonly string[];
 	/** Runtime model-manager factory. Omitted for catalog-only providers. */
 	readonly createModelManagerOptions?: (config: ModelManagerConfig) => ModelManagerOptions<Api>;
-	/** When true, the runtime creates a model manager even without a valid API key. */
-	readonly allowUnauthenticated?: boolean;
 	/** When true, successful runtime discovery replaces bundled provider models. */
 	readonly dynamicModelsAuthoritative?: boolean;
 	/** Catalog discovery configuration for generate-models.ts. */

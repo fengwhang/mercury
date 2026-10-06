@@ -2192,13 +2192,14 @@ def _run_post_setup(post_setup_key: str):
 
     elif post_setup_key == "faster_whisper":
         import subprocess
+        _print_info("    Provision local model assets and set stt.local.model; Mercury never downloads weights.")
         try:
             __import__("faster_whisper")
             _print_success("    faster-whisper is already installed")
             return
         except ImportError:
             pass
-        _print_info("    Installing faster-whisper (model ~150MB downloads on first use)...")
+        _print_info("    Installing faster-whisper (local model assets required separately)...")
         try:
             result = _pip_install(["-U", "faster-whisper", "--quiet"], timeout=300)
             if result.returncode == 0:
@@ -2214,6 +2215,8 @@ def _run_post_setup(post_setup_key: str):
             _print_info("    Run manually: uv pip install -U faster-whisper")
 
     elif post_setup_key == "kittentts":
+        _print_info("    Set tts.kittentts.model to a local directory with config.json, ONNX and voices NPZ assets,")
+        _print_info("    or provision its complete Hugging Face cache. Mercury never downloads weights.")
         try:
             __import__("kittentts")
             _print_success("    kittentts is already installed")
@@ -2244,7 +2247,7 @@ def _run_post_setup(post_setup_key: str):
             __import__("piper")
             _print_success("    piper-tts is already installed")
         except ImportError:
-            _print_info("    Installing piper-tts (~14MB wheel, voices downloaded on first use)...")
+            _print_info("    Installing piper-tts (~14MB wheel; local voice assets required separately)...")
             try:
                 result = _pip_install(["-U", "piper-tts", "--quiet"], timeout=300)
                 if result.returncode == 0:
@@ -2258,9 +2261,10 @@ def _run_post_setup(post_setup_key: str):
                 _print_warning("    piper-tts install timed out (>5min)")
                 _print_info("    Run manually: uv pip install -U piper-tts")
                 return
-        _print_info("    Default voice: en_US-lessac-medium (downloaded on first TTS call)")
+        _print_info("    Default voice: en_US-lessac-medium (requires local .onnx and .onnx.json files)")
         _print_info("    Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md")
-        _print_info("    Switch voices by setting tts.piper.voice in ~/.mercury/config.yaml")
+        _print_info("    Set tts.piper.voice to a local .onnx path or place both assets in tts.piper.voices_dir.")
+        _print_info("    Mercury never downloads voice weights.")
 
     elif post_setup_key == "ddgs":
         try:

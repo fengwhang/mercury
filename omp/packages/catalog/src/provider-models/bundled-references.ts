@@ -71,7 +71,7 @@ function getGlobalReferences(): Map<string, Model<Api>> {
 }
 
 export function createReferenceResolver<TApi extends Api>(
-	providerReferenceSource: ProviderReferenceSource<TApi>,
+	providerReferenceSource?: ProviderReferenceSource<TApi>,
 ): (modelId: string) => ModelSpec<TApi> | undefined {
 	let lazyProviderReferences: Map<string, ModelSpec<TApi>> | undefined;
 	const getProviderReferences =
@@ -81,7 +81,7 @@ export function createReferenceResolver<TApi extends Api>(
 	return (modelId: string) => {
 		const providerRefs = getProviderReferences();
 		const globalRefs = getGlobalReferences();
-		const providerRef = providerRefs.get(modelId);
+		const providerRef = providerRefs?.get(modelId);
 		if (providerRef) return providerRef;
 		const globalRef = globalRefs.get(modelId);
 		return globalRef ? toModelSpec(globalRef as Model<TApi>) : undefined;

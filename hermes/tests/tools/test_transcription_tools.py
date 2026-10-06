@@ -356,6 +356,16 @@ class TestTranscribeLocalCommand:
     reason="faster_whisper not installed",
 )
 class TestTranscribeLocalExtended:
+    @pytest.fixture(autouse=True)
+    def _cached_model_assets(self, tmp_path, monkeypatch):
+        self.cached_model = tmp_path / "whisper-assets"
+        self.cached_model.mkdir()
+        for name in ("model.bin", "config.json", "tokenizer.json"):
+            (self.cached_model / name).write_bytes(b"provisioned fixture")
+        module = types.ModuleType("faster_whisper.utils")
+        module.download_model = lambda model, **kwargs: str(self.cached_model)
+        monkeypatch.setitem(sys.modules, "faster_whisper.utils", module)
+
     def test_model_reuse_on_second_call(self, tmp_path):
         """Second call with same model should NOT reload the model."""
         audio = tmp_path / "test.ogg"
@@ -416,7 +426,8 @@ class TestTranscribeLocalExtended:
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
-        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
+        mock_whisper_cls.assert_called_once_with(
+            str(self.cached_model), local_files_only=True, device="cpu", compute_type="float32")
 
 
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):

@@ -1655,7 +1655,7 @@ def _install_neutts_deps() -> bool:
     # Install neutts Python package
     print()
     print_info("Installing neutts Python package...")
-    print_info("This will also download the TTS model (~300MB) on first use.")
+    print_info("Backbone, codec and semantic encoder assets must be provisioned locally; Mercury never downloads weights.")
     print()
 
     # Route through the canonical uv → pip → ensurepip ladder so pip-less
@@ -1685,7 +1685,7 @@ def _install_kittentts_deps() -> bool:
         "0.8.1/kittentts-0.8.1-py3-none-any.whl"
     )
     print()
-    print_info("Installing kittentts Python package (~25-80MB model downloaded on first use)...")
+    print_info("Installing kittentts Python package (ONNX and voices assets must be provisioned locally)...")
     print()
 
     from mercury_cli.tools_config import _pip_install
@@ -1800,8 +1800,8 @@ def _setup_tts_provider(config: dict):
             "MiniMax TTS (high quality with voice cloning, needs API key)",
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
-            "NeuTTS (local on-device, free, ~300MB model download)",
-            "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
+            "NeuTTS (local on-device, free, provisioned backbone and codec weights required)",
+            "KittenTTS (local on-device, free, provisioned ~25-80MB ONNX and voices required)",
         ]
     )
     providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
@@ -1823,6 +1823,8 @@ def _setup_tts_provider(config: dict):
             )
 
     if selected == "neutts":
+        print_info("NeuTTS requires a local/cached backbone plus complete neuphonic/neucodec")
+        print_info("and facebook/w2v-bert-2.0 caches. Set tts.neutts.model; Mercury never downloads weights.")
         # Check if already installed
         try:
             already_installed = importlib.util.find_spec("neutts") is not None
@@ -1834,7 +1836,7 @@ def _setup_tts_provider(config: dict):
         else:
             print()
             print_info("NeuTTS requires:")
-            print_info("  • Python package: neutts (~50MB install + ~300MB model on first use)")
+            print_info("  • Python package: neutts (~50MB install; model assets provisioned separately)")
             print_info("  • System package: espeak-ng (phonemizer)")
             print()
             if prompt_yes_no("Install NeuTTS dependencies now?", True):

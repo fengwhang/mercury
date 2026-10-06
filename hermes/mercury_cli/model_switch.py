@@ -2477,19 +2477,11 @@ def _extra_headers_from_config(entry: Any) -> dict[str, str]:
 
 
 def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
-    """Warm the provider-models disk cache in a background daemon thread.
+    """Warm local metadata and configured providers' model caches off-thread.
 
-    The no-args ``/model`` picker calls ``list_authenticated_providers()``,
-    which fetches each authenticated provider's live ``/v1/models`` list on a
-    cold/stale cache. Those fetches are independent HTTP round-trips but run
-    serially, so the first ``/model`` open in a session (or any open after the
-    1h cache TTL expires) blocks ~1-2s on the user's critical path.
-
-    This pre-warms that exact path off-thread during idle session time: it
-    runs ``list_authenticated_providers()`` once, which populates
-    ``provider_models_cache.json`` for every authed provider. By the time the
-    user types ``/model``, the picker hits the warm disk cache and renders in
-    ~100ms.
+    Public metadata reads are cache-only, including cold and stale caches.
+    Authenticated or user-configured providers retain their own ``/models``
+    discovery, so the first picker open can reuse those provider caches.
 
     Fire-and-forget. Process-level Event guard ensures it runs at most once.
     Fully exception-isolated — a slow or offline provider can never affect the
@@ -2504,9 +2496,8 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
             from mercury_cli.inventory import load_picker_context
 
             ctx = load_picker_context()
-            # Calling this is what populates cached_provider_model_ids() ->
-            # provider_models_cache.json for each authed provider. We discard
-            # the result; the side effect (warm disk cache) is the point.
+            # This loads local metadata and warms authenticated/configured
+            # provider caches; startup does not opt into public catalog refresh.
             list_authenticated_providers(
                 current_provider=ctx.current_provider,
                 current_base_url=ctx.current_base_url,
@@ -2971,16 +2962,18 @@ def list_authenticated_providers(
         except Exception:
             return False
 
-    data = fetch_models_dev()
+    if refresh:
+        from mercury_cli.model_catalog import get_catalog
+        data = fetch_models_dev(force_refresh=True)
+        get_catalog(force_refresh=True)
+    else:
+        data = fetch_models_dev()
 
     # Build curated model lists keyed by mercury provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" pulls from the remote model-catalog manifest published at
-    # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
-    # newly added Portal models surface in the /model picker without
-    # requiring a Mercury release. Falls back to the in-repo
-    # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
+    # Curated metadata is local (cached or shipped) unless the operator
+    # explicitly requested the refresh above.
     curated["nous"] = get_curated_nous_model_ids()
     # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:

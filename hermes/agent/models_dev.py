@@ -9,12 +9,10 @@ of 4000+ models across 109+ providers.  Provides:
   open-weights flag, family grouping, deprecation status
 
 Data resolution order:
-  1. In-memory cache (fresh, or stale served immediately while a single
-     background daemon thread refreshes)
-  2. Disk cache (~/.mercury/models_dev_cache.json — any age; stale data is
-     served rather than blocking callers on the network)
-  3. Network fetch (https://models.dev/api.json) — only when no cache
-     exists at all; failed refreshes back off for 5 minutes process-wide
+  1. In-memory cache, including stale metadata without changing its age.
+  2. Disk cache (~/.mercury/models_dev_cache.json), any age.
+  3. Network fetch only with explicit ``force_refresh`` or ``allow_network=True``.
+     A cold ordinary read reports unavailable metadata, never invented defaults.
 
 Network hardening:
 
@@ -578,7 +576,7 @@ def _start_background_refresh_models_dev() -> None:
 
 
 def fetch_models_dev(
-    force_refresh: bool = False, *, allow_network: bool = True
+    force_refresh: bool = False, *, allow_network: Optional[bool] = None
 ) -> Dict[str, Any]:
     """Fetch models.dev registry. Cache hierarchy: in-mem → disk → network.
 
@@ -592,28 +590,23 @@ def fetch_models_dev(
 
     Cache hierarchy (when ``force_refresh=False``):
       1. Fresh in-memory cache → return immediately.
-      2. Stale in-memory cache → return immediately and refresh in a single
-         background daemon thread. Callers never block on the network while
-         any cache exists; ``models.dev`` only changes when providers add
-         new models, so stale data is preferable to a foreground timeout.
-      3. Disk cache file (any age) → load, populate in-mem, return
-         immediately. Stale disk caches trigger the same background refresh.
+      2. Stale in-memory cache → return without changing its age.
+      3. Disk cache file (any age) → load and populate in-memory data.
          A corrupt or empty disk cache is rejected with a warning.
-      4. No cache at all → singleflight foreground network fetch. On
-         success, save to disk + in-mem and return.
-      5. Any failed refresh (foreground or background) suppresses further
-         automatic refreshes for 5 minutes process-wide.
+      4. No cache at all → unknown (empty registry), unless network access
+         was explicitly requested.
 
     When ``force_refresh=True`` (used by ``mercury config refresh``, the
     \"refresh model catalog\" code path), cache fast paths and the failure
     backoff are bypassed; the function hits the network and only falls back
-    to cached data if the call fails. When ``allow_network=False``, any
-    memory or disk cache is returned regardless of age and no request is
-    made — used by latency-sensitive paths (gateway route-identity checks,
-    vision routing, context-length lookup) that must never wait on the
-    network.
+    to cached data if the call fails. Ordinary reads are cache-only.
+    ``allow_network=True`` explicitly permits cold fetches and stale background
+    refreshes; ``allow_network=False`` forbids even a forced refresh.
     """
     global _models_dev_cache, _models_dev_cache_time, _models_dev_retry_after
+
+    if allow_network is None:
+        allow_network = force_refresh
 
     if not allow_network:
         if _models_dev_cache:
@@ -758,14 +751,7 @@ def lookup_models_dev_context(
     if not mdev_provider_id:
         return _default_override_context(provider)
 
-    # NOTE: keep the zero-argument call on the allow_network path. Dozens
-    # of test sites monkeypatch fetch_models_dev with zero-arg lambdas;
-    # passing the kwarg unconditionally breaks them all (TypeError).
-    data = (
-        fetch_models_dev()
-        if allow_network
-        else fetch_models_dev(allow_network=False)
-    )
+    data = fetch_models_dev(allow_network=allow_network)
     provider_data = data.get(mdev_provider_id)
     if not isinstance(provider_data, dict):
         return _default_override_context(provider)
@@ -1108,14 +1094,7 @@ def _get_provider_models(
     if not mdev_provider_id:
         return None
 
-    # NOTE: keep the zero-argument call on the allow_network path. Dozens
-    # of test sites monkeypatch fetch_models_dev with zero-arg lambdas;
-    # passing the kwarg unconditionally breaks them all (TypeError).
-    data = (
-        fetch_models_dev()
-        if allow_network
-        else fetch_models_dev(allow_network=False)
-    )
+    data = fetch_models_dev(allow_network=allow_network)
     provider_data = data.get(mdev_provider_id)
     if not isinstance(provider_data, dict):
         return None
@@ -1267,15 +1246,14 @@ def get_model_capabilities(
 
 
 def list_provider_models(
-    provider: str, *, allow_network: bool = True
+    provider: str, *, allow_network: bool = False
 ) -> List[str]:
     """Return all model IDs for a provider from models.dev.
 
     Returns an empty list if the provider is unknown or has no data.
 
-    ``allow_network`` defaults to True — this is called from the model
-    picker (``mercury model``), which is an interactive user-facing flow
-    where a fresh catalog is worth a short network wait.
+    Reads local metadata by default; pass ``allow_network=True`` only for
+    deliberate catalog discovery.
     """
     from mercury_cli.models import normalize_provider
     provider = normalize_provider(provider) or provider
@@ -1337,7 +1315,7 @@ def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
 
 
 def list_agentic_models(
-    provider: str, *, allow_network: bool = True
+    provider: str, *, allow_network: bool = False
 ) -> List[str]:
     """Return model IDs suitable for agentic use from models.dev.
 
@@ -1345,8 +1323,7 @@ def list_agentic_models(
     dated preview snapshots, live/streaming, image-only models).
     Returns an empty list on any failure.
 
-    ``allow_network`` defaults to True — like ``list_provider_models``,
-    this is called from interactive model selection flows.
+    Like ``list_provider_models``, ordinary reads are cache-only.
     """
     models = _get_provider_models(provider, allow_network=allow_network)
     if models is None:
@@ -1441,29 +1418,20 @@ def _parse_provider_info(provider_id: str, raw: Dict[str, Any]) -> ProviderInfo:
 # ---------------------------------------------------------------------------
 
 def get_provider_info(
-    provider_id: str, *, allow_network: bool = True
+    provider_id: str, *, allow_network: bool = False
 ) -> Optional[ProviderInfo]:
     """Get full provider metadata from models.dev.
 
     Accepts either a Mercury provider ID (e.g. "kilocode") or a models.dev
     ID (e.g. "kilo").  Returns None if the provider is not in the catalog.
 
-    ``allow_network`` defaults to True — the primary caller is
-    ``resolve_provider_full`` during interactive setup, where a fresh
-    catalog is worth a short network wait. Hot-path callers should pass
-    ``allow_network=False``.
+    Provider resolution is cache-only by default, including startup and
+    runtime routing. Explicit metadata discovery may opt into network access.
     """
     # Resolve Mercury ID → models.dev ID
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 
-    # NOTE: keep the zero-argument call on the default path. Dozens of test
-    # sites monkeypatch fetch_models_dev with zero-arg lambdas; passing the
-    # kwarg unconditionally would break them all (they raise TypeError).
-    data = (
-        fetch_models_dev()
-        if allow_network
-        else fetch_models_dev(allow_network=False)
-    )
+    data = fetch_models_dev(allow_network=allow_network)
     raw = data.get(mdev_id)
     if not isinstance(raw, dict):
         return None
@@ -1511,14 +1479,7 @@ def get_model_info(
         shaped = _merge_catalog_entry_with_override(base, override)
         return _parse_model_info(model_id, shaped, mdev_id)
 
-    # NOTE: keep the zero-argument call on the allow_network path. Dozens
-    # of test sites monkeypatch fetch_models_dev with zero-arg lambdas;
-    # passing the kwarg unconditionally breaks them all (TypeError).
-    data = (
-        fetch_models_dev()
-        if allow_network
-        else fetch_models_dev(allow_network=False)
-    )
+    data = fetch_models_dev(allow_network=allow_network)
     pdata = data.get(mdev_id)
     if not isinstance(pdata, dict):
         return _from_override_alone()

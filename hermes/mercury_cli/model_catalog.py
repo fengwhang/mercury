@@ -1,17 +1,16 @@
-"""Remote model catalog fetcher.
+"""Local curated model catalog with deliberate remote refresh.
 
-The Mercury docs site hosts a JSON manifest of curated models for providers
-we want to update without shipping a release (currently OpenRouter and
-Nous Portal). This module fetches, validates, and caches that manifest,
-falling back to the in-repo hardcoded lists when the network is unavailable.
+The shipped manifest and existing disk cache provide curated OpenRouter and
+Nous Portal metadata without automatic upstream contact. Explicit refreshes
+fetch, validate and cache the remote manifest.
 
 Pipeline
 --------
 1. ``get_catalog()`` — returns a parsed manifest dict.
-   - Checks in-process cache (invalidated by TTL).
-   - Reads disk cache at ``~/.mercury/cache/model_catalog.json``.
-   - Fetches the master URL if disk cache is stale or missing.
-   - On any fetch failure, keeps using the stale cache (or empty dict).
+   - Reads in-process and disk cache, including stale data without refreshing.
+   - Uses the shipped manifest when no cache exists.
+   - Fetches only on explicit ``force_refresh`` or ``allow_network=True``.
+   - On fetch failure, keeps using the stale cache (or reports unavailable).
 
 2. ``get_curated_openrouter_models()`` / ``get_curated_nous_models()`` —
    thin accessors returning the shapes existing callers expect. Each
@@ -152,15 +151,18 @@ def _fetch_manifest(url: str, timeout: float) -> dict[str, Any] | None:
 def _fetch_manifest_with_fallback(
     primary_url: str,
     timeout: float,
-    fallback_urls: tuple[str, ...] = DEFAULT_CATALOG_FALLBACK_URLS,
+    fallback_urls: tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
     """Try ``primary_url`` first, then walk ``fallback_urls``.
 
     Returns the first manifest that fetches and validates, or None when
-    every URL fails. Skips fallback URLs identical to the primary so an
-    operator who configured the catalog URL to point at the raw GitHub
-    copy doesn't double-fetch.
+    every URL fails. Only the default upstream primary has an implicit upstream
+    fallback; a configured mirror must never escape to another service.
     """
+    if fallback_urls is None:
+        fallback_urls = (
+            DEFAULT_CATALOG_FALLBACK_URLS if primary_url == DEFAULT_CATALOG_URL else ()
+        )
     data = _fetch_manifest(primary_url, timeout)
     if data is not None:
         return data
@@ -265,11 +267,14 @@ def _spawn_catalog_swr_refresh(url: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
+def get_catalog(
+    *, force_refresh: bool = False, allow_network: bool | None = None
+) -> dict[str, Any]:
     """Return the parsed model catalog manifest, or an empty dict on failure.
 
-    Callers should treat a missing provider/model as "use the in-repo fallback"
-    — never raise from this function so the CLI keeps working offline.
+    Ordinary reads serve local memory, disk (including stale data), or the
+    shipped manifest. Only explicit refresh/allow_network opts into HTTP.
+    Missing data remains unavailable, so callers can use their in-repo fallback.
     """
     global _catalog_cache, _catalog_cache_source_mtime
 
@@ -281,6 +286,23 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
 
     disk_data, disk_mtime = _read_disk_cache()
     now = time.time()
+    if allow_network is None:
+        allow_network = force_refresh
+    if not allow_network:
+        if disk_data is not None:
+            _catalog_cache = disk_data
+            _catalog_cache_source_mtime = disk_mtime
+        elif _catalog_cache is None:
+            try:
+                with open(_shipped_manifest_path(), encoding="utf-8") as fh:
+                    shipped = json.load(fh)
+                if _validate_manifest(shipped):
+                    _catalog_cache = shipped
+                    _catalog_cache_source_mtime = 0.0
+            except (OSError, json.JSONDecodeError):
+                pass
+        return _catalog_cache or {}
+
     disk_fresh = disk_data is not None and (now - disk_mtime) < ttl_seconds
 
     # In-process cache hit: disk hasn't changed since we loaded it and still fresh.

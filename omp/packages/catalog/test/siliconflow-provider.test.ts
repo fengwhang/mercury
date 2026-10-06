@@ -30,32 +30,6 @@ function withEnv(key: string, value: string, run: () => void): void {
 	}
 }
 
-const MODELS_DEV_STUB_PAYLOAD = {
-	siliconflow: {
-		models: {
-			"zai-org/GLM-5.1": {
-				name: "GLM-5.1",
-				tool_call: true,
-				reasoning: true,
-				modalities: { input: ["text"] },
-				limit: { context: 205000, output: 32768 },
-				cost: { input: 1.4, output: 4.4 },
-			},
-		},
-	},
-	"siliconflow-cn": {
-		models: {
-			"Pro/zai-org/GLM-5.1": {
-				name: "GLM-5.1 Pro",
-				tool_call: true,
-				reasoning: true,
-				modalities: { input: ["text"] },
-				limit: { context: 205000, output: 32768 },
-				cost: { input: 2.8, output: 8.8 },
-			},
-		},
-	},
-};
 
 describe("siliconflow built-in providers", () => {
 	test("registers dynamic-authoritative runtime descriptors with env-key discovery", () => {
@@ -82,7 +56,7 @@ describe("siliconflow built-in providers", () => {
 			expect(entry?.dynamicModelsAuthoritative).toBe(true);
 			expect(entry?.catalogDiscovery).toBeUndefined();
 		}
-		// Runtime: no stencil.so mapping may feed the generator either.
+		// No raw metadata mapping may feed generation either.
 		expect(MODELS_DEV_PROVIDER_DESCRIPTORS.some(d => d.providerId === "siliconflow")).toBe(false);
 		expect(MODELS_DEV_PROVIDER_DESCRIPTORS.some(d => d.providerId === "siliconflow-cn")).toBe(false);
 	});
@@ -106,124 +80,58 @@ describe("siliconflow built-in providers", () => {
 		});
 	});
 
-	test("dynamic discovery filters non-chat ids and hydrates metadata from stencil.so and bundled references", async () => {
+	test("dynamic discovery filters non-chat ids and enriches from bundled references only", async () => {
 		const seen: { urls: string[]; authorization?: string } = { urls: [] };
 		const stubFetch: FetchImpl = async (input, init) => {
-			const url = String(input);
-			seen.urls.push(url);
-			if (url.startsWith("https://catalog.stencil.so/")) {
-				return new Response(JSON.stringify(MODELS_DEV_STUB_PAYLOAD), {
-					status: 200,
-					headers: { "content-type": "application/json" },
-				});
-			}
+			seen.urls.push(String(input));
 			seen.authorization = new Headers(init?.headers).get("Authorization") ?? undefined;
-			const payload = {
-				object: "list",
+			return Response.json({
 				data: [
-					{ id: "zai-org/GLM-5.1", object: "model", created: 0, owned_by: "siliconflow" },
-					{ id: "deepseek-ai/DeepSeek-V4-Pro", object: "model", created: 0, owned_by: "siliconflow" },
-					{ id: "BAAI/bge-m3", object: "model", created: 0, owned_by: "siliconflow" },
-					{ id: "Qwen/Qwen-Image", object: "model", created: 0, owned_by: "siliconflow" },
-					{ id: "Wan-AI/Wan2.2-T2V-A14B", object: "model", created: 0, owned_by: "siliconflow" },
-					{ id: "TeleAI/TeleSpeechASR", object: "model", created: 0, owned_by: "siliconflow" },
-					{ id: "IndexTeam/IndexTTS-2", object: "model", created: 0, owned_by: "siliconflow" },
+					{ id: "zai-org/GLM-5.1" },
+					{ id: "deepseek-ai/DeepSeek-V4-Pro" },
+					{ id: "BAAI/bge-m3" },
+					{ id: "Qwen/Qwen-Image" },
+					{ id: "Wan-AI/Wan2.2-T2V-A14B" },
+					{ id: "TeleAI/TeleSpeechASR" },
+					{ id: "IndexTeam/IndexTTS-2" },
 				],
-			};
-			return new Response(JSON.stringify(payload), {
-				status: 200,
-				headers: { "content-type": "application/json" },
 			});
 		};
-
 		const options = siliconflowModelManagerOptions({ apiKey: "sk-test", fetch: stubFetch });
 		expect(options.dynamicModelsAuthoritative).toBe(true);
 		const models = await options.fetchDynamicModels?.();
-		expect(models).not.toBeNull();
-		expect((models ?? []).map(model => model.id)).toEqual(["deepseek-ai/DeepSeek-V4-Pro", "zai-org/GLM-5.1"]);
-
-		// Tier 1: stencil.so carries the id — pricing, limits, and reasoning hydrate.
-		const glm = models?.find(model => model.id === "zai-org/GLM-5.1");
-		expect(glm?.reasoning).toBe(true);
-		expect(glm?.contextWindow).toBe(205000);
-		expect(glm?.maxTokens).toBe(32768);
-		expect(glm?.cost).toEqual({ input: 1.4, output: 4.4, cacheRead: 0, cacheWrite: 0 });
-		expect(glm?.provider).toBe("siliconflow");
-		expect(glm?.api).toBe("openai-completions");
-		expect(glm?.baseUrl).toBe("https://api.siliconflow.com/v1");
-
-		// Tier 2: absent from stencil.so — reasoning and canonical limits recover
-		// from the bundled upstream/reseller reference, but provider-specific
-		// pricing stays unknown instead of inheriting another host's values.
-		const canonical = resolveModelReference("deepseek-ai/DeepSeek-V4-Pro", getBundledModelReferenceIndex());
-		expect(canonical).toBeDefined();
-		const v4pro = models?.find(model => model.id === "deepseek-ai/DeepSeek-V4-Pro");
-		expect(v4pro?.reasoning).toBe(true);
-		expect(v4pro?.cost.input).toBe(0);
-		expect(v4pro?.contextWindow).toBe(canonical?.contextWindow ?? null);
-		if (canonical?.maxTokens != null && canonical?.contextWindow != null) {
-			expect(v4pro?.maxTokens).toBe(Math.min(canonical.maxTokens, canonical.contextWindow));
-		} else {
-			expect(v4pro?.maxTokens).toBe(canonical?.maxTokens ?? null);
+		expect(models?.map(model => model.id)).toEqual(["deepseek-ai/DeepSeek-V4-Pro", "zai-org/GLM-5.1"]);
+		for (const model of models ?? []) {
+			const canonical = resolveModelReference(model.id, getBundledModelReferenceIndex());
+			expect(canonical).toBeDefined();
+			expect(model).toMatchObject({
+				reasoning: canonical?.reasoning,
+				contextWindow: canonical?.contextWindow,
+				maxTokens: canonical?.maxTokens != null && canonical.contextWindow != null
+					? Math.min(canonical.maxTokens, canonical.contextWindow)
+					: (canonical?.maxTokens ?? null),
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				provider: "siliconflow",
+				baseUrl: "https://api.siliconflow.com/v1",
+			});
 		}
-
-		expect(seen.urls).toContain("https://api.siliconflow.com/v1/models");
-		expect(seen.urls.some(url => url.startsWith("https://catalog.stencil.so/"))).toBe(true);
+		expect(seen.urls).toEqual(["https://api.siliconflow.com/v1/models"]);
 		expect(seen.authorization).toBe("Bearer sk-test");
 	});
 
-	test("cn variant discovers against the China endpoint with cn stencil.so pricing", async () => {
-		const seen: { urls: string[] } = { urls: [] };
+	test("cn variant keeps canonical capabilities without inventing cn pricing", async () => {
+		const urls: string[] = [];
 		const stubFetch: FetchImpl = async input => {
-			const url = String(input);
-			seen.urls.push(url);
-			if (url.startsWith("https://catalog.stencil.so/")) {
-				return new Response(JSON.stringify(MODELS_DEV_STUB_PAYLOAD), {
-					status: 200,
-					headers: { "content-type": "application/json" },
-				});
-			}
-			const payload = {
-				object: "list",
-				data: [{ id: "Pro/zai-org/GLM-5.1", object: "model", created: 0, owned_by: "siliconflow" }],
-			};
-			return new Response(JSON.stringify(payload), {
-				status: 200,
-				headers: { "content-type": "application/json" },
-			});
+			urls.push(String(input));
+			return Response.json({ data: [{ id: "Pro/zai-org/GLM-5.1" }] });
 		};
-
-		const options = siliconflowCnModelManagerOptions({ apiKey: "sk-test", fetch: stubFetch });
-		const models = await options.fetchDynamicModels?.();
+		const models = await siliconflowCnModelManagerOptions({ apiKey: "sk-test", fetch: stubFetch }).fetchDynamicModels?.();
 		expect(models).toHaveLength(1);
-		const pro = models?.[0];
-		expect(pro?.id).toBe("Pro/zai-org/GLM-5.1");
-		expect(pro?.reasoning).toBe(true);
-		expect(pro?.cost).toEqual({ input: 2.8, output: 8.8, cacheRead: 0, cacheWrite: 0 });
-		expect(pro?.baseUrl).toBe("https://api.siliconflow.cn/v1");
-		expect(seen.urls).toContain("https://api.siliconflow.cn/v1/models");
-	});
-
-	test("stencil.so lookup failure still yields endpoint-discovered models", async () => {
-		const stubFetch: FetchImpl = async input => {
-			const url = String(input);
-			if (url.startsWith("https://catalog.stencil.so/")) {
-				throw new Error("stencil.so stalled");
-			}
-			const payload = {
-				object: "list",
-				data: [{ id: "deepseek-ai/DeepSeek-V4-Pro", object: "model", created: 0, owned_by: "" }],
-			};
-			return new Response(JSON.stringify(payload), {
-				status: 200,
-				headers: { "content-type": "application/json" },
-			});
-		};
-
-		const options = siliconflowCnModelManagerOptions({ apiKey: "sk-test", fetch: stubFetch });
-		const models = await options.fetchDynamicModels?.();
-		expect(models?.map(model => model.id)).toEqual(["deepseek-ai/DeepSeek-V4-Pro"]);
-		// Canonical fallback still hydrates reasoning when stencil.so is unreachable.
-		expect(models?.[0]?.reasoning).toBe(true);
+		expect(models?.[0]).toMatchObject({
+			id: "Pro/zai-org/GLM-5.1", reasoning: true,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			baseUrl: "https://api.siliconflow.cn/v1",
+		});
+		expect(urls).toEqual(["https://api.siliconflow.cn/v1/models"]);
 	});
 });

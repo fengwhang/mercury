@@ -79,13 +79,8 @@ function createMockFetch(): { fetch: FetchImpl; controlPlaneUrls: string[] } {
 	const controlPlaneUrls: string[] = [];
 	const fetch = (async (input: string | URL | Request): Promise<Response> => {
 		const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-		// stencil.so reference fetch — return an empty catalog so the mapper relies
-		// purely on control-plane + bundled references.
-		if (url.startsWith("https://stencil.so")) {
-			return jsonResponse({});
-		}
+		controlPlaneUrls.push(url);
 		if (url.includes("/v1/accounts/fireworks/models")) {
-			controlPlaneUrls.push(url);
 			const token = new URL(url).searchParams.get("pageToken");
 			return token
 				? jsonResponse({ models: PAGE_2, totalSize: 4 })
@@ -107,6 +102,7 @@ describe("Fireworks control-plane serverless discovery", () => {
 	it("queries the control-plane serverless catalog, not the OpenAI-compat /v1/models", async () => {
 		const { controlPlaneUrls } = await discover();
 		expect(controlPlaneUrls.length).toBeGreaterThan(0);
+		expect(controlPlaneUrls.every(url => new URL(url).hostname === "api.fireworks.ai")).toBe(true);
 		const first = new URL(controlPlaneUrls[0]);
 		expect(first.pathname).toBe("/v1/accounts/fireworks/models");
 		expect(first.searchParams.get("filter")).toBe("supports_serverless=true");
@@ -165,11 +161,8 @@ describe("Fireworks control-plane serverless discovery", () => {
 	});
 
 	it("returns null on a control-plane transport failure so the manager keeps its cache", async () => {
-		const fetch = (async (input: string | URL | Request): Promise<Response> => {
-			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-			if (url.startsWith("https://stencil.so")) return jsonResponse({});
-			return new Response("server error", { status: 500 });
-		}) as unknown as FetchImpl;
+		const fetch = (async (): Promise<Response> =>
+			new Response("server error", { status: 500 })) as unknown as FetchImpl;
 		const options = fireworksModelManagerOptions({ apiKey: "fw_test_key", fetch });
 		const result = await options.fetchDynamicModels?.();
 		expect(result).toBeNull();

@@ -188,9 +188,9 @@ def _import_sounddevice():
 
 
 def _import_kittentts():
-    """Lazy import KittenTTS. Returns the class or raises ImportError."""
-    from kittentts import KittenTTS
-    return KittenTTS
+    """Import the local ONNX implementation, not KittenTTS's downloading wrapper."""
+    from kittentts.onnx_model import KittenTTS_1_Onnx
+    return KittenTTS_1_Onnx
 
 
 def _import_piper():
@@ -199,7 +199,7 @@ def _import_piper():
     Piper is an optional, fully-local neural TTS engine (Home Assistant /
     Open Home Foundation). ``pip install piper-tts`` provides cross-platform
     wheels (Linux / macOS / Windows, x86_64 + ARM64) with embedded espeak-ng.
-    Voice models (.onnx + .onnx.json) are downloaded on first use.
+    Voice models (.onnx + .onnx.json) must already be available locally.
     """
     from piper import PiperVoice
     return PiperVoice
@@ -2800,67 +2800,7 @@ def _check_kittentts_available() -> bool:
         return False
 
 
-def _default_neutts_ref_audio() -> str:
-    """Return path to the bundled default voice reference audio."""
-    return str(Path(__file__).parent / "neutts_samples" / "jo.wav")
-
-
-def _default_neutts_ref_text() -> str:
-    """Return path to the bundled default voice reference transcript."""
-    return str(Path(__file__).parent / "neutts_samples" / "jo.txt")
-
-
-def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """Generate speech using the local NeuTTS engine.
-
-    Runs synthesis in a subprocess via tools/neutts_synth.py to keep the
-    ~500MB model in a separate process that exits after synthesis.
-    Outputs WAV; the caller handles conversion for Telegram if needed.
-    """
-    import sys
-
-    neutts_config = tts_config.get("neutts") or {}
-    ref_audio = neutts_config.get("ref_audio", "") or _default_neutts_ref_audio()
-    ref_text = neutts_config.get("ref_text", "") or _default_neutts_ref_text()
-    model = neutts_config.get("model", "neuphonic/neutts-air-q4-gguf")
-    device = neutts_config.get("device", "cpu")
-
-    # NeuTTS outputs WAV natively — use a .wav path for generation,
-    # let the caller convert to the final format afterward.
-    wav_path = output_path
-    if not output_path.endswith(".wav"):
-        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
-
-    synth_script = str(Path(__file__).parent / "neutts_synth.py")
-    cmd = [
-        sys.executable, synth_script,
-        "--text", text,
-        "--out", wav_path,
-        "--ref-audio", ref_audio,
-        "--ref-text", ref_text,
-        "--model", model,
-        "--device", device,
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, stdin=subprocess.DEVNULL)
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        # Filter out the "OK:" line from stderr
-        error_lines = [l for l in stderr.splitlines() if not l.startswith("OK:")]
-        raise RuntimeError(f"NeuTTS synthesis failed: {chr(10).join(error_lines) or 'unknown error'}")
-
-    # If the caller wanted .mp3 or .ogg, convert from WAV
-    if wav_path != output_path:
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg:
-            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
-            os.remove(wav_path)
-        else:
-            # No ffmpeg — just rename the WAV to the expected path
-            os.rename(wav_path, output_path)
-
-    return output_path
+from tools.tts_tool_local import _generate_neutts
 
 
 # ===========================================================================
@@ -2893,10 +2833,7 @@ def _tts_cache_get_or_load(cache: Dict[str, Any], key: str, load: Callable[[], A
     return value
 
 
-# Module-level cache for Piper voice instances. Voices are keyed on their
-# absolute .onnx model path so switching voices doesn't invalidate older
-# cached voices.
-_piper_voice_cache: Dict[str, Any] = {}
+from tools.tts_tool_local import _piper_voice_cache, _generate_piper_tts, _resolve_piper_voice_path
 
 
 def _check_piper_available() -> bool:
@@ -2908,232 +2845,17 @@ def _check_piper_available() -> bool:
         return False
 
 
-def _get_piper_voices_dir() -> Path:
-    """Return the directory where Mercury caches Piper voice models.
-
-    Resolves to ``~/.mercury/cache/piper-voices/`` under the active
-    HERMES_HOME so voice downloads follow profile boundaries.
-    """
-    from mercury_constants import get_hermes_dir
-    root = Path(get_hermes_dir("cache/piper-voices", "piper_voices_cache"))
-    root.mkdir(parents=True, exist_ok=True)
-    return root
 
 
-def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
-    """Resolve *voice* (a model name or path) to a concrete .onnx file path.
-
-    Accepts any of:
-      - Absolute / expanded path to an .onnx file the user already has
-      - A voice *name* like ``en_US-lessac-medium`` (downloads to
-        ``download_dir`` on first use via ``python -m piper.download_voices``)
-
-    Raises RuntimeError if the model can't be located or downloaded.
-    """
-    if not voice:
-        voice = DEFAULT_PIPER_VOICE
-
-    # Case 1: user gave a direct file path.
-    candidate = Path(voice).expanduser()
-    if candidate.suffix.lower() == ".onnx" and candidate.exists():
-        return str(candidate)
-
-    # Case 2: user gave a voice *name*. See if it's already downloaded.
-    cached = download_dir / f"{voice}.onnx"
-    if cached.exists() and (download_dir / f"{voice}.onnx.json").exists():
-        return str(cached)
-
-    # Case 3: download the voice. piper ships a download helper module.
-    import sys as _sys
-    logger.info("[Piper] Downloading voice '%s' to %s (first use)", voice, download_dir)
-    try:
-        result = subprocess.run(
-            [_sys.executable, "-m", "piper.download_voices", voice,
-             "--download-dir", str(download_dir)],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"Piper voice download timed out after 300s for '{voice}'"
-        ) from exc
-
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip() or "no stderr output"
-        raise RuntimeError(
-            f"Piper voice download failed for '{voice}': {stderr[:400]}"
-        )
-
-    if not cached.exists():
-        raise RuntimeError(
-            f"Piper voice download completed but {cached} is missing — "
-            f"check voice name (see: https://github.com/OHF-Voice/piper1-gpl/"
-            f"blob/main/docs/VOICES.md)"
-        )
-    return str(cached)
-
-
-def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """Generate speech using the local Piper engine.
-
-    Loads the voice model once per process (cached by absolute path) and
-    writes a WAV file. Caller is responsible for converting to MP3/Opus
-    via ffmpeg when a different output format is required.
-    """
-    PiperVoice = _import_piper()
-    import wave
-
-    piper_config = tts_config.get("piper") or {} if isinstance(tts_config, dict) else {}
-    voice_name = piper_config.get("voice") or DEFAULT_PIPER_VOICE
-    download_dir = Path(piper_config.get("voices_dir") or _get_piper_voices_dir()).expanduser()
-    download_dir.mkdir(parents=True, exist_ok=True)
-    use_cuda = bool(piper_config.get("use_cuda", False))
-
-    model_path = _resolve_piper_voice_path(voice_name, download_dir)
-
-    # Tolerant speaker_id parse: drop bad input (non-int strings, lists, dicts)
-    # to 0 (Piper's own default). Booleans are rejected outright — True/False
-    # would silently coerce to 1/0 and hide a config mistake.
-    _raw_speaker = piper_config.get("speaker_id", 0)
-    if isinstance(_raw_speaker, bool) or not isinstance(_raw_speaker, int):
-        speaker_id = 0
-    else:
-        speaker_id = _raw_speaker
-
-    # speaker_id is applied per-call via syn_config.speaker_id — the same
-    # PiperVoice instance serves all speakers, so it stays out of the cache
-    # key. Multi-speaker workflows share one model load.
-    cache_key = f"{model_path}::cuda={use_cuda}"
-
-    def _load_piper_voice():
-        logger.info("[Piper] Loading voice: %s", model_path)
-        v = PiperVoice.load(model_path, use_cuda=use_cuda)
-        logger.info("[Piper] Voice loaded")
-        return v
-
-    voice = _tts_cache_get_or_load(_piper_voice_cache, cache_key, _load_piper_voice)
-
-    # Optional synthesis knobs — only pass a SynthesisConfig when at least
-    # one advanced knob is configured, so we don't depend on a newer Piper
-    # version than the user's installed one unless we need to.
-    syn_config = None
-    has_advanced = any(
-        k in piper_config
-        for k in (
-            "length_scale",
-            "noise_scale",
-            "noise_w_scale",
-            "volume",
-            "normalize_audio",
-            "speaker_id",
-        )
-    )
-    if has_advanced:
-        try:
-            from piper import SynthesisConfig  # type: ignore
-            syn_config = SynthesisConfig(
-                length_scale=float(piper_config.get("length_scale", 1.0)),
-                noise_scale=float(piper_config.get("noise_scale", 0.667)),
-                noise_w_scale=float(piper_config.get("noise_w_scale", 0.8)),
-                volume=float(piper_config.get("volume", 1.0)),
-                normalize_audio=bool(piper_config.get("normalize_audio", True)),
-                speaker_id=speaker_id,
-            )
-        except ImportError:
-            logger.warning(
-                "[Piper] SynthesisConfig not available in this piper-tts "
-                "version — advanced knobs ignored"
-            )
-
-    # Piper outputs WAV. Caller handles downstream MP3/Opus conversion.
-    wav_path = output_path
-    if not output_path.endswith(".wav"):
-        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
-
-    with wave.open(wav_path, "wb") as wav_file:
-        if syn_config is not None:
-            voice.synthesize_wav(text, wav_file, syn_config=syn_config)
-        else:
-            voice.synthesize_wav(text, wav_file)
-
-    # Convert to desired format if caller requested mp3/ogg
-    if wav_path != output_path:
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg:
-            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
-            try:
-                os.remove(wav_path)
-            except OSError:
-                pass
-        else:
-            # No ffmpeg — keep WAV and return that path
-            os.rename(wav_path, output_path)
-
-    return output_path
 
 
 # ===========================================================================
 # Provider: KittenTTS (local, lightweight)
 # ===========================================================================
 
-# Module-level cache for KittenTTS model instance
-_kittentts_model_cache: Dict[str, Any] = {}
+from tools.tts_tool_local import _kittentts_model_cache, _generate_kittentts
 
 
-def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """Generate speech using KittenTTS local ONNX model.
-
-    KittenTTS is a lightweight TTS engine (25-80MB models) that runs
-    entirely on CPU without requiring a GPU or API key.
-
-    Args:
-        text: Text to convert to speech.
-        output_path: Where to save the audio file.
-        tts_config: TTS config dict.
-
-    Returns:
-        Path to the saved audio file.
-    """
-    KittenTTS = _import_kittentts()
-    kt_config = tts_config.get("kittentts", {})
-    model_name = kt_config.get("model", DEFAULT_KITTENTTS_MODEL)
-    voice = kt_config.get("voice", DEFAULT_KITTENTTS_VOICE)
-    speed = kt_config.get("speed", 1.0)
-    clean_text = kt_config.get("clean_text", True)
-
-    # Use cached model instance if available
-    def _load_kittentts_model():
-        logger.info("[KittenTTS] Loading model: %s", model_name)
-        m = KittenTTS(model_name)
-        logger.info("[KittenTTS] Model loaded successfully")
-        return m
-
-    model = _tts_cache_get_or_load(_kittentts_model_cache, model_name, _load_kittentts_model)
-
-    # Generate audio (returns numpy array at 24kHz)
-    audio = model.generate(text, voice=voice, speed=speed, clean_text=clean_text)
-
-    # Save as WAV
-    import soundfile as sf
-    wav_path = output_path
-    if not output_path.endswith(".wav"):
-        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
-
-    sf.write(wav_path, audio, 24000)
-
-    # Convert to desired format if needed
-    if wav_path != output_path:
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg:
-            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
-            os.remove(wav_path)
-        else:
-            # No ffmpeg — rename the WAV to the expected path
-            os.rename(wav_path, output_path)
-
-    return output_path
 
 
 # ===========================================================================

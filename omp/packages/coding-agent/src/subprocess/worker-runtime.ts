@@ -298,7 +298,7 @@ export function getTransformersVersionSpec(): string {
 
 /** The subset of the Transformers.js module surface {@link configureTransformers} touches. */
 interface ConfigurableTransformers {
-	env: { cacheDir?: string; allowLocalModels?: boolean; logLevel?: unknown };
+	env: { cacheDir?: string; localModelPath?: string; allowLocalModels?: boolean; allowRemoteModels?: boolean; logLevel?: unknown };
 	LogLevel: { ERROR: unknown };
 }
 
@@ -410,11 +410,31 @@ export async function formatOnnxRuntimeCudaDiagnostics(
 	return lines.join("\n");
 }
 
-function configureTransformers<T extends ConfigurableTransformers>(transformers: T): T {
+export function configureTransformers<T extends ConfigurableTransformers>(transformers: T): T {
 	transformers.env.cacheDir = getTinyModelsCacheDir();
-	transformers.env.allowLocalModels = false;
+	transformers.env.localModelPath = getTinyModelsCacheDir();
+	transformers.env.allowLocalModels = true;
+	transformers.env.allowRemoteModels = false;
 	transformers.env.logLevel = transformers.LogLevel.ERROR;
 	return transformers;
+}
+
+/** Reject missing provisioned assets before loading/installing a backend. The
+ * backend's local-only policy also covers optional files, dtype variants and shards. */
+export async function requireLocalModelAssets(repo: string): Promise<string> {
+	const dir = path.join(getTinyModelsCacheDir(), repo);
+	for (const name of ["config.json", "tokenizer.json"]) {
+		const file = path.join(dir, name);
+		const present = await fsp.stat(file).then(stat => stat.isFile() && stat.size > 0).catch(() => false);
+		if (!present) throw new Error(`Local model assets missing: ${file}. Provision the complete model directory locally, or configure a provider. Mercury does not download model weights.`);
+	}
+	const files = await fsp.readdir(path.join(dir, "onnx")).catch(() => [] as string[]);
+	for (const name of files) {
+		if (!name.endsWith(".onnx")) continue;
+		const stat = await fsp.stat(path.join(dir, "onnx", name));
+		if (stat.isFile() && stat.size > 0) return dir;
+	}
+	throw new Error(`Local model assets missing: ${dir}/onnx/*.onnx. Provision the complete ONNX model (including external data and selected dtype), or configure a provider. Mercury does not download model weights.`);
 }
 
 /**

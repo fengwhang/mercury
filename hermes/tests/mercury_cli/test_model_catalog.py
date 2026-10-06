@@ -197,10 +197,8 @@ class TestFallbackChain:
 class TestCuratedAccessors:
     def test_openrouter_returns_tuples(self, isolated_home):
         from mercury_cli import model_catalog
-        with patch.object(
-            model_catalog, "_fetch_manifest", return_value=_valid_manifest()
-        ):
-            result = model_catalog.get_curated_openrouter_models()
+        model_catalog._write_disk_cache(_valid_manifest())
+        result = model_catalog.get_curated_openrouter_models()
         assert result == [
             ("anthropic/claude-opus-4.7", "recommended"),
             ("openai/gpt-5.4", ""),
@@ -210,7 +208,7 @@ class TestCuratedAccessors:
 
     def test_nous_returns_none_when_catalog_empty(self, isolated_home):
         from mercury_cli import model_catalog
-        with patch.object(model_catalog, "_fetch_manifest", return_value=None):
+        with patch.object(model_catalog, "get_catalog", return_value={}):
             assert model_catalog.get_curated_nous_models() is None
 
 

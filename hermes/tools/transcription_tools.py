@@ -5,7 +5,7 @@ Transcription Tools Module
 Provides speech-to-text transcription with six providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
-    Auto-downloads the model (~150 MB for ``base``) on first use.
+    Requires provisioned local model and tokenizer assets; never downloads on first use.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
@@ -45,6 +45,7 @@ from urllib.parse import urljoin
 from mercury_cli._subprocess_compat import windows_hide_flags
 from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.transcription_local import _create_whisper_model, _resolve_local_whisper_command_model
 from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
@@ -136,7 +137,7 @@ _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
 # Guards the check-then-load of the module-global model cache above.
 # Without it, two concurrent voice messages can both see `_local_model is
-# None` and download/load the whisper model twice (#24767).
+# None` and load the whisper model twice (#24767).
 _local_model_lock = threading.Lock()
 
 # --- Idle unload ---------------------------------------------------------------
@@ -1791,16 +1792,15 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         # gateway survives, then keep inference on CPU to avoid device probing.
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-    from faster_whisper import WhisperModel
     if force_cpu:
         logger.info(
             "Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
             "(int8) to avoid native device autodetection crashes"
         )
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+        return _create_whisper_model(model_name, device="cpu", compute_type="int8")
 
     try:
-        return WhisperModel(model_name, device=device, compute_type=compute_type)
+        return _create_whisper_model(model_name, device=device, compute_type=compute_type)
     except Exception as exc:
         if not _looks_like_cuda_lib_error(exc):
             raise
@@ -1809,7 +1809,7 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
             "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.",
             exc,
         )
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+        return _create_whisper_model(model_name, device="cpu", compute_type="int8")
 
 
 # Silence-hallucination hardening defaults for local faster-whisper.
@@ -1956,9 +1956,8 @@ def _transcribe_local(
         # watcher can't count a long in-flight transcription as idle time and
         # unload mid-use.
         _touch_transcription_time()
-        # Lazy-load the model (downloads on first use, ~150 MB for 'base').
-        # Double-checked lock: concurrent voice messages must not both
-        # download/load the model (#24767).
+        # Load provisioned local assets once; a cache miss never downloads.
+        # Double-checked lock prevents concurrent messages loading twice.
         # ``model`` is a strong local reference bound under the lock: the idle
         # watcher may null the module global at any time, but this
         # transcription keeps using the instance it grabbed.
@@ -1966,7 +1965,7 @@ def _transcribe_local(
         if model is None or _local_model_name != model_name:
             with _local_model_lock:
                 if _local_model is None or _local_model_name != model_name:
-                    logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
+                    logger.info("Loading provisioned faster-whisper model '%s'...", model_name)
                     # Honour stt.local.device / stt.local.compute_type from config so
                     # users on hosts where ``auto`` mis-detects (NVIDIA libs present but
                     # not usable, etc.) can pin a working configuration (#9088).
@@ -2012,8 +2011,7 @@ def _transcribe_local(
                 "evicting cached model and retrying on CPU (int8).",
                 exc,
             )
-            from faster_whisper import WhisperModel
-            model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            model = _create_whisper_model(model_name, device="cpu", compute_type="int8")
             with _local_model_lock:
                 _local_model = model
                 _local_model_name = model_name
@@ -2120,6 +2118,7 @@ def _transcribe_local_command(
     normalized_model = _normalize_local_command_model(model_name)
 
     try:
+        normalized_model = _resolve_local_whisper_command_model(normalized_model)
         with tempfile.TemporaryDirectory(prefix="mercury-local-stt-") as output_dir:
             prepared_input, prep_error = _prepare_local_audio(file_path, output_dir)
             if prep_error:

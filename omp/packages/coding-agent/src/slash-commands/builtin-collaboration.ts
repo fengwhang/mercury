@@ -343,7 +343,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				return;
 			}
 			const explicitUrl = knownStartVerb ? rest : args;
-			const relayInput = explicitUrl || ctx.settings.get("collab.relayUrl") || "";
+			const relayInput = (explicitUrl || ctx.settings.get("collab.relayUrl") || "").trim();
 			if (!relayInput) {
 				ctx.showError(
 					"No relay configured. Set collab.relayUrl in /settings or pass one: /collab relay.example.com",

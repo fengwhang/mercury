@@ -380,16 +380,22 @@ class TrajectoryCompressor:
         self.logger = logging.getLogger(__name__)
     
     def _init_tokenizer(self):
-        """Initialize HuggingFace tokenizer for token counting."""
+        """Initialize token counting from existing local or cached assets only."""
         try:
             from transformers import AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.config.tokenizer_name,
-                trust_remote_code=self.config.trust_remote_code
+                trust_remote_code=self.config.trust_remote_code,
+                local_files_only=True,
             )
             print(f"✅ Loaded tokenizer: {self.config.tokenizer_name}")
         except Exception as e:
-            raise RuntimeError(f"Failed to load tokenizer '{self.config.tokenizer_name}': {e}")
+            raise RuntimeError(
+                f"Failed to load local/cached tokenizer '{self.config.tokenizer_name}'. "
+                "Tokenizer assets and any required custom code must already be available "
+                "locally; downloads are disabled. Pass --tokenizer=/path/to/tokenizer "
+                f"or set tokenizer.name in the compression config to existing assets. {e}"
+            ) from e
     
     def _init_summarizer(self):
         """Initialize LLM routing for summarization (sync and async).
@@ -1441,7 +1447,7 @@ def main(
                 Default: adds "_compressed" suffix to input name
         config: Path to YAML configuration file
         target_max_tokens: Override target token count from config
-        tokenizer: Override tokenizer name from config
+        tokenizer: Existing local tokenizer directory or cached name (no downloads)
         sample_percent: Sample this percentage of trajectories (1-100) before compression
         seed: Random seed for sampling reproducibility (default: 42)
         dry_run: Analyze without compressing (just show what would happen)

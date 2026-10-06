@@ -6,6 +6,7 @@ dispatch.  All external dependencies (faster_whisper, openai) are mocked.
 
 import os
 import tempfile
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -27,6 +28,16 @@ pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
 @pytest.fixture(autouse=True)
 def _clear_openai_env(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _cached_model_assets(tmp_path, monkeypatch):
+    snapshot = tmp_path / "whisper-assets"
+    snapshot.mkdir()
+    for name in ("model.bin", "config.json", "tokenizer.json"):
+        (snapshot / name).write_bytes(b"provisioned fixture")
+    monkeypatch.setitem(sys.modules, "faster_whisper.utils",
+                        SimpleNamespace(download_model=lambda model, **kwargs: str(snapshot)))
 
 
 class TestGetProvider:

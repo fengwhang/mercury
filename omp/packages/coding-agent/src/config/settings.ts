@@ -304,11 +304,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Migrate a v17 leaf rename that used to nest under a boolean parent path
- * (`dev.autoqa.consent` → `dev.autoqaConsent`, `todo.reminders.max` →
- * `todo.remindersMax`). Pre-rename configs left the leaf beneath the parent,
- * so the parent path resolved to an object and truthy checks like
- * `isAutoQaEnabled` treated a consent-only container as "enabled".
+ * Migrate the v17 `todo.reminders.max` leaf rename to `todo.remindersMax`.
+ * Pre-rename configs left the leaf beneath a boolean parent path, making
+ * the parent resolve to an object instead of a boolean.
  *
  * Handles nested (`{ parent: { leaf } }`) and quoted-dotted (`"parent.leaf"`)
  * legacy sources. An explicit new key always wins; a separately configured
@@ -2582,17 +2580,20 @@ export class Settings {
 			}
 		}
 
-		// v17 renames that used to nest under a boolean parent path:
-		//   dev.autoqa.consent -> dev.autoqaConsent
-		//   todo.reminders.max -> todo.remindersMax
-		migrateNestedLeafRename(
-			raw,
-			"dev",
-			"autoqa",
-			"consent",
-			"autoqaConsent",
-			value => value === "unset" || value === "granted" || value === "denied",
-		);
+		// Automatic QA is local-only. Remove obsolete sharing configuration,
+		// including the legacy consent container that occupied a boolean path.
+		const devObj = isRecord(raw.dev) ? raw.dev : undefined;
+		if (devObj) {
+			delete devObj.autoqaConsent;
+			delete devObj.autoqaPush;
+			if (isRecord(devObj.autoqa)) delete devObj.autoqa;
+		}
+		for (const key of ["dev.autoqa.consent", "dev.autoqaConsent", "dev.autoqaPush", "dev.autoqaPush.endpoint", "dev.autoqaPush.token"]) {
+			delete raw[key];
+		}
+		if (isRecord(raw["dev.autoqa"])) delete raw["dev.autoqa"];
+
+		// v17 reminders.max rename used to nest under a boolean parent path.
 		migrateNestedLeafRename(
 			raw,
 			"todo",

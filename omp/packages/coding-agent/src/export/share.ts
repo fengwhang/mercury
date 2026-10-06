@@ -8,8 +8,8 @@
  *   1. The share server (default — `POST <serverUrl>` → `{"id":"…"}`), capped
  *      at 1 MB; oversized sessions are truncated (images first, then long
  *      strings, then oldest entries) until the sealed blob fits.
- *   2. A secret GitHub gist (`store: "gist"`, when an authenticated `gh`
- *      exists; falls back to the share server) holding base64 of the blob.
+ *   2. An explicitly selected secret GitHub gist (`store: "gist"`, requires
+ *      authenticated `gh`) holding base64 of the blob; failures are surfaced.
  *
  * Either way the link is `<serverUrl>/<id>#<base64url key>`. The viewer page
  * served there fetches the blob (gist ids are hex; server ids never are),
@@ -21,8 +21,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage, AgentState } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
-import { $which, logger } from "@oh-my-pi/pi-utils";
-import { DEFAULT_SHARE_URL } from "@oh-my-pi/pi-wire";
+import { $which } from "@oh-my-pi/pi-utils";
+import { DEFAULT_SHARE_URL, isUpstreamHostedHostname } from "@oh-my-pi/pi-wire";
 import { $ } from "bun";
 import { obfuscateToolArguments } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
@@ -54,12 +54,12 @@ const IMAGE_OMITTED_TEXT = "[image omitted from share]";
 export type ShareStore = "blob" | "gist";
 
 export interface ShareSessionOptions {
-	/** Share server/viewer base URL; defaults to {@link DEFAULT_SHARE_URL}. */
+	/** Required self-hosted share server/viewer base URL. */
 	serverUrl?: string;
 	/**
 	 * Where to upload the sealed blob. `"blob"` (default) posts to the share
-	 * server; `"gist"` pushes to a secret GitHub gist first (needs an
-	 * authenticated `gh`) and falls back to the server.
+	 * server; `"gist"` pushes only to a secret GitHub gist (requires an
+	 * authenticated `gh`). Neither store falls back to another endpoint.
 	 */
 	store?: ShareStore;
 	/** Agent state for system prompt + tool descriptions in the snapshot. */
@@ -484,27 +484,23 @@ function redactShareMessage(
 
 /** Share the session; uploads to the share server unless `options.store` is `"gist"`. */
 export async function shareSession(sm: SessionManager, options?: ShareSessionOptions): Promise<ShareSessionResult> {
+	const base = normalizeShareServerUrl(options?.serverUrl);
 	const data = buildShareSnapshot(sm, options);
 	const keyBytes = new Uint8Array(SHARE_KEY_BYTES);
 	crypto.getRandomValues(keyBytes);
 	const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
 	const keyText = Buffer.from(keyBytes).toString("base64url");
-	const base = normalizeShareServerUrl(options?.serverUrl);
 
 	if (options?.store === "gist") {
 		const forGist = await sealToFit(key, data, GIST_MAX_SEALED_BYTES);
-		const gist = await tryCreateGist(forGist.sealed);
-		if (gist) {
-			return {
-				url: `${base}/${gist.id}#${keyText}`,
-				method: "gist",
-				gistUrl: gist.url,
-				truncated: forGist.truncated,
-				sealedBytes: forGist.sealed.byteLength,
-			};
-		}
-		// gh unusable or gist creation failed — fall back to the share server.
-		return shareViaServer(key, data, base, keyText, forGist);
+		const gist = await createGist(forGist.sealed);
+		return {
+			url: `${base}/${gist.id}#${keyText}`,
+			method: "gist",
+			gistUrl: gist.url,
+			truncated: forGist.truncated,
+			sealedBytes: forGist.sealed.byteLength,
+		};
 	}
 
 	return shareViaServer(key, data, base, keyText);
@@ -513,7 +509,13 @@ export async function shareSession(sm: SessionManager, options?: ShareSessionOpt
 /** Strip trailing slashes so `<base>/<id>` composes cleanly. */
 export function normalizeShareServerUrl(serverUrl?: string): string {
 	const base = (serverUrl ?? DEFAULT_SHARE_URL).trim().replace(/\/+$/, "");
-	return base || DEFAULT_SHARE_URL;
+	if (!base) {
+		throw new Error("No share URL configured. Set share.serverUrl to your self-hosted share viewer/upload endpoint in /settings.");
+	}
+	if (isUpstreamHostedHostname(new URL(base).hostname)) {
+		throw new Error("Upstream hosted sharing is not supported. Set share.serverUrl to your self-hosted share endpoint.");
+	}
+	return base;
 }
 
 interface SealedSession {
@@ -609,13 +611,12 @@ function capLongStrings(value: unknown, cap: number): void {
 	}
 }
 
-/** Create a secret gist holding base64 of the sealed blob; null when `gh` is unusable. */
-async function tryCreateGist(sealed: Uint8Array): Promise<{ id: string; url: string } | null> {
-	if (!$which("gh")) return null;
+/** Create the explicitly selected secret gist; never fall back to another store. */
+async function createGist(sealed: Uint8Array): Promise<{ id: string; url: string }> {
+	if (!$which("gh")) throw new Error("Gist sharing requires gh. Install and authenticate gh, or select share.store=blob with your self-hosted share.serverUrl.");
 	const auth = await $`gh auth status`.quiet().nothrow();
 	if (auth.exitCode !== 0) {
-		logger.debug("share: gh present but not authenticated; falling back to share server");
-		return null;
+		throw new Error("Gist sharing requires authenticated gh. Run gh auth login, or select share.store=blob.");
 	}
 
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-share-"));
@@ -624,16 +625,12 @@ async function tryCreateGist(sealed: Uint8Array): Promise<{ id: string; url: str
 		await Bun.write(file, Buffer.from(sealed).toString("base64"));
 		const result = await $`gh gist create --public=false ${file}`.quiet().nothrow();
 		if (result.exitCode !== 0) {
-			logger.warn("share: gist creation failed; falling back to share server", {
-				stderr: result.stderr.toString("utf-8").trim().slice(0, 500),
-			});
-			return null;
+			throw new Error(`Gist creation failed: ${result.stderr.toString("utf-8").trim().slice(0, 500)}`);
 		}
 		const url = result.text().trim().split("\n").pop()?.trim() ?? "";
 		const id = url.split("/").pop() ?? "";
 		if (!GIST_ID_RE.test(id)) {
-			logger.warn("share: could not parse gist id from gh output", { url });
-			return null;
+			throw new Error("Gist creation failed: gh returned no usable gist id.");
 		}
 		return { id, url };
 	} finally {
@@ -641,18 +638,14 @@ async function tryCreateGist(sealed: Uint8Array): Promise<{ id: string; url: str
 	}
 }
 
-/** Seal to the server cap (reusing `preFit` when it already fits) and upload. */
+/** Seal to the configured server's cap and upload. */
 async function shareViaServer(
 	key: CryptoKey,
 	data: SessionData,
 	base: string,
 	keyText: string,
-	preFit?: SealedSession,
 ): Promise<ShareSessionResult> {
-	const forServer =
-		preFit && preFit.sealed.byteLength <= SERVER_MAX_SEALED_BYTES
-			? preFit
-			: await sealToFit(key, data, SERVER_MAX_SEALED_BYTES);
+	const forServer = await sealToFit(key, data, SERVER_MAX_SEALED_BYTES);
 	const id = await uploadToServer(forServer.sealed, base);
 	return {
 		url: `${base}/${id}#${keyText}`,

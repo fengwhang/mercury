@@ -13,9 +13,94 @@ System:   apt install espeak-ng  (or brew install espeak-ng)
 """
 
 import argparse
+import json
+import os
 import struct
 import sys
 from pathlib import Path
+
+
+def _cached_hf_snapshot(repo: str) -> Path | None:
+    """Resolve the existing default-revision hub cache using only filesystem reads."""
+    hf_home = Path(os.environ.get("HF_HOME") or
+                   Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "huggingface")
+    cache_dir = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE") or str(hf_home / "hub")
+    root = Path(cache_dir) / ("models--" + repo.replace("/", "--"))
+    ref = root / "refs" / "main"
+    if not ref.is_file():
+        return None
+    revision = ref.read_text(encoding="utf-8").strip()
+    if not revision or "/" in revision or "\\" in revision or revision in (".", ".."):
+        return None
+    snapshot = root / "snapshots" / revision
+    return snapshot if snapshot.is_dir() else None
+
+
+def _cached_hf_file(repo: str, filename: str) -> Path | None:
+    """Look up an existing cache file without importing any downloading SDK."""
+    snapshot = _cached_hf_snapshot(repo)
+    result = snapshot / filename if snapshot is not None else None
+    return result if result is not None and result.is_file() else None
+
+
+def _require_transformer_assets(directory: Path, label: str) -> None:
+    """Validate weights (including shards) before a transformers initializer runs."""
+    if not (directory / "config.json").is_file():
+        raise RuntimeError(f"{label}: config.json missing")
+    if any((directory / name).is_file() for name in ("model.safetensors", "pytorch_model.bin")):
+        return
+    for name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+        index = directory / name
+        if index.is_file():
+            shards = json.loads(index.read_text(encoding="utf-8")).get("weight_map", {})
+            if shards and all((directory / shard).is_file() for shard in set(shards.values())):
+                return
+    raise RuntimeError(f"{label}: complete model weights missing")
+
+
+def _resolve_neutts_assets(model: str) -> str:
+    """Preflight backbone, codec and its semantic encoder; no SDK or hub requests."""
+    hint = (
+        "NeuTTS local assets unavailable. Set tts.neutts.model to an existing GGUF file "
+        "or provision the complete backbone cache; the existing Hugging Face caches for "
+        "neuphonic/neucodec (config.json, pytorch_model.bin, meta.yaml) and "
+        "facebook/w2v-bert-2.0 (config, preprocessor and weights) are also required. "
+        "Mercury does not download model weights.")
+    try:
+        candidate = Path(model).expanduser()
+        if candidate.suffix.lower() == ".gguf":
+            if not candidate.is_file():
+                raise RuntimeError(f"backbone file missing: {candidate}")
+            backbone = str(candidate.absolute())
+        elif model.lower().endswith("gguf"):
+            snapshot = _cached_hf_snapshot(model)
+            files = sorted(snapshot.glob("*.gguf")) if snapshot is not None else []
+            files = [path for path in files if path.is_file()]
+            if len(files) != 1:
+                raise RuntimeError(f"{model}: one cached GGUF backbone required")
+            # Keep the .gguf symlink name: NeuTTS selects llama.cpp by extension.
+            backbone = str(files[0].absolute())
+        else:
+            directory = candidate if candidate.is_dir() else _cached_hf_snapshot(model)
+            if directory is None:
+                raise RuntimeError(f"{model}: backbone cache missing")
+            _require_transformer_assets(directory, model)
+            if not (directory / "tokenizer_config.json").is_file() or not any(
+                    (directory / name).is_file() for name in ("tokenizer.json", "tokenizer.model")):
+                raise RuntimeError(f"{model}: tokenizer assets missing")
+            backbone = str(candidate.resolve()) if candidate.is_dir() else model
+        for filename in ("config.json", "pytorch_model.bin", "meta.yaml"):
+            if _cached_hf_file("neuphonic/neucodec", filename) is None:
+                raise RuntimeError(f"neuphonic/neucodec: {filename} missing")
+        semantic = _cached_hf_snapshot("facebook/w2v-bert-2.0")
+        if semantic is None:
+            raise RuntimeError("facebook/w2v-bert-2.0: semantic encoder cache missing")
+        _require_transformer_assets(semantic, "facebook/w2v-bert-2.0")
+        if not (semantic / "preprocessor_config.json").is_file():
+            raise RuntimeError("facebook/w2v-bert-2.0: preprocessor_config.json missing")
+        return backbone
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise RuntimeError(f"{hint} {exc}") from exc
 
 
 def _write_wav(path: str, samples, sample_rate: int = 24000) -> None:
@@ -55,9 +140,19 @@ def main():
     parser.add_argument("--ref-audio", required=True, help="Reference voice audio path")
     parser.add_argument("--ref-text", required=True, help="Reference voice transcript path")
     parser.add_argument("--model", default="neuphonic/neutts-air-q4-gguf",
-                        help="HuggingFace backbone model repo")
+                        help="Existing local backbone path or fully cached model repo")
     parser.add_argument("--device", default="cpu", help="Device (cpu/cuda/mps)")
     args = parser.parse_args()
+
+    # Set before importing the SDK: its codec and nested semantic encoder otherwise
+    # fetch weights even when the backbone is an explicit local file.
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    try:
+        model = _resolve_neutts_assets(args.model)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # llama_cpp (backbone) offloads to GPU only for the literal string "gpu";
     # torch (codec) only accepts "cuda". A single --device value can't satisfy
@@ -85,10 +180,12 @@ def main():
         sys.exit(1)
 
     tts = NeuTTS(
-        backbone_repo=args.model,
+        backbone_repo=model,
         backbone_device=backbone_device,
         codec_repo="neuphonic/neucodec",
         codec_device=codec_device,
+        language=(getattr(sys.modules.get(NeuTTS.__module__), "BACKBONE_LANGUAGE_MAP", {})
+                  .get(args.model, "en-us")) if Path(model).exists() else None,
     )
     ref_codes = tts.encode_reference(str(ref_audio))
     wav = tts.infer(args.text, ref_codes, ref_text)

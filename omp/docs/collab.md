@@ -1,21 +1,21 @@
 # Collab: Live Session Sharing
 
-`/collab` shares your running session with other omp instances in real time. Guests render the **same session natively in their own TUI** — streaming assistant text, tool-call cards, footer state (cwd, model, context %, cost), ctrl+o expansion, `/dump` — no terminal mirroring. Guests can prompt and interrupt the agent; the host machine runs the agent and all tools.
+`/collab` shares your running session through an explicitly selected self-hosted relay. Mercury ships no hosted relay or share endpoint. Guests render the **same session natively in their own TUI** — streaming assistant text, tool-call cards, footer state (cwd, model, context %, cost), ctrl+o expansion, `/dump` — no terminal mirroring. Guests can prompt and interrupt the agent; the host machine runs the agent and all tools.
 
 ## Quick start
 
 Host:
 
 ```
-/collab
+/collab relay.example.com
 ```
 
 prints
 
 ```
 Collab session started!
- • Join from another terminal: omp join "mgAYTZwEnpRQtca0CTgn-Q.gdJUbTovD94ofDaa8YvhY0-ty16w4fn8PgB6PLnoA30"
- • or any web browser: my.omp.sh/#mgAYTZwEnpRQtca0CTgn-Q.gdJUbTovD94ofDaa8YvhY0-ty16w4fn8PgB6PLnoA30
+ • Join from another terminal: mercury omp join "relay.example.com/r/mgAYTZwEnpRQtca0CTgn-Q.gdJUbTovD94ofDaa8YvhY0-ty16w4fn8PgB6PLnoA30"
+ • or any web browser: relay.example.com/#relay.example.com/r/mgAYTZwEnpRQtca0CTgn-Q.gdJUbTovD94ofDaa8YvhY0-ty16w4fn8PgB6PLnoA30
 ```
 
 The browser line is click-to-join (an OSC 8 hyperlink to the full `https://` deep link): the relay serves the web guest client at `/`, and the room id + key ride in the URL fragment. From another omp (any directory, any machine), either form works:
@@ -23,7 +23,7 @@ The browser line is click-to-join (an OSC 8 hyperlink to the full `https://` dee
 Running `/collab` or `/collab view` starts or displays the active hosting session, rendering both the terminal/browser join links and their corresponding QR codes.
 
 ```
-/join my.omp.sh/#mgAYTZwEnpRQtca0CTgn-Q.gdJU…
+/join relay.example.com/r/mgAYTZwEnpRQtca0CTgn-Q.gdJUbTovD94ofDaa8YvhY0-ty16w4fn8PgB6PLnoA30
 ```
 
 The guest's previous session is restored on `/leave` (or when the host stops).
@@ -42,11 +42,9 @@ The guest's previous session is restored on `/leave` (or when the host stops).
 
 ## Link format
 
-Accepted by `/join <link>` and `omp join "<link>"`:
+Accepted by `/join <link>` and `mercury omp join "<link>"` (or `mercury-nightly omp join`):
 
 ```
-<roomId>.<key>                                                    → default relay (wss://my.omp.sh)
-<roomId>#<key>                                                    → legacy bare form
 host[:port]/r/<roomId>.<key>                                     → custom relay, wss:// inferred
 host[:port]/r/<roomId>#<key>                                     → legacy direct relay form
 https://host[:port]/r/<roomId>.<key>                             → direct relay URL, normalized to wss://
@@ -58,6 +56,10 @@ https://web.example/collab/#relay.example.com/r/<roomId>.<key>   → web UI and 
 ```
 
 `<link>` / `<relay-link>` are parsed recursively as any accepted link above. For `http(s)` browser wrappers with a parseable fragment, the fragment wins before the HTTP host/path are treated as a relay. This lets `https://web.example/collab/#relay.example.com/r/<roomId>.<key>` open the web UI at `web.example` while joining `wss://relay.example.com/r/<roomId>`. If the fragment is not a complete collab link, parsing falls back to the legacy direct relay form, so `https://relay.example.com/r/<roomId>#<key>` still means relay `relay.example.com`.
+
+Bare `<roomId>.<key>` and legacy `<roomId>#<key>` links do not identify a relay and are refused before opening a WebSocket. Ask the host for a new link containing its explicit relay endpoint. `/collab` with no inline relay requires `collab.relayUrl`; otherwise it reports how to configure one without making a request.
+
+Former upstream `omp.sh` endpoints (including its subdomains) are rejected even when retained in settings or explicitly supplied in links. Replace old `collab.relayUrl`, `collab.webUrl`, and `share.serverUrl` values with your self-hosted endpoints; no connection is attempted to the retired hosts.
 
 The trailing `.<key>` or `#<key>` part is the room secret, base64url-encoded, in one of two strengths:
 
@@ -104,11 +106,13 @@ Set `collab.webUrl` when the browser UI is hosted separately from the websocket 
 
 | Setting               | Default               | Meaning                                                                                                        |
 | --------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `collab.relayUrl`     | `wss://my.omp.sh`     | Relay used by `/collab` when no relay is passed inline                                                         |
+| `collab.relayUrl`     | empty                 | Required self-hosted relay used by `/collab` when no relay is passed inline                                   |
 | `collab.webUrl`       | empty                 | Browser UI URL for `/collab` links; empty derives from relay; explicit `http://` is allowed only for localhost |
 | `collab.displayName`  | OS username           | Name shown to other participants                                                                               |
-| `share.serverUrl`     | `https://my.omp.sh/s` | Share viewer/upload base used by `/share` (links are `<base>/<id>#<key>`)                                      |
+| `share.serverUrl`     | empty                 | Required self-hosted share viewer/upload base used by `/share` (links are `<base>/<id>#<key>`)                 |
 | `share.redactSecrets` | `true`                | Run the secret obfuscator over `/share` snapshots before upload                                                |
+
+`/share` refuses an unset or blank `share.serverUrl` before any upload or `gh` operation. `share.store` defaults to `blob`; explicitly selecting `gist` requires authenticated `gh` and the configured viewer URL. Gist failures are reported, never retried through a different store or built-in hosted endpoint.
 
 ## Self-hosting the relay
 

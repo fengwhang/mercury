@@ -175,7 +175,7 @@ class TestXiaomiModelCatalog:
                 },
             }
         }
-        monkeypatch.setattr(md, "fetch_models_dev", lambda: fake_data)
+        monkeypatch.setattr(md, "fetch_models_dev", lambda **_kwargs: fake_data)
 
         result = md.list_agentic_models("xiaomi")
         assert "mimo-v2-pro" in result

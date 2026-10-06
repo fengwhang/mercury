@@ -56,7 +56,7 @@ def _runner_with_store(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(gateway_run, "_hermes_home", mercury_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr(
         "mercury_cli.model_switch.switch_model",
         lambda **kw: ModelSwitchResult(

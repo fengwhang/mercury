@@ -29,6 +29,7 @@ import {
 	type CatalogDiscoveryConfig,
 	type CatalogProviderDescriptor,
 	isCatalogDescriptor,
+	type ModelManagerConfig,
 } from "../src/provider-models/descriptor-types";
 import { PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
 import { filterModelsDevCatalogRows } from "../src/provider-models/models-dev-policies";
@@ -43,14 +44,11 @@ import {
 	buildXaiOAuthStaticSeed,
 	clampFireworksKimiMaxTokens,
 	clampKimiK27CodeMaxTokens,
-	fetchWellKnownModels,
 	GMI_CLOUD_STATIC_MODELS,
 	isFireworksKimiK2ModelId,
 	isKimiK27CodeModelId,
 	kimiCodeMaxTokens,
 	META_MUSE_STATIC_MODELS,
-	MODELS_DEV_PROVIDER_DESCRIPTORS,
-	mapModelsDevToModels,
 	OPENAI_DAYBREAK_CURATED_FALLBACK_MODELS,
 	projectOpenAIProReasoningAliases,
 	resolveZaiApi,
@@ -66,6 +64,7 @@ import {
 import type { Api, Model, ModelSpec } from "../src/types";
 import { cleanModelName } from "../src/utils";
 import { mergeCopilotApiHeaders } from "../src/wire/github-copilot";
+import { assertHuggingfaceEndpoint } from "../src/wire/huggingface";
 import {
 	applyAntigravityPricingFallback,
 	applyCanonicalLimitFallback,
@@ -171,10 +170,11 @@ async function resolveProviderApiKey(providerId: string, catalog: CatalogDiscove
 }
 type CatalogProviderFetchResult = { models: ModelSpec[]; succeeded: boolean };
 
-async function fetchProviderModelsFromCatalog(
+export async function fetchProviderModelsFromCatalog(
 	descriptor: CatalogProviderDescriptor,
+	config: ModelManagerConfig = {},
 ): Promise<CatalogProviderFetchResult> {
-	const apiKey = await resolveProviderApiKey(descriptor.providerId, descriptor.catalogDiscovery);
+	const apiKey = config.apiKey ?? (await resolveProviderApiKey(descriptor.providerId, descriptor.catalogDiscovery));
 
 	if (!apiKey && !allowsUnauthenticatedCatalogDiscovery(descriptor)) {
 		console.log(`No ${descriptor.catalogDiscovery.label} credentials found (env or agent.db), using fallback models`);
@@ -183,9 +183,12 @@ async function fetchProviderModelsFromCatalog(
 
 	try {
 		console.log(`Fetching models from ${descriptor.catalogDiscovery.label} model manager...`);
-		const discoveryConfig = { apiKey };
+		// Keep explicit endpoint/transport overrides when supplied; credentials
+		// alone must never revive a hosted Hugging Face catalog endpoint.
+		const discoveryConfig = { ...config, apiKey };
 		const preparedConfig =
 			getProviderDefinition(descriptor.providerId)?.prepareModelDiscovery?.(discoveryConfig) ?? discoveryConfig;
+		assertHuggingfaceEndpoint(descriptor.providerId, preparedConfig.baseUrl);
 		const managerOptions = descriptor.createModelManagerOptions(preparedConfig);
 		const manager = createModelManager(managerOptions);
 		const result = await manager.refresh("online");
@@ -216,23 +219,18 @@ async function fetchProviderModelsFromCatalog(
 	}
 }
 
-async function loadModelsDevData(): Promise<ModelSpec[]> {
-	try {
-		console.log("Fetching stencil.so catalog from catalog.stencil.so...");
-		const data = await fetchWellKnownModels();
-		const models = mapModelsDevToModels(data as Record<string, unknown>, MODELS_DEV_PROVIDER_DESCRIPTORS);
-		models.sort((a, b) => a.id.localeCompare(b.id));
-		console.log(`Loaded ${models.length} tool-capable models from stencil.so`);
-		return models;
-	} catch (error) {
-		console.error("Failed to load stencil.so data:", error);
-		return [];
-	}
+export function loadPreviousSnapshotModels(): ModelSpec[] {
+	const models = Object.values(prevModelsJson).flatMap(providerModels =>
+		Object.values(providerModels).map(model => toModelSpec(model as Model<Api>)),
+	);
+	models.sort((a, b) => a.id.localeCompare(b.id));
+	console.log(`Loaded ${models.length} models from the local previous models.json snapshot`);
+	return models;
 }
 
-function createGlobalModelsDevReferenceMap(modelsDevModels: readonly ModelSpec[]): Map<string, ModelSpec> {
+function createGlobalSnapshotReferenceMap(snapshotModels: readonly ModelSpec[]): Map<string, ModelSpec> {
 	const references = new Map<string, ModelSpec>();
-	for (const model of modelsDevModels) {
+	for (const model of snapshotModels) {
 		const existing = references.get(model.id);
 		if (!existing) {
 			references.set(model.id, model);
@@ -252,12 +250,12 @@ function createGlobalModelsDevReferenceMap(modelsDevModels: readonly ModelSpec[]
 	return references;
 }
 
-function applyGlobalModelsDevFallback(
+function applyGlobalSnapshotFallback(
 	models: readonly ModelSpec[],
-	modelsDevModels: readonly ModelSpec[],
+	snapshotModels: readonly ModelSpec[],
 ): ModelSpec[] {
-	const providerScopedKeys = new Set(modelsDevModels.map(model => `${model.provider}/${model.id}`));
-	const globalReferences = createGlobalModelsDevReferenceMap(modelsDevModels);
+	const providerScopedKeys = new Set(snapshotModels.map(model => `${model.provider}/${model.id}`));
+	const globalReferences = createGlobalSnapshotReferenceMap(snapshotModels);
 	return models.map(model => {
 		if (
 			providerScopedKeys.has(`${model.provider}/${model.id}`) ||
@@ -292,7 +290,7 @@ function applyGlobalModelsDevFallback(
 			name: reference.name,
 			reasoning: reference.reasoning,
 			input: reference.input,
-			// Fill unknown endpoint limits from same-id stencil.so references, but keep
+			// Fill unknown endpoint limits from same-id local snapshot references, but keep
 			// provider-specific values when discovery returned them explicitly.
 			contextWindow: model.contextWindow ?? reference.contextWindow,
 			maxTokens: model.maxTokens ?? reference.maxTokens,
@@ -318,16 +316,16 @@ function applyPremiumMultiplierOverrides(models: readonly ModelSpec[]): ModelSpe
 	});
 }
 
-function applyUmansPricingFallback(models: readonly ModelSpec[], modelsDevModels: readonly ModelSpec[]): ModelSpec[] {
+function applyUmansPricingFallback(models: readonly ModelSpec[], snapshotModels: readonly ModelSpec[]): ModelSpec[] {
 	const paygCosts = new Map<string, ModelSpec["cost"]>();
-	for (const model of modelsDevModels) {
+	for (const model of snapshotModels) {
 		if (model.provider === "umans" && hasBillableCost(model.cost)) {
 			paygCosts.set(model.id, model.cost);
 		}
 	}
 
 	// The public endpoint exposes this technical alias for Umans Flash, but
-	// stencil.so publishes pricing only for the recommended `umans-flash` id.
+	// the previous snapshot carries pricing under the recommended `umans-flash` id.
 	const flashCost = paygCosts.get("umans-flash");
 	if (flashCost) {
 		paygCosts.set("umans-qwen3.6-35b-a3b", flashCost);
@@ -526,8 +524,8 @@ async function fetchCodexDiscoveryModels(): Promise<ModelSpec<"openai-codex-resp
 }
 
 async function generateModels() {
-	// Fetch models from dynamic sources.
-	const modelsDevModels = await loadModelsDevData();
+	// Reuse local metadata before explicitly configured provider discovery.
+	const snapshotModels = loadPreviousSnapshotModels();
 	const catalogProviderDescriptors = PROVIDER_DESCRIPTORS.filter(
 		(descriptor): descriptor is CatalogProviderDescriptor =>
 			isCatalogDescriptor(descriptor) &&
@@ -541,7 +539,7 @@ async function generateModels() {
 		})),
 	);
 	// A provider is authoritative once its endpoint snapshot can replace the
-	// stencil.so / previous-snapshot rows. Requiring fetched models keeps a
+	// previous-snapshot rows. Requiring fetched models keeps a
 	// flaky empty-but-200 discovery from silently wiping another provider's
 	// bundled catalog; only alibaba-token-plan treats an empty success as
 	// authoritative, because its `/models` allowlist reflects the subscribed
@@ -556,25 +554,25 @@ async function generateModels() {
 			.map(batch => batch.descriptor.providerId),
 	);
 	const catalogProviderModels = catalogProviderModelBatches.flatMap(batch => batch.models);
-	const bundledModelsDevModels = modelsDevModels.filter(model => !authoritativeCatalogProviders.has(model.provider));
+	const retainedSnapshotModels = snapshotModels.filter(model => !authoritativeCatalogProviders.has(model.provider));
 	// getGitLabDuoModels returns built models; project back to spec stage for the bundle.
 	const gitLabDuoModels = getGitLabDuoModels().map(model => toModelSpec(model));
-	// Combine models. stencil.so has priority unless a provider's successful endpoint
-	// discovery is authoritative; those endpoint snapshots replace stencil.so rows.
+	// Combine models. The local snapshot has priority unless a provider's
+	// successful endpoint discovery is authoritative.
 	// Meta's reviewed first-party seed goes first: it carries the documented
 	// Responses capabilities and display names, and keeps first-run selection
 	// independent of credentials or live discovery.
-	let allModels = applyGlobalModelsDevFallback(
-		[...META_MUSE_STATIC_MODELS, ...bundledModelsDevModels, ...catalogProviderModels, ...gitLabDuoModels],
-		modelsDevModels,
+	let allModels = applyGlobalSnapshotFallback(
+		[...META_MUSE_STATIC_MODELS, ...retainedSnapshotModels, ...catalogProviderModels, ...gitLabDuoModels],
+		snapshotModels,
 	);
 
 	if (!allModels.some(model => model.provider === "cloudflare-ai-gateway")) {
 		allModels.push(CLOUDFLARE_FALLBACK_MODEL as ModelSpec<"anthropic-messages">);
 	}
 
-	// xai-oauth is not in stencil.so; its descriptor's catalogDiscovery fetch
-	// only succeeds with live SuperGrok OAuth credentials (and on success the
+	// xai-oauth catalogDiscovery only succeeds with live SuperGrok OAuth credentials
+	// (and on success the
 	// dynamic entries — already overlaid by applyXAIOAuthCuration — win dedup
 	// below). Always push the curated seed so a regen without credentials, or
 	// with a failed fetch, still bundles XAI_OAUTH_CURATED_MODELS verbatim:
@@ -582,12 +580,12 @@ async function generateModels() {
 	// persisted `modelRoles.default = "xai-oauth/<id>"` is honored before the
 	// async refresh fires (interactive boot does not await refresh).
 	allModels.push(...buildXaiOAuthStaticSeed());
-	// Daybreak is separately provisioned and absent from stencil.so. Keep its
+	// Daybreak is separately provisioned. Keep its
 	// documented aliases and current Cyber snapshot in every generated bundle.
 	allModels.push(...OPENAI_DAYBREAK_CURATED_FALLBACK_MODELS);
 	// Seed Anthropic models that are live on the first-party API or in limited
-	// release but that stencil.so has not catalogued yet (e.g. Claude Fable 5 /
-	// Mythos 5). Deduped behind upstream entries; metadata is pinned in
+	// release (e.g. Claude Fable 5 / Mythos 5). Deduped behind local snapshot
+	// entries; metadata is pinned in
 	// applyAnthropicCatalogPolicy.
 	allModels.push(...ANTHROPIC_CURATED_FALLBACK_MODELS);
 	// Seed GLM-5.3 on the z.AI provider. GLM-5.3 is live on the Anthropic and
@@ -710,21 +708,21 @@ async function generateModels() {
 		}
 	}
 
-	const modelsDevSnapshotExcludedProviders = new Set<string>();
-	for (const model of modelsDevModels) {
+	const snapshotCoveredProviders = new Set<string>();
+	for (const model of snapshotModels) {
 		if (model.provider === "google-vertex") {
-			modelsDevSnapshotExcludedProviders.add(model.provider);
+			snapshotCoveredProviders.add(model.provider);
 		}
 	}
 	// Merge previous models.json entries as fallback for provider/model pairs not
 	// fetched dynamically. Providers covered by authoritative endpoint discovery
-	// or authoritative stencil.so sources keep that upstream list exactly, so
-	// retired entries from the previous snapshot do not reappear during regeneration.
+	// or already included local snapshot rows keep that list exactly, so
+	// the fallback merge does not widen an authoritative endpoint catalog.
 	// Discovery-only providers (local inference servers) — never bundle static models.
 	const previousSnapshotExcludedProviders = new Set([
 		...authoritativeCatalogProviders,
 		...authoritativeSpecialDiscoveryProviders,
-		...modelsDevSnapshotExcludedProviders,
+		...snapshotCoveredProviders,
 	]);
 
 	// Previous-snapshot entries may carry an older ThinkingConfig vocabulary;
@@ -736,7 +734,7 @@ async function generateModels() {
 		previousSnapshotExcludedProviders,
 	);
 
-	allModels = applyGlobalModelsDevFallback(allModels, modelsDevModels);
+	allModels = applyGlobalSnapshotFallback(allModels, snapshotModels);
 	// Previous-snapshot fallbacks can retain a retired client fingerprint. Force
 	// every bundled Copilot model onto the same identity used by live discovery.
 	allModels = allModels.map(model =>
@@ -750,7 +748,7 @@ async function generateModels() {
 	if (!authoritativeCatalogProviders.has("alibaba-token-plan")) {
 		allModels.unshift(...ALIBABA_TOKEN_PLAN_STATIC_MODELS);
 	}
-	allModels = applyUmansPricingFallback(allModels, modelsDevModels);
+	allModels = applyUmansPricingFallback(allModels, snapshotModels);
 	allModels = applyPremiumMultiplierOverrides(allModels);
 	allModels = applyXaiCatalogPricing(allModels);
 	allModels = applyCodexPricingFallback(allModels);

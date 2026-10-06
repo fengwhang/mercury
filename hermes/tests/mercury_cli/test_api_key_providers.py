@@ -49,7 +49,11 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY[provider_id]
         assert pconfig.name == name
         assert pconfig.auth_type == auth_type
-        assert pconfig.inference_base_url  # must have a default base URL
+        if provider_id == "huggingface":
+            assert pconfig.inference_base_url == ""
+            assert pconfig.base_url_env_var == "HF_BASE_URL"
+        else:
+            assert pconfig.inference_base_url
 
 
 
@@ -114,7 +118,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
-        assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
+        assert PROVIDER_REGISTRY["huggingface"].inference_base_url == ""
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""

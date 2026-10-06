@@ -2409,7 +2409,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "interaction",
 			group: "Collab",
 			label: "Relay URL",
-			description: "Relay used by /collab (wss://host[:port])",
+			description: "Self-hosted relay used by /collab (wss://host[:port]); required unless passed inline",
 		},
 	},
 
@@ -2444,7 +2444,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Collab",
 			label: "Share Server",
 			description:
-				"Share viewer/upload base used by /share (encrypted blob upload + viewer; links are <base>/<id>#<key>)",
+				"Required self-hosted share viewer/upload base used by /share; no built-in endpoint (links are <base>/<id>#<key>)",
 		},
 	},
 
@@ -2466,7 +2466,7 @@ export const SETTINGS_SCHEMA = {
 				{
 					value: "gist",
 					label: "GitHub Gist",
-					description: "Push to a secret gist (needs authenticated gh), falling back to the share server",
+					description: "Explicitly upload to a secret gist (needs authenticated gh); failures never change stores",
 				},
 			],
 		},
@@ -6042,44 +6042,8 @@ export const SETTINGS_SCHEMA = {
 			group: "Developer",
 			label: "Auto QA",
 			description:
-				"Automated tool issue reporting (xd://report_issue). On by default; the first report asks for consent, and denying it disables reporting until re-enabled explicitly",
+				"Record tool issues locally (xd://report_issue). On by default; reports stay on this machine and can be inspected or deleted with grievances",
 		},
-	},
-
-	"dev.autoqaPush.endpoint": {
-		type: "string",
-		default: "https://qa.omp.sh/v1/grievances" as const,
-		ui: {
-			tab: "tools",
-			group: "Developer",
-			label: "Auto QA Push Endpoint",
-			description: "Full URL receiving Auto QA JSON reports (default https://qa.omp.sh/v1/grievances)",
-		},
-	},
-
-	"dev.autoqaPush.token": {
-		type: "string",
-		default: undefined,
-		credential: true,
-	},
-
-	/**
-	 * User decision on sharing automatic `report_tool_issue` grievances.
-	 *
-	 *   - `"unset"`  — never asked; the first `report_tool_issue` invocation
-	 *                  pops a consent dialog and persists the answer here.
-	 *   - `"granted"` — record and (when push is configured) ship grievances.
-	 *   - `"denied"`  — silently no-op every `report_tool_issue` call.
-	 *
-	 * Owned by `packages/coding-agent/src/tools/report-tool-issue.ts` via the
-	 * process-global consent handler registered by `InteractiveMode`.
-	 *
-	 * @default "unset"
-	 */
-	"dev.autoqaConsent": {
-		type: "enum",
-		values: ["unset", "granted", "denied"] as const,
-		default: "unset" as const,
 	},
 
 	"gc.blobs": { type: "boolean", default: true },

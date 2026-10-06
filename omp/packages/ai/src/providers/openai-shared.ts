@@ -25,6 +25,7 @@ import {
 	removeBlankCoreWeaveProjectHeaders,
 } from "@oh-my-pi/pi-catalog/wire/coreweave";
 import { parseGitHubCopilotApiKey } from "@oh-my-pi/pi-catalog/wire/github-copilot";
+import { assertHuggingfaceEndpoint } from "@oh-my-pi/pi-catalog/wire/huggingface";
 import {
 	$env,
 	classifyJsonPrefix,
@@ -214,6 +215,11 @@ export function resolveOpenAIRequestSetup(
 	model: OpenAIRequestSetupModel,
 	options: OpenAIRequestSetupOptions,
 ): OpenAIRequestSetup {
+	// Refuse missing HF endpoints before generic OpenAI defaults can revive
+	// them; validate the effective URL after explicit overrides below.
+	if (model.provider === "huggingface" && !model.baseUrl?.trim()) {
+		assertHuggingfaceEndpoint(model.provider, model.baseUrl);
+	}
 	let apiKey = options.apiKey;
 	if (!apiKey) {
 		if (!$env.OPENAI_API_KEY) {
@@ -331,6 +337,7 @@ export function resolveOpenAIRequestSetup(
 	if (apiKey !== NO_AUTH_SENTINEL) {
 		headers.Authorization ??= `Bearer ${apiKey}`;
 	}
+	assertHuggingfaceEndpoint(model.provider, baseUrl);
 	return { copilotPremiumRequests, baseUrl, headers, query, requestHeaders };
 }
 

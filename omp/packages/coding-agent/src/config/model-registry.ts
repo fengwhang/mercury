@@ -30,8 +30,6 @@ import {
 	googleAntigravityModelManagerOptions,
 	googleGeminiCliModelManagerOptions,
 	isCredentialScopedModelCacheProvider,
-	MODELS_DEV_CATALOG_PROVIDER_IDS,
-	modelsDevCatalogFallback,
 	openaiCodexModelManagerOptions,
 	PROVIDER_DESCRIPTORS,
 	resolveModelCacheProviderId,
@@ -132,12 +130,12 @@ const BUILT_IN_MODEL_MANAGER_PROVIDER_IDS: Readonly<Record<string, true>> = Obje
 		),
 	),
 );
-const MODELS_DEV_CATALOG_PROVIDER_ID_LOOKUP: Readonly<Record<string, true>> = Object.freeze(
-	Object.fromEntries(MODELS_DEV_CATALOG_PROVIDER_IDS.map(providerId => [providerId, true as const])),
+const BUNDLED_CATALOG_PROVIDER_ID_LOOKUP: Readonly<Record<string, true>> = Object.freeze(
+	Object.fromEntries(getBundledProviders().map(providerId => [providerId, true as const])),
 );
-const ADDITIVE_MODELS_DEV_CATALOG_PROVIDER_ID_LOOKUP: Readonly<Record<string, true>> = Object.freeze(
+const ADDITIVE_BUNDLED_CATALOG_PROVIDER_ID_LOOKUP: Readonly<Record<string, true>> = Object.freeze(
 	Object.fromEntries(
-		MODELS_DEV_CATALOG_PROVIDER_IDS.filter(
+		getBundledProviders().filter(
 			providerId =>
 				!PROVIDER_DESCRIPTORS.some(
 					descriptor => descriptor.providerId === providerId && descriptor.dynamicModelsAuthoritative,
@@ -231,6 +229,7 @@ export class ModelRegistry {
 	// retry request through the live header proxy, not just the apiKey (#9760).
 	#commandConfigsByProvider: Map<string, Set<string>> = new Map();
 	#keylessProviders: Set<string> = new Set();
+	#configuredProviders: Set<string> = new Set();
 	#discoverableProviders: DiscoveryProviderConfig[] = [];
 	#customModelOverlays: CustomModelOverlay[] = [];
 	#providerOverrides: Map<string, ProviderOverride> = new Map();
@@ -774,6 +773,7 @@ export class ModelRegistry {
 		} = logger.time("modelRegistry:loadCustomModels", () => this.#loadCustomModels());
 		this.#configError = configError;
 		this.#keylessProviders = keylessProviders;
+		this.#configuredProviders = configuredProviders;
 		this.#discoverableProviders = discoverableProviders;
 		this.#customModelOverlays = customModels;
 		this.#providerOverrides = overrides;
@@ -1012,8 +1012,8 @@ export class ModelRegistry {
 		for (const providerId of providerIds) {
 			const cacheProviderId = this.#resolveStartupModelCacheProviderId(providerId);
 			const cache = readModelCache<Api>(cacheProviderId, 24 * 60 * 60 * 1000, Date.now, this.#cacheDbPath);
-			const sharedCatalogProvider = MODELS_DEV_CATALOG_PROVIDER_ID_LOOKUP[providerId] === true;
-			const additiveSharedCatalogProvider = ADDITIVE_MODELS_DEV_CATALOG_PROVIDER_ID_LOOKUP[providerId] === true;
+			const sharedCatalogProvider = BUNDLED_CATALOG_PROVIDER_ID_LOOKUP[providerId] === true;
+			const additiveSharedCatalogProvider = ADDITIVE_BUNDLED_CATALOG_PROVIDER_ID_LOOKUP[providerId] === true;
 			if (!cache) {
 				if (sharedCatalogProvider) {
 					this.#providerDiscoveryStates.set(providerId, {
@@ -1906,33 +1906,31 @@ export class ModelRegistry {
 		for (let i = 0; i < standardProviderDescriptors.length; i++) {
 			const descriptor = standardProviderDescriptors[i];
 			const apiKey = standardProviderKeys[i];
-			const hasExplicitVllmConfig =
-				descriptor.providerId === "vllm" &&
-				(this.#runtimeProviderOverrides.has(descriptor.providerId) ||
-					this.#providerOverrides.has(descriptor.providerId) ||
-					this.#keylessProviders.has(descriptor.providerId));
-			const supportsSharedCatalog = MODELS_DEV_CATALOG_PROVIDER_ID_LOOKUP[descriptor.providerId] === true;
-			const canUseSharedCatalogWithoutAuth = supportsSharedCatalog && !descriptor.dynamicModelsAuthoritative;
-			if (
+			const hasDiscoveryIntent =
 				isAuthenticated(apiKey) ||
-				descriptor.allowUnauthenticated ||
-				hasExplicitVllmConfig ||
-				canUseSharedCatalogWithoutAuth
-			) {
-				const discoveryConfig = {
-					apiKey: isDiscoveryBearerApiKey(apiKey) ? apiKey : undefined,
-					baseUrl: this.#descriptorBaseUrl(descriptor.providerId),
-					fetch: this.#fetch,
-				};
-				const preparedConfig =
-					getProviderDefinition(descriptor.providerId)?.prepareModelDiscovery?.(discoveryConfig) ??
-					discoveryConfig;
-				const managerOptions = descriptor.createModelManagerOptions(preparedConfig);
-				const modelsDev = managerOptions.modelsDev
-					? { ...managerOptions.modelsDev, additiveOnly: true }
-					: modelsDevCatalogFallback(descriptor.providerId, this.#fetch);
-				options.push(modelsDev ? { ...managerOptions, modelsDev } : managerOptions);
+				this.#configuredProviders.has(descriptor.providerId) ||
+				this.#runtimeProviderSourceByName.has(descriptor.providerId) ||
+				this.#runtimeProviderOverrides.has(descriptor.providerId) ||
+				providerFilter?.has(descriptor.providerId);
+			if (!hasDiscoveryIntent) {
+				// Default catalog refresh is local-only. Calling a keyless endpoint
+				// factory here would turn bundled metadata admission into an
+				// unsolicited request to its public provider API.
+				options.push({
+					providerId: descriptor.providerId,
+					cacheProviderId: this.#resolveStartupModelCacheProviderId(descriptor.providerId),
+				});
+				continue;
 			}
+			const discoveryConfig = {
+				apiKey: isDiscoveryBearerApiKey(apiKey) ? apiKey : undefined,
+				baseUrl: this.#descriptorBaseUrl(descriptor.providerId),
+				fetch: this.#fetch,
+			};
+			const preparedConfig =
+				getProviderDefinition(descriptor.providerId)?.prepareModelDiscovery?.(discoveryConfig) ??
+				discoveryConfig;
+			options.push(descriptor.createModelManagerOptions(preparedConfig));
 		}
 
 		for (let i = 0; i < enabledSpecialProviderDescriptors.length; i++) {
@@ -1944,24 +1942,18 @@ export class ModelRegistry {
 			options.push(descriptor.createOptions(key, specialKeys[i]));
 		}
 
-		// Catalog-only providers have no endpoint manager. Give their bundled
-		// slices the same shared remote layer without requiring credentials.
-		const bundledProviderIds: Record<string, true> = Object.create(null);
-		for (const providerId of getBundledProviders()) bundledProviderIds[providerId] = true;
-		for (const providerId of MODELS_DEV_CATALOG_PROVIDER_IDS) {
+		// Catalog-only providers retain their existing local cache and bundled
+		// slices. There is no automatic hosted metadata overlay.
+		for (const providerId of getBundledProviders()) {
 			if (BUILT_IN_MODEL_MANAGER_PROVIDER_IDS[providerId] === true) continue;
-			if (bundledProviderIds[providerId] !== true) continue;
 			if (disabledProviders.has(providerId) || configuredDiscoveryProviders.has(providerId)) continue;
 			if (providerFilter && !providerFilter.has(providerId)) continue;
 			if (this.#runtimeModelManagers.has(providerId)) continue;
-			const modelsDev = modelsDevCatalogFallback(providerId, this.#fetch);
-			if (!modelsDev) continue;
 			options.push({
 				providerId,
 				cacheProviderId: resolveModelCacheProviderId(providerId, {
 					baseUrl: this.#descriptorBaseUrl(providerId),
 				}),
-				modelsDev,
 			});
 		}
 

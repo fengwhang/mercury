@@ -65,7 +65,7 @@ export const gitHelp = {
 export const grepHelp = { description: "Test grep tool" } satisfies CommandMetadata;
 
 export const grievancesHelp = {
-	description: "View, clean, or push reported tool issues (auto-QA grievances)",
+	description: "View or clean locally recorded tool issues",
 } satisfies CommandMetadata;
 
 export const imagesHelp = {
@@ -122,7 +122,7 @@ export const sshHelp = { description: "Manage SSH host configurations" } satisfi
 export const statsHelp = { description: "View usage statistics" } satisfies CommandMetadata;
 
 export const tinyModelsHelp = {
-	description: "Download tiny local models (session titles + memory)",
+	description: "List tiny local models (session titles + memory); downloads are disabled",
 } satisfies CommandMetadata;
 
 export const tokenHelp = { description: "Get the API key or OAuth token for a provider" } satisfies CommandMetadata;

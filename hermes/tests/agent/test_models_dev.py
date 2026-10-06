@@ -189,7 +189,7 @@ class TestFetchModelsDev:
              patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY), \
              patch.object(md, "_load_etag", return_value=""), \
              patch.object(md, "_start_background_refresh_models_dev") as mock_refresh:
-            result = fetch_models_dev()
+            result = fetch_models_dev(allow_network=True)
 
         mock_get.assert_not_called()
         mock_refresh.assert_called_once()
@@ -211,7 +211,7 @@ class TestFetchModelsDev:
             return_value=md._MODELS_DEV_CACHE_TTL + 60,
         ), patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY), \
            patch.object(md, "_load_etag", return_value=""):
-            first = fetch_models_dev()
+            first = fetch_models_dev(allow_network=True)
             # Join the background refresh worker so its failure backoff is
             # observable and requests.get stays patched for its lifetime.
             for worker in threading.enumerate():
@@ -228,7 +228,7 @@ class TestFetchModelsDev:
         # spawn another refresh worker (in_flight is set synchronously
         # before the worker thread starts, so False proves no spawn).
         md._models_dev_cache_time = time.time() - md._MODELS_DEV_CACHE_TTL - 1
-        second = fetch_models_dev()
+        second = fetch_models_dev(allow_network=True)
         assert second == SAMPLE_REGISTRY
         assert not md._models_dev_refresh_in_flight
         mock_get.assert_called_once()
@@ -281,7 +281,7 @@ class TestFetchModelsDev:
         ), patch.object(md, "_load_etag", return_value=""), \
              patch.object(md, "_save_etag"), \
              ThreadPoolExecutor(max_workers=6) as pool:
-            futures = [pool.submit(fetch_models_dev) for _ in range(6)]
+            futures = [pool.submit(fetch_models_dev, allow_network=True) for _ in range(6)]
             assert request_started.wait(timeout=2)
             release_request.set()
             results = [future.result(timeout=5) for future in futures]
@@ -301,7 +301,7 @@ class TestFetchModelsDev:
         ), patch.object(md, "_save_disk_cache"), \
              patch.object(md, "_load_etag", return_value=""), \
              patch.object(md, "_save_etag"):
-            assert fetch_models_dev() == {}
+            assert fetch_models_dev(allow_network=True) == {}
             assert fetch_models_dev(force_refresh=True) == SAMPLE_REGISTRY
 
         assert mock_get.call_count == 2
@@ -458,7 +458,7 @@ class TestETagConditionalGet:
              patch.object(md, "_save_disk_cache") as mock_save, \
              patch.object(md, "_load_etag", return_value=""), \
              patch.object(md, "_save_etag") as mock_save_etag:
-            fetch_models_dev()
+            fetch_models_dev(allow_network=True)
 
         # ETag rides along with the cache body into _save_disk_cache.
         mock_save.assert_called_once_with(SAMPLE_REGISTRY, '"new-etag"')
@@ -481,7 +481,7 @@ class TestETagConditionalGet:
              patch.object(md, "_save_disk_cache"), \
              patch.object(md, "_load_etag", return_value=""), \
              patch.object(md, "_save_etag"):
-            fetch_models_dev()
+            fetch_models_dev(allow_network=True)
 
         call_kwargs = mock_get.call_args
         headers = call_kwargs.kwargs.get("headers", {})
@@ -653,7 +653,7 @@ class TestMirrorUrlOverride:
              patch.object(md, "_load_etag", return_value=""), \
              patch.object(md, "_save_etag"), \
              patch("mercury_cli.config.load_config_readonly", return_value=fake_config):
-            fetch_models_dev()
+            fetch_models_dev(allow_network=True)
 
         call_args = mock_get.call_args
         assert "mirror.example.com" in call_args.args[0]
@@ -676,7 +676,7 @@ class TestMirrorUrlOverride:
              patch.object(md, "_load_etag", return_value=""), \
              patch.object(md, "_save_etag"), \
              patch("mercury_cli.config.load_config_readonly", return_value={}):
-            fetch_models_dev()
+            fetch_models_dev(allow_network=True)
 
         call_args = mock_get.call_args
         assert "models.dev" in call_args.args[0]
@@ -701,7 +701,7 @@ class TestMirrorUrlOverride:
              patch.object(md, "_load_etag", return_value=""), \
              patch.object(md, "_save_etag"), \
              patch("mercury_cli.config.load_config_readonly", return_value=fake_config):
-            fetch_models_dev()
+            fetch_models_dev(allow_network=True)
 
         call_args = mock_get.call_args
         assert "models.dev" in call_args.args[0]
@@ -746,10 +746,7 @@ class TestNoNetworkOnHotPaths:
         with patch("agent.models_dev.fetch_models_dev") as mock_fetch:
             mock_fetch.return_value = CAPS_REGISTRY
             get_model_capabilities("anthropic", "claude-sonnet-4", allow_network=True)
-        # allow_network=True uses the zero-arg call shape so the dozens of
-        # test sites that monkeypatch fetch_models_dev with zero-arg
-        # lambdas keep working.
-        mock_fetch.assert_called_once_with()
+        mock_fetch.assert_called_once_with(allow_network=True)
 
 
 # ---------------------------------------------------------------------------

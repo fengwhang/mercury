@@ -1,4 +1,3 @@
-import { USER_AGENT } from "@oh-my-pi/pi-utils";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { toClinePassPublicModelId } from "../cline-pass-model-id";
 import {
@@ -23,7 +22,7 @@ import { Effort, THINKING_EFFORTS } from "../effort";
 import { FIREWORKS_FAST_SUFFIX, toFireworksPublicModelId } from "../fireworks-model-id";
 import { getBundledModelReferenceIndex } from "../identity/bundled";
 import { resolveModelReference } from "../identity/reference";
-import type { ModelManagerOptions, ModelsDevFallback } from "../model-manager";
+import type { ModelManagerOptions } from "../model-manager";
 import { type GeneratedProvider, getBundledModels } from "../models";
 import type { Api, FetchImpl, Model, ModelSpec, OpenAICompat, Provider, ThinkingConfig, TokenCost } from "../types";
 import { discoveryFetch, isAnthropicOAuthToken, isRecord, toBoolean, toNumber, toPositiveNumber } from "../utils";
@@ -44,7 +43,6 @@ import { createBundledReferenceMap, createReferenceResolver, toModelSpec } from 
 import { getDefaultModelDiscoveryBaseUrl, resolveModelCacheProviderId } from "./cache-provider-id";
 import { getClinePassModelMetadata } from "./cline-pass";
 import type { ModelManagerConfig } from "./descriptor-types";
-import { filterModelsDevCatalogRows } from "./models-dev-policies";
 
 function revisionAtLeast(revision: string | undefined, floor: string): boolean {
 	if (revision === undefined) return false;
@@ -61,11 +59,6 @@ function isGlmReasoningIdentity(provider: string, modelId: string, floor: string
 	if (identity.family === "flash") return revisionAtLeast(identity.revision, "5.3");
 	return identity.family === undefined || identity.family === "air" || identity.family === "turbo";
 }
-
-const MODELS_DEV_URL = "https://catalog.stencil.so/models.json.zstd";
-
-/** Little-endian magic number opening every zstd frame (RFC 8878). */
-const ZSTD_MAGIC = 0xfd2fb528;
 
 /**
  * Uses a cancellable timer rather than the native abort-timeout helper so
@@ -130,157 +123,6 @@ function toInputCapabilities(value: unknown): ("text" | "image")[] {
 	return supportsImage ? ["text", "image"] : ["text"];
 }
 
-/**
- * Catalog sessions are scoped to the fetch implementation that owns their
- * network and authentication context. Callers sharing one fetch reuse the same
- * conditional request state; isolated registries cannot observe each other's
- * payloads, ETags, or in-flight requests.
- */
-interface CatalogSession {
-	inflight: Promise<unknown> | null;
-	payload: unknown;
-	etag: string | null;
-	hasPayload: boolean;
-}
-
-const defaultCatalogSession: CatalogSession = { inflight: null, payload: undefined, etag: null, hasPayload: false };
-const catalogSessionsByFetch = new WeakMap<FetchImpl, CatalogSession>();
-
-function getCatalogSession(fetchImpl: FetchImpl | undefined): CatalogSession {
-	if (!fetchImpl) return defaultCatalogSession;
-	const existing = catalogSessionsByFetch.get(fetchImpl);
-	if (existing) return existing;
-	const created: CatalogSession = { inflight: null, payload: undefined, etag: null, hasPayload: false };
-	catalogSessionsByFetch.set(fetchImpl, created);
-	return created;
-}
-
-function waitForCatalogRequest<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
-	if (!signal) return request;
-	if (signal.aborted) return Promise.reject(signal.reason);
-	const aborted = Promise.withResolvers<never>();
-	const rejectAborted = () => aborted.reject(signal.reason);
-	signal.addEventListener("abort", rejectAborted, { once: true });
-	return Promise.race([request, aborted.promise]).finally(() => {
-		signal.removeEventListener("abort", rejectAborted);
-	});
-}
-
-const CATALOG_USER_AGENT = USER_AGENT;
-
-/**
- * Fetches the models.dev catalog via catalog.stencil.so, which serves a
- * field-pruned copy precompressed as a zstd blob (~93 KB vs ~3.3 MB raw).
- * The frame magic is sniffed rather than trusting content-type so plain-JSON
- * responses (test stubs, fallback mirrors) parse identically.
- *
- * Fetched fully once per fetch context: concurrent callers sharing a fetch
- * implementation reuse one transport request, while repeat callers send a
- * conditional GET that the server answers with `304`. Each subscriber may stop
- * waiting independently; the shared transport retains its own hard deadline.
- * Transient failures reuse the last in-memory payload for callers that only
- * need best-effort metadata.
- */
-export function fetchWellKnownModels(fetchImpl?: FetchImpl, signal?: AbortSignal): Promise<unknown> {
-	const session = getCatalogSession(fetchImpl);
-	return fetchRevalidatedWellKnownModels(fetchImpl, signal).catch(error => {
-		if (session.hasPayload) return session.payload;
-		throw error;
-	});
-}
-
-function fetchRevalidatedWellKnownModels(fetchImpl?: FetchImpl, signal?: AbortSignal): Promise<unknown> {
-	const session = getCatalogSession(fetchImpl);
-	if (!session.inflight) {
-		session.inflight = withCatalogDiscoveryTimeout(DEFAULT_OPENAI_COMPATIBLE_DISCOVERY_TIMEOUT_MS, transportSignal =>
-			fetchCatalogPayload(fetchImpl ?? discoveryFetch(), session, transportSignal),
-		).finally(() => {
-			session.inflight = null;
-		});
-	}
-	return waitForCatalogRequest(session.inflight, signal);
-}
-
-function fetchRevalidatedWellKnownModelsWithTimeout(
-	fetchImpl?: FetchImpl,
-	timeoutMs = DEFAULT_OPENAI_COMPATIBLE_DISCOVERY_TIMEOUT_MS,
-): Promise<unknown> {
-	return withCatalogDiscoveryTimeout(timeoutMs, signal => fetchRevalidatedWellKnownModels(fetchImpl, signal));
-}
-
-async function fetchCatalogPayload(
-	fetchImpl: FetchImpl,
-	session: CatalogSession,
-	signal?: AbortSignal,
-): Promise<unknown> {
-	const headers: Record<string, string> = {
-		Accept: "application/zstd, application/json",
-		"User-Agent": CATALOG_USER_AGENT,
-	};
-	if (session.hasPayload && session.etag) {
-		headers["If-None-Match"] = session.etag;
-	}
-	const response = await fetchImpl(MODELS_DEV_URL, { method: "GET", headers, signal });
-	if (response.status === 304 && session.hasPayload) {
-		return session.payload;
-	}
-	if (!response.ok) {
-		throw new Error(`models catalog fetch failed: ${response.status}`);
-	}
-	const bytes = new Uint8Array(await response.arrayBuffer());
-	const isZstd = bytes.length >= 4 && new DataView(bytes.buffer, bytes.byteOffset).getUint32(0, true) === ZSTD_MAGIC;
-	const text = new TextDecoder().decode(isZstd ? await Bun.zstdDecompress(bytes) : bytes);
-	const payload: unknown = JSON.parse(text);
-	session.payload = payload;
-	session.etag = response.headers.get("etag");
-	session.hasPayload = true;
-	return payload;
-}
-
-function mapAnthropicModelsDev(payload: unknown, baseUrl: string): ModelSpec<"anthropic-messages">[] {
-	if (!isRecord(payload)) {
-		return [];
-	}
-	const anthropicPayload = payload.anthropic;
-	if (!isRecord(anthropicPayload)) {
-		return [];
-	}
-	const modelsValue = anthropicPayload.models;
-	if (!isRecord(modelsValue)) {
-		return [];
-	}
-
-	const models: ModelSpec<"anthropic-messages">[] = [];
-	for (const [modelId, rawModel] of Object.entries(modelsValue)) {
-		if (!isRecord(rawModel)) {
-			continue;
-		}
-		const model = rawModel as ModelsDevModel;
-		if (model.tool_call !== true) {
-			continue;
-		}
-		models.push({
-			id: modelId,
-			name: toModelName(model.name, modelId),
-			api: "anthropic-messages",
-			provider: "anthropic",
-			baseUrl,
-			reasoning: model.reasoning === true,
-			input: toInputCapabilities(model.modalities?.input),
-			cost: {
-				input: toNumber(model.cost?.input) ?? 0,
-				output: toNumber(model.cost?.output) ?? 0,
-				cacheRead: toNumber(model.cost?.cache_read) ?? 0,
-				cacheWrite: toNumber(model.cost?.cache_write) ?? 0,
-			},
-			contextWindow: toPositiveNumber(model.limit?.context, null),
-			maxTokens: toPositiveNumber(model.limit?.output, null),
-		});
-	}
-
-	models.sort((left, right) => left.id.localeCompare(right.id));
-	return models;
-}
 
 function buildAnthropicDiscoveryHeaders(apiKey: string): Record<string, string> {
 	const oauthToken = isAnthropicOAuthToken(apiKey);
@@ -297,30 +139,13 @@ function buildAnthropicDiscoveryHeaders(apiKey: string): Record<string, string> 
 	return headers;
 }
 
-function buildAnthropicReferenceMap(
-	modelsDevModels: readonly ModelSpec<"anthropic-messages">[],
-): Map<string, ModelSpec<"anthropic-messages">> {
-	const merged = new Map<string, ModelSpec<"anthropic-messages">>();
-	for (const model of modelsDevModels) {
-		merged.set(model.id, model);
-	}
-	// Anthropic /v1/models does not carry token limits, so bundled metadata stays canonical
-	// for known models while models.dev only fills gaps for newly discovered ids.
-	const bundledModels = getBundledModels("anthropic").filter(
-		(model): model is Model<"anthropic-messages"> => model.api === "anthropic-messages",
-	);
-	for (const model of bundledModels) {
-		merged.set(model.id, toModelSpec(model));
-	}
-	return merged;
-}
 
 /**
  * Curated Anthropic models that are live or limited-availability on the
  * first-party `/v1/models` endpoint but that models.dev has not catalogued yet.
- * Seeded into model generation so the bundled catalog is never gated on
- * models.dev's update cadence; deduped behind upstream catalog / models.dev
- * entries once those appear. Token limits and pricing are pinned either directly or
+ * Seeded into model generation independently of provider discovery; deduped
+ * behind local snapshot and discovered entries. Token limits and pricing are
+ * pinned either directly or
  * in `applyAnthropicCatalogPolicy`, and `thinking` is re-baked
  * by the generator's policy pass (scripts/generated-policies.ts).
  */
@@ -895,8 +720,8 @@ export function umansModelManagerOptions(config?: UmansModelManagerConfig): Mode
 // ---------------------------------------------------------------------------
 
 const OPENAI_API_BASE_URL = "https://api.openai.com/v1";
-// Curated seed pricing for approval-gated aliases stencil.so does not list
-// yet; upstream catalog rows outrank these once discovery serves them.
+// Curated seed pricing for approval-gated aliases; discovered provider
+// catalog rows outrank these once the endpoint serves them.
 /** Standard GPT-5.6 Sol rates used by the Daybreak Blue aliases. */
 const OPENAI_GPT_56_SOL_STANDARD_COST = {
 	input: 5,
@@ -932,8 +757,8 @@ export function openaiModelManagerOptions(config?: OpenAIModelManagerConfig): Mo
 }
 
 /**
- * Daybreak models are approval-gated first-party Responses models that are not
- * yet present in stencil.so. Seed the documented aliases and current Cyber
+ * Daybreak models are approval-gated first-party Responses models.
+ * Seed the documented aliases and current Cyber
  * snapshot so fresh installs expose them without credentialed discovery.
  */
 export const OPENAI_DAYBREAK_CURATED_FALLBACK_MODELS: readonly ModelSpec<"openai-responses">[] = [
@@ -1176,7 +1001,7 @@ export interface HuggingfaceModelManagerConfig {
 export function huggingfaceModelManagerOptions(
 	config?: HuggingfaceModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
-	return createSimpleOpenAICompletionsOptions("huggingface", "https://router.huggingface.co/v1", config);
+	return createSimpleOpenAICompletionsOptions("huggingface", "", config);
 }
 
 // ---------------------------------------------------------------------------
@@ -1355,8 +1180,8 @@ function mapDeepinfraModel(
 	// `output === context` for every model and default oversized `max_tokens`
 	// onto models with smaller real output limits. Trust it only when it is
 	// strictly below the context window (i.e. the API starts publishing a real
-	// output cap); otherwise keep the bundled reference's cap (stencil.so fill
-	// during generation) or leave the limit unknown so requests defer to the
+	// output cap); otherwise keep the bundled reference's cap
+	// or leave the limit unknown so requests defer to the
 	// server-side cap.
 	const liveMaxTokens = toPositiveNumber(metadata.max_tokens, 0);
 	const hasLiveOutputCap = contextWindow !== null && liveMaxTokens > 0 && liveMaxTokens < contextWindow;
@@ -1627,7 +1452,7 @@ function withXaiOAuthCompatDefaults(model: ModelSpec<"openai-responses">): Model
  * off-allowlist reasoners (`grok-code-fast-1`, `grok-build-0.1`,
  * `grok-4.20-0309-reasoning`, …) 400 if the param is sent. SuperGrok
  * (`xai-oauth`) already curates this via {@link mergeCuratedIntoModel}; paid
- * `xai` rows come from stencil.so and need the same wire facts in the exported
+ * `xai` rows in the local snapshot need the same wire facts in the exported
  * `models.json` so direct catalog readers do not present an unsupported dial.
  *
  * Explicit `compat.supportsReasoningEffort` / `omitReasoningEffort` win.
@@ -1903,47 +1728,6 @@ export function isLikelySiliconFlowChatModelId(id: string): boolean {
 	return !isExcludedModel("siliconflow", normalized);
 }
 
-/**
- * models.dev mappings consulted ONLY as a runtime metadata reference during
- * dynamic discovery. They are deliberately absent from
- * `MODELS_DEV_PROVIDER_DESCRIPTORS` so `generate-models.ts` never bundles
- * SiliconFlow models — the live endpoint decides which models exist, while
- * these entries hydrate the pricing, limits, and reasoning metadata that the
- * endpoint's bare `{id}` rows do not carry. No filter: the join against live
- * discovered ids already restricts hydration to chat models.
- */
-const SILICONFLOW_MODELS_DEV_DESCRIPTORS: readonly ModelsDevProviderDescriptor[] = [
-	openAiCompletionsDescriptor("siliconflow", "siliconflow", "https://api.siliconflow.com/v1", {
-		filterModel: () => true,
-	}),
-	openAiCompletionsDescriptor("siliconflow-cn", "siliconflow-cn", "https://api.siliconflow.cn/v1", {
-		filterModel: () => true,
-	}),
-];
-
-const SILICONFLOW_MODELS_DEV_REFERENCE_TIMEOUT_MS = 5_000;
-
-async function loadSiliconFlowModelsDevReferences(
-	providerId: "siliconflow" | "siliconflow-cn",
-	fetchImpl?: FetchImpl,
-): Promise<Map<string, ModelSpec<"openai-completions">>> {
-	const descriptor = SILICONFLOW_MODELS_DEV_DESCRIPTORS.find(d => d.providerId === providerId);
-	if (!descriptor) {
-		return new Map();
-	}
-	try {
-		// Bounded: this enrichment is optional, so a stalled models.dev must not
-		// hold back the authoritative endpoint request that runs after it.
-		const payload = await withCatalogDiscoveryTimeout(SILICONFLOW_MODELS_DEV_REFERENCE_TIMEOUT_MS, signal =>
-			fetchWellKnownModels(fetchImpl, signal),
-		);
-		return createModelsDevReferenceMap<"openai-completions">(
-			mapModelsDevToModels(payload as Record<string, unknown>, [descriptor]),
-		);
-	} catch {
-		return new Map();
-	}
-}
 
 function createSiliconFlowModelManagerOptions(
 	providerId: "siliconflow" | "siliconflow-cn",
@@ -1956,8 +1740,7 @@ function createSiliconFlowModelManagerOptions(
 		providerId,
 		dynamicModelsAuthoritative: true,
 		...(apiKey && {
-			fetchDynamicModels: async () => {
-				const modelsDevReferences = await loadSiliconFlowModelsDevReferences(providerId, config?.fetch);
+			fetchDynamicModels: () => {
 				// Resolved here, not at options construction: walking the bundled
 				// reference index is only worth paying for when dynamic discovery
 				// actually runs, keeping the ModelManager cache fast path cheap.
@@ -1969,13 +1752,8 @@ function createSiliconFlowModelManagerOptions(
 					apiKey,
 					filterModel: (_entry, model) => isLikelySiliconFlowChatModelId(model.id),
 					mapModel: (entry, defaults) => {
-						const modelsDevReference = modelsDevReferences.get(defaults.id);
-						if (modelsDevReference) {
-							return mapWithBundledReference(entry, defaults, modelsDevReference);
-						}
-						// ids missing from models.dev (new launches) still recover intrinsic
-						// capabilities and canonical limits from any bundled upstream/reseller
-						// entry — but never its pricing, which is provider-specific.
+						// Recover intrinsic capabilities and canonical limits from
+						// bundled upstream/reseller metadata, never its host-specific pricing.
 						const canonical = resolveModelReference(defaults.id, canonicalReferences) as
 							| ModelSpec<"openai-completions">
 							| undefined;
@@ -2371,41 +2149,6 @@ async function fetchFireworksServerlessModels(options: {
 	return Array.from(collected.values());
 }
 
-function createModelsDevReferenceMap<TApi extends Api>(
-	models: readonly ModelSpec<Api>[],
-): Map<string, ModelSpec<TApi>> {
-	const references = new Map<string, ModelSpec<TApi>>();
-	for (const model of models) {
-		const candidate = model as ModelSpec<TApi>;
-		const existing = references.get(candidate.id);
-		if (!existing) {
-			references.set(candidate.id, candidate);
-			continue;
-		}
-		if ((candidate.contextWindow ?? 0) > (existing.contextWindow ?? 0)) {
-			references.set(candidate.id, candidate);
-			continue;
-		}
-		if (
-			candidate.contextWindow === existing.contextWindow &&
-			(candidate.maxTokens ?? 0) > (existing.maxTokens ?? 0)
-		) {
-			references.set(candidate.id, candidate);
-		}
-	}
-	return references;
-}
-
-async function loadModelsDevReferences<TApi extends Api>(fetchImpl?: FetchImpl): Promise<Map<string, ModelSpec<TApi>>> {
-	try {
-		const payload = await fetchWellKnownModels(fetchImpl);
-		return createModelsDevReferenceMap<TApi>(
-			mapModelsDevToModels(payload as Record<string, unknown>, MODELS_DEV_PROVIDER_DESCRIPTORS),
-		);
-	} catch {
-		return new Map<string, ModelSpec<TApi>>();
-	}
-}
 export function fireworksModelManagerOptions(
 	config?: FireworksModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
@@ -2417,16 +2160,13 @@ export function fireworksModelManagerOptions(
 	return {
 		providerId: "fireworks",
 		...(apiKey && {
-			fetchDynamicModels: async () => {
-				const modelsDevReferences = await loadModelsDevReferences<"openai-completions">(config?.fetch);
-				return fetchFireworksServerlessModels({
+			fetchDynamicModels: () =>
+				fetchFireworksServerlessModels({
 					baseUrl,
 					apiKey,
-					resolveReference: publicModelId =>
-						modelsDevReferences.get(publicModelId) ?? bundledReferences(publicModelId),
+					resolveReference: bundledReferences,
 					fetch: config?.fetch,
-				});
-			},
+				}),
 		}),
 	};
 }
@@ -3037,18 +2777,6 @@ function openCodeModelManagerOptions(
 			...OPENCODE_CACHE_MIGRATION_MODEL_IDS,
 			...(providerId === "opencode-zen" ? OPENCODE_ZEN_CACHE_MIGRATION_MODEL_IDS : []),
 		],
-		modelsDev: {
-			fetch: () => fetchRevalidatedWellKnownModelsWithTimeout(config?.fetch),
-			map: payload => {
-				if (!isRecord(payload)) return [];
-				return mapModelsDevToModels(payload, OPENCODE_MODELS_DEV_DESCRIPTORS)
-					.filter(model => model.provider === providerId)
-					.map(model => {
-						const api = resolveApi(model.id, "openai-completions");
-						return { ...model, api, baseUrl: openCodeBaseUrlForApi(api, basePath) };
-					});
-			},
-		},
 		...(apiKey && {
 			fetchDynamicModels: () =>
 				fetchOpenAICompatibleModels<Api>({
@@ -3059,8 +2787,7 @@ function openCodeModelManagerOptions(
 					mapModel: (entry, defaults) => {
 						const reference = references.get(defaults.id);
 						const name = toModelName(entry.name, reference?.name ?? defaults.name);
-						// Pins and bundled routing hints win over the metadata-only
-						// stencil fallback; the fallback never selects a transport.
+						// Pins and bundled routing hints select the transport.
 						const api = resolveApi(defaults.id, defaults.api);
 						const baseUrl = openCodeBaseUrlForApi(api, basePath);
 						const lineage = museSparkLineageSpec(defaults.id);
@@ -5881,11 +5608,10 @@ export function litellmModelManagerOptions(config?: LiteLLMModelManagerConfig): 
 		cacheProviderId: resolveModelCacheProviderId("litellm", { baseUrl }),
 		// litellm is a local-only proxy and is never bundled in models.json (that
 		// would leak the machine's localhost catalog). Prefer the proxy's richer
-		// management metadata, then enrich ids against models.dev with the bundled
-		// catalog as a fallback before using /v1/models.
+		// management metadata, then enrich ids against the local bundled
+		// catalog before using /v1/models.
 		fetchDynamicModels: async () => {
-			const modelsDevReferences = await loadModelsDevReferences<Api>(config?.fetch);
-			const resolveReference = createReferenceResolver(modelsDevReferences);
+			const resolveReference = createReferenceResolver<Api>();
 			const richModels = await fetchLiteLLMRichModels<Api>({
 				api: "openai-completions",
 				provider: "litellm",
@@ -6392,16 +6118,9 @@ export function anthropicModelManagerOptions(
 	const discoveryBaseUrl = toAnthropicDiscoveryBaseUrl(baseUrl);
 	return {
 		providerId: "anthropic",
-		modelsDev: {
-			fetch: () => fetchRevalidatedWellKnownModelsWithTimeout(config?.fetch),
-			map: payload => mapAnthropicModelsDev(payload, baseUrl),
-		},
 		...(apiKey && {
-			fetchDynamicModels: async () => {
-				const modelsDevModels = await fetchWellKnownModels(config?.fetch)
-					.then(payload => mapAnthropicModelsDev(payload, baseUrl))
-					.catch(() => []);
-				const references = buildAnthropicReferenceMap(modelsDevModels);
+			fetchDynamicModels: () => {
+				const references = createBundledReferenceMap<"anthropic-messages">("anthropic");
 				return (
 					fetchOpenAICompatibleModels({
 						api: "anthropic-messages",
@@ -6440,7 +6159,7 @@ export function anthropicModelManagerOptions(
 }
 
 // ---------------------------------------------------------------------------
-// Models.dev provider descriptors for generate-models.ts
+// Models.dev-compatible payload descriptors for caller-owned metadata
 // ---------------------------------------------------------------------------
 
 /** Describes how to map models.dev API data for a single provider. */
@@ -7100,7 +6819,7 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_SPECIALIZED: readonly ModelsDevProviderDes
 	anthropicMessagesDescriptor("minimax", "minimax", "https://api.minimax.io/anthropic"),
 	anthropicMessagesDescriptor("minimax-cn", "minimax-cn", "https://api.minimaxi.com/anthropic"),
 	// --- Hugging Face ---
-	openAiCompletionsDescriptor("huggingface", "huggingface", "https://router.huggingface.co/v1"),
+	openAiCompletionsDescriptor("huggingface", "huggingface", ""),
 	// --- Kilo Gateway ---
 	openAiCompletionsDescriptor("kilo", "kilo", "https://api.kilo.ai/api/gateway"),
 	// --- Moonshot AI ---
@@ -7151,7 +6870,7 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_SPECIALIZED: readonly ModelsDevProviderDes
 		},
 	}),
 ];
-/** All provider descriptors for models.dev data mapping in generate-models.ts. */
+/** All provider descriptors for caller-owned models.dev-compatible payload mapping. */
 export const MODELS_DEV_PROVIDER_DESCRIPTORS: readonly ModelsDevProviderDescriptor[] = [
 	...MODELS_DEV_PROVIDER_DESCRIPTORS_BEDROCK,
 	...MODELS_DEV_PROVIDER_DESCRIPTORS_GOOGLE_VERTEX,
@@ -7160,41 +6879,3 @@ export const MODELS_DEV_PROVIDER_DESCRIPTORS: readonly ModelsDevProviderDescript
 	...MODELS_DEV_PROVIDER_DESCRIPTORS_SPECIALIZED,
 ];
 
-const MODELS_DEV_DESCRIPTORS_BY_PROVIDER: Record<string, ModelsDevProviderDescriptor[]> = Object.create(null);
-for (const descriptor of MODELS_DEV_PROVIDER_DESCRIPTORS) {
-	const providerDescriptors = MODELS_DEV_DESCRIPTORS_BY_PROVIDER[descriptor.providerId];
-	if (providerDescriptors) {
-		providerDescriptors.push(descriptor);
-	} else {
-		MODELS_DEV_DESCRIPTORS_BY_PROVIDER[descriptor.providerId] = [descriptor];
-	}
-}
-
-/** Providers whose bundled catalog can receive additive models.dev updates at runtime. */
-export const MODELS_DEV_CATALOG_PROVIDER_IDS: readonly string[] = Object.freeze(
-	Object.keys(MODELS_DEV_DESCRIPTORS_BY_PROVIDER),
-);
-
-/**
- * Build the shared models.dev fallback for one known provider.
- *
- * Provider managers sharing one fetch implementation reuse its conditional
- * catalog session. Each mapped provider slice is persisted independently so
- * startup can restore it without parsing the full catalog.
- *
- * `timeoutMs` bounds the catalog request. It is configurable for callers with a
- * stricter startup budget and for deterministic timeout tests.
- */
-export function modelsDevCatalogFallback(
-	providerId: string,
-	fetchImpl?: FetchImpl,
-	timeoutMs = DEFAULT_OPENAI_COMPATIBLE_DISCOVERY_TIMEOUT_MS,
-): ModelsDevFallback<Api> | undefined {
-	const descriptors = MODELS_DEV_DESCRIPTORS_BY_PROVIDER[providerId];
-	if (!descriptors) return undefined;
-	return {
-		additiveOnly: true,
-		fetch: () => fetchRevalidatedWellKnownModelsWithTimeout(fetchImpl, timeoutMs),
-		map: payload => (isRecord(payload) ? filterModelsDevCatalogRows(mapModelsDevToModels(payload, descriptors)) : []),
-	};
-}

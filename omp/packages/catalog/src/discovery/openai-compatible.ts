@@ -1,6 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { Api, FetchImpl, ModelSpec, Provider } from "../types";
 import { discoveryFetch } from "../utils";
+import { assertHuggingfaceEndpoint } from "../wire/huggingface";
 
 const MODELS_PATH = "/models";
 
@@ -141,6 +142,7 @@ export interface FetchOpenAICompatibleModelsOptions<TApi extends Api> {
 export async function fetchOpenAICompatibleModels<TApi extends Api>(
 	options: FetchOpenAICompatibleModelsOptions<TApi>,
 ): Promise<ModelSpec<TApi>[] | null> {
+	assertHuggingfaceEndpoint(options.provider, options.baseUrl);
 	const baseUrl = normalizeBaseUrl(options.baseUrl);
 	if (!baseUrl) {
 		return null;

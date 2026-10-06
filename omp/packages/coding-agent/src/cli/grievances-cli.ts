@@ -1,9 +1,8 @@
 /**
- * CLI handler for `omp grievances` — view, clean, and manually push reported tool issues.
+ * CLI handler for `mercury omp grievances` — view and clean locally recorded tool issues.
  */
 import chalk from "@oh-my-pi/pi-utils/chalk";
-import { Settings } from "../config/settings";
-import { flushGrievances, openAutoQaDb } from "../tools/report-tool-issue";
+import { openAutoQaDb } from "../tools/report-tool-issue";
 
 interface GrievanceRow {
 	id: number;
@@ -30,10 +29,6 @@ export interface CleanGrievancesOptions {
 	json?: boolean;
 }
 
-export interface PushGrievancesOptions {
-	/** Emit the {@link FlushResult} as JSON instead of a status line. */
-	json?: boolean;
-}
 export async function listGrievances(options: ListGrievancesOptions): Promise<void> {
 	const db = openAutoQaDb();
 	if (!db) {
@@ -154,103 +149,3 @@ export async function cleanGrievances(options: CleanGrievancesOptions): Promise<
 	}
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Manual push (`omp grievances push`)
-// ───────────────────────────────────────────────────────────────────────────
-
-/**
- * Single-line ANSI progress reporter. `update(done)` rewrites the line via
- * `\r`; `finish()` newlines out so subsequent log lines land cleanly. On a
- * non-TTY stdout (CI, pipes) both calls no-op so log files don't fill with
- * carriage-return noise.
- */
-interface ProgressBar {
-	update(done: number): void;
-	finish(): void;
-}
-
-function makeProgressBar(total: number, width = 30): ProgressBar {
-	const isTty = !!process.stdout.isTTY;
-	if (!isTty || total === 0) {
-		return { update: () => undefined, finish: () => undefined };
-	}
-	const render = (done: number): void => {
-		const ratio = Math.min(1, done / total);
-		const filled = Math.round(ratio * width);
-		const bar = `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
-		const pct = `${Math.floor(ratio * 100)
-			.toString()
-			.padStart(3, " ")}%`;
-		process.stdout.write(`\r${chalk.cyan("Pushing")} [${bar}] ${pct} ${done}/${total}`);
-	};
-	render(0);
-	return {
-		update: render,
-		finish: () => process.stdout.write("\n"),
-	};
-}
-
-/**
- * Manually drain every unpushed grievance to the configured backend,
- * ignoring the user-facing consent gate (manual push is the user's
- * explicit "yes ship these now" intent).
- *
- * Requires endpoint configuration (default `qa.omp.sh/v1/grievances`).
- */
-export async function pushGrievances(options: PushGrievancesOptions): Promise<void> {
-	const db = openAutoQaDb();
-	if (!db) {
-		if (options.json) {
-			console.log(JSON.stringify({ pushed: 0, ok: false, skipped: true, reason: "no_db" }));
-		} else {
-			console.log(chalk.dim("No grievances database found — nothing to push."));
-		}
-		return;
-	}
-	const settings = await Settings.init();
-	let bar: ProgressBar = { update: () => undefined, finish: () => undefined };
-	let total = 0;
-
-	try {
-		const result = await flushGrievances(db, settings, {
-			bypassConsent: true,
-			onStart: t => {
-				total = t;
-				if (!options.json) bar = makeProgressBar(t);
-			},
-			onProgress: pushed => bar.update(pushed),
-		});
-		bar.finish();
-
-		if (options.json) {
-			console.log(JSON.stringify(result));
-			return;
-		}
-
-		if (result.skipped) {
-			console.log(
-				chalk.yellow(
-					"Push skipped — no endpoint configured. Set `dev.autoqaPush.endpoint` or `PI_AUTO_QA_PUSH_URL`.",
-				),
-			);
-			return;
-		}
-		if (total === 0) {
-			console.log(chalk.dim("Nothing to push — all grievances are already shipped."));
-			return;
-		}
-		if (result.ok) {
-			console.log(chalk.green(`Pushed ${result.pushed}/${total} grievance${result.pushed === 1 ? "" : "s"}.`));
-			return;
-		}
-		const remaining = total - result.pushed;
-		console.log(
-			chalk.red(
-				`Push failed after ${result.pushed}/${total}; ${remaining} grievance${remaining === 1 ? "" : "s"} remain unpushed.`,
-			),
-		);
-		process.exitCode = 1;
-	} finally {
-		db.close();
-	}
-}

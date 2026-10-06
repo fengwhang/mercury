@@ -1,6 +1,4 @@
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
-import { getTinyModelsCacheDir } from "@oh-my-pi/pi-utils";
+import { requireLocalModelAssets } from "../subprocess/worker-runtime";
 import { getTtsLocalModelSpec } from "./models";
 import { isTtsRuntimeCached } from "./runtime";
 import { ttsClient } from "./tts-client";
@@ -12,30 +10,24 @@ export interface TtsDownloadProgress {
 }
 
 /**
- * Whether the selected local TTS model and the side Kokoro runtime are already
- * present. transformers.js stores `main`-revision files at
- * `<cacheDir>/<repo>/...`, so any `.onnx` weight under the repo dir means the
- * model weights can load without a network fetch; the Kokoro package runtime is
- * version-keyed separately and must also exist before setup can report ready.
+ * Whether provisioned model assets and the side Kokoro runtime are present.
+ * Requires config/tokenizer plus ONNX weights and the versioned runtime.
  */
 export async function isTtsModelCached(modelKey: string): Promise<boolean> {
 	const spec = getTtsLocalModelSpec(modelKey);
 	if (!spec) return false;
-	const repoDir = path.join(getTinyModelsCacheDir(), ...spec.repo.split("/"));
 	try {
-		const entries = await fs.readdir(repoDir, { recursive: true });
-		const hasWeights = entries.some(entry => typeof entry === "string" && entry.endsWith(".onnx"));
-		return hasWeights && (await isTtsRuntimeCached());
+		await requireLocalModelAssets(spec.repo);
+		return await isTtsRuntimeCached();
 	} catch {
 		return false;
 	}
 }
 
 /**
- * Ensure the selected local TTS model is downloaded into the transformers.js
- * cache (and warm in the worker), streaming integer-percent Hub progress. The
- * worker resolves the request once every model file is cached. Returns `false`
- * if the worker is unavailable or the download failed.
+ * Warm a provisioned local TTS model. Missing assets fail before starting the
+ * worker; runtime preparation may install dependencies, never model weights.
+ * Returns false if the worker is unavailable or local initialization fails.
  */
 export async function downloadTtsModel(
 	modelKey: string,
@@ -44,6 +36,7 @@ export async function downloadTtsModel(
 ): Promise<boolean> {
 	const spec = getTtsLocalModelSpec(modelKey);
 	if (!spec) return false;
+	await requireLocalModelAssets(spec.repo);
 	onProgress?.({ stage: `Preparing ${spec.label}...` });
 	return ttsClient.downloadModel(spec.key, {
 		signal,
@@ -58,7 +51,7 @@ export async function downloadTtsModel(
 					: typeof event.progress === "number"
 						? Math.round(event.progress)
 						: undefined;
-			onProgress?.({ stage: `Downloading ${spec.label}`, percent });
+			onProgress?.({ stage: `Preparing local ${spec.label}`, percent });
 		},
 	});
 }

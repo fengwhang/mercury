@@ -14445,7 +14445,7 @@ def main():
         )
 
     sessions_export = sessions_subparsers.add_parser(
-        "export", help="Export sessions to JSONL, Markdown, or QMD"
+        "export", help="Export sessions to local JSONL, Markdown, QMD, HTML, or trace files"
     )
     sessions_export.add_argument(
         "output",
@@ -14460,22 +14460,8 @@ def main():
         choices=["jsonl", "md", "qmd", "html", "trace"],
         default="jsonl",
         help=(
-            "Export format (default: jsonl). 'trace' emits Claude Code JSONL "
-            "for the Hugging Face Agent Trace Viewer"
+            "Export format (default: jsonl). 'trace' emits local Claude Code JSONL"
         ),
-    )
-    sessions_export.add_argument(
-        "--upload",
-        action="store_true",
-        help=(
-            "trace only: upload to your Hugging Face traces dataset instead "
-            "of writing a local file (needs HF_TOKEN)"
-        ),
-    )
-    sessions_export.add_argument(
-        "--public",
-        action="store_true",
-        help="trace --upload only: create/update a public dataset instead of private",
     )
     sessions_export.add_argument(
         "--no-redact",

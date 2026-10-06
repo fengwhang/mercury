@@ -624,6 +624,9 @@ def _resolve_runtime_from_pool_entry(
 
         base_url = normalize_opencode_base_url(provider, api_mode, base_url)
 
+    if provider == "huggingface":
+        base_url = auth_mod.resolve_huggingface_base_url(base_url)
+
     # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
     # Inert when `model.openai_runtime` is unset or "auto".
     api_mode = _maybe_apply_codex_app_server_runtime(
@@ -1832,9 +1835,21 @@ def _resolve_explicit_runtime(
         if provider == "actual":
             base_url = normalize_actual_base_url(base_url)
 
+        if provider == "huggingface":
+            cfg_base = (
+                str(model_cfg.get("base_url") or "").strip()
+                if model_cfg.get("provider") in {"huggingface", "hf", "hugging-face", "huggingface-hub"}
+                else ""
+            )
+            base_url = auth_mod.resolve_huggingface_base_url(base_url or cfg_base)
+
         api_key = explicit_api_key
         if not api_key:
-            creds = resolve_api_key_provider_credentials(provider)
+            creds = (
+                resolve_api_key_provider_credentials(provider, explicit_base_url=base_url)
+                if provider == "huggingface"
+                else resolve_api_key_provider_credentials(provider)
+            )
             api_key = creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
@@ -2004,6 +2019,10 @@ def resolve_runtime_provider(
         target_model=target_model,
     )
     if custom_runtime:
+        if requested_provider in {"huggingface", "hf", "hugging-face", "huggingface-hub"}:
+            custom_runtime["base_url"] = auth_mod.validate_huggingface_base_url(
+                custom_runtime.get("base_url") or ""
+            )
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
@@ -2447,7 +2466,15 @@ def resolve_runtime_provider(
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
-        creds = resolve_api_key_provider_credentials(provider)
+        if provider == "huggingface":
+            cfg_base = (
+                model_cfg.get("base_url")
+                if model_cfg.get("provider") in {"huggingface", "hf", "hugging-face", "huggingface-hub"}
+                else None
+            )
+            creds = resolve_api_key_provider_credentials(provider, explicit_base_url=cfg_base)
+        else:
+            creds = resolve_api_key_provider_credentials(provider)
         # Actual Computer: a loopback base_url configured in model_cfg (not
         # just env) selects the daemon's local offline API, which requires no
         # auth. Inject the placeholder BEFORE the usable-secret gate below,
@@ -2489,6 +2516,8 @@ def resolve_runtime_provider(
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         if provider == "actual":
             base_url = normalize_actual_base_url(base_url)
+        if provider == "huggingface":
+            base_url = auth_mod.validate_huggingface_base_url(base_url)
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(

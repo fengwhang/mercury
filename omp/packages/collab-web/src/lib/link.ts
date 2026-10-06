@@ -12,6 +12,7 @@ import type { ParsedCollabLink } from "@oh-my-pi/pi-wire";
 import {
 	DEFAULT_RELAY_URL,
 	ENVELOPE_HEADER_LENGTH,
+	isUpstreamHostedHostname,
 	ROOM_ID_BYTES,
 	ROOM_KEY_BYTES,
 	WRITE_TOKEN_BYTES,
@@ -91,6 +92,9 @@ function normalizeRelayOrigin(relayUrl: string): { origin: string } | { error: s
 	} catch {
 		return { error: `Invalid relay URL: ${relayUrl}` };
 	}
+	if (isUpstreamHostedHostname(url.hostname)) {
+		return { error: "Upstream hosted relays are not supported. Use a self-hosted relay link." };
+	}
 	let scheme: string;
 	switch (url.protocol) {
 		case "wss:":
@@ -112,8 +116,8 @@ function normalizeRelayOrigin(relayUrl: string): { origin: string } | { error: s
 }
 
 /**
- * Render the shareable link. Compact forms: the default relay collapses to
- * `<roomId>.<key>`; custom wss relays drop the scheme (`host[:port]/r/…`);
+ * Render the shareable link. Every link includes its relay endpoint:
+ * wss relays drop the scheme (`host[:port]/r/…`);
  * plain-ws localhost relays keep the full `ws://` URL.
  *
  * The room secret is dot-joined (`<roomId>.<key>`) rather than `#`-joined:
@@ -135,7 +139,6 @@ export function formatCollabLink(relayUrl: string, roomId: string, key: Uint8Arr
 		secret.set(writeToken, key.byteLength);
 	}
 	const keyText = encodeBase64Url(secret);
-	if (normalized.origin === DEFAULT_RELAY_URL) return `${roomId}.${keyText}`;
 	const compact = normalized.origin.startsWith("wss://")
 		? normalized.origin.slice("wss://".length)
 		: normalized.origin;
@@ -146,21 +149,25 @@ export function parseCollabLink(link: string): ParsedCollabLink | { error: strin
 	// Lenient input: terminals that open OSC 8 links through strict URL stacks
 	// (macOS Foundation) percent-encode the legacy second `#` to `%23`.
 	let text = link.trim().replace(/%23/gi, "#");
-	// Bare `<roomId>.<key>` (legacy `<roomId>#<key>`) → default relay.
-	const bare = BARE_LINK_RE.exec(text);
-	if (bare) text = `${DEFAULT_RELAY_URL}/r/${bare[1]}.${bare[2]}`;
+	// Bare room secrets do not identify a relay; never infer a hosted endpoint.
+	if (BARE_LINK_RE.test(text)) {
+		return { error: "Collab link is missing a relay URL. Ask the host for a full relay.example.com/r/<roomId>.<key> link." };
+	}
 	// Scheme-less `host[:port]/r/…` → wss.
-	else if (!text.includes("://")) text = `wss://${text}`;
+	if (!text.includes("://")) text = `wss://${text}`;
 	let url: URL;
 	try {
 		url = new URL(text);
 	} catch {
 		return { error: `Invalid collab link: ${link}` };
 	}
+	if (isUpstreamHostedHostname(url.hostname)) {
+		return { error: "Upstream hosted collab links are not supported. Ask the host for a self-hosted relay link." };
+	}
 	if ((url.protocol === "http:" || url.protocol === "https:") && url.hash) {
 		const inner = url.hash.startsWith("#") ? url.hash.slice(1) : url.hash;
 		const parsed = parseCollabLink(inner);
-		if (!("error" in parsed)) return parsed;
+		if (BARE_LINK_RE.test(inner) || !("error" in parsed)) return parsed;
 	}
 	const normalized = normalizeRelayOrigin(url.origin);
 	if ("error" in normalized) return normalized;
