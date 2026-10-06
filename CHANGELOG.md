@@ -32,6 +32,10 @@ their original projects and are not Mercury release announcements.
   cached model metadata at ordinary startup; deliberate provider discovery and
   operator refresh remain available.
 
+- Quarantine malformed local embedding ONNX files once, preserve their sidecars
+  and the original backend error, and require local repair rather than retrying
+  a model download. Complete local caches remain usable.
+
 ## [0.4.3] — nightly
 
 - Remove expired subagent rooms even when MIRC destruction needs a retry, and
