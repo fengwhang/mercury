@@ -618,8 +618,8 @@ describe("shareSession", () => {
 	});
 
 	test("explicit authenticated gist stays on its selected store on success and failure", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "share-fake-gh-"));
-		const originalPath = process.env.PATH;
+		const inheritedGhDir = process.env.OMP_SHARE_TEST_GH_DIR;
+		const dir = inheritedGhDir ?? (await fs.mkdtemp(path.join(os.tmpdir(), "share-fake-gh-")));
 		const gh = path.join(dir, "gh");
 		const gistId = "abcdef0123456789abcd";
 		await Bun.write(
@@ -633,6 +633,36 @@ console.log("https://gist.github.com/fake/${gistId}");
 `,
 		);
 		await fs.chmod(gh, 0o700);
+		if (!inheritedGhDir) {
+			// Bun's shell resolves commands against the process's initial PATH.
+			// Exercise the real gh subprocess chain in a fresh, fixture-only environment.
+			try {
+				const child = Bun.spawn(
+					[
+						process.execPath,
+						"test",
+						import.meta.path,
+						"--test-name-pattern",
+						"explicit authenticated gist stays on its selected store on success and failure",
+					],
+					{
+						env: { ...process.env, PATH: dir, OMP_SHARE_TEST_GH_DIR: dir },
+						stdin: "ignore",
+						stdout: "pipe",
+						stderr: "pipe",
+					},
+				);
+				const [stdout, stderr, exitCode] = await Promise.all([
+					new Response(child.stdout).text(),
+					new Response(child.stderr).text(),
+					child.exited,
+				]);
+				expect(exitCode, `${stdout}\n${stderr}`).toBe(0);
+			} finally {
+				await fs.rm(dir, { recursive: true, force: true });
+			}
+			return;
+		}
 		vi.spyOn(utils, "$which").mockReturnValue(gh);
 		const network = vi.spyOn(globalThis, "fetch").mockImplementation(
 			asGlobalFetch(() => {
@@ -644,29 +674,22 @@ console.log("https://gist.github.com/fake/${gistId}");
 			getEntries: () => [],
 			getLeafId: () => "x",
 		} as unknown as SessionManager;
-		try {
-			process.env.PATH = dir;
-			const result = await shareSession(sm, { store: "gist", serverUrl: "https://share.example/s" });
-			expect(result.method).toBe("gist");
-			expect(result.gistUrl).toBe(`https://gist.github.com/fake/${gistId}`);
-			expect(result.url).toMatch(new RegExp(`^https://share\\.example/s/${gistId}#[A-Za-z0-9_-]+$`));
-			expect(network).not.toHaveBeenCalled();
-			await Bun.write(
-				gh,
-				`#!${process.execPath}
+		const result = await shareSession(sm, { store: "gist", serverUrl: "https://share.example/s" });
+		expect(result.method).toBe("gist");
+		expect(result.gistUrl).toBe(`https://gist.github.com/fake/${gistId}`);
+		expect(result.url).toMatch(new RegExp(`^https://share\\.example/s/${gistId}#[A-Za-z0-9_-]+$`));
+		expect(network).not.toHaveBeenCalled();
+		await Bun.write(
+			gh,
+			`#!${process.execPath}
 if (process.argv[2] === "auth") process.exit(0);
 process.exit(1);
 `,
-			);
-			await expect(shareSession(sm, { store: "gist", serverUrl: "https://share.example/s" })).rejects.toThrow(
-				"Gist creation failed",
-			);
-			expect(network).not.toHaveBeenCalled();
-		} finally {
-			if (originalPath === undefined) delete process.env.PATH;
-			else process.env.PATH = originalPath;
-			await fs.rm(dir, { recursive: true, force: true });
-		}
+		);
+		await expect(shareSession(sm, { store: "gist", serverUrl: "https://share.example/s" })).rejects.toThrow(
+			"Gist creation failed",
+		);
+		expect(network).not.toHaveBeenCalled();
 	});
 	test("default store seals the snapshot and uploads it to the share server", async () => {
 		const entries = [messageEntry("e1", null, "share me"), messageEntry("e2", "e1", "second")];
