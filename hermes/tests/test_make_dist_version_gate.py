@@ -171,3 +171,16 @@ def test_nix_loader_refuses_pack_before_writing_archive(tmp_path):
     assert proc.returncode != 0
     assert "Non-portable ELF" in proc.stderr
     assert not list((repo / "dist").glob("*.tar.gz"))
+
+
+def test_modern_only_x64_addon_refuses_pack(tmp_path):
+    repo = _sandbox_repo(tmp_path, VERSION)
+    natives = repo / "omp/packages/natives/native"
+    baseline = natives / "pi_natives.linux-x64-baseline.node"
+    if not baseline.exists():
+        pytest.skip("x64 baseline regression")
+    baseline.rename(natives / "pi_natives.linux-x64-modern.node")
+    proc = _run_make_dist(repo, {})
+    assert proc.returncode != 0
+    assert "baseline" in proc.stderr
+    assert not list((repo / "dist").glob("*.tar.gz"))

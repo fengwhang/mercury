@@ -44,19 +44,17 @@ echo -e "${MAGENTA}│   Hermes by Nous Research and omp by can1357  │${NC}"
 echo -e "${MAGENTA}└──────────────────────────────────────────────┘${NC}\n"
 
 # --- config ---
-MERCURY_HOME="${MERCURY_HOME:-$HOME/.mercury}"
-export MERCURY_HOME
+MERCURY_HOME="${MERCURY_HOME:-}"
 # MERCURY LAYOUT (hermes pattern, faithful): code + state under one home;
 # the COMMAND is a tiny shim in ~/.local/bin — already on PATH by default
 # on modern distros, which is why hermes' one-liner needs zero extra steps.
 #   code+state -> $MERCURY_HOME (default ~/.mercury; code at mercury-agent/)
 BIN_DIR="${MERCURY_BIN_DIR:-$HOME/.local/bin}"
-MANAGED_BIN="$MERCURY_HOME/bin"
-INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-$MERCURY_HOME/mercury-agent}"
+INSTALL_ROOT="${MERCURY_INSTALL_ROOT:-}"
 # Release track + command name. Stable installs `mercury` to
 # ~/.mercury; nightly installs `mercury-nightly` to ~/.mercury-nightly
 # (install-nightly.sh execs this script with both set).
-MERCURY_CMD="${MERCURY_CMD:-mercury}"
+MERCURY_CMD="${MERCURY_CMD:-}"
 # Channel selection is explicit: inherited agent/launcher environments must
 # not turn the standard installer into a nightly installation.
 MERCURY_CHANNEL="stable"
@@ -101,6 +99,15 @@ case "$MERCURY_CHANNEL" in
     stable|nightly) ;;
     *) log_error "invalid --channel: $MERCURY_CHANNEL (expected stable or nightly)"; exit 1 ;;
 esac
+# Resolve defaults after parsing the explicit channel; direct nightly installs
+# must be just as isolated as installs routed through install-nightly.sh.
+_default_name=mercury
+[ "$MERCURY_CHANNEL" = nightly ] && _default_name=mercury-nightly
+MERCURY_HOME="${MERCURY_HOME:-$HOME/.$_default_name}"
+MERCURY_CMD="${MERCURY_CMD:-$_default_name}"
+INSTALL_ROOT="${INSTALL_ROOT:-$MERCURY_HOME/mercury-agent}"
+MANAGED_BIN="$MERCURY_HOME/bin"
+export MERCURY_HOME
 
 # --- prompting: works under curl|bash via /dev/tty (hermes pattern) ---
 prompt() { # $1=question $2=default(yes/no)
@@ -331,7 +338,9 @@ fetch_tarball() {
         if [ -n "${TAG_ARG:-}" ]; then
             # Versioned asset name (only stable releases carry the
             # version-less aliases; the arch rewrite below still applies).
-            TARBALL_URL="https://github.com/fengwhang/mercury/releases/download/${TAG_ARG}/mercury-${TAG_ARG#v}${_libc_suffix}-${_def_arch}.tar.gz"
+            local _asset_version="${TAG_ARG#v}"
+            _asset_version="${_asset_version%-nightly}"
+            TARBALL_URL="https://github.com/fengwhang/mercury/releases/download/${TAG_ARG}/mercury-${_asset_version}${_libc_suffix}-${_def_arch}.tar.gz"
             log_info "$_def_arch host — release $TAG_ARG tarball"
         elif [ "$MERCURY_CHANNEL" = "nightly" ]; then
             log_error "nightly installs need a release tag (no latest-nightly redirect exists)"
@@ -499,7 +508,8 @@ setup_venv() {
     log_info "python environment (uv + exact-pinned venv)"
     local VENV="$INSTALL_ROOT/hermes/.venv"
     if [ ! -x "$VENV/bin/python" ]; then
-        "$UV_CMD" venv "$VENV" --python '>=3.11,<3.14' 2>/dev/null || "$UV_CMD" venv "$VENV"
+        "$UV_CMD" venv "$VENV" --python '>=3.11,<3.14' \
+            || { log_error "could not create environment with supported Python (>=3.11,<3.14)"; exit 1; }
         ( cd hermes && "$UV_CMD" pip install --python "$VENV/bin/python" -q -e . ) || { log_error "python deps failed"; exit 1; }
     fi
     log_success "python environment ready"

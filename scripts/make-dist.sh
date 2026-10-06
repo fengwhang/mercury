@@ -177,6 +177,10 @@ for spec in "${SPECS[@]}"; do
     python3 hermes/mercury_cli/elf.py "$binary" --arch "$arch" --libc "$libc" --portable || exit 1
     native_dir="omp/packages/natives/native"
     [ "$libc" = musl ] && native_dir="$native_dir/musl"
+    if [ "$arch" = x64 ] && [ ! -f "$native_dir/pi_natives.linux-x64-baseline.node" ]; then
+        echo "FATAL: no baseline x64/$libc native addon (modern-only releases cannot run on baseline CPUs)" >&2
+        exit 1
+    fi
     count=0
     for addon in "$native_dir"/pi_natives.linux-"$arch"*.node; do
         [ -f "$addon" ] || continue

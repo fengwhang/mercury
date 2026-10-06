@@ -265,6 +265,35 @@ def test_render_mlounge_unit_carries_path() -> None:
     assert "THELOUNGE_HOME=/h" in unit
 
 
+
+def test_provision_propagates_explicit_voice_sidecar_url_only(tmp_path, monkeypatch):
+    home = tmp_path / "mercury"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_text(
+        'voice_call:\n  stt_sidecar_url: "https://stt.example.invalid/call?path=%2F"\n'
+        '  mirc_host_url: "https://mirc.example.invalid"\n')
+    monkeypatch.setenv("MERCURY_HOME", str(home))
+    monkeypatch.setenv("MERCURY_CONFIG", str(config))
+    monkeypatch.setenv("VOICE_CALL_MIRC_TOKEN", "synthetic-mirc-secret")
+    monkeypatch.setenv("VOICE_CALL_BROWSER_TOKEN", "synthetic-browser-secret")
+    for name in ("ensure_node", "ensure_mlounge_installed"):
+        monkeypatch.setattr(mlounge_mod, name, lambda: "/bin/x")
+    monkeypatch.setattr(mlounge_mod, "ensure_mlounge_user",
+                        lambda *a, **k: {"action": "current"})
+    monkeypatch.setattr(mlounge_mod, "mlounge_unit_active", lambda: False)
+    units = []
+    monkeypatch.setattr(mlounge_mod, "ensure_mlounge_unit",
+                        lambda paths, *, unit: units.append(unit) or "installed")
+    mlounge_mod.provision_mlounge()
+    assert 'Environment="MERCURY_VOICE_CALL_SIDECAR_URL=https://stt.example.invalid/call?path=%%2F"' in units[-1]
+    assert "TOKEN" not in units[-1]
+    assert "synthetic-" not in units[-1]
+    config.write_text("voice_call: {}\n")
+    mlounge_mod.provision_mlounge()
+    assert 'Environment="MERCURY_VOICE_CALL_SIDECAR_URL="' in units[-1]
+    assert "localhost" not in units[-1]
+
 def test_ensure_mlounge_user_uses_password_flag(tmp_path, monkeypatch) -> None:
     import json as _json
     import subprocess as _subprocess
