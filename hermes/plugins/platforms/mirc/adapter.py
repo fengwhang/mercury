@@ -1446,6 +1446,9 @@ class MIRCAdapter(BasePlatformAdapter):
             try:
                 from observatory.rooms import get_room_manager, route_channel
                 route, _row = route_channel(chat_id)
+                if route == "expired":
+                    # A queued line may outlive its room's durable expiry.
+                    return
                 manager = get_room_manager()
                 if isinstance(_row, dict) and (_row.get("extra") or {}).get("profile"):
                     # Select the profile before deriving the approval key.

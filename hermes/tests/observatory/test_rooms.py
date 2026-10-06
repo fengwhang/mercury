@@ -106,6 +106,11 @@ class FakeState:
                 return row
         raise KeyError(node_id)
 
+    def get_meta(self, key):
+        from observatory.state import StateError
+
+        raise StateError(f"unknown metadata: {key}")
+
 
 class FakeBot:
     def __init__(self):
@@ -190,6 +195,111 @@ def test_inbound_route() -> None:
     assert mgr.inbound_route("#king")[0] == "spawn-omp"
     assert mgr.inbound_route("#mercury_gateway-cow")[0] == "child"
     assert mgr.inbound_route("#unknown")[0] == "passthrough"
+
+
+@pytest.mark.parametrize("managed_only", ["true", "false"])
+def test_inbound_route_excludes_durable_expiries_only(tmp_path, monkeypatch, managed_only):
+    import json
+    from observatory import provision
+    from observatory.spawn import begin_exit, finish_exit
+    from observatory.state import CLOSED_ROOMS_META_KEY, MANAGED_ROOMS_META_KEY
+
+    monkeypatch.setattr(provision, "live_server_name", lambda home=None: "test")
+    with _real_state(tmp_path) as state:
+        state.add_node("old", engine="hermes", name="kid", slug="kid", mxid="kid",
+                       session_ref="old")
+        state.set_room_id("old", "#test-root-kid")
+        mgr = RoomManager(state, FakeBot())
+        record = begin_exit(state, "old")
+        assert mgr.inbound_route("#TEST-ROOT-KID") == ("expired", None)
+        finish_exit(state, record)
+        state.set_meta(MANAGED_ROOMS_META_KEY, managed_only)
+        state.set_meta(CLOSED_ROOMS_META_KEY, json.dumps(
+            ["#test-root-kid", "#test_gateway"]))
+        assert mgr.inbound_route("#test-root-kid") == ("expired", None)
+        assert mgr.inbound_route("#unrelated") == ("passthrough", None)
+        assert mgr.inbound_route("#TEST_GATEWAY") == ("passthrough", None)
+        state.add_node("new", engine="hermes", name="kid", slug="kid", mxid="kid",
+                       session_ref="new")
+        state.set_room_id("new", "#test-root-kid")
+        route, row = mgr.inbound_route("#TEST-ROOT-KID")
+        assert route == "spawn-hermes"
+        assert row["node_id"] == "new"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_text", ["late queued text", "!spawn unexpected", "!approve"])
+async def test_adapter_drops_expired_queued_group_message(tmp_path, monkeypatch, late_text):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from gateway.config import PlatformConfig
+    from observatory import provision
+    from observatory.room_reaper import closed_rooms
+    from observatory.spawn import begin_exit, finish_exit
+    from observatory.state import MANAGED_ROOMS_META_KEY, StateError
+    from plugins.platforms.mirc.adapter import MIRCAdapter
+
+    monkeypatch.setattr(provision, "live_server_name", lambda home=None: "test")
+    history = tmp_path / "test-root-kid.log"
+    history.write_text("completed child transcript\n")
+    state = _real_state(tmp_path)
+    state.add_node("root", engine="hermes", name="root", slug="root", mxid="root",
+                   session_ref="root", extra={"kind": "spawn"})
+    state.set_room_id("root", "#test-root")
+    state.add_node("old", engine="hermes", name="kid", slug="kid", mxid="kid",
+                   session_ref="old", parent_node_id="root", extra={"kind": "delegate"})
+    state.set_room_id("old", "#test-root-kid")
+    steered = []
+    rooms.register_child_steer("old", steered.append)
+    record = begin_exit(state, "old")
+    finish_exit(state, record)
+    state.set_meta(MANAGED_ROOMS_META_KEY, "true")
+    state.close()
+    # Re-open both the manager and state: expiry is durable, not a process cache.
+    state = _real_state(tmp_path)
+    monkeypatch.setattr(rooms, "_current_manager", RoomManager(state, FakeBot()))
+    adapter = MIRCAdapter(PlatformConfig(enabled=True, extra={
+        "server": "127.0.0.1", "port": 1, "nickname": "testbot",
+        "channel": "#test_gateway", "use_tls": False,
+    }))
+    monkeypatch.setattr(adapter, "send", AsyncMock())
+    events = []
+
+    async def gateway(event):
+        events.append((event.source.chat_id, event.text))
+
+    adapter.set_message_handler(gateway)
+    try:
+        with pytest.raises(StateError):
+            state.get("old")
+        assert "#test-root-kid" in closed_rooms(state)
+        await adapter._dispatch_message(late_text, "#TEST-ROOT-KID", "group", "owner", "owner")
+        await asyncio.gather(*adapter._background_tasks)
+        assert events == []
+        assert steered == []
+        adapter.send.assert_not_awaited()
+        assert rooms.route_channel("#test-root-kid") == ("expired", None)
+
+        for channel in ("#unrelated", "#test_gateway"):
+            await adapter._dispatch_message("normal input", channel, "group", "owner", "owner")
+            await asyncio.gather(*adapter._background_tasks)
+        assert events == [("#unrelated", "normal input"), ("#test_gateway", "normal input")]
+
+        state.add_node("new", engine="hermes", name="kid", slug="kid", mxid="kid",
+                       session_ref="new", parent_node_id="root", extra={"kind": "delegate"})
+        state.set_room_id("new", "#test-root-kid")
+        rooms.register_child_steer("new", steered.append)
+        await adapter._dispatch_message(
+            "successor input", "#test-root-kid", "group", "owner", "owner")
+        assert steered == ["successor input"]
+        assert len(events) == 2
+        assert history.read_text() == "completed child transcript\n"
+        assert state.get("root")["status"] == "live"
+    finally:
+        await adapter.cancel_background_tasks()
+        rooms.drop_child_steer("old")
+        rooms.drop_child_steer("new")
+        state.close()
 
 
 def test_node_for_channel_case_insensitive() -> None:
