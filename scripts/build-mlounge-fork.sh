@@ -23,15 +23,16 @@ trap cleanup EXIT
 [ -f "$SRC/package.json" ] || { echo "FATAL: no vendored fork at $SRC" >&2; exit 1; }
 command -v node >/dev/null || { echo "FATAL: node required on release host" >&2; exit 1; }
 command -v npm >/dev/null || { echo "FATAL: npm required on release host" >&2; exit 1; }
+command -v npx >/dev/null || { echo "FATAL: npx required for pinned Yarn on release host" >&2; exit 1; }
 
 echo "== staging fork source (excluding node_modules)"
 cp -r "$SRC/." "$TMP/tree/"
 rm -rf "$TMP/tree/node_modules" "$TMP/tree/.git"
 
-echo "== npm install (full toolchain, release host only)"
+echo "== Yarn 1.22.22 frozen install (full toolchain, release host only)"
 (
     cd "$TMP/tree"
-    npm install --no-audit --no-fund 2>&1 | tail -1
+    npx --yes yarn@1.22.22 install --frozen-lockfile --non-interactive 2>&1 | tail -1
 )
 
 echo "== vite build (client) + tsc (server)"
