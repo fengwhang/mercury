@@ -8,11 +8,9 @@
  * `node_modules/<name>/package.json`). This exercises the real
  * `PluginManager.install` end-to-end without hitting the network.
  *
- * `vi.spyOn` + `vi.restoreAllMocks()` is the same pattern used by
- * `test/tools/report-tool-issue.test.ts` (which spies on
- * `piUtils.getInstallId`), so we know namespace spying on `pi-utils` exports
- * propagates through to consumers of the barrel re-exports. The
- * `vi.spyOn(Bun, "spawn")` mock follows `test/git-process-config.test.ts`.
+ * Namespace spies on `pi-utils` exports propagate to consumers of the barrel
+ * re-exports. The `vi.spyOn(Bun, "spawn")` mock follows
+ * `test/git-process-config.test.ts`.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";

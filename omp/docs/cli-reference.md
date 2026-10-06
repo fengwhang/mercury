@@ -231,7 +231,6 @@ Run `omp <command> --help` for each command's own flags and examples.
 | `grep` | Test the grep tool from the CLI. (The [`grep` tool](./tools/grep.md) is a separate agent tool.) | |
 | `gallery` | Preview tool renderers across streaming, in-progress, success, and failure states. | |
 | `git` | Interactive fullscreen git UI: split diff viewer, staging sidebar, and commit composer. | |
-| `grievances` | View or clean tool issues recorded in the local auto-QA database. Reports never leave this machine. | |
 | `if-bench` | Benchmark instruction following and working memory: one cached thread of glyph array actions with a cat-sound directive that moves through the prompt. | |
 | `images`, `img` | Inspect, diagnose, probe, and purge image publication backends. | |
 | `install` | Install or link an extension package (alias of `plugin install` / `plugin link`). | [extensions](./extensions.md) |

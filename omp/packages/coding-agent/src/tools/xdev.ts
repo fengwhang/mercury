@@ -516,7 +516,7 @@ const ACTIVITY_OBJECT_KEYS = ["query", "symbol", "path", "file", "pattern", "url
 /**
  * Compact `label · verb object` activity summary for a device write, so a
  * squeezed transcript row reads `LSP · references foo` instead of
- * `Write · xd://lsp`. Prose payloads (resolution devices, report_issue)
+ * `Write · xd://lsp`. Prose payloads (resolution devices)
  * surface their first line instead.
  */
 export function xdevActivitySummary(

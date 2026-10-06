@@ -36,7 +36,6 @@ Generated IDs are lowercase RFC 4122 UUIDs. Existing persisted values are accept
 | `packages/ai/src/providers/openai-codex-responses.ts`                                                | Sends the value as the OpenAI Codex compatibility `installationId`, alongside per-session/thread/window IDs.                                                                           |
 | `packages/ai/src/providers/anthropic.ts` and `packages/coding-agent/src/session/session-metadata.ts` | Derives Claude-compatible `device_id` metadata from the install ID, scoped by the Anthropic account UUID when one is available. The raw install ID is not used as the device ID.       |
 | `packages/ai/src/auth-broker/remote-store.ts`                                                        | Includes it in observed-usage reports to the configured auth broker. Those reports also include the hostname; the install-ID helper itself does not generate or combine that metadata. |
-| `packages/coding-agent/src/tools/report-tool-issue.ts`                                               | Includes it as `installId` in auto-QA grievance pushes so the backend can correlate reports from the same installation.                                                                |
 
 New consumers MUST treat the value as opaque. The helper contributes no PII, but a transport can still send it alongside other metadata; each consumer remains responsible for documenting and minimizing its complete payload.
 

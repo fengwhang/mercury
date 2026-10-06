@@ -6034,18 +6034,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"dev.autoqa": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "tools",
-			group: "Developer",
-			label: "Auto QA",
-			description:
-				"Record tool issues locally (xd://report_issue). On by default; reports stay on this machine and can be inspected or deleted with grievances",
-		},
-	},
-
 	"gc.blobs": { type: "boolean", default: true },
 
 	"gc.archive": { type: "boolean", default: true },

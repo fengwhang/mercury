@@ -135,7 +135,6 @@ import { splitAddressableFileLines } from "./hashline-format";
 import { readSqlite, resolveSqliteReadPath } from "./read-sqlite";
 import { isProseSummaryPath, renderSummary, routeReadThroughBridge, trySummarize } from "./read-summary";
 import { formatBytes, shortenPath } from "./render-utils";
-import { REPORT_ISSUE_DEVICE_NAME, reportIssueDeviceUsage } from "./report-tool-issue";
 import { isResolutionDeviceName, resolutionDeviceUsage } from "./resolve";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -2360,7 +2359,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			rules: this.session.activeRules,
 			xd: {
 				read: async name => {
-					if (name === REPORT_ISSUE_DEVICE_NAME) return reportIssueDeviceUsage();
 					if (name && isResolutionDeviceName(name)) return resolutionDeviceUsage(name);
 					const xdev = this.session.xdev;
 					if (!xdev) throw new ToolError("xd:// is not mounted in this session.");

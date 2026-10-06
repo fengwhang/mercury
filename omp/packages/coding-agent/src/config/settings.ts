@@ -2580,25 +2580,6 @@ export class Settings {
 			}
 		}
 
-		// Automatic QA is local-only. Remove obsolete sharing configuration,
-		// including the legacy consent container that occupied a boolean path.
-		const devObj = isRecord(raw.dev) ? raw.dev : undefined;
-		if (devObj) {
-			delete devObj.autoqaConsent;
-			delete devObj.autoqaPush;
-			if (isRecord(devObj.autoqa)) delete devObj.autoqa;
-		}
-		for (const key of [
-			"dev.autoqa.consent",
-			"dev.autoqaConsent",
-			"dev.autoqaPush",
-			"dev.autoqaPush.endpoint",
-			"dev.autoqaPush.token",
-		]) {
-			delete raw[key];
-		}
-		if (isRecord(raw["dev.autoqa"])) delete raw["dev.autoqa"];
-
 		// v17 reminders.max rename used to nest under a boolean parent path.
 		migrateNestedLeafRename(
 			raw,
