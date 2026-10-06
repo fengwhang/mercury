@@ -57,12 +57,14 @@ class VoiceCallEngineError(RuntimeError):
 
 
 def resolve_channel_agent(channel: str) -> Dict[str, str]:
-    """Return the live room's engine and registered name (never raises).
+    """Return a live channel or query nick's registered identity.
 
-    Reads the room manager or its durable tree in one lookup. Missing,
-    expired and unidentifiable rooms return unknown with an empty name.
+    Channels match room_id; queries match the actual IRC nick in mxid,
+    never a display name or room slug. Ambiguous/expired nicks fail closed.
     """
-    unknown = {"engine": "unknown", "name": ""}
+    unknown = {"engine": "unknown", "name": "", "room_id": ""}
+    target = (channel or "").strip()
+    is_channel = target.startswith(("#", "&"))
     try:
         from observatory.rooms import get_room_manager
 
@@ -76,19 +78,29 @@ def resolve_channel_agent(channel: str) -> Dict[str, str]:
             if not path.is_file():
                 return unknown
             with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as db:
-                row = db.execute(
-                    "SELECT engine, name FROM nodes WHERE lower(room_id) = lower(?) "
-                    "AND status = 'live' ORDER BY created_epoch DESC LIMIT 1",
-                    (channel or "",),
-                ).fetchone()
-            return {"engine": str(row[0]), "name": str(row[1] or "")} if row else unknown
-        _route, row = manager.inbound_route(channel or "")
+                field = "room_id" if is_channel else "mxid"
+                rows = db.execute(
+                    f"SELECT engine, name, room_id FROM nodes WHERE lower({field}) = lower(?) "
+                    "AND status = 'live' ORDER BY created_epoch DESC LIMIT ?",
+                    (target, 1 if is_channel else 2),
+                ).fetchall()
+            if not rows or (not is_channel and len(rows) != 1):
+                return unknown
+            row = {"engine": rows[0][0], "name": rows[0][1], "room_id": rows[0][2]}
+        elif is_channel:
+            _route, row = manager.inbound_route(target)
+        else:
+            want = target.lower()
+            matches = [entry for entry in manager.live_rows()
+                       if str(entry.get("mxid") or "").lower() == want]
+            row = matches[0] if len(matches) == 1 else None
         if row is None:
             return unknown
         engine = str(row.get("engine") or "").strip().lower()
         if engine not in {"hermes", "omp"}:
             return unknown
-        return {"engine": engine, "name": str(row.get("name") or "")}
+        return {"engine": engine, "name": str(row.get("name") or ""),
+                "room_id": str(row.get("room_id") or "")}
     except Exception:
         return unknown
 

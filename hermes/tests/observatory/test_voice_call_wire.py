@@ -491,3 +491,100 @@ def test_control_before_hangup_cannot_pin_reader_behind_tts_writer(sidecar, monk
     finally:
         release.set()
         ws.close()
+
+@pytest.mark.parametrize("co_located", [False, True])
+def test_query_nick_uses_authoritative_live_identity(tmp_path, monkeypatch, co_located):
+    from fastapi.testclient import TestClient
+    from mercury_cli import web_server
+    from observatory import rooms, state
+
+    database = tmp_path / "state.db"
+    monkeypatch.setattr(state, "default_state_db_path", lambda: database)
+    monkeypatch.setenv("VOICE_CALL_MIRC_TOKEN", "service-secret")
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+    client = TestClient(web_server.app)
+    headers = {"Authorization": "Bearer service-secret"}
+    with state.ObservatoryState(database) as tree:
+        for node, engine, nick in [("query", "hermes", "Kai"), ("coder", "omp", "Coder")]:
+            tree.add_node(node, engine=engine, name="Registered " + node,
+                          slug="not-the-nick", mxid=nick, session_ref=node)
+            tree.set_room_id(node, "#server-" + node)
+        manager = rooms.RoomManager(tree) if co_located else None
+        monkeypatch.setattr(rooms, "get_room_manager", lambda: manager)
+        response = client.get("/api/voice-call/status", params={"channel": "kAI"}, headers=headers)
+        assert response.status_code == 200
+        assert response.json()["allowed"]
+        assert response.json()["engine"] == "hermes"
+        assert response.json()["agent_name"] == "Registered query"
+        assert response.json()["agent_room"] == "#server-query"
+        refused = client.post("/api/voice-call/call", headers=headers, json={
+            "action": "start", "channel": "Coder", "engine": "hermes",
+        })
+        assert refused.status_code == 409
+        for unknown in ["Registered query", "not-the-nick", "missing"]:
+            assert not client.get("/api/voice-call/status", params={"channel": unknown},
+                                  headers=headers).json()["allowed"]
+        tree.add_node("duplicate", engine="hermes", name="another agent", slug="duplicate",
+                      mxid="kAI", session_ref="duplicate")
+        assert client.get("/api/voice-call/status", params={"channel": "Kai"},
+                          headers=headers).json()["engine"] == "unknown"
+        tree.mark_dead("duplicate")
+        tree.mark_dead("query")
+        assert not client.get("/api/voice-call/status", params={"channel": "Kai"},
+                              headers=headers).json()["allowed"]
+
+
+@pytest.mark.parametrize("expire_before_end", [False, True])
+def test_query_roundtrip_uses_real_registry_endpoints(sidecar, tmp_path, monkeypatch, expire_before_end):
+    from fastapi.testclient import TestClient
+    from mercury_cli import web_server
+    from observatory import rooms, state
+
+    url, _requests, sidecar_state = sidecar
+    database = tmp_path / "state.db"
+    with state.ObservatoryState(database) as tree:
+        tree.add_node("query", engine="hermes", name="Registered Query Agent",
+                      slug="not-the-nick", mxid="Kai", session_ref="query")
+        tree.set_room_id("query", "#server-query")
+    monkeypatch.setattr(state, "default_state_db_path", lambda: database)
+    monkeypatch.setattr(rooms, "get_room_manager", lambda: None)
+    monkeypatch.setenv("VOICE_CALL_MIRC_TOKEN", "service-secret")
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+    store = vc.VoiceCallStore()
+    monkeypatch.setattr(vc, "default_store", lambda: store)
+    client = TestClient(web_server.app)
+    ended = threading.Event()
+
+    def source_request(path, payload=None, **_):
+        headers = {"Authorization": "Bearer service-secret"}
+        response = (client.get(path, headers=headers) if payload is None else
+                    client.post(path, headers=headers, json=payload))
+        if payload and payload.get("action") == "end":
+            ended.set()
+        return response.json()
+
+    monkeypatch.setattr(sidecar_state, "request", source_request)
+    monkeypatch.setattr(stt, "transcribe_chunk", lambda *_: {
+        "success": True, "transcript": "query speech",
+    })
+    with connect(url) as ws:
+        ws.send(json.dumps({"type": "hello", "channel": "Kai"}))
+        ready = json.loads(ws.recv(timeout=2))
+        assert ready["type"] == "ready"
+        assert ready["channel"] == "Kai"
+        assert ready["agentName"] == "Registered Query Agent"
+        assert ready["agentRoom"] == "#server-query"
+        assert store.status("Kai")["active"]
+        ws.send(b"query microphone")
+        transcript = json.loads(ws.recv(timeout=2))
+        assert transcript["text"] == "query speech" and transcript["channel"] == "Kai"
+        if expire_before_end:
+            with state.ObservatoryState(database) as tree:
+                tree.mark_dead("query")
+            assert not client.get("/api/voice-call/status", params={"channel": "Kai"},
+                                  headers={"Authorization": "Bearer service-secret"}).json()["allowed"]
+            assert store.status("Kai")["active"]
+        ws.send(json.dumps({"type": "hangup"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "ended"
+    assert ended.wait(2)
+    assert not store.active_channels() and not sidecar_state.calls

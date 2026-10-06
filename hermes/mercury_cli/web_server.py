@@ -5860,6 +5860,7 @@ async def voice_call_status(channel: str = "", profile: Optional[str] = None):
         "engine": engine,
         "allowed": allowed,
         "agent_name": agent["name"],
+        "agent_room": agent.get("room_id", ""),
         "call": call,
     }
     if reason:
