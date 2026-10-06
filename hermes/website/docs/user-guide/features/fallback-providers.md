@@ -107,7 +107,8 @@ fallback_providers:
 
 The fallback activates automatically when the primary model fails with:
 
-- **Rate limits** (HTTP 429) — after exhausting retry attempts
+- **Rate limits** (HTTP 429) — after same-provider credential recovery cannot help
+- **Exhausted plan usage/quota** — immediately, even if the provider supplies a future reset time; when no configured fallback remains, the turn stops instead of retrying the exhausted plan
 - **Server errors** (HTTP 500, 502, 503) — after exhausting retry attempts
 - **Auth failures** (HTTP 401, 403) — immediately (no point retrying)
 - **Not found** (HTTP 404) — immediately
@@ -127,7 +128,11 @@ Prompt caches are keyed to the model (and on most providers, the account) servin
 :::
 
 :::info Per-Turn, Not Per-Session
-Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
+Fallback is **turn-scoped**: each new user message normally starts with the primary model restored. If the primary fails mid-turn, the agent advances through the configured fallback chain in order. Exhausted usage/quota never causes a retry-wait loop on the final route.
+
+If the primary has no usable credentials at startup, the same fallback activation path selects the wire protocol, credentials and full model name, including `/` characters. It keeps its place in the chain and preserves the preferred primary selection separately. On later turns, the agent restores that selection only after it resolves to a usable runtime.
+
+An explicit primary model/provider switch does not erase configured backup routes. A backup may use another model or endpoint at the same provider; activation skips the exact backend that just failed rather than deleting all entries for that provider.
 
 The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. The moment the reset time elapses, the next turn goes back to the primary automatically. Transient 429s without a reset time keep the existing behavior: a short cooldown, then retry every turn.
 :::
