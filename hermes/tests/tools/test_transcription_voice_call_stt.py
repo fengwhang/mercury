@@ -78,3 +78,33 @@ def test_parakeet_transcribes_via_command_registry(tmp_path: Path) -> None:
     assert result["success"] is True
     assert result["transcript"] == "hello parakeet"
     assert result["provider"] == "parakeet"
+
+
+def test_sidecar_overlays_configured_command_provider(tmp_path, monkeypatch):
+    import shlex
+    from observatory.voice_call_stt import load_sidecar_stt_config, transcribe_chunk
+    from tools import transcription_tools as tt
+
+    # A real command provider reports the arguments it actually received.
+    cli = tmp_path / "fake-asr.py"
+    cli.write_text(
+        "import pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text('|'.join(sys.argv[2:]))\n"
+    )
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(cli))} {{output_path}} {{model}} {{language}}"
+    stored = {
+        "provider": "qwen3-asr",
+        "qwen3-asr": {"model": "stored-model", "language": "en"},
+        "providers": {"qwen3-asr": {
+            "type": "command", "local": True, "command": command,
+            "model": "stored-model", "language": "en",
+        }},
+    }
+    monkeypatch.setattr(tt, "_load_stt_config", lambda: stored)
+    cfg = load_sidecar_stt_config({"model": "overlay-model", "language": "es"})
+    audio = _make_silent_wav(tmp_path / "browser.wav").read_bytes()
+    result = transcribe_chunk(audio, "audio/wav", cfg)
+    assert result["success"], result
+    assert result["transcript"] == "overlay-model|es"
+    assert stored["providers"]["qwen3-asr"]["model"] == "stored-model"
+    assert stored["qwen3-asr"]["language"] == "en"
