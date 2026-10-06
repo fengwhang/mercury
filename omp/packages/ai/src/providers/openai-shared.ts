@@ -25,6 +25,7 @@ import {
 	removeBlankCoreWeaveProjectHeaders,
 } from "@oh-my-pi/pi-catalog/wire/coreweave";
 import { parseGitHubCopilotApiKey } from "@oh-my-pi/pi-catalog/wire/github-copilot";
+import { assertHuggingfaceEndpoint } from "@oh-my-pi/pi-catalog/wire/huggingface";
 import {
 	$env,
 	classifyJsonPrefix,
@@ -214,6 +215,9 @@ export function resolveOpenAIRequestSetup(
 	model: OpenAIRequestSetupModel,
 	options: OpenAIRequestSetupOptions,
 ): OpenAIRequestSetup {
+	// Validate the model URL before generic OpenAI defaults can revive a missing
+	// endpoint, including old generated catalogs and persisted cache records.
+	assertHuggingfaceEndpoint(model.provider, model.baseUrl);
 	let apiKey = options.apiKey;
 	if (!apiKey) {
 		if (!$env.OPENAI_API_KEY) {

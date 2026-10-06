@@ -1176,7 +1176,7 @@ export interface HuggingfaceModelManagerConfig {
 export function huggingfaceModelManagerOptions(
 	config?: HuggingfaceModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
-	return createSimpleOpenAICompletionsOptions("huggingface", "https://router.huggingface.co/v1", config);
+	return createSimpleOpenAICompletionsOptions("huggingface", "", config);
 }
 
 // ---------------------------------------------------------------------------
@@ -7100,7 +7100,7 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_SPECIALIZED: readonly ModelsDevProviderDes
 	anthropicMessagesDescriptor("minimax", "minimax", "https://api.minimax.io/anthropic"),
 	anthropicMessagesDescriptor("minimax-cn", "minimax-cn", "https://api.minimaxi.com/anthropic"),
 	// --- Hugging Face ---
-	openAiCompletionsDescriptor("huggingface", "huggingface", "https://router.huggingface.co/v1"),
+	openAiCompletionsDescriptor("huggingface", "huggingface", ""),
 	// --- Kilo Gateway ---
 	openAiCompletionsDescriptor("kilo", "kilo", "https://api.kilo.ai/api/gateway"),
 	// --- Moonshot AI ---

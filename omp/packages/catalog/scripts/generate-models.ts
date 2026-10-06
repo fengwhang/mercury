@@ -29,6 +29,7 @@ import {
 	type CatalogDiscoveryConfig,
 	type CatalogProviderDescriptor,
 	isCatalogDescriptor,
+	type ModelManagerConfig,
 } from "../src/provider-models/descriptor-types";
 import { PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
 import { filterModelsDevCatalogRows } from "../src/provider-models/models-dev-policies";
@@ -66,6 +67,7 @@ import {
 import type { Api, Model, ModelSpec } from "../src/types";
 import { cleanModelName } from "../src/utils";
 import { mergeCopilotApiHeaders } from "../src/wire/github-copilot";
+import { assertHuggingfaceEndpoint } from "../src/wire/huggingface";
 import {
 	applyAntigravityPricingFallback,
 	applyCanonicalLimitFallback,
@@ -171,10 +173,11 @@ async function resolveProviderApiKey(providerId: string, catalog: CatalogDiscove
 }
 type CatalogProviderFetchResult = { models: ModelSpec[]; succeeded: boolean };
 
-async function fetchProviderModelsFromCatalog(
+export async function fetchProviderModelsFromCatalog(
 	descriptor: CatalogProviderDescriptor,
+	config: ModelManagerConfig = {},
 ): Promise<CatalogProviderFetchResult> {
-	const apiKey = await resolveProviderApiKey(descriptor.providerId, descriptor.catalogDiscovery);
+	const apiKey = config.apiKey ?? (await resolveProviderApiKey(descriptor.providerId, descriptor.catalogDiscovery));
 
 	if (!apiKey && !allowsUnauthenticatedCatalogDiscovery(descriptor)) {
 		console.log(`No ${descriptor.catalogDiscovery.label} credentials found (env or agent.db), using fallback models`);
@@ -183,9 +186,12 @@ async function fetchProviderModelsFromCatalog(
 
 	try {
 		console.log(`Fetching models from ${descriptor.catalogDiscovery.label} model manager...`);
-		const discoveryConfig = { apiKey };
+		// Keep explicit endpoint/transport overrides when supplied; credentials
+		// alone must never revive a hosted Hugging Face catalog endpoint.
+		const discoveryConfig = { ...config, apiKey };
 		const preparedConfig =
 			getProviderDefinition(descriptor.providerId)?.prepareModelDiscovery?.(discoveryConfig) ?? discoveryConfig;
+		assertHuggingfaceEndpoint(descriptor.providerId, preparedConfig.baseUrl);
 		const managerOptions = descriptor.createModelManagerOptions(preparedConfig);
 		const manager = createModelManager(managerOptions);
 		const result = await manager.refresh("online");
