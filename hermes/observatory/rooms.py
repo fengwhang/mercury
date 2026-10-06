@@ -693,6 +693,7 @@ class RoomManager:
                 ok = fn(text)
         except Exception as exc:
             logger.debug("rooms: steer %s failed", node_id, exc_info=True)
+            return f"steer failed: {exc}"
         if ok is False:
             return "subagent is no longer accepting input."
         return f"steered (as {sender})."

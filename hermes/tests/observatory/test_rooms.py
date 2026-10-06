@@ -280,6 +280,139 @@ async def test_handle_child_message_steers(tmp_path) -> None:
     )
 
 
+@pytest.fixture
+def child_adapter(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import SendResult
+    from mercury_cli import profiles
+    from mercury_constants import get_hermes_home_override
+    from plugins.platforms.mirc.adapter import MIRCAdapter
+
+    state = _real_state(tmp_path)
+    state.add_node(
+        "parent", engine="hermes", name="parent", slug="parent", mxid="parent",
+        session_ref="parent-session", extra={"kind": "spawn", "profile": "research"},
+    )
+    state.set_room_id("parent", "#parent")
+    state.add_node(
+        "child", engine="hermes", name="child", slug="child", mxid="child",
+        session_ref="child-session", parent_node_id="parent",
+        extra={"kind": "delegate", "profile": "research"},
+    )
+    state.set_room_id("child", "#parent-child")
+    manager = RoomManager(state, FakeBot())
+    monkeypatch.setattr(rooms, "_current_manager", manager)
+    profile_home = tmp_path / "profiles" / "research"
+    monkeypatch.setattr(profiles, "get_profile_dir", lambda name: profile_home)
+    monkeypatch.setattr("observatory.thinking.thinking_started", lambda channel: None)
+    adapter = MIRCAdapter(PlatformConfig(enabled=True, extra={}, typing_indicator=False))
+    events = []
+    replies = []
+
+    async def handle(event):
+        assert get_hermes_home_override() == str(profile_home)
+        events.append(event)
+
+    async def send(chat_id, content, **kwargs):
+        replies.append((chat_id, content))
+        return SendResult(success=True)
+
+    adapter.set_message_handler(handle)
+    monkeypatch.setattr(adapter, "handle_message", handle)
+    monkeypatch.setattr(adapter, "send", send)
+    yield SimpleNamespace(
+        manager=manager, adapter=adapter, events=events, replies=replies,
+    )
+    rooms.drop_child_steer("child")
+    state.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", [
+    "!exit", "/exit", "!approve", "/approve", "!status", "/status", "/unknown",
+])
+async def test_child_gateway_commands_dispatch_once_without_steering(child_adapter, text):
+    from gateway.session import build_session_key
+    from mercury_constants import get_hermes_home_override
+
+    env = child_adapter
+    steered = []
+    rooms.register_child_steer("child", steered.append)
+    await env.adapter._dispatch_message(text, "#parent-child", "group", "owner", "owner")
+    assert steered == []
+    assert env.replies == []
+    assert len(env.events) == 1
+    event = env.events[0]
+    assert event.text == ("/" + text[1:] if text.startswith("!") else text)
+    assert event.source.chat_id == "#parent-child"
+    assert event.source.profile == "research"
+    source = env.adapter.build_source(
+        "#parent-child", chat_type="group", user_id="owner", user_name="owner",
+    )
+    source.profile = "research"
+    assert build_session_key(event.source, profile=event.source.profile) == build_session_key(
+        source, profile="research",
+    )
+    assert get_hermes_home_override() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["accepted", "refused", "finished", "sync-error", "async-error"])
+async def test_child_chat_never_gateway_dispatches(child_adapter, outcome):
+    env = child_adapter
+    steered = []
+
+    def steer(text):
+        steered.append(text)
+        if outcome.endswith("error"):
+            raise RuntimeError("transport ended")
+        if outcome == "refused":
+            return False
+
+    async def async_steer(text):
+        return steer(text)
+
+    if outcome != "finished":
+        rooms.register_child_steer("child", async_steer if outcome == "async-error" else steer)
+    await env.adapter._dispatch_message("change direction", "#parent-child", "group", "owner", "owner")
+    assert env.events == []
+    assert steered == ([] if outcome == "finished" else ["change direction"])
+    expected = {
+        "accepted": "steered (as owner).",
+        "refused": "subagent is no longer accepting input.",
+        "finished": "that subagent already finished — its room is history now.",
+        "sync-error": "steer failed: transport ended",
+        "async-error": "steer failed: transport ended",
+    }
+    assert env.replies == [("#parent-child", expected[outcome])]
+
+
+@pytest.mark.asyncio
+async def test_root_approval_keeps_profile_and_session_source(child_adapter):
+    from gateway.session import build_session_key
+
+    env = child_adapter
+    steered = []
+    rooms.register_child_steer("child", steered.append)
+    await env.adapter._dispatch_message("!approve", "#parent", "group", "owner", "owner")
+    assert steered == []
+    assert env.replies == []
+    assert len(env.events) == 1
+    event = env.events[0]
+    assert event.text == "/approve"
+    assert event.source.chat_id == "#parent"
+    assert event.source.profile == "research"
+    source = env.adapter.build_source(
+        "#parent", chat_type="group", user_id="owner", user_name="owner",
+    )
+    source.profile = "research"
+    assert build_session_key(event.source, profile=event.source.profile) == build_session_key(
+        source, profile="research",
+    )
+
+
 @pytest.mark.asyncio
 async def test_handle_omp_message_task_then_steer(tmp_path, monkeypatch) -> None:
     class FakeRpc:

@@ -1442,15 +1442,15 @@ class MIRCAdapter(BasePlatformAdapter):
                     source.profile = _row["extra"]["profile"]
                 if manager is not None and route in ("child", "spawn-omp"):
                     if route == "child":
-                        reply = await manager.handle_child_message(chat_id, user_name, text)
-                        if reply:
-                            await self.send(chat_id, reply, metadata={
-                                "mercury_kind": "status", "_interim_send": True,
-                            })
-                        # The room owned this text: a gateway turn here would
-                        # answer a second time in someone else's room. Slash
-                        # commands still fall through (exit/status/...).
+                        # Slash commands belong to the gateway; never steer
+                        # them into a child before dispatching its command.
                         if not text.lstrip().startswith("/"):
+                            reply = await manager.handle_child_message(chat_id, user_name, text)
+                            if reply:
+                                await self.send(chat_id, reply, metadata={
+                                    "mercury_kind": "status", "_interim_send": True,
+                                })
+                            # Plain chat belongs only to the child.
                             return
                     else:
                         from observatory.rooms import classify_omp_slash
