@@ -714,31 +714,6 @@ TOOL_CATEGORIES = {
             },
         ],
     },
-    "langfuse": {
-        "name": "Langfuse Observability",
-        "icon": "📊",
-        "providers": [
-            {
-                "name": "Langfuse Cloud",
-                "tag": "Hosted Langfuse (cloud.langfuse.com)",
-                "env_vars": [
-                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)", "url": "https://cloud.langfuse.com"},
-                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)", "url": "https://cloud.langfuse.com"},
-                ],
-                "post_setup": "langfuse",
-            },
-            {
-                "name": "Langfuse Self-Hosted",
-                "tag": "Self-hosted Langfuse instance",
-                "env_vars": [
-                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)"},
-                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)"},
-                    {"key": "HERMES_LANGFUSE_BASE_URL", "prompt": "Langfuse server URL (e.g. http://localhost:3000)", "default": "http://localhost:3000"},
-                ],
-                "post_setup": "langfuse",
-            },
-        ],
-    },
 }
 
 # Simple env-var requirements for toolsets NOT in TOOL_CATEGORIES.
@@ -2314,36 +2289,6 @@ def _run_post_setup(post_setup_key: str):
             _print_warning(f"    Spotify login failed: {exc}")
             _print_info("    Run manually: mercury auth spotify")
 
-    elif post_setup_key == "langfuse":
-        # Install the langfuse SDK.
-        try:
-            __import__("langfuse")
-            _print_success("    langfuse SDK already installed")
-        except ImportError:
-            _print_info("    Installing langfuse SDK...")
-            result = _pip_install(["langfuse", "--quiet"], timeout=120)
-            if result.returncode == 0:
-                _print_success("    langfuse SDK installed")
-            else:
-                _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
-        # Opt the bundled observability/langfuse plugin into plugins.enabled.
-        # The plugin ships in the repo but doesn't load until the user enables
-        # it (standalone plugins are opt-in).
-        try:
-            from mercury_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
-            enabled = _get_enabled_set()
-            if "observability/langfuse" in enabled or "langfuse" in enabled:
-                _print_success("    Plugin observability/langfuse already enabled")
-            else:
-                enabled.add("observability/langfuse")
-                _save_enabled_set(enabled)
-                _print_success("    Plugin observability/langfuse enabled")
-        except Exception as exc:
-            _print_warning(f"    Could not enable plugin automatically: {exc}")
-            _print_info("    Run manually: mercury plugins enable observability/langfuse")
-        _print_info("    Restart Mercury for tracing to take effect.")
-        _print_info("    Verify: mercury plugins list")
-
     elif post_setup_key == "xai_grok":
         # Shared credential bootstrap for any picker entry that talks to xAI
         # (TTS, Video Gen, future Image Gen, etc.). Accepts either a
@@ -3734,7 +3679,6 @@ _RESTORABLE_PYTHON_TOOL_DEPENDENCIES: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     "piper": ("piper", ("-U", "piper-tts")),
     "ddgs": ("ddgs", ("-U", "ddgs")),
-    "langfuse": ("langfuse", ("langfuse",)),
 }
 
 
@@ -3795,7 +3739,6 @@ _POST_SETUP_READY: dict = {
     "piper": lambda: _module_installed("piper"),
     "faster_whisper": lambda: _module_installed("faster_whisper"),
     "ddgs": lambda: _module_installed("ddgs"),
-    "langfuse": lambda: _module_installed("langfuse"),
     "agent_browser": lambda: _agent_browser_installed(),
     "browserbase": lambda: _cloud_agent_browser_installed(),
     "camofox": lambda: _camofox_installed(),

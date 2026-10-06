@@ -57,7 +57,7 @@ def _fire_pre_api_request_hook(
             if not isinstance(request_messages, list):
                 request_messages = api_messages
             # Shallow copies: plugins may retain the lists; deepcopy is costly.
-            # ``request_messages``/``conversation_history`` are raw langfuse passthroughs.
+            # ``request_messages``/``conversation_history`` are raw plugin passthroughs.
             # Anthropic (``system``) and Responses/Codex (``instructions``) move the system
             # prompt out of messages; pass it for observability.
             _invoke_hook(

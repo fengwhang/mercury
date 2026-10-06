@@ -171,12 +171,6 @@ async def test_startup_aborts_when_restart_begins_during_platform_connect(tmp_pa
 async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     cron_started = False
-    export_shutdown_calls = 0
-
-    class ExportRuntime:
-        def shutdown(self):
-            nonlocal export_shutdown_calls
-            export_shutdown_calls += 1
 
     class AbortedStartupRunner:
         def __init__(self, config):
@@ -187,7 +181,6 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
             self.should_exit_with_failure = False
             self.exit_reason = None
             self.exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
-            self._gateway_health_export_runtime = ExportRuntime()
 
         async def start(self):
             return True
@@ -215,4 +208,3 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
 
     assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert cron_started is False
-    assert export_shutdown_calls == 1

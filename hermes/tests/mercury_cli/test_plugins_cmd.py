@@ -568,26 +568,26 @@ class TestPromptPluginEnvVars:
 
         console = MagicMock()
         manifest = {
-            "name": "langfuse_tracing",
+            "name": "example_plugin",
             "requires_env": [
                 {
-                    "name": "LANGFUSE_PUBLIC_KEY",
+                    "name": "EXAMPLE_PUBLIC_KEY",
                     "description": "Public key",
-                    "url": "https://langfuse.com",
+                    "url": "https://example.invalid",
                     "secret": False,
                 },
             ],
         }
 
         with patch("mercury_cli.config.get_env_value", return_value=None), \
-             patch("builtins.input", return_value="pk-lf-123"), \
+             patch("builtins.input", return_value="public-test-key"), \
              patch("mercury_cli.config.save_env_value") as mock_save:
             _prompt_plugin_env_vars(manifest, console)
 
-        mock_save.assert_called_once_with("LANGFUSE_PUBLIC_KEY", "pk-lf-123")
+        mock_save.assert_called_once_with("EXAMPLE_PUBLIC_KEY", "public-test-key")
         # Should show url hint
         printed = " ".join(str(c) for c in console.print.call_args_list)
-        assert "langfuse.com" in printed
+        assert "example.invalid" in printed
 
     def test_secret_uses_masked_prompt(self):
         from mercury_cli.plugins_cmd import _prompt_plugin_env_vars
