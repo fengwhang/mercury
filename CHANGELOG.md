@@ -36,6 +36,9 @@ their original projects and are not Mercury release announcements.
   and the original backend error, and require local repair rather than retrying
   a model download. Complete local caches remain usable.
 
+- Build the packaged mLounge client and server using the pinned frozen Yarn
+  lockfile, preserving committed frontend source bytes in release archives.
+
 ## [0.4.3] — nightly
 
 - Remove expired subagent rooms even when MIRC destruction needs a retry, and
