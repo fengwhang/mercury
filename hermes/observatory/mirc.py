@@ -385,7 +385,10 @@ class MircDaemon:
             self._rebind_task = None
         if self._room_expiry_task is not None:
             self._room_expiry_task.cancel()
-            await self._room_expiry_task
+            try:
+                await self._room_expiry_task
+            except asyncio.CancelledError:
+                pass  # A freshly scheduled worker may not have entered its loop.
             self._room_expiry_task = None
         if self._ping_task is not None:
             self._ping_task.cancel()

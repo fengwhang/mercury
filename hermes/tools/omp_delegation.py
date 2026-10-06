@@ -36,6 +36,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 import uuid
 from tools import wave_mem_profiler as _wave_mem_profiler
@@ -159,16 +160,48 @@ def _live_child_id(delegation_id: Optional[str], task_index: int) -> str:
 
 
 def _register_live_child(meta: Dict[str, Any], transport: Any) -> None:
-    with _live_children_lock:
-        _live_children[meta["child_id"]] = {
-            **meta, "transport": transport,
-            "started_at": time.time(), "stop_requested": False,
-        }
+    parent_id = str(meta.get("parent_node_id") or "")
+    manager = None
+    if parent_id:
+        from observatory.rooms import get_room_manager
+
+        manager = get_room_manager()
+    allowed = True
+    # Serialize admission with begin_exit's durable dead mark. Unbound CLI
+    # delegates keep their normal registry behavior, without a room lifetime.
+    with manager.state.locked() if manager is not None else nullcontext():
+        with _live_children_lock:
+            if manager is not None:
+                ancestor = parent_id
+                visited: set[str] = set()
+                allowed = False
+                while ancestor and ancestor not in visited:
+                    visited.add(ancestor)
+                    try:
+                        row = manager.state.get(ancestor)
+                    except KeyError:
+                        row = None
+                    if row is not None:
+                        allowed = row.get("status") == "live"
+                        break
+                    # A parent transport may itself await watcher observation.
+                    ancestor = str(_live_children.get(ancestor, {}).get("parent_node_id") or "")
+            if allowed:
+                _live_children[meta["child_id"]] = {
+                    **meta, "transport": transport,
+                    "started_at": time.time(), "stop_requested": False,
+                }
+        if allowed:
+            # Keep the legacy process list in sync (counts + _kill_live_children).
+            with _live_procs_lock:
+                _live_procs.append(transport)
+    if not allowed:
+        transport.kill()
+        logger.info("observatory: rejected child %s after parent %s ended",
+                    meta.get("child_id"), parent_id)
+        return
     logger.info("observatory: live child registered %s (%s)",
                 meta.get("child_id"), meta.get("name"))
-    # Keep the legacy process list in sync (counts + _kill_live_children).
-    with _live_procs_lock:
-        _live_procs.append(transport)
 
 
 def _subscribe_child_feed(transport: Any) -> None:

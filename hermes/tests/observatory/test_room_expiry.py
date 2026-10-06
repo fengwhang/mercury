@@ -219,3 +219,9 @@ async def test_expiry_sweep_protects_live_replacement_gateway_and_unrelated_room
         finally:
             await observer.close()
             state.close()
+
+
+@pytest.mark.asyncio
+async def test_daemon_can_stop_before_expiry_worker_first_runs(tmp_path):
+    async with running_daemon(tmp_path):
+        pass

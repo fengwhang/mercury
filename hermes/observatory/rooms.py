@@ -479,7 +479,7 @@ class RoomManager:
         return sent
 
     async def destroy_room(self, channel: str) -> bool:
-        """Server-side destroy (OPER DESTROY): members PARTed, history dropped."""
+        """Server-side destroy: members PARTed, saved transcripts preserved."""
         from observatory.thinking import thinking_done
 
         thinking_done(channel)

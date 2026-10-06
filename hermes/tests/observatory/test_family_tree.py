@@ -267,3 +267,41 @@ async def test_parent_exit_stops_registered_descendants_before_rooms_are_observe
     assert state.get("coder")["status"] == "live"
     with pytest.raises(StateError):
         state.get("testbot")
+
+
+@pytest.mark.asyncio
+async def test_child_registration_after_exit_snapshot_cannot_outlive_parent(family, monkeypatch):
+    from observatory.spawn import OrchestratorRegistry, exit_orchestrator
+    from tools import omp_delegation as delegation
+
+    manager, state = family
+    monkeypatch.setattr(delegation, "_live_children", {})
+    monkeypatch.setattr(delegation, "_live_procs", [])
+    killed = []
+    snapshot = gateway_session._snapshot_live_children
+
+    def register_after_snapshot():
+        children = snapshot()
+        delegation._register_live_child(
+            {"child_id": "late", "parent_node_id": "testbot"},
+            SimpleNamespace(kill=lambda: killed.append("late")))
+        return children
+
+    monkeypatch.setattr(gateway_session, "_snapshot_live_children", register_after_snapshot)
+    await exit_orchestrator(
+        "testbot", state=state, registry=OrchestratorRegistry(), bot=manager.bot)
+    assert killed == ["late"]
+    assert "late" not in snapshot()
+    assert delegation._live_procs == []
+
+
+def test_unbound_cli_child_registration_is_not_gated_by_observatory(family, monkeypatch):
+    from tools import omp_delegation as delegation
+
+    monkeypatch.setattr(delegation, "_live_children", {})
+    monkeypatch.setattr(delegation, "_live_procs", [])
+    killed = []
+    transport = SimpleNamespace(kill=lambda: killed.append("cli"))
+    delegation._register_live_child({"child_id": "cli", "parent_node_id": ""}, transport)
+    assert killed == []
+    assert gateway_session._snapshot_live_children()["cli"]["transport"] is transport

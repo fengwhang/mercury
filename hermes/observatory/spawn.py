@@ -951,8 +951,8 @@ def finish_exit(
     channel destroy did not converge. This is the zombie fix: the node rows
     (and the mLounge sidebar entry, pruned by the caller) go away at death
     time regardless, while the channel itself keeps retrying in the
-    background. A journal entry with no rows reserves no names and blocks
-    nothing — it is purely a destroy to-do list.
+    background. A row-less entry retains only the channel cleanup intent;
+    its channel name stays reserved until destruction converges.
     """
     pending = [str(c) for c in (pending_channels or []) if str(c)]
     with state.locked() as db:
@@ -1107,8 +1107,13 @@ async def exit_orchestrator(
     from observatory.rooms import drop_child_steer
     from observatory.gateway_session import _snapshot_live_children
 
+    # Close admission before snapshotting transports. Registration shares
+    # this state lock, so a concurrent late child is killed rather than
+    # slipping behind the exit cascade's snapshot.
+    with state.locked():
+        record = begin_exit(state, node_id, status=status, summary=summary)
+        subtree = state.get_subtree(node_id)
     live_children = _snapshot_live_children()
-    subtree = state.get_subtree(node_id)
     # Transports register before the watcher creates their state rows.
     # Include that pending family, rather than letting observer lag decide
     # which descendants survive an explicit parent exit.
@@ -1136,7 +1141,6 @@ async def exit_orchestrator(
                 native_controls.append((rpc, sid))
                 break
             parent_id = str(state.get(parent_id).get("parent_node_id") or "")
-    record = begin_exit(state, node_id, status=status, summary=summary)
     for rpc, sid in reversed(native_controls):
         try:
             await asyncio.to_thread(rpc.subagent_abort, sid)
