@@ -643,16 +643,6 @@ class RoomManager:
                 )
         except Exception:
             parent_channel = ""
-        if parent_channel and not already_completed:
-            try:
-                label = str(row.get("name") or node_id)
-                await self.publish(
-                    parent_channel,
-                    f"Delegate task {status}: {label}" + (f"\n{summary}" if summary else ""),
-                    kind="assistant_reply" if summary else "status",
-                )
-            except Exception:
-                pass
         from observatory.state import purge_on_death
 
         if purge_on_death(int(row["depth"])):
@@ -670,6 +660,16 @@ class RoomManager:
             )
             await exit_orchestrator(node_id, state=self.state, registry=_shared_registry(),
                                     bot=self.bot, status=status, summary=summary)
+        if parent_channel and not already_completed:
+            try:
+                label = str(row.get("name") or node_id)
+                await self.publish(
+                    parent_channel,
+                    f"Delegate task {status}: {label}" + (f"\n{summary}" if summary else ""),
+                    kind="assistant_reply" if summary else "status",
+                )
+            except Exception:
+                pass
 
     def _native_parent(self, owner_id: str, feed: dict[str, Any]) -> str:
         """Map an in-process OMP parent to the immediate observatory node."""

@@ -427,3 +427,27 @@ async def test_boot_reap_expires_live_descendants_of_a_dead_parent(tmp_path, mon
         assert history.read_text() == "retained child transcript\n"
     finally:
         state.close()
+
+
+def test_boot_reap_recovers_completed_level1_not_retained_agents(tmp_path):
+    """Completion persisted before an interrupted exit still ends depth 1."""
+    state = ObservatoryState(tmp_path / "observatory/state.db")
+    try:
+        _seed(state, "root", depth=0, room="#nixpad_root", parent=None)
+        _seed(state, "completed", depth=1, room="#nixpad_completed", parent="root")
+        _seed(state, "descendant", depth=2, room="#nixpad_descendant", parent="completed")
+        _seed(state, "active", depth=1, room="#nixpad_active", parent="root")
+        _seed(state, "retained", depth=2, room="#nixpad_retained", parent="active")
+        for node in ("root", "completed", "retained"):
+            state.update_extra(node, task_state="completed")
+
+        result = reap_orphan_rooms(state, mercury_home=tmp_path)
+
+        assert set(result["rows_purged"]) == {"completed", "descendant"}
+        assert {row["node_id"] for row in state.get_live()} == {"root", "active", "retained"}
+        assert set(result["channels_queued"]) == {"#nixpad_completed", "#nixpad_descendant"}
+        assert {channel for entry in read_purge_journal(state) for channel in entry["channels"]} == {
+            "#nixpad_completed", "#nixpad_descendant"
+        }
+    finally:
+        state.close()

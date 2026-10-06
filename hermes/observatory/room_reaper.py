@@ -202,6 +202,9 @@ def reap_orphan_rooms(
        subtree deepest-first so parent foreign keys cannot strand either
        generation. Transcripts live in the mLounge log store and Hermes
        session DB, neither touched here.
+       A depth-1 task whose completion persisted before an interrupted exit
+       also ended its lifetime; completed roots and deeper retained agents
+       do not expire on their own.
     2. **Orphan channels.** Every channel in ``closed-rooms`` with no live
        node row must not exist. Returned for destruction — destroying a gone
        channel is success, so the caller's retry is idempotent.
@@ -226,12 +229,19 @@ def reap_orphan_rooms(
 
     expired: dict[str, dict[str, Any]] = {}
     try:
+        from observatory.state import purge_on_death
+
         with state.locked() as db:
             live_rows = list(state.get_live())
-            dead_rows = db.execute(
+            expired_roots = list(db.execute(
                 "SELECT node_id, room_id FROM nodes WHERE status != 'live' ORDER BY depth DESC"
-            ).fetchall()
-            for raw in dead_rows:
+            ).fetchall())
+            expired_roots.extend(
+                row for row in live_rows
+                if purge_on_death(int(row["depth"]))
+                and row.get("extra", {}).get("task_state") == "completed"
+            )
+            for raw in expired_roots:
                 if raw["node_id"] in expired or _norm(raw["room_id"]) in pinned:
                     continue
                 for row in state.get_subtree(raw["node_id"]):
