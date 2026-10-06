@@ -181,18 +181,33 @@ def test_requirements_deps_present_but_no_audio_hint(monkeypatch):
     assert "audio device" in r["hint"] or "microphone" in r["hint"].lower()
 
 
-# ── openWakeWord engine (bundled model + base-model fetch) ───────────────
+# ── openWakeWord engine (local models only) ──────────────────────────────
 
 
-def _install_fake_openwakeword(monkeypatch):
-    """Swap in a fake ``openwakeword`` so the engine builds with no network.
+def _forbid_wake_network(monkeypatch):
+    import socket
+    import urllib.request
 
-    Returns a ``calls`` dict recording every ``download_models`` invocation.
-    """
-    calls = {"download": []}
+    def _blocked(*args, **kwargs):
+        raise AssertionError("wake-word network access is forbidden")
+
+    monkeypatch.setattr(socket, "create_connection", _blocked)
+    monkeypatch.setattr(urllib.request, "urlopen", _blocked)
+    monkeypatch.setattr(urllib.request, "urlretrieve", _blocked)
+
+
+def _install_fake_openwakeword(monkeypatch, tmp_path):
+    """Provide local feature fixtures; any attempted downloader fails loudly."""
+    _forbid_wake_network(monkeypatch)
+    calls = {"download": [], "model": []}
+
+    def _download(*args, **kwargs):
+        calls["download"].append(args)
+        raise AssertionError("wake-word model downloads are forbidden")
 
     class _FakeModel:
-        def __init__(self, wakeword_models, inference_framework="onnx"):
+        def __init__(self, wakeword_models, inference_framework="onnx", **kwargs):
+            calls["model"].append((list(wakeword_models), inference_framework, kwargs))
             self.wakeword_models = list(wakeword_models)
             self.models = {"hey_hermes": object()}
 
@@ -203,28 +218,87 @@ def _install_fake_openwakeword(monkeypatch):
             pass
 
     oww = types.ModuleType("openwakeword")
-    oww.utils = types.SimpleNamespace(
-        download_models=lambda names=[]: calls["download"].append(list(names))
-    )
+    oww.FEATURE_MODELS = {}
+    for name, stem in (("melspectrogram", "melspectrogram"), ("embedding", "embedding_model")):
+        path = tmp_path / f"{stem}.onnx"
+        path.write_bytes(b"local fixture")
+        path.with_suffix(".tflite").write_bytes(b"local fixture")
+        oww.FEATURE_MODELS[name] = {"model_path": str(path)}
+    builtin = tmp_path / "hey_jarvis_v0.1.onnx"
+    builtin.write_bytes(b"local fixture")
+    builtin.with_suffix(".tflite").write_bytes(b"local fixture")
+    oww.models = {"hey_jarvis": {"model_path": str(builtin)}}
+    oww.utils = types.SimpleNamespace(download_models=_download)
     model_mod = types.ModuleType("openwakeword.model")
     model_mod.Model = _FakeModel
-
     monkeypatch.setitem(sys.modules, "openwakeword", oww)
     monkeypatch.setitem(sys.modules, "openwakeword.model", model_mod)
     monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: True)
     return calls
 
 
-def test_openwakeword_ensures_base_models_for_custom_path(monkeypatch):
-    # Regression: a custom ``.onnx`` path used to skip download_models entirely,
-    # so a fresh install crashed at load time on a missing melspectrogram.onnx.
-    # The base feature models must be ensured for a custom path too.
-    calls = _install_fake_openwakeword(monkeypatch)
-    eng = ww._OpenWakeWordEngine(
-        {"provider": "openwakeword", "openwakeword": {"model": "/models/hey_hermes.onnx"}}
-    )
-    assert calls["download"] == [["/models/hey_hermes.onnx"]]
+@pytest.mark.parametrize("framework", ["onnx", "tflite"])
+@pytest.mark.parametrize("model_kind", ["default", "custom", "builtin"])
+def test_openwakeword_local_models_never_download(monkeypatch, tmp_path, model_kind, framework):
+    calls = _install_fake_openwakeword(monkeypatch, tmp_path)
+    sub = {"inference_framework": framework}
+    if model_kind == "custom":
+        model = tmp_path / f"custom.{framework}"
+        model.write_bytes(b"local fixture")
+        sub["model"] = str(model)
+    elif model_kind == "builtin":
+        sub["model"] = "hey_jarvis"
+    eng = ww._build_engine({"provider": "openwakeword", "openwakeword": sub})
+    assert calls["download"] == []
+    assert len(calls["model"]) == 1
+    assert Path(calls["model"][0][0][0]).is_file()
     assert eng._labels == ["hey_hermes"]
+
+
+@pytest.mark.parametrize("feature", ["embedding_model.onnx", "melspectrogram.onnx"])
+@pytest.mark.parametrize("model_kind", ["default", "custom"])
+def test_openwakeword_missing_features_refuses_before_initializer(monkeypatch, tmp_path, model_kind, feature):
+    calls = _install_fake_openwakeword(monkeypatch, tmp_path)
+    (tmp_path / feature).unlink()
+    sub = {"inference_framework": "onnx"}
+    if model_kind == "custom":
+        path = tmp_path / "custom.onnx"
+        path.write_bytes(b"local fixture")
+        sub["model"] = str(path)
+    with pytest.raises(RuntimeError, match=f"local.*{feature}"):
+        ww._OpenWakeWordEngine({"openwakeword": sub})
+    assert calls["download"] == []
+    assert calls["model"] == []
+
+
+@pytest.mark.parametrize("asset", ["missing", "empty", "directory"])
+def test_openwakeword_unusable_custom_model_refuses(monkeypatch, tmp_path, asset):
+    calls = _install_fake_openwakeword(monkeypatch, tmp_path)
+    path = tmp_path / "custom.onnx"
+    if asset == "empty":
+        path.touch()
+    elif asset == "directory":
+        path.mkdir()
+    with pytest.raises(RuntimeError, match="wake_word.openwakeword.model"):
+        ww._OpenWakeWordEngine({"openwakeword": {"model": str(path), "inference_framework": "onnx"}})
+    assert calls["download"] == []
+    assert calls["model"] == []
+
+
+@pytest.mark.parametrize("model_kind", ["default", "builtin"])
+def test_openwakeword_missing_selected_model_refuses(monkeypatch, tmp_path, model_kind):
+    calls = _install_fake_openwakeword(monkeypatch, tmp_path)
+    if model_kind == "default":
+        monkeypatch.setattr(ww, "_bundled_wakeword_path", lambda framework: str(tmp_path / "absent.onnx"))
+        sub = {}
+    else:
+        (tmp_path / "hey_jarvis_v0.1.onnx").unlink()
+        sub = {"model": "hey_jarvis"}
+    with pytest.raises(RuntimeError, match="wake_word.openwakeword.model"):
+        ww._build_engine({"provider": "openwakeword", "openwakeword": {"inference_framework": "onnx", **sub}})
+    assert calls["download"] == []
+    assert calls["model"] == []
 
 
 def test_bundled_hey_hermes_model_ships_on_disk():
@@ -269,15 +343,14 @@ def test_macos_arm64_prefers_tflite_on_this_host():
     ) == "tflite"
 
 
-def test_explicit_framework_kept_where_onnx_works(monkeypatch):
-    # An operator who pins a backend keeps it everywhere ONNX actually works.
-    calls = _install_fake_openwakeword(monkeypatch)
+def test_explicit_framework_kept_where_onnx_works(monkeypatch, tmp_path):
+    calls = _install_fake_openwakeword(monkeypatch, tmp_path)
     monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
     ww._OpenWakeWordEngine(
         {"provider": "openwakeword", "openwakeword": {"inference_framework": "onnx"}}
     )
-    (downloaded,) = calls["download"]
-    assert downloaded == [ww._bundled_wakeword_path("onnx")]
+    assert calls["download"] == []
+    assert calls["model"][0][:2] == ([ww._bundled_wakeword_path("onnx")], "onnx")
 
 
 def test_empty_framework_falls_back_to_platform_default(monkeypatch):
@@ -297,12 +370,12 @@ def test_empty_framework_falls_back_to_platform_default(monkeypatch):
 
 # ── ambient-speech rejection: consecutive-frame confirmation ──────────────────
 
-def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores):
+def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores, tmp_path):
     """Build a real _OpenWakeWordEngine whose predict() replays ``scores``."""
     seq = iter(scores)
 
     class _ScriptedModel:
-        def __init__(self, wakeword_models, inference_framework="onnx"):
+        def __init__(self, wakeword_models, inference_framework="onnx", **kwargs):
             self.models = {"hey_hermes": object()}
 
         def predict(self, frame):
@@ -311,15 +384,23 @@ def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores):
         def reset(self):
             pass
 
-    oww = types.ModuleType("openwakeword")
-    oww.utils = types.SimpleNamespace(download_models=lambda names=[]: None)
+    _install_fake_openwakeword(monkeypatch, tmp_path)
     model_mod = types.ModuleType("openwakeword.model")
     model_mod.Model = _ScriptedModel
-    monkeypatch.setitem(sys.modules, "openwakeword", oww)
     monkeypatch.setitem(sys.modules, "openwakeword.model", model_mod)
     monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
     monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: True)
     return ww._OpenWakeWordEngine({"provider": "openwakeword", **cfg_wake})
+
+
+def test_local_openwakeword_retains_confirmation_detection(monkeypatch, tmp_path):
+    engine = _openwakeword_engine_with_scores(
+        monkeypatch,
+        {"confirmation_frames": 2, "openwakeword": {"inference_framework": "onnx"}},
+        [0.9, 0.1, 0.9, 0.9],
+        tmp_path,
+    )
+    assert [engine.process([]) for _ in range(4)] == [False, False, False, True]
 
 
 # ── sherpa-onnx open-vocabulary engine ───────────────────────────────────
@@ -327,6 +408,7 @@ def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores):
 
 def _install_fake_sherpa(monkeypatch, tmp_path):
     """Fake sherpa_onnx + a fake model dir so the engine builds offline."""
+    _forbid_wake_network(monkeypatch)
     calls = {"text2token": [], "spotter": [], "results": []}
 
     model_dir = tmp_path / "kws-model"
@@ -386,6 +468,77 @@ def _install_fake_sherpa(monkeypatch, tmp_path):
         np_stub.asarray = lambda x, dtype=None: _FakeArr(x)
         monkeypatch.setitem(sys.modules, "numpy", np_stub)
     return calls, model_dir
+
+
+@pytest.mark.parametrize("custom", [False, True])
+def test_sherpa_missing_assets_refuses_without_network(monkeypatch, tmp_path, custom):
+    import urllib.request
+    from tools import wake_word_engines
+
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    downloads = []
+
+    def _download(*args, **kwargs):
+        downloads.append(args)
+        raise AssertionError("wake-word model downloads are forbidden")
+
+    monkeypatch.setattr(urllib.request, "urlretrieve", _download)
+    monkeypatch.setattr(wake_word_engines, "_sherpa_model_root", lambda: tmp_path / "cache")
+    if custom:
+        (model_dir / "bpe.model").unlink()
+        sub = {"model_dir": str(model_dir)}
+    else:
+        sub = {}
+    with pytest.raises(RuntimeError, match="wake_word.sherpa.model_dir"):
+        ww._SherpaKwsEngine({"sherpa": sub, "profile_routing": False})
+    assert downloads == []
+    assert calls["text2token"] == []
+    assert calls["spotter"] == []
+
+
+@pytest.mark.parametrize("custom", [False, True])
+def test_sherpa_complete_local_model_initializes_and_detects(monkeypatch, tmp_path, custom):
+    from tools import wake_word_engines
+
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    if custom:
+        sub = {"model_dir": str(model_dir)}
+    else:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        model_dir = model_dir.rename(cache / wake_word_engines._SHERPA_KWS_MODEL_DIR)
+        monkeypatch.setattr(wake_word_engines, "_sherpa_model_root", lambda: cache)
+        sub = {}
+    engine = ww._build_engine({"provider": "sherpa", "sherpa": sub, "phrase": "hey mercury", "profile_routing": False})
+    try:
+        assert calls["text2token"] == [["HEY MERCURY"]]
+        assert calls["spotter"][0]["encoder"].startswith(str(model_dir))
+        calls["results"].append("HEY_MERCURY")
+        assert engine.process([0] * 1280) is True
+        assert engine.last_match[0] == "hey mercury"
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("filename", [
+    "tokens.txt", "bpe.model",
+    "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+    "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+    "joiner-epoch-12-avg-2-chunk-16-left-64.onnx",
+])
+@pytest.mark.parametrize("unusable", ["missing", "empty", "directory"])
+def test_sherpa_incomplete_local_model_refuses_before_tokenization(monkeypatch, tmp_path, filename, unusable):
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    path = model_dir / filename
+    path.unlink()
+    if unusable == "empty":
+        path.touch()
+    elif unusable == "directory":
+        path.mkdir()
+    with pytest.raises(RuntimeError, match="wake_word.sherpa.model_dir"):
+        ww._build_engine({"provider": "sherpa", "sherpa": {"model_dir": str(model_dir)}, "profile_routing": False})
+    assert calls["text2token"] == []
+    assert calls["spotter"] == []
 
 
 # ── Multi-profile phrase routing ─────────────────────────────────────────
