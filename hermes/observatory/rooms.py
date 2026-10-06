@@ -392,11 +392,18 @@ class RoomManager:
         """Classify an inbound channel message for the adapter.
 
         Returns ``(route, row)`` where route ∈ gateway | spawn-hermes |
-        spawn-omp | child | passthrough. Unknown channels pass through to
+        spawn-omp | child | expired | passthrough. Closed channels without
+        a live successor are expired; unrelated channels pass through to
         normal gateway dispatch (a fresh per-channel session).
         """
         row = self.node_for_channel(channel)
         if row is None:
+            from observatory.room_reaper import closed_rooms
+
+            want = (channel or "").lower()
+            if (want in closed_rooms(self.state)
+                    and want != gateway_channel(_server_prefix()).lower()):
+                return "expired", None
             return "passthrough", None
         try:
             extra = row.get("extra") or {}
