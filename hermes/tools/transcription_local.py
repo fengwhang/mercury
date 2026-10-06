@@ -41,6 +41,20 @@ def _has_local_command() -> bool:
     return _get_local_command_template() is not None
 
 
+def _resolve_local_whisper_command_model(model_name: str) -> str:
+    """The built-in whisper CLI may load only an explicit local checkpoint."""
+    if os.getenv(LOCAL_STT_COMMAND_ENV, "").strip():
+        return model_name
+    checkpoint = Path(model_name).expanduser()
+    if not checkpoint.is_file():
+        raise RuntimeError(
+            "The automatic whisper CLI requires a local model file. Set stt.local.model "
+            "to a provisioned checkpoint, or configure an explicit local STT command "
+            f"with {LOCAL_STT_COMMAND_ENV}. Mercury does not download model assets.")
+    # A checkpoint named 'base' must not be mistaken for Whisper's remote model key.
+    return str(checkpoint.resolve())
+
+
 def _normalize_local_model(model_name: Optional[str]) -> str:
     """Return a valid faster-whisper size; cloud-only names (``whisper-1`` …) fall back to the default with a warning."""
     if not model_name:
@@ -122,43 +136,36 @@ def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
     return max(_config_number(local_cfg, "unload_after_idle_seconds", 0, int), 0)
 
 
-def _hub_cache_miss_error() -> type:
-    """Exception faster-whisper raises for a model missing from the local Hub cache.
-
-    ``huggingface_hub`` is an optional dependency (it arrives with faster-whisper); when it is
-    absent, its ``LocalEntryNotFoundError`` base class ``OSError`` is the closest match.
-    """
-    try:
-        from huggingface_hub.errors import LocalEntryNotFoundError
-    except ImportError:
-        return OSError
-    return LocalEntryNotFoundError
 
 
 def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
-    """Use a cached model without contacting the Hub, downloading only on a cache miss."""
+    """Load only provisioned local model assets; never download on a cache miss."""
     from faster_whisper import WhisperModel
 
-    kwargs = {"device": device, "compute_type": compute_type}
     try:
-        return WhisperModel(model_name, local_files_only=True, **kwargs)
-    except (_hub_cache_miss_error(), RuntimeError) as exc:
-        # An interrupted first download leaves a snapshot folder without the weights;
-        # snapshot_download still returns it and ctranslate2 raises "Unable to open file".
+        model_path = Path(model_name).expanduser()
+        if not model_path.is_dir():
+            # This resolver forwards local_files_only to snapshot_download; it cannot
+            # fetch. Resolve first because WhisperModel otherwise hides cache admission.
+            from faster_whisper.utils import download_model
+
+            model_path = Path(download_model(model_name, local_files_only=True))
+        for name in ("model.bin", "config.json", "tokenizer.json"):
+            asset = model_path / name
+            with asset.open("rb") as stream:
+                if not stream.read(1):
+                    raise OSError(f"Local asset is empty: {asset}")
+        # Without tokenizer.json, faster-whisper calls Tokenizer.from_pretrained
+        # independently of local_files_only. Complete asset admission prevents that.
+        return WhisperModel(
+            str(model_path.resolve()), local_files_only=True, device=device, compute_type=compute_type)
+    except (OSError, RuntimeError) as exc:
         if isinstance(exc, RuntimeError) and "Unable to open file" not in str(exc):
             raise
-        logger.info("faster-whisper model '%s' is not cached; downloading it from the Hugging Face Hub", model_name)
-
-    # huggingface_hub surfaces every Hub/network failure as an OSError subclass
-    # (LocalEntryNotFoundError wrapping the ConnectTimeout, HfHubHTTPError). Anything else
-    # (CUDA runtime, invalid model size) is not a download problem and propagates untouched.
-    try:
-        return WhisperModel(model_name, local_files_only=False, **kwargs)
-    except OSError as exc:
         raise RuntimeError(
-            f"Unable to download faster-whisper model '{model_name}': {exc}. "
-            "If huggingface.co is unreachable, set HF_ENDPOINT to an accessible mirror; "
-            "when using a mirror with hf-xet installed, also set HF_HUB_DISABLE_XET=1."
+            f"Local faster-whisper assets for '{model_name}' are unavailable: {exc}. "
+            "Provision the model locally and set stt.local.model to its local directory, "
+            "or configure a supported STT provider. Mercury does not download model assets."
         ) from exc
 
 
@@ -274,6 +281,7 @@ def _transcribe_local_command(
     language = language or _resolve_stt_language("local") or DEFAULT_LOCAL_STT_LANGUAGE
     normalized_model = _normalize_local_model(model_name)
     try:
+        normalized_model = _resolve_local_whisper_command_model(normalized_model)
         with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
             prepared_input, prep_error = _prepare_local_audio(file_path, output_dir)
             if prep_error:
