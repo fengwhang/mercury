@@ -1847,6 +1847,7 @@ export class TurnRecovery {
 			pinFallback?: boolean;
 			preserveFailedTurn?: boolean;
 			wrapAround?: boolean;
+			signal: AbortSignal;
 		},
 	): Promise<boolean> {
 		const ceiling = this.#host.thinkingLevelCeiling();
@@ -1857,6 +1858,7 @@ export class TurnRecovery {
 				);
 		for (const role of this.retryFallbackChainKeys(currentSelector)) {
 			for (const selector of this.findRetryFallbackCandidates(role, currentSelector, undefined, options)) {
+				if (options?.signal.aborted) return false;
 				if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
@@ -1889,9 +1891,18 @@ export class TurnRecovery {
 				if (!this.#host.contextFitsModel(candidate, options?.preserveFailedTurn ? undefined : failedMessage)) {
 					continue;
 				}
-				const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
+				let apiKey: string | undefined;
+				try {
+					apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId(), {
+						signal: options?.signal,
+					});
+				} catch (error) {
+					if (options?.signal.aborted) return false;
+					throw error;
+				}
+				if (options?.signal.aborted) return false;
 				if (!apiKey) continue;
-				return this.applyRetryFallbackCandidate(role, selector, currentSelector, options);
+				return this.applyRetryFallbackCandidate(role, selector, currentSelector, { ...options, apiKey });
 			}
 		}
 
@@ -1981,13 +1992,19 @@ export class TurnRecovery {
 	 * fallback that makes Fast a safe default. Returns false when the current
 	 * model is not a fast variant, the base id is missing, or it has no key.
 	 */
-	async #tryFireworksFastFallback(currentSelector: string): Promise<boolean> {
+	async #tryFireworksFastFallback(currentSelector: string, signal: AbortSignal): Promise<boolean> {
 		const model = this.#activeFireworksFastModel();
 		if (!model) return false;
 		const baseModel = this.#host.modelRegistry.find("fireworks", toFireworksBaseModelId(model.id));
 		if (!baseModel) return false;
-		const apiKey = await this.#host.modelRegistry.getApiKey(baseModel, this.#host.sessionId());
-		if (!apiKey) return false;
+		let apiKey: string | undefined;
+		try {
+			apiKey = await this.#host.modelRegistry.getApiKey(baseModel, this.#host.sessionId(), { signal });
+		} catch (error) {
+			if (signal.aborted) return false;
+			throw error;
+		}
+		if (signal.aborted || !apiKey) return false;
 		const baseSelector = formatModelStringWithRouting(baseModel);
 		// A capability degrade is fallback routing too, even though it arms no
 		// chain: the base model must not be reported as the configured primary.
@@ -2006,6 +2023,9 @@ export class TurnRecovery {
 
 	async #maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
 		if (!this.#activeRetryFallback) return false;
+		// Complete the current recovery on its selected route. A short primary
+		// cooldown can expire during setup, before the fallback gets any request.
+		if (this.isRetrying) return false;
 		if (this.#activeRetryFallback.pinned) return false;
 		if (this.#getRetryFallbackRevertPolicy() !== "cooldown-expiry") return false;
 
@@ -2131,6 +2151,7 @@ export class TurnRecovery {
 			preserveFailedTurn?: boolean;
 		},
 	): Promise<boolean> {
+		if (this.#host.abortInProgress() || this.#host.isDisposed()) return false;
 		const retrySettings = this.#host.settings.getGroup("retry");
 		// The Fireworks Fast→base degrade is an intrinsic model-selection safety net,
 		// not a retry loop, so it runs even when the user disabled retries: it switches
@@ -2139,6 +2160,11 @@ export class TurnRecovery {
 		const classifierRefusal = this.isClassifierRefusal(message);
 
 		const generation = this.#host.promptGeneration();
+		// Cancellation must cover credential lookup and model selection, not just
+		// the backoff sleep: a late key must never change a cancelled task's model.
+		const retryAbortController = new AbortController();
+		this.#retryAbortController?.abort();
+		this.#retryAbortController = retryAbortController;
 		this.#retryAttempt++;
 
 		// Create retry promise on first attempt so waitForRetry() can await it
@@ -2170,6 +2196,11 @@ export class TurnRecovery {
 		const staleOpenAIResponsesReplayError = AIError.is(id, AIError.Flag.StaleResponsesItem);
 		const accountPolicyDenial = AIError.is(id, AIError.Flag.AccountPolicy);
 		const recordedUsageLimitOutcome = await this.#usageLimitOutcomes.get(message);
+		if (retryAbortController.signal.aborted) {
+			this.#retryAttempt = 0;
+			this.resolveRetry();
+			return false;
+		}
 		// An explicit exhausted-quota response should use the user's chain before
 		// rotating accounts or waiting for a reset. Keep credential recovery when
 		// there is no chain, and for opaque 402 billing errors.
@@ -2307,6 +2338,7 @@ export class TurnRecovery {
 					pinFallback: classifierRefusal,
 					preserveFailedTurn,
 					wrapAround: longUsageLimitFallback,
+					signal: retryAbortController.signal,
 				});
 			}
 			// Auto fallback from a Fireworks Fast variant to its base model. Independent
@@ -2314,7 +2346,12 @@ export class TurnRecovery {
 			// best-effort, degrade to Standard on failure) and triggers on hard router
 			// errors the generic retry classifier would otherwise reject.
 			if (!switchedModel && allowModelFallback && options?.fireworksFastFallback) {
-				switchedModel = await this.#tryFireworksFastFallback(currentSelector);
+				switchedModel = await this.#tryFireworksFastFallback(currentSelector, retryAbortController.signal);
+			}
+			if (retryAbortController.signal.aborted) {
+				this.#retryAttempt = 0;
+				this.resolveRetry();
+				return false;
 			}
 			if (switchedModel) {
 				delayMs = 0;
@@ -2441,9 +2478,6 @@ export class TurnRecovery {
 		this.#maybeInjectThinkingLoopRedirect(id);
 
 		// Wait with exponential backoff (abortable).
-		const retryAbortController = new AbortController();
-		this.#retryAbortController?.abort();
-		this.#retryAbortController = retryAbortController;
 		try {
 			await scheduler.wait(delayMs, { signal: retryAbortController.signal });
 		} catch {

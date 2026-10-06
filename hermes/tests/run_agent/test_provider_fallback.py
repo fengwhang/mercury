@@ -188,6 +188,23 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
 
+    def test_interrupted_resolution_does_not_activate_next_provider(self):
+        agent = _make_agent(fallback_model=[
+            {"provider": "zai", "model": "glm-4.7"},
+            {"provider": "openai", "model": "gpt-4o"},
+        ])
+        primary = (agent.provider, agent.model, agent.api_key, agent.base_url)
+        with patch("agent.auxiliary_client.resolve_provider_client") as resolve:
+            resolve.side_effect = [
+                InterruptedError("cancelled while resolving fallback"),
+                (_mock_client(), "gpt-4o"),
+            ]
+            with pytest.raises(InterruptedError, match="cancelled"):
+                agent._try_activate_fallback()
+        assert resolve.call_count == 1
+        assert (agent.provider, agent.model, agent.api_key, agent.base_url) == primary
+        assert agent._fallback_activated is False
+
     def test_resolves_key_env_for_fallback_provider(self):
         fbs = [
             {

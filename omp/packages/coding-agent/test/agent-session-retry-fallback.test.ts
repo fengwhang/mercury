@@ -1494,6 +1494,111 @@ describe("AgentSession retry fallback", () => {
 		expect(agent.state.isStreaming).toBe(false);
 	});
 
+	it("dispatches the selected fallback before restoring a primary whose cooldown expired during recovery", async () => {
+		const primary = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const fallback = getBundledModel("openai", "gpt-4o-mini")!;
+		const requestedModels: string[] = [];
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 1,
+			"retry.fallbackChains": {
+				[`${primary.provider}/${primary.id}`]: [`${fallback.provider}/${fallback.id}`],
+			},
+		});
+		session = new AgentSession({
+			agent: createFallbackAgent(primary, requestedModels, {
+				firstError: "rate limit exceeded retry-after-ms=200",
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_applied") {
+				vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1_000);
+			}
+		});
+		await session.prompt("Recover even if setup outlasts the cooldown");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primary.provider}/${primary.id}`,
+			`${fallback.provider}/${fallback.id}`,
+		]);
+		expect(getLastAssistantMessage(session).content).toContainEqual({
+			type: "text",
+			text: `ok:${fallback.provider}/${fallback.id}`,
+		});
+
+		await session.prompt("Restore the primary on the next independent turn");
+		await session.waitForIdle();
+		expect(requestedModels.at(-1)).toBe(`${primary.provider}/${primary.id}`);
+	});
+
+	it.each(["chain", "abort-aware chain", "Fast degrade"])(
+		"does not apply late task fallback credentials after cancellation (%s)",
+		async recovery => {
+			const fast = recovery === "Fast degrade";
+			const primary = fast
+				? getBundledModel("fireworks", "kimi-k2.6-fast")!
+				: getBundledModel("anthropic", "claude-sonnet-4-5")!;
+			const fallback = fast
+				? getBundledModel("fireworks", "kimi-k2.6")!
+				: getBundledModel("openai", "gpt-4o-mini")!;
+			const requestedModels: string[] = [];
+			const credentialStarted = Promise.withResolvers<void>();
+			const releaseCredential = Promise.withResolvers<void>();
+			let credentialSignal: AbortSignal | undefined;
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 1,
+				"retry.fallbackChains": fast
+					? {}
+					: { [`${primary.provider}/${primary.id}`]: [`${fallback.provider}/${fallback.id}`] },
+			});
+			settings.setModelRole("task", `${primary.provider}/${primary.id}`);
+			vi.spyOn(modelRegistry, "getApiKey").mockImplementation(async (model, _sessionId, options) => {
+				if (model.id === fallback.id) {
+					credentialSignal = options?.signal;
+					credentialStarted.resolve();
+					await releaseCredential.promise;
+					if (recovery === "abort-aware chain") options?.signal?.throwIfAborted();
+				}
+				return `${model.provider}-test-key`;
+			});
+			session = new AgentSession({
+				agent: createFallbackAgent(primary, requestedModels, { firstError: "service unavailable: 503" }),
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+			});
+			const applied: AgentSessionEvent[] = [];
+			session.subscribe(event => {
+				if (event.type === "retry_fallback_applied") applied.push(event);
+			});
+			const prompt = session.prompt("Cancel pending task recovery");
+			await credentialStarted.promise;
+			const abort = session.abort();
+			releaseCredential.resolve();
+			await abort;
+			await prompt;
+			await session.waitForIdle();
+
+			expect(session.model).toBe(primary);
+			expect(applied).toEqual([]);
+			expect(requestedModels).toEqual([`${primary.provider}/${primary.id}`]);
+			expect(credentialSignal?.aborted).toBe(true);
+
+			// A cancelled recovery settles the turn, not the root session.
+			await session.prompt("Continue the same session after cancellation");
+			await session.waitForIdle();
+			expect(requestedModels).toEqual([
+				`${primary.provider}/${primary.id}`,
+				`${primary.provider}/${primary.id}`,
+			]);
+			expect(getLastAssistantMessage(session).stopReason).toBe("stop");
+		},
+	);
+
 	it("continues a startup-owned role fallback chain from the active fallback", async () => {
 		const firstFallback = getBundledModel("openai", "gpt-4o-mini");
 		const secondFallback = getBundledModel("openai", "gpt-4o");

@@ -5597,6 +5597,10 @@ def run_conversation(
                     (is_rate_limited and _wrapped_output_cap_budget is None)
                     or (_is_transport_failure and retry_count >= 2)
                 )
+                _is_usage_limit = _should_fallback and is_usage_limit_exhausted(
+                    getattr(classified, "error_context", None) or {},
+                    message=error_msg,
+                )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
@@ -5613,10 +5617,6 @@ def run_conversation(
                     # different MODEL. Skipping the pool guard here is what lets
                     # `models.fallback` actually run instead of the loop burning
                     # its retry budget rotating keys before dying.
-                    _is_usage_limit = is_usage_limit_exhausted(
-                        getattr(classified, "error_context", None) or {},
-                        message=error_msg,
-                    )
                     pool_may_recover = (
                         False if (_is_upstream or _is_usage_limit)
                         else _ra()._pool_may_recover_from_rate_limit(
@@ -6304,6 +6304,14 @@ def run_conversation(
                 # already behave once their recovery paths have failed.
                 is_client_error = (
                     is_local_validation_error
+                    # A future quota reset does not make this plan usable
+                    # now. Once its configured chain is exhausted, stop
+                    # rather than replaying the final depleted billing route.
+                    or (
+                        _is_usage_limit
+                        and bool(agent._fallback_chain)
+                        and agent._fallback_index >= len(agent._fallback_chain)
+                    )
                     or (
                         not classified.retryable
                         and not classified.should_compress
