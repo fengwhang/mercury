@@ -575,11 +575,11 @@ describe("migrateRenamedInstall transaction", () => {
 		vi.spyOn(console, "log").mockImplementation(() => {});
 		const { steps, calls } = scriptedSteps({ install: [0, 0], verify: [false, false] });
 
-		await expect(migrateRenamedInstall(release, steps)).rejects.toThrow("curl -fsSL https://omp.sh/install");
+		await expect(migrateRenamedInstall(release, steps)).rejects.toThrow("`mercury update`");
 		expect(calls).toEqual(["install", "removeOld", "verify", "install", "verify"]);
 	});
 
-	it("uses the platform-aware PowerShell reinstall hint on Windows", async () => {
+	it("routes Windows recovery to Mercury documentation instead of an upstream PowerShell installer", async () => {
 		vi.spyOn(console, "log").mockImplementation(() => {});
 		const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 		if (!platformDescriptor) throw new Error("process.platform descriptor missing");
@@ -587,8 +587,10 @@ describe("migrateRenamedInstall transaction", () => {
 		try {
 			const { steps } = scriptedSteps({ install: [0, 0], verify: [false, false] });
 			const promise = migrateRenamedInstall(release, steps);
-			await expect(promise).rejects.toThrow("irm https://omp.sh/install.ps1");
-			await expect(promise).rejects.not.toThrow("| sh");
+			await expect(promise).rejects.toThrow("https://github.com/Fengwhang/mercury#install");
+			await expect(promise).rejects.toThrow("`mercury-nightly update`");
+			await expect(promise).rejects.not.toThrow("omp.sh");
+			await expect(promise).rejects.not.toThrow("irm ");
 		} finally {
 			Object.defineProperty(process, "platform", platformDescriptor);
 		}
