@@ -633,10 +633,21 @@ class SidecarHandler(BaseHTTPRequestHandler):
             timeout=10.0,
         )
         if not started.get("ok"):
-            ws.send_json({
-                "type": "refused",
-                "reason": str(started.get("detail") or started.get("error") or "MIRC host refused the call"),
-            })
+            try:
+                ws.send_json({
+                    "type": "refused",
+                    "reason": str(started.get("detail") or started.get("error") or "MIRC host refused the call"),
+                })
+            finally:
+                # The request can commit remotely before its reply is lost.
+                # UUID ownership makes uncertain-start cleanup idempotent
+                # without ending any other browser's call on this target.
+                ws.close()
+                self.state.request(
+                    "/api/voice-call/call",
+                    {"action": "end", "channel": channel, "call_id": call_id},
+                    timeout=10.0,
+                )
             return
         with self.state.lock:
             self.state.calls[call_id] = {
