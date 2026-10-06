@@ -600,3 +600,42 @@ def test_query_roundtrip_uses_real_registry_endpoints(sidecar, tmp_path, monkeyp
         with connect(url) as ws:
             ws.send(json.dumps({"type": "hello", "channel": "Kai", "engine": "hermes"}))
             assert json.loads(ws.recv(timeout=2))["type"] == "refused"
+
+def test_lost_start_ack_cleans_only_the_attempted_registry_owner(sidecar, monkeypatch):
+    from fastapi.testclient import TestClient
+    from mercury_cli import web_server
+    from websockets.exceptions import ConnectionClosedOK
+
+    url, _requests, sidecar_state = sidecar
+    monkeypatch.setenv("VOICE_CALL_MIRC_TOKEN", "service-secret")
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+    monkeypatch.setattr(vc, "resolve_channel_agent", lambda _: {
+        "engine": "hermes", "name": "Gaia", "room_id": "#chat",
+    })
+    store = vc.VoiceCallStore()
+    store.start("#chat", call_id="other-browser")
+    monkeypatch.setattr(vc, "default_store", lambda: store)
+    client = TestClient(web_server.app)
+    ended = threading.Event()
+
+    def lose_start_ack(path, payload=None, **_):
+        headers = {"Authorization": "Bearer service-secret"}
+        response = (client.get(path, headers=headers) if payload is None else
+                    client.post(path, headers=headers, json=payload))
+        assert response.status_code == 200
+        if payload and payload.get("action") == "start":
+            return {"ok": False, "error": "response lost after registry accepted start"}
+        if payload and payload.get("action") == "end":
+            ended.set()
+        return response.json()
+
+    monkeypatch.setattr(sidecar_state, "request", lose_start_ack)
+    with connect(url) as ws:
+        ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "refused"
+        with pytest.raises(ConnectionClosedOK):
+            ws.recv(timeout=2)
+    assert ended.wait(2)
+    assert store.status("#chat")["active"]
+    assert store.end("#chat", call_id="other-browser")
+    assert not store.active_channels() and not sidecar_state.calls
