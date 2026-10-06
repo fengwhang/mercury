@@ -121,7 +121,8 @@ it("Transformers' actual asset resolver cannot fetch missing optional or require
 	};
 	const network = spyOn(globalThis, "fetch").mockRejectedValue(new Error("network must not run"));
 	try {
-		runtime.configureTransformers({ env, LogLevel: environmentModule.LogLevel });
+		const localEnv = Object.assign(env, { cacheDir: utils.getTinyModelsCacheDir() });
+		runtime.configureTransformers({ env: localEnv, LogLevel: environmentModule.LogLevel });
 		await expect(getModelFile("fixture/missing", "config.json", true, { local_files_only: true })).rejects.toThrow(
 			"file was not found locally",
 		);

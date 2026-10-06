@@ -11,6 +11,9 @@ import {
 } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { CollabQrCodeComponent } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/collab-qrcode";
 import { Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
+import { asGlobalFetch } from "../helpers/fetch-mock";
+
+const OriginalWebSocket = globalThis.WebSocket;
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -20,6 +23,7 @@ beforeAll(async () => {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	globalThis.WebSocket = OriginalWebSocket;
 });
 
 afterAll(() => {
@@ -81,11 +85,22 @@ function mockStartedHostLinks() {
 	});
 }
 
+function mockWebSocket(errorMessage = "unexpected network") {
+	const network = vi.fn((_url: string | URL) => {
+		throw new Error(errorMessage);
+	});
+	globalThis.WebSocket = class extends OriginalWebSocket {
+		constructor(url: string | URL) {
+			network(url);
+			super(url);
+		}
+	};
+	return network;
+}
+
 describe("collaboration offline entrypoints", () => {
 	it("refuses default /collab before constructing a network connection", async () => {
-		const network = vi.spyOn(globalThis, "WebSocket").mockImplementation(() => {
-			throw new Error("unexpected network");
-		});
+		const network = mockWebSocket();
 		const harness = createRuntimeHarness();
 		harness.ctx.settings = Settings.instance;
 		await executeBuiltinSlashCommand("/collab", harness.runtime);
@@ -94,9 +109,7 @@ describe("collaboration offline entrypoints", () => {
 	});
 
 	it("refuses a bare /join link before constructing a network connection", async () => {
-		const network = vi.spyOn(globalThis, "WebSocket").mockImplementation(() => {
-			throw new Error("unexpected network");
-		});
+		const network = mockWebSocket();
 		const harness = createRuntimeHarness();
 		const key = Buffer.alloc(32, 1).toString("base64url");
 		await executeBuiltinSlashCommand(`/join abcdefghijklmnop.${key}`, harness.runtime);
@@ -105,9 +118,7 @@ describe("collaboration offline entrypoints", () => {
 	});
 
 	it("rejects persisted and inline upstream collab endpoints before WebSocket", async () => {
-		const network = vi.spyOn(globalThis, "WebSocket").mockImplementation(() => {
-			throw new Error("unexpected network");
-		});
+		const network = mockWebSocket();
 		const harness = createRuntimeHarness();
 		harness.ctx.settings = Settings.isolated({ "collab.relayUrl": "wss://my.omp.sh" });
 		await executeBuiltinSlashCommand("/collab", harness.runtime);
@@ -124,9 +135,7 @@ describe("collaboration offline entrypoints", () => {
 	});
 
 	it("rejects an explicit upstream /join link before WebSocket", async () => {
-		const network = vi.spyOn(globalThis, "WebSocket").mockImplementation(() => {
-			throw new Error("unexpected network");
-		});
+		const network = mockWebSocket();
 		const harness = createRuntimeHarness();
 		const key = Buffer.alloc(32, 1).toString("base64url");
 		for (const link of [
@@ -141,9 +150,11 @@ describe("collaboration offline entrypoints", () => {
 	});
 
 	it("refuses /share with an inherited upstream serverUrl before upload", async () => {
-		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
-			throw new Error("unexpected network");
-		});
+		const network = vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(() => {
+				throw new Error("unexpected network");
+			}),
+		);
 		const output = vi.fn();
 		const runtime = {
 			settings: Settings.isolated({ "share.serverUrl": "https://my.omp.sh/s" }),
@@ -158,9 +169,7 @@ describe("collaboration offline entrypoints", () => {
 	});
 
 	it("routes an explicit /collab relay to exactly that fake WebSocket endpoint", async () => {
-		const network = vi.spyOn(globalThis, "WebSocket").mockImplementation(() => {
-			throw new Error("fake relay reached");
-		});
+		const network = mockWebSocket("fake relay reached");
 		const harness = createRuntimeHarness();
 		harness.ctx.settings = Settings.instance;
 		await executeBuiltinSlashCommand("/collab relay.example.com:8443", harness.runtime);
@@ -170,9 +179,7 @@ describe("collaboration offline entrypoints", () => {
 	});
 
 	it("routes an explicit /join link to its fake relay without using settings defaults", async () => {
-		const network = vi.spyOn(globalThis, "WebSocket").mockImplementation(() => {
-			throw new Error("fake relay reached");
-		});
+		const network = mockWebSocket("fake relay reached");
 		const harness = createRuntimeHarness();
 		const key = Buffer.alloc(32, 1).toString("base64url");
 		await executeBuiltinSlashCommand(`/join relay.example.com:8443/r/abcdefghijklmnop.${key}`, harness.runtime);
