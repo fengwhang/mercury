@@ -763,10 +763,6 @@ export function getDocsRsCacheDir(): string {
 	return dirs.rootSubdir("webcache", "cache");
 }
 
-/** Get the auto-QA grievances SQLite database path (~/.omp/autoqa.db; XDG: $XDG_DATA_HOME/omp/autoqa.db). */
-export function getAutoQaDbPath(): string {
-	return dirs.rootSubdir("autoqa.db", "data");
-}
 /**
  * Stable 7-character hex digest of an absolute filesystem path.
  *
@@ -1101,8 +1097,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * Generated lazily on first call and persisted with `O_CREAT|O_EXCL` so
  * concurrent first-call races don't clobber each other (loser re-reads the
  * winner's id). Survives independently of agent state: deleting
- * `~/.omp/agent/` does not regenerate it. Server-side dedup for grievance
- * pushes (and similar telemetry) keys on this id.
+ * `~/.omp/agent/` does not regenerate it.
  *
  * Anchored to the base config root (`~/.omp/install-id`) regardless of the
  * active profile: install identity is per-install, not per-profile, so every

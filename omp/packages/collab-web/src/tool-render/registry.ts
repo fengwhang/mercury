@@ -26,7 +26,6 @@ import { recallRenderer } from "./tools/memory-recall";
 import { reflectRenderer } from "./tools/memory-reflect";
 import { retainRenderer } from "./tools/memory-retain";
 import { readRenderer } from "./tools/read";
-import { reportToolIssueRenderer } from "./tools/report-tool-issue";
 import { resolveRenderer } from "./tools/resolve";
 import { taskRenderer } from "./tools/task";
 import { todoRenderer } from "./tools/todo";
@@ -67,7 +66,6 @@ const RENDERERS: Record<string, ToolRenderer> = {
 	reflect: reflectRenderer,
 	retain: retainRenderer,
 	read: readRenderer,
-	report_tool_issue: reportToolIssueRenderer,
 	resolve: resolveRenderer,
 	reject: resolveRenderer,
 	propose: resolveRenderer,

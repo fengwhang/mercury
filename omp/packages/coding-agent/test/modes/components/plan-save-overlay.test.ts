@@ -18,11 +18,11 @@ describe("PlanSaveOverlay", () => {
 	});
 
 	it("renders the generated filename as a dim empty-input suggestion", () => {
-		const overlay = new PlanSaveOverlay("AUTO_QA_PLAN.md", () => {});
+		const overlay = new PlanSaveOverlay("REVIEW_PLAN.md", () => {});
 		overlay.focused = true;
 		const lines = overlay.render(80);
 
-		expect(lines.join("\n")).toContain(theme.fg("dim", "AUTO_QA_PLAN.md"));
+		expect(lines.join("\n")).toContain(theme.fg("dim", "REVIEW_PLAN.md"));
 		expect(lines.map(visibleWidth)).toEqual(Array(lines.length).fill(80));
 		expect(stripAnsi(lines.join("\n"))).toContain("Enter save and quit · Esc cancel");
 	});
@@ -33,15 +33,15 @@ describe("PlanSaveOverlay", () => {
 			result = value;
 		});
 
-		overlay.setSuggestedPath("AUTO_QA_PLAN.md");
+		overlay.setSuggestedPath("REVIEW_PLAN.md");
 		overlay.handleInput("\r");
 
-		expect(result).toEqual({ path: "AUTO_QA_PLAN.md" });
+		expect(result).toEqual({ path: "REVIEW_PLAN.md" });
 	});
 
 	it("uses a typed path instead of the suggestion", () => {
 		let result: PlanSaveOverlayResult | undefined;
-		const overlay = new PlanSaveOverlay("AUTO_QA_PLAN.md", value => {
+		const overlay = new PlanSaveOverlay("REVIEW_PLAN.md", value => {
 			result = value;
 		});
 

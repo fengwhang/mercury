@@ -278,12 +278,6 @@
 - Contained timed-out child lifecycle rejections so `ptree` callers cannot leak an unhandled `TimeoutError` after settling ([#6635](https://github.com/can1357/oh-my-pi/issues/6635)).
 - Fixed an invalid configured `shellPath` being silently masked whenever an earlier caller had already resolved a shell in the same process; the guidance error now surfaces regardless of cache state.
 
-## [17.0.9] - 2026-07-23
-
-### Breaking Changes
-
-- Renamed `getAutoQaDbDir` to `getAutoQaDbPath` for accuracy; update any usage accordingly
-
 ## [17.0.5] - 2026-07-18
 
 ### Changed

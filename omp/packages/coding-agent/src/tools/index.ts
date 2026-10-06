@@ -103,7 +103,6 @@ export * from "./memory-recall";
 export * from "./memory-reflect";
 export * from "./memory-retain";
 export * from "./read";
-export * from "./report-tool-issue";
 export * from "./resolve";
 export * from "./review";
 export * from "./security-scan";
