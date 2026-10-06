@@ -171,11 +171,16 @@ python -m observatory.voice_call_stt --host 0.0.0.0 --port 8765 \
     --mirc-url http://mirc-host:8000 --token s3cret
 ```
 
-Stdlib HTTP/WebSocket transport. `--provider/--model/--language/--endpoint` overlay the
+Stdlib HTTP/WebSocket transport. `--provider/--model/--language` overlay the
 stored STT config in memory. Model and language flags also apply when the stored
-provider is retained (without `--provider`). `--token` (or `VOICE_CALL_SIDECAR_TOKEN`)
-gates every route except `/stt/health`; without it the port transcribes
-for anyone who can reach it — bind loopback or firewall accordingly.
+provider is retained (without `--provider`). The parsed `--endpoint` flag does
+**not** redirect the current OpenAI client or update a local provider's baked
+command endpoint; configure endpoints through `mercury setup stt` instead.
+When reusing a local command template, update any existing `--endpoint` argument
+in that template too: setup only appends the flag when it is absent.
+`--token` (or `VOICE_CALL_SIDECAR_TOKEN`) gates every route except `/stt/health`;
+without it the port transcribes for anyone who can reach it — bind loopback or
+firewall accordingly.
 
 Set `VOICE_CALL_MIRC_TOKEN` to the same secret in the **MIRC web-server
 process** and the **sidecar process** (or pass `--mirc-token` to the
