@@ -190,6 +190,7 @@ class DaemonConfig:
 PING_INTERVAL = 60.0  # seconds between server PINGs to idle clients
 PING_TIMEOUT = 180.0  # drop a registered client silent this long
 SEND_TIMEOUT = 10.0  # one wedged client may never block others longer than this
+ROOM_EXPIRY_INTERVAL = 1.0  # durable registry -> connected sidebar convergence
 
 class _Client:
     __slots__ = (
@@ -255,6 +256,7 @@ class MircDaemon:
         self._servers: list[asyncio.AbstractServer] = []
         self._lock = asyncio.Lock()
         self._ping_task: asyncio.Task | None = None
+        self._room_expiry_task: asyncio.Task | None = None
         self._pending_binds: list[tuple[str, str, int]] = []
         self._pending_tls: bool = False
         self._rebind_task: asyncio.Task | None = None
@@ -297,6 +299,7 @@ class MircDaemon:
             cfg.network_name,
         )
         self._ping_task = asyncio.create_task(self._ping_loop())
+        self._room_expiry_task = asyncio.create_task(self._room_expiry_loop())
         return self
     async def _rebind_loop(self) -> None:
         """Retry failed listener binds until they all succeed or stop().
@@ -380,6 +383,10 @@ class MircDaemon:
         if self._rebind_task is not None:
             self._rebind_task.cancel()
             self._rebind_task = None
+        if self._room_expiry_task is not None:
+            self._room_expiry_task.cancel()
+            await self._room_expiry_task
+            self._room_expiry_task = None
         if self._ping_task is not None:
             self._ping_task.cancel()
             self._ping_task = None
@@ -400,6 +407,28 @@ class MircDaemon:
             except Exception:
                 pass
         self._clients.clear()
+
+    async def _room_expiry_loop(self) -> None:
+        """Registry death must reach connected mLounge even without OPER."""
+        try:
+            while True:
+                await asyncio.sleep(ROOM_EXPIRY_INTERVAL)
+                try:
+                    await self._expire_closed_rooms()
+                except (sqlite3.Error, ValueError):
+                    logger.warning("MIRC: room expiry state unavailable — retrying", exc_info=True)
+        except asyncio.CancelledError:
+            pass
+
+    async def _expire_closed_rooms(self) -> None:
+        async with self._lock:
+            # Read under the same lock as JOIN. A replacement live row
+            # removes its name from closed; never destroy a stale snapshot.
+            closed, _ = await asyncio.to_thread(_room_policy_from_disk, self.config.state_dir)
+            for key in list(self._channels):
+                if key != self.gateway_channel and key in closed:
+                    await self._part_channel_locked(
+                        self._display.get(key, key), "room expired")
 
     async def _ping_loop(self) -> None:
         """Drive the liveness sweep every PING_INTERVAL (see _ping_sweep)."""
@@ -450,9 +479,14 @@ class MircDaemon:
         # deletion and recreate the channel from mLounge's saved network state.
         await asyncio.to_thread(self._remember_closed_room, key)
         async with self._lock:
-            members = sorted(self._channels.pop(key, ()))
-            self._display.pop(key, None)
-            self._topics.pop(key, None)
+            return await self._part_channel_locked(channel, reason)
+
+    async def _part_channel_locked(self, channel: str, reason: str) -> int:
+        """Remove membership and emit self-PART, ordered against JOIN."""
+        key = channel.lower()
+        members = sorted(self._channels.pop(key, ()))
+        self._display.pop(key, None)
+        self._topics.pop(key, None)
         for nick in members:
             client = self._clients.get(nick)
             if client is None:
@@ -769,12 +803,9 @@ class MircDaemon:
                     logger.debug("ircd: state.db room fallback failed",
                                  exc_info=True)
             for display in targets:
-                key = display.lower()
-                async with self._lock:
-                    self._channels[key].add(nick.lower())
-                    self._display.setdefault(key, display)
-                    client.channels.add(key)
-                await self._emit_join(client, key, display)
+                # Targets may expire while an earlier JOIN is delivered.
+                # Use the same locked policy check as cached client JOINs.
+                await self._cmd_join(client, display)
 
     async def _cmd_join(self, client: _Client, arg: str) -> None:
         if not arg:

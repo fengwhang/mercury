@@ -177,3 +177,43 @@ async def test_late_join_fanout_cannot_recreate_frontend_room_after_destroy(tmp_
         finally:
             release.set()
             await client.close()
+
+
+@pytest.mark.asyncio
+async def test_registration_does_not_restore_room_expired_after_target_snapshot(tmp_path, monkeypatch):
+    import asyncio
+    from observatory import rooms
+    from observatory.spawn import begin_exit
+
+    monkeypatch.setattr(rooms, "get_room_manager", lambda: None)
+    state = ObservatoryState(tmp_path / "state.db")
+    state.add_node("child", engine="hermes", name="child", slug="child", mxid="child",
+                   session_ref="child")
+    state.set_room_id("child", "#nixpad_child")
+    async with running_daemon(tmp_path, server_name="nixpad") as (daemon, _, server_port):
+        queued, release = asyncio.Event(), asyncio.Event()
+        emit = daemon._emit_join
+
+        async def delayed(peer, key, display):
+            if key == "#nixpad_gateway":
+                queued.set()
+                await release.wait()
+            await emit(peer, key, display)
+
+        monkeypatch.setattr(daemon, "_emit_join", delayed)
+        client = RawClient()
+        try:
+            await client.connect(server_port)
+            await client.register("desktop")
+            await asyncio.wait_for(queued.wait(), 2)
+            begin_exit(state, "child")
+            await daemon.destroy_channel("#nixpad_child")
+            release.set()
+            await client.next_match(" JOIN #nixpad_gateway")
+            with pytest.raises(TimeoutError):
+                await client.next_match(" JOIN #nixpad_child", timeout=0.2)
+            assert "#nixpad_child" not in daemon.channel_names()
+        finally:
+            release.set()
+            await client.close()
+            state.close()
