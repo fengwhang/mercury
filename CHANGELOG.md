@@ -39,6 +39,10 @@ their original projects and are not Mercury release announcements.
 - Build the packaged mLounge client and server using the pinned frozen Yarn
   lockfile, preserving committed frontend source bytes in release archives.
 
+- Continue auxiliary provider discovery past Hugging Face entries without
+  usable credentials or a valid self-hosted endpoint; explicit invalid Hugging
+  Face selections still fail before transport.
+
 ## [0.4.3] — nightly
 
 - Remove expired subagent rooms even when MIRC destruction needs a retry, and
