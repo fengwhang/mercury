@@ -546,6 +546,9 @@ def test_query_roundtrip_uses_real_registry_endpoints(sidecar, tmp_path, monkeyp
         tree.add_node("query", engine="hermes", name="Registered Query Agent",
                       slug="not-the-nick", mxid="Kai", session_ref="query")
         tree.set_room_id("query", "#server-query")
+        tree.add_node("coder", engine="omp", name="Coder", slug="coder",
+                      mxid="Coder", session_ref="coder")
+        tree.set_room_id("coder", "#server-coder")
     monkeypatch.setattr(state, "default_state_db_path", lambda: database)
     monkeypatch.setattr(rooms, "get_room_manager", lambda: None)
     monkeypatch.setenv("VOICE_CALL_MIRC_TOKEN", "service-secret")
@@ -588,3 +591,12 @@ def test_query_roundtrip_uses_real_registry_endpoints(sidecar, tmp_path, monkeyp
         assert json.loads(ws.recv(timeout=2))["type"] == "ended"
     assert ended.wait(2)
     assert not store.active_channels() and not sidecar_state.calls
+    for target, reason in [("Coder", "OMP"), ("unknown-nick", "Cannot identify")]:
+        with connect(url) as ws:
+            ws.send(json.dumps({"type": "hello", "channel": target, "engine": "hermes"}))
+            refused = json.loads(ws.recv(timeout=2))
+            assert refused["type"] == "refused" and reason in refused["reason"]
+    if expire_before_end:
+        with connect(url) as ws:
+            ws.send(json.dumps({"type": "hello", "channel": "Kai", "engine": "hermes"}))
+            assert json.loads(ws.recv(timeout=2))["type"] == "refused"
