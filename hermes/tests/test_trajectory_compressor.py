@@ -30,6 +30,43 @@ def test_import_loads_env_from_hermes_home(tmp_path, monkeypatch):
     assert os.getenv("OPENROUTER_API_KEY") == "from-mercury-home"
 
 
+@pytest.mark.parametrize("tokenizer_name", ["moonshotai/Kimi-K2-Thinking", "missing-local-tokenizer"])
+def test_cli_missing_tokenizer_never_fetches_assets(tmp_path, monkeypatch, tokenizer_name):
+    import trajectory_compressor
+
+    calls = []
+    network_attempts = []
+
+    def from_pretrained(name, **kwargs):
+        calls.append((name, kwargs))
+        if not kwargs.get("local_files_only"):
+            network_attempts.append(name)
+        raise OSError("tokenizer assets are missing")
+
+    monkeypatch.setitem(
+        sys.modules, "transformers",
+        SimpleNamespace(AutoTokenizer=SimpleNamespace(from_pretrained=from_pretrained)),
+    )
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    with pytest.raises(RuntimeError) as exc:
+        trajectory_compressor.main(
+            input=str(input_dir),
+            config=str(tmp_path / "missing.yaml"),
+            tokenizer=tokenizer_name,
+        )
+
+    assert network_attempts == []
+    assert len(calls) == 1
+    assert calls[0][1]["local_files_only"] is True
+    message = str(exc.value)
+    assert tokenizer_name in message
+    assert "local" in message.lower()
+    assert "cache" in message.lower()
+    assert "--tokenizer" in message
+    assert isinstance(exc.value.__cause__, OSError)
+
+
 def test_generate_summary_kimi_omits_temperature():
     """Kimi models should have temperature omitted — server manages it."""
     config = CompressionConfig(

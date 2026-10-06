@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Sample and Compress HuggingFace Datasets
+Sample and Compress Local Datasets
 
-Downloads trajectories from multiple HuggingFace datasets, randomly samples them,
+Loads existing local trajectory datasets, randomly samples them,
 and runs trajectory compression to fit within a target token budget.
 
 Usage:
-    python scripts/sample_and_compress.py
+    python scripts/sample_and_compress.py --datasets=/path/to/trajectories.jsonl
     
     # Custom sample size
     python scripts/sample_and_compress.py --total_samples=5000
@@ -36,27 +36,38 @@ DEFAULT_DATASETS = [
 ]
 
 
-def load_dataset_from_hf(dataset_name: str) -> List[Dict[str, Any]]:
+def load_local_dataset(dataset_name: str) -> List[Dict[str, Any]]:
+    """Load local JSON/JSONL trajectories or a datasets.save_to_disk directory.
+
+    Repository names are retained as dataset references, not download targets.
+    Pass local exports with --datasets; no Hub lookup or download is performed.
     """
-    Load a dataset from HuggingFace.
-    
-    Args:
-        dataset_name: HuggingFace dataset name (e.g., "NousResearch/dataset-name")
-        
-    Returns:
-        List of trajectory entries
-    """
-    from datasets import load_dataset
-    
-    print(f"   Loading {dataset_name}...")
-    
-    try:
-        # Try loading with default config
-        ds = load_dataset(dataset_name, split="train")
-    except Exception as e:
-        print(f"   ⚠️  Error loading {dataset_name}: {e}")
-        return []
-    
+    path = Path(dataset_name).expanduser()
+    if not path.exists():
+        raise RuntimeError(
+            f"Dataset '{dataset_name}' is not available locally; downloads are disabled. "
+            "Pass --datasets=/path/to/trajectories.jsonl (or a local JSON/JSONL file "
+            "or datasets.save_to_disk directory), or use --skip_download with "
+            "existing sampled data."
+        )
+
+    print(f"   Loading local dataset {path}...")
+    if path.is_dir():
+        from datasets import DatasetDict, load_from_disk
+        ds = load_from_disk(str(path))
+        if isinstance(ds, DatasetDict):
+            ds = ds["train"]
+    elif path.suffix.lower() == ".jsonl":
+        with path.open(encoding="utf-8") as f:
+            ds = [json.loads(line) for line in f if line.strip()]
+    elif path.suffix.lower() == ".json":
+        with path.open(encoding="utf-8") as f:
+            ds = json.load(f)
+    else:
+        raise RuntimeError(
+            f"Unsupported local dataset '{dataset_name}'. "
+            "Use a JSON/JSONL file or a datasets.save_to_disk directory."
+        )
     # Convert to list of dicts
     entries = []
     for item in ds:
@@ -79,10 +90,20 @@ _TOKENIZER = None
 
 
 def _init_tokenizer_worker(tokenizer_name: str):
-    """Initialize tokenizer in worker process."""
+    """Initialize token counting from existing local or cached assets only."""
     global _TOKENIZER
-    from transformers import AutoTokenizer
-    _TOKENIZER = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
+    try:
+        from transformers import AutoTokenizer
+        _TOKENIZER = AutoTokenizer.from_pretrained(
+            tokenizer_name, trust_remote_code=True, local_files_only=True,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to load local/cached tokenizer '{tokenizer_name}'. "
+            "Tokenizer assets and any required custom code must already be available "
+            "locally; downloads are disabled. Set tokenizer_name to an existing "
+            f"local tokenizer directory or cached tokenizer name. {e}"
+        ) from e
 
 
 def _count_tokens_for_entry(entry: Dict) -> Tuple[Dict, int]:
@@ -126,10 +147,10 @@ def sample_from_datasets(
     Load all datasets, filter by token count, then randomly sample from combined pool.
     
     Args:
-        datasets: List of HuggingFace dataset names
+        datasets: List of local JSON/JSONL files or datasets.save_to_disk directories
         total_samples: Total number of samples to collect
         min_tokens: Minimum token count to include (only sample trajectories >= this)
-        tokenizer_name: HuggingFace tokenizer for counting tokens
+        tokenizer_name: Existing local tokenizer directory or cached name
         seed: Random seed for reproducibility
         num_proc: Number of parallel processes for tokenization
         
@@ -149,7 +170,7 @@ def sample_from_datasets(
     all_entries = []
     
     for dataset_name in datasets:
-        entries = load_dataset_from_hf(dataset_name)
+        entries = load_local_dataset(dataset_name)
         
         if not entries:
             print(f"   ⚠️  Skipping {dataset_name} (no entries loaded)")
@@ -169,6 +190,9 @@ def sample_from_datasets(
     filtered_entries = []
     token_counts = []
     
+    # Fail in the caller: Pool otherwise repeatedly respawns failed initializers.
+    _init_tokenizer_worker(tokenizer_name)
+
     # Use multiprocessing for token counting
     with Pool(
         processes=num_proc,
@@ -323,20 +347,23 @@ def main(
     min_tokens: int = 16000,
     num_proc: int = 8,
     skip_download: bool = False,
+    tokenizer_name: str = "moonshotai/Kimi-K2-Thinking",
 ):
     """
-    Sample trajectories from HuggingFace datasets and run compression.
+    Sample trajectories from local datasets and run compression (no downloads).
     
     Args:
         total_samples: Total number of samples to collect (default: 2500)
         output_name: Name for output directory/file (default: "compressed_agentic")
-        datasets: Comma-separated list of dataset names (uses defaults if not provided)
+        datasets: Comma-separated local JSON/JSONL files or saved dataset directories
         config: Path to compression config YAML
         seed: Random seed for reproducibility
         batch_size: Number of entries per JSONL file during processing
         min_tokens: Minimum token count to filter trajectories (default: 16000)
         num_proc: Number of parallel workers for tokenization (default: 8)
-        skip_download: Skip download and use existing sampled data
+        skip_download: Reuse existing sampled data rather than loading local datasets
+        tokenizer_name: Local/cached sampling tokenizer; compression uses tokenizer.name
+                        from the YAML config. Neither loader downloads assets.
     """
     print("=" * 70)
     print("📊 TRAJECTORY SAMPLING AND COMPRESSION")
@@ -366,11 +393,12 @@ def main(
     final_output = base_dir / "data" / f"{output_name}.jsonl"
     
     if not skip_download:
-        # Step 1: Download, filter by token count, and sample from combined pool
+        # Step 1: Load local data, filter by token count, and sample from combined pool
         samples = sample_from_datasets(
             dataset_list, 
             total_samples, 
             min_tokens=min_tokens,
+            tokenizer_name=tokenizer_name,
             seed=seed,
             num_proc=num_proc
         )
@@ -382,7 +410,7 @@ def main(
         # Step 2: Save to JSONL files
         save_samples_for_compression(samples, sampled_dir, batch_size)
     else:
-        print(f"\n⏭️  Skipping download, using existing data in {sampled_dir}")
+        print(f"\n⏭️  Reusing existing sampled data in {sampled_dir}")
     
     # Step 3: Run compression
     config_path = base_dir / config
