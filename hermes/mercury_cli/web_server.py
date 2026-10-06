@@ -5850,7 +5850,8 @@ async def voice_call_status(channel: str = "", profile: Optional[str] = None):
     from observatory import voice_call as _voice_call
 
     name = (channel or "").strip()
-    engine = _voice_call.resolve_channel_engine(name) if name else "hermes"
+    agent = _voice_call.resolve_channel_agent(name) if name else {"engine": "hermes", "name": ""}
+    engine = agent["engine"]
     allowed, reason = _voice_call.check_engine_allowed(engine)
     call = _voice_call.default_store().status(name)
     response: Dict[str, Any] = {
@@ -5858,6 +5859,7 @@ async def voice_call_status(channel: str = "", profile: Optional[str] = None):
         "channel": name,
         "engine": engine,
         "allowed": allowed,
+        "agent_name": agent["name"],
         "call": call,
     }
     if reason:
@@ -5881,7 +5883,7 @@ async def voice_call_action(payload: VoiceCallActionRequest, profile: Optional[s
         ended = store.end(channel, call_id=payload.call_id)
         return {"ok": True, "action": action, "channel": channel, "ended": ended}
     # Caller hints cannot override the server's room engine.
-    engine = _voice_call.resolve_channel_engine(channel)
+    engine = _voice_call.resolve_channel_agent(channel)["engine"]
     allowed, reason = _voice_call.check_engine_allowed(engine)
     if not allowed:
         raise HTTPException(status_code=409, detail=reason)

@@ -18,7 +18,7 @@ the network. Same-machine is a degenerate case, never an assumption:
 every hop reads explicit host URLs from the ``voice_call`` config
 section — this module never falls back to localhost.
 
-Hermes-only scope: ``check_engine_allowed`` / ``resolve_channel_engine``
+Hermes-only scope: ``check_engine_allowed`` / ``resolve_channel_agent``
 allow only confirmed live Hermes rooms, using the durable tree when the
 dashboard and gateway run in separate processes. OMP and unknown rooms are refused.
 Nothing here imports omp machinery.
@@ -56,47 +56,41 @@ class VoiceCallEngineError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def resolve_channel_engine(channel: str) -> str:
-    """Return ``"hermes"`` or ``"omp"`` for a MIRC channel (never raises).
+def resolve_channel_agent(channel: str) -> Dict[str, str]:
+    """Return the live room's engine and registered name (never raises).
 
-    Reads the live room manager or its durable tree. Missing, expired and
-    unidentifiable rooms return ``"unknown"`` and cannot start a call.
+    Reads the room manager or its durable tree in one lookup. Missing,
+    expired and unidentifiable rooms return unknown with an empty name.
     """
+    unknown = {"engine": "unknown", "name": ""}
     try:
         from observatory.rooms import get_room_manager
 
         manager = get_room_manager()
         if manager is None:
-            # `mercury serve` and the gateway normally run in different
-            # processes. Read the gateway's durable tree without creating or
-            # migrating its database from a dashboard request.
+            # The dashboard normally runs separately from the gateway.
+            # Read its durable tree without creating or migrating the DB.
             from observatory.state import default_state_db_path
 
             path = default_state_db_path()
             if not path.is_file():
-                return "unknown"
+                return unknown
             with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as db:
                 row = db.execute(
-                    "SELECT engine FROM nodes WHERE lower(room_id) = lower(?) "
+                    "SELECT engine, name FROM nodes WHERE lower(room_id) = lower(?) "
                     "AND status = 'live' ORDER BY created_epoch DESC LIMIT 1",
                     (channel or "",),
                 ).fetchone()
-            return str(row[0]) if row else "unknown"
-        route, row = manager.inbound_route(channel or "")
+            return {"engine": str(row[0]), "name": str(row[1] or "")} if row else unknown
+        _route, row = manager.inbound_route(channel or "")
         if row is None:
-            return "unknown"
-        if route == "spawn-omp":
-            return "omp"
-        if route == "child":
-            try:
-                if str((row or {}).get("engine") or "") == "omp":
-                    return "omp"
-            except Exception:
-                pass
-            return "hermes"
-        return "hermes"
+            return unknown
+        engine = str(row.get("engine") or "").strip().lower()
+        if engine not in {"hermes", "omp"}:
+            return unknown
+        return {"engine": engine, "name": str(row.get("name") or "")}
     except Exception:
-        return "unknown"
+        return unknown
 
 
 def check_engine_allowed(engine: str) -> tuple[bool, str]:

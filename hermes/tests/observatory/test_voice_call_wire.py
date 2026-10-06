@@ -26,7 +26,7 @@ def sidecar():
 
         def do_GET(self):
             requests.append((self.path, self.headers.get("Authorization"), None))
-            self.respond({"ok": True, "allowed": True, "engine": "hermes"})
+            self.respond({"ok": True, "allowed": True, "engine": "hermes", "agent_name": "Gaia"})
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -79,7 +79,9 @@ def test_browser_codec_transcript_and_speech_roundtrip(sidecar, monkeypatch):
     monkeypatch.setattr(stt, "transcribe_chunk", transcribe)
     with connect(url) as ws:
         ws.send(json.dumps({"type": "hello", "channel": "#chat", "mime": "audio/mp4"}))
-        assert json.loads(ws.recv(timeout=2))["type"] == "ready"
+        ready = json.loads(ws.recv(timeout=2))
+        assert ready["type"] == "ready"
+        assert ready.get("agentName") == "Gaia"
         ws.send(b"independent-mp4-segment")
         assert json.loads(ws.recv(timeout=2))["text"] == "hello"
         assert chunks == [(b"independent-mp4-segment", "audio/mp4")]
@@ -102,7 +104,7 @@ def test_voice_service_auth_cannot_override_engine_or_admin(monkeypatch):
 
     monkeypatch.setenv("VOICE_CALL_MIRC_TOKEN", "service-secret")
     monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
-    monkeypatch.setattr(vc, "resolve_channel_engine", lambda _channel: "omp")
+    monkeypatch.setattr(vc, "resolve_channel_agent", lambda _channel: {"engine": "omp", "name": "Coder"})
     client = TestClient(web_server.app)
     headers = {"Authorization": "Bearer service-secret"}
     refused = client.post("/api/voice-call/call", headers=headers,
@@ -236,7 +238,7 @@ def test_simultaneous_socket_owners_do_not_end_each_other(monkeypatch):
 
     monkeypatch.setenv("VOICE_CALL_MIRC_TOKEN", "service-secret")
     monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
-    monkeypatch.setattr(vc, "resolve_channel_engine", lambda _: "hermes")
+    monkeypatch.setattr(vc, "resolve_channel_agent", lambda _: {"engine": "hermes", "name": "Gaia"})
     store = vc.VoiceCallStore()
     monkeypatch.setattr(vc, "default_store", lambda: store)
     client = TestClient(web_server.app)
@@ -423,3 +425,24 @@ def test_mute_ack_prevents_already_completed_transcript_emission(sidecar, monkey
     finally:
         release.set()
         ws.close()
+
+def test_status_exposes_registered_name_not_room_slug(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from mercury_cli import web_server
+    from observatory import rooms, state
+
+    database = tmp_path / "state.db"
+    with state.ObservatoryState(database) as tree:
+        tree.add_node("test-agent", engine="hermes", name="Gaia the companion",
+                      slug="conversation-42", mxid="test-agent", session_ref="test-agent")
+        tree.set_room_id("test-agent", "#conversation-42")
+    monkeypatch.setattr(rooms, "get_room_manager", lambda: None)
+    monkeypatch.setattr(state, "default_state_db_path", lambda: database)
+    monkeypatch.setenv("VOICE_CALL_MIRC_TOKEN", "service-secret")
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+    client = TestClient(web_server.app)
+    response = client.get("/api/voice-call/status", params={"channel": "#conversation-42"},
+                          headers={"Authorization": "Bearer service-secret"})
+    assert response.status_code == 200
+    assert response.json()["engine"] == "hermes"
+    assert response.json().get("agent_name") == "Gaia the companion"
