@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { authPolicyFor } from "@oh-my-pi/pi-catalog/compat/auth";
-import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
+import { getBundledModel, getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { completeSimple } from "../src/index";
 import { resolveOpenAIRequestSetup } from "../src/providers/openai-shared";
 import { validateOpenAICompatibleApiKey } from "../src/registry/api-key-validation";
 import { createApiKeyLogin } from "../src/registry/engine/api-key";
 import type { FetchImpl } from "../src/types";
 
-const bundled = getBundledModels("huggingface")[0]!;
+const bundled = getBundledModel<"openai-completions">("huggingface", getBundledModels("huggingface")[0]!.id);
 const forbidden = [
 	"",
 	"https://router.huggingface.co/v1",
@@ -74,7 +74,10 @@ describe("Hugging Face inference and auth HTTP", () => {
 		if (rule?.kind !== "api-key") throw new Error("Missing Hugging Face login rule");
 		const routes: string[] = [];
 		let requests = 0;
-		const key = await createApiKeyLogin(rule, "Hugging Face Inference")({
+		const key = await createApiKeyLogin(
+			rule,
+			"Hugging Face Inference",
+		)({
 			onPrompt: async () => "test-key",
 			onAuth: info => routes.push(info.url),
 			fetch: async () => {
@@ -98,11 +101,10 @@ describe("Hugging Face inference and auth HTTP", () => {
 				{ headers: { "content-type": "text/event-stream" } },
 			);
 		};
-		const result = await completeSimple(
-			{ ...bundled, baseUrl: "https://example.invalid/v1" },
-			context,
-			{ apiKey: "test-key", fetch },
-		);
+		const result = await completeSimple({ ...bundled, baseUrl: "https://example.invalid/v1" }, context, {
+			apiKey: "test-key",
+			fetch,
+		});
 		expect(result.stopReason).toBe("stop");
 		await validateOpenAICompatibleApiKey({
 			provider: "Hugging Face",
