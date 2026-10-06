@@ -328,22 +328,19 @@ hermes sessions export - --session-id 20250305_091523_a1b2c3d4 --only user-promp
 
 支持 `--format jsonl`（默认）或 `md`，批量导出时同样支持全部过滤器，也可与 `--redact` 组合。
 
-#### Trace（HF Agent Trace Viewer）
+#### 本地 Trace
 
-`--format trace` 生成 Claude Code JSONL — Hugging Face Hub 的 [Agent Trace Viewer](https://huggingface.co/docs/hub/agent-traces) 可自动识别的转录格式。可以写入本地文件，或加 `--upload` 推送到你自己的私有 `hermes-traces` 数据集（读取 `HF_TOKEN`）：
+`--format trace` 生成 Claude Code JSONL，输出到 stdout 或本地文件。Mercury 不会将 trace 上传到 Hugging Face；原有的 `--upload` 和 `--public` 参数已移除。导出文件以便在本地审查：
 
 ```bash
 # 最近一个 session 的 trace，输出到 stdout
-hermes sessions export --format trace
+mercury sessions export --format trace
 
 # 将一个 session 导出为本地 trace 文件
-hermes sessions export --format trace --session-id 20250305_091523_a1b2c3d4 trace.jsonl
-
-# 直接上传到你的私有 HF traces 数据集
-hermes sessions export --format trace --session-id 20250305_091523_a1b2c3d4 --upload
+mercury sessions export --format trace --session-id 20250305_091523_a1b2c3d4 trace.jsonl
 ```
 
-Trace 导出默认强制脱敏（它们本来就是要离开本机的）；`--no-redact` 需人工审查后才建议使用。`--upload` 默认私有，除非加 `--public`。带过滤器的批量 trace 导出会为每个 session 写一个 `<id>.trace.jsonl`。
+Trace 导出默认强制脱敏；`--no-redact` 需人工审查后才建议使用。带过滤器的批量 trace 导出会为每个 session 写一个 `<id>.trace.jsonl`。导出 trace 不会修改已存储的转录内容。
 
 #### Markdown / QMD
 
