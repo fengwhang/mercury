@@ -250,7 +250,7 @@ Run `omp <command> --help` for each command's own flags and examples.
 | `ssh` | Manage SSH host configurations. | |
 | `stats` | View usage statistics. | |
 | `update` | Check for and install updates; `--canary`/`--stable` switch release channels. | |
-| `usage` | Show provider usage limits for every authenticated account; `usage clients` breaks token burn down per client (with `--days`), `usage invalidate` drops cached reports. | |
+| `usage` | Show provider usage limits for every authenticated account; `usage invalidate` drops cached reports. | |
 | `tiny-models` | Download tiny local models (session titles + memory). | [local models](./local-models.md) |
 | `token` | Get the API key or OAuth token for a provider. | [secrets](./secrets.md) |
 | `toks` | Count file or text tokens with the embedded offline tokenizers. | |

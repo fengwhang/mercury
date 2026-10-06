@@ -1,11 +1,13 @@
-import { describe, expect, it, vi } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { clearCustomApis } from "@oh-my-pi/pi-ai/api-registry";
+import { AuthBrokerClient, RemoteAuthCredentialStore, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
 import { startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
 import { AuthStorage } from "@oh-my-pi/pi-ai/auth-storage";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
+import { streamPiNative } from "@oh-my-pi/pi-ai/providers/pi-native-client";
 import { encodeStream, formatError, parseRequest } from "@oh-my-pi/pi-ai/providers/pi-native-server";
 import type {
 	AssistantMessage,
@@ -302,22 +304,27 @@ describe("pi-native gateway cache controls", () => {
 	});
 });
 
-describe("pi-native gateway usage attribution", () => {
-	it("records observed usage under the caller's x-omp-* identity, host-fallback when absent", async () => {
+describe("pi-native gateway keeps observed usage local", () => {
+	it("serves authenticated broker credentials and usage without sending client reports, including on close", async () => {
 		registerMockApi();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-pi-native-usage-"));
-		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
-		storage.setRuntimeApiKey("openrouter", "test-key");
-		const recorded: Array<{
-			provider: string;
-			model: string;
-			usage: { input: number; output: number; cacheRead: number; cacheWrite: number };
-			costUsd?: number;
-			client?: { installId: string; hostname?: string; app?: string };
-		}> = [];
-		const spy = vi.spyOn(storage, "recordObservedUsage").mockImplementation(entry => {
-			recorded.push(entry);
-		});
+		const brokerStorage = await AuthStorage.create(path.join(dir, "auth.db"));
+		brokerStorage.upsertCredential("openrouter", { type: "api_key", key: "broker-test-key" });
+		const broker = startAuthBroker({ bind: "127.0.0.1:0", bearerTokens: ["broker-token"], storage: brokerStorage });
+		const requests: { method: string; path: string }[] = [];
+		const fetchImpl: typeof fetch = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit) => {
+				const url = new URL(input instanceof Request ? input.url : String(input));
+				requests.push({ method: init?.method ?? "GET", path: url.pathname });
+				return fetch(input, init);
+			},
+			{ preconnect: fetch.preconnect },
+		);
+		const client = new AuthBrokerClient({ url: broker.url, token: "broker-token", fetchImpl });
+		const remote = new RemoteAuthCredentialStore({ client, streamSnapshots: false });
+		await remote.refreshSnapshot();
+		const storage = new AuthStorage(remote);
+		await storage.reload();
 		const mock = createMockModel({ provider: "openrouter", id: "pi-native-usage" });
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
@@ -326,62 +333,65 @@ describe("pi-native gateway usage attribution", () => {
 			resolveModel: () => mock,
 			version: "test",
 		});
-
 		try {
-			const usage = { input: 100, output: 20, cacheRead: 5, cacheWrite: 2, cost: { total: 0.75 } };
-			mock.push({ content: ["ok"], usage });
-			const attributed = await fetch(`${handle.url}/v1/pi/stream`, {
-				method: "POST",
-				headers: {
-					Authorization: "Bearer test-token",
-					"Content-Type": "application/json",
-					"x-omp-install-id": "robomp-install",
-					"x-omp-hostname": "robomp-box",
-					"x-omp-app": "robomp",
-				},
-				body: JSON.stringify({ modelId: "pi-native-usage", context: baseContext, stream: false }),
-			});
-			expect(attributed.status).toBe(200);
-			await attributed.json();
-			expect(recorded).toHaveLength(1);
-			expect(recorded[0]).toMatchObject({
-				provider: "openrouter",
-				model: "pi-native-usage",
-				usage: { input: 100, output: 20, cacheRead: 5, cacheWrite: 2 },
-				costUsd: 0.75,
-				client: { installId: "robomp-install", hostname: "robomp-box", app: "robomp" },
-			});
-
-			// No identity headers → the burn still lands somewhere: the gateway
-			// host's own install id under the `gateway` app label.
-			mock.push({ content: ["ok"], usage });
-			const anonymous = await fetch(`${handle.url}/v1/pi/stream`, {
-				method: "POST",
-				headers: { Authorization: "Bearer test-token", "Content-Type": "application/json" },
-				body: JSON.stringify({ modelId: "pi-native-usage", context: baseContext, stream: false }),
-			});
-			expect(anonymous.status).toBe(200);
-			await anonymous.json();
-			expect(recorded).toHaveLength(2);
-			expect(recorded[1]?.client?.app).toBe("gateway");
-			expect(recorded[1]?.client?.installId.length).toBeGreaterThan(0);
-
-			// Zero-usage turns (pre-flight failures) never record.
-			mock.push({ content: ["ok"] });
-			const zeroUsage = await fetch(`${handle.url}/v1/pi/stream`, {
-				method: "POST",
-				headers: { Authorization: "Bearer test-token", "Content-Type": "application/json" },
-				body: JSON.stringify({ modelId: "pi-native-usage", context: baseContext, stream: false }),
-			});
-			expect(zeroUsage.status).toBe(200);
-			await zeroUsage.json();
-			expect(recorded).toHaveLength(2);
+			for (const stream of [false, true]) {
+				mock.push({ content: ["ok"], usage: { input: 100, output: 20, cacheRead: 5, cacheWrite: 2 } });
+				const response = await fetch(`${handle.url}/v1/pi/stream`, {
+					method: "POST",
+					headers: { Authorization: "Bearer test-token", "Content-Type": "application/json" },
+					body: JSON.stringify({ modelId: "pi-native-usage", context: baseContext, stream }),
+				});
+				expect(response.status).toBe(200);
+				const result = stream ? await response.text() : JSON.stringify(await response.json());
+				expect(result).toContain('"input":100');
+				expect(result).toContain('"output":20');
+			}
+			expect(mock.calls.map(call => call.options?.apiKey)).toEqual(["broker-test-key", "broker-test-key"]);
+			expect(requests.some(request => request.path === "/v1/snapshot")).toBe(true);
+			storage.close();
+			await client.healthz();
+			expect(requests.filter(request => request.method === "POST")).toEqual([]);
+			expect(requests.filter(request => request.path === "/v1/usage/observed")).toEqual([]);
 		} finally {
-			spy.mockRestore();
 			await handle.close();
 			storage.close();
+			await broker.close();
+			brokerStorage.close();
 			await fs.rm(dir, { recursive: true, force: true });
 			clearCustomApis();
+		}
+	});
+});
+
+describe("pi-native client metadata", () => {
+	it("authenticates inference without attaching installation, hostname, or application telemetry", async () => {
+		const final = baseAssistant({ usage: { ...ZERO_USAGE, input: 7, totalTokens: 7 } });
+		let headers: Headers | undefined;
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch(req) {
+				headers = req.headers;
+				const events = makeEventStream([{ type: "done", reason: "stop", message: final }], final);
+				return new Response(encodeStream(events, final.model, {}), {
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			},
+		});
+		try {
+			const model = createMockModel({ provider: "anthropic", id: final.model });
+			const result = await streamPiNative(
+				{ ...model, baseUrl: `http://127.0.0.1:${server.port}` },
+				baseContext,
+				{ apiKey: "gateway-token", sessionId: "session-only" },
+			).result();
+			expect(result.usage.input).toBe(7);
+			expect(headers?.get("authorization")).toBe("Bearer gateway-token");
+			for (const name of ["x-omp-install-id", "x-omp-hostname", "x-omp-app"]) {
+				expect(headers?.has(name)).toBe(false);
+			}
+		} finally {
+			await server.stop(true);
 		}
 	});
 });

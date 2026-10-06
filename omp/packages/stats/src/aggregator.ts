@@ -553,16 +553,16 @@ export async function getToolDashboardStats(range?: string | null): Promise<Tool
  * histogram, provider token time series, and subscription-window analytics
  * (utilization series + insights) derived from recorded usage-limit snapshots.
  *
- * Window token estimates use broker-held fleet token burn when a broker is
- * configured — the window fractions cover every install sharing the broker's
- * credentials, so dividing them into local-only tokens would undercount.
+ * Window token estimates use this install's local message statistics. Usage
+ * fractions may include other clients sharing broker-managed credentials,
+ * so those estimates do not represent fleet-wide token burn.
  */
 export async function getProviderDashboardStats(range?: string | null): Promise<ProviderDashboardStats> {
 	await initDb();
 	const { modelSeriesDays, modelSeriesBucketMs, cutoff } = getTimeRangeConfig(range);
 	const providers = getStatsByProvider(cutoff ?? undefined);
 	const usage = await fetchUsageData(cutoff ?? 0);
-	const tokensByProvider = usage.fleetTokensByProvider ?? new Map(providers.map(p => [p.provider, p.totalTokens]));
+	const tokensByProvider = new Map(providers.map(p => [p.provider, p.totalTokens]));
 	const { usageSeries, windowInsights } = computeUsageWindowStats(usage.rows, tokensByProvider);
 	return {
 		providers,
