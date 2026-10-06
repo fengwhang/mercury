@@ -292,6 +292,11 @@ def load_sidecar_stt_config(overlays: Optional[Dict[str, str]] = None) -> Dict[s
     provider = (overlays.get("provider") or "").strip().lower()
     if provider:
         stt_config["provider"] = provider
+    elif any(overlays.get(key) for key in ("model", "language", "endpoint")):
+        from tools.transcription_tools import _get_provider
+
+        provider = _get_provider(stt_config)
+    if provider:
         section = dict(stt_config.get(provider) or {})
         if overlays.get("model"):
             section["model"] = overlays["model"]
