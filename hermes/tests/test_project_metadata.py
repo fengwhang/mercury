@@ -230,3 +230,22 @@ def test_every_lazy_deps_exact_pin_matches_uv_lock():
         "`uv lock --upgrade-package <name>` in the same commit. Drift: "
         f"{drift}"
     )
+
+
+def test_transitive_hub_does_not_enable_retired_trace_upload(monkeypatch):
+    import sys
+    import types
+
+    from pm.extras import available
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.ModuleType("huggingface_hub"))
+    assert available("trace-upload") is False
+
+
+def test_legacy_hub_install_does_not_select_retired_trace_upload(tmp_path):
+    from pm.extras import legacy_selection
+
+    (tmp_path / "venv" / "lib" / "python3.13" / "site-packages" / "huggingface_hub").mkdir(
+        parents=True
+    )
+    assert legacy_selection(tmp_path) == ["all"]
