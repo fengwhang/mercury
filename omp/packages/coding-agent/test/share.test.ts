@@ -14,6 +14,7 @@ import {
 import { SecretObfuscator } from "../src/secrets/obfuscator";
 import type { SessionEntry } from "../src/session/session-entries";
 import type { SessionManager } from "../src/session/session-manager";
+import { asGlobalFetch } from "./helpers/fetch-mock";
 
 const IV_LENGTH = 12;
 const TEST_MAX_SEALED_BYTES = 4_000;
@@ -560,9 +561,11 @@ describe("shareSession", () => {
 		const gh = vi.spyOn(utils, "$which").mockImplementation(() => {
 			throw new Error("unexpected gh operation");
 		});
-		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
-			throw new Error("unexpected network");
-		});
+		const network = vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(() => {
+				throw new Error("unexpected network");
+			}),
+		);
 		const sm = {
 			getHeader: () => sessionData([], "x").header,
 			getEntries: () => [],
@@ -579,9 +582,11 @@ describe("shareSession", () => {
 		const gh = vi.spyOn(utils, "$which").mockImplementation(() => {
 			throw new Error("unexpected gh operation");
 		});
-		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
-			throw new Error("unexpected network");
-		});
+		const network = vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(() => {
+				throw new Error("unexpected network");
+			}),
+		);
 		const sm = {
 			getHeader: () => sessionData([], "x").header,
 			getEntries: () => [],
@@ -598,9 +603,11 @@ describe("shareSession", () => {
 	});
 	test("an explicitly selected unavailable gist fails without uploading to another store", async () => {
 		vi.spyOn(utils, "$which").mockReturnValue(null);
-		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
-			throw new Error("unexpected fallback upload");
-		});
+		const network = vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(() => {
+				throw new Error("unexpected fallback upload");
+			}),
+		);
 		const sm = {
 			getHeader: () => sessionData([], "x").header,
 			getEntries: () => [],
@@ -627,9 +634,11 @@ console.log("https://gist.github.com/fake/${gistId}");
 		);
 		await fs.chmod(gh, 0o700);
 		vi.spyOn(utils, "$which").mockReturnValue(gh);
-		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
-			throw new Error("unexpected upload");
-		});
+		const network = vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(() => {
+				throw new Error("unexpected upload");
+			}),
+		);
 		const sm = {
 			getHeader: () => sessionData([], "x").header,
 			getEntries: () => [],
