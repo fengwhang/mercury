@@ -305,6 +305,7 @@ code,
 	color: white;
 	font: 16px / 1.4 sans-serif;
 	isolation: isolate;
+	overflow-y: auto;
 }
 
 .voice-call-screen button {
@@ -403,6 +404,21 @@ code,
 .voice-control .voice-audio {
 	background: white;
 	color: black;
+}
+
+.voice-control .voice-audio.routed {
+	background: rgb(255 255 255 / 25%);
+	color: white;
+}
+
+.voice-control .voice-audio.alternate {
+	background: #ffd2e9;
+	color: #301827;
+}
+
+.voice-audio.alternate .voice-route-icon {
+	transform: rotate(180deg);
+	transform-origin: 18px 3px;
 }
 
 .voice-control .voice-end {

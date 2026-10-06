@@ -81,7 +81,11 @@
 				</div>
 				<div v-if="showOutputs && inCall" class="voice-outputs">
 					<label v-if="sinkSupported && outputs.length"
-						>Playback output<select :value="selectedOutput" @change="selectOutput">
+						>Playback output<select
+							:value="selectedOutput"
+							:disabled="outputBusy"
+							@change="selectOutput"
+						>
 							<option value="">Browser default</option>
 							<option
 								v-for="output in outputs"
@@ -95,16 +99,29 @@
 						</select></label
 					>
 					<p role="status">{{ outputNotice }}</p>
+					<p v-if="playbackError" role="alert">{{ playbackError }}</p>
 				</div>
 				<div class="voice-controls">
 					<div v-if="inCall" class="voice-control">
 						<button
 							class="voice-audio"
+							:class="{routed: !!selectedOutput, alternate: alternateOutput}"
+							:data-output="selectedOutput"
+							:title="'Playback: ' + routeLabel"
+							:disabled="outputBusy"
 							aria-label="Audio output"
 							:aria-expanded="showOutputs"
 							@click="toggleOutputs"
 						>
 							<svg viewBox="0 0 24 24" aria-hidden="true">
+								<path
+									v-if="selectedOutput"
+									class="voice-route-icon"
+									d="M15 3h6m-3-3 3 3-3 3"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="1.5"
+								/>
 								<path d="M3 9h4l5-5v16l-5-5H3Z" />
 								<path
 									d="M16 8q5 4 0 8m3-11q8 7 0 14"
@@ -147,7 +164,7 @@
 									stroke-width="2"
 								/>
 							</svg></button
-						><span>{{ muted ? "Unmute" : "Mute" }}</span>
+						><span>Mute</span>
 					</div>
 				</div>
 			</section>
@@ -178,6 +195,7 @@ export default defineComponent({
 		const store = useStore();
 		const target = shallowRef<ClientChan>();
 		const agentName = ref("");
+		const agentRoom = ref("");
 		const inCall = ref(false);
 		const connecting = ref(false);
 		const panelOpen = ref(false);
@@ -192,7 +210,63 @@ export default defineComponent({
 		const sinkSupported = ref(false);
 		const outputs = ref<MediaDeviceInfo[]>([]);
 		const selectedOutput = ref("");
+		const alternateOutput = ref(false);
+		const outputBusy = ref(false);
 		const outputNotice = ref("");
+		const playbackError = ref("");
+		const routeLabel = ref("Browser default");
+		let previousOutput = "";
+		const playbackOutputs = computed(() => {
+			// groupId identifies hardware, not necessarily a distinct logical playback route.
+			const routes = outputs.value.filter(
+				(device) => !["default", "communications"].includes(device.deviceId)
+			);
+
+			for (const aliasId of ["default", "communications"]) {
+				const alias = outputs.value.find((device) => device.deviceId === aliasId);
+
+				if (!alias?.groupId || routes.some((device) => device.groupId === alias.groupId)) {
+					continue;
+				}
+
+				if (aliasId === "default") {
+					routes.unshift(alias);
+				} else {
+					routes.push(alias);
+				}
+			}
+
+			return routes;
+		});
+
+		const resolvePlaybackRoute = (id: string) => {
+			const requested = outputs.value.find((device) => device.deviceId === (id || "default"));
+
+			if (!requested || !["default", "communications"].includes(requested.deviceId)) {
+				return id;
+			}
+
+			if (!requested.groupId) {
+				return null;
+			}
+
+			let match: MediaDeviceInfo | undefined;
+
+			for (const route of playbackOutputs.value) {
+				if (route.groupId !== requested.groupId) {
+					continue;
+				}
+
+				if (match) {
+					return null;
+				} // Multiple real routes in this hardware group: do not guess.
+
+				match = route;
+			}
+
+			return match ? (match.deviceId === "default" ? "" : match.deviceId) : null;
+		};
+
 		const contactName = computed(() => {
 			if (agentName.value) {
 				return agentName.value;
@@ -309,6 +383,14 @@ export default defineComponent({
 			elapsed.value = 0;
 			muted.value = false;
 			showOutputs.value = false;
+			playbackError.value = "";
+			outputBusy.value = false;
+			alternateOutput.value = false;
+			selectedOutput.value = "";
+			previousOutput = "";
+			routeLabel.value = "Browser default";
+			outputs.value = [];
+			outputNotice.value = "";
 			error.value = message;
 
 			if (!message) {
@@ -326,6 +408,7 @@ export default defineComponent({
 			const current = audio;
 			const callEpoch = epoch;
 			current.src = queue.shift()!;
+			playbackError.value = "";
 			playing = true;
 			playStartedAt = performance.now();
 
@@ -345,7 +428,7 @@ export default defineComponent({
 					return;
 				}
 
-				outputNotice.value =
+				playbackError.value =
 					"Reply audio could not be played. Check your browser playback permissions.";
 				showOutputs.value = true;
 				finished();
@@ -357,7 +440,7 @@ export default defineComponent({
 				}
 
 				playing = false;
-				outputNotice.value =
+				playbackError.value =
 					"Playback was blocked. Allow audio in your browser, then press Audio to retry.";
 				showOutputs.value = true;
 				queue.unshift(current.src);
@@ -386,49 +469,118 @@ export default defineComponent({
 					return;
 				}
 
+				outputs.value = [];
 				outputNotice.value =
 					"Audio outputs could not be listed. Using the browser/system default.";
 			}
 		};
 
-		const toggleOutputs = () => {
-			showOutputs.value = !showOutputs.value;
-
-			if (showOutputs.value) {
-				void refreshOutputs();
-				playNext();
-			}
-		};
-
-		const selectOutput = async (event: Event) => {
-			const id = (event.target as HTMLSelectElement).value;
+		const switchOutput = async (id: string) => {
 			const current = audio;
 			const callEpoch = epoch;
 
 			if (!current?.setSinkId) {
-				return;
+				return false;
 			}
 
 			try {
-				await current.setSinkId(id);
+				await current.setSinkId(id === "default" ? "" : id);
 
 				if (callEpoch !== epoch) {
-					return;
+					return false;
 				}
 
-				selectedOutput.value = id;
-				outputNotice.value = `Playback: ${
-					outputs.value.find((device) => device.deviceId === id)?.label ||
-					"browser default"
-				}`;
+				previousOutput = selectedOutput.value;
+				selectedOutput.value = id === "default" ? "" : id;
+				const selected = outputs.value.find((device) => device.deviceId === id);
+				const route = resolvePlaybackRoute(id);
+				alternateOutput.value =
+					playbackOutputs.value.findIndex(
+						(device) => (device.deviceId === "default" ? "" : device.deviceId) === route
+					) > 0;
+				routeLabel.value = selected
+					? selected.label || `Audio output ${outputs.value.indexOf(selected) + 1}`
+					: "Browser default";
+				outputNotice.value = `Playback: ${routeLabel.value}`;
+				return true;
 			} catch {
 				if (callEpoch !== epoch) {
+					return false;
+				}
+
+				outputNotice.value = `Output switch failed. Playback remains on ${routeLabel.value}; check device permissions.`;
+				return false;
+			}
+		};
+
+		const toggleOutputs = async () => {
+			if (outputBusy.value || !inCall.value) {
+				return;
+			}
+
+			const callEpoch = epoch;
+			outputBusy.value = true;
+			showOutputs.value = true;
+			// Retry queued playback synchronously while the Audio click's user activation is live.
+			playNext();
+
+			try {
+				await refreshOutputs();
+
+				if (callEpoch !== epoch || !inCall.value) {
 					return;
 				}
 
-				(event.target as HTMLSelectElement).value = selectedOutput.value;
-				outputNotice.value =
-					"Output switch failed. Playback remains on the previous browser output; check device permissions.";
+				if (!sinkSupported.value || !outputs.value.length) {
+					return;
+				}
+
+				const currentRoute = resolvePlaybackRoute(selectedOutput.value);
+				const previousRoute = resolvePlaybackRoute(previousOutput);
+				const alternatives = playbackOutputs.value.filter(
+					(device) =>
+						(device.deviceId === "default" ? "" : device.deviceId) !== currentRoute
+				);
+
+				if (playbackOutputs.value.length < 2 || !alternatives.length) {
+					outputNotice.value =
+						"No alternate playback output is exposed. Use the picker or your browser/system device settings.";
+					return;
+				}
+
+				const next =
+					alternatives.find(
+						(device) =>
+							(device.deviceId === "default" ? "" : device.deviceId) === previousRoute
+					) || alternatives[0];
+
+				if (next) {
+					await switchOutput(next.deviceId);
+				}
+			} finally {
+				if (callEpoch === epoch) {
+					outputBusy.value = false;
+				}
+			}
+		};
+
+		const selectOutput = async (event: Event) => {
+			if (outputBusy.value) {
+				return;
+			}
+
+			const select = event.target as HTMLSelectElement;
+			const callEpoch = epoch;
+			outputBusy.value = true;
+
+			try {
+				if (!(await switchOutput(select.value)) && callEpoch === epoch) {
+					select.value = selectedOutput.value;
+				}
+			} finally {
+				if (callEpoch === epoch) {
+					outputBusy.value = false;
+				}
 			}
 		};
 
@@ -572,6 +724,7 @@ export default defineComponent({
 
 			target.value = channel;
 			agentName.value = "";
+			agentRoom.value = "";
 			panelOpen.value = true;
 			minimized.value = false;
 			error.value = "";
@@ -677,6 +830,8 @@ export default defineComponent({
 								typeof message.agentName === "string"
 									? message.agentName.trim()
 									: "";
+							agentRoom.value =
+								typeof message.agentRoom === "string" ? message.agentRoom : "";
 							inCall.value = true;
 							establishedAt = Date.now();
 							timer = window.setInterval(() => {
@@ -778,6 +933,37 @@ export default defineComponent({
 
 		eventbus.on("voice-call:start", onPhone);
 		watch(
+			() => {
+				const network = store.state.networks.find((candidate) =>
+					candidate.channels.some((channel) => channel.id === target.value?.id)
+				);
+				const room = agentRoom.value.toLowerCase();
+				return [
+					target.value?.id,
+					room,
+					!!network,
+					!!room &&
+						!!network?.channels.some(
+							(channel) =>
+								channel.type === ChanType.CHANNEL &&
+								channel.name.toLowerCase() === room
+						),
+				] as const;
+			},
+			(
+				[targetId, room, targetPresent, roomPresent],
+				[previousTargetId, previousRoom, targetWasPresent, roomWasPresent]
+			) => {
+				if (
+					((targetId === previousTargetId && targetWasPresent && !targetPresent) ||
+						(room === previousRoom && roomWasPresent && !roomPresent)) &&
+					(inCall.value || connecting.value)
+				) {
+					hangup();
+				}
+			}
+		);
+		watch(
 			() => target.value?.messages.at(-1)?.id,
 			() => {
 				if (!inCall.value || !target.value || ws?.readyState !== WebSocket.OPEN) {
@@ -829,7 +1015,11 @@ export default defineComponent({
 			sinkSupported,
 			outputs,
 			selectedOutput,
+			alternateOutput,
+			outputBusy,
+			routeLabel,
 			outputNotice,
+			playbackError,
 			startCall,
 			saveAndCall,
 			hangup,

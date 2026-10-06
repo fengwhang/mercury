@@ -54,17 +54,33 @@ that identity across navigation. Before metadata is available it uses a query's
 actual nick, or a tagged assistant reply's `from.nick`, and otherwise shows the
 intact room name rather than guessing an agent name from a channel slug.
 
-- **Audio** lists real browser-enumerated playback outputs and switches the
-  call's persistent `HTMLAudioElement` using `setSinkId` when supported. A
-  rejected switch leaves the previous selection and displays the error.
-  Unsupported browsers explicitly report system/browser-default playback and
-  direct the caller to device settings. An earpiece route is never claimed
-  unless the browser actually exposes it.
+Query calls signal the actual IRC nick; the backend resolves a live node's
+`mxid` rather than guessing a channel from its slug. `ready.agentRoom` carries
+the authoritative `room_id` for lifecycle tracking, while transcripts continue
+to use the original query's numeric mLounge chat target. Removing that query,
+its network, or its registered room ends the call. A self-PART removing the
+agent room also ends a query call even if the query remains open; ordinary view
+navigation and ready-metadata changes are not treated as removal.
+
+- **Audio** directly switches the call's persistent `HTMLAudioElement` using
+  `setSinkId` between exposed playback routes on each tap, then back on the next
+  tap. The icon, colour, and actual device label update only after a completed
+  switch. Default/communications aliases are not invented alternatives; a group
+  identifies their current physical route only when that mapping is unambiguous.
+  Distinct non-alias device IDs remain distinct logical routes even when their
+  `groupId` matches. The picker remains available for explicit selection,
+  additional outputs, and permission/fallback cases. A rejected switch preserves
+  the prior route and shows the error. Unsupported browsers or devices exposing
+  no alternate route visibly explain browser/system-default playback and device
+  settings. An earpiece route is never claimed unless actually exposed. Each new
+  call starts with the browser default and fresh output state, not a stale claim
+  about the last call's device.
 - **Mute** immediately disables microphone tracks, stops segment recording,
   and invalidates pending uploads. Unmute begins a fresh recording so bytes
   captured before mute cannot leak after unmute. The microphone slash denotes
   the currently **unmuted** state, as specified by this UI's control convention;
-  the label and pressed state indicate the action/current mute state.
+  the visible label stays **Mute**, while the pressed state and action's
+  accessible name distinguish mute from unmute.
 - **End** immediately stops recording and mic tracks, clears playback and the
   timer, sends `hangup` if possible, and closes the socket. The sidecar releases
   its registry entry. Late permission, recording, playback, or socket callbacks
@@ -74,6 +90,13 @@ intact room name rather than guessing an agent name from a channel slug.
   the active call and its original contact, chat input target, and TTS source.
   Calling a different contact while a call exists restores the existing call;
   end it before calling another contact. Closing the app tears the call down.
+
+Rejected browser playback retains the queued reply. Audio retries it immediately
+within the click's user activation, before waiting for output enumeration.
+Playback failures remain visible independently of output-selection messages;
+they are not silently replaced by routing status. A worker/provider error ends
+the established state and exposes its error plus **Voice settings**, rather
+than leaving an inaudible call hidden behind the timer.
 
 Acceptance: a remote laptop browser against muted/headless servers
 captures mic locally and plays replies through the laptop speakers —
@@ -100,6 +123,23 @@ Non-interactive: `mercury setup stt --non-interactive
 --stt-provider parakeet [--stt-model … --stt-endpoint … --stt-language …]`,
 or `MERCURY_STT_PROVIDER/MODEL/ENDPOINT/LANGUAGE` env vars. The OpenAI
 key always comes from the environment/`.env`.
+
+### Local model prerequisites: no automatic weight downloads
+
+Provision local provider binaries and model assets separately, then configure
+their existing paths. Model selectors shown in setup are not permission to fetch
+weights. Mercury does not automatically download model weights or substitute a
+cloud provider when local assets are absent.
+
+The existing local faster-whisper path requires readable, nonempty `model.bin`,
+`config.json`, and `tokenizer.json` in `stt.local.model` (a model directory) or a
+complete existing cache. The Whisper CLI requires an existing local `.pt`
+checkpoint, not a bare model name that would trigger a download. Local TTS also
+requires complete assets: Piper's ONNX model plus JSON configuration, Kitten's
+local model assets, or NeuTTS's backbone, codec, and semantic encoder assets.
+Missing assets are an actionable host-configuration error; configure STT on the
+mLounge host and TTS on the MIRC host before retrying. Explicitly configured
+cloud APIs remain available with their own credentials.
 
 ## Split-host config (`voice_call` section)
 
@@ -163,7 +203,7 @@ equivalent proxy can provide the HTTPS endpoints.
   pause up to a 12s cap; WebM/Ogg/MP4 depending on
   browser support), `{type: tts, text, token}`,
   `{type: mute, muted}`, `{type: hangup}`, `{type: ping}`.
-- Sidecar → browser: `{type: ready, callId, engine, sttProvider, agentName?}`,
+- Sidecar → browser: `{type: ready, callId, engine, sttProvider, agentName?, agentRoom?}`,
   `{type: refused, reason}` (OMP and unidentified/expired rooms),
   `{type: transcript, text}`, `{type: audio, token, mime, dataUrl}`,
   `{type: muted}`, `{type: ended}`, `{type: error}`.
@@ -192,7 +232,9 @@ Automated checks cover the actual HTTP/WebSocket upgrade, service auth, engine
 selection, independently decodable microphone recordings, transcript/TTS delivery,
 and blocked-worker hangup. Client controls additionally cover ready-based timing,
 pending permission/upload cancellation, mute/unmute races, PiP/contact pinning,
-output switching/failure, and unsupported sink indication.
+direct Audio taps, alias/default-group boundaries, output switching/failure,
+fresh-call routing state, autoplay retry, visible worker failure, and actual
+query/registered-room/network removal.
 
 An offline browser smoke mounts the actual App, Chat, and VoiceCall components
 with unrelated leaf views stubbed. Generated browser media runs through native
@@ -203,6 +245,19 @@ registry after End, missing configuration, and OMP refusal. Deterministic fake
 output devices exercise successful sink selection and rejection; the native API's
 rejection path is also observed. These checks do not establish physical device
 routing.
+
+The source query smoke verifies `Kai` → registered node identity/canonical room,
+native microphone bytes → STT → numeric query chat target, and TTS → native
+playback. Expiring the temporary node and delivering a self-PART through the
+actual client handler ends the call while the query remains open. A fake STT
+provider failure through the real worker also ends the call visibly.
+
+Isolated Chromium playback smoke used `--autoplay-policy=no-user-gesture-required`
+for deterministic native playback. A rejection injected at the play seam proves
+the queued reply survives and Audio retries the same source through native
+playback; unit checks also hold enumeration pending to verify the retry remains
+inside the gesture. This does not prove default-policy or Safari/iOS autoplay
+acceptance.
 
 Physical microphones, acoustic echo/barge-in thresholds, uninterrupted speech
 across recording boundaries, provider latency/audio quality, and Safari/iOS
