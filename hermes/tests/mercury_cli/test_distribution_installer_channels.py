@@ -55,6 +55,16 @@ printf 'parsed-tag:%s\n' "${TAG_ARG:-}"
     return harness, env, state
 
 
+@pytest.fixture
+def nightly_installer(installer):
+    harness, env, _ = installer
+    env = dict(env)
+    # Exercise direct --channel nightly defaults without overriding its home.
+    env.pop("MERCURY_HOME")
+    state = Path(env["HOME"]) / ".mercury-nightly"
+    return harness, env, state
+
+
 def run_installer(installer, *args, fail=False):
     harness, env, _ = installer
     if fail:
@@ -66,15 +76,23 @@ def run_installer(installer, *args, fail=False):
 def assert_channel(installer, selected):
     _, env, state = installer
     assert (state / "channel").read_text().strip() == selected
-    shim = Path(env["MERCURY_BIN_DIR"]) / "mercury"
+    command = "mercury-nightly" if selected == "nightly" else "mercury"
+    shim = Path(env["MERCURY_BIN_DIR"]) / command
     # Execute the shim against a tiny fixture distribution launcher.
     launcher = state / "mercury-agent/bin/mercury"
     launcher.parent.mkdir(parents=True, exist_ok=True)
-    launcher.write_text('#!/bin/sh\nprintf "%s\\n" "$MERCURY_CHANNEL"\n')
+    launcher.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$MERCURY_CHANNEL" "$MERCURY_HOME" "$MERCURY_CMD"\n'
+    )
     launcher.chmod(0o755)
     result = subprocess.run([str(shim)], env=env, capture_output=True,
                             text=True, timeout=15, check=True)
-    assert result.stdout.strip() == selected
+    assert result.stdout.splitlines() == [selected, str(state), command]
+    if selected == "nightly":
+        stable_state = Path(env["HOME"]) / ".mercury"
+        assert (stable_state / "channel").read_text() == "nightly\n"
+        assert sorted(path.name for path in stable_state.iterdir()) == ["channel"]
+        assert not (Path(env["MERCURY_BIN_DIR"]) / "mercury").exists()
 
 
 def test_default_stable_ignores_inherited_nightly_and_old_marker(installer):
@@ -84,7 +102,9 @@ def test_default_stable_ignores_inherited_nightly_and_old_marker(installer):
 
 
 @pytest.mark.parametrize("selected", ["stable", "nightly"])
-def test_explicit_channel_matches_saved_marker_and_launcher(installer, selected):
+def test_explicit_channel_matches_saved_marker_and_launcher(installer, nightly_installer, selected):
+    if selected == "nightly":
+        installer = nightly_installer
     result = run_installer(installer, "--channel", selected)
     assert result.returncode == 0, result.stderr
     assert_channel(installer, selected)
@@ -105,11 +125,11 @@ def test_invalid_channel_fails_before_modifying_installation(installer):
     assert not Path(env["MERCURY_BIN_DIR"]).exists()
 
 
-def test_prerelease_tag_is_accepted(installer):
-    result = run_installer(installer, "--channel", "nightly", "v0.3.4-nightly")
+def test_prerelease_tag_is_accepted(nightly_installer):
+    result = run_installer(nightly_installer, "--channel", "nightly", "v0.3.4-nightly")
     assert result.returncode == 0, result.stderr
     assert "parsed-tag:v0.3.4-nightly" in result.stdout
-    assert_channel(installer, "nightly")
+    assert_channel(nightly_installer, "nightly")
 
 
 @pytest.mark.parametrize("remote", [False, True])
