@@ -569,12 +569,18 @@ def ensure_mlounge_user(paths: MLoungePaths, username: str,
     return {"action": "created"}
 
 
-def render_mlounge_unit(*, mlounge_bin: str, home: str, path_extra: str = "") -> str:
+def render_mlounge_unit(*, mlounge_bin: str, home: str, path_extra: str = "",
+                       stt_sidecar_url: str = "") -> str:
     """Render the mlounge systemd USER unit (pure string templating)."""
     import os as _os
 
     _path = _os.pathsep.join(
         [p for p in (path_extra, "/usr/local/bin:/usr/bin:/bin") if p])
+    # Only the explicit, public endpoint crosses into the browser service.
+    # Tokens stay out of the unit/client; double systemd's percent specifier.
+    sidecar_env = json.dumps(
+        f"MERCURY_VOICE_CALL_SIDECAR_URL={stt_sidecar_url}".replace("%", "%%"),
+        ensure_ascii=False)
     return f"""\
 [Unit]
 Description={MLOUNGE_UNIT_DESCRIPTION}
@@ -587,6 +593,7 @@ Type=simple
 Environment=MLOUNGE_HOME={home}
 Environment=THELOUNGE_HOME={home}
 Environment=PATH={_path}
+Environment={sidecar_env}
 ExecStart={mlounge_bin} start
 Restart=on-failure
 RestartSec=5
@@ -787,6 +794,9 @@ def provision_mlounge(
     was_active = mlounge_unit_active()
     summary["config"] = ensure_mlounge_config(spaths, host=host, port=int(port))
     import os as _os2
+    from mercury_cli.config import cfg_get, load_config
+
+    sidecar_url = str(cfg_get(load_config(), "voice_call", "stt_sidecar_url", default="") or "").strip()
 
     _node = shutil.which("node") or ""
     # `add` only CREATES: an existing login silently keeps its old
@@ -806,6 +816,7 @@ def provision_mlounge(
         spaths,
         unit=render_mlounge_unit(
             mlounge_bin=summary["bin"], home=str(spaths.home),
+            stt_sidecar_url=sidecar_url,
             path_extra=_os2.pathsep.join(
                 [str(mlounge_prefix(home) / "bin"),
                  str(Path(_node).parent)] if _node else
