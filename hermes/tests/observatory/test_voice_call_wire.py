@@ -446,3 +446,48 @@ def test_status_exposes_registered_name_not_room_slug(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.json()["engine"] == "hermes"
     assert response.json().get("agent_name") == "Gaia the companion"
+
+@pytest.mark.parametrize("control", ["websocket-ping", "ping", "mute"])
+def test_control_before_hangup_cannot_pin_reader_behind_tts_writer(sidecar, monkeypatch, control):
+    from websockets.exceptions import ConnectionClosed
+
+    url, _requests, state = sidecar
+    entered, release, ended = threading.Event(), threading.Event(), threading.Event()
+    send_json = stt.WsConnection.send_json
+    request = state.request
+
+    def blocked_writer(ws, message, **kwargs):
+        if message.get("type") == "audio":
+            with ws.lock:
+                entered.set()
+                release.wait(5)
+        return send_json(ws, message, **kwargs)
+
+    def track_end(path, payload=None, **kwargs):
+        result = request(path, payload, **kwargs)
+        if payload and payload.get("action") == "end":
+            ended.set()
+        return result
+
+    monkeypatch.setattr(stt.WsConnection, "send_json", blocked_writer)
+    monkeypatch.setattr(state, "request", track_end)
+    ws = connect(url)
+    try:
+        ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
+        assert json.loads(ws.recv(timeout=2))["type"] == "ready"
+        ws.send(json.dumps({"type": "tts", "text": "reply", "token": "blocked"}))
+        assert entered.wait(2)
+        if control == "websocket-ping":
+            ws.ping(b"probe")
+        else:
+            ws.send(json.dumps({"type": control, "muted": True}))
+        ws.send(json.dumps({"type": "hangup"}))
+        # An undrainable data frame cannot interleave an acknowledgement.
+        # Abort honestly rather than leave the reader and registry pinned.
+        with pytest.raises(ConnectionClosed):
+            ws.recv(timeout=0.5)
+        assert ended.wait(2)
+        assert not state.calls
+    finally:
+        release.set()
+        ws.close()

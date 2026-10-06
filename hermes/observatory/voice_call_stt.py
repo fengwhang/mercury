@@ -152,17 +152,36 @@ class WsConnection:
         self.lock = threading.Lock()
         self.closed = False
 
-    def send_json(self, message: Dict[str, Any], *, guard=None) -> None:
+    def send_json(self, message: Dict[str, Any], *, guard=None, timeout=None) -> None:
         raw = json.dumps(message).encode("utf-8")
-        with self.lock:
+        self._send_frame(raw, 0x1, guard=guard, timeout=timeout)
+
+    def _send_frame(self, payload: bytes, opcode: int, *, guard=None, timeout=None) -> None:
+        locked = self.lock.acquire() if timeout is None else self.lock.acquire(timeout=timeout)
+        if not locked:
+            self.close(1011, "Voice socket writer blocked")
+            raise ConnectionError("Voice socket writer blocked; call ended")
+        failure = None
+        try:
             if self.closed or (guard is not None and not guard()):
                 return
+            previous_timeout = self.conn.gettimeout() if timeout is not None else None
             try:
-                self.conn.sendall(ws_encode_frame(raw, 0x1))
-            except OSError:
+                if timeout is not None:
+                    self.conn.settimeout(timeout)
+                self.conn.sendall(ws_encode_frame(payload, opcode))
+            except OSError as exc:
                 self.closed = True
+                failure = exc
+            finally:
+                if timeout is not None and not self.closed:
+                    self.conn.settimeout(previous_timeout)
+        finally:
+            self.lock.release()
         if self.closed:
             self.close()
+        if failure is not None and timeout is not None:
+            raise ConnectionError("Voice control response failed; call ended") from failure
 
     def recv_message(self) -> tuple[str, bytes]:
         """Next complete message as (kind, payload): text|binary|close."""
@@ -174,11 +193,7 @@ class WsConnection:
             if opcode == 0x8:  # close
                 return "close", payload
             if opcode == 0x9:  # ping
-                with self.lock:
-                    try:
-                        self.conn.sendall(ws_encode_frame(payload, 0xA))
-                    except OSError:
-                        pass
+                self._send_frame(payload, 0xA, timeout=0.1)
                 continue
             if opcode == 0xA:  # pong
                 continue
@@ -649,7 +664,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
                         logger.exception("voice worker failed")
                         done.set()
                         with contextlib.suppress(Exception):
-                            ws.send_json({"type": "error", "message": "Voice worker failed; call ended."})
+                            ws.send_json({"type": "error", "message": "Voice worker failed; call ended."}, timeout=0.1)
                         ws.close()
                         return
 
@@ -658,7 +673,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             try:
                 jobs.put_nowait(data)
             except queue.Full:
-                ws.send_json({"type": "error", "message": "Voice provider is too slow; audio queue is full."})
+                ws.send_json({"type": "error", "message": "Voice provider is too slow; audio queue is full."}, timeout=0.1)
 
         try:
             for jobs, operation in (
@@ -804,14 +819,14 @@ class SidecarHandler(BaseHTTPRequestHandler):
                     return False
                 call["muted"] = muted
                 call["audio_epoch"] += 1
-            ws.send_json({"type": "muted", "callId": call_id, "muted": muted})
+            ws.send_json({"type": "muted", "callId": call_id, "muted": muted}, timeout=0.1)
             return False
         if kind == "hangup":
             return True
         if kind == "ping":
-            ws.send_json({"type": "pong", "callId": call_id})
+            ws.send_json({"type": "pong", "callId": call_id}, timeout=0.1)
             return False
-        ws.send_json({"type": "error", "message": f"unknown control {kind!r}"})
+        ws.send_json({"type": "error", "message": f"unknown control {kind!r}"}, timeout=0.1)
         return False
 
 
