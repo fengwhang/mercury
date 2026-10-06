@@ -176,3 +176,51 @@ async def test_send_raw_default_path_unchanged() -> None:
     adapter._writer.drain = _ok  # type: ignore[method-assign]
     await adapter._send_raw("PING :x")
     assert drained == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current_nick,prefix", [
+    ("testbot", "testbot!relay@server"),
+    ("TestBot", "TESTBOT!relay@server"),
+    ("testbot_1", "TESTBOT_1!relay@server"),
+])
+async def test_self_part_clears_only_departed_room_cache(current_nick, prefix):
+    adapter = _mirc_adapter()
+    adapter._current_nick = current_nick
+    for channel in ("#test-root", "#test-active", "#Test-Expired", "#test-expired"):
+        assert await adapter.join_channel(channel)
+    adapter._observatory_online_channels = {
+        "#test", "#test-root", "#test-active", "#test-expired",
+    }
+
+    await adapter._handle_line(f":{prefix} PART #TEST-EXPIRED :room expired")
+
+    assert adapter.extra_channels == {"#test-root", "#test-active"}
+    assert adapter._observatory_online_channels == {"#test", "#test-root", "#test-active"}
+    assert adapter.channel == "#test"
+    assert adapter.is_managed("#test-root")
+    assert adapter.is_managed("#test-active")
+    assert not adapter.is_managed("#test-expired")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", [
+    ":owner!relay@server PART #test-active :leaving",
+    ":testbot!relay@server PART #test-active :leaving",
+    ":testbot_1!relay@server PART #test :leaving",
+    ":testbot_1!relay@server PART #unrelated :leaving",
+    ":testbot_1!relay@server PART",
+])
+async def test_unrelated_part_preserves_managed_room_intent(raw):
+    adapter = _mirc_adapter()
+    adapter._current_nick = "testbot_1"
+    assert await adapter.join_channel("#test-root")
+    assert await adapter.join_channel("#test-active")
+    adapter._observatory_online_channels = {"#test-root", "#test-active"}
+
+    await adapter._handle_line(raw)
+
+    assert adapter.extra_channels == {"#test-root", "#test-active"}
+    assert adapter._observatory_online_channels == {"#test-root", "#test-active"}
+    assert adapter.channel == "#test"
+    assert adapter.is_managed("#test")
