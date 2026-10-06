@@ -1,4 +1,6 @@
 import { createRequire } from "node:module";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import type { ProgressInfo, RawAudio } from "@huggingface/transformers";
 import { ensureRuntimeInstalled, getTinyModelsCacheDir, resolveRuntimeModule } from "@oh-my-pi/pi-utils";
 import {
@@ -7,6 +9,7 @@ import {
 	installSharpStubResolver,
 	MemoizedRuntime,
 	replayCachedReady,
+	requireLocalModelAssets,
 	sendLog,
 	sendProgress,
 	TRANSFORMERS_PACKAGE,
@@ -49,6 +52,7 @@ interface KokoroRuntime {
 			options: {
 				dtype: TinyModelDtype;
 				device: KokoroDevice;
+				local_files_only: true;
 				progress_callback: (info: ProgressInfo) => void;
 			},
 		): Promise<KokoroTtsInstance>;
@@ -63,6 +67,8 @@ interface TransformersEnv {
 	env: {
 		cacheDir?: string;
 		allowLocalModels?: boolean;
+		allowRemoteModels?: boolean;
+		localModelPath?: string;
 		logLevel?: unknown;
 		backends?: {
 			onnx?: {
@@ -111,7 +117,9 @@ function toKokoroDevice(device: TinyModelDevice): KokoroDevice {
 
 function configureTransformers(transformers: TransformersEnv): void {
 	transformers.env.cacheDir = getTinyModelsCacheDir();
-	transformers.env.allowLocalModels = false;
+	transformers.env.localModelPath = getTinyModelsCacheDir();
+	transformers.env.allowLocalModels = true;
+	transformers.env.allowRemoteModels = false;
 	transformers.env.logLevel = transformers.LogLevel?.ERROR ?? "error";
 	if (transformers.env.backends?.onnx) transformers.env.backends.onnx.logLevel = "error";
 }
@@ -153,6 +161,13 @@ function loadKokoroRuntime(
 		const transformersEntry = resolveRuntimeModule(nodeModules, TRANSFORMERS_PACKAGE);
 		if (!transformersEntry) throw new Error(`Unable to resolve ${TRANSFORMERS_PACKAGE} in runtime at ${nodeModules}`);
 		const runtimeRequire = createRequire(kokoroEntry);
+		// kokoro-js 1.2.1's Node loader reads bundled voices with fs.readFile
+		// and throws on missing files; only its browser branch fetches voices.
+		for (const voice of getTtsLocalModelSpec(modelKey)?.voices ?? []) {
+			const file = path.resolve(path.dirname(kokoroEntry), "../voices", `${voice.id}.bin`);
+			const present = await fs.stat(file).then(stat => stat.isFile() && stat.size > 0).catch(() => false);
+			if (!present) throw new Error(`Local TTS voice assets missing: ${file}. Install the complete kokoro-js runtime locally or configure a TTS provider.`);
+		}
 		configureTransformers(runtimeRequire(transformersEntry) as TransformersEnv);
 		return runtimeRequire(kokoroEntry) as KokoroRuntime;
 	});
@@ -167,6 +182,7 @@ async function loadModelOnDevice(
 	device: KokoroDevice,
 ): Promise<KokoroTtsInstance> {
 	return runtime.KokoroTTS.from_pretrained(spec.repo, {
+		local_files_only: true,
 		device,
 		dtype: ttsDtypeOverride ?? spec.dtype,
 		progress_callback: info => sendProgress(transport, requestId, modelKey, info),
@@ -223,6 +239,7 @@ async function loadModel(
 	const cached = replayCachedReady(models, modelKey, transport, requestId, TTS_TASK, spec.repo);
 	if (cached) return cached;
 
+	await requireLocalModelAssets(spec.repo);
 	const runtime = await loadKokoroRuntime(transport, requestId, modelKey);
 	const startedAt = performance.now();
 	const loaded = loadModelWithDeviceFallback(runtime, spec, modelKey, transport, requestId).then(

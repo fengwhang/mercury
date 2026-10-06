@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { getTinyModelsCacheDir } from "@oh-my-pi/pi-utils";
 import { sttClient } from "./asr-client";
 import type { SttProgressStatus } from "./asr-protocol";
+import { requireLocalModelAssets } from "../subprocess/worker-runtime";
 import { resolveSttModelSpec } from "./models";
 
 export interface DownloadProgress {
@@ -50,9 +51,10 @@ export async function isSttModelCached(key: string): Promise<boolean> {
 	const repoDir = path.join(getTinyModelsCacheDir(), spec.repo);
 	if (spec.engine === "sherpa") {
 		try {
-			const root = new Set(await fs.readdir(repoDir));
 			for (const role in spec.files) {
-				if (!root.has(spec.files[role as keyof typeof spec.files])) return false;
+				const file = path.join(repoDir, spec.files[role as keyof typeof spec.files]);
+				const present = await fs.stat(file).then(stat => stat.isFile() && stat.size > 0).catch(() => false);
+				if (!present) return false;
 			}
 			return true;
 		} catch {
@@ -60,13 +62,9 @@ export async function isSttModelCached(key: string): Promise<boolean> {
 		}
 	}
 	try {
-		const root = await fs.readdir(repoDir);
-		if (!root.includes("config.json")) return false;
-		// Whisper tiers are encoder-decoder: a complete download leaves both an
-		// `encoder*.onnx` and a `decoder*.onnx` (the dtype suffix varies). Require
-		// both rather than any single `.onnx`, so an interrupted fetch that landed
-		// only one shard reads as not-cached and the caller takes the foreground
-		// download path with progress instead of silently fetching mid-recording.
+		await requireLocalModelAssets(spec.repo);
+		// Whisper is encoder-decoder: require both graph shards, not just one
+		// weight file. The worker enforces local-only for dtype variants and data.
 		const onnxFiles = await fs.readdir(path.join(repoDir, "onnx")).catch(() => [] as string[]);
 		const hasEncoder = onnxFiles.some(file => file.startsWith("encoder") && file.endsWith(".onnx"));
 		const hasDecoder = onnxFiles.some(file => file.startsWith("decoder") && file.endsWith(".onnx"));
@@ -77,10 +75,9 @@ export async function isSttModelCached(key: string): Promise<boolean> {
 }
 
 /**
- * Download (or warm from cache) the selected ONNX Whisper model via the speech
- * worker, resolving once the model is fully present and loaded. Streams real
- * Hub progress with an aggregated integer percent. Rejects if the worker cannot
- * obtain the model. Safe to call non-interactively.
+ * Warm a provisioned local speech model through the worker. Missing files fail
+ * locally; Mercury never downloads weights. Progress describes runtime preparation
+ * and model readiness rather than remote transfers.
  */
 export async function downloadSttModel(
 	key: string,
@@ -88,6 +85,8 @@ export async function downloadSttModel(
 	options?: { signal?: AbortSignal },
 ): Promise<void> {
 	const spec = resolveSttModelSpec(key);
+	if (spec.engine === "transformers") await requireLocalModelAssets(spec.repo);
+	else if (!(await isSttModelCached(spec.key))) throw new Error(`Local STT assets missing: ${path.join(getTinyModelsCacheDir(), spec.repo)}. Provision all encoder/decoder/joiner/tokens files locally or configure an STT provider. Model downloads are disabled.`);
 	const files = new Map<string, { loaded: number; total: number }>();
 	const result = await sttClient.downloadModel(spec.key, {
 		signal: options?.signal,
@@ -117,11 +116,11 @@ export async function downloadSttModel(
 		},
 	});
 	if (!result.ok) {
-		const detail = result.error ? `: ${result.error}` : ". Check your network connection.";
-		throw new Error(`Failed to download speech model (${spec.repo})${detail}`);
+		const detail = result.error ? `: ${result.error}` : ". Configure an STT provider or repair local assets/backend.";
+		throw new Error(`Failed to load local speech model (${spec.repo})${detail}`);
 	}
 	if (!(await isSttModelCached(spec.key))) {
-		throw new Error(`Speech model download finished without required files (${spec.repo}).`);
+		throw new Error(`Local speech model is missing required files (${spec.repo}).`);
 	}
 }
 
@@ -134,7 +133,7 @@ export async function ensureSTTDependencies(options?: EnsureOptions): Promise<vo
 			const stage =
 				progress.status === "ready" || progress.status === "done"
 					? `Speech model ${progress.label} ready`
-					: `Downloading speech model ${progress.label}`;
+					: `Preparing local speech model ${progress.label}`;
 			options?.onProgress?.({ stage, percent: progress.percent });
 		},
 		{ signal: options?.signal },
