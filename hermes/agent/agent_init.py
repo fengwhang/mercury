@@ -1431,7 +1431,6 @@ def init_agent(
                         "model": agent.model,
                         "requested_provider": agent.requested_provider,
                         "api_mode": agent.api_mode,
-                        "base_url": agent.base_url,
                     }
                     _fb_resolved = agent._try_activate_fallback()
                     if _fb_resolved:

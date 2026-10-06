@@ -1667,10 +1667,13 @@ def restore_primary_runtime(agent) -> bool:
         try:
             from agent.auxiliary_client import resolve_provider_client
 
+            requested_provider = startup_primary["requested_provider"]
+            # A supplied URL alone must not grant a private custom route
+            # synthetic keyless credentials on recovery. Reuse its declared
+            # provider identity and the router's normal credential resolution.
             client, model = resolve_provider_client(
-                startup_primary["provider"], model=startup_primary["model"],
+                requested_provider, model=startup_primary["model"],
                 raw_codex=True,
-                explicit_base_url=startup_primary.get("base_url") or None,
                 api_mode=startup_primary["api_mode"],
             )
             if client is None:
@@ -1680,6 +1683,8 @@ def restore_primary_runtime(agent) -> bool:
                 api_key=client.api_key, base_url=str(client.base_url),
                 api_mode=startup_primary["api_mode"],
             )
+            agent.requested_provider = requested_provider
+            agent._primary_runtime["requested_provider"] = requested_provider
             return True
         except InterruptedError:
             raise

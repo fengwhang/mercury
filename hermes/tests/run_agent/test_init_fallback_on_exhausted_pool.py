@@ -113,6 +113,7 @@ def test_startup_fallback_keeps_wire_chain_progress_and_primary_recovery(
     monkeypatch.setattr("httpx.Client.send", http)
     monkeypatch.setattr("requests.sessions.Session.request", http)
     recovered = False
+    requested_primary = "custom:private" if primary_provider == "custom" else primary_provider
     routes = []
     chain = [
         {"provider": "deepseek", "model": "unavailable"},
@@ -122,10 +123,10 @@ def test_startup_fallback_keeps_wire_chain_progress_and_primary_recovery(
 
     def resolve(provider, **kwargs):
         routes.append((provider, kwargs["model"]))
-        if (provider == primary_provider and not recovered) or provider == "deepseek":
+        if (provider in {primary_provider, requested_primary} and not recovered) or provider == "deepseek":
             return None, None
         return SimpleNamespace(
-            api_key=f"fake-{provider}", base_url=f"https://{provider}.invalid/v1",
+            api_key=f"fake-{provider}", base_url=f"https://{primary_provider if provider == requested_primary else provider}.invalid/v1",
             _custom_headers={},
         ), kwargs["model"]
 
@@ -143,6 +144,7 @@ def test_startup_fallback_keeps_wire_chain_progress_and_primary_recovery(
     ):
         agent = AIAgent(
             provider=primary_provider, model="primary", api_key=None, base_url=None,
+            requested_provider=requested_primary,
             quiet_mode=True, skip_context_files=True, skip_memory=True,
             fallback_model=chain,
         )
@@ -157,9 +159,11 @@ def test_startup_fallback_keeps_wire_chain_progress_and_primary_recovery(
 
         recovered = True
         assert agent._restore_primary_runtime() is True
-        assert agent.provider == agent.requested_provider == primary_provider
+        assert agent.provider == primary_provider
+        assert agent.requested_provider == requested_primary
         assert agent.model == "primary"
         assert agent._primary_runtime["provider"] == primary_provider
+        assert agent._primary_runtime["requested_provider"] == requested_primary
         assert agent._fallback_chain == chain
         assert agent._fallback_index == 0
         assert agent._fallback_activated is False
@@ -167,5 +171,48 @@ def test_startup_fallback_keeps_wire_chain_progress_and_primary_recovery(
     http.assert_not_called()
     assert routes == [
         (primary_provider, "primary"), ("deepseek", "unavailable"), ("nous", fallback_model),
-        (primary_provider, "primary"), (primary_provider, "primary"),
+        (requested_primary, "primary"), (requested_primary, "primary"),
     ]
+
+
+def test_unavailable_private_custom_primary_does_not_become_keyless_on_restore(monkeypatch):
+    from types import SimpleNamespace
+    from agent.auxiliary_client import resolve_provider_client
+
+    http = MagicMock(side_effect=AssertionError("offline test attempted HTTP"))
+    monkeypatch.setattr("httpx.Client.send", http)
+    monkeypatch.setattr("requests.sessions.Session.request", http)
+    fallback_client = SimpleNamespace(
+        api_key="fake-backup", base_url="https://backup.invalid/v1", _custom_headers={},
+    )
+
+    def resolve(provider, **kwargs):
+        if provider == "openrouter":
+            return fallback_client, kwargs["model"]
+        return resolve_provider_client(provider, **kwargs)
+
+    with (
+        patch("agent.auxiliary_client.resolve_provider_client", side_effect=resolve),
+        patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)),
+        patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("agent.credential_pool.load_pool", return_value=None),
+        patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        patch("agent.context_compressor.get_model_context_length", return_value=200000),
+    ):
+        agent = AIAgent(
+            provider="custom", model="vendor/private", api_key=None,
+            base_url="https://private.invalid/v1", quiet_mode=True,
+            skip_context_files=True, skip_memory=True,
+            fallback_model=[{"provider": "openrouter", "model": "vendor/backup"}],
+        )
+        assert agent.provider == "openrouter"
+        assert agent._restore_primary_runtime() is False
+        assert agent.provider == "openrouter"
+        assert agent.api_key == "fake-backup"
+        assert agent.model == "vendor/backup"
+        assert agent._fallback_index == 1
+
+    http.assert_not_called()
