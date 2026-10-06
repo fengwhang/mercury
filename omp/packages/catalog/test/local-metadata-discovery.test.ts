@@ -13,12 +13,27 @@ import { loadPreviousSnapshotModels } from "../scripts/generate-models";
 
 describe("local metadata discovery", () => {
 	test("generator metadata load preserves the complete local snapshot without transport", () => {
-		const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+		const rejectTransport: FetchImpl = async () => {
 			throw new Error("metadata loading must not use network");
-		});
+		};
+		const transport = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(Object.assign(rejectTransport, { preconnect: vi.fn() }));
 		try {
 			const models = loadPreviousSnapshotModels();
-			const bundled = getBundledProviders().flatMap(provider => getBundledModels(provider));
+			const bundled = getBundledProviders().flatMap(provider => {
+				switch (provider) {
+					case "litellm":
+					case "lm-studio":
+					case "ollama":
+					case "siliconflow":
+					case "siliconflow-cn":
+					case "vllm":
+						throw new Error(`Provider ${provider} has no bundled snapshot`);
+					default:
+						return getBundledModels(provider);
+				}
+			});
 			expect(models.length).toBe(bundled.length);
 			expect(models.length).toBeGreaterThan(100);
 			expect(models.map(model => `${model.provider}/${model.id}`).sort()).toEqual(
