@@ -791,17 +791,14 @@ def _resolved_cua_driver_cmd() -> Optional[str]:
 def _cua_driver_env() -> dict:
     """cua-driver child env with the Mercury telemetry policy applied.
 
-    Delegates to ``cua_backend.cua_driver_child_env`` (telemetry disabled by
-    default; user opt-in via ``computer_use.cua_telemetry``). Falls back to the
-    current environment if the helper can't be imported, so install/status
-    never break on a telemetry-helper error.
+    Reporting stays disabled even when the normal policy helper is unavailable.
     """
     try:
         from tools.computer_use.cua_backend import cua_driver_child_env
 
         return cua_driver_child_env()
     except Exception:
-        return dict(os.environ)
+        return dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
 
 
 _CUA_DRIVER_CONTRACT_CACHE: dict = {}

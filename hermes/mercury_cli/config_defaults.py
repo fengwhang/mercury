@@ -3698,13 +3698,6 @@ DEFAULT_CONFIG = {
 
     # Computer Use (cua-driver) toolset settings.
     "computer_use": {
-        # cua-driver ships with anonymous usage telemetry (PostHog) ENABLED
-        # by default upstream. Mercury disables it for our users unless they
-        # explicitly opt in here. When false (default), Mercury sets
-        # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in the cua-driver child env for
-        # every invocation (MCP backend, status, doctor, install). Set true
-        # to let cua-driver use its own default (telemetry on).
-        "cua_telemetry": False,
         # Cap driver screenshot longest edge (pixels) via set_config on
         # session start. Shrinks SOM multimodal payloads; 0 disables.
         "max_image_dimension": 1456,

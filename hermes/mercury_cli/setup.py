@@ -5148,8 +5148,7 @@ def setup_telemetry(config: dict):
     # shared metrics default off (above), and cua-driver telemetry too.
     print_info(
         "Mercury disables cua-driver telemetry "
-        "(CUA_DRIVER_RS_TELEMETRY_ENABLED=0) unless you opt in via "
-        "computer_use.cua_telemetry."
+        "(CUA_DRIVER_RS_TELEMETRY_ENABLED=0) on every invocation."
     )
     _persist_cua_driver_telemetry_off(config)
 
@@ -5160,20 +5159,12 @@ def _persist_cua_driver_telemetry_off(config: dict) -> None:
     The env var covers every Mercury-spawned driver, but the driver's own
     installer/startup message advertises telemetry-on (its persistent
     default). ``set_config`` has no telemetry key, so ``telemetry disable``
-    is the only persistent switch — flip it here with printed
-    confirmation. Skipped on ``computer_use.cua_telemetry`` opt-in.
+    is the only persistent switch — flip it here with printed confirmation.
     Never raises; every failure degrades to the env-var line above.
     """
-    try:
-        cu = config.get("computer_use") if isinstance(config, dict) else None
-        if isinstance(cu, dict) and bool(cu.get("cua_telemetry", False)):
-            print_info(
-                "cua-driver telemetry left enabled"
-                " (computer_use.cua_telemetry opt-in)."
-            )
-            return
-    except Exception:  # noqa: BLE001 — unreadable config falls safe (disable)
-        pass
+    cu = config.get("computer_use") if isinstance(config, dict) else None
+    if isinstance(cu, dict):
+        cu.pop("cua_telemetry", None)
     try:
         from tools.computer_use.cua_backend import (
             cua_driver_telemetry_disable_persistent as _persistent_off,

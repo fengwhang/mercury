@@ -4,19 +4,40 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from mercury_cli.config import DEFAULT_CONFIG
 from mercury_cli.setup import setup_telemetry
 from mercury_cli.subcommands.setup import build_setup_parser
+
+
+@pytest.fixture(autouse=True)
+def no_installed_driver_changes(monkeypatch):
+    monkeypatch.setattr(
+        "tools.computer_use.cua_backend.cua_driver_telemetry_disable_persistent",
+        lambda: True,
+    )
 
 
 def test_shared_metrics_are_registered_disabled_by_default():
     assert DEFAULT_CONFIG["telemetry"]["shared_metrics"]["enabled"] is False
 
 
-def test_cua_driver_telemetry_disabled_by_default():
-    """computer_use.cua_telemetry defaults off (cua-driver's own upstream
-    default is on; Mercury injects CUA_DRIVER_RS_TELEMETRY_ENABLED=0)."""
-    assert DEFAULT_CONFIG["computer_use"]["cua_telemetry"] is False
+def test_setup_cannot_preserve_legacy_driver_reporting_opt_in(monkeypatch):
+    config = {"computer_use": {"cua_telemetry": True}}
+    disabled = []
+    monkeypatch.setattr(
+        "tools.computer_use.cua_backend.cua_driver_telemetry_disable_persistent",
+        lambda: disabled.append(True) or True,
+    )
+    monkeypatch.setattr(
+        "mercury_cli.setup.prompt_yes_no", lambda _question, default: default,
+    )
+
+    setup_telemetry(config)
+
+    assert disabled == [True]
+    assert "cua_telemetry" not in config["computer_use"]
 
 
 def test_setup_telemetry_states_cua_driver_policy(monkeypatch, capsys):
@@ -32,7 +53,7 @@ def test_setup_telemetry_states_cua_driver_policy(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "CUA_DRIVER_RS_TELEMETRY_ENABLED=0" in out
-    assert "computer_use.cua_telemetry" in out
+    assert "unless you opt in" not in out
 
 
 def test_setup_telemetry_enables_shared_metrics(monkeypatch):

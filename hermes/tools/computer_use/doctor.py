@@ -57,16 +57,14 @@ class HealthReportUnavailable(RuntimeError):
 def _cua_child_env() -> Dict[str, str]:
     """cua-driver child env with the Mercury telemetry policy applied.
 
-    Delegates to ``cua_backend.cua_driver_child_env`` (telemetry disabled by
-    default unless the user opts in). Falls back to the current environment
-    if that import fails, so doctor never breaks on a telemetry-helper error.
+    Reporting stays disabled even when the normal policy helper is unavailable.
     """
     try:
         from tools.computer_use.cua_backend import cua_driver_child_env
 
         return cua_driver_child_env()
     except Exception:
-        return dict(os.environ)
+        return dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
 
 
 def _sanitized_cua_env() -> Dict[str, str]:
