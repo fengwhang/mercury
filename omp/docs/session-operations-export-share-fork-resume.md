@@ -128,6 +128,8 @@ Critical fallback behavior:
 
 For headless execution, or in the TUI only when no custom share handler is found, `shareSession()`:
 
+`share.serverUrl` has no built-in default. Configure your self-hosted upload/viewer endpoint before sharing; missing or blank values fail before building the snapshot or making a network request, including when `gist` is explicitly selected.
+
 1. Builds the session snapshot (`header`, `entries`, `leafId`, plus current
    `systemPrompt` and tool descriptions from agent state).
 2. If `share.redactSecrets` is enabled (default) and the obfuscator has configured or regex-discovered secrets, a typed per-field redaction pass rewrites text-bearing header, prompt, tool, entry, sub-session, and message fields. Inline image bytes remain for the later size pass. Opaque provider replay fields and untyped extension payloads (`details`, `data`, `outputSchema`, compaction preserve data) are dropped rather than traversed.
@@ -135,14 +137,14 @@ For headless execution, or in the TUI only when no custom share handler is found
    (`[12B IV][ciphertext+tag]`).
 4. Upload target is chosen by `share.store`:
    - **Share server** (default, `store: "blob"`) — `POST <share.serverUrl>`
-     (default `https://my.omp.sh/s`) with the raw blob, capped at 1 MB.
+     (explicitly configured; no built-in endpoint) with the raw blob, capped at 1 MB.
      Oversized snapshots are trimmed until they fit: inline images first,
      then long strings (32 KB → 8 KB → 2 KB → 512 B caps), then oldest
      entries.
    - **Secret gist** (`store: "gist"`) — when `gh` is installed and
      authenticated, the sealed blob is pushed base64-encoded as
      `session.ompshare.txt` (budget 5 MB sealed; gist raw fetches cap at
-     10 MB), falling back to the share server when `gh` is unusable.
+     10 MB). Missing authentication or gist creation failure is surfaced; there is no automatic fallback to another store.
 5. The link is `<share.serverUrl>/<id>#<base64url key>` in both cases. The
    viewer page served there fetches the blob (hex ids via the GitHub gist
    API, anything else from the server's blob store) and decrypts it

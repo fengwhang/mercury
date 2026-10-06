@@ -6,7 +6,7 @@ import { GuestClient } from "../src/lib/client";
 import { Composer, shouldSubmitOnEnter } from "../src/components/shell/Composer";
 import { encodeBase64Url } from "../src/lib/link";
 
-const LINK = `roomroomroom1234#${encodeBase64Url(new Uint8Array(32))}`;
+const LINK = `relay.example.com/r/roomroomroom1234.${encodeBase64Url(new Uint8Array(32))}`;
 const client = new GuestClient(LINK, "tester");
 
 function snapshot(uiRequest: GuestSnapshot["uiRequest"]): GuestSnapshot {

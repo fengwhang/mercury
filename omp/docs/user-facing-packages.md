@@ -86,7 +86,7 @@ Sources: [`packages/browser-relay/README.md`](../packages/browser-relay/README.m
 
 Sources: [`packages/collab-web/README.md`](../packages/collab-web/README.md), [`packages/collab-web/package.json`](../packages/collab-web/package.json), [`docs/collab.md`](./collab.md).
 
-- Package: private `@oh-my-pi/collab-web`; production client: <https://my.omp.sh/>.
+- Package: private `@oh-my-pi/collab-web`; deploy the static client on your explicitly configured self-hosted endpoint (no built-in hosted client).
 - Feature: browser guest UI for `/collab` sessions, including streaming transcript, tool cards,
   subagent views, prompts, and host interruption.
 - Local paths: `bun run dev` serves the UI on port 3000; `bun run mock-host` runs an offline relay

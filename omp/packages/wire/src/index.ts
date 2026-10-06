@@ -420,11 +420,11 @@ export const ROOM_KEY_BYTES = 32;
  */
 export const WRITE_TOKEN_BYTES = 16;
 
-/** Default public relay; bare `<roomId>.<key>` links resolve against it. */
-export const DEFAULT_RELAY_URL = "wss://my.omp.sh";
+/** No built-in relay. Hosts must explicitly configure or pass their relay URL. */
+export const DEFAULT_RELAY_URL = "";
 
-/** Default share viewer/upload base; `/share` links resolve against `<base>/<id>#<key>`. */
-export const DEFAULT_SHARE_URL = "https://my.omp.sh/s";
+/** No built-in share viewer/upload endpoint. Configure share.serverUrl explicitly. */
+export const DEFAULT_SHARE_URL = "";
 
 export interface ParsedCollabLink {
 	/** wss://host[:port]/r/<roomId> — no query, no fragment. */

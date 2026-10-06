@@ -2409,7 +2409,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "interaction",
 			group: "Collab",
 			label: "Relay URL",
-			description: "Relay used by /collab (wss://host[:port])",
+			description: "Self-hosted relay used by /collab (wss://host[:port]); required unless passed inline",
 		},
 	},
 
@@ -2444,7 +2444,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Collab",
 			label: "Share Server",
 			description:
-				"Share viewer/upload base used by /share (encrypted blob upload + viewer; links are <base>/<id>#<key>)",
+				"Required self-hosted share viewer/upload base used by /share; no built-in endpoint (links are <base>/<id>#<key>)",
 		},
 	},
 
@@ -2466,7 +2466,7 @@ export const SETTINGS_SCHEMA = {
 				{
 					value: "gist",
 					label: "GitHub Gist",
-					description: "Push to a secret gist (needs authenticated gh), falling back to the share server",
+					description: "Explicitly upload to a secret gist (needs authenticated gh); failures never change stores",
 				},
 			],
 		},

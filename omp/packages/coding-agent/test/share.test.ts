@@ -1,4 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import * as utils from "@oh-my-pi/pi-utils";
 import type { SessionData } from "../src/export/html";
 import {
 	buildShareSnapshot,
@@ -13,6 +17,8 @@ import type { SessionManager } from "../src/session/session-manager";
 
 const IV_LENGTH = 12;
 const TEST_MAX_SEALED_BYTES = 4_000;
+
+afterEach(() => vi.restoreAllMocks());
 
 async function makeKey(): Promise<CryptoKey> {
 	const bytes = new Uint8Array(32);
@@ -542,15 +548,90 @@ describe("buildShareSnapshot", () => {
 });
 
 describe("normalizeShareServerUrl", () => {
-	test("strips trailing slashes and falls back to the default", () => {
-		expect(normalizeShareServerUrl("https://my.omp.sh/s/")).toBe("https://my.omp.sh/s");
+	test("strips trailing slashes and requires an explicit endpoint", () => {
 		expect(normalizeShareServerUrl("https://example.com/s///")).toBe("https://example.com/s");
-		expect(normalizeShareServerUrl(undefined)).toBe("https://my.omp.sh/s");
-		expect(normalizeShareServerUrl("   ")).toBe("https://my.omp.sh/s");
+		expect(() => normalizeShareServerUrl(undefined)).toThrow("share.serverUrl");
+		expect(() => normalizeShareServerUrl("   ")).toThrow("share.serverUrl");
 	});
 });
 
 describe("shareSession", () => {
+	test("refuses a missing or blank share endpoint before fetch", async () => {
+		const gh = vi.spyOn(utils, "$which").mockImplementation(() => {
+			throw new Error("unexpected gh operation");
+		});
+		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+			throw new Error("unexpected network");
+		});
+		const sm = {
+			getHeader: () => sessionData([], "x").header,
+			getEntries: () => [],
+			getLeafId: () => "x",
+		} as unknown as SessionManager;
+		for (const serverUrl of [undefined, "   "]) {
+			await expect(shareSession(sm, { serverUrl })).rejects.toThrow("share.serverUrl");
+		}
+		await expect(shareSession(sm, { store: "gist" })).rejects.toThrow("share.serverUrl");
+		expect(gh).not.toHaveBeenCalled();
+		expect(network).not.toHaveBeenCalled();
+	});
+	test("an explicitly selected unavailable gist fails without uploading to another store", async () => {
+		vi.spyOn(utils, "$which").mockReturnValue(null);
+		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+			throw new Error("unexpected fallback upload");
+		});
+		const sm = {
+			getHeader: () => sessionData([], "x").header,
+			getEntries: () => [],
+			getLeafId: () => "x",
+		} as unknown as SessionManager;
+		await expect(shareSession(sm, { store: "gist", serverUrl: "https://share.example/s" })).rejects.toThrow("gh");
+		expect(network).not.toHaveBeenCalled();
+	});
+
+	test("explicit authenticated gist stays on its selected store on success and failure", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "share-fake-gh-"));
+		const originalPath = process.env.PATH;
+		const gh = path.join(dir, "gh");
+		const gistId = "abcdef0123456789abcd";
+		await Bun.write(gh, `#!${process.execPath}
+if (process.argv[2] === "auth") process.exit(0);
+if (process.argv[2] !== "gist") process.exit(1);
+const sealed = Buffer.from(await Bun.file(process.argv.at(-1)).text(), "base64");
+if (sealed.length < 28) process.exit(1);
+console.log("https://gist.github.com/fake/${gistId}");
+`);
+		await fs.chmod(gh, 0o700);
+		vi.spyOn(utils, "$which").mockReturnValue(gh);
+		const network = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+			throw new Error("unexpected upload");
+		});
+		const sm = {
+			getHeader: () => sessionData([], "x").header,
+			getEntries: () => [],
+			getLeafId: () => "x",
+		} as unknown as SessionManager;
+		try {
+			process.env.PATH = dir;
+			const result = await shareSession(sm, { store: "gist", serverUrl: "https://share.example/s" });
+			expect(result.method).toBe("gist");
+			expect(result.gistUrl).toBe(`https://gist.github.com/fake/${gistId}`);
+			expect(result.url).toMatch(new RegExp(`^https://share\\.example/s/${gistId}#[A-Za-z0-9_-]+$`));
+			expect(network).not.toHaveBeenCalled();
+			await Bun.write(gh, `#!${process.execPath}
+if (process.argv[2] === "auth") process.exit(0);
+process.exit(1);
+`);
+			await expect(shareSession(sm, { store: "gist", serverUrl: "https://share.example/s" })).rejects.toThrow(
+				"Gist creation failed",
+			);
+			expect(network).not.toHaveBeenCalled();
+		} finally {
+			if (originalPath === undefined) delete process.env.PATH;
+			else process.env.PATH = originalPath;
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
 	test("default store seals the snapshot and uploads it to the share server", async () => {
 		const entries = [messageEntry("e1", null, "share me"), messageEntry("e2", "e1", "second")];
 		const sm = {
