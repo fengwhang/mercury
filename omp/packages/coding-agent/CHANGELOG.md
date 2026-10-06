@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Removed automatic outbound OpenTelemetry traces, metrics, and log export, including inherited OTEL endpoint activation; local session traces and usage statistics remain available.
+
 - Switch to the configured Mercury fallback immediately on an explicit exhausted quota instead of burning retries on the same model.
 
 - Run Mercury OMP shell commands and descendant shell commands on the terminal backend selected during setup, including SSH, without silently falling back to local execution.
@@ -1502,7 +1504,6 @@
 - Enforced the centralized artifact spill threshold on oversized read results, persisting them as recoverable session artifacts.
 - Fixed DuckDuckGo web search under-returning results above the first-page limit by automatically submitting continuation forms.
 - Fixed DuckDuckGo web search ignoring after: and before: date bounds by correctly parsing and filtering result timestamps.
-- Fixed env-driven OTLP trace export ignoring OTEL_RESOURCE_ATTRIBUTES.
 - Fixed a fresh session with deferred MCP discovery injecting the newly mounted xd:// tool catalog twice into the first model request.
 - Fixed the bash tool failing with EACCES permission errors on multi-user machines by scoping the snapshot directory per user ID.
 - Fixed LSP write batching replaying stale whole-file snapshots over newer external changes made before the batch flushed.
