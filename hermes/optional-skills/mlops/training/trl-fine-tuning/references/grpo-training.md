@@ -480,7 +480,7 @@ trainer.generate_completions(dataset[:1])
 
 ## Template
 
-A production-ready training script lives at **`../templates/basic_grpo_training.py`**. It uses Qwen 2.5-1.5B-Instruct with LoRA and three reward functions (incremental format, strict format, correctness) on GSM8K. Copy and adapt:
+A production-ready training script lives at **`../templates/basic_grpo_training.py`**. It uses a preprovisioned local causal language model with LoRA and three reward functions (incremental format, strict format, correctness) on GSM8K. Before running, set the script's `MODEL_NAME` to your local directory containing the model configuration, complete weights (including every indexed shard), and tokenizer assets. There is no default remote model or weight download; both model loaders use local files only. Hugging Face loading is forced offline, so cache GSM8K separately beforehand or replace `get_dataset()` with your local data loader. Copy and adapt:
 1. `get_dataset()` — swap in your data loader
 2. Reward functions — tune to your task
 3. `SYSTEM_PROMPT` — match your output format
