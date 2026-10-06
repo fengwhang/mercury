@@ -16,6 +16,7 @@ describe("Server", function () {
 	let checkForUpdatesStub: sinon.SinonStub<[manager: ClientManager], void>;
 
 	beforeAll(async function () {
+		vi.stubEnv("MERCURY_VOICE_CALL_SIDECAR_URL", "https://voice.example.test/sidecar");
 		logInfoStub = sinon.stub(log, "info");
 		logWarnStub = sinon.stub(log, "warn").callsFake((...args: string[]) => {
 			// vapid.json permissions do not survive in git
@@ -42,6 +43,7 @@ describe("Server", function () {
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 
 		await vi.dynamicImportSettled();
+		vi.unstubAllEnvs();
 	});
 
 	const webURL = `http://${Config.values.host}:${Config.values.port}/`;
@@ -130,6 +132,7 @@ describe("Server", function () {
 					expect(data.themes).to.be.an("array");
 					expect(data.lockNetwork).to.equal(false);
 					expect(data.useHexIp).to.equal(false);
+					expect(data.voiceCallSidecarUrl).to.equal("https://voice.example.test/sidecar");
 
 					resolve();
 				});

@@ -1,9 +1,9 @@
 # mLounge voice calls (Hermes engines only)
 
-Experimental voice-call UX for Hermes-agent rooms: tap-to-call, live
-waveform, barge-in, mute/hangup — inspired by the
-OpenAI Dots Voice interaction model, implemented from scratch against
-Mercury's own stack (no proprietary code).
+Experimental browser calls for Hermes-agent rooms. The phone action opens
+an established-call screen with the registered agent/contact name, a pink avatar,
+rose-to-burgundy background, a duration timer, and Audio, End, and Mute controls.
+Ordinary text chat remains independent of voice.
 
 ## Three tiers, no localhost
 
@@ -35,6 +35,45 @@ Hermes engine (never OMP — refused at call start)
   chunk upload (the registry is synced best-effort); barge-in pauses
   local playback when fresh mic energy arrives mid-reply; hangup closes
   the socket and ends the MIRC-side registry entry.
+
+## Browser controls and lifecycle
+
+The phone button starts a configured call directly. Missing or invalid sidecar
+configuration opens visible settings with **Save and call**; microphone, network,
+authentication, and engine failures remain visible instead of disappearing below
+the chat header. The call surface is mounted outside that clipping header.
+
+The duration is `mm:ss`, measured from the sidecar's `ready` establishment,
+not from the button click or the microphone permission prompt. Established
+calls show no waveform, transcript, or connection status. Transcripts still
+travel through normal chat, and agent replies still trigger TTS.
+
+The `ready.agentName` metadata comes from the live/durable Observatory node's
+configured `name`, not its room ID, slug, or parent prefix. The browser preserves
+that identity across navigation. Before metadata is available it uses a query's
+actual nick, or a tagged assistant reply's `from.nick`, and otherwise shows the
+intact room name rather than guessing an agent name from a channel slug.
+
+- **Audio** lists real browser-enumerated playback outputs and switches the
+  call's persistent `HTMLAudioElement` using `setSinkId` when supported. A
+  rejected switch leaves the previous selection and displays the error.
+  Unsupported browsers explicitly report system/browser-default playback and
+  direct the caller to device settings. An earpiece route is never claimed
+  unless the browser actually exposes it.
+- **Mute** immediately disables microphone tracks, stops segment recording,
+  and invalidates pending uploads. Unmute begins a fresh recording so bytes
+  captured before mute cannot leak after unmute. The microphone slash denotes
+  the currently **unmuted** state, as specified by this UI's control convention;
+  the label and pressed state indicate the action/current mute state.
+- **End** immediately stops recording and mic tracks, clears playback and the
+  timer, sends `hangup` if possible, and closes the socket. The sidecar releases
+  its registry entry. Late permission, recording, playback, or socket callbacks
+  cannot reopen the screen.
+- The top-right four-arrow control minimizes the call into PiP or expands it.
+  Minimize does not stop audio. Channel, query, and settings navigation preserve
+  the active call and its original contact, chat input target, and TTS source.
+  Calling a different contact while a call exists restores the existing call;
+  end it before calling another contact. Closing the app tears the call down.
 
 Acceptance: a remote laptop browser against muted/headless servers
 captures mic locally and plays replies through the laptop speakers —
@@ -72,8 +111,11 @@ box; localhost is never filled in for you.
   (`/api/voice-call/*`, `/api/audio/speak`). Consumed by the sidecar.
 - `voice_call.mlounge_host_url` — host serving the mLounge UI.
 - `voice_call.stt_sidecar_url` — sidecar base the browser uses
-  (e.g. `https://voice.example.ts.net`); stored per-browser in the call
-  settings popover when it differs.
+  (e.g. `https://voice.example.ts.net`). Observatory service provisioning exports
+  this nonsecret URL as `MERCURY_VOICE_CALL_SIDECAR_URL`; mLounge sends it in its
+  public browser configuration. Reprovision/regenerate and restart the mLounge
+  service after changing it; this is not a hot-reloaded setting. A per-browser
+  URL override in voice settings takes precedence.
 - `voice_call.language`, `voice_call.enabled`.
 
 `mercury setup stt` prompts for all three (flags `--mirc-url`,
@@ -101,6 +143,12 @@ voice/audio routes. It does not grant access to configuration or other
 dashboard endpoints. The browser receives only the distinct sidecar token.
 Restart the two processes after adding the service secret.
 
+The separate sidecar token is entered in the browser's voice settings and kept
+in local browser storage. Service provisioning and public mLounge configuration
+never export the MIRC authentication token or automatically publish a sidecar
+secret. When a configured sidecar refuses authentication, open **Voice settings**
+and enter its dedicated browser token.
+
 For a remote browser, serve mLounge over HTTPS and put the sidecar behind
 an HTTPS reverse proxy that supports WebSocket upgrades; use its HTTPS
 URL in the panel. The sidecar itself serves HTTP. A plain tailnet HTTP
@@ -115,7 +163,7 @@ equivalent proxy can provide the HTTPS endpoints.
   pause up to a 12s cap; WebM/Ogg/MP4 depending on
   browser support), `{type: tts, text, token}`,
   `{type: mute, muted}`, `{type: hangup}`, `{type: ping}`.
-- Sidecar → browser: `{type: ready, callId, engine, sttProvider}`,
+- Sidecar → browser: `{type: ready, callId, engine, sttProvider, agentName?}`,
   `{type: refused, reason}` (OMP and unidentified/expired rooms),
   `{type: transcript, text}`, `{type: audio, token, mime, dataUrl}`,
   `{type: muted}`, `{type: ended}`, `{type: error}`.
@@ -140,14 +188,26 @@ no OMP code path was touched.
 
 ## Validation limits
 
-Automated tests cover the actual HTTP/WebSocket upgrade, service auth,
-engine selection across processes, audio-container signaling, transcript
-and TTS delivery, and hangup while transcription is blocked. Provider
-audio quality, real browser microphone/playback, and uninterrupted
-speech across recording boundaries still need an end-to-end hardware test.
-Calls remain experimental and require explicit sidecar setup; ordinary
-Observatory chat does not depend on voice services. Automated checks do not
-establish production audio quality or Safari/iOS hardware acceptance.
+Automated checks cover the actual HTTP/WebSocket upgrade, service auth, engine
+selection, independently decodable microphone recordings, transcript/TTS delivery,
+and blocked-worker hangup. Client controls additionally cover ready-based timing,
+pending permission/upload cancellation, mute/unmute races, PiP/contact pinning,
+output switching/failure, and unsupported sink indication.
+
+An offline browser smoke mounts the actual App, Chat, and VoiceCall components
+with unrelated leaf views stubbed. Generated browser media runs through native
+MediaRecorder, the source sidecar and registry with fake STT/TTS providers, normal
+chat input, and native HTMLAudio playback. Screenshots verify the full screen and
+PiP; control checks verify muted upload suppression, socket/mic teardown, an empty
+registry after End, missing configuration, and OMP refusal. Deterministic fake
+output devices exercise successful sink selection and rejection; the native API's
+rejection path is also observed. These checks do not establish physical device
+routing.
+
+Physical microphones, acoustic echo/barge-in thresholds, uninterrupted speech
+across recording boundaries, provider latency/audio quality, and Safari/iOS
+hardware/playback permissions still need hardware acceptance. No live provider
+quota or live Mercury installation is required for the offline smoke.
 
 ## Files
 
@@ -162,6 +222,7 @@ establish production audio quality or Safari/iOS hardware acceptance.
 - `hermes/mercury_cli/web_server.py`, `web_models.py` —
   `/api/voice-call/status`, `/api/voice-call/call` (audio reuses
   `/api/audio/speak`).
-- `third_party/mlounge/client/components/VoiceCall.vue` (+ `Chat.vue`
-  mount, `mercury.css`) — 📞 button, panel, meter, barge-in/mute/hangup.
+- `third_party/mlounge/client/components/VoiceCall.vue` (`App.vue` owner,
+  `Chat.vue` phone button, `mercury.css`) — persistent call UI,
+  browser recording/playback, barge-in, mute/hangup, PiP, and output routing.
 - `hermes/.env.example` — STT/host/token placeholders.

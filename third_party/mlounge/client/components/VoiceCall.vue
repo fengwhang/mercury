@@ -1,660 +1,485 @@
 <template>
 	<div class="voice-call">
 		<button
+			v-if="showEntry"
 			class="call-toggle"
-			:class="{active: inCall, connecting: connecting}"
-			aria-label="Start or end voice call"
-			:title="inCall ? 'End voice call' : 'Start experimental voice call'"
-			@click="toggleCall"
+			aria-label="Start voice call"
+			@click="startCall(channel)"
 		>
-			📞
+			<svg viewBox="0 0 24 24" aria-hidden="true">
+				<path
+					d="M5 3h4l2 5-3 2c2 3 3 4 6 6l2-3 5 2v4c0 2-2 3-4 2C9 19 5 15 3 7c-1-2 0-4 2-4Z"
+				/>
+			</svg>
 		</button>
-		<div v-if="panelOpen" class="voice-call-panel">
-			<div class="voice-call-status">
-				<span class="voice-dot" :class="connectionClass" />
-				<span class="voice-label">{{ statusLabel }}</span>
+		<Teleport to="body">
+			<section
+				v-if="panelOpen"
+				class="voice-call-screen"
+				:class="{minimized}"
+				role="dialog"
+				aria-label="Voice call"
+				:aria-modal="!minimized"
+			>
 				<button
-					class="voice-settings-toggle"
-					aria-label="Voice call settings"
-					@click="showSettings = !showSettings"
+					v-if="inCall || connecting"
+					class="voice-pip"
+					:aria-label="minimized ? 'Expand call' : 'Minimize call'"
+					@click="minimized = !minimized"
 				>
-					⚙
+					<svg
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="1.8"
+						aria-hidden="true"
+					>
+						<path
+							d="m9 9-6-6m0 5V3h5m7 6 6-6m-5 0h5v5M9 15l-6 6m0-5v5h5m7-6 6 6m-5 0h5v-5"
+						/>
+					</svg>
 				</button>
-			</div>
-			<canvas ref="waveform" class="voice-waveform" width="260" height="48" />
-			<div class="voice-level">
-				<div class="voice-level-fill" :style="{width: levelPercent + '%'}" />
-			</div>
-			<div class="voice-controls">
-				<button
-					:disabled="!inCall"
-					:class="{muted: muted}"
-					aria-label="Mute or unmute"
-					@click="toggleMute"
-				>
-					{{ muted ? "🔇" : "🎙" }}
-				</button>
-				<button :disabled="!inCall" aria-label="Hang up" @click="hangup">🛑</button>
-			</div>
-			<div v-if="showSettings" class="voice-settings">
-				<label
-					>mLounge-host sidecar URL (explicit, no localhost default)
-					<input
-						v-model="sidecarUrl"
-						placeholder="http://mlounge-host:8765"
-						spellcheck="false"
-					/>
-				</label>
-				<label
-					>Sidecar token (when set server-side)
-					<input v-model="token" type="password" placeholder="optional" />
-				</label>
-				<button @click="saveSettings">Save</button>
-			</div>
-			<div v-if="error" class="voice-error">{{ error }}</div>
-			<ul class="voice-transcripts">
-				<li v-for="(line, i) in transcripts" :key="i" :class="line.kind">
-					{{ line.text }}
-				</li>
-			</ul>
-		</div>
+				<div class="voice-identity">
+					<div class="voice-avatar" aria-hidden="true">
+						<svg viewBox="0 0 100 100">
+							<path d="M24 33q11-5 22 0v5H24Zm30 0q11-5 22 0v5H54Z" />
+							<rect x="32" y="35" width="5" height="9" rx="2.5" />
+							<rect x="62" y="35" width="5" height="9" rx="2.5" />
+						</svg>
+					</div>
+					<h2>{{ contactName }}</h2>
+				</div>
+				<div v-if="inCall" class="voice-timer" aria-label="Call duration">
+					{{ duration }}
+				</div>
+				<div v-else class="voice-setup">
+					<p v-if="connecting">Connecting…</p>
+					<p v-if="error" class="voice-error" role="alert">{{ error }}</p>
+					<form v-if="showSettings" class="voice-settings" @submit.prevent="saveAndCall">
+						<label
+							>STT sidecar URL<input
+								v-model="sidecarUrl"
+								type="url"
+								placeholder="https://voice.example.net"
+								required
+						/></label>
+						<label
+							>Sidecar token (if required)<input
+								v-model="token"
+								type="password"
+								autocomplete="off"
+						/></label>
+						<p>
+							Use the mLounge host’s voice sidecar URL, not the MIRC host. Remote
+							microphone access requires HTTPS.
+						</p>
+						<button type="submit">Save and call</button>
+					</form>
+					<button v-else-if="!connecting" @click="showSettings = true">
+						Voice settings
+					</button>
+				</div>
+				<div v-if="showOutputs && inCall" class="voice-outputs">
+					<label v-if="sinkSupported && outputs.length"
+						>Playback output<select :value="selectedOutput" @change="selectOutput">
+							<option value="">Browser default</option>
+							<option
+								v-for="output in outputs"
+								:key="output.deviceId"
+								:value="output.deviceId"
+							>
+								{{
+									output.label || "Audio output " + (outputs.indexOf(output) + 1)
+								}}
+							</option>
+						</select></label
+					>
+					<p role="status">{{ outputNotice }}</p>
+				</div>
+				<div class="voice-controls">
+					<div v-if="inCall" class="voice-control">
+						<button
+							class="voice-audio"
+							aria-label="Audio output"
+							:aria-expanded="showOutputs"
+							@click="toggleOutputs"
+						>
+							<svg viewBox="0 0 24 24" aria-hidden="true">
+								<path d="M3 9h4l5-5v16l-5-5H3Z" />
+								<path
+									d="M16 8q5 4 0 8m3-11q8 7 0 14"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+								/>
+							</svg></button
+						><span>Audio</span>
+					</div>
+					<div class="voice-control">
+						<button class="voice-end" aria-label="End call" @click="hangup">
+							<svg viewBox="0 0 24 24" aria-hidden="true">
+								<path d="M2 13q10-10 20 0v5h-6v-5q-4-2-8 0v5H2Z" />
+							</svg></button
+						><span>End</span>
+					</div>
+					<div v-if="inCall" class="voice-control">
+						<button
+							class="voice-mute"
+							:class="{muted}"
+							:aria-label="muted ? 'Unmute microphone' : 'Mute microphone'"
+							:aria-pressed="muted"
+							@click="toggleMute"
+						>
+							<svg viewBox="0 0 24 24" aria-hidden="true">
+								<rect x="9" y="2" width="6" height="12" rx="3" />
+								<path
+									d="M5 10v2a7 7 0 0 0 14 0v-2m-7 9v3m-4 0h8"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+								/>
+								<path
+									v-if="!muted"
+									class="voice-mic-slash"
+									d="m3 3 18 18"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+								/>
+							</svg></button
+						><span>{{ muted ? "Unmute" : "Mute" }}</span>
+					</div>
+				</div>
+			</section>
+		</Teleport>
 	</div>
 </template>
 
 <script lang="ts">
-import {defineComponent, PropType, ref, computed, watch, onBeforeUnmount, nextTick} from "vue";
+import {defineComponent, PropType, ref, shallowRef, computed, watch, onBeforeUnmount} from "vue";
 import socket from "../js/socket";
+import eventbus from "../js/eventbus";
 import {recordVoiceSegments} from "../js/helpers/voice-recording";
 import {useStore} from "../js/store";
-import type {ClientNetwork, ClientChan} from "../js/types";
+import type {ClientChan} from "../js/types";
+import {ChanType} from "../../shared/types/chan";
 
-type TranscriptLine = {kind: "said" | "heard"; text: string};
-
-const SIDECAR_URL_KEY = "mlounge.voiceCall.sidecarUrl";
-const SIDECAR_TOKEN_KEY = "mlounge.voiceCall.token";
-const CHUNK_MS = 2000;
-
-function wsBase(url: string): string {
-	const trimmed = url.trim().replace(/\/+$/, "");
-
-	if (trimmed.startsWith("https://")) {
-		return "wss://" + trimmed.slice("https://".length);
-	}
-
-	if (trimmed.startsWith("http://")) {
-		return "ws://" + trimmed.slice("http://".length);
-	}
-
-	if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) {
-		return trimmed;
-	}
-
-	return "ws://" + trimmed;
-}
-
-function pickRecorderMime(): string {
-	try {
-		const MR = (window as any).MediaRecorder;
-
-		if (!MR || typeof MR.isTypeSupported !== "function") {
-			return "";
-		}
-
-		for (const mime of [
-			"audio/webm;codecs=opus",
-			"audio/webm",
-			"audio/ogg;codecs=opus",
-			"audio/mp4",
-		]) {
-			if (MR.isTypeSupported(mime)) {
-				return mime;
-			}
-		}
-	} catch {
-		return "";
-	}
-
-	return "";
-}
-
-function stripIrcFormatting(text: string): string {
-	return text
-		.replace(/\x03\d{0,2}(,\d{0,2})?/g, "")
-		.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
-		.trim();
-}
+type PlaybackAudio = HTMLAudioElement & {setSinkId?: (id: string) => Promise<void>};
+const URL_KEY = "mlounge.voiceCall.sidecarUrl";
+const TOKEN_KEY = "mlounge.voiceCall.token";
 
 export default defineComponent({
 	name: "VoiceCall",
 	props: {
-		network: {type: Object as PropType<ClientNetwork>, required: true},
-		channel: {type: Object as PropType<ClientChan>, required: true},
+		channel: {type: Object as PropType<ClientChan>, default: undefined},
+		showEntry: {type: Boolean, default: true},
 	},
 	setup(props) {
 		const store = useStore();
+		const target = shallowRef<ClientChan>();
+		const agentName = ref("");
 		const inCall = ref(false);
 		const connecting = ref(false);
-		const muted = ref(false);
 		const panelOpen = ref(false);
-		const showSettings = ref(false);
+		const minimized = ref(false);
+		const muted = ref(false);
 		const error = ref("");
-		const level = ref(0);
-		const transcripts = ref<TranscriptLine[]>([]);
+		const showSettings = ref(false);
 		const sidecarUrl = ref("");
 		const token = ref("");
-		const waveform = ref<HTMLCanvasElement | null>(null);
-		const playing = ref(false);
+		const elapsed = ref(0);
+		const showOutputs = ref(false);
+		const sinkSupported = ref(false);
+		const outputs = ref<MediaDeviceInfo[]>([]);
+		const selectedOutput = ref("");
+		const outputNotice = ref("");
+		const contactName = computed(() => {
+			if (agentName.value) {
+				return agentName.value;
+			}
 
+			const channel = target.value || props.channel;
+
+			if (!channel) {
+				return "Voice call";
+			}
+
+			if (channel.type === ChanType.QUERY) {
+				return channel.name;
+			}
+
+			for (let index = channel.messages.length - 1; index >= 0; index--) {
+				const message = channel.messages[index];
+
+				if (message.mercuryKind === "assistant_reply" && message.from?.nick) {
+					return message.from.nick;
+				}
+			}
+
+			// Without registered identity, show the actual room, never guess from its slug.
+			return channel.name;
+		});
+		const duration = computed(
+			() =>
+				`${String(Math.floor(elapsed.value / 60)).padStart(2, "0")}:${String(
+					elapsed.value % 60
+				).padStart(2, "0")}`
+		);
 		let ws: WebSocket | null = null;
 		let stream: MediaStream | null = null;
-		let audioCtx: AudioContext | null = null;
-		let analyser: AnalyserNode | null = null;
 		let recorder: {stop: () => void} | null = null;
-		let callEpoch = 0;
-		let rafId = 0;
-		let noiseFloor = 0.02;
-		let playStartedAt = 0;
-		let audioEl: HTMLAudioElement | null = null;
-		let audioQueue: Array<{token: string; dataUrl: string}> = [];
-		let lastSeenId = 0;
+		let epoch = 0;
+		let uploadEpoch = 0;
+		let establishedAt = 0;
+		let timer: number | undefined;
+		let audio: PlaybackAudio | null = null;
+		let playing = false;
+		let queue: string[] = [];
 		let ttsSeq = 0;
-		let discardTtsThrough = 0;
+		let lastSeenId = 0;
+		let audioCtx: AudioContext | null = null;
+		let frame = 0;
 		let lastSpeechAt = 0;
-		let callActive = false;
+		let playStartedAt = 0;
+		let discardThrough = 0;
 
 		try {
-			sidecarUrl.value = window.localStorage.getItem(SIDECAR_URL_KEY) || "";
-			token.value = window.localStorage.getItem(SIDECAR_TOKEN_KEY) || "";
+			sidecarUrl.value = localStorage.getItem(URL_KEY) || "";
+			token.value = localStorage.getItem(TOKEN_KEY) || "";
 		} catch {
-			sidecarUrl.value = "";
+			// Private browsing may keep settings for this session only.
 		}
 
-		const levelPercent = computed(() => Math.round(Math.min(1, level.value) * 100));
-		const connectionClass = computed(() => {
-			if (error.value) {
-				return "error";
-			}
-
-			if (inCall.value) {
-				return "live";
-			}
-
-			if (connecting.value) {
-				return "connecting";
-			}
-
-			return "idle";
-		});
-		const statusLabel = computed(() => {
-			if (error.value) {
-				return "Call failed";
-			}
-
-			if (inCall.value) {
-				return muted.value ? "On call — muted" : "On call";
-			}
-
-			if (connecting.value) {
-				return "Connecting…";
-			}
-
-			return "Tap 📞 to call this agent";
-		});
-
-		const saveSettings = () => {
-			try {
-				window.localStorage.setItem(SIDECAR_URL_KEY, sidecarUrl.value.trim());
-				window.localStorage.setItem(SIDECAR_TOKEN_KEY, token.value);
-			} catch {
-				// private mode — settings last for the session only
-			}
-
-			showSettings.value = false;
-		};
-
-		const stopTracks = () => {
-			if (rafId) {
-				cancelAnimationFrame(rafId);
-				rafId = 0;
-			}
+		const stopRecording = () => {
+			uploadEpoch += 1;
 
 			try {
 				recorder?.stop();
 			} catch {
-				// already stopped
+				/* Release tracks even when the recorder already failed. */
 			}
 
 			recorder = null;
-
-			try {
-				stream?.getTracks().forEach((track) => track.stop());
-			} catch {
-				// already stopped
-			}
-
-			stream = null;
-
-			if (audioCtx) {
-				void audioCtx.close().catch(() => undefined);
-				audioCtx = null;
-			}
-
-			analyser = null;
-
-			if (audioEl) {
-				try {
-					audioEl.pause();
-				} catch {
-					// already paused
-				}
-
-				audioEl = null;
-			}
-
-			audioQueue = [];
-			playing.value = false;
-			level.value = 0;
 		};
 
-		const teardown = (message: string) => {
-			callEpoch += 1;
-			callActive = false;
+		const teardown = (message = "") => {
+			epoch += 1;
 			inCall.value = false;
 			connecting.value = false;
-			muted.value = false;
-
-			if (message) {
-				error.value = message;
-			}
-
-			try {
-				ws?.close();
-			} catch {
-				// already closed
-			}
-
+			const closing = ws;
 			ws = null;
-			stopTracks();
+
+			if (closing) {
+				closing.onopen = closing.onmessage = closing.onerror = closing.onclose = null;
+
+				try {
+					if (closing.readyState === WebSocket.OPEN) {
+						closing.send(JSON.stringify({type: "hangup"}));
+					}
+				} catch {
+					// Closing still releases the server-side registry when hangup cannot be sent.
+				}
+
+				try {
+					closing.close();
+				} catch {
+					// A disconnected socket is already being cleaned up remotely.
+				}
+			}
+
+			stopRecording();
+			stream?.getTracks().forEach((track) => track.stop());
+			stream = null;
+			cancelAnimationFrame(frame);
+			frame = 0;
+			void audioCtx?.close().catch(() => undefined);
+			audioCtx = null;
+
+			if (audio) {
+				audio.onended = audio.onerror = null;
+				audio.pause();
+				audio.removeAttribute("src");
+				audio = null;
+			}
+
+			queue = [];
+			playing = false;
+			clearInterval(timer);
+			timer = undefined;
+			elapsed.value = 0;
+			muted.value = false;
+			showOutputs.value = false;
+			error.value = message;
+
+			if (!message) {
+				panelOpen.value = false;
+			}
 		};
+
+		const hangup = () => teardown();
 
 		const playNext = () => {
-			if (playing.value || audioQueue.length === 0 || !callActive) {
+			if (playing || !inCall.value || !audio || !queue.length) {
 				return;
 			}
 
-			const next = audioQueue.shift();
+			const current = audio;
+			const callEpoch = epoch;
+			current.src = queue.shift()!;
+			playing = true;
+			playStartedAt = performance.now();
 
-			if (!next) {
-				return;
-			}
-
-			try {
-				audioEl = new Audio(next.dataUrl);
-				playing.value = true;
-				playStartedAt = performance.now();
-
-				audioEl.onended = () => {
-					playing.value = false;
-					audioEl = null;
-					playNext();
-				};
-
-				audioEl.onerror = () => {
-					playing.value = false;
-					audioEl = null;
-					playNext();
-				};
-
-				void audioEl.play().catch(() => {
-					playing.value = false;
-					audioEl = null;
-				});
-			} catch {
-				playing.value = false;
-				audioEl = null;
-			}
-		};
-
-		const meterLoop = () => {
-			if (!analyser || !callActive) {
-				return;
-			}
-
-			const data = new Uint8Array(analyser.fftSize);
-			analyser.getByteTimeDomainData(data);
-			let sum = 0;
-
-			for (let i = 0; i < data.length; i++) {
-				const v = (data[i] - 128) / 128;
-				sum += v * v;
-			}
-
-			const rms = Math.sqrt(sum / data.length);
-			level.value = rms;
-
-			if (!muted.value && rms > Math.max(noiseFloor * 2, 0.02)) {
-				lastSpeechAt = performance.now();
-			}
-
-			// Barge-in (browser-side): loud mic input while a reply plays
-			// stops local playback. The agent turn itself is untouched —
-			// the next transcript steers it.
-			if (!muted.value && playing.value && performance.now() - playStartedAt > 500) {
-				const threshold = Math.max(noiseFloor * 3, 0.08);
-
-				if (rms > threshold && audioEl) {
-					try {
-						audioEl.pause();
-					} catch {
-						// already paused
-					}
-
-					audioEl = null;
-					playing.value = false;
-					audioQueue = [];
-					discardTtsThrough = ttsSeq;
-				}
-			}
-
-			const canvas = waveform.value;
-
-			if (canvas) {
-				const ctx = canvas.getContext("2d");
-
-				if (ctx) {
-					ctx.clearRect(0, 0, canvas.width, canvas.height);
-					ctx.beginPath();
-					const step = canvas.width / data.length;
-
-					for (let i = 0; i < data.length; i++) {
-						const y =
-							((data[i] - 128) / 128) * canvas.height * 0.45 + canvas.height / 2;
-
-						if (i === 0) {
-							ctx.moveTo(0, y);
-						} else {
-							ctx.lineTo(i * step, y);
-						}
-					}
-
-					ctx.stroke();
-				}
-			}
-
-			rafId = requestAnimationFrame(meterLoop);
-		};
-
-		const startMeter = (media: MediaStream) => {
-			const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
-			audioCtx = new AC() as AudioContext;
-			const source = audioCtx.createMediaStreamSource(media);
-			analyser = audioCtx.createAnalyser();
-			analyser.fftSize = 2048;
-			source.connect(analyser);
-			// Calibrate the quiet-room floor before the user speaks.
-			const probe = new Uint8Array(analyser.fftSize);
-			let samples = 0;
-			let acc = 0;
-
-			const calibrate = () => {
-				if (!analyser || samples >= 10) {
-					noiseFloor = Math.max(acc / Math.max(1, samples), 0.005);
-					rafId = requestAnimationFrame(meterLoop);
+			const finished = () => {
+				if (epoch !== callEpoch || audio !== current) {
 					return;
 				}
 
-				analyser.getByteTimeDomainData(probe);
-				let sum = 0;
-
-				for (let i = 0; i < probe.length; i++) {
-					const v = (probe[i] - 128) / 128;
-					sum += v * v;
-				}
-
-				acc += Math.sqrt(sum / probe.length);
-				samples += 1;
-				setTimeout(calibrate, 50);
+				playing = false;
+				playNext();
 			};
 
-			calibrate();
+			current.onended = finished;
+
+			current.onerror = () => {
+				if (epoch !== callEpoch) {
+					return;
+				}
+
+				outputNotice.value =
+					"Reply audio could not be played. Check your browser playback permissions.";
+				showOutputs.value = true;
+				finished();
+			};
+
+			void current.play().catch(() => {
+				if (epoch !== callEpoch) {
+					return;
+				}
+
+				playing = false;
+				outputNotice.value =
+					"Playback was blocked. Allow audio in your browser, then press Audio to retry.";
+				showOutputs.value = true;
+				queue.unshift(current.src);
+			});
 		};
 
-		const startRecorder = (media: MediaStream, mime: string) => {
+		const refreshOutputs = async () => {
+			const callEpoch = epoch;
+
+			try {
+				const devices = await navigator.mediaDevices.enumerateDevices();
+
+				if (callEpoch !== epoch) {
+					return;
+				}
+
+				outputs.value = devices.filter(
+					(device) => device.kind === "audiooutput" && device.deviceId
+				);
+				outputNotice.value =
+					sinkSupported.value && outputs.value.length
+						? "Choose an output exposed by your browser. Earpiece routing is available only if listed."
+						: "This browser cannot select an audio output. Using the browser/system default; change output in your device settings.";
+			} catch {
+				if (callEpoch !== epoch) {
+					return;
+				}
+
+				outputNotice.value =
+					"Audio outputs could not be listed. Using the browser/system default.";
+			}
+		};
+
+		const toggleOutputs = () => {
+			showOutputs.value = !showOutputs.value;
+
+			if (showOutputs.value) {
+				void refreshOutputs();
+				playNext();
+			}
+		};
+
+		const selectOutput = async (event: Event) => {
+			const id = (event.target as HTMLSelectElement).value;
+			const current = audio;
+			const callEpoch = epoch;
+
+			if (!current?.setSinkId) {
+				return;
+			}
+
+			try {
+				await current.setSinkId(id);
+
+				if (callEpoch !== epoch) {
+					return;
+				}
+
+				selectedOutput.value = id;
+				outputNotice.value = `Playback: ${
+					outputs.value.find((device) => device.deviceId === id)?.label ||
+					"browser default"
+				}`;
+			} catch {
+				if (callEpoch !== epoch) {
+					return;
+				}
+
+				(event.target as HTMLSelectElement).value = selectedOutput.value;
+				outputNotice.value =
+					"Output switch failed. Playback remains on the previous browser output; check device permissions.";
+			}
+		};
+
+		const startRecording = () => {
+			if (!stream || muted.value || !inCall.value) {
+				return;
+			}
+
+			const generation = uploadEpoch;
+			const current = ws;
+			const mime =
+				["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"].find(
+					(candidate) => MediaRecorder.isTypeSupported(candidate)
+				) || "";
 			recorder = recordVoiceSegments(
-				media,
+				stream,
 				mime,
 				(blob) => {
-					if (!callActive || muted.value || !ws || ws.readyState !== WebSocket.OPEN) {
+					if (generation !== uploadEpoch || muted.value || !inCall.value) {
 						return;
 					}
 
-					const callSocket = ws;
-					void blob.arrayBuffer().then((buffer) => {
-						if (
-							ws === callSocket &&
-							callSocket.readyState === WebSocket.OPEN &&
-							callActive &&
-							!muted.value
-						) {
-							callSocket.send(buffer);
-						}
-					});
+					void blob
+						.arrayBuffer()
+						.then((buffer) => {
+							if (
+								generation === uploadEpoch &&
+								ws === current &&
+								current?.readyState === WebSocket.OPEN &&
+								inCall.value &&
+								!muted.value
+							) {
+								current.send(buffer);
+							}
+						})
+						.catch(() => {
+							if (generation === uploadEpoch) {
+								teardown("Microphone audio could not be read. Retry the call.");
+							}
+						});
 				},
-				CHUNK_MS,
+				2000,
 				{
 					canFinalize: () => performance.now() - lastSpeechAt >= 350,
-					onError: (recordingError) => teardown(recordingError.message),
+					onError(recordingError) {
+						if (generation === uploadEpoch) {
+							teardown(recordingError.message);
+						}
+					},
 				}
 			);
-		};
-
-		const requestTts = (text: string) => {
-			if (!ws || ws.readyState !== WebSocket.OPEN || !callActive) {
-				return;
-			}
-
-			ttsSeq += 1;
-			ws.send(JSON.stringify({type: "tts", text, token: `reply-${ttsSeq}`}));
-		};
-
-		const onSocketMessage = (event: MessageEvent) => {
-			let message: any;
-
-			try {
-				message = JSON.parse(String(event.data));
-			} catch {
-				return;
-			}
-
-			if (!message || typeof message !== "object") {
-				return;
-			}
-
-			switch (message.type) {
-				case "ready":
-					connecting.value = false;
-					inCall.value = true;
-					callActive = true;
-					error.value = "";
-					lastSeenId = 0;
-
-					for (const m of props.channel.messages) {
-						if (typeof m.id === "number" && m.id > lastSeenId) {
-							lastSeenId = m.id;
-						}
-					}
-
-					transcripts.value.push({
-						kind: "heard",
-						text: `Connected (STT: ${message.sttProvider || "sidecar"})`,
-					});
-					break;
-				case "refused":
-					teardown(String(message.reason || "Call refused"));
-					break;
-
-				case "transcript": {
-					const text = String(message.text || "").trim();
-
-					if (!text || !callActive) {
-						break;
-					}
-
-					transcripts.value.push({kind: "said", text});
-
-					if (store.state.isConnected) {
-						socket.emit("input", {target: props.channel.id, text});
-					}
-
-					break;
-				}
-
-				case "audio":
-					if (
-						message.dataUrl &&
-						callActive &&
-						Number(String(message.token || "").replace(/^reply-/, "")) >
-							discardTtsThrough
-					) {
-						audioQueue.push({
-							token: String(message.token || ""),
-							dataUrl: String(message.dataUrl),
-						});
-						playNext();
-					}
-
-					break;
-				case "muted":
-					muted.value = Boolean(message.muted);
-					break;
-				case "ended":
-					teardown("");
-					break;
-				case "error":
-					error.value = String(message.message || "Call error");
-					break;
-				default:
-					break;
-			}
-		};
-
-		const hangup = () => {
-			if (!inCall.value && !connecting.value) {
-				panelOpen.value = false;
-				return;
-			}
-
-			try {
-				ws?.send(JSON.stringify({type: "hangup"}));
-			} catch {
-				// closing below ends the call server-side too
-			}
-
-			teardown("");
-			panelOpen.value = false;
-		};
-
-		const toggleCall = async () => {
-			if (inCall.value || connecting.value) {
-				hangup();
-				return;
-			}
-
-			error.value = "";
-			const base = sidecarUrl.value.trim();
-
-			if (!base) {
-				error.value =
-					"Set the sidecar URL first (⚙) — e.g. http://mlounge-host:8765. No localhost assumed.";
-				panelOpen.value = true;
-				showSettings.value = true;
-				return;
-			}
-
-			panelOpen.value = true;
-			connecting.value = true;
-			const epoch = ++callEpoch;
-
-			try {
-				const acquired = await navigator.mediaDevices.getUserMedia({audio: true});
-
-				if (epoch !== callEpoch) {
-					acquired.getTracks().forEach((track) => track.stop());
-					return;
-				}
-
-				stream = acquired;
-			} catch {
-				if (epoch !== callEpoch) {
-					return;
-				}
-
-				teardown("Microphone blocked — allow mic access for this origin, then retry.");
-				return;
-			}
-
-			try {
-				startMeter(stream);
-			} catch {
-				teardown("WebAudio unavailable in this browser.");
-				return;
-			}
-
-			let url = wsBase(base) + "/call";
-
-			if (token.value) {
-				url += "?token=" + encodeURIComponent(token.value);
-			}
-
-			try {
-				ws = new WebSocket(url);
-			} catch {
-				teardown("Could not open the call socket — check the sidecar URL.");
-				return;
-			}
-
-			const callSocket = ws;
-			const mime = pickRecorderMime() || "audio/webm";
-
-			ws.onopen = () => {
-				if (ws !== callSocket) {
-					return;
-				}
-
-				ws?.send(JSON.stringify({type: "hello", channel: props.channel.name, mime}));
-
-				try {
-					startRecorder(stream as MediaStream, mime);
-				} catch (err) {
-					teardown(err instanceof Error ? err.message : "Recorder failed to start");
-				}
-			};
-
-			ws.onmessage = (event) => {
-				if (ws === callSocket) {
-					onSocketMessage(event);
-				}
-			};
-
-			ws.onerror = () => {
-				if (ws !== callSocket) {
-					return;
-				}
-
-				if (!inCall.value) {
-					teardown("Call socket error — is the sidecar reachable at that URL?");
-				}
-			};
-
-			ws.onclose = () => {
-				if (ws !== callSocket) {
-					return;
-				}
-
-				if (callActive || connecting.value) {
-					teardown("Call socket closed.");
-				}
-			};
 		};
 
 		const toggleMute = () => {
@@ -663,95 +488,354 @@ export default defineComponent({
 			}
 
 			muted.value = !muted.value;
+			stream?.getAudioTracks().forEach((track) => {
+				track.enabled = !muted.value;
+			});
+			stopRecording();
 
-			try {
-				ws?.send(JSON.stringify({type: "mute", muted: muted.value}));
-			} catch {
-				// registry sync is best-effort; the mic gate above is the real mute
+			if (!muted.value) {
+				try {
+					startRecording();
+				} catch {
+					teardown("Microphone recording could not restart.");
+				}
+			}
+
+			if (ws?.readyState === WebSocket.OPEN) {
+				ws.send(JSON.stringify({type: "mute", muted: muted.value}));
 			}
 		};
 
-		// Agent replies arriving in this channel while on a call are
-		// synthesized on the MIRC host and played back here (browser
-		// speakers — never a server-side device).
-		watch(
-			() => props.channel.messages.at(-1)?.id,
-			() => {
-				let maxId = lastSeenId;
-				const replies: string[] = [];
+		const startMeter = (media: MediaStream) => {
+			const AC =
+				window.AudioContext ||
+				(window as Window & {webkitAudioContext?: typeof AudioContext}).webkitAudioContext;
 
-				for (const m of props.channel.messages) {
-					if (typeof m.id === "number" && m.id > maxId) {
-						maxId = m.id;
+			if (!AC) {
+				return;
+			}
+
+			audioCtx = new AC();
+			const source = audioCtx!.createMediaStreamSource(media);
+			const analyser = audioCtx!.createAnalyser();
+			analyser.fftSize = 2048;
+			source.connect(analyser);
+			const samples = new Uint8Array(analyser.fftSize);
+			const callEpoch = epoch;
+
+			const measure = () => {
+				if (callEpoch !== epoch || !inCall.value) {
+					return;
+				}
+
+				analyser.getByteTimeDomainData(samples);
+				let sum = 0;
+
+				for (const sample of samples) {
+					sum += ((sample - 128) / 128) ** 2;
+				}
+
+				const rms = Math.sqrt(sum / samples.length);
+
+				if (!muted.value && rms > 0.02) {
+					lastSpeechAt = performance.now();
+				}
+
+				if (
+					!muted.value &&
+					playing &&
+					rms > 0.08 &&
+					performance.now() - playStartedAt > 500
+				) {
+					audio?.pause();
+					playing = false;
+					queue = [];
+					discardThrough = ttsSeq;
+				}
+
+				frame = requestAnimationFrame(measure);
+			};
+
+			measure();
+		};
+
+		const startCall = async (channel = props.channel) => {
+			if (inCall.value || connecting.value) {
+				minimized.value = false;
+				panelOpen.value = true;
+				return;
+			}
+
+			if (!channel) {
+				return;
+			}
+
+			target.value = channel;
+			agentName.value = "";
+			panelOpen.value = true;
+			minimized.value = false;
+			error.value = "";
+			const configured = store.state.serverConfiguration?.voiceCallSidecarUrl || "";
+			const base = (sidecarUrl.value || configured).trim();
+			sidecarUrl.value = base;
+			let url: URL;
+
+			try {
+				url = new URL(base);
+
+				if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) {
+					throw new Error();
+				}
+
+				if (location.protocol === "https:" && ["http:", "ws:"].includes(url.protocol)) {
+					throw new Error();
+				}
+			} catch {
+				error.value =
+					"Set a valid STT sidecar URL first. An HTTPS page requires an HTTPS/WSS sidecar; no localhost is assumed.";
+				showSettings.value = true;
+				return;
+			}
+
+			showSettings.value = false;
+
+			if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+				error.value =
+					"Microphone recording is unavailable. Open mLounge over HTTPS in a browser supporting MediaRecorder.";
+				return;
+			}
+
+			connecting.value = true;
+			const callEpoch = ++epoch;
+
+			try {
+				const acquired = await navigator.mediaDevices.getUserMedia({audio: true});
+
+				if (callEpoch !== epoch) {
+					acquired.getTracks().forEach((track) => track.stop());
+					return;
+				}
+
+				stream = acquired;
+				url.protocol = ["https:", "wss:"].includes(url.protocol) ? "wss:" : "ws:";
+				url.pathname = url.pathname.replace(/\/+$/, "") + "/call";
+
+				if (token.value) {
+					url.searchParams.set("token", token.value);
+				}
+
+				const current = new WebSocket(url.toString());
+				ws = current;
+				const mime =
+					[
+						"audio/webm;codecs=opus",
+						"audio/webm",
+						"audio/ogg;codecs=opus",
+						"audio/mp4",
+					].find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
+
+				current.onopen = () => {
+					if (ws === current) {
+						current.send(JSON.stringify({type: "hello", channel: channel.name, mime}));
+					}
+				};
+
+				current.onmessage = (event) => {
+					if (ws !== current || callEpoch !== epoch) {
+						return;
 					}
 
-					if (
-						callActive &&
-						typeof m.id === "number" &&
-						m.id > lastSeenId &&
-						!m.self &&
-						m.mercuryKind === "assistant_reply" &&
-						typeof m.text === "string" &&
-						m.text.trim() &&
-						(m.type === undefined || String(m.type) === "message")
-					) {
-						const clean = stripIrcFormatting(m.text);
+					let payload: unknown;
 
-						if (clean) {
-							replies.push(clean);
+					try {
+						payload = JSON.parse(String(event.data));
+					} catch {
+						return;
+					}
+
+					if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+						return;
+					}
+
+					const message = payload as Record<string, unknown>;
+
+					switch (message.type) {
+						case "ready":
+							if (!connecting.value) {
+								break;
+							}
+
+							if (message.engine !== "hermes") {
+								teardown(
+									"Voice calls are supported only for Hermes agents, not OMP."
+								);
+								break;
+							}
+
+							connecting.value = false;
+							agentName.value =
+								typeof message.agentName === "string"
+									? message.agentName.trim()
+									: "";
+							inCall.value = true;
+							establishedAt = Date.now();
+							timer = window.setInterval(() => {
+								elapsed.value = Math.floor((Date.now() - establishedAt) / 1000);
+							}, 250);
+							lastSeenId = 0;
+
+							for (const prior of channel.messages) {
+								lastSeenId = Math.max(lastSeenId, prior.id || 0);
+							}
+
+							ttsSeq = discardThrough = 0;
+							selectedOutput.value = "";
+							audio = new Audio();
+							sinkSupported.value = typeof audio.setSinkId === "function";
+
+							try {
+								startRecording();
+								startMeter(stream!);
+							} catch {
+								teardown("Microphone recorder failed to start.");
+							}
+
+							break;
+						case "refused":
+							teardown(String(message.reason || "Call refused"));
+							break;
+						case "ended":
+							teardown();
+							break;
+						case "error":
+							teardown(String(message.message || "Call error"));
+							break;
+						case "transcript":
+							if (
+								inCall.value &&
+								!muted.value &&
+								store.state.isConnected &&
+								String(message.text || "").trim()
+							) {
+								socket.emit("input", {
+									target: channel.id,
+									text: String(message.text).trim(),
+								});
+							}
+
+							break;
+						case "audio":
+							if (
+								inCall.value &&
+								message.dataUrl &&
+								Number(String(message.token || "").replace(/^reply-/, "")) >
+									discardThrough
+							) {
+								queue.push(String(message.dataUrl));
+								playNext();
+							}
+
+							break;
+					}
+				};
+
+				current.onerror = () => {
+					if (ws === current) {
+						teardown(
+							"Call socket failed. Check the sidecar URL, token, and network access."
+						);
+					}
+				};
+
+				current.onclose = () => {
+					if (ws === current) {
+						teardown("Call socket closed. Check the sidecar connection and retry.");
+					}
+				};
+			} catch {
+				if (callEpoch === epoch) {
+					teardown(
+						"Could not start the call. Allow microphone access and check the sidecar URL."
+					);
+				}
+			}
+		};
+
+		const saveAndCall = () => {
+			try {
+				localStorage.setItem(URL_KEY, sidecarUrl.value.trim());
+				localStorage.setItem(TOKEN_KEY, token.value);
+			} catch {
+				/* Session-only settings. */
+			}
+
+			void startCall(target.value);
+		};
+
+		const onPhone = (channel: ClientChan) => {
+			void startCall(channel);
+		};
+
+		eventbus.on("voice-call:start", onPhone);
+		watch(
+			() => target.value?.messages.at(-1)?.id,
+			() => {
+				if (!inCall.value || !target.value || ws?.readyState !== WebSocket.OPEN) {
+					return;
+				}
+
+				for (const message of target.value.messages) {
+					if (
+						message.id > lastSeenId &&
+						!message.self &&
+						message.mercuryKind === "assistant_reply" &&
+						(message.type === undefined || String(message.type) === "message")
+					) {
+						const text = String(message.text || "")
+							.replace(/\x03\d{0,2}(,\d{0,2})?/g, "")
+							.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+							.trim();
+
+						if (text) {
+							ws.send(
+								JSON.stringify({type: "tts", text, token: `reply-${++ttsSeq}`})
+							);
 						}
 					}
 				}
 
-				lastSeenId = maxId;
-
-				for (const reply of replies) {
-					transcripts.value.push({kind: "heard", text: reply});
-					requestTts(reply);
+				for (const message of target.value.messages) {
+					lastSeenId = Math.max(lastSeenId, message.id || 0);
 				}
 			}
 		);
-
 		onBeforeUnmount(() => {
-			callEpoch += 1;
-
-			try {
-				ws?.send(JSON.stringify({type: "hangup"}));
-			} catch {
-				// unmounting — best effort
-			}
-
-			callActive = false;
-
-			try {
-				ws?.close();
-			} catch {
-				// already closed
-			}
-
-			ws = null;
-			stopTracks();
+			eventbus.off("voice-call:start", onPhone);
+			teardown();
 		});
-
 		return {
-			store,
 			inCall,
 			connecting,
-			muted,
 			panelOpen,
-			showSettings,
+			minimized,
+			muted,
 			error,
-			levelPercent,
-			transcripts,
+			showSettings,
 			sidecarUrl,
 			token,
-			waveform,
-			connectionClass,
-			statusLabel,
-			saveSettings,
-			toggleCall,
-			toggleMute,
+			contactName,
+			duration,
+			showOutputs,
+			sinkSupported,
+			outputs,
+			selectedOutput,
+			outputNotice,
+			startCall,
+			saveAndCall,
 			hangup,
+			toggleMute,
+			toggleOutputs,
+			selectOutput,
 		};
 	},
 });

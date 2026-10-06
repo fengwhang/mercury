@@ -63,11 +63,18 @@
 						aria-label="Open the context menu"
 						@click="openContextMenu"
 					/>
-				<VoiceCall
-					v-if="['channel', 'query'].includes(channel.type)"
-					:network="network"
-					:channel="channel"
-				/>
+					<button
+						v-if="['channel', 'query'].includes(channel.type)"
+						class="call-toggle"
+						aria-label="Start voice call"
+						@click="eventbus.emit('voice-call:start', channel)"
+					>
+						<svg viewBox="0 0 24 24" aria-hidden="true">
+							<path
+								d="M5 3h4l2 5-3 2c2 3 3 4 6 6l2-3 5 2v4c0 2-2 3-4 2C9 19 5 15 3 7c-1-2 0-4 2-4Z"
+							/>
+						</svg>
+					</button>
 					<span
 						v-if="channel.type === 'channel'"
 						class="rt-tooltip tooltipped tooltipped-w"
@@ -129,7 +136,6 @@
 import socket from "../js/socket";
 import eventbus from "../js/eventbus";
 import ParsedMessage from "./ParsedMessage.vue";
-import VoiceCall from "./VoiceCall.vue";
 import MessageList from "./MessageList.vue";
 import ChatInput from "./ChatInput.vue";
 import ChatUserList from "./ChatUserList.vue";
@@ -152,7 +158,6 @@ export default defineComponent({
 		MessageList,
 		ChatInput,
 		ChatUserList,
-		VoiceCall,
 		SidebarToggle,
 		MessageSearchForm,
 	},
@@ -280,6 +285,7 @@ export default defineComponent({
 
 		return {
 			store,
+			eventbus,
 			messageList,
 			topicInput,
 			plainTopic,

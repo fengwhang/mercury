@@ -16,6 +16,7 @@ type SharedConfigurationBase = {
 	themes: ConfigTheme[];
 	defaultTheme: string;
 	fileUploadMaxFileSize?: number;
+	voiceCallSidecarUrl?: string;
 };
 
 export type ConfigNetDefaults = {

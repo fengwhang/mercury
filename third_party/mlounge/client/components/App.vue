@@ -8,6 +8,7 @@
 			@click="store.commit('sidebarOpen', false)"
 		/>
 		<router-view ref="loungeWindow"></router-view>
+		<VoiceCall :show-entry="false" />
 		<Mentions />
 		<ImageViewer ref="imageViewer" />
 		<ContextMenu ref="contextMenu" />
@@ -29,6 +30,7 @@ import ImageViewer from "./ImageViewer.vue";
 import ContextMenu from "./ContextMenu.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import Mentions from "./Mentions.vue";
+import VoiceCall from "./VoiceCall.vue";
 import {
 	computed,
 	provide,
@@ -54,6 +56,7 @@ export default defineComponent({
 		ContextMenu,
 		ConfirmDialog,
 		Mentions,
+		VoiceCall,
 	},
 	setup() {
 		const store = useStore();
