@@ -93,3 +93,54 @@ def test_parser_defaults_have_no_localhost_urls() -> None:
     assert args.mirc_url == ""
     assert args.host == "127.0.0.1"
     assert args.port == 8765
+
+def test_send_failure_still_shuts_down_socket():
+    class BrokenConnection:
+        shutdowns = 0
+        closes = 0
+
+        def sendall(self, _frame):
+            raise OSError("peer is gone")
+
+        def shutdown(self, _how):
+            self.shutdowns += 1
+
+        def close(self):
+            self.closes += 1
+
+    conn = BrokenConnection()
+    ws = WsConnection(conn, io.BytesIO())
+    ws.send_json({"type": "ready"})
+    ws.close()
+    assert conn.shutdowns >= 1
+    assert conn.closes >= 1
+
+def test_close_interrupts_a_blocked_socket_writer():
+    import threading
+
+    entered, released, closed = threading.Event(), threading.Event(), threading.Event()
+
+    class BackpressuredConnection:
+        def sendall(self, _frame, *_flags):
+            entered.set()
+            released.wait(5)
+            raise OSError("socket shut down")
+
+        def shutdown(self, _how):
+            released.set()
+
+        def close(self):
+            closed.set()
+
+    ws = WsConnection(BackpressuredConnection(), io.BytesIO())
+    sender = threading.Thread(target=ws.send_json, args=({"type": "audio"},), daemon=True)
+    closer = threading.Thread(target=ws.close, daemon=True)
+    sender.start()
+    try:
+        assert entered.wait(2)
+        closer.start()
+        assert closed.wait(0.5)
+    finally:
+        released.set()
+        sender.join(2)
+        closer.join(2)

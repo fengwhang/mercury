@@ -18,7 +18,7 @@ the network. Same-machine is a degenerate case, never an assumption:
 every hop reads explicit host URLs from the ``voice_call`` config
 section — this module never falls back to localhost.
 
-Hermes-only scope: ``check_engine_allowed`` / ``resolve_channel_engine``
+Hermes-only scope: ``check_engine_allowed`` / ``resolve_channel_agent``
 allow only confirmed live Hermes rooms, using the durable tree when the
 dashboard and gateway run in separate processes. OMP and unknown rooms are refused.
 Nothing here imports omp machinery.
@@ -56,47 +56,41 @@ class VoiceCallEngineError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def resolve_channel_engine(channel: str) -> str:
-    """Return ``"hermes"`` or ``"omp"`` for a MIRC channel (never raises).
+def resolve_channel_agent(channel: str) -> Dict[str, str]:
+    """Return the live room's engine and registered name (never raises).
 
-    Reads the live room manager or its durable tree. Missing, expired and
-    unidentifiable rooms return ``"unknown"`` and cannot start a call.
+    Reads the room manager or its durable tree in one lookup. Missing,
+    expired and unidentifiable rooms return unknown with an empty name.
     """
+    unknown = {"engine": "unknown", "name": ""}
     try:
         from observatory.rooms import get_room_manager
 
         manager = get_room_manager()
         if manager is None:
-            # `mercury serve` and the gateway normally run in different
-            # processes. Read the gateway's durable tree without creating or
-            # migrating its database from a dashboard request.
+            # The dashboard normally runs separately from the gateway.
+            # Read its durable tree without creating or migrating the DB.
             from observatory.state import default_state_db_path
 
             path = default_state_db_path()
             if not path.is_file():
-                return "unknown"
+                return unknown
             with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as db:
                 row = db.execute(
-                    "SELECT engine FROM nodes WHERE lower(room_id) = lower(?) "
+                    "SELECT engine, name FROM nodes WHERE lower(room_id) = lower(?) "
                     "AND status = 'live' ORDER BY created_epoch DESC LIMIT 1",
                     (channel or "",),
                 ).fetchone()
-            return str(row[0]) if row else "unknown"
-        route, row = manager.inbound_route(channel or "")
+            return {"engine": str(row[0]), "name": str(row[1] or "")} if row else unknown
+        _route, row = manager.inbound_route(channel or "")
         if row is None:
-            return "unknown"
-        if route == "spawn-omp":
-            return "omp"
-        if route == "child":
-            try:
-                if str((row or {}).get("engine") or "") == "omp":
-                    return "omp"
-            except Exception:
-                pass
-            return "hermes"
-        return "hermes"
+            return unknown
+        engine = str(row.get("engine") or "").strip().lower()
+        if engine not in {"hermes", "omp"}:
+            return unknown
+        return {"engine": engine, "name": str(row.get("name") or "")}
     except Exception:
-        return "unknown"
+        return unknown
 
 
 def check_engine_allowed(engine: str) -> tuple[bool, str]:
@@ -173,8 +167,10 @@ class VoiceCallStore:
         self._lock = threading.Lock()
         self._calls: Dict[str, Dict[str, Any]] = {}
 
-    def start(self, channel: str, *, engine: str = "hermes") -> Dict[str, Any]:
-        """Open (or rejoin) a call. Raises VoiceCallEngineError for OMP."""
+    def start(
+        self, channel: str, *, engine: str = "hermes", call_id: str = "",
+    ) -> Dict[str, Any]:
+        """Open or rejoin one socket-owned call on a channel."""
         allowed, reason = check_engine_allowed(engine)
         if not allowed:
             raise VoiceCallEngineError(reason)
@@ -184,27 +180,45 @@ class VoiceCallStore:
         with self._lock:
             record = self._calls.get(key)
             if record is None:
-                record = {"channel": key, "engine": engine, "muted": False}
+                record = {"channel": key, "engine": engine, "sessions": {}}
                 self._calls[key] = record
-            else:
-                record["engine"] = engine
-            return dict(record)
+            record["sessions"].setdefault(call_id, False)
+            return self._record_status(record)
 
-    def end(self, channel: str) -> bool:
-        """Close a call. True when one was active."""
+    def end(self, channel: str, *, call_id: Optional[str] = None) -> bool:
+        """Close one socket owner, or all owners for a channel-wide End."""
         key = (channel or "").strip()
         with self._lock:
-            return self._calls.pop(key, None) is not None
+            if call_id is None:
+                return self._calls.pop(key, None) is not None
+            record = self._calls.get(key)
+            if record is None or call_id not in record["sessions"]:
+                return False
+            del record["sessions"][call_id]
+            if not record["sessions"]:
+                del self._calls[key]
+            return True
 
-    def set_muted(self, channel: str, muted: bool) -> Optional[Dict[str, Any]]:
-        """Mute/unmute a call. None when no call is active."""
+    def set_muted(
+        self, channel: str, muted: bool, *, call_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update one socket owner, or every owner on the channel."""
         key = (channel or "").strip()
         with self._lock:
             record = self._calls.get(key)
-            if record is None:
+            if record is None or (call_id is not None and call_id not in record["sessions"]):
                 return None
-            record["muted"] = bool(muted)
-            return dict(record)
+            for owner in record["sessions"]:
+                if call_id is None or owner == call_id:
+                    record["sessions"][owner] = bool(muted)
+            return self._record_status(record)
+
+    @staticmethod
+    def _record_status(record: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "channel": record["channel"], "engine": record["engine"],
+            "muted": all(record["sessions"].values()),
+        }
 
     def status(self, channel: str) -> Dict[str, Any]:
         """Call state for *channel* (active False when idle)."""
@@ -213,7 +227,7 @@ class VoiceCallStore:
             record = self._calls.get(key)
             if record is None:
                 return {"channel": key, "active": False, "muted": False, "engine": "hermes"}
-            return {"channel": key, "active": True, **{k: v for k, v in record.items() if k != "channel"}}
+            return {"active": True, **self._record_status(record)}
 
     def active_channels(self) -> List[str]:
         """Every channel with an open call."""
