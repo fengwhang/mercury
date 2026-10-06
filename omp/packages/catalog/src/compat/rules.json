@@ -16474,16 +16474,7 @@
 				"name": "Hugging Face Inference",
 				"login": {
 					"kind": "api-key",
-					"authUrl": "https://huggingface.co/settings/tokens/new?ownUserPermissions=inference.serverless.write&tokenType=fineGrained",
-					"instructions": "Create/copy a token with Make calls to Inference Providers permission (usable as HUGGINGFACE_HUB_TOKEN or HF_TOKEN)",
-					"prompt": "Paste your Hugging Face token (HUGGINGFACE_HUB_TOKEN / HF_TOKEN)",
-					"placeholder": "hf_...",
-					"validate": {
-						"kind": "chat-completions",
-						"label": "Hugging Face",
-						"baseUrl": "https://router.huggingface.co/v1",
-						"model": "openai/gpt-oss-120b"
-					}
+					"prompt": "Hosted Hugging Face inference is unsupported. Configure an explicit self-hosted provider base URL override, then paste its API key (HUGGINGFACE_HUB_TOKEN / HF_TOKEN)"
 				}
 			},
 			{

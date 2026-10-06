@@ -1,3 +1,4 @@
+import { assertHuggingfaceEndpoint } from "@oh-my-pi/pi-catalog/wire/huggingface";
 import { OpenAIHttpError, ProviderHttpError } from "../error/classes";
 import type { FetchImpl } from "../types";
 
@@ -85,6 +86,7 @@ async function createApiKeyValidationError(
  * Performs a minimal request to verify credentials and endpoint access.
  */
 export async function validateOpenAICompatibleApiKey(options: OpenAICompatibleValidationOptions): Promise<void> {
+	assertHuggingfaceEndpoint(options.provider, options.baseUrl);
 	const timeoutSignal = AbortSignal.timeout(VALIDATION_TIMEOUT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
 	const fetchImpl = options.fetch ?? fetch;
