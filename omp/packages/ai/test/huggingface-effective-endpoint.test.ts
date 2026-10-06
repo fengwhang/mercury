@@ -1,17 +1,16 @@
 import { expect, test } from "bun:test";
-import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
+import { getBundledModel, getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { completeSimple } from "../src/index";
 import { resolveOpenAIRequestSetup } from "../src/providers/openai-shared";
 import type { FetchImpl } from "../src/types";
 
 const context = { messages: [{ role: "user" as const, content: "ping", timestamp: 0 }] };
-const bundled = getBundledModels("huggingface")[0]!;
+const bundled = getBundledModel<"openai-completions">("huggingface", getBundledModels("huggingface")[0]!.id);
 const hosted = "https://APP.HF.SPACE.:443/v1";
 
 for (const [provider, env] of [
 	["moonshot", "MOONSHOT_BASE_URL"],
 	["sakana", "SAKANA_BASE_URL"],
-	["custom", "OPENAI_BASE_URL"],
 ] as const) {
 	test(`refuses effective ${env} override before inference HTTP`, async () => {
 		const previous = Bun.env[env];
@@ -25,7 +24,7 @@ for (const [provider, env] of [
 			const model = {
 				...bundled,
 				provider,
-				baseUrl: provider === "custom" ? undefined : "https://example.invalid/v1",
+				baseUrl: "https://example.invalid/v1",
 			};
 			expect(() =>
 				resolveOpenAIRequestSetup(model, {
@@ -34,7 +33,7 @@ for (const [provider, env] of [
 					defaultBaseUrl: "https://example.invalid/v1",
 				}),
 			).toThrow("self-hosted");
-			const result = await completeSimple(model as typeof bundled, context, { apiKey: "test-key", fetch });
+			const result = await completeSimple(model, context, { apiKey: "test-key", fetch });
 			expect(result.errorMessage).toContain("self-hosted");
 			expect(requests).toBe(0);
 		} finally {
@@ -43,6 +42,34 @@ for (const [provider, env] of [
 		}
 	});
 }
+
+test("refuses an effective OPENAI_BASE_URL override for a custom alias", () => {
+	const previous = Bun.env.OPENAI_BASE_URL;
+	Bun.env.OPENAI_BASE_URL = hosted;
+	try {
+		expect(() =>
+			resolveOpenAIRequestSetup(
+				{ ...bundled, provider: "custom", baseUrl: undefined },
+				{ apiKey: "test-key", messages: [], defaultBaseUrl: "https://example.invalid/v1" },
+			),
+		).toThrow("self-hosted");
+	} finally {
+		if (previous === undefined) delete Bun.env.OPENAI_BASE_URL;
+		else Bun.env.OPENAI_BASE_URL = previous;
+	}
+});
+
+test("refuses an explicit hosted URL for custom inference before HTTP", async () => {
+	let requests = 0;
+	const fetch: FetchImpl = async () => {
+		requests++;
+		throw new Error("unexpected HTTP");
+	};
+	const model = { ...bundled, provider: "custom", baseUrl: hosted };
+	const result = await completeSimple(model, context, { apiKey: "test-key", fetch });
+	expect(result.errorMessage).toContain("self-hosted");
+	expect(requests).toBe(0);
+});
 
 test("refuses an effective default URL for a custom alias", () => {
 	expect(() =>
