@@ -95,7 +95,7 @@ def test_passthrough_kwargs_to_base(monkeypatch):
 
 def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     """Interactive picker should preserve current custom endpoint semantics."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr("mercury_cli.models.fetch_openrouter_models",
@@ -176,7 +176,7 @@ def _stub_kimi_discovery(monkeypatch, *, canonical):
     class _PInfo:
         name = "Kimi For Coding"
 
-    monkeypatch.setattr(md, "get_provider_info", lambda _pid: _PInfo())
+    monkeypatch.setattr(md, "get_provider_info", lambda _pid, **_kwargs: _PInfo())
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr(hm, "CANONICAL_PROVIDERS", canonical)
     monkeypatch.setattr(hm, "cached_provider_model_ids",

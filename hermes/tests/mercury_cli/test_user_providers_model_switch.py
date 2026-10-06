@@ -31,7 +31,7 @@ def test_list_authenticated_providers_includes_full_models_list_from_user_provid
     
     Regression test: previously only default_model was shown in /model picker.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
     
     user_providers = {
@@ -77,7 +77,7 @@ def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch)
     list-format ``models:`` and silently dropped dict-format entries,
     even though Mercury's own writer and downstream readers use dict format.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
 
     user_providers = {
@@ -121,7 +121,7 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
     showing only the configured subset in the /model picker, even though their
     /v1/models endpoint exposed newly added models.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setenv("CRS_TEST_KEY", "sk-test")
 
@@ -184,7 +184,7 @@ def test_list_authenticated_providers_accepts_base_url_and_singular_model(monkey
     ``default_model``, so new-shape entries written by Mercury's own writer
     surfaced with empty ``api_url`` and no default.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
 
     user_providers = {
@@ -221,7 +221,7 @@ def test_list_authenticated_providers_dedupes_when_user_and_custom_overlap(monke
     Regression: section 3 previously had no ``seen_slugs`` check, so
     overlapping entries produced two picker rows for the same provider.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
 
     providers = list_authenticated_providers(
@@ -261,7 +261,7 @@ def test_list_authenticated_providers_no_duplicate_labels_across_schemas(monkeyp
     emitted ``custom:openrouter`` rows for the same endpoint — both labelled
     identically, bypassing ``seen_slugs`` dedup because the slug shapes differ.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
     # Singular ``model:``-only entries are un-narrowed → section 3 now probes
     # them; stub the probe so the test stays hermetic (endpoints are fake).
@@ -313,15 +313,12 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
         "DASHSCOPE_BASE_URL",
         "https://custom-dashscope.example.com/v1",
     )
-    monkeypatch.setattr(
-        "agent.models_dev.fetch_models_dev",
-        lambda: {
-            "alibaba": {
-                "name": "Alibaba Cloud (DashScope)",
-                "env": ["DASHSCOPE_API_KEY"],
-            }
-        },
-    )
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {
+        "alibaba": {
+            "name": "Alibaba Cloud (DashScope)",
+            "env": ["DASHSCOPE_API_KEY"],
+        }
+    })
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
 
     custom_providers = [
@@ -472,7 +469,7 @@ def test_section3_probes_no_key_endpoint_without_explicit_models(monkeypatch):
     vLLM) that don't require auth previously showed an empty/minimal model
     list because section 3 gated probing on ``api_url and api_key``.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
 
     probed = {}
@@ -519,7 +516,7 @@ def test_section3_probes_no_key_endpoint_with_singular_default_model(monkeypatch
     ``default_model`` entry suppressed live discovery and the /model picker
     showed a one-line menu for local no-auth endpoints.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
 
     probed = {}
@@ -566,7 +563,7 @@ def test_current_custom_model_is_surfaced_in_builtin_provider_row(monkeypatch):
     curated catalog. The current model is now injected at the front of the
     current provider's list.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     # Pin a small curated catalog so the assertion is deterministic.
@@ -594,7 +591,7 @@ def test_current_custom_model_is_surfaced_in_builtin_provider_row(monkeypatch):
 def test_current_custom_model_not_leaked_into_other_provider_rows(monkeypatch):
     """The current model is only injected into the CURRENT provider's row,
     never into other providers (which can't serve it)."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr("mercury_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.setenv("NOUS_API_KEY", "sk-test")

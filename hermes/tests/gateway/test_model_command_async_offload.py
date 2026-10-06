@@ -76,7 +76,7 @@ def _isolated_config(tmp_path, monkeypatch):
     mercury_home.mkdir()
     (mercury_home / "config.yaml").write_text("model:\n  default: gpt-x\n  provider: openrouter\nproviders: {}\n", encoding="utf-8")
     monkeypatch.setattr(gateway_run, "_hermes_home", mercury_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     return mercury_home
 
 

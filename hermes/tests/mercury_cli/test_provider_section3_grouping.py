@@ -16,7 +16,7 @@ from mercury_cli.model_switch import (
 
 
 def _providers(monkeypatch, user_providers):
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **_kwargs: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     monkeypatch.setattr("mercury_cli.models.fetch_api_models", lambda *a, **k: [])
     return list_authenticated_providers(

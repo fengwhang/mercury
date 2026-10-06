@@ -2303,10 +2303,9 @@ def model_ids(*, force_refresh: bool = False) -> list[str]:
 def get_curated_nous_model_ids() -> list[str]:
     """Return the curated Nous Portal model-id list.
 
-    Prefers the remotely-hosted catalog manifest (published under
-    ``website/static/api/model-catalog.json``); falls back to the in-repo
-    snapshot in ``_PROVIDER_MODELS["nous"]`` when the manifest is
-    unreachable. Always returns a list (never None).
+    Prefers locally cached or shipped catalog metadata (including stale data);
+    falls back to ``_PROVIDER_MODELS["nous"]`` when local metadata is missing.
+    Ordinary reads never refresh the upstream manifest. Always returns a list.
     """
     try:
         from mercury_cli.model_catalog import get_curated_nous_models
@@ -2802,11 +2801,9 @@ def _fireworks_pricing_from_models_dev(
 ) -> dict[str, dict[str, str]]:
     """Derive Fireworks picker pricing from the models.dev registry cache.
 
-    No dedicated network fetch: ``fetch_models_dev()`` already maintains an
-    in-memory + disk cache (1h TTL) that every picker surface shares, so this
-    is a pure dict transform on the picker path — no added latency and no
-    per-render network call. Results are additionally memoized in
-    ``_pricing_cache`` so repeated menu renders within a process are free.
+    No network fetch: reads the same local models.dev cache as the picker,
+    including stale metadata. Results are additionally memoized in
+    ``_pricing_cache`` so repeated menu renders are free.
 
     models.dev publishes Fireworks costs in USD per 1M tokens; the shared
     pricing formatter expects per-token strings, so divide by 1M.
