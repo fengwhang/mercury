@@ -196,6 +196,31 @@ async def test_completed_native_name_can_be_reused_only_with_a_new_transcript(fa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("frame", ("death", "add", "message"))
+async def test_old_native_generation_cannot_mutate_a_reused_child_room(family, frame):
+    manager, state = family
+    node = "coder/sub-Hello"
+    item = {"name": "hello", "parent_name": "coder", "engine": "omp", "session_ref": "old.jsonl"}
+    await manager._ensure_child_room_for(node, item)
+    await manager._retire_child_room(node)
+    channel = await manager._ensure_child_room_for(node, {**item, "session_ref": "new.jsonl"})
+    cache = {"Hello": channel}
+    replacement = state.get(node)
+    messages = list(manager.bot.messages)
+    destroyed = list(manager.bot.destroyed)
+    await manager._publish_routed_frame("coder", "#nixpi4_coder", {
+        "feed": "message" if frame == "message" else "node",
+        "kind": frame, "role": "assistant", "text": "old transcript",
+        "subagent_id": "Hello", "session_file": "old.jsonl",
+        "name": "hello", "status": "completed",
+    }, cache)
+    assert state.get(node) == replacement
+    assert cache == {"Hello": channel}
+    assert manager.bot.destroyed == destroyed
+    assert manager.bot.messages == messages
+
+
+@pytest.mark.asyncio
 async def test_exit_native_parent_stops_descendants_and_preserves_the_root(family):
     from observatory.spawn import OrchestratorHandle, OrchestratorRegistry, exit_orchestrator
 

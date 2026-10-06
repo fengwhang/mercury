@@ -964,6 +964,18 @@ class RoomManager:
         """One feed frame into the owner's room or its own N>1 room."""
         try:
             sub = str(feed.get("subagent_id") or "")
+            session_file = str(feed.get("session_file") or "")
+            if sub and session_file:
+                node_id = f"{owner_id}/sub-{sub}"
+                try:
+                    row = self.state.get(node_id)
+                except KeyError:
+                    row = None
+                if row and str(row.get("session_ref") or node_id) not in (node_id, session_file):
+                    # Native ids/names can be reused after /new. Old queued
+                    # lifecycle/output frames belong to the old transcript,
+                    # not the replacement room or its parent.
+                    return
             kind = str(feed.get("kind") or "")
             if str(feed.get("feed") or "") == "node":
                 await self._apply_grandchild_node(owner_id, feed, grands)
