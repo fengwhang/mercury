@@ -688,6 +688,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 "channel": channel,
                 "engine": engine,
                 "agentName": str(status.get("agent_name") or ""),
+                "agentRoom": str(status.get("agent_room") or ""),
                 "sttProvider": active_stt_provider(self.state.stt_config),
             })
             while True:

@@ -18,7 +18,7 @@ def test_engine_guard_hermes_only() -> None:
 
 
 def test_resolve_channel_agent_without_live_room_is_unknown() -> None:
-    assert vc.resolve_channel_agent("#anything") == {"engine": "unknown", "name": ""}
+    assert vc.resolve_channel_agent("#anything") == {"engine": "unknown", "name": "", "room_id": ""}
 
 
 def test_resolve_channel_agent_routes(monkeypatch) -> None:
@@ -39,7 +39,7 @@ def test_resolve_channel_agent_routes(monkeypatch) -> None:
     monkeypatch.setattr(rooms, "get_room_manager", lambda: Manager("child", {"engine": "omp"}))
     assert vc.resolve_channel_agent("#x")["engine"] == "omp"
     monkeypatch.setattr(rooms, "get_room_manager", lambda: Manager("child", {"engine": "hermes", "name": "Gaia"}))
-    assert vc.resolve_channel_agent("#x") == {"engine": "hermes", "name": "Gaia"}
+    assert vc.resolve_channel_agent("#x") == {"engine": "hermes", "name": "Gaia", "room_id": ""}
     monkeypatch.setattr(rooms, "get_room_manager", lambda: None)
     assert vc.resolve_channel_agent("#x")["engine"] == "unknown"
 
@@ -57,10 +57,10 @@ def test_separate_web_process_resolves_live_gateway_tree(tmp_path, monkeypatch):
             tree.add_node(name, engine=engine, name=name, slug=name,
                           mxid=name, session_ref=name)
             tree.set_room_id(name, "#" + name)
-        assert vc.resolve_channel_agent("#CODER") == {"engine": "omp", "name": "coder"}
-        assert vc.resolve_channel_agent("#chat") == {"engine": "hermes", "name": "chat"}
+        assert vc.resolve_channel_agent("#CODER") == {"engine": "omp", "name": "coder", "room_id": "#coder"}
+        assert vc.resolve_channel_agent("#chat") == {"engine": "hermes", "name": "chat", "room_id": "#chat"}
         tree.mark_dead("coder")
-        assert vc.resolve_channel_agent("#coder") == {"engine": "unknown", "name": ""}
+        assert vc.resolve_channel_agent("#coder") == {"engine": "unknown", "name": "", "room_id": ""}
 
 
 def test_store_lifecycle() -> None:
