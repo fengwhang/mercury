@@ -1077,12 +1077,13 @@ export const SETTINGS_SCHEMA = {
 
 	"images.urls.backends": {
 		type: "array",
-		default: ["provider-files", "tailscale", "cloudflared", "litterbox"] as BlobDestinationId[],
+		default: ["provider-files"] as BlobDestinationId[],
 		ui: {
 			tab: "model",
 			group: "Vision",
 			label: "Image URL Backends",
-			description: "Ordered destinations tried when publishing images for provider access",
+			description:
+				"Ordered destinations tried when publishing images for provider access. Defaults to provider-native attachments only; tunnels and uploaders require explicit selection",
 			options: BLOB_BACKEND_CHOICES,
 			ordered: true,
 		},

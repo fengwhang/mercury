@@ -1,13 +1,23 @@
-# Generate fixtures/deepseek3.json from the cached HF tokenizer.
+# Generate fixtures/deepseek3.json from locally provisioned HF-format tokenizers.
 #
-# Usage: uv run --with tokenizers tools/gen-deepseek-fixtures.py
+# Usage: python tools/gen-deepseek-fixtures.py --tokenizer-v4 <path> --tokenizer-v3 <path>
+# Install the tokenizers Python dependency separately. This generator never downloads assets.
+import argparse
 import json
 import pathlib
 
 from tokenizers import Tokenizer
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-tok = Tokenizer.from_file(str(ROOT / "tools/cache/deepseek-v4.tokenizer.json"))
+parser = argparse.ArgumentParser(description="Generate DeepSeek fixtures using local tokenizer files only.")
+parser.add_argument("--tokenizer-v4", type=pathlib.Path, default=ROOT / "tools/cache/deepseek-v4.tokenizer.json")
+parser.add_argument("--tokenizer-v3", type=pathlib.Path, default=ROOT / "tools/cache/deepseek-v3.tokenizer.json")
+parser.add_argument("--output", type=pathlib.Path, default=ROOT / "fixtures/deepseek3.json")
+args = parser.parse_args()
+for version, tokenizer_path in (("V4", args.tokenizer_v4), ("V3", args.tokenizer_v3)):
+    if not tokenizer_path.is_file():
+        parser.error(f"DeepSeek {version} tokenizer not found: {tokenizer_path}. Provision it locally and pass --tokenizer-{version.lower()}; no assets are downloaded.")
+tok = Tokenizer.from_file(str(args.tokenizer_v4))
 # encode_ordinary semantics: special added tokens present verbatim in the
 # input must be split as plain text (pure BPE), never emitted as their ids.
 # Required for the dead-entry probes below; a no-op for every other case.
@@ -59,29 +69,21 @@ for text in texts:
     assert not any(i < 3 for i in ids), f"sentinel id leaked into reference: {text!r}"
     cases.append({"text": text, "ids": ids, "count": len(ids)})
 
-# V3 parity: encode one sample with the actual DeepSeek-V3 tokenizer
-# (downloaded once into tools/cache/) and assert it matches V4 — the base
-# BPE is identical across V3..V4.
+# V3 parity: encode one sample with the locally provisioned actual DeepSeek-V3
+# tokenizer and assert it matches V4 — the base BPE is identical across V3..V4.
 PARITY_TEXT = "DeepSeek V3参数量6710亿, released 2024-12-26. (fn)main一二三"
-v3_path = ROOT / "tools/cache/deepseek-v3.tokenizer.json"
-if not v3_path.exists():
-    import urllib.request
-
-    url = "https://huggingface.co/deepseek-ai/DeepSeek-V3/resolve/main/tokenizer.json"
-    with urllib.request.urlopen(url) as resp:
-        v3_path.write_bytes(resp.read())
-v3 = Tokenizer.from_file(str(v3_path))
+v3 = Tokenizer.from_file(str(args.tokenizer_v3))
 v3.encode_special_tokens = True
 v3_ids = v3.encode(PARITY_TEXT, add_special_tokens=False).ids
 v4_ids = tok.encode(PARITY_TEXT, add_special_tokens=False).ids
 assert v3_ids == v4_ids, f"V3/V4 drift on parity sample: {v3_ids} != {v4_ids}"
 
 out = {
-    "generator": "uv run --with tokenizers tools/gen-deepseek-fixtures.py (tokenizers, cache/deepseek-v4.tokenizer.json, add_special_tokens=False, encode_special_tokens=True)",
+    "generator": "python tools/gen-deepseek-fixtures.py (tokenizers, locally provisioned V4/V3 tokenizer JSON, add_special_tokens=False, encode_special_tokens=True)",
     "cases": cases,
     "v3_parity": {"text": PARITY_TEXT, "ids": v3_ids, "count": len(v3_ids)},
 }
-(ROOT / "fixtures/deepseek3.json").write_text(
+args.output.write_text(
     json.dumps(out, ensure_ascii=False, indent=1) + "\n"
 )
 print(f"wrote {len(cases)} cases")

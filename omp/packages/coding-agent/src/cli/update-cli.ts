@@ -1932,16 +1932,13 @@ export async function updateViaShimTakeover(
 }
 
 /**
- * Platform-appropriate installer one-liner for recovery instructions.
+ * Recovery instructions for Mercury's managed distribution.
  *
- * Forces the installer's binary mode (`--binary` / `-Binary`): the default
- * mode prefers a bun-based install whenever bun is present, which would send
- * a user recovering from a binary-only release straight back through bun.
+ * Never bypass Mercury's updater with an upstream OMP installer, including
+ * when recovery is reached from an embedded or source engine invocation.
  */
 function installerHint(): string {
-	return process.platform === "win32"
-		? "& ([scriptblock]::Create((irm https://omp.sh/install.ps1))) -Binary"
-		: "curl -fsSL https://omp.sh/install | sh -s -- --binary";
+	return "run `mercury update` (or `mercury-nightly update` for nightly); if the launcher is missing, follow https://github.com/Fengwhang/mercury#install";
 }
 
 /** Persisted channel, or undefined when settings are unavailable (SDK/test embedding without `Settings.init()`). */
