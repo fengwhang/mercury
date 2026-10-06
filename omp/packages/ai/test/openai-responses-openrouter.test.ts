@@ -379,6 +379,16 @@ describe("OpenRouter Responses request shape", () => {
 		expect(request.body.max_output_tokens).toBe(64_000);
 	});
 
+	it("sends Mercury attribution without an implicit website while preserving provider cache headers", async () => {
+		const { headers } = await captureRequest(buildOpenRouterResponsesModel());
+		expect(headers.has("HTTP-Referer")).toBe(false);
+		expect(headers.get("X-OpenRouter-Title")).toBe("Mercury");
+		expect(headers.get("X-OpenRouter-Categories")).toBe("cli-agent");
+		expect(headers.get("X-OpenRouter-Cache")).toBe("true");
+		expect(headers.get("X-OpenRouter-Cache-TTL")).toBe("3600");
+		expect(headers.get("Authorization")).toBe("Bearer test-key");
+	});
+
 	it("lets caller headers override OpenRouter attribution and cache defaults", async () => {
 		const { headers } = await captureRequest(buildOpenRouterResponsesModel(), {
 			headers: {
