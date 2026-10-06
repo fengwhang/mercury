@@ -104,27 +104,3 @@ def test_sessions_export_redact_scrubs_secrets(monkeypatch, tmp_path):
     assert secret not in text
     assert "api key:" in text
 
-
-def _trace_fake_db(captured):
-    class FakeDB:
-        def resolve_session_id(self, session_id):
-            return "s1"
-
-        def get_session(self, session_id):
-            return {"id": session_id, "model": "test-model"}
-
-        def get_messages_as_conversation(self, session_id):
-            captured["conv"] = session_id
-            return [
-                {"role": "user", "content": "hello trace"},
-                {"role": "assistant", "content": "hi"},
-            ]
-
-        def close(self):
-            captured["closed"] = True
-
-    return FakeDB()
-
-
-
-

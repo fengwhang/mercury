@@ -535,9 +535,8 @@ def cmd_sessions(args, sessions_parser=None):
             db.close()
             return
 
-        # Claude Code JSONL trace export — local file or HF upload.
-        # Redaction is ON by default for traces (they leave the machine
-        # when --upload is used); --no-redact opts out after review.
+        # Local Claude Code JSONL trace export. Redaction is ON by default;
+        # --no-redact opts out after review.
         if args.format == "trace":
             if getattr(args, "only", None):
                 print("--only user-prompts supports --format jsonl or md.")
@@ -557,29 +556,12 @@ def cmd_sessions(args, sessions_parser=None):
                 db.close()
                 return
 
-            from agent.trace_upload import (
+            from agent.trace_export import (
                 TraceRedactionError,
                 build_trace_jsonl,
-                upload_session_trace,
             )
 
             redact_trace = not getattr(args, "no_redact", False)
-
-            if getattr(args, "upload", False):
-                if not session_id:
-                    print("--upload exports one session: pass --session-id (or drop filters to use the most recent).")
-                    db.close()
-                    return
-                resolved = db.resolve_session_id(session_id)
-                db.close()
-                status = upload_session_trace(
-                    resolved,
-                    cwd="",
-                    redact=redact_trace,
-                    private=not getattr(args, "public", False),
-                )
-                print(status)
-                return
 
             # Local trace file(s)
             def _trace_ids():
