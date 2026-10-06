@@ -5,14 +5,16 @@ import * as path from "node:path";
 import type { AssistantMessage, AssistantMessageEvent, Context, Model } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { getProjectDir } from "@oh-my-pi/pi-utils";
+import { getProjectDir, TempDir } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { LocalBlobBackend } from "../src/blob-broker/broker";
 import { contextHasImageUrls, supportsRemoteImageUrls } from "../src/blob-broker/context-images";
-import { ImageUrlService } from "../src/blob-broker/service";
+import * as blobDaemon from "../src/blob-broker/daemon";
+import { createImageUrlServiceFromSettings, ImageUrlService, resolveBlobBrokerConfigs } from "../src/blob-broker/service";
 import { type BlobPersistence, BlobRegistry } from "../src/blob-broker/store";
 import { wrapStreamFnWithBlobUrlFallback } from "../src/blob-broker/stream-fallback";
 import { createCommandUploader, extractUploadUrl, splitCommandTemplate } from "../src/blob-broker/uploaders";
+import { Settings } from "../src/config/settings";
 import { BlobStore as SessionBlobStore } from "../src/session/blob-store";
 
 const PNG_B64 = Buffer.from("blob-broker-test-bytes-1").toString("base64");
@@ -72,6 +74,57 @@ function makeService(): ImageUrlService {
 
 afterAll(() => {
 	for (const cleanup of cleanups) cleanup();
+});
+
+describe("image URL destination consent", () => {
+	it("generic enablement never starts an exposure and stays inline when provider attachments are unavailable", async () => {
+		using dir = TempDir.createSync("@mercury-image-consent-");
+		const settings = await Settings.loadIsolated({
+			agentDir: dir.path(),
+			cwd: dir.path(),
+			inMemory: true,
+			overrides: { "images.urls.enabled": true },
+		});
+		const connect = vi.spyOn(blobDaemon, "connectDaemonBlobBackend").mockResolvedValue(null);
+		const service = createImageUrlServiceFromSettings(settings, dir.path(), () => undefined);
+		if (!service) throw new Error("Expected enabled image service");
+		try {
+			// Configs feed both prewarm and the upload/tunnel fallback path.
+			expect(resolveBlobBrokerConfigs(settings, dir.path())).toEqual([]);
+			service.prewarm();
+			const decorated = await service.decorateContext(makeContext(), anthropicModel);
+			expect(decorated.messages).toEqual(makeContext().messages);
+			expect(contextHasImageUrls(decorated)).toBe(false);
+			expect(connect).not.toHaveBeenCalled();
+		} finally {
+			service.stop();
+			vi.restoreAllMocks();
+		}
+	});
+
+	it("explicit direct destination still publishes and serves the image bytes", async () => {
+		using dir = TempDir.createSync("@mercury-image-explicit-");
+		const settings = await Settings.loadIsolated({
+			agentDir: dir.path(),
+			cwd: dir.path(),
+			inMemory: true,
+			overrides: { "images.urls.enabled": true, "images.urls.backends": ["direct"] },
+		});
+		const configs = resolveBlobBrokerConfigs(settings, dir.path());
+		const service = new ImageUrlService(dir.path(), configs, { daemon: false });
+		try {
+			const decorated = await service.decorateContext(makeContext(), anthropicModel);
+			const first = decorated.messages[0];
+			if (!Array.isArray(first.content)) throw new Error("Expected image content");
+			const image = first.content.find(block => block.type === "image");
+			if (image?.type !== "image" || !image.url) throw new Error("Expected explicitly selected image URL");
+			const response = await fetch(image.url);
+			expect(response.status).toBe(200);
+			expect(Buffer.from(await response.arrayBuffer()).toString("base64")).toBe(PNG_B64);
+		} finally {
+			service.stop();
+		}
+	});
 });
 
 describe("LocalBlobBackend (serve mode)", () => {

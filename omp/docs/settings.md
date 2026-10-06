@@ -426,6 +426,43 @@ A value of `-1` means "use the provider/model default" — `omp` does not send t
 | `tier.advisor`      | enum   | `none`    | `inherit`, `none`, `auto`, `default`, `flex`, `scale`, `priority`. Applied to the advisor model's family.                                                                                                                                                                      |
 | `personality`       | enum   | `default` | `default`, `friendly`, `pragmatic`, `none`. A user-level `<agent dir>/PERSONALITY.md` replaces the selected preset's text; `none` still omits the block. See [system-prompt-customization](./system-prompt-customization.md).                                                  |
 
+### Image destinations and consent
+
+`images.urls.enabled` defaults to `false`. Enabling it alone uses only the
+`provider-files` destination: provider-native attachments using the selected
+inference provider's credentials. If that provider has no compatible file API,
+credentials are unavailable, or upload fails, images stay inline. Generic
+enablement does not prewarm a public tunnel or fall back to a third-party host.
+
+Tunnels, uploaders, and self-hosted destinations remain available only when
+explicitly selected in `images.urls.backends`. The configured order is preserved,
+including the position of `provider-files`; existing explicit backend chains are
+not rewritten. Check a previously saved chain before enabling URLs.
+
+```yaml
+images:
+  urls:
+    enabled: true
+    backends: [provider-files]  # safe default; no public exposure fallback
+```
+
+To opt into a self-hosted serving endpoint, configure its destination explicitly:
+
+```yaml
+images:
+  urls:
+    enabled: true
+    backends: [direct]
+    options:
+      direct:
+        publicBaseUrl: https://images.example.org
+        bindHost: 127.0.0.1
+```
+
+The endpoint must be reachable by the inference provider and routed to the
+local image server. To inspect the effective chain in Mercury, run
+`mercury omp config get images.urls.backends` (or `mercury-nightly omp …`).
+
 ### Retry and fallback
 
 ```yaml
