@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import {
-	DEFAULT_RELAY_URL,
 	encodeBase64Url,
 	formatCollabLink,
 	generateRoomId,
@@ -13,22 +12,38 @@ import {
 const KEY = Uint8Array.from({ length: 32 }, (_, i) => i);
 const KEY_TEXT = encodeBase64Url(KEY);
 const ROOM = "AbCdEf123456_-Xy";
+const RELAY = "wss://relay.example.com";
 
 describe("collab link parsing", () => {
-	it("parses a bare roomId.key link against the default relay", () => {
-		const parsed = parseCollabLink(`${ROOM}.${KEY_TEXT}`);
-		if ("error" in parsed) throw new Error(parsed.error);
-		expect(parsed.wsUrl).toBe(`${DEFAULT_RELAY_URL}/r/${ROOM}`);
-		expect(parsed.roomId).toBe(ROOM);
-		expect(parsed.key).toEqual(KEY);
+	it("requires a relay endpoint instead of inventing one for a bare room secret", () => {
+		expect(parseCollabLink(`${ROOM}.${KEY_TEXT}`)).toEqual({
+			error: "Collab link is missing a relay URL. Ask the host for a full relay.example.com/r/<roomId>.<key> link.",
+		});
 	});
 
-	it("parses a legacy bare roomId#key link against the default relay", () => {
-		const parsed = parseCollabLink(`${ROOM}#${KEY_TEXT}`);
-		if ("error" in parsed) throw new Error(parsed.error);
-		expect(parsed.wsUrl).toBe(`${DEFAULT_RELAY_URL}/r/${ROOM}`);
-		expect(parsed.roomId).toBe(ROOM);
-		expect(parsed.key).toEqual(KEY);
+	it("rejects legacy bare roomId#key links without a relay", () => {
+		expect(parseCollabLink(`${ROOM}#${KEY_TEXT}`)).toEqual({
+			error: "Collab link is missing a relay URL. Ask the host for a full relay.example.com/r/<roomId>.<key> link.",
+		});
+	});
+
+	it("reports a missing relay inside a legacy browser wrapper", () => {
+		expect(parseCollabLink(`https://web.example/#${ROOM}.${KEY_TEXT}`)).toEqual({
+			error: "Collab link is missing a relay URL. Ask the host for a full relay.example.com/r/<roomId>.<key> link.",
+		});
+	});
+
+	it("rejects upstream relay and browser endpoints without rejecting lookalike self-host names", () => {
+		for (const link of [
+			`wss://my.omp.sh/r/${ROOM}.${KEY_TEXT}`,
+			`https://my.omp.sh/#relay.example.com/r/${ROOM}.${KEY_TEXT}`,
+		]) {
+			const parsed = parseCollabLink(link);
+			expect("error" in parsed && parsed.error).toContain("self-hosted");
+		}
+		const selfHosted = parseCollabLink(`wss://my.omp.sh.example/r/${ROOM}.${KEY_TEXT}`);
+		if ("error" in selfHosted) throw new Error(selfHosted.error);
+		expect(selfHosted.wsUrl).toBe(`wss://my.omp.sh.example/r/${ROOM}`);
 	});
 
 	it("infers wss for scheme-less custom hosts", () => {
@@ -56,23 +71,18 @@ describe("collab link parsing", () => {
 
 	it("splits full-link fragments into key and write token", () => {
 		const token = Uint8Array.from({ length: 16 }, (_, i) => 0xf0 + i);
-		const full = parseCollabLink(formatCollabLink(DEFAULT_RELAY_URL, ROOM, KEY, token));
+		const full = parseCollabLink(formatCollabLink(RELAY, ROOM, KEY, token));
 		if ("error" in full) throw new Error(full.error);
 		expect(full.key).toEqual(KEY);
 		expect(full.writeToken).toEqual(token);
 
-		const view = parseCollabLink(formatCollabLink(DEFAULT_RELAY_URL, ROOM, KEY));
+		const view = parseCollabLink(formatCollabLink(RELAY, ROOM, KEY));
 		if ("error" in view) throw new Error(view.error);
 		expect(view.key).toEqual(KEY);
 		expect(view.writeToken).toBeUndefined();
 	});
 
 	it("parses web deep links (https://<relay>/#<link>)", () => {
-		const bare = parseCollabLink(`https://my.omp.sh/#${ROOM}#${KEY_TEXT}`);
-		if ("error" in bare) throw new Error(bare.error);
-		expect(bare.wsUrl).toBe(`${DEFAULT_RELAY_URL}/r/${ROOM}`);
-		expect(bare.key).toEqual(KEY);
-
 		const custom = parseCollabLink(`https://relay.example.com:8443/#relay.example.com:8443/r/${ROOM}#${KEY_TEXT}`);
 		if ("error" in custom) throw new Error(custom.error);
 		expect(custom.wsUrl).toBe(`wss://relay.example.com:8443/r/${ROOM}`);
@@ -108,9 +118,9 @@ describe("collab link parsing", () => {
 	});
 
 	it("parses dot-joined web deep links (https://<relay>/#<roomId>.<key>)", () => {
-		const parsed = parseCollabLink(`https://my.omp.sh/#${ROOM}.${KEY_TEXT}`);
+		const parsed = parseCollabLink(`https://web.example/#relay.example.com/r/${ROOM}.${KEY_TEXT}`);
 		if ("error" in parsed) throw new Error(parsed.error);
-		expect(parsed.wsUrl).toBe(`${DEFAULT_RELAY_URL}/r/${ROOM}`);
+		expect(parsed.wsUrl).toBe(`${RELAY}/r/${ROOM}`);
 		expect(parsed.key).toEqual(KEY);
 	});
 
@@ -122,15 +132,15 @@ describe("collab link parsing", () => {
 	});
 
 	it("accepts %23-mangled legacy deep links (macOS Foundation re-encoding)", () => {
-		const parsed = parseCollabLink(`https://my.omp.sh/#${ROOM}%23${KEY_TEXT}`);
+		const parsed = parseCollabLink(`https://web.example/#relay.example.com/r/${ROOM}%23${KEY_TEXT}`);
 		if ("error" in parsed) throw new Error(parsed.error);
-		expect(parsed.wsUrl).toBe(`${DEFAULT_RELAY_URL}/r/${ROOM}`);
+		expect(parsed.wsUrl).toBe(`${RELAY}/r/${ROOM}`);
 		expect(parsed.key).toEqual(KEY);
 	});
 
-	it("round-trips format → parse for default, custom, and localhost relays", () => {
+	it("round-trips format → parse for explicit custom and localhost relays", () => {
 		const roomId = generateRoomId();
-		for (const relay of [DEFAULT_RELAY_URL, "wss://relay.example.com:8443", "ws://127.0.0.1:7466"]) {
+		for (const relay of [RELAY, "wss://relay.example.com:8443", "ws://127.0.0.1:7466"]) {
 			const link = formatCollabLink(relay, roomId, KEY);
 			const parsed = parseCollabLink(link);
 			if ("error" in parsed) throw new Error(`${relay}: ${parsed.error}`);

@@ -14,7 +14,7 @@ import { GuestClient } from "../src/lib/client";
 import { COLLAB_PROTO, encodeBase64Url } from "../src/lib/link";
 import { CollabSocket } from "../src/lib/socket";
 
-const LINK = `roomroomroom1234#${encodeBase64Url(new Uint8Array(32))}`;
+const LINK = `relay.example.com/r/roomroomroom1234.${encodeBase64Url(new Uint8Array(32))}`;
 
 const HEADER: SessionHeader = { type: "session", id: "s1", timestamp: "2026-06-12T00:00:00Z", cwd: "/work" };
 
