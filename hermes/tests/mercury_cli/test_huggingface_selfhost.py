@@ -10,9 +10,12 @@ from providers import get_provider_profile
 
 
 REFUSED_BASES = (
-    "", "https://router.huggingface.co/v1", "https://huggingface.co/v1",
-    "https://API.HUGGINGFACE.CO.:443/v1", "https://huggingface.co:443/v1",
-    "huggingface.co/v1", "ftp://example.invalid/v1", "https:///v1",
+    "", "huggingface.co/v1", "ftp://example.invalid/v1", "https:///v1",
+    *(
+        f"https://{host}/v1"
+        for domain in ("huggingface.co", "hf.co", "hf.space", "huggingface.cloud", "hfusercontent.com")
+        for host in (domain, f"router.{domain}", f"API.{domain.upper()}.:443")
+    ),
 )
 
 
@@ -117,7 +120,7 @@ def test_hf_explicit_selfhost_resolves_environment_key(monkeypatch):
     assert result["api_key"] == "hf-offline-test"
 
 
-@pytest.mark.parametrize("base", ["", "https://router.huggingface.co/v1", "https://example.invalid/hf/v1"])
+@pytest.mark.parametrize("base", [*REFUSED_BASES, "https://example.invalid/hf/v1"])
 def test_doctor_hf_probe_requires_selfhost(monkeypatch, tmp_path, capsys, base):
     import sys
     from argparse import Namespace

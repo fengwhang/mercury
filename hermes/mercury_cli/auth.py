@@ -7469,7 +7469,12 @@ def validate_huggingface_base_url(base_url: str) -> str:
             parsed.scheme in {"http", "https"} and bool(host)
             and not parsed.username and not parsed.password
             and not parsed.query and not parsed.fragment
-            and host != "huggingface.co" and not host.endswith(".huggingface.co")
+            and host not in {
+                "huggingface.co", "hf.co", "hf.space", "huggingface.cloud", "hfusercontent.com",
+            }
+            and not host.endswith((
+                ".huggingface.co", ".hf.co", ".hf.space", ".huggingface.cloud", ".hfusercontent.com",
+            ))
         )
         parsed.port  # Reject malformed ports before a client can be constructed.
     except ValueError:
