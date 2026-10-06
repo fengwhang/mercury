@@ -214,12 +214,11 @@ class TestRecoveryProviderGuard:
         codex_pool = _make_pool("openai-codex")
         agent._credential_pool = codex_pool
 
-        # The guard should prevent mark_exhausted_and_rotate from being called
-        current_provider = "zai"
-        pool_provider = "openai-codex"
-        should_skip = current_provider != pool_provider
+        from agent.agent_runtime_helpers import recover_with_credential_pool
 
-        assert should_skip is True
+        assert recover_with_credential_pool(
+            agent, status_code=429, has_retried_429=False,
+        ) == (False, False)
         codex_pool.mark_exhausted_and_rotate.assert_not_called()
 
 
