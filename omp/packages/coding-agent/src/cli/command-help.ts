@@ -65,7 +65,7 @@ export const gitHelp = {
 export const grepHelp = { description: "Test grep tool" } satisfies CommandMetadata;
 
 export const grievancesHelp = {
-	description: "View, clean, or push reported tool issues (auto-QA grievances)",
+	description: "View or clean locally recorded tool issues",
 } satisfies CommandMetadata;
 
 export const imagesHelp = {
