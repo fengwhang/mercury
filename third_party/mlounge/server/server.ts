@@ -872,6 +872,7 @@ function getClientConfiguration(): SharedConfiguration | LockedSharedConfigurati
 		public: Config.values.public,
 		useHexIp: Config.values.useHexIp,
 		prefetch: Config.values.prefetch,
+		voiceCallSidecarUrl: process.env.MERCURY_VOICE_CALL_SIDECAR_URL || "",
 		fileUploadMaxFileSize: Uploader ? Uploader.getMaxFileSize() : undefined, // TODO can't be undefined?
 	};
 
