@@ -3,6 +3,9 @@ Basic GRPO Training Template
 =============================
 
 A minimal, production-ready template for GRPO training with TRL.
+Set MODEL_NAME to a preprovisioned local directory containing model and tokenizer
+assets before running this script. No model weights are downloaded; Hugging Face
+loading is offline, so the example dataset must also already be cached or replaced.
 Adapt this for your specific task by modifying:
 1. Dataset loading (get_dataset function)
 2. Reward functions (reward_*_func)
@@ -10,16 +13,19 @@ Adapt this for your specific task by modifying:
 4. Hyperparameters (GRPOConfig)
 """
 
-import torch
+import json
+import os
 import re
-from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig
-from trl import GRPOTrainer, GRPOConfig
+from pathlib import Path
+
+# Force offline loading before any Hugging Face dependency is imported.
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 # ==================== CONFIGURATION ====================
 
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+# Set this to a preprovisioned directory containing both model and tokenizer.
+MODEL_NAME = None
 OUTPUT_DIR = "outputs/grpo-model"
 MAX_PROMPT_LENGTH = 256
 MAX_COMPLETION_LENGTH = 512
@@ -44,6 +50,8 @@ def get_dataset(split="train"):
     - 'prompt': List[Dict] with role/content
     - 'answer': str (ground truth, optional)
     """
+    from datasets import load_dataset
+
     # Example: GSM8K math dataset
     data = load_dataset('openai/gsm8k', 'main')[split]
 
@@ -123,22 +131,85 @@ def incremental_format_reward_func(completions, **kwargs):
 
 # ==================== MODEL SETUP ====================
 
+def validate_local_assets():
+    """Check model config, weights (including shards), and tokenizer before imports."""
+    provision = (
+        "Set MODEL_NAME to a preprovisioned local model/tokenizer directory. "
+        "Provision the complete assets separately; this template never downloads weights."
+    )
+    if not MODEL_NAME:
+        raise ValueError(provision)
+
+    def require_file(file):
+        if not file.is_file():
+            raise OSError(f"missing file: {file.name}")
+        with file.open("rb") as asset:
+            if not asset.read(1):
+                raise OSError(f"empty file: {file.name}")
+
+    try:
+        path = Path(MODEL_NAME).expanduser().resolve()
+        if not path.is_dir():
+            raise OSError(f"not a local directory: {path}")
+        require_file(path / "config.json")
+
+        weights = next((
+            path / name for name in (
+                "model.safetensors", "model.safetensors.index.json",
+                "pytorch_model.bin", "pytorch_model.bin.index.json",
+            ) if (path / name).is_file()
+        ), None)
+        if weights is None:
+            raise OSError("missing model.safetensors or pytorch_model.bin (or shard index)")
+        require_file(weights)
+        if weights.name.endswith(".index.json"):
+            with weights.open() as index:
+                weight_map = json.load(index).get("weight_map")
+            if not isinstance(weight_map, dict) or not weight_map:
+                raise ValueError(f"invalid weight_map in {weights.name}")
+            for shard in set(weight_map.values()):
+                require_file(path / shard)
+
+        tokenizer_files = next((
+            names for names in (
+                ("tokenizer.json",), ("tokenizer.model",), ("spiece.model",),
+                ("vocab.txt",), ("vocab.json", "merges.txt"),
+            ) if all((path / name).is_file() for name in names)
+        ), None)
+        if tokenizer_files is None:
+            raise OSError("missing tokenizer.json or complete tokenizer vocabulary assets")
+        for name in tokenizer_files:
+            require_file(path / name)
+        for name in ("tokenizer_config.json", "special_tokens_map.json"):
+            if (path / name).exists():
+                require_file(path / name)
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        raise ValueError(f"Incomplete or unreadable local model/tokenizer assets: {exc}. {provision}") from exc
+    return str(path)
+
 def setup_model_and_tokenizer():
-    """Load model and tokenizer with optimizations."""
+    """Load preprovisioned model and tokenizer with optimizations."""
+    model_path = validate_local_assets()
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
+        model_path,
+        local_files_only=True,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
         device_map="auto"
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
     tokenizer.pad_token = tokenizer.eos_token
 
     return model, tokenizer
 
 def get_peft_config():
     """LoRA configuration for parameter-efficient training."""
+    from peft import LoraConfig
+
     return LoraConfig(
         r=16,
         lora_alpha=32,
@@ -154,6 +225,8 @@ def get_peft_config():
 
 def main():
     """Main training function."""
+    validate_local_assets()
+    from trl import GRPOTrainer, GRPOConfig
 
     # Load data
     print("Loading dataset...")
