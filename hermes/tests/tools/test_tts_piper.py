@@ -57,6 +57,7 @@ class TestResolvePiperVoicePath:
     def test_direct_onnx_path_returned_as_is(self, tmp_path):
         model = tmp_path / "custom.onnx"
         model.write_bytes(b"fake onnx bytes")
+        Path(f"{model}.json").write_text("{}")
         result = _resolve_piper_voice_path(str(model), tmp_path)
         assert result == str(model)
 

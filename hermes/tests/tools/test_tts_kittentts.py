@@ -22,6 +22,14 @@ def clear_kittentts_cache():
 
 
 @pytest.fixture
+def local_model(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({
+        "type": "ONNX1", "model_file": "model.onnx", "voices": "voices.npz"}))
+    (tmp_path / "model.onnx").write_bytes(b"model")
+    (tmp_path / "voices.npz").write_bytes(b"voices")
+    return str(tmp_path)
+
+@pytest.fixture
 def mock_kittentts_module():
     """Inject a fake kittentts + soundfile module that return stub objects."""
     fake_model = MagicMock()
@@ -29,7 +37,7 @@ def mock_kittentts_module():
     fake_model.generate.return_value = [0.0] * 48000
     fake_cls = MagicMock(return_value=fake_model)
     fake_kittentts = MagicMock()
-    fake_kittentts.KittenTTS = fake_cls
+    fake_kittentts.KittenTTS_1_Onnx = fake_cls
 
     # Stub soundfile — the real package isn't installed in CI venv, and
     # _generate_kittentts does `import soundfile as sf` at runtime.
@@ -42,31 +50,31 @@ def mock_kittentts_module():
 
     with patch.dict(
         "sys.modules",
-        {"kittentts": fake_kittentts, "soundfile": fake_sf},
+        {"kittentts.onnx_model": fake_kittentts, "soundfile": fake_sf},
     ):
         yield fake_model, fake_cls
 
 
 class TestGenerateKittenTts:
-    def test_successful_wav_generation(self, tmp_path, mock_kittentts_module):
+    def test_successful_wav_generation(self, tmp_path, mock_kittentts_module, local_model):
         from tools.tts_tool import _generate_kittentts
 
         fake_model, fake_cls = mock_kittentts_module
         output_path = str(tmp_path / "test.wav")
-        result = _generate_kittentts("Hello world", output_path, {})
+        result = _generate_kittentts("Hello world", output_path, {"kittentts": {"model": local_model}})
 
         assert result == output_path
         assert (tmp_path / "test.wav").exists()
         fake_cls.assert_called_once()
         fake_model.generate.assert_called_once()
 
-    def test_config_passes_voice_speed_cleantext(self, tmp_path, mock_kittentts_module):
+    def test_config_passes_voice_speed_cleantext(self, tmp_path, mock_kittentts_module, local_model):
         from tools.tts_tool import _generate_kittentts
 
         fake_model, _ = mock_kittentts_module
         config = {
             "kittentts": {
-                "model": "KittenML/kitten-tts-mini-0.8",
+                "model": local_model,
                 "voice": "Luna",
                 "speed": 1.25,
                 "clean_text": False,
@@ -80,14 +88,15 @@ class TestGenerateKittenTts:
         assert call_kwargs["clean_text"] is False
 
 
-    def test_missing_kittentts_raises_import_error(self, tmp_path, monkeypatch):
+    def test_missing_kittentts_raises_import_error(self, tmp_path, monkeypatch, local_model):
         """When kittentts package is not installed, _import_kittentts raises."""
         import sys
         monkeypatch.setitem(sys.modules, "kittentts", None)
+        monkeypatch.setitem(sys.modules, "kittentts.onnx_model", None)
         from tools.tts_tool import _generate_kittentts
 
         with pytest.raises((ImportError, TypeError)):
-            _generate_kittentts("Hi", str(tmp_path / "out.wav"), {})
+            _generate_kittentts("Hi", str(tmp_path / "out.wav"), {"kittentts": {"model": local_model}})
 
 
 class TestCheckKittenttsAvailable:

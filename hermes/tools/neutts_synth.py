@@ -13,9 +13,23 @@ System:   apt install espeak-ng  (or brew install espeak-ng)
 """
 
 import argparse
+import os
 import struct
 import sys
 from pathlib import Path
+
+
+def _cached_hf_file(repo: str, filename: str) -> Path | None:
+    """Look up an existing Hugging Face cache file without any hub request."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except ImportError:
+        return None
+    hf_home = Path(os.environ.get("HF_HOME") or
+                   Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "huggingface")
+    cache_dir = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE") or str(hf_home / "hub")
+    result = try_to_load_from_cache(repo, filename, cache_dir=cache_dir)
+    return Path(result) if isinstance(result, str) and Path(result).is_file() else None
 
 
 def _write_wav(path: str, samples, sample_rate: int = 24000) -> None:

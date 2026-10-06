@@ -188,9 +188,9 @@ def _import_sounddevice():
 
 
 def _import_kittentts():
-    """Lazy import KittenTTS. Returns the class or raises ImportError."""
-    from kittentts import KittenTTS
-    return KittenTTS
+    """Import the local ONNX implementation, not KittenTTS's downloading wrapper."""
+    from kittentts.onnx_model import KittenTTS_1_Onnx
+    return KittenTTS_1_Onnx
 
 
 def _import_piper():
@@ -199,7 +199,7 @@ def _import_piper():
     Piper is an optional, fully-local neural TTS engine (Home Assistant /
     Open Home Foundation). ``pip install piper-tts`` provides cross-platform
     wheels (Linux / macOS / Windows, x86_64 + ARM64) with embedded espeak-ng.
-    Voice models (.onnx + .onnx.json) are downloaded on first use.
+    Voice models (.onnx + .onnx.json) must already be available locally.
     """
     from piper import PiperVoice
     return PiperVoice
@@ -2920,57 +2920,7 @@ def _get_piper_voices_dir() -> Path:
     return root
 
 
-def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
-    """Resolve *voice* (a model name or path) to a concrete .onnx file path.
-
-    Accepts any of:
-      - Absolute / expanded path to an .onnx file the user already has
-      - A voice *name* like ``en_US-lessac-medium`` (downloads to
-        ``download_dir`` on first use via ``python -m piper.download_voices``)
-
-    Raises RuntimeError if the model can't be located or downloaded.
-    """
-    if not voice:
-        voice = DEFAULT_PIPER_VOICE
-
-    # Case 1: user gave a direct file path.
-    candidate = Path(voice).expanduser()
-    if candidate.suffix.lower() == ".onnx" and candidate.exists():
-        return str(candidate)
-
-    # Case 2: user gave a voice *name*. See if it's already downloaded.
-    cached = download_dir / f"{voice}.onnx"
-    if cached.exists() and (download_dir / f"{voice}.onnx.json").exists():
-        return str(cached)
-
-    # Case 3: download the voice. piper ships a download helper module.
-    import sys as _sys
-    logger.info("[Piper] Downloading voice '%s' to %s (first use)", voice, download_dir)
-    try:
-        result = subprocess.run(
-            [_sys.executable, "-m", "piper.download_voices", voice,
-             "--download-dir", str(download_dir)],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"Piper voice download timed out after 300s for '{voice}'"
-        ) from exc
-
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip() or "no stderr output"
-        raise RuntimeError(
-            f"Piper voice download failed for '{voice}': {stderr[:400]}"
-        )
-
-    if not cached.exists():
-        raise RuntimeError(
-            f"Piper voice download completed but {cached} is missing — "
-            f"check voice name (see: https://github.com/OHF-Voice/piper1-gpl/"
-            f"blob/main/docs/VOICES.md)"
-        )
-    return str(cached)
+from tools.tts_tool_local import _resolve_piper_voice_path
 
 
 def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -3077,8 +3027,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 # Provider: KittenTTS (local, lightweight)
 # ===========================================================================
 
-# Module-level cache for KittenTTS model instance
-_kittentts_model_cache: Dict[str, Any] = {}
+from tools.tts_tool_local import _kittentts_model_cache, _load_kittentts_model_for_config
 
 
 def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -3095,21 +3044,11 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
     Returns:
         Path to the saved audio file.
     """
-    KittenTTS = _import_kittentts()
-    kt_config = tts_config.get("kittentts", {})
-    model_name = kt_config.get("model", DEFAULT_KITTENTTS_MODEL)
+    model, kt_config = _load_kittentts_model_for_config(tts_config)
     voice = kt_config.get("voice", DEFAULT_KITTENTTS_VOICE)
     speed = kt_config.get("speed", 1.0)
     clean_text = kt_config.get("clean_text", True)
 
-    # Use cached model instance if available
-    def _load_kittentts_model():
-        logger.info("[KittenTTS] Loading model: %s", model_name)
-        m = KittenTTS(model_name)
-        logger.info("[KittenTTS] Model loaded successfully")
-        return m
-
-    model = _tts_cache_get_or_load(_kittentts_model_cache, model_name, _load_kittentts_model)
 
     # Generate audio (returns numpy array at 24kHz)
     audio = model.generate(text, voice=voice, speed=speed, clean_text=clean_text)

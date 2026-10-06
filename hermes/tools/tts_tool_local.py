@@ -8,6 +8,7 @@ container. Piper and KittenTTS keep loaded models in small LRU caches registered
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 
 from tools.tts_tool_delivery import _finalize_wav_output, _origin, _section, _wav_sidecar_path
+from tools.neutts_synth import _cached_hf_file
 
 logger = logging.getLogger("tools.tts_tool")
 
@@ -85,31 +87,17 @@ def _get_piper_voices_dir() -> Path:
 
 
 def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
-    """Resolve *voice* (an .onnx path or a name like ``en_US-lessac-medium``, downloaded into
-    *download_dir* on first use) to a concrete .onnx file; RuntimeError when it can't be."""
+    """Resolve a local ONNX voice and its config; never fetch missing assets."""
     voice = voice or DEFAULT_PIPER_VOICE
     candidate = Path(voice).expanduser()
-    if candidate.suffix.lower() == ".onnx" and candidate.exists():
-        return str(candidate)
-    cached = download_dir / f"{voice}.onnx"
-    if cached.exists() and (download_dir / f"{voice}.onnx.json").exists():
-        return str(cached)
-    logger.info("[Piper] Downloading voice '%s' to %s (first use)", voice, download_dir)
-    try:
-        result = _run_helper(
-            [sys.executable, "-m", "piper.download_voices", voice, "--download-dir", str(download_dir)], 300,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"Piper voice download timed out after 300s for '{voice}'") from exc
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip() or "no stderr output"
-        raise RuntimeError(f"Piper voice download failed for '{voice}': {stderr[:400]}")
-    if not cached.exists():
-        raise RuntimeError(
-            f"Piper voice download completed but {cached} is missing — "
-            f"check voice name (see: https://github.com/OHF-Voice/piper1-gpl/"
-            f"blob/main/docs/VOICES.md)")
-    return str(cached)
+    model = candidate if candidate.suffix.lower() == ".onnx" else download_dir / f"{voice}.onnx"
+    config = Path(f"{model}.json")
+    if model.is_file() and config.is_file():
+        return str(model.resolve())
+    raise RuntimeError(
+        f"Piper local voice assets missing: {model} and {config} are required. "
+        "Set tts.piper.voice to an existing .onnx file with its .onnx.json sidecar, "
+        "or place both files in tts.piper.voices_dir. Mercury does not download model weights.")
 
 
 def _load_piper_voice_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
@@ -168,19 +156,46 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
 
 # --- KittenTTS (local ONNX, 25-80MB models, CPU only) ---
+def _resolve_kittentts_assets(model_name: str) -> Tuple[Path, Path, Dict[str, Any]]:
+    """Read the SDK's config and both assets locally, bypassing its HF downloader."""
+    directory = Path(model_name).expanduser()
+    repo = model_name if "/" in model_name else f"KittenML/{model_name}"
+    config_path = directory / "config.json" if directory.is_dir() else _cached_hf_file(repo, "config.json")
+    hint = (
+        "KittenTTS local assets missing. Set tts.kittentts.model to a directory containing "
+        "config.json and its model_file (ONNX) and voices (NPZ), or provision the complete "
+        f"existing Hugging Face cache for {repo}. Mercury does not download model weights.")
+    if config_path is None or not config_path.is_file():
+        raise RuntimeError(hint)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    if config.get("type") not in ("ONNX1", "ONNX2"):
+        raise RuntimeError("KittenTTS local config.json has an unsupported model type.")
+    assets = []
+    for key in ("model_file", "voices"):
+        filename = config.get(key)
+        if not isinstance(filename, str) or not filename:
+            raise RuntimeError(f"{hint} Missing {key} in config.json.")
+        path = directory / filename if directory.is_dir() else _cached_hf_file(repo, filename)
+        if path is None or not path.is_file():
+            raise RuntimeError(f"{hint} Missing {filename}.")
+        assets.append(path.resolve())
+    return assets[0], assets[1], config
+
+
 def _load_kittentts_model_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
-    """Load (or fetch from cache) the KittenTTS model; returns ``(model, kittentts_config)``."""
-    KittenTTS = _origin()._import_kittentts()
+    """Load the local ONNX implementation, never the SDK's downloading constructor."""
     kt_config = _section(tts_config, "kittentts")
-    model_name = kt_config.get("model", DEFAULT_KITTENTTS_MODEL)
+    model_name = kt_config.get("model") or DEFAULT_KITTENTTS_MODEL
+    model_path, voices_path, config = _resolve_kittentts_assets(model_name)
+    KittenTTS = _origin()._import_kittentts()
+    key = f"{model_path}::{voices_path}"
 
     def _load_kittentts_model():
-        logger.info("[KittenTTS] Loading model: %s", model_name)
-        m = KittenTTS(model_name)
-        logger.info("[KittenTTS] Model loaded successfully")
-        return m
+        return KittenTTS(
+            model_path=str(model_path), voices_path=str(voices_path),
+            speed_priors=config.get("speed_priors", {}), voice_aliases=config.get("voice_aliases", {}))
 
-    return _tts_cache_get_or_load(_kittentts_model_cache, model_name, _load_kittentts_model), kt_config
+    return _tts_cache_get_or_load(_kittentts_model_cache, key, _load_kittentts_model), kt_config
 
 
 def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
