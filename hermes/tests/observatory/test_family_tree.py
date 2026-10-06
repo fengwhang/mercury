@@ -241,3 +241,29 @@ async def test_exit_native_parent_stops_descendants_and_preserves_the_root(famil
     assert state.get("coder")["status"] == "live"
     with pytest.raises(StateError):
         state.get("grandchild")
+
+
+@pytest.mark.asyncio
+async def test_parent_exit_stops_registered_descendants_before_rooms_are_observed(family, monkeypatch):
+    from observatory.spawn import OrchestratorHandle, OrchestratorRegistry, exit_orchestrator
+    from tools import omp_delegation as delegation
+
+    manager, state = family
+    monkeypatch.setattr(delegation, "_live_children", {})
+    monkeypatch.setattr(delegation, "_live_procs", [])
+    calls = []
+    registry = OrchestratorRegistry()
+    registry.register(OrchestratorHandle(
+        node_id="testbot", engine="hermes", name="testbot", session_ref="testbot",
+        agent=SimpleNamespace(close=lambda: calls.append("testbot"))))
+    for child, parent in (("pending", "testbot"), ("nested", "pending"), ("unrelated", "coder")):
+        delegation._register_live_child(
+            {"child_id": child, "name": child, "parent_node_id": parent},
+            SimpleNamespace(kill=lambda child=child: calls.append(child)))
+    result = await exit_orchestrator(
+        "testbot", state=state, registry=registry, bot=manager.bot)
+    assert result["deferred"] == []
+    assert calls == ["nested", "pending", "testbot"]
+    assert state.get("coder")["status"] == "live"
+    with pytest.raises(StateError):
+        state.get("testbot")

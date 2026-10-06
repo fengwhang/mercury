@@ -1109,6 +1109,22 @@ async def exit_orchestrator(
 
     live_children = _snapshot_live_children()
     subtree = state.get_subtree(node_id)
+    # Transports register before the watcher creates their state rows.
+    # Include that pending family, rather than letting observer lag decide
+    # which descendants survive an explicit parent exit.
+    lifetime_ids = {row["node_id"] for row in subtree}
+    unobserved_children: list[str] = []
+    remaining = {child_id: meta for child_id, meta in live_children.items()
+                 if child_id not in lifetime_ids}
+    while remaining:
+        found = [child_id for child_id, meta in remaining.items()
+                 if str(meta.get("parent_node_id") or "") in lifetime_ids]
+        if not found:
+            break
+        for child_id in found:
+            unobserved_children.append(child_id)
+            lifetime_ids.add(child_id)
+            remaining.pop(child_id)
     native_controls = []
     for row in subtree:
         sid = str(row.get("extra", {}).get("subagent_id") or "")
@@ -1131,6 +1147,12 @@ async def exit_orchestrator(
     # Every descendant belongs to this lifetime, including retained native
     # OMP agents. Stop deepest first so no child outlives its parent.
     from observatory.thinking import thinking_done
+    for child_id in reversed(unobserved_children):
+        transport = live_children[child_id].get("transport")
+        if transport is not None:
+            await asyncio.to_thread(transport.kill)
+        drop_omp_room(child_id)
+        drop_child_steer(child_id)
 
     for row in subtree:
         thinking_done(str(row.get("room_id") or ""))
