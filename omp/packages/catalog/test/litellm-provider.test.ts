@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { createReferenceResolver } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import {
 	fetchLiteLLMRichModels,
 	litellmModelManagerOptions,
@@ -9,7 +10,6 @@ import type { Api, FetchImpl, ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 
 const ORIGINAL_LITELLM_BASE_URL = Bun.env.LITELLM_BASE_URL;
-const MODELS_DEV_URL = "https://catalog.stencil.so/models.json.zstd";
 function makeLiteLLMSentinelPlaceholder(modelGroup: string) {
 	return {
 		model_group: modelGroup,
@@ -56,9 +56,6 @@ function makeFetchMock(expectedModelUrl: string): FetchImpl {
 	const managementBaseUrl = expectedModelUrl.replace(/\/v1\/models$/, "");
 	return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		const url = inputUrl(input);
-		if (url === MODELS_DEV_URL) {
-			return new Response("{}", { status: 500 });
-		}
 
 		expect(init?.method).toBe("GET");
 		expect(init?.headers).toMatchObject({
@@ -85,20 +82,6 @@ function makeFetchMock(expectedModelUrl: string): FetchImpl {
 function makeCollisionFetchMock(): FetchImpl {
 	return vi.fn(async (input: string | URL | Request) => {
 		const url = inputUrl(input);
-		if (url === MODELS_DEV_URL) {
-			return Response.json({
-				"ollama-cloud": {
-					models: {
-						"deepseek-v4-flash": {
-							name: "DeepSeek V4 Flash",
-							tool_call: true,
-							limit: { context: 64_000, output: 8_000 },
-							cost: { input: 1, output: 2 },
-						},
-					},
-				},
-			});
-		}
 		if (url === "http://primary:4000/model_group/info") {
 			return new Response("{}", { status: 404 });
 		}
@@ -133,7 +116,7 @@ describe("LiteLLM provider discovery", () => {
 		expect(options.cacheProviderId).toBe(
 			`litellm:rich-v8:${Bun.hash("http://litellm.example:4100/v1").toString(36)}`,
 		);
-		expect(fetchMock).toHaveBeenCalledTimes(6);
+		expect(fetchMock).toHaveBeenCalledTimes(5);
 		expect(models).toHaveLength(1);
 		expect(models?.[0]).toMatchObject({
 			id: "openai/gpt-5",
@@ -157,12 +140,12 @@ describe("LiteLLM provider discovery", () => {
 		expect(options.cacheProviderId).toBe(
 			`litellm:rich-v8:${Bun.hash("http://litellm-config.example:4200/v1/").toString(36)}`,
 		);
-		expect(fetchMock).toHaveBeenCalledTimes(6);
+		expect(fetchMock).toHaveBeenCalledTimes(5);
 		expect(models).toHaveLength(1);
 		expect(models?.[0]?.baseUrl).toBe("http://litellm-config.example:4200/v1");
 	});
 
-	test("keeps LiteLLM transport when stencil.so has a colliding provider model id", async () => {
+	test("keeps LiteLLM transport when the local bundle has a colliding provider model id", async () => {
 		const fetchMock = makeCollisionFetchMock();
 
 		const options = litellmModelManagerOptions({
@@ -175,16 +158,13 @@ describe("LiteLLM provider discovery", () => {
 		expect(models).toHaveLength(1);
 		expect(models?.[0]).toMatchObject({
 			id: "deepseek-v4-flash",
-			name: "DeepSeek V4 Flash",
+			name: createReferenceResolver()("deepseek-v4-flash")?.name,
 			api: "openai-completions",
 			provider: "litellm",
 			baseUrl: "http://primary:4000/v1",
-			contextWindow: 64_000,
-			maxTokens: 8_000,
-			cost: {
-				input: 1,
-				output: 2,
-			},
+			contextWindow: createReferenceResolver()("deepseek-v4-flash")?.contextWindow,
+			maxTokens: createReferenceResolver()("deepseek-v4-flash")?.maxTokens,
+			cost: createReferenceResolver()("deepseek-v4-flash")?.cost,
 		});
 	});
 
@@ -301,9 +281,7 @@ describe("LiteLLM provider discovery", () => {
 	test("routes only OpenAI-backed rich models through Responses", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -361,9 +339,7 @@ describe("LiteLLM provider discovery", () => {
 	test("uses rich LiteLLM metadata before /v1/models", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 			const url = inputUrl(input);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			expect(init?.headers).toMatchObject({
 				Accept: "application/json",
 				Authorization: "Bearer sk-rich",
@@ -418,9 +394,7 @@ describe("LiteLLM provider discovery", () => {
 	test("warns once when forbidden rich metadata forces /v1/models fallback", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://forbidden:4000/v1/models") {
 				return Response.json({ data: [{ id: "hosted_vllm/private-model" }] });
 			}
@@ -482,12 +456,9 @@ describe("LiteLLM provider discovery", () => {
 		expect(warnSpy).not.toHaveBeenCalled();
 	});
 
-	test("maps LiteLLM per-token cost onto cost.input/output for models missing from stencil.so", async () => {
+	test("maps LiteLLM per-token cost onto cost.input/output for models missing from the bundle", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -525,12 +496,9 @@ describe("LiteLLM provider discovery", () => {
 		});
 	});
 
-	test("enriches LiteLLM rich models missing from stencil.so with bundled reasoning metadata", async () => {
+	test("enriches LiteLLM rich models with bundled reasoning metadata", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -575,9 +543,7 @@ describe("LiteLLM provider discovery", () => {
 	test("uses LiteLLM tool support metadata when rich endpoints succeed", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -611,9 +577,7 @@ describe("LiteLLM provider discovery", () => {
 			const fetchMock = vi.fn(async (input: string | URL | Request) => {
 				const url = inputUrl(input);
 				calls.push(url);
-				if (url === MODELS_DEV_URL) {
-					return Response.json({});
-				}
+				
 				if (url === "http://primary:4000/model_group/info") {
 					return Response.json({ data: [makeLiteLLMSentinelPlaceholder(sentinelModelId)] });
 				}
@@ -664,9 +628,7 @@ describe("LiteLLM provider discovery", () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
 			calls.push(url);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -717,9 +679,7 @@ describe("LiteLLM provider discovery", () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
 			calls.push(url);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return new Response("{}", { status: 404 });
 			}
@@ -767,9 +727,7 @@ describe("LiteLLM provider discovery", () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
 			calls.push(url);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -815,9 +773,7 @@ describe("LiteLLM provider discovery", () => {
 	test("ignores zero placeholder prices from later rich metadata", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -861,9 +817,7 @@ describe("LiteLLM provider discovery", () => {
 	test("preserves cache prices reported before base prices", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -908,9 +862,7 @@ describe("LiteLLM provider discovery", () => {
 	test("merges API routing evidence across rich metadata endpoints", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [{ model_group: "aliased-openai" }, { model_group: "mixed-backend", providers: ["openai"] }],
@@ -951,9 +903,7 @@ describe("LiteLLM provider discovery", () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
 			calls.push(url);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [{ model_group: "opaque-alias", supports_vision: false }],
@@ -985,9 +935,7 @@ describe("LiteLLM provider discovery", () => {
 	test("merges mixed-provider routing evidence within one rich endpoint", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -1015,9 +963,7 @@ describe("LiteLLM provider discovery", () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
 			calls.push(url);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -1109,9 +1055,7 @@ describe("LiteLLM provider discovery", () => {
 	test("drops reseller usage suffix from LiteLLM rich model names", async () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
+			
 			if (url === "http://primary:4000/model_group/info") {
 				return Response.json({
 					data: [
@@ -1144,27 +1088,7 @@ describe("LiteLLM provider discovery", () => {
 		const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 			const url = inputUrl(input);
 			const headers = init?.headers as Record<string, string> | undefined;
-			if (url !== MODELS_DEV_URL) {
-				authByUrl.set(url, headers?.Authorization);
-			}
-			if (url === MODELS_DEV_URL) {
-				return Response.json({
-					"ollama-cloud": {
-						models: {
-							"deepseek-v4-flash": {
-								name: "DeepSeek V4 Flash",
-								tool_call: true,
-								limit: { context: 64_000, output: 8_000 },
-							},
-							"minimax-m3": {
-								name: "MiniMax M3 (3x usage)",
-								tool_call: true,
-								limit: { context: 262_144, output: 8_192 },
-							},
-						},
-					},
-				});
-			}
+			authByUrl.set(url, headers?.Authorization);
 			if (url === "http://primary:4000/model_group/info") {
 				return new Response("{}", { status: 404 });
 			}
@@ -1191,26 +1115,23 @@ describe("LiteLLM provider discovery", () => {
 		expect(authByUrl.get("http://primary:4000/v1/models")).toBe("Bearer sk-fallback");
 		expect(models?.[0]).toMatchObject({
 			id: "deepseek-v4-flash",
-			name: "DeepSeek V4 Flash",
-			contextWindow: 64_000,
-			maxTokens: 8_000,
+			name: createReferenceResolver()("deepseek-v4-flash")?.name,
+			contextWindow: createReferenceResolver()("deepseek-v4-flash")?.contextWindow,
+			maxTokens: createReferenceResolver()("deepseek-v4-flash")?.maxTokens,
 		});
 		expect(models?.find(model => model.id === "minimax-m3")).toMatchObject({
 			id: "minimax-m3",
-			name: "MiniMax M3",
-			contextWindow: 262_144,
-			maxTokens: 8_192,
+			name: createReferenceResolver()("minimax-m3")?.name,
+			contextWindow: createReferenceResolver()("minimax-m3")?.contextWindow,
+			maxTokens: createReferenceResolver()("minimax-m3")?.maxTokens,
 		});
 	});
 
-	test("enriches LiteLLM /v1/models fallback entries missing from stencil.so with bundled reasoning metadata", async () => {
+	test("enriches LiteLLM /v1/models fallback entries with bundled reasoning metadata", async () => {
 		const calls: string[] = [];
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
 			const url = inputUrl(input);
 			calls.push(url);
-			if (url === MODELS_DEV_URL) {
-				return Response.json({});
-			}
 			if (
 				url === "http://primary:4000/model_group/info" ||
 				url === "http://primary:4000/v2/model/info" ||

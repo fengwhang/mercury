@@ -6,7 +6,7 @@ import type { Api, KnownProvider, Model, ModelCost, TokenCost, Usage } from "./t
  * Static bundled model registry loaded from `models.json`.
  *
  * This module intentionally exposes compile-time defaults only.
- * It does not include runtime discovery, stencil.so overlays, or on-disk cache state.
+ * It does not include runtime discovery, caller-owned overlays, or on-disk cache state.
  *
  * For runtime-aware resolution, use `createModelManager()` / `resolveProviderModels()`.
  */

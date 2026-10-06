@@ -28,7 +28,7 @@ describe("ModelRegistry runtime provider registration", () => {
 
 	// Stub transport: reject every request so refresh("online") drives the full
 	// online discovery path with deterministic, instant failures instead of real
-	// network. Provider fetches (dynamic + stencil.so) are caught and swallowed,
+	// network. Selected provider fetch failures are caught and swallowed,
 	// leaving the registry with its bundled catalog plus runtime overlays.
 	const offlineFetch: FetchImpl = input => {
 		fetchRequests.push(String(input));
@@ -123,6 +123,24 @@ describe("ModelRegistry runtime provider registration", () => {
 		expect(registry.find(providerName, modelId)?.baseUrl).toBe(baseUrl);
 		expect(registry.find(providerName, modelId)?.headers?.[headerName]).toBe(headerValue);
 	}
+
+	test("startup and runtime refresh retain bundled models without hosted metadata or credentials", async () => {
+		const peek = vi.spyOn(authStorage, "peekApiKey").mockResolvedValue(undefined);
+		try {
+			await registry.hydrateCredentialScopedModelCaches();
+			registry.refreshInBackground();
+			await registry.awaitBackgroundRefresh();
+			await registry.refresh("online");
+			await registry.refreshProvider("zai", "offline");
+		} finally {
+			peek.mockRestore();
+		}
+
+		expect(fetchRequests.filter(url => new URL(url).hostname === "catalog.stencil.so")).toEqual([]);
+		expect(registry.getAll().length).toBeGreaterThan(100);
+		expect(registry.find("anthropic", "claude-opus-5")?.input).toContain("image");
+		expect(getProviderModels(registry, "zai").length).toBeGreaterThan(0);
+	});
 
 	test("does not discover ClinePass without credentials", async () => {
 		const peek = vi.spyOn(authStorage, "peekApiKey").mockResolvedValue(undefined);
@@ -419,52 +437,22 @@ describe("ModelRegistry runtime provider registration", () => {
 		]);
 	});
 
-	test("refreshProvider aborts and retries inherited shared-catalog fetches", async () => {
-		vi.useFakeTimers();
-		// Pin the keyless premise: a host ANTHROPIC_API_KEY (dev machines, agent
-		// harnesses) gives the anthropic manager a fetchDynamicModels hook whose
-		// endpoint fetch starts only after the catalog abort — its deadline timer
-		// arms after the last advanceTimersByTime and the refresh hangs forever.
+	test("credentialless provider refresh resolves locally without invoking a stalled transport", async () => {
 		const peekSpy = vi.spyOn(authStorage, "peekApiKey").mockResolvedValue(undefined);
-		let catalogFetches = 0;
-		let abortedFetches = 0;
-		const stalledFetch: FetchImpl = (_input, init) => {
-			catalogFetches++;
-			const { promise, reject } = Promise.withResolvers<Response>();
-			const signal = init?.signal;
-			if (!signal) {
-				reject(new Error("catalog fetch did not receive an abort signal"));
-				return promise;
-			}
-			const rejectAborted = () => {
-				abortedFetches++;
-				reject(signal.reason);
-			};
-			if (signal.aborted) {
-				rejectAborted();
-			} else {
-				signal.addEventListener("abort", rejectAborted, { once: true });
-			}
-			return promise;
+		let fetches = 0;
+		const stalledFetch: FetchImpl = () => {
+			fetches++;
+			return Promise.withResolvers<Response>().promise;
 		};
-		const stalledRegistry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: stalledFetch });
-
-		const firstRefresh = stalledRegistry.refreshProvider("anthropic", "online");
-		await drainMicrotasksUntil(() => catalogFetches === 1, "first shared-catalog fetch did not start");
-		vi.advanceTimersByTime(9_999);
-		await Promise.resolve();
-		expect(abortedFetches).toBe(0);
-		vi.advanceTimersByTime(1);
-		await firstRefresh;
-		expect(abortedFetches).toBe(1);
-
-		const secondRefresh = stalledRegistry.refreshProvider("anthropic", "online");
-		await drainMicrotasksUntil(() => catalogFetches === 2, "second shared-catalog fetch did not start");
-		vi.advanceTimersByTime(10_000);
-		await secondRefresh;
-		expect(abortedFetches).toBe(2);
-		expect(catalogFetches).toBe(2);
-		peekSpy.mockRestore();
+		const localRegistry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: stalledFetch });
+		try {
+			await localRegistry.refreshProvider("anthropic", "online");
+			await localRegistry.refreshProvider("anthropic", "online");
+		} finally {
+			peekSpy.mockRestore();
+		}
+		expect(fetches).toBe(0);
+		expect(localRegistry.find("anthropic", "claude-opus-5")?.input).toContain("image");
 	});
 
 	test("refreshRuntimeProviders times out extension fetchDynamicModels that never resolves", async () => {
