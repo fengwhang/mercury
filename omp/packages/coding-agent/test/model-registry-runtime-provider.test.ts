@@ -137,9 +137,99 @@ describe("ModelRegistry runtime provider registration", () => {
 		}
 
 		expect(fetchRequests.filter(url => new URL(url).hostname === "catalog.stencil.so")).toEqual([]);
+		expect(fetchRequests.filter(url => !["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname))).toEqual([]);
 		expect(registry.getAll().length).toBeGreaterThan(100);
 		expect(registry.find("anthropic", "claude-opus-5")?.input).toContain("image");
 		expect(getProviderModels(registry, "zai").length).toBeGreaterThan(0);
+	});
+
+	test("authenticated metadata discovery queries only the credentialed remote provider", async () => {
+		await authStorage.set("zenmux", { type: "api_key", key: "zenmux-test-key" });
+		const urls: string[] = [];
+		const credentialedRegistry = new ModelRegistry(authStorage, modelsJsonPath, {
+			fetch: async (input, init) => {
+				urls.push(String(input));
+				if (String(input) !== "https://zenmux.ai/api/v1/models") throw new Error("unexpected provider");
+				expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer zenmux-test-key");
+				return Response.json({ data: [{ id: "operator-authenticated-model" }] });
+			},
+		});
+		await credentialedRegistry.refresh("online");
+		expect(urls.filter(url => new URL(url).protocol === "https:")).toEqual(["https://zenmux.ai/api/v1/models"]);
+		expect(credentialedRegistry.find("zenmux", "operator-authenticated-model")).toBeDefined();
+	});
+
+	test("explicit keyless built-in configuration retains selfhosted metadata discovery", async () => {
+		const endpoint = "http://192.0.2.18:4100/v1";
+		fs.writeFileSync(modelsJsonPath, JSON.stringify({ providers: { zenmux: { baseUrl: endpoint, auth: "none" } } }));
+		const urls: string[] = [];
+		const configuredRegistry = new ModelRegistry(authStorage, modelsJsonPath, {
+			fetch: async input => {
+				const url = String(input);
+				urls.push(url);
+				if (url !== `${endpoint}/models`) throw new Error("unexpected provider");
+				return Response.json({ data: [{ id: "operator-selfhosted-model" }] });
+			},
+		});
+		configuredRegistry.refreshInBackground();
+		await configuredRegistry.awaitBackgroundRefresh();
+		expect(urls.filter(url => new URL(url).hostname !== "127.0.0.1")).toEqual([`${endpoint}/models`]);
+		expect(configuredRegistry.find("zenmux", "operator-selfhosted-model")?.baseUrl).toBe(endpoint);
+		urls.length = 0;
+		fs.writeFileSync(modelsJsonPath, JSON.stringify({ providers: {} }));
+		const changedAt = new Date(Date.now() + 2_000);
+		fs.utimesSync(modelsJsonPath, changedAt, changedAt);
+		await configuredRegistry.refresh("online");
+		expect(urls.filter(url => new URL(url).hostname !== "127.0.0.1")).toEqual([]);
+		expect(configuredRegistry.getAll().length).toBeGreaterThan(100);
+	});
+
+	test("explicit keyless provider configuration without an endpoint override activates its own discovery", async () => {
+		fs.writeFileSync(modelsJsonPath, JSON.stringify({ providers: { zenmux: { auth: "none" } } }));
+		const urls: string[] = [];
+		const configuredRegistry = new ModelRegistry(authStorage, modelsJsonPath, {
+			fetch: async input => {
+				urls.push(String(input));
+				if (String(input) !== "https://zenmux.ai/api/v1/models") throw new Error("unexpected provider");
+				return Response.json({ data: [{ id: "operator-configured-model" }] });
+			},
+		});
+		await configuredRegistry.refresh("online");
+		expect(urls.filter(url => new URL(url).protocol === "https:")).toEqual(["https://zenmux.ai/api/v1/models"]);
+		expect(configuredRegistry.find("zenmux", "operator-configured-model")).toBeDefined();
+	});
+
+	test("selected and targeted metadata refresh retains provider discovery without credentials", async () => {
+		for (const selected of [false, true]) {
+			const urls: string[] = [];
+			const targetedRegistry = new ModelRegistry(authStorage, modelsJsonPath, {
+				fetch: async input => {
+					urls.push(String(input));
+					if (String(input) !== "https://zenmux.ai/api/v1/models") throw new Error("unexpected provider");
+					return Response.json({ data: [{ id: "operator-selected-model" }] });
+				},
+			});
+			if (selected) await targetedRegistry.refreshDiscoverableProviders(["zenmux"], "online");
+			else await targetedRegistry.refreshProvider("zenmux", "online");
+			expect(urls).toEqual(["https://zenmux.ai/api/v1/models"]);
+			expect(targetedRegistry.find("zenmux", "operator-selected-model")).toBeDefined();
+		}
+	});
+
+	test("runtime provider registration retains explicit selfhosted metadata discovery", async () => {
+		const endpoint = "https://zenmux.operator.test/v1";
+		const urls: string[] = [];
+		const configuredRegistry = new ModelRegistry(authStorage, modelsJsonPath, {
+			fetch: async input => {
+				urls.push(String(input));
+				if (String(input) !== `${endpoint}/models`) throw new Error("unexpected provider");
+				return Response.json({ data: [{ id: "operator-runtime-model" }] });
+			},
+		});
+		configuredRegistry.registerProvider("zenmux", { baseUrl: endpoint }, "ext://runtime");
+		await configuredRegistry.refresh("online");
+		expect(urls.filter(url => new URL(url).protocol === "https:")).toEqual([`${endpoint}/models`]);
+		expect(configuredRegistry.find("zenmux", "operator-runtime-model")?.baseUrl).toBe(endpoint);
 	});
 
 	test("does not discover ClinePass without credentials", async () => {

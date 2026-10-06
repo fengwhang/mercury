@@ -21,7 +21,7 @@ Import from subpaths (`@oh-my-pi/pi-catalog/<module>`) or the root barrel.
 
 ## models.json and rules.json are generated
 
-Never edit `src/models.json` or `src/compat/rules.json` by hand. `models.json` is produced from the existing local snapshot, provider catalog discovery, and reviewed static metadata by `scripts/generate-models.ts`; `rules.json` is compiled from the KDL tree in `src/compat/rules/`. Runtime enrichment uses bundled metadata and existing provider caches, without automatic hosted catalog requests. Regenerate with:
+Never edit `src/models.json` or `src/compat/rules.json` by hand. `models.json` is produced from the existing local snapshot, provider catalog discovery, and reviewed static metadata by `scripts/generate-models.ts`; `rules.json` is compiled from the KDL tree in `src/compat/rules/`. Unconfigured startup refresh reads bundled metadata and existing provider caches, retaining the existing loopback inference probes. Remote provider discovery requires credentials, explicit provider configuration/registration, or a selected/targeted provider refresh; it never downloads a hosted shared catalog. Regenerate with:
 
 ```sh
 bun run gen:compat   # src/compat/rules/**/*.kdl -> src/compat/rules.json

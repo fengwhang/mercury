@@ -229,6 +229,7 @@ export class ModelRegistry {
 	// retry request through the live header proxy, not just the apiKey (#9760).
 	#commandConfigsByProvider: Map<string, Set<string>> = new Map();
 	#keylessProviders: Set<string> = new Set();
+	#configuredProviders: Set<string> = new Set();
 	#discoverableProviders: DiscoveryProviderConfig[] = [];
 	#customModelOverlays: CustomModelOverlay[] = [];
 	#providerOverrides: Map<string, ProviderOverride> = new Map();
@@ -772,6 +773,7 @@ export class ModelRegistry {
 		} = logger.time("modelRegistry:loadCustomModels", () => this.#loadCustomModels());
 		this.#configError = configError;
 		this.#keylessProviders = keylessProviders;
+		this.#configuredProviders = configuredProviders;
 		this.#discoverableProviders = discoverableProviders;
 		this.#customModelOverlays = customModels;
 		this.#providerOverrides = overrides;
@@ -1904,30 +1906,31 @@ export class ModelRegistry {
 		for (let i = 0; i < standardProviderDescriptors.length; i++) {
 			const descriptor = standardProviderDescriptors[i];
 			const apiKey = standardProviderKeys[i];
-			const hasExplicitVllmConfig =
-				descriptor.providerId === "vllm" &&
-				(this.#runtimeProviderOverrides.has(descriptor.providerId) ||
-					this.#providerOverrides.has(descriptor.providerId) ||
-					this.#keylessProviders.has(descriptor.providerId));
-			const canUseLocalCatalogWithoutAuth =
-				BUNDLED_CATALOG_PROVIDER_ID_LOOKUP[descriptor.providerId] === true &&
-				!descriptor.dynamicModelsAuthoritative;
-			if (
+			const hasDiscoveryIntent =
 				isAuthenticated(apiKey) ||
-				descriptor.allowUnauthenticated ||
-				hasExplicitVllmConfig ||
-				canUseLocalCatalogWithoutAuth
-			) {
-				const discoveryConfig = {
-					apiKey: isDiscoveryBearerApiKey(apiKey) ? apiKey : undefined,
-					baseUrl: this.#descriptorBaseUrl(descriptor.providerId),
-					fetch: this.#fetch,
-				};
-				const preparedConfig =
-					getProviderDefinition(descriptor.providerId)?.prepareModelDiscovery?.(discoveryConfig) ??
-					discoveryConfig;
-				options.push(descriptor.createModelManagerOptions(preparedConfig));
+				this.#configuredProviders.has(descriptor.providerId) ||
+				this.#runtimeProviderSourceByName.has(descriptor.providerId) ||
+				this.#runtimeProviderOverrides.has(descriptor.providerId) ||
+				providerFilter?.has(descriptor.providerId);
+			if (!hasDiscoveryIntent) {
+				// Default catalog refresh is local-only. Calling a keyless endpoint
+				// factory here would turn bundled metadata admission into an
+				// unsolicited request to its public provider API.
+				options.push({
+					providerId: descriptor.providerId,
+					cacheProviderId: this.#resolveStartupModelCacheProviderId(descriptor.providerId),
+				});
+				continue;
 			}
+			const discoveryConfig = {
+				apiKey: isDiscoveryBearerApiKey(apiKey) ? apiKey : undefined,
+				baseUrl: this.#descriptorBaseUrl(descriptor.providerId),
+				fetch: this.#fetch,
+			};
+			const preparedConfig =
+				getProviderDefinition(descriptor.providerId)?.prepareModelDiscovery?.(discoveryConfig) ??
+				discoveryConfig;
+			options.push(descriptor.createModelManagerOptions(preparedConfig));
 		}
 
 		for (let i = 0; i < enabledSpecialProviderDescriptors.length; i++) {
