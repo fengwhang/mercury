@@ -1290,3 +1290,22 @@ class TestLightpandaPostSetup:
         # Not in the forced-setup gate: a missing binary must not nag every
         # user who toggles the browser toolset.
         assert "lightpanda" not in _POST_SETUP_INSTALLED
+
+
+@pytest.mark.parametrize("provider,package,setting", [
+    ("piper", "piper", "tts.piper.voice"),
+    ("kittentts", "kittentts", "tts.kittentts.model"),
+    ("faster_whisper", "faster_whisper", "stt.local.model"),
+])
+def test_local_speech_setup_explains_required_assets(provider, package, setting, monkeypatch, capsys):
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, package, types.ModuleType(package))
+    with patch("mercury_cli.tools_config._pip_install") as install:
+        _run_post_setup(provider)
+    output = capsys.readouterr().out
+    assert setting in output
+    assert "never downloads" in output.lower()
+    assert "first use" not in output.lower()
+    install.assert_not_called()

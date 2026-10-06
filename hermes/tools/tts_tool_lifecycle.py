@@ -26,6 +26,7 @@ from tools.tts_tool_delivery import _origin
 from tools.tts_tool_local import (
     _LOCAL_TTS_MODEL_CACHES, _load_kittentts_model_for_config, _load_piper_voice_for_config)
 from tools.tts_tool_plugins import _lookup_plugin_provider
+from tools.neutts_synth import _resolve_neutts_assets
 
 logger = logging.getLogger("tools.tts_tool")
 
@@ -90,20 +91,30 @@ def _signal_user_tts_provider(name: str, tts_config: Dict[str, Any], hook: str) 
 
 def warm_tts_provider(tts_config: Optional[Dict[str, Any]] = None, provider: Optional[str] = None) -> Dict[str, Any]:
     """Pre-load the configured TTS provider so the next synthesis starts hot (blocking; never raises).
-    Local engines fill the same LRU slot synthesis reads (including first-use download); lazily
+    Local engines fill the same LRU slot synthesis reads from already provisioned assets; lazily
     installed cloud SDKs are made importable; user-declared providers get their warm hook;
     everything else is ``action: "noop"``. The result carries ``warmed`` / ``action`` / ``error``."""
     if tts_config is None:
         tts_config = _origin()._load_tts_config()
     name = (provider or _origin()._get_provider(tts_config) or "").lower().strip()
     result: Dict[str, Any] = {"provider": name, "warmed": False, "action": "noop"}
+    if name == "neutts":
+        # NeuTTS intentionally lives in a per-synthesis subprocess, not a resident cache.
+        try:
+            _resolve_neutts_assets((tts_config.get("neutts") or {}).get("model") or
+                                   "neuphonic/neutts-air-q4-gguf")
+        except RuntimeError as exc:
+            result.update(action="error", error=str(exc))
+        else:
+            result.update(action="validated")
+        return result
     warmer = _local_tts_warmers().get(name)
     if warmer is not None:
         cache = _LOCAL_TTS_MODEL_CACHES.get(name, {})
         before, started = len(cache), time.monotonic()
         try:
             warmer(tts_config)
-        except Exception as exc:  # engine missing, download failed, bad voice…
+        except Exception as exc:  # engine missing, absent assets, bad voice…
             logger.warning("[TTS] warm-up for %s failed: %s", name, exc)
             result.update(action="error", error=str(exc))
             return result
