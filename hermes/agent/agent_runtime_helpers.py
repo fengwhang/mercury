@@ -1121,20 +1121,12 @@ def recover_with_credential_pool(
     if pool is None:
         return False, has_retried_429
 
-    # A usage limit is charged to the PLAN, not to one API key, so rotating
-    # within the same pool usually hits the same wall and just burns the retry
-    # budget. When a MODEL fallback is configured, decline pool recovery here
-    # so the caller's failover gate runs and the turn continues on
-    # ``models.fallback`` instead of dying. With no fallback configured the
-    # historical rotation behaviour is kept — that is still better than no
-    # recovery at all.
-    if is_usage_limit_exhausted(error_context) and getattr(agent, "_fallback_chain", None):
-        _chain = list(agent._fallback_chain)
+    # A plan-wide usage wall cannot be recovered by rotating keys, even
+    # when no fallback is configured. Let the caller fail over or terminate
+    # immediately instead of retrying the same exhausted billing route.
+    if is_usage_limit_exhausted(error_context):
         _ra().logger.info(
-            "Usage limit on the plan — skipping credential rotation in favour of "
-            "the configured model fallback (%d entr%s)",
-            len(_chain),
-            "y" if len(_chain) == 1 else "ies",
+            "Usage limit on the plan — skipping credential rotation",
         )
         return False, has_retried_429
 

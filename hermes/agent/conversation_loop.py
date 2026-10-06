@@ -6307,11 +6307,7 @@ def run_conversation(
                     # A future quota reset does not make this plan usable
                     # now. Once its configured chain is exhausted, stop
                     # rather than replaying the final depleted billing route.
-                    or (
-                        _is_usage_limit
-                        and bool(agent._fallback_chain)
-                        and agent._fallback_index >= len(agent._fallback_chain)
-                    )
+                    or _is_usage_limit
                     or (
                         not classified.retryable
                         and not classified.should_compress
