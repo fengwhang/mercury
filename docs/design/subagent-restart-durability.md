@@ -55,6 +55,8 @@ A watcher disappearing from the local process registry is not proof of success. 
 
 A send-only identity announces `transport connected.`, not worker execution. Execution readiness requires the actual PID/start owner plus attached SELF/event feed. A network reconnect preserves that running worker and subscription; transport state alone does not establish task readiness or success.
 
+Live and replayed frames share one receipt-aware transaction on the canonical gateway loop. A queued RoomManager call is not a delivery receipt: only an accepted transport send reserves the dedupe identity. Failed or unavailable sends remain replayable, including tool-completion status. Reconnect replay preserves the original worker subscription and RPC listeners; it does not detach the feed or suppress identical later work through stale live-frame reservations.
+
 ## Tool-result rendering
 
 Native OMP emits tool invocation and tool-result message events separately. The feed preserves that distinction. Normal Hermes `tool.completed` callbacks, including the top-level collector, now produce a role-tool output frame (`tool_result` at the collector seam). The shared IRC renderer labels that frame `result:`. Only invocation frames use the invocation glyph; todo plan updates remain status frames.
