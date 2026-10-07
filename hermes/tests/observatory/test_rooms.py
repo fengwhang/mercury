@@ -728,3 +728,21 @@ async def test_omp_room_approval_reaches_its_owner_and_returns_to_waiting_child(
     assert manager.bot.said == [("#task-room", "approved write")]
     assert approval.get_current_session_key() == before
     assert key not in approval._gateway_notify_cbs
+
+
+def test_missing_shutdown_sink_closes_unsubmitted_routed_coroutine(monkeypatch):
+    from observatory import rooms
+    from observatory.gateway_session import _hop
+
+    monkeypatch.setattr(rooms, "get_bot_sink", lambda: None)
+    monkeypatch.setattr(rooms, "_loop_now", lambda: None)
+
+    async def publish_routed_frame():
+        raise AssertionError("a closed sink cannot run a routed frame")
+
+    coroutine = publish_routed_frame()
+    try:
+        assert _hop(coroutine) is None
+        assert coroutine.cr_frame is None, "rejected coroutine must release ownership"
+    finally:
+        coroutine.close()

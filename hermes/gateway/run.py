@@ -108,6 +108,7 @@ _USER_BOUNDARY_END_REASONS = (
     "user_exit",
     "session_switch",
     "new_session",
+    "cli_close",
 )
 # Round-2 #2: upper bound on a single stall-notify adapter.send so a wedged
 # transport cannot block the session-stall watcher pass (notify-only path;
@@ -12698,6 +12699,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     def request_restart(
         self, *, detached: bool = False, via_service: bool = False,
         after_turn_timeout: float | None = None, trigger: str = "request",
+        automatic: bool = False,
     ) -> bool:
         if after_turn_timeout is not None:
             # Operator-requested Observatory restarts checkpoint sessions
@@ -12716,9 +12718,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Refuse new turns immediately while in-flight work finishes.
         # Keep ``_running`` True so adapters stay connected and the active
         # turn can still deliver its final response (#77184).
-        self._draining = True
+        # Convenience refreshes must not amputate children merely because a
+        # parent turn ended. Keep its feed and completion receiver usable
+        # until all work finishes; explicit admin restarts retain bounded drain.
+        self._draining = not automatic
 
         async def _run_restart() -> None:
+            if automatic:
+                while self._active_work_count() > 0:
+                    await asyncio.sleep(0.1)
+                self._draining = True
             await self._await_active_work_before_restart()
             # Launch the detached helper only AFTER the after-turn wait.
             # Its deadline is drain_timeout+5 and covers stop() teardown —
@@ -16675,7 +16684,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             self._pending_approvals.clear()
             if hasattr(self, '_busy_ack_ts'):
                 self._busy_ack_ts.clear()
-            self._shutdown_event.set()
 
             # Global cleanup: kill any remaining tool subprocesses not tied
             # to a specific agent (catch-all for zombie prevention). On the
@@ -16744,6 +16752,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 _phase_elapsed(),
             )
 
+            # A foreground-only drain verdict is not a clean receipt for
+            # independent children. Persist their resumable original intent
+            # before release/exit, and require genuine settlement for clean.
+            _delegations_settled = False
+            try:
+                from tools.async_delegation import active_count, checkpoint_active_delegations
+
+                checkpoint_active_delegations("gateway clean-exit barrier")
+                _delegations_settled = active_count() == 0
+            except Exception:
+                logger.exception("Delegation clean-exit checkpoint failed")
+
             from gateway.status import remove_pid_file, release_gateway_runtime_lock
             remove_pid_file()
             release_gateway_runtime_lock()
@@ -16756,16 +16776,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # message).  Skip the marker in that case so the next startup
             # suspends those sessions — giving users a clean slate instead
             # of resuming a half-finished tool loop.
-            if not timed_out:
+            if not timed_out and _delegations_settled:
                 try:
                     (_hermes_home / ".clean_shutdown").touch()
                 except Exception:
                     pass
             else:
                 logger.info(
-                    "Skipping .clean_shutdown marker — drain timed out with "
-                    "interrupted agents; next startup will suspend recently "
-                    "active sessions."
+                    "Skipping .clean_shutdown marker — unfinished or interrupted "
+                    "execution owners remain; next startup must reconcile "
+                    "checkpointed work."
                 )
 
             # Track sessions that were active at shutdown for stuck-loop
@@ -16836,6 +16856,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             else:
                 self._update_runtime_status("stopped", self._exit_reason)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
+            # This releases run_forever/the supervisor. Every durable child
+            # checkpoint, result/claim and exit receipt must precede it.
+            self._shutdown_event.set()
 
         self._stop_task = asyncio.create_task(_stop_impl())
         await self._stop_task
@@ -33401,36 +33424,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # drain budget so the caller knows how long to wait for exit.
         _main_loop = asyncio.get_running_loop()
 
-        def _pause_for_update_handler() -> dict:
-            try:
-                from mercury_cli.gateway import _get_restart_drain_timeout
+        from gateway.control_socket import restart_control_handlers
 
-                _drain = float(_get_restart_drain_timeout())
-            except Exception:
-                _drain = 30.0
-            accepted_box: list[bool] = []
-            _done = threading.Event()
-
-            def _request() -> None:
-                try:
-                    accepted_box.append(
-                        runner.request_restart(detached=False, via_service=True, trigger="control:pause-for-update")
-                    )
-                finally:
-                    _done.set()
-
-            _main_loop.call_soon_threadsafe(_request)
-            _done.wait(timeout=5.0)
-            accepted = bool(accepted_box and accepted_box[0])
-            return {
-                "pausing": accepted,
-                "already_stopping": not accepted,
-                "pid": os.getpid(),
-                "drain_timeout": _drain,
-            }
-
-        _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler}
+        _restart_handlers = restart_control_handlers(runner, _main_loop)
+        _control_server = GatewayControlServer(verb_handlers=_restart_handlers)
+        _control_server.register_handler(
+            "restart-when-idle", _restart_handlers["restart-when-idle"], takes_params=True,
         )
         from observatory.restart import quick_restart_handler
 

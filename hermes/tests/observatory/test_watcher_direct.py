@@ -82,7 +82,7 @@ async def test_watcher_start_streams_stop_retires_depth1_session(tmp_path, monke
         assert "#vm_alpha-bravo" in bot.joined
         assert ("owner", "#vm_alpha-bravo") in bot.invited
         await asyncio.sleep(0.3)
-        assert any("started" in t for _, t in bot.said)
+        assert not any("started" in t for _, t in bot.said), "room transport is not execution readiness"
         # Live SELF frame streams straight into the room.
         gs._publish_live_payload("deleg_1/0", {
             "feed": "tool", "subagent_id": "", "tool": "bash",
@@ -103,3 +103,43 @@ async def test_watcher_start_streams_stop_retires_depth1_session(tmp_path, monke
         rooms_mod.set_room_manager(None)
         rooms_mod.set_bot_sink(None)
         rooms_mod.set_event_loop(None)
+
+
+@pytest.mark.asyncio
+async def test_execution_ready_requires_verified_child_and_attached_feed(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    import observatory.gateway_session as gs
+    from gateway.status import get_process_start_time
+    from tools import async_delegation as ad
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    setup = _manager(tmp_path, monkeypatch)
+    manager, state, bot = next(setup)
+    try:
+        state.add_node("root", engine="hermes", name="root", slug="root",
+            mxid="vm_root", session_ref="root", depth=0)
+        state.add_node("ready/0", engine="omp", depth=1, parent_node_id="root",
+            name="worker", slug="ready", mxid="vm_ready", session_ref="ready/0", extra={"kind": "delegate"})
+        state.set_room_id("ready/0", "#vm_ready")
+        ad.record_child_spawn("ready/0", "ready", child_pid=os.getpid(),
+            child_started_at=get_process_start_time(os.getpid()))
+        feed = SimpleNamespace(_dispose_listener=lambda: None, _dispose_agent_listener=None)
+        transport = SimpleNamespace(pid=os.getpid())
+        assert await asyncio.to_thread(gs._mark_child_execution_ready, "ready/0", transport, feed) is False
+        assert bot.said == []
+        feed._dispose_agent_listener = lambda: None
+        assert await asyncio.to_thread(gs._mark_child_execution_ready, "ready/0", transport, feed) is True
+        assert state.get("ready/0")["extra"]["execution_state"] == "ready"
+        assert any("started" in text for _, text in bot.said)
+        before = list(bot.said)
+        assert await asyncio.to_thread(gs._mark_child_execution_ready, "ready/0", transport, feed) is True
+        assert bot.said == before
+        ad.record_child_terminal("ready/0", "interrupted", error="verified interruption")
+        assert await asyncio.to_thread(gs._mark_child_execution_ready, "ready/0", transport, feed) is False
+    finally:
+        try:
+            next(setup)
+        except StopIteration:
+            pass
+        state.close()

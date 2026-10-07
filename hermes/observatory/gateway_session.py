@@ -613,6 +613,44 @@ def _route_grandchild_frame(
         owner_id, manager.channel_for_node(owner_id), feed, cache))
 
 
+def _mark_child_execution_ready(child_id: str, transport: Any, feed: Any) -> bool:
+    """Execution readiness needs a real owner and attached SELF/event feeds."""
+    from tools.async_delegation import list_delegation_children, process_identity_state
+    from tools.omp_delegation import _child_run_identity
+
+    if not callable(getattr(feed, "_dispose_listener", None)) or not callable(
+        getattr(feed, "_dispose_agent_listener", None)
+    ):
+        return False
+    child = next((row for row in list_delegation_children(child_id.split("/", 1)[0])
+                  if row["child_id"] == child_id), None)
+    if child is not None:
+        if child["status"] != "running":
+            return False
+        pid, started = child.get("child_pid"), child.get("child_started_at")
+    else:
+        pid, started, _ = _child_run_identity(transport)
+    if process_identity_state(pid, started) != "live":
+        return False
+    manager = _watcher_manager()
+    if manager is None:
+        return False
+    try:
+        row = manager.state.get(child_id)
+        if row["status"] != "live" or (row.get("extra") or {}).get("task_state") == "completed":
+            return False
+        prior = (row.get("extra") or {}).get("execution_state")
+        manager.state.update_extra(child_id, execution_state="ready", feed_attached=True,
+                                   execution_pid=pid, execution_started_at=started)
+        if prior != "ready":
+            _hop(manager.publish_lifecycle(str(row.get("room_id") or ""), "start",
+                                           name=str(row.get("name") or child_id)))
+        return True
+    except Exception:
+        logger.debug("child execution readiness unavailable for %s", child_id, exc_info=True)
+        return False
+
+
 async def _forward_child_feed(
     child_id: str, transport: Any, feeds: dict[str, Any],
     grands: dict[str, str] | None = None,
@@ -652,6 +690,11 @@ async def _forward_child_feed(
             logger.debug("child feed subscribe failed for %s", child_id, exc_info=True)
             return
         try:
+            _mark_child_execution_ready(child_id, transport, feed)
+        except Exception:
+            # Readiness uncertainty must not detach an otherwise working feed.
+            logger.debug("child readiness evidence unavailable for %s", child_id, exc_info=True)
+        try:
             async for typed in feed.events():
                 try:
                     payload = _feed_event_to_dict(typed)
@@ -688,20 +731,31 @@ async def _forward_child_feed(
         except Exception:
             pass
         feeds.pop(child_id, None)
+        owned_feed = False
         try:
             with _child_feed_lock:
                 if _child_live_feeds.get(child_id) is feed:
+                    owned_feed = True
                     _child_live_feeds.pop(child_id, None)
                 _child_dedupe.pop(child_id, None)
         except Exception:
             pass
+        if owned_feed:
+            try:
+                manager = _watcher_manager()
+                row = manager.state.get(child_id) if manager is not None else None
+                if row is not None and (row.get("extra") or {}).get("task_state") != "completed":
+                    manager.state.update_extra(child_id, execution_state="detached", feed_attached=False)
+            except Exception:
+                pass
 
 
 def _ensure_watcher_room(child_id: str, meta: dict[str, Any]) -> str:
     """Create the delegate room inline (watcher thread).
 
-    Row + join + subscribe + invite + start line, via the gateway loop
-    where transport is involved. Returns the channel ("" when unavailable).
+    Row + join + subscribe + invite, via the gateway loop. Execution readiness
+    is announced separately only after the owner's feed actually attaches.
+    Returns the channel ("" when unavailable).
     Never raises.
     """
     try:
@@ -717,8 +771,7 @@ def _ensure_watcher_room(child_id: str, meta: dict[str, Any]) -> str:
         channel = _hop(manager._ensure_child_room_for(child_id, item)) or ""
         if channel:
             logger.info("observatory: room ensured %s for %s", channel, child_id)
-            _hop(manager.publish_lifecycle(
-                channel, "start", name=str(meta.get("name") or child_id)))
+            manager.state.update_extra(child_id, execution_state="unattached", feed_attached=False)
         return channel
     except Exception:
         return ""
@@ -848,7 +901,6 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
             known[child_id] = meta
             stops_pushed.discard(child_id)
             logger.info("observatory: watcher child start %s", child_id)
-            logger.info("observatory: watcher child start %s", child_id)
             try:
                 _ensure_watcher_room(child_id, meta)
                 _register_watcher_steer(child_id, meta)
@@ -877,7 +929,7 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
             except Exception:
                 logger.debug("child terminal evidence unavailable for %s", child_id, exc_info=True)
                 continue
-            gone_meta = known.pop(child_id, None) or {}
+            known.pop(child_id, None)
             try:
                 from observatory.rooms import drop_child_steer
                 drop_child_steer(child_id)

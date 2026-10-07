@@ -44,6 +44,14 @@ def child():
     append_message({"role": "user", "content": "frozen fixture goal"})
     append_message({"role": "assistant", "stopReason": "toolUse", "content": [
         {"type": "toolCall", "id": "fixture-tool", "name": "fixture", "arguments": {}}]})
+    # Observable side effect already committed before interruption. Recovery
+    # must inspect this transcript and preserve it, not rerun the whole goal.
+    (HOME / "step-one-attempts").write_text("1")
+    with (HOME / "step-one").open("x") as handle:
+        handle.write("preserved prior side effect")
+    append_message({"role": "toolResult", "content": [
+        {"type": "text", "text": json.dumps(
+            {"completed_step": "one", "artifact": str(HOME / "step-one")})}]})
     marker("child-ready", {"pid": os.getpid()})
     deadline = time.monotonic() + 15
     while not (HOME / "release-child").exists():
@@ -163,10 +171,60 @@ async def recover(hold_ack):
     state.close()
 
 
+def resume():
+    """A model-free parent reconciles evidence before continuing its goal."""
+    previous = json.loads((HOME / "final").read_text())["event"]
+    recovery = previous["results"][0]["recovery"]
+    checkpoint = recovery["checkpoint"]
+    assert checkpoint["prompt"] == "frozen full fixture specification"
+    assert Path(checkpoint["workdir"]) == HOME
+    transcript = Path(recovery["session_file"])
+    rows = [json.loads(line) for line in transcript.read_text().splitlines()]
+    completed = []
+    for row in rows:
+        message = row.get("message", {})
+        if message.get("role") == "toolResult":
+            for block in message["content"]:
+                receipt = json.loads(block["text"])
+                artifact = Path(receipt["artifact"])
+                assert artifact.parent == HOME
+                assert artifact.read_text() == "preserved prior side effect"
+                completed.append(receipt["completed_step"])
+    assert completed == ["one"], "resume requires verified prior work"
+    original_goal = recovery["goal"]
+    assert original_goal == previous["goal"] == "frozen fixture goal"
+    task = {"delegation_id": "process-fixture-resume", "goal": original_goal,
+            "parent_session_id": previous["parent_session_id"],
+            "session_key": previous["session_key"], "dispatched_at": time.time()}
+    ad._persist_dispatch(task)
+    ad.record_child_spawn("process-fixture-resume/0", task["delegation_id"],
+        goal=original_goal, child_pid=os.getpid(),
+        child_started_at=get_process_start_time(os.getpid()),
+        session_file=str(HOME / "resume-worker.jsonl"), transport_kind="fixture")
+    ad.record_child_checkpoint("process-fixture-resume/0",
+        {**checkpoint, "resume_from": str(transcript)})
+    with (HOME / "step-two").open("x") as handle:
+        handle.write("remaining goal finished")
+    completed.append("two")
+    summary = "verified fixture remaining goal after transcript reconciliation"
+    (HOME / "resume-worker.jsonl").write_text(json.dumps(
+        {"type": "message", "message": {"role": "assistant", "stopReason": "stop",
+         "content": [{"type": "text", "text": summary}]}}) + "\n")
+    ad.record_child_terminal("process-fixture-resume/0", "completed", summary=summary)
+    ad._persist_completion({**task, "type": "async_delegation", "status": "completed",
+        "summary": summary, "completed_at": time.time()}, {"status": "completed", "summary": summary})
+    marker("resumed", {"goal": original_goal, "prompt": checkpoint["prompt"],
+        "prior_transcript": str(transcript), "completed_steps": completed,
+        "original_status": ad.get_durable_delegation("process-fixture")["state"],
+        "continuation_status": ad.get_durable_delegation("process-fixture-resume")["state"]})
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "owner":
         owner()
     elif sys.argv[1] == "child":
         child()
+    elif sys.argv[1] == "resume":
+        resume()
     else:
         asyncio.run(recover("hold-ack" in sys.argv))

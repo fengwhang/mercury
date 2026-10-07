@@ -84,3 +84,119 @@ async def test_restart_request_checkpoints_before_after_turn_wait(tmp_path, monk
         release.set()
         time.sleep(0.02)
         ad._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_automatic_restart_defers_background_child_without_draining(tmp_path, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ad._reset_for_tests()
+    release = threading.Event()
+    runner, _ = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 0
+    try:
+        ad.dispatch_async_delegation(goal="original goal still running", context=None,
+            toolsets=None, role="leaf", model="fixture/model", session_key="route",
+            runner=lambda: (release.wait(2), {"status": "completed"})[1])
+        assert runner._running_agent_count() == 0
+        assert runner.request_restart(via_service=True, automatic=True,
+                                      trigger="control:restart-when-idle")
+        await asyncio.sleep(0.15)
+        runner.stop.assert_not_awaited()
+        assert not runner._draining, "deferred convenience restart must keep parent/feed usable"
+        assert ad.active_count() == 1
+        release.set()
+        await asyncio.wait_for(runner._restart_task, timeout=2)
+        runner.stop.assert_awaited_once_with(
+            restart=True, detached_restart=False, service_restart=True)
+    finally:
+        release.set()
+        task = getattr(runner, "_restart_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        time.sleep(0.02)
+        ad._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_explicit_admin_restart_keeps_bounded_checkpoint_drain(tmp_path, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ad._reset_for_tests()
+    release = threading.Event()
+    runner, _ = make_restart_runner()
+    runner._restart_after_turn_timeout = 0
+    runner.stop = AsyncMock()
+    try:
+        ad.dispatch_async_delegation(goal="checkpoint before admin stop", context=None,
+            toolsets=None, role="leaf", model="fixture/model", session_key="route",
+            runner=lambda: (release.wait(2), {"status": "completed"})[1])
+        assert runner.request_restart(via_service=True, trigger="admin:restart")
+        await asyncio.wait_for(runner._restart_task, timeout=1)
+        runner.stop.assert_awaited_once()
+        assert ad.active_count() == 1
+    finally:
+        release.set()
+        time.sleep(0.02)
+        ad._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_clean_exit_barrier_checks_unsettled_children_not_only_turn_drain(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ad._reset_for_tests()
+    release = threading.Event()
+    runner, _ = make_restart_runner()
+    # Replay the reported active_agents=0 drain seam. The clean-exit barrier
+    # must independently see the running background owner, not trust this.
+    runner._drain_active_agents = AsyncMock(return_value=({}, False))
+    try:
+        handle = ad.dispatch_async_delegation(goal="saved unfinished child", context=None,
+            toolsets=None, role="leaf", model="fixture/model", session_key="route",
+            interrupt_fn=lambda: None,
+            runner=lambda: (release.wait(5), {"status": "completed"})[1])
+        await runner.stop(restart=True, service_restart=True)
+        assert not (tmp_path / ".clean_shutdown").exists()
+        with ad._transaction() as db:
+            task = json.loads(db.execute(
+                "SELECT task_json FROM async_delegations WHERE delegation_id=?",
+                (handle["delegation_id"],)).fetchone()[0])
+        assert task["restart_checkpoint"]["reason"] == "gateway clean-exit barrier"
+        assert ad.active_count() == 1
+    finally:
+        release.set()
+        time.sleep(0.02)
+        ad._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_signal_follows_durable_exit_barrier(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    ad._reset_for_tests()
+    runner, _ = make_restart_runner()
+    observed = []
+    original = ad.checkpoint_active_delegations
+
+    def checkpoint(reason):
+        if reason == "gateway clean-exit barrier":
+            observed.append(runner._shutdown_event.is_set())
+        return original(reason)
+
+    monkeypatch.setattr(ad, "checkpoint_active_delegations", checkpoint)
+    await runner.stop(restart=True, service_restart=True)
+    assert observed == [False], "run_forever must not exit/cancel teardown before durability"
+    assert runner._shutdown_event.is_set()

@@ -46,8 +46,11 @@ def kill_owned_child(identity, home):
         time.sleep(0.01)
 
 
-@pytest.mark.parametrize("outcome", ["completed", "interrupted"])
-def test_owner_kill_reconcile_and_delivery_ack_restart(tmp_path, outcome):
+@pytest.mark.parametrize(("outcome", "service_shutdown"), [
+    ("completed", False), ("interrupted", False),
+    pytest.param("interrupted", True, id="service-like-cgroup-kill"),
+])
+def test_owner_kill_reconcile_and_delivery_ack_restart(tmp_path, outcome, service_shutdown):
     owner = start_fixture(tmp_path, "owner")
     recovery = None
     identity = None
@@ -55,12 +58,19 @@ def test_owner_kill_reconcile_and_delivery_ack_restart(tmp_path, outcome):
         identity = wait_marker(tmp_path / "owner-ready", owner)
         owner.kill()
         assert owner.wait(timeout=5) == -signal.SIGKILL
+        if service_shutdown:
+            # Model KillMode=mixed final cgroup cleanup: after the main exits,
+            # the service supervisor kills its child even in a new session.
+            # The controlled fixture self-kills; no live service/PID is touched.
+            kill_owned_child(identity, tmp_path)
         recovery = start_fixture(tmp_path, "recover", "hold-ack")
         ready = wait_marker(tmp_path / "recovery-ready", recovery)
-        assert set(ready["live"]) == {"root", "process-fixture/0", "grandchild", "independent"}
+        expected_live = {"root", "independent"} if service_shutdown else {
+            "root", "process-fixture/0", "grandchild", "independent"}
+        assert set(ready["live"]) == expected_live
         if outcome == "completed":
             (tmp_path / "release-child").touch()
-        else:
+        elif not service_shutdown:
             kill_owned_child(identity, tmp_path)
         accepted = wait_marker(tmp_path / "accepted", recovery)
         assert accepted["event"]["status"] == outcome
@@ -85,6 +95,17 @@ def test_owner_kill_reconcile_and_delivery_ack_restart(tmp_path, outcome):
         else:
             assert final["event"]["results"][0]["summary"] is None
             assert final["event"]["results"][0]["recovery"]["session_file"] == str(tmp_path / "worker.jsonl")
+            continuation = start_fixture(tmp_path, "resume")
+            resumed = wait_marker(tmp_path / "resumed", continuation)
+            assert continuation.wait(timeout=5) == 0
+            assert resumed["goal"] == "frozen fixture goal"
+            assert resumed["prompt"] == "frozen full fixture specification"
+            assert resumed["prior_transcript"] == str(tmp_path / "worker.jsonl")
+            assert resumed["completed_steps"] == ["one", "two"]
+            assert resumed["original_status"] == "interrupted"
+            assert resumed["continuation_status"] == "completed"
+            assert (tmp_path / "step-one-attempts").read_text() == "1"
+            assert (tmp_path / "step-two").read_text() == "remaining goal finished"
     finally:
         for proc in (owner, recovery):
             if proc is not None and proc.poll() is None:

@@ -71,3 +71,31 @@ async def test_existing_parent_receipt_acknowledges_unverifiable_legacy_claim(tm
         adapter.handle_message.assert_not_awaited()
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_ended_cli_rawsession_is_user_boundary_not_api_wake(tmp_path, monkeypatch):
+    import time
+    from tests.gateway.test_completion_delivery import _runner
+    from tools import async_delegation as ad
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    parent = "20261005_012442_1ab2bf"
+    evt = {"type": "async_delegation", "delegation_id": "closed-cli-fixture",
+           "parent_session_id": parent, "session_key": parent,
+           "goal": "retain original result", "status": "completed", "summary": "real output"}
+    ad._persist_dispatch({**evt, "dispatched_at": time.time()})
+    ad._persist_completion(evt, {"status": "completed", "summary": "real output"})
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    runner._session_db = SimpleNamespace(
+        get_session=AsyncMock(return_value={"id": parent, "source": "cli",
+            "ended_at": time.time(), "end_reason": "cli_close"}),
+        get_compression_tip=AsyncMock(return_value=parent))
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store, load_transcript=AsyncMock(return_value=[]))
+    runner._inject_watch_notification = AsyncMock(return_value=None)
+    assert await runner._deliver_completion_notification(format_process_notification(evt), evt) is None
+    runner._inject_watch_notification.assert_not_awaited()
+    durable = ad.get_durable_delegation("closed-cli-fixture")
+    assert durable["delivery_state"] == "dropped"
+    assert durable["result"]["summary"] == "real output"

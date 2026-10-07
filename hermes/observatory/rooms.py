@@ -113,19 +113,26 @@ def say_nowait(channel: str, text: str, *, kind: str = "status") -> bool:
 def call_soon(coro):
     """Schedule a bot coroutine on the gateway loop from any thread.
 
-    Returns the concurrent Future, or None when unschedulable.
+    Returns the concurrent Future, or None when unschedulable. Ownership of
+    an unsubmitted coroutine is released here, including shutdown sink loss.
     Never raises.
     """
+    if coro is None:
+        return None
     try:
         bot = get_bot_sink()
         loop = _loop_now()
-        if bot is None or loop is None or coro is None:
-            return None
-        import asyncio as _asyncio
+        if bot is not None and loop is not None:
+            import asyncio as _asyncio
 
-        return _asyncio.run_coroutine_threadsafe(coro, loop)
+            return _asyncio.run_coroutine_threadsafe(coro, loop)
     except Exception:
-        return None
+        pass
+    try:
+        coro.close()
+    except Exception:
+        pass
+    return None
 
 
 def set_bot_sink(sink: BotSink | None) -> None:

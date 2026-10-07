@@ -55,6 +55,7 @@ import socket
 import sys
 import tempfile
 import time
+import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -217,6 +218,64 @@ def build_status_payload() -> dict[str, Any]:
     payload["answered_at"] = time.time()
     payload["answering_pid"] = os.getpid()
     return payload
+
+
+def restart_control_handlers(runner: Any, loop: asyncio.AbstractEventLoop) -> dict[str, Callable]:
+    """Answer service admission on the owner loop, never from stale status."""
+    def on_loop(action: Callable[[], dict]) -> dict:
+        answer: list[dict] = []
+        done = threading.Event()
+
+        def invoke() -> None:
+            try:
+                answer.append(action())
+            except Exception as exc:
+                answer.append({"pid": os.getpid(), "error": str(exc)})
+            finally:
+                done.set()
+
+        loop.call_soon_threadsafe(invoke)
+        if not done.wait(timeout=5.0):
+            return {"pid": os.getpid(), "error": "gateway loop did not answer admission"}
+        return answer[0]
+
+    def status() -> dict:
+        return on_loop(lambda: {
+            **build_status_payload(), "pid": os.getpid(),
+            "active_work": runner._active_work_count(),
+            "active_delegations": runner._active_delegation_count(),
+            "running_agents": runner._running_agent_count(),
+        })
+
+    def restart(*, automatic: bool, params: Optional[dict] = None) -> dict:
+        def admit() -> dict:
+            active = runner._active_work_count()
+            if active and not automatic:
+                return {"pausing": False, "already_stopping": False, "deferred": True,
+                        "active_work": active, "pid": os.getpid()}
+            trigger = "control:restart-when-idle" if automatic else "control:pause-for-update"
+            if automatic and params and params.get("trigger"):
+                trigger += ":" + str(params["trigger"])
+            if automatic:
+                from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
+
+                supervised = is_gateway_supervisor_process() or is_container_restart_context()
+            else:
+                supervised = True
+            kwargs = {"automatic": True} if automatic else {}
+            accepted = runner.request_restart(detached=not supervised, via_service=supervised,
+                                              trigger=trigger, **kwargs)
+            return {"restarting" if automatic else "pausing": accepted,
+                    "already_stopping": not accepted, "deferred": bool(active),
+                    "active_work": active, "pid": os.getpid(),
+                    "drain_timeout": runner._restart_drain_timeout}
+        return on_loop(admit)
+
+    return {
+        "status": status,
+        "pause-for-update": lambda: restart(automatic=False),
+        "restart-when-idle": lambda params=None: restart(automatic=True, params=params),
+    }
 
 
 # ---------------------------------------------------------------------------
