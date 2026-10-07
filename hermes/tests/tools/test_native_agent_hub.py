@@ -144,6 +144,30 @@ def test_idle_peer_wake_preserves_native_attribution(tmp_path, monkeypatch, host
         assert scope.drain() == []
 
 
+def test_inbox_consume_before_idle_handoff_retains_successful_native_receipt(tmp_path, monkeypatch):
+    import queue
+    from tools.native_agent_hub import NativeHubSession, peer_record
+    import mercury_cli.plugins as plugins
+    parent = SimpleNamespace(session_id="receive-race", _native_hub_profile=str(tmp_path), _native_hub_turn_running=False)
+    cli = SimpleNamespace(agent=parent, _agent_running=False, _pending_input=queue.Queue())
+    consumed = []
+    with NativeHubSession(parent, command=BUN + [str(FIXTURE), "server"]) as scope:
+        def interleaved_consumer():
+            consumed.extend(peer_record(message) for message in scope.drain())
+            return SimpleNamespace(_cli_ref=cli)
+        monkeypatch.setattr(plugins, "get_plugin_manager", interleaved_consumer)
+        sdk = ROOT / "omp/packages/coding-agent/test/mirc/sdk-hub-fixture.ts"
+        result = subprocess.run(BUN + [str(sdk), "enabled", str(tmp_path)], cwd=ROOT / "omp",
+                                env={**os.environ, **scope.child_env("RacePeer")}, capture_output=True, text=True, timeout=40)
+        assert result.returncode == 0, result.stderr
+        receipt = json.loads(result.stdout)["sent"]["details"]["receipts"][0]
+        assert receipt["outcome"] == "injected"
+        assert len(consumed) == 1
+        assert consumed[0]["attribution"] == "agent"
+        assert cli._pending_input.empty()
+        assert scope.drain() == []
+
+
 def test_real_sdk_reconstruction_reopens_disposed_external_scope(tmp_path):
     from tools.native_agent_hub import NativeHubSession
     parent = SimpleNamespace(session_id="sdk-reuse", _native_hub_enabled=True, _native_hub_profile=str(tmp_path))

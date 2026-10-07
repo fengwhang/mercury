@@ -272,18 +272,21 @@ class NativeHubSession:
                 manager = get_plugin_manager()
                 cli = manager._cli_ref
                 wake = PeerWake(peer_record(message), self._profile_id, self._owner_session_id)
-                if cli is not None and getattr(cli, "agent", None) is parent and not getattr(cli, "_agent_running", False):
-                    with self._inbox_lock:
+                with self._inbox_lock:
+                    # Drain and wake handoff compete for one queued record.
+                    # A completed drain already accepted it; never wake/resend.
+                    if message not in self._inbox:
+                        return "injected"
+                    if cli is not None and getattr(cli, "agent", None) is parent and not getattr(cli, "_agent_running", False):
+                        cli._pending_input.put(wake)
                         self._inbox.remove(message)
-                    cli._pending_input.put(wake)
-                    return "woken"
-                if self._session_key and manager.inject_gateway_message(
-                    session_key=self._session_key, content=wake.record["content"], plugin_id="mercury.native-hub",
-                    expected_session_id=self._owner_session_id, peer_wake=wake,
-                ):
-                    with self._inbox_lock:
+                        return "woken"
+                    if self._session_key and manager.inject_gateway_message(
+                        session_key=self._session_key, content=wake.record["content"], plugin_id="mercury.native-hub",
+                        expected_session_id=self._owner_session_id, peer_wake=wake,
+                    ):
                         self._inbox.remove(message)
-                    return "woken"
+                        return "woken"
             except (ImportError, AttributeError):
                 pass
         # Finite/library hosts have no autonomous scheduler. The native inbox
