@@ -603,6 +603,18 @@ def build_turn_context(
     ``conversation_loop`` module are passed in explicitly to keep this module
     free of an import cycle with ``agent.conversation_loop``.
     """
+    from tools.native_agent_hub import PeerWake
+    wake = user_message if isinstance(user_message, PeerWake) else persist_user_message if isinstance(persist_user_message, PeerWake) else None
+    if wake is not None:
+        from tools.delegate_tool import _resolve_session_lineage
+        if (wake.profile != getattr(agent, "_native_hub_profile", "")
+                or _resolve_session_lineage(wake.conversation_id, agent)
+                != _resolve_session_lineage(agent.session_id, agent)):
+            raise RuntimeError("Native peer wake belongs to another conversation")
+        if isinstance(user_message, PeerWake):
+            user_message = wake.record["content"]
+        if isinstance(persist_user_message, PeerWake):
+            persist_user_message = wake.record["content"]
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
@@ -835,7 +847,10 @@ def build_turn_context(
     # forever if the turn crashes — so the raw system note paints as a user
     # bubble. The model still receives role/content unchanged; the api_messages
     # build strips both fields from every outgoing copy.
-    if persist_user_display_kind:
+    if wake is not None:
+        user_msg.update(attribution="agent", display_kind="agent_peer",
+                        display_metadata=wake.record["display_metadata"])
+    if persist_user_display_kind and wake is None:
         user_msg["display_kind"] = persist_user_display_kind
         if persist_user_display_metadata:
             user_msg["display_metadata"] = persist_user_display_metadata
@@ -845,10 +860,11 @@ def build_turn_context(
     agent._persist_user_message_idx = current_turn_user_idx
 
     # Track user turns for memory flush and periodic nudge logic.
-    agent._user_turn_count += 1
+    if user_msg.get("attribution") != "agent":
+        agent._user_turn_count += 1
     # Copilot x-initiator: the first API call of this user turn is
     # user-initiated; tool-loop follow-ups revert to "agent" (#3040).
-    agent._is_user_initiated_turn = True
+    agent._is_user_initiated_turn = user_msg.get("attribution") != "agent"
 
     # Reset the streaming context scrubber at the top of each turn.
     scrubber = getattr(agent, "_stream_context_scrubber", None)
