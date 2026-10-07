@@ -104,7 +104,6 @@ import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
 import { shouldShowStartupSplash } from "./startup-splash";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
-import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { concreteThinkingLevel, parseConfiguredThinkingLevel } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";
 import { getChangelogPath, resolveStartupChangelogForDisplay, type StartupChangelogSelection } from "./utils/changelog";
@@ -1901,15 +1900,6 @@ export async function runRootCommand(
 		sessionOptions.modelRegistry = modelRegistry;
 		sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
 		sessionOptions.settings = settingsInstance;
-
-		// OTEL: register global OTLP exporters when an endpoint is configured via
-		// env, then switch on the agent loop's telemetry hooks so traces, run-level
-		// metrics, and structured logs have source events to export. Content capture
-		// remains governed by OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT.
-		await logger.time("initTelemetryExport", initTelemetryExport);
-		if (isTelemetryExportEnabled()) {
-			sessionOptions.telemetry = createTelemetryExportConfig(sessionOptions.telemetry);
-		}
 
 		// Handle CLI --api-key as runtime override (not persisted)
 		if (parsedArgs.apiKey) {

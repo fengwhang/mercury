@@ -40,12 +40,8 @@ import { AUTHENTICATED_SENTINEL } from "./registry/types";
 import { getEnvApiKey, getEnvApiKeyName } from "./stream";
 import type { Provider } from "./types";
 import type {
-	ClientUsageIdentity,
-	ClientUsageReport,
-	ClientUsageSummary,
 	CredentialRankingContext,
 	CredentialRankingStrategy,
-	ObservedUsageEntry,
 	UsageCredential,
 	UsageFetchContext,
 	UsageFetchParams,
@@ -468,18 +464,6 @@ export interface AuthCredentialStore {
 	recordUsageSnapshots?(entries: UsageHistoryEntry[]): void;
 	/** Read recorded usage-limit snapshots, oldest first. */
 	listUsageHistory?(query?: UsageHistoryQuery): UsageHistoryEntry[];
-	/**
-	 * Client hook: forward locally observed request usage. Remote broker stores
-	 * batch these to the broker so it can attribute token burn per install;
-	 * local stores omit it and observation is skipped.
-	 * `client` overrides the reporting identity (gateway requests attribute to
-	 * the originating client, not the gateway host).
-	 */
-	recordObservedUsage?(entries: ObservedUsageEntry[], client?: ClientUsageIdentity): void;
-	/** Broker host: persist one client's observed-usage report. */
-	recordClientUsage?(report: ClientUsageReport): void;
-	/** Broker host: aggregate recorded per-client usage since a timestamp. */
-	getClientUsageSummary?(sinceMs: number): ClientUsageSummary;
 	/**
 	 * Optional store-supplied OAuth refresh. When present, `AuthStorage` uses
 	 * it before the per-provider local refresh path. `RemoteAuthCredentialStore`
@@ -3623,67 +3607,6 @@ export class AuthStorage {
 	 */
 	listUsageHistory(query?: UsageHistoryQuery): UsageHistoryEntry[] {
 		return this.#store.listUsageHistory?.(query) ?? [];
-	}
-
-	/**
-	 * Forward one completed request's usage to the store's observer hook.
-	 * Broker-backed stores batch these into per-install reports so the broker
-	 * can track actual token burn per client; local stores have no hook and
-	 * the call is a no-op.
-	 */
-	recordObservedUsage(entry: {
-		provider: Provider;
-		model: string;
-		usage: {
-			input: number;
-			output: number;
-			cacheRead: number;
-			cacheWrite: number;
-		};
-		costUsd?: number;
-		at?: number;
-		/** Attribution override; defaults to this process's install identity. */
-		client?: ClientUsageIdentity;
-	}): void {
-		const record = this.#store.recordObservedUsage;
-		if (!record) return;
-		try {
-			record.call(
-				this.#store,
-				[
-					{
-						at: entry.at ?? Date.now(),
-						provider: entry.provider,
-						model: entry.model,
-						requests: 1,
-						inputTokens: entry.usage.input,
-						outputTokens: entry.usage.output,
-						cacheReadTokens: entry.usage.cacheRead,
-						cacheWriteTokens: entry.usage.cacheWrite,
-						costUsd: Number.isFinite(entry.costUsd) ? (entry.costUsd ?? 0) : 0,
-					},
-				],
-				entry.client,
-			);
-		} catch (error) {
-			this.#usageLogger?.debug("observed usage record failed", {
-				provider: entry.provider,
-				error: String(error),
-			});
-		}
-	}
-
-	/** Broker host: persist one client's observed-usage report (per-install token burn). */
-	recordClientUsage(report: ClientUsageReport): boolean {
-		const record = this.#store.recordClientUsage;
-		if (!record) return false;
-		record.call(this.#store, report);
-		return true;
-	}
-
-	/** Broker host: aggregate recorded per-client usage since `sinceMs`. */
-	getClientUsageSummary(sinceMs: number): ClientUsageSummary {
-		return this.#store.getClientUsageSummary?.(sinceMs) ?? { clients: [] };
 	}
 
 	ingestUsageHeaders(

@@ -171,10 +171,16 @@ python -m observatory.voice_call_stt --host 0.0.0.0 --port 8765 \
     --mirc-url http://mirc-host:8000 --token s3cret
 ```
 
-Stdlib only. `--provider/--model/--language/--endpoint` overlay the
-stored STT config in memory. `--token` (or `VOICE_CALL_SIDECAR_TOKEN`)
-gates every route except `/stt/health`; without it the port transcribes
-for anyone who can reach it — bind loopback or firewall accordingly.
+Stdlib HTTP/WebSocket transport. `--provider/--model/--language` overlay the
+stored STT config in memory. Model and language flags also apply when the stored
+provider is retained (without `--provider`). The parsed `--endpoint` flag does
+**not** redirect the current OpenAI client or update a local provider's baked
+command endpoint; configure endpoints through `mercury setup stt` instead.
+When reusing a local command template, update any existing `--endpoint` argument
+in that template too: setup only appends the flag when it is absent.
+`--token` (or `VOICE_CALL_SIDECAR_TOKEN`) gates every route except `/stt/health`;
+without it the port transcribes for anyone who can reach it — bind loopback or
+firewall accordingly.
 
 Set `VOICE_CALL_MIRC_TOKEN` to the same secret in the **MIRC web-server
 process** and the **sidecar process** (or pass `--mirc-token` to the
@@ -182,6 +188,10 @@ sidecar). This authenticates the sidecar only to the dashboard's three
 voice/audio routes. It does not grant access to configuration or other
 dashboard endpoints. The browser receives only the distinct sidecar token.
 Restart the two processes after adding the service secret.
+
+`--home PATH` selects that home's `config.yaml` as well as its state directories,
+overriding an inherited `MERCURY_CONFIG`. Without `--home`, the launcher's active
+configuration remains authoritative.
 
 The separate sidecar token is entered in the browser's voice settings and kept
 in local browser storage. Service provisioning and public mLounge configuration

@@ -216,10 +216,10 @@ class WsConnection:
     def close(
         self, code: int = 1000, reason: str = "", *, message: Optional[Dict[str, Any]] = None,
     ) -> None:
-        # Never wait for a provider worker holding the send lock. Shutdown
-        # interrupts its sendall; an uncontended close gets a bounded chance
-        # to deliver the final notice and RFC close frame first.
-        locked = self.lock.acquire(blocking=False)
+        # Give a finishing writer a bounded chance to release the lock so a
+        # normal hangup delivers its final notice and RFC close frame. A
+        # backpressured writer still gets interrupted by shutdown below.
+        locked = self.lock.acquire(timeout=0.1)
         was_closed = self.closed
         self.closed = True
         try:
@@ -292,6 +292,11 @@ def load_sidecar_stt_config(overlays: Optional[Dict[str, str]] = None) -> Dict[s
     provider = (overlays.get("provider") or "").strip().lower()
     if provider:
         stt_config["provider"] = provider
+    elif any(overlays.get(key) for key in ("model", "language", "endpoint")):
+        from tools.transcription_tools import _get_provider
+
+        provider = _get_provider(stt_config)
+    if provider:
         section = dict(stt_config.get(provider) or {})
         if overlays.get("model"):
             section["model"] = overlays["model"]
@@ -872,7 +877,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--endpoint", default="", help="STT endpoint overlay")
     parser.add_argument("--token", default="", help="Shared bearer token (or VOICE_CALL_SIDECAR_TOKEN)")
     parser.add_argument("--mirc-token", default="", help="MIRC voice service secret (or VOICE_CALL_MIRC_TOKEN)")
-    parser.add_argument("--home", default="", help="Mercury home override (sets MERCURY_HOME/HERMES_HOME)")
+    parser.add_argument("--home", default="", help="Mercury home override (including its config.yaml)")
     return parser
 
 
@@ -881,6 +886,7 @@ def main(argv: Optional[list] = None) -> int:
     if args.home:
         os.environ["MERCURY_HOME"] = args.home
         os.environ["HERMES_HOME"] = args.home
+        os.environ["MERCURY_CONFIG"] = os.path.join(args.home, "config.yaml")
     section = load_voice_call_section()
     mirc_url = (args.mirc_url or str(section.get("mirc_host_url") or "")).strip().rstrip("/")
     if not mirc_url:

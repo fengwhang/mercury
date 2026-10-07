@@ -81,7 +81,6 @@ import {
 	truncateToWidth,
 } from "./render-utils";
 import type { ToolActivityContext, ToolActivitySummary } from "./renderers";
-import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
 import { dispatchResolutionDevice, isResolutionDeviceName, renderResolutionDeviceCall } from "./resolve";
 import {
 	deleteRowByKey,
@@ -525,7 +524,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		// finalize a staged, already-previewed action, so they stay at read tier.
 		const xdevTarget = parseXdUrl(path);
 		if (xdevTarget) {
-			if (xdevTarget.name === REPORT_ISSUE_DEVICE_NAME) return "write";
 			if (xdevTarget.name && isResolutionDeviceName(xdevTarget.name)) return "read";
 			const inst =
 				xdevTarget.name && this.session.xdev ? resolveXdevTool(this.session.xdev, xdevTarget.name) : undefined;
@@ -1157,16 +1155,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 						signal,
 						xd: {
 							write: async (name, deviceContent) => {
-								if (name === REPORT_ISSUE_DEVICE_NAME) {
-									const { result, xdev } = await dispatchReportIssueDevice(this.session, deviceContent);
-									xdResult = {
-										content: result.content,
-										details: { xdev },
-										isError: result.isError,
-										useless: result.useless,
-									};
-									return;
-								}
 								if (name && isResolutionDeviceName(name)) {
 									const { result, xdev } = await dispatchResolutionDevice(this.session, name, deviceContent);
 									xdResult = {
@@ -1634,7 +1622,6 @@ export const writeToolRenderer = {
 			const pathSettled = args.content !== undefined;
 			if (!xdev?.name || !pathSettled) return undefined;
 			if (isResolutionDeviceName(xdev.name)) return renderResolutionDeviceCall(xdev.name, args.content, uiTheme);
-			if (xdev.name === REPORT_ISSUE_DEVICE_NAME) return renderReportIssueDeviceCall(args.content, uiTheme);
 			return renderXdevCall(xdev.name, args.content, options, uiTheme, options.renderContext?.resolveXdevMounted);
 		}
 		const filePath = shortenPath(rawPath);

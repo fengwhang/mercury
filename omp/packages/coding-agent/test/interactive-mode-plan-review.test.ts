@@ -636,14 +636,14 @@ describe("InteractiveMode plan review rendering", () => {
 
 		mode.planModeEnabled = true;
 		mode.planModePlanFilePath = planFilePath;
-		const edited = "# Auto QA\n\nSave the final plan.\n\n## Verify\n\n- run focused tests\n";
+		const edited = "# Plan review\n\nSave the final plan.\n\n## Verify\n\n- run focused tests\n";
 		vi.spyOn(mode, "showPlanReview").mockImplementation(async (_plan, _title, _options, dialogOptions) => {
 			dialogOptions?.onPlanEdited?.(edited);
 			return "Save and quit";
 		});
-		const generateTitle = vi.spyOn(session, "generateTitle").mockResolvedValue("Auto QA");
-		const destination = path.join(tempDir.path(), "AUTO_QA_PLAN.md");
-		vi.spyOn(mode, "showHookCustom").mockResolvedValue({ path: "AUTO_QA_PLAN.md" });
+		const generateTitle = vi.spyOn(session, "generateTitle").mockResolvedValue("Plan review");
+		const destination = path.join(tempDir.path(), "PLAN_REVIEW_PLAN.md");
+		vi.spyOn(mode, "showHookCustom").mockResolvedValue({ path: "PLAN_REVIEW_PLAN.md" });
 		const clear = vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
 
 		await mode.handlePlanApproval({
@@ -653,7 +653,7 @@ describe("InteractiveMode plan review rendering", () => {
 		});
 
 		expect(generateTitle).toHaveBeenCalledWith(
-			"# Auto QA\nSave the final plan.\n## Verify\n- run focused tests",
+			"# Plan review\nSave the final plan.\n## Verify\n- run focused tests",
 			expect.any(String),
 		);
 		expect(await Bun.file(destination).text()).toBe(edited);

@@ -59,17 +59,6 @@
     "@oh-my-pi/pi-utils": "catalog:",
     "@oh-my-pi/pi-wire": "catalog:",
     "@oh-my-pi/snapcompact": "catalog:",
-    "@opentelemetry/api": "catalog:",
-    "@opentelemetry/api-logs": "catalog:",
-    "@opentelemetry/context-async-hooks": "catalog:",
-    "@opentelemetry/exporter-logs-otlp-proto": "catalog:",
-    "@opentelemetry/exporter-metrics-otlp-proto": "catalog:",
-    "@opentelemetry/exporter-trace-otlp-proto": "catalog:",
-    "@opentelemetry/resources": "catalog:",
-    "@opentelemetry/sdk-logs": "catalog:",
-    "@opentelemetry/sdk-metrics": "catalog:",
-    "@opentelemetry/sdk-trace-base": "catalog:",
-    "@opentelemetry/sdk-trace-node": "catalog:",
     "puppeteer-core": "catalog:"
   },
   "optionalDependencies": {
@@ -77,6 +66,7 @@
     "sherpa-onnx-node": "1.13.2"
   },
   "devDependencies": {
+    "@opentelemetry/api": "catalog:",
     "@types/bun": "catalog:"
   },
   "engines": {

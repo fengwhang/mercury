@@ -10,7 +10,7 @@ import { GrepTool } from "../../src/tools/grep";
 
 const testSettings = Settings.isolated();
 
-// Regression for grievances #208 (find) and #209 (search): a multi-path call
+// Regression: a multi-path call
 // that includes an entry which does not exist on disk must not abort the whole
 // lookup. The tool should skip the missing entry and return matches from the
 // surviving entries, with a non-fatal "skipped missing paths" notice.

@@ -10,9 +10,6 @@ import { type } from "@oh-my-pi/omptype";
 import { readSseEvents } from "@oh-my-pi/pi-utils";
 import type { AuthCredential, DisabledCredentialSummary } from "../auth-storage";
 import type {
-	ClientUsageReportRequest,
-	ClientUsageReportResponse,
-	ClientUsageSummaryResponse,
 	CredentialBlockRequest,
 	CredentialBlockResponse,
 	CredentialBlocksDeleteResponse,
@@ -31,8 +28,6 @@ import type {
 } from "./types";
 import { AUTH_BROKER_CAPABILITIES_HEADER, AUTH_BROKER_CAPABILITY_CODEX_METER_BLOCK_SCOPES } from "./types";
 import {
-	clientUsageReportResponseSchema,
-	clientUsageSummaryResponseSchema,
 	credentialBlockResponseSchema,
 	credentialBlocksDeleteResponseSchema,
 	credentialDisableResponseSchema,
@@ -49,8 +44,6 @@ import {
 
 /** Response schema per endpoint, keyed by the name `#request` callers pass. */
 const RESPONSE_SCHEMAS = {
-	clientUsageReportResponseSchema,
-	clientUsageSummaryResponseSchema,
 	credentialBlockResponseSchema,
 	credentialBlocksDeleteResponseSchema,
 	credentialDisableResponseSchema,
@@ -297,26 +290,6 @@ export class AuthBrokerClient {
 		if (query?.provider) params.set("provider", query.provider);
 		const path = `/v1/usage/history${params.size > 0 ? `?${params.toString()}` : ""}`;
 		return this.#request<UsageHistoryResponse>("GET", path, { schema: "usageHistoryResponseSchema", signal });
-	}
-
-	/** Report this client's batched observed request usage for per-install burn tracking. */
-	reportClientUsage(report: ClientUsageReportRequest, signal?: AbortSignal): Promise<ClientUsageReportResponse> {
-		return this.#request<ClientUsageReportResponse>("POST", "/v1/usage/observed", {
-			body: report,
-			schema: "clientUsageReportResponseSchema",
-			signal,
-		});
-	}
-
-	/** Per-client token burn aggregates recorded by the broker host. */
-	fetchClientUsageSummary(query?: { sinceMs?: number }, signal?: AbortSignal): Promise<ClientUsageSummaryResponse> {
-		const params = new URLSearchParams();
-		if (query?.sinceMs !== undefined) params.set("sinceMs", String(query.sinceMs));
-		const path = `/v1/usage/clients${params.size > 0 ? `?${params.toString()}` : ""}`;
-		return this.#request<ClientUsageSummaryResponse>("GET", path, {
-			schema: "clientUsageSummaryResponseSchema",
-			signal,
-		});
 	}
 
 	notifyUsageStale(signal?: AbortSignal): Promise<UsageStaleResponse> {

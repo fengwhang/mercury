@@ -392,11 +392,18 @@ class RoomManager:
         """Classify an inbound channel message for the adapter.
 
         Returns ``(route, row)`` where route ∈ gateway | spawn-hermes |
-        spawn-omp | child | passthrough. Unknown channels pass through to
+        spawn-omp | child | expired | passthrough. Closed channels without
+        a live successor are expired; unrelated channels pass through to
         normal gateway dispatch (a fresh per-channel session).
         """
         row = self.node_for_channel(channel)
         if row is None:
+            from observatory.room_reaper import closed_rooms
+
+            want = (channel or "").lower()
+            if (want in closed_rooms(self.state)
+                    and want != gateway_channel(_server_prefix()).lower()):
+                return "expired", None
             return "passthrough", None
         try:
             extra = row.get("extra") or {}
@@ -643,16 +650,6 @@ class RoomManager:
                 )
         except Exception:
             parent_channel = ""
-        if parent_channel and not already_completed:
-            try:
-                label = str(row.get("name") or node_id)
-                await self.publish(
-                    parent_channel,
-                    f"Delegate task {status}: {label}" + (f"\n{summary}" if summary else ""),
-                    kind="assistant_reply" if summary else "status",
-                )
-            except Exception:
-                pass
         from observatory.state import purge_on_death
 
         if purge_on_death(int(row["depth"])):
@@ -670,6 +667,16 @@ class RoomManager:
             )
             await exit_orchestrator(node_id, state=self.state, registry=_shared_registry(),
                                     bot=self.bot, status=status, summary=summary)
+        if parent_channel and not already_completed:
+            try:
+                label = str(row.get("name") or node_id)
+                await self.publish(
+                    parent_channel,
+                    f"Delegate task {status}: {label}" + (f"\n{summary}" if summary else ""),
+                    kind="assistant_reply" if summary else "status",
+                )
+            except Exception:
+                pass
 
     def _native_parent(self, owner_id: str, feed: dict[str, Any]) -> str:
         """Map an in-process OMP parent to the immediate observatory node."""
@@ -693,6 +700,7 @@ class RoomManager:
                 ok = fn(text)
         except Exception as exc:
             logger.debug("rooms: steer %s failed", node_id, exc_info=True)
+            return f"steer failed: {exc}"
         if ok is False:
             return "subagent is no longer accepting input."
         return f"steered (as {sender})."

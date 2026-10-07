@@ -468,12 +468,7 @@ Python subprocess filtering denies common API keys and allows safe base variable
 | `PI_DISABLE_UUTILS_BUILTINS` | Non-empty except `0`/`false` disables the bash tool's uutils built-ins; `shell.env.PI_DISABLE_UUTILS_BUILTINS` wins                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `OMP_NO_WEBP`                | `1` or `true` (case-insensitive) disables WebP in image-resize format selection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `MNEMOPI_EMBEDDING_MODEL`    | Embedding-model override for mnemopi memory configuration when no explicit override is supplied                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `PI_AUTO_QA`                 | Boolean flag with highest precedence for the automatic tool-issue report injection/recording (`dev.autoqa` setting is consulted next); `0`/`false` disables, `1`/`true` forces on                                                                                                                                                                                                                                                                                                                                                                                          |
 | `PI_BROWSER_RELAY`           | `0`/`1` kill switch for the browser relay; overrides the `browser.relay` setting (relay auto-starts when the browser tool needs it)                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-
-Auto-QA reports stay in the local `autoqa.db`. Inspect or delete them with
-`mercury omp grievances list` and `mercury omp grievances clean`; there is no
-push command, remote endpoint setting, or sharing-consent prompt.
 
 ### Hindsight memory backend
 
@@ -604,21 +599,6 @@ These are read as runtime signals; they are usually set by the terminal/OS rathe
 | `PI_COMMIT_NO_FALLBACK`   | If `true`, disables fallback when agent returns no proposal         |
 | `PI_COMMIT_MAP_REDUCE`    | If `false`, disables map-reduce commit analysis path                |
 | `DEBUG`                   | If set, commit agent error stack traces are printed                 |
-
----
-
-## 11) OpenTelemetry export
-
-OMP initializes OTLP export only when at least one signal has an endpoint. `OTEL_SDK_DISABLED=true` disables initialization.
-
-| Variable group                                                                                                  | Behavior                                                                                        |
-| --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`                                                                                   | Common endpoint fallback                                                                        |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Per-signal endpoint; wins over the common endpoint                                              |
-| `OTEL_TRACES_EXPORTER`, `OTEL_LOGS_EXPORTER`, `OTEL_METRICS_EXPORTER`                                           | A list containing `none` disables that signal                                                   |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` and per-signal `..._PROTOCOL` variants                                            | Only `http/protobuf` is enabled by this runtime; another explicit protocol disables that signal |
-| `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`                                                                 | OpenTelemetry resource metadata                                                                 |
-| `OTEL_LOG_LEVEL`                                                                                                | Minimum exported OMP log level                                                                  |
 
 ---
 

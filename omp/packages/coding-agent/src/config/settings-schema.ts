@@ -1077,12 +1077,13 @@ export const SETTINGS_SCHEMA = {
 
 	"images.urls.backends": {
 		type: "array",
-		default: ["provider-files", "tailscale", "cloudflared", "litterbox"] as BlobDestinationId[],
+		default: ["provider-files"] as BlobDestinationId[],
 		ui: {
 			tab: "model",
 			group: "Vision",
 			label: "Image URL Backends",
-			description: "Ordered destinations tried when publishing images for provider access",
+			description:
+				"Ordered destinations tried when publishing images for provider access. Defaults to provider-native attachments only; tunnels and uploaders require explicit selection",
 			options: BLOB_BACKEND_CHOICES,
 			ordered: true,
 		},
@@ -6031,18 +6032,6 @@ export const SETTINGS_SCHEMA = {
 			label: "Tool Call Handler Timeout (ms)",
 			description:
 				"Positive finite active-work timeout for extension tool_call handlers; invalid values use 30000ms, and time awaiting OMP-owned dialogs does not count",
-		},
-	},
-
-	"dev.autoqa": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "tools",
-			group: "Developer",
-			label: "Auto QA",
-			description:
-				"Record tool issues locally (xd://report_issue). On by default; reports stay on this machine and can be inspected or deleted with grievances",
 		},
 	},
 

@@ -100,7 +100,6 @@ Plus 15 hits in assistant visible text / thinking blobs.
 | ------------------------------ | -----: |
 | `edit`                         |     38 |
 | `eval`                         |     11 |
-| `report_tool_issue`            |      3 |
 | `grep`/`read`/`search`/`yield` | 1 each |
 
 Concentrated in tools with free-form (non-JSON-schema) argument formats.

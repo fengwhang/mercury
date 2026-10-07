@@ -24,9 +24,6 @@ import {
 	type SnapshotCredential,
 } from "../auth-storage";
 import type {
-	ClientUsageReportRequest,
-	ClientUsageReportResponse,
-	ClientUsageSummaryResponse,
 	CredentialBlockRequest,
 	CredentialBlockResponse,
 	CredentialBlockSnapshot,
@@ -282,56 +279,6 @@ export const usageHistoryResponseSchema: FluentType<UsageHistoryResponse> = type
 	"+": "reject",
 	generatedAt: "number",
 	entries: usageHistoryEntrySchema.array(),
-});
-
-const observedUsageEntrySchema = type({
-	at: "number",
-	provider: "string",
-	model: "string",
-	requests: "number",
-	inputTokens: "number",
-	outputTokens: "number",
-	cacheReadTokens: "number",
-	cacheWriteTokens: "number",
-	costUsd: "number",
-});
-
-/** Broker `POST /v1/usage/observed` request — one client's batched observed usage. */
-export const clientUsageReportRequestSchema: FluentType<ClientUsageReportRequest> = type({
-	"+": "reject",
-	installId: "string",
-	"hostname?": "string",
-	"app?": "string",
-	entries: observedUsageEntrySchema.array(),
-});
-
-export const clientUsageReportResponseSchema: FluentType<ClientUsageReportResponse> = type({
-	"+": "reject",
-	ok: "boolean",
-});
-
-const clientUsageClientSummarySchema = type({
-	installId: "string",
-	"hostname?": "string",
-	firstSeen: "number",
-	lastSeen: "number",
-	providers: type({
-		"app?": "string",
-		provider: "string",
-		requests: "number",
-		inputTokens: "number",
-		outputTokens: "number",
-		cacheReadTokens: "number",
-		cacheWriteTokens: "number",
-		costUsd: "number",
-	}).array(),
-});
-
-/** Broker `GET /v1/usage/clients` response — per-client token burn aggregates. */
-export const clientUsageSummaryResponseSchema: FluentType<ClientUsageSummaryResponse> = type({
-	"+": "reject",
-	generatedAt: "number",
-	clients: clientUsageClientSummarySchema.array(),
 });
 
 // ─── Refresh ─────────────────────────────────────────────────────────────────

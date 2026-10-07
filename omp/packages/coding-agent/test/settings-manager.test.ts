@@ -1976,43 +1976,20 @@ describe("Settings", () => {
 			expect(settings.get("grep.enabled")).toBe(true);
 		});
 
-		it("drops obsolete QA sharing settings while preserving local recording and reminders migration", async () => {
+		it("migrates nested reminders max and persists it across reload", async () => {
 			await writeSettings({
-				dev: {
-					autoqa: { consent: "denied" },
-					autoqaConsent: "granted",
-					autoqaPush: { endpoint: "https://qa.invalid", token: "test-token" },
-				},
-				"dev.autoqa.consent": "granted",
-				"dev.autoqaConsent": "denied",
-				"dev.autoqaPush.endpoint": "https://qa.invalid/flat",
-				"dev.autoqaPush.token": "flat-test-token",
 				todo: { reminders: { max: 5 } },
 			});
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			expect(settings.get("dev.autoqa")).toBe(true);
-			expect(settings.isConfigured("dev.autoqa")).toBe(false);
 			expect(settings.get("todo.remindersMax")).toBe(5);
 			expect(settings.get("todo.reminders")).toBe(true);
 
 			settings.set("display.showTokenUsage", true);
 			await settings.flush();
 			const onDisk = await readSettings();
-			const dev = onDisk.dev as Record<string, unknown>;
-			expect(dev.autoqaConsent).toBeUndefined();
-			expect(dev.autoqaPush).toBeUndefined();
-			expect(dev.autoqa).toBeUndefined();
-			for (const key of [
-				"dev.autoqa.consent",
-				"dev.autoqaConsent",
-				"dev.autoqaPush.endpoint",
-				"dev.autoqaPush.token",
-			]) {
-				expect(onDisk[key]).toBeUndefined();
-			}
+			expect((onDisk.todo as Record<string, unknown>).remindersMax).toBe(5);
 			const reloaded = await Settings.loadIsolated({ cwd: projectDir, agentDir });
-			expect(reloaded.get("dev.autoqa")).toBe(true);
 			expect(reloaded.get("todo.remindersMax")).toBe(5);
 		});
 
@@ -2031,24 +2008,10 @@ describe("Settings", () => {
 		});
 
 		it("preserves explicit parent booleans despite obsolete leaf settings", async () => {
-			await Bun.write(
-				getConfigPath(),
-				`dev:\n  autoqa: false\n"dev.autoqa.consent": unset\ntodo:\n  reminders: false\n"todo.reminders.max": 4\n`,
-			);
+			await Bun.write(getConfigPath(), `todo:\n  reminders: false\n"todo.reminders.max": 4\n`);
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			expect(settings.get("dev.autoqa")).toBe(false);
 			expect(settings.get("todo.reminders")).toBe(false);
 			expect(settings.get("todo.remindersMax")).toBe(4);
-		});
-
-		it("ignores obsolete consent values in isolated overrides", () => {
-			for (const consent of ["denied", "granted", "unset"] as const) {
-				const settings = Settings.isolated({
-					"dev.autoqa.consent": consent,
-				} as Partial<Record<SettingPath, unknown>>);
-				expect(settings.get("dev.autoqa")).toBe(true);
-				expect(settings.isConfigured("dev.autoqa")).toBe(false);
-			}
 		});
 
 		it("drops dead BM25-discovery keys and leaves tools.xdev at its default", async () => {

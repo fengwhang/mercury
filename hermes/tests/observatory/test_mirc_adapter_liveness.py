@@ -67,6 +67,57 @@ async def test_successful_connect_reports_eof_and_reconnect_restores_messages(tm
 
 
 @pytest.mark.asyncio
+async def test_expired_room_self_part_drops_reconnect_join_intent(tmp_path, monkeypatch):
+    from observatory import rooms
+
+    async with running_daemon(tmp_path) as (daemon, port, _):
+        adapter = make_adapter(port, monkeypatch)
+        departed = asyncio.Event()
+        sent = []
+        handle_line = adapter._handle_line
+        send_raw = adapter._send_raw
+
+        async def observe_line(raw):
+            await handle_line(raw)
+            if " PART #test-expired " in raw:
+                departed.set()
+
+        async def observe_send(raw, **kwargs):
+            sent.append(raw)
+            await send_raw(raw, **kwargs)
+
+        monkeypatch.setattr(adapter, "_handle_line", observe_line)
+        monkeypatch.setattr(adapter, "_send_raw", observe_send)
+        previous_sink = rooms.get_bot_sink()
+        try:
+            assert await adapter.connect()
+            for channel in ("#test-root", "#test-active", "#test-expired"):
+                assert await adapter.join_channel(channel)
+            await until(lambda: all(
+                "testbot" in daemon._channels.get(channel, set())
+                for channel in ("#test", "#test-root", "#test-active", "#test-expired")
+            ))
+
+            assert await daemon.destroy_channel("#test-expired") == 1
+            await asyncio.wait_for(departed.wait(), 5)
+            await adapter.disconnect()
+            sent.clear()
+            assert await adapter.connect(is_reconnect=True)
+            await until(lambda: all(
+                "testbot" in daemon._channels.get(channel, set())
+                for channel in ("#test", "#test-root", "#test-active")
+            ))
+            assert {line for line in sent if line.startswith("JOIN ")} == {
+                "JOIN #test", "JOIN #test-root", "JOIN #test-active",
+            }
+            assert adapter.extra_channels == {"#test-root", "#test-active"}
+            assert "#test-expired" not in daemon.channel_names()
+        finally:
+            await adapter.disconnect()
+            rooms.set_bot_sink(previous_sink)
+
+
+@pytest.mark.asyncio
 async def test_busy_output_survives_multiple_inbound_silence_periods(tmp_path, monkeypatch):
     from observatory import mirc
 

@@ -1215,6 +1215,17 @@ class MIRCAdapter(BasePlatformAdapter):
             await self._send_raw(f"NICK {self._current_nick}")
             return
 
+        # The daemon self-PARTs expired rooms, including rejected cached JOINs.
+        # Forget that room's reconnect intent without changing the gateway.
+        if command == "PART" and params:
+            if _extract_nick(msg["prefix"]).lower() == self._current_nick.lower():
+                channel = params[0].lower()
+                self.extra_channels.difference_update(
+                    [c for c in self.extra_channels if c.lower() == channel]
+                )
+                self._observatory_online_channels.discard(channel)
+            return
+
         # BATCH frames (draft/multiline reassembly)
         if command == "BATCH":
             await self._close_in_batch(params)
@@ -1435,6 +1446,9 @@ class MIRCAdapter(BasePlatformAdapter):
             try:
                 from observatory.rooms import get_room_manager, route_channel
                 route, _row = route_channel(chat_id)
+                if route == "expired":
+                    # A queued line may outlive its room's durable expiry.
+                    return
                 manager = get_room_manager()
                 if isinstance(_row, dict) and (_row.get("extra") or {}).get("profile"):
                     # Select the profile before deriving the approval key.
@@ -1442,15 +1456,15 @@ class MIRCAdapter(BasePlatformAdapter):
                     source.profile = _row["extra"]["profile"]
                 if manager is not None and route in ("child", "spawn-omp"):
                     if route == "child":
-                        reply = await manager.handle_child_message(chat_id, user_name, text)
-                        if reply:
-                            await self.send(chat_id, reply, metadata={
-                                "mercury_kind": "status", "_interim_send": True,
-                            })
-                        # The room owned this text: a gateway turn here would
-                        # answer a second time in someone else's room. Slash
-                        # commands still fall through (exit/status/...).
+                        # Slash commands belong to the gateway; never steer
+                        # them into a child before dispatching its command.
                         if not text.lstrip().startswith("/"):
+                            reply = await manager.handle_child_message(chat_id, user_name, text)
+                            if reply:
+                                await self.send(chat_id, reply, metadata={
+                                    "mercury_kind": "status", "_interim_send": True,
+                                })
+                            # Plain chat belongs only to the child.
                             return
                     else:
                         from observatory.rooms import classify_omp_slash

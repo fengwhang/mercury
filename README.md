@@ -19,7 +19,7 @@ your phone. Your host runs the agents; you choose their supported model
 providers.
 
 The current stable release is **[v0.3.27](https://github.com/fengwhang/mercury/releases/tag/v0.3.27)**.
-The experimental nightly is **[v0.4.3-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.4.3-nightly)**, built from the integration branch. It includes the stable Observatory room-cleanup fixes, managed Python dependencies, connector setup cards, and opt-in browser voice calls. Voice still needs real-device acceptance testing; see the [integration audit](docs/integration-audit-2026-10-04.md) for tested behavior and remaining limits.
+Experimental nightly builds are published as **[GitHub prereleases](https://github.com/fengwhang/mercury/releases)** from the integration line, separately from stable. They include the stable Observatory room-cleanup fixes, managed Python dependencies, connector setup cards, and opt-in browser voice calls. Voice still needs real-device acceptance testing; see the [integration audit](docs/integration-audit-2026-10-04.md) for tested behavior and remaining limits.
 
 ## Shared shell backend
 
@@ -117,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/fengwhang/mercury/main/install-nigh
 ```
 
 Stable is **[v0.3.27](https://github.com/fengwhang/mercury/releases/tag/v0.3.27)**.
-The latest nightly is **[v0.4.3-nightly](https://github.com/fengwhang/mercury/releases/tag/v0.4.3-nightly)**.
+Published nightlies are listed on the **[releases page](https://github.com/fengwhang/mercury/releases)** and never replace GitHub Latest.
 The nightly installer selects the newest published prerelease. Stable remains
 on its own update channel; nightly is selected explicitly by this wrapper or
 `--channel nightly`.

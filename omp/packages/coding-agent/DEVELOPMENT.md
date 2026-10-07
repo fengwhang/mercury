@@ -56,7 +56,7 @@ registry (see `AGENTS.md` → *Worker scripts*).
 
 Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 `config.ts`, `system-prompt.ts`, `thinking.ts`, `workspace-tree.ts`,
-`cli-commands.ts`, `telemetry-export.ts`.
+`cli-commands.ts`.
 
 | Directory | Responsibility | Reference |
 |---|---|---|

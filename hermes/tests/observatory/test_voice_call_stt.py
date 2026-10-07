@@ -144,3 +144,82 @@ def test_close_interrupts_a_blocked_socket_writer():
         released.set()
         sender.join(2)
         closer.join(2)
+
+
+def test_close_delivers_ended_after_finishing_writer_releases_lock():
+    import json
+    import threading
+
+    attempted = threading.Event()
+    lock = threading.Lock()
+
+    class ObservedLock:
+        def acquire(self, blocking=True, timeout=-1):
+            if not blocking:
+                acquired = lock.acquire(blocking=False)
+                attempted.set()
+                return acquired
+            attempted.set()
+            return lock.acquire(timeout=timeout)
+
+        def release(self):
+            lock.release()
+
+    client, server = socket.socketpair()
+    client.settimeout(1)
+    ws = WsConnection(server)
+    ws.lock = ObservedLock()
+    # A writer has completed its send, but has not released its lock yet.
+    lock.acquire()
+    closer = threading.Thread(
+        target=ws.close, kwargs={"message": {"type": "ended"}}, daemon=True,
+    )
+    closer.start()
+    try:
+        assert attempted.wait(1)
+        lock.release()
+        closer.join(1)
+        assert not closer.is_alive()
+        expected = ws_encode_frame(json.dumps({"type": "ended"}).encode())
+        expected += ws_encode_frame(struct.pack("!H", 1000), 0x8)
+        with client.makefile("rb") as frames:
+            assert frames.read(len(expected)) == expected
+    finally:
+        if lock.locked():
+            lock.release()
+        closer.join(1)
+        client.close()
+        server.close()
+
+
+def test_explicit_sidecar_home_overrides_inherited_mercury_config(tmp_path, monkeypatch):
+    import json
+    from observatory import voice_call_stt as stt
+
+    home = tmp_path / "voice-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(json.dumps({
+        "stt": {"provider": "qwen3-asr"},
+        "voice_call": {"mirc_host_url": "http://explicit-mirc:8123"},
+    }))
+    inherited = tmp_path / "inherited.yaml"
+    inherited.write_text(json.dumps({
+        "stt": {"provider": "openai"},
+        "voice_call": {"mirc_host_url": "http://wrong-mirc:9123"},
+    }))
+    monkeypatch.setenv("MERCURY_CONFIG", str(inherited))
+    served = []
+
+    class Server:
+        def __init__(self, address, handler):
+            served.append((handler.state.mirc_url, handler.state.stt_config["provider"]))
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            pass
+
+    monkeypatch.setattr(stt, "ThreadingHTTPServer", Server)
+    assert stt.main(["--home", str(home)]) == 0
+    assert served == [("http://explicit-mirc:8123", "qwen3-asr")]

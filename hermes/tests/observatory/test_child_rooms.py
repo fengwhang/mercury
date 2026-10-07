@@ -109,6 +109,40 @@ async def test_deeper_child_survives_completion_until_parent_finishes(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_completion_expires_family_before_parent_notification(tmp_path, monkeypatch):
+    """A cancelled parent notification cannot keep a completed family live."""
+    import asyncio
+    from observatory.state import StateError
+
+    mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
+    _spawn_row(state, "alpha-node", "alpha", "#vm_alpha")
+    await mgr._ensure_child_room_for("d1", {"name": "bravo", "parent_name": "alpha-node"})
+    await mgr._ensure_child_room_for("d2", {"name": "cee", "parent_name": "d1"})
+    notifying = asyncio.Event()
+
+    async def blocked_publish(*args, **kwargs):
+        notifying.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(mgr, "publish", blocked_publish)
+    retirement = asyncio.create_task(mgr._retire_child_room("d1", summary="done"))
+    try:
+        await asyncio.wait_for(notifying.wait(), 2)
+        retirement.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await retirement
+        for node in ("d1", "d2"):
+            with pytest.raises(StateError):
+                state.get(node)
+        assert state.get("alpha-node")["status"] == "live"
+        assert set(bot.destroyed) == {"#vm_alpha-bravo", "#vm_alpha-bravo-cee"}
+    finally:
+        retirement.cancel()
+        await asyncio.gather(retirement, return_exceptions=True)
+        state.close()
+
+
+@pytest.mark.asyncio
 async def test_stop_unknown_node_resurrects_nothing(tmp_path, monkeypatch) -> None:
     mgr, state, bot, _ = _manager(tmp_path, monkeypatch)
     await mgr._retire_child_room("ghost")
