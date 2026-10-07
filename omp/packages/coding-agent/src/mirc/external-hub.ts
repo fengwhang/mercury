@@ -306,6 +306,8 @@ export class NativeHubServer {
 						throw new Error("Root topology mismatch");
 				} else if (!ref.parentId || this.#owners.get(ref.parentId) !== grant || ref.kind === "main")
 					throw new Error("Subtree capability required");
+				const reservation = [...this.#grants.values()].find(candidate => candidate.root === ref.id);
+				if (reservation && reservation !== grant) throw new Error("Peer identity reserved for another subtree");
 				const owner = this.#owners.get(ref.id);
 				if (owner && owner !== grant) throw new Error("Peer identity owned by another subtree");
 				// Terminal tombstones may not be resurrected by a stale registration.

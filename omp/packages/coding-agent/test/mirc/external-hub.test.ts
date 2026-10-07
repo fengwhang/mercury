@@ -120,6 +120,15 @@ test("sender identity cannot impersonate parent or issue from another subtree", 
 	expect(r.received).toEqual([]);
 });
 
+test("reserved sibling root cannot be registered by another granted subtree", async () => {
+	const server = await scope();
+	const left = await peer(server, "Left", "Main");
+	server.issue("Right", "Main");
+	left.registry.register({ id: "Right", displayName: "Right", kind: "sub", parentId: "Left", session: left.session });
+	await expect(left.client.flush()).rejects.toThrow("reserved");
+	expect(server.registry.get("Right")).toBeUndefined();
+});
+
 test("successful transport receipt is not duplicated into native inbox", async () => {
 	const server = await scope();
 	const l = await peer(server, "Left", "Main");
