@@ -2616,7 +2616,7 @@ class TestCaptureScreenshotPersistence:
         screenshot_path = out["meta"]["screenshot_path"]
         assert screenshot_path in out["text_summary"]
         assert "MEDIA:" not in out["text_summary"]
-        assert screenshot_path.startswith(str(tmp_path / "cache" / "images"))
+        assert not Path(screenshot_path).is_relative_to(tmp_path)
         assert Path(screenshot_path).read_bytes() == base64.b64decode(self._PNG_B64)
 
     def test_capture_cache_is_bounded(self, tmp_path, monkeypatch):
@@ -2624,11 +2624,13 @@ class TestCaptureScreenshotPersistence:
         from tools.computer_use import tool as cu_tool
 
         monkeypatch.setattr(cu_tool, "_MAX_CAPTURE_FILES", 2)
-        for _ in range(3):
-            assert cu_tool._persist_capture_image(self._capture()) is not None
-
-        captures = list((tmp_path / "cache" / "images").glob("computer_use_*.*"))
-        assert len(captures) == 2
+        captures = [
+            Path(cu_tool._persist_capture_image(self._capture()))
+            for _ in range(3)
+        ]
+        assert not captures[0].exists()
+        assert all(path.is_file() for path in captures[1:])
+        assert len(list(captures[-1].parent.glob("computer_use_*.*"))) == 2
 
 
 class TestBoundsScaleField:
