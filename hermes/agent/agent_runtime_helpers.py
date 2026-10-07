@@ -1671,8 +1671,16 @@ def restore_primary_runtime(agent) -> bool:
             # A supplied URL alone must not grant a private custom route
             # synthetic keyless credentials on recovery. Reuse its declared
             # provider identity and the router's normal credential resolution.
+            # An inferred startup selection (""/auto) carries no identity of
+            # its own: re-resolve only the provider the router inferred back
+            # then, never auto-discover a new route here.
+            resolve_target = (requested_provider or "").strip().lower()
+            if resolve_target in {"", "auto"}:
+                resolve_target = (startup_primary.get("provider") or "").strip().lower()
+            if resolve_target in {"", "auto"}:
+                return False
             client, model = resolve_provider_client(
-                requested_provider, model=startup_primary["model"],
+                resolve_target, model=startup_primary["model"],
                 raw_codex=True,
                 api_mode=startup_primary["api_mode"],
             )
@@ -1683,8 +1691,8 @@ def restore_primary_runtime(agent) -> bool:
                 api_key=client.api_key, base_url=str(client.base_url),
                 api_mode=startup_primary["api_mode"],
             )
-            agent.requested_provider = requested_provider
-            agent._primary_runtime["requested_provider"] = requested_provider
+            agent.requested_provider = resolve_target
+            agent._primary_runtime["requested_provider"] = resolve_target
             return True
         except InterruptedError:
             raise

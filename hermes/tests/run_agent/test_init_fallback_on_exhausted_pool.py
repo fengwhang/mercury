@@ -216,3 +216,42 @@ def test_unavailable_private_custom_primary_does_not_become_keyless_on_restore(m
         assert agent._fallback_index == 1
 
     http.assert_not_called()
+
+
+@pytest.mark.parametrize("requested_provider", ["", "auto"])
+def test_inferred_startup_provider_never_auto_discovers_on_restore(requested_provider):
+    from types import SimpleNamespace
+
+    routes = []
+    fallback_client = SimpleNamespace(
+        api_key="fake-openrouter", base_url="https://openrouter.invalid/v1", _custom_headers={},
+    )
+
+    def resolve(provider, **kwargs):
+        routes.append(provider)
+        if provider == "openai-codex":
+            return None, None
+        return fallback_client, kwargs["model"]
+
+    with (
+        patch("agent.auxiliary_client.resolve_provider_client", side_effect=resolve),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("agent.credential_pool.load_pool", return_value=None),
+        patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        patch("agent.context_compressor.get_model_context_length", return_value=200000),
+    ):
+        agent = AIAgent(
+            provider=None, requested_provider=requested_provider, model="gpt-6.1-sol",
+            api_key=None, base_url="https://chatgpt.com/backend-api/codex",
+            quiet_mode=True, skip_context_files=True, skip_memory=True,
+            fallback_model=[{"provider": "openrouter", "model": "vendor/backup"}],
+        )
+        assert agent.provider == "openrouter"
+        assert agent._restore_primary_runtime() is False
+        assert agent.provider == agent.requested_provider == "openrouter"
+        assert agent.api_key == "fake-openrouter"
+        assert agent.api_mode == "chat_completions"
+        assert agent.model == "vendor/backup"
+        assert routes == ["openai-codex", "openrouter", "openai-codex"]
