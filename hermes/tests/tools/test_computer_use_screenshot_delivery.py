@@ -159,3 +159,85 @@ def test_secret_looking_exports_remain_denied(mercury_home, tmp_path, name):
     source.write_bytes(b"private fixture state")
     with pytest.raises(MLoungeError, match="refusing secret-looking file"):
         stage_mlounge_upload(mercury_home, source)
+
+
+def test_removed_export_directory_is_recreated(mercury_home, monkeypatch):
+    monkeypatch.setattr(computer_use, "_capture_export_dir", None)
+    cap, raw, _ = capture()
+    first = Path(computer_use._persist_capture_image(cap))
+    first.unlink()
+    first.parent.rmdir()
+    screenshot = computer_use._persist_capture_image(cap)
+    assert screenshot is not None
+    path = Path(screenshot)
+    assert path.parent != first.parent
+    assert path.read_bytes() == raw
+    assert staged_bytes(mercury_home, stage_mlounge_upload(mercury_home, path)) == raw
+
+
+def test_retention_does_not_delete_untracked_matching_files(mercury_home, monkeypatch):
+    monkeypatch.setattr(computer_use, "_capture_export_dir", None)
+    monkeypatch.setattr(computer_use, "_MAX_CAPTURE_FILES", 2)
+    cap, _, _ = capture()
+    first = Path(computer_use._persist_capture_image(cap))
+    foreign = first.parent / "computer_use_not-owned.png"
+    foreign.write_bytes(b"unrelated fixture file")
+    os.utime(foreign, (1, 1))
+    assert computer_use._persist_capture_image(cap) is not None
+    assert foreign.read_bytes() == b"unrelated fixture file"
+
+
+def test_directory_swap_before_file_create_cannot_write_into_mercury_home(
+    mercury_home, monkeypatch,
+):
+    import tempfile
+
+    monkeypatch.setattr(computer_use, "_capture_export_dir", None)
+    cap, _, _ = capture()
+    first = Path(computer_use._persist_capture_image(cap))
+    export = first.parent
+    moved = export.with_name(export.name + "-moved")
+    real_mkstemp = tempfile.mkstemp
+    real_open = os.open
+    swapped = False
+
+    def swap():
+        nonlocal swapped
+        if not swapped:
+            export.rename(moved)
+            export.symlink_to(mercury_home, target_is_directory=True)
+            swapped = True
+
+    def swap_before_mkstemp(*args, **kwargs):
+        swap()
+        return real_mkstemp(*args, **kwargs)
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        if flags & os.O_CREAT and kwargs.get("dir_fd") is not None:
+            swap()
+        return real_open(path, flags, *args, **kwargs)
+
+    with monkeypatch.context() as race:
+        race.setattr(tempfile, "mkstemp", swap_before_mkstemp)
+        race.setattr(os, "open", swap_before_open)
+        # The wrapper retains the real open() dir_fd capability.
+        race.setattr(os, "supports_dir_fd", os.supports_dir_fd | {swap_before_open})
+        result = computer_use._persist_capture_image(cap)
+    assert swapped
+    assert not list(mercury_home.glob("computer_use_*.*"))
+    assert result is None or not Path(result).resolve().is_relative_to(mercury_home)
+    recovered = computer_use._persist_capture_image(cap)
+    assert recovered is not None
+    assert not Path(recovered).resolve().is_relative_to(mercury_home)
+    stage_mlounge_upload(mercury_home, recovered)
+
+
+def test_ordinary_capture_without_dir_fd_support_is_stageable(mercury_home, monkeypatch):
+    monkeypatch.setattr(os, "supports_dir_fd", set())
+    monkeypatch.setattr(computer_use, "_capture_export_dir", None)
+    cap, raw, _ = capture("JPEG")
+    screenshot = computer_use._persist_capture_image(cap)
+    assert screenshot is not None
+    assert Path(screenshot).suffix == ".jpg"
+    assert Path(screenshot).read_bytes() == raw
+    assert staged_bytes(mercury_home, stage_mlounge_upload(mercury_home, screenshot)) == raw
