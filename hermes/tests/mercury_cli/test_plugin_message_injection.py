@@ -235,3 +235,23 @@ def test_actual_cli_chat_stages_peer_record_without_context_expansion(monkeypatc
     assert staged[0]["attribution"] == "agent"
     assert staged[0]["content"] == record["content"]
     assert host.agent._pending_cli_user_message is staged[0]
+
+
+def test_actual_cli_explicit_exit_revokes_native_conversation(tmp_path, monkeypatch):
+    import cli as cli_module
+    import mercury_cli.plugins as plugins
+    from tests.tools.test_native_agent_hub import BUN, FIXTURE
+    from tools.native_agent_hub import get_parent_hub, close_parent_hub, detach_agent_hub
+    parent = SimpleNamespace(session_id="exit", _native_hub_enabled=True, _native_hub_profile=str(tmp_path),
+                             _native_hub_conversation_id="exit")
+    scope = get_parent_hub(parent, command=BUN + [str(FIXTURE), "server"])
+    host = object.__new__(cli_module.MercuryCLI)
+    host.agent = parent
+    monkeypatch.setattr(plugins, "fire_pre_command_hook", lambda **kwargs: None)
+    try:
+        detach_agent_hub(parent)
+        assert host.process_command("/exit") is False
+        assert not scope._rendezvous.exists()
+        assert scope._process.wait(timeout=3) == 0
+    finally:
+        close_parent_hub(str(tmp_path), "exit")

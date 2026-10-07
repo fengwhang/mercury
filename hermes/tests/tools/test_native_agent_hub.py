@@ -322,6 +322,64 @@ def test_parent_turn_state_close_and_reset_follow_native_owner_boundaries(tmp_pa
             scope._process.wait()
 
 
+def test_explicit_close_revokes_detached_durable_conversation(tmp_path):
+    from tools.native_agent_hub import get_parent_hub, close_parent_hub, detach_agent_hub, NativeHubSession
+    parent = SimpleNamespace(session_id="exit", _native_hub_enabled=True, _native_hub_profile=str(tmp_path),
+                             _native_hub_conversation_id="exit")
+    scope = get_parent_hub(parent, command=BUN + [str(FIXTURE), "server"])
+    scope.child_env("Reserved")
+    rendezvous = scope._rendezvous
+    try:
+        detach_agent_hub(parent)
+        close_parent_hub(str(tmp_path), "exit")
+        assert not rendezvous.exists(), "explicit close left the durable grant handle"
+        assert scope._process.wait(timeout=3) == 0
+    finally:
+        if scope._process.poll() is None:
+            replacement = NativeHubSession(parent, command=BUN + [str(FIXTURE), "server"], rendezvous=rendezvous)
+            replacement.close()
+            scope._process.wait(timeout=3)
+
+
+def test_stale_agent_exit_cannot_revoke_replacement_scope_generation(tmp_path):
+    from tools.native_agent_hub import get_parent_hub, close_parent_hub, detach_agent_hub, close_agent_hub
+    def parent():
+        return SimpleNamespace(session_id="generation", _native_hub_enabled=True, _native_hub_profile=str(tmp_path),
+                               _native_hub_conversation_id="generation")
+    old, replacement = parent(), parent()
+    scope = get_parent_hub(old, command=BUN + [str(FIXTURE), "server"])
+    detach_agent_hub(old)
+    close_parent_hub(str(tmp_path), "generation")
+    fresh = get_parent_hub(replacement, command=BUN + [str(FIXTURE), "server"])
+    try:
+        detach_agent_hub(replacement)
+        close_agent_hub(old)
+        assert fresh._rendezvous.exists()
+        live = get_parent_hub(replacement, command=BUN + [str(FIXTURE), "server"])
+        assert live.address == fresh.address
+        assert live.tool({"op": "list"})["details"]["peers"] == []
+    finally:
+        close_parent_hub(str(tmp_path), "generation")
+        scope._process.wait(timeout=3)
+        fresh._process.wait(timeout=3)
+
+
+def test_replaced_owner_instance_close_cannot_kill_live_coordinator(tmp_path):
+    from tools.native_agent_hub import NativeHubSession
+    parent = SimpleNamespace(session_id="replacement", _native_hub_profile=str(tmp_path))
+    old = NativeHubSession(parent, command=BUN + [str(FIXTURE), "server"], rendezvous=tmp_path / "scope.json")
+    replacement = NativeHubSession(parent, command=BUN + [str(FIXTURE), "server"], rendezvous=tmp_path / "scope.json")
+    try:
+        old.close()
+        assert (tmp_path / "scope.json").exists()
+        assert replacement.tool({"op": "list"})["details"]["peers"] == []
+    finally:
+        replacement.close()
+        if old._process.poll() is None:
+            old._process.terminate()
+        old._process.wait(timeout=3)
+
+
 def test_compression_continuation_drains_stable_conversation_scope(tmp_path):
     from tools.native_agent_hub import get_parent_hub, close_parent_hub, drain_peer_records, reset_agent_hub
     parent = SimpleNamespace(session_id="original", _native_hub_enabled=True, _native_hub_profile=str(tmp_path),

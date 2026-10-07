@@ -194,6 +194,12 @@ class GatewaySlashCommandsMixin:
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
         old_entry = self.session_store._entries.get(session_key)
+        # /new is explicit revocation, unlike generic agent rebuild/restart close.
+        from tools.native_agent_hub import close_parent_hub
+        from gateway.run import _hermes_home
+        profile = self._resolve_profile_home_for_source(source) if hasattr(self, "_resolve_profile_home_for_source") else _hermes_home()
+        if old_entry is not None:
+            await self._run_in_executor_with_context(close_parent_hub, str(profile), old_entry.session_id)
 
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.

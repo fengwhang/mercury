@@ -198,3 +198,27 @@ async def test_reset_completes_when_cleanup_times_out(caplog):
     ), "expected the timeout warning to be logged"
     runner.session_store.reset_session.assert_called_once()
     assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_actual_gateway_new_revokes_detached_native_hub(tmp_path):
+    from tests.tools.test_native_agent_hub import BUN, FIXTURE
+    from tools.native_agent_hub import get_parent_hub, close_parent_hub, detach_agent_hub
+    runner = _make_runner_with_cached_agent(lambda: None)
+    key = build_session_key(_make_source())
+    parent = SimpleNamespace(session_id="sess-old", _native_hub_enabled=True, _native_hub_profile=str(tmp_path),
+                             _native_hub_conversation_id="sess-old")
+    scope = get_parent_hub(parent, command=BUN + [str(FIXTURE), "server"])
+    runner._resolve_profile_home_for_source = lambda source: tmp_path
+    runner._cleanup_agent_resources = lambda agent: detach_agent_hub(parent)
+    runner._agent_cache[key] = parent
+    try:
+        detach_agent_hub(parent)
+        await runner._handle_reset_command(_make_event("/new"))
+        assert not scope._rendezvous.exists()
+        assert scope._process.wait(timeout=3) == 0
+        runner.session_store.reset_session.assert_called_once()
+    finally:
+        close_parent_hub(str(tmp_path), "sess-old")
+        if scope._process.poll() is not None:
+            scope._process.wait()

@@ -114,7 +114,7 @@ class PeerWake:
 
 class NativeHubSession:
     """One native server per profile/conversation; separate grants per external subtree."""
-    def __init__(self, parent, *, command=None, rendezvous=None):
+    def __init__(self, parent, *, command=None, rendezvous=None, connect_only=False, expected_token=None):
         self._parent = weakref.ref(parent) if hasattr(parent, "__weakref__") else lambda: parent
         self._lock = threading.RLock()
         self._send_lock = threading.Lock()
@@ -132,6 +132,7 @@ class NativeHubSession:
         self._reader = None
         self._rendezvous = Path(rendezvous) if rendezvous else None
         self._connected = False
+        self._authenticated = False
         self._session_key = ""
         self._owner_session_id = str(getattr(parent, "_native_hub_conversation_id", None) or getattr(parent, "session_id", ""))
         self._profile_id = str(getattr(parent, "_native_hub_profile", ""))
@@ -161,11 +162,18 @@ class NativeHubSession:
                         if hasattr(os, "getuid") and stat.st_uid != os.getuid():
                             raise RuntimeError("Native hub rendezvous has another owner")
                         try:
-                            self._connect(json.loads(self._rendezvous.read_text()))
+                            ready = json.loads(self._rendezvous.read_text())
+                            if expected_token is not None and ready.get("token") != expected_token:
+                                raise PermissionError("Native hub scope generation changed")
+                            self._connect(ready)
                             return
                         except ConnectionRefusedError:
                             # No listener owns this endpoint; never signal a saved PID.
                             self._rendezvous.unlink()
+                            if connect_only:
+                                raise
+                    if connect_only:
+                        raise FileNotFoundError("Native hub conversation already closed")
                     ready = self._spawn(command, env)
                     self._connect(ready)
                     temporary = self._rendezvous.with_name(self._rendezvous.name + "." + uuid.uuid4().hex)
@@ -205,6 +213,7 @@ class NativeHubSession:
         self._reader = threading.Thread(target=self._read, name="mercury-native-hub", daemon=True)
         self._reader.start()
         self.request("hello", {"token": self._token})
+        self._authenticated = True
         self.request("register", {"id": "Main", "displayName": "Main", "kind": "main", "status": "running", "lastActivity": int(time.time() * 1000)})
 
     def rebind(self, parent):
@@ -449,20 +458,22 @@ class NativeHubSession:
             if self._process and self._process.poll() is not None:
                 self._process.wait()
             return
+        shutdown_owned = not self._authenticated
         if not self._closed and self._connected:
             try:
                 self.request("shutdown", {})
+                shutdown_owned = True
             except (OSError, RuntimeError):
                 pass
         self.detach()
-        if self._rendezvous and self._rendezvous.exists():
+        if shutdown_owned and self._rendezvous and self._rendezvous.exists():
             # A stale generation cannot delete another scope's rendezvous.
             try:
                 if json.loads(self._rendezvous.read_text()).get("token") == getattr(self, "_token", None):
                     self._rendezvous.unlink()
             except (OSError, ValueError):
                 pass
-        if self._process:
+        if shutdown_owned and self._process:
             try:
                 self._process.wait(timeout=3)
             except subprocess.TimeoutExpired:
@@ -498,6 +509,7 @@ def get_parent_hub(parent, *, command=None):
             _scopes[key] = scope
         else:
             scope.rebind(parent)
+        parent._native_hub_scope_token = scope._token
         return scope
 
 
@@ -518,12 +530,46 @@ def drain_peer_records(agent, messages):
         messages.extend(peer_record(message) for message in scope.drain())
 
 
-def close_parent_hub(profile, session_id):
-    """Explicit conversation termination only. Never call on planned restart drain."""
+def close_parent_hub(profile, session_id, *, expected_token=None):
+    """Explicit termination uses the durable handle, even after owner detach."""
+    profile, session_id = str(profile), str(session_id)
+    if not session_id or not profile or not Path(profile).is_absolute():
+        return
     with _scope_lock:
-        scope = _scopes.pop((str(profile), str(session_id)), None)
-    if scope:
+        scope = _scopes.get((profile, session_id))
+        if scope is not None:
+            if expected_token is not None and scope._token != expected_token:
+                return
+            _scopes.pop((profile, session_id), None)
+    if scope is not None and not scope._closed and scope._connected:
         scope.close()
+        return
+    rendezvous = Path(profile) / "runtime" / "native-hub" / (hashlib.sha256(session_id.encode()).hexdigest() + ".json")
+    if not rendezvous.exists():
+        return
+    # Reconnect only to this owned conversation. Never spawn, resolve an
+    # installed executable, or signal a PID saved in a rendezvous file.
+    from types import SimpleNamespace
+    parent = SimpleNamespace(session_id=session_id, _native_hub_conversation_id=session_id, _native_hub_profile=profile)
+    try:
+        handle = NativeHubSession(parent, command=[], rendezvous=rendezvous, connect_only=True,
+                                  expected_token=expected_token)
+    except (FileNotFoundError, ConnectionRefusedError, PermissionError):
+        return
+    handle.close()
+
+
+def close_agent_hub(agent):
+    """Explicit owner exit/reset; stale agent generations cannot close a replacement."""
+    if agent is None:
+        return
+    profile = getattr(agent, "_native_hub_profile", "")
+    conversation = getattr(agent, "_native_hub_conversation_id", None) or getattr(agent, "session_id", "")
+    with _scope_lock:
+        scope = _scopes.get((profile, str(conversation)))
+        if scope is not None and scope._parent() is not agent:
+            return
+    close_parent_hub(profile, conversation, expected_token=getattr(agent, "_native_hub_scope_token", None))
 
 
 def set_agent_hub_running(agent, running):
@@ -555,7 +601,7 @@ def reset_agent_hub(agent):
     conversation = getattr(agent, "_native_hub_conversation_id", None)
     target = str(getattr(agent, "session_id", ""))
     if conversation and conversation != target:
-        close_parent_hub(getattr(agent, "_native_hub_profile", ""), conversation)
+        close_agent_hub(agent)
         agent._native_hub_conversation_id = target
 
 

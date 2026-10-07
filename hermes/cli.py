@@ -10374,6 +10374,8 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         old_session_id = self.session_id
+        from tools.native_agent_hub import close_agent_hub
+        close_agent_hub(getattr(self, "agent", None))
         _boundary_snapshot = None
         if self.agent and self.conversation_history:
             # Deliver the context-engine boundary synchronously and get back
@@ -12577,6 +12579,8 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             elif _args:
                 _cprint(f"  {_DIM}✗ Unknown argument: {_escape(_args)}. Use /exit --delete to also remove session history.{_RST}")
                 return True
+            from tools.native_agent_hub import close_agent_hub
+            close_agent_hub(getattr(self, "agent", None))
             return False
         elif canonical == "help":
             _help_parts = cmd_original.split(None, 1)
