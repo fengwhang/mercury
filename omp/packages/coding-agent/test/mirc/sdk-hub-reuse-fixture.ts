@@ -11,12 +11,25 @@ const directory = process.argv[2];
 try {
 	for (let generation = 1; generation <= 2; generation++) {
 		const { session } = await createAgentSession({
-			cwd: directory, agentDir: directory,
-			modelRegistry: new ModelRegistry(auth), model: getBundledModel("anthropic", "claude-sonnet-4-5"),
-			settings: Settings.isolated({ "memory.backend": "off", "autolearn.enabled": false, "task.maxRecursionDepth": 0 }),
-			sessionManager: SessionManager.inMemory(directory), toolNames: ["hub"], skills: [], contextFiles: [],
-			promptTemplates: [], slashCommands: [], disableExtensionDiscovery: true, enableMCP: false,
-			enableLsp: false, skipPythonPreflight: true,
+			cwd: directory,
+			agentDir: directory,
+			modelRegistry: new ModelRegistry(auth),
+			model: getBundledModel("anthropic", "claude-sonnet-4-5"),
+			settings: Settings.isolated({
+				"memory.backend": "off",
+				"autolearn.enabled": false,
+				"task.maxRecursionDepth": 0,
+			}),
+			sessionManager: SessionManager.inMemory(directory),
+			toolNames: ["hub"],
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			disableExtensionDiscovery: true,
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
 		});
 		if (session.getAgentId() !== "SDKReuse") throw new Error("External identity lost");
 		if (!session.getActiveToolNames().includes("hub")) throw new Error("Hub capability lost");

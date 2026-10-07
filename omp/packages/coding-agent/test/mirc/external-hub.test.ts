@@ -120,6 +120,14 @@ test("sender identity cannot impersonate parent or issue from another subtree", 
 	expect(r.received).toEqual([]);
 });
 
+test("external transport rejects non-loopback and implicit-host addresses before connecting", async () => {
+	for (const address of ["localhost:1", "[::1]:1", "192.0.2.1:1", "https://127.0.0.1:1"]) {
+		await expect(HubScopeClient.connect(address, "invalid-fixture-grant", new AgentRegistry())).rejects.toThrow(
+			"localhost",
+		);
+	}
+});
+
 test("reserved sibling root cannot be registered by another granted subtree", async () => {
 	const server = await scope();
 	const left = await peer(server, "Left", "Main");
@@ -129,11 +137,10 @@ test("reserved sibling root cannot be registered by another granted subtree", as
 	expect(server.registry.get("Right")).toBeUndefined();
 });
 
-
 test("involuntary disconnect clears mirrors and settles accepted unbounded await", async () => {
 	const server = await scope();
 	const left = await peer(server, "Left", "Main");
-	const right = await peer(server, "Right", "Main");
+	await peer(server, "Right", "Main");
 	await left.client.flush();
 	const accepted = Promise.withResolvers<void>();
 	const send = left.bus.send.bind(left.bus);
