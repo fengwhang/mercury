@@ -51,6 +51,27 @@ def test_disabled_parent_has_no_eager_hub(tmp_path):
     assert set(tmp_path.iterdir()) == before
 
 
+def test_coordinator_inherits_private_profile_xdg_and_process_namespaces(tmp_path, monkeypatch):
+    from tools.native_agent_hub import NativeHubSession
+    # Test conftest intentionally removes Mercury alias overrides. Restore only
+    # this fixture's private aliases, not any owner/global environment.
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+    monkeypatch.setenv("MERCURY_CONFIG", str(tmp_path / "config.yaml"))
+    keys = ["HOME", "MERCURY_HOME", "HERMES_HOME", "MERCURY_PROFILE_HOME", "MERCURY_CONFIG", "PI_CODING_AGENT_DIR",
+            "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+            "DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS",
+            "HERMES_TEST_SUBPROCESS_ISOLATED", "MERCURY_TEST_SUBPROCESS_ISOLATED"]
+    missing = [key for key in keys if not os.environ.get(key)]
+    assert not missing, f"private fixture host context missing keys: {missing}"
+    parent = SimpleNamespace(session_id="inherited-isolation", _native_hub_profile=str(tmp_path))
+    with NativeHubSession(parent, command=BUN + [str(FIXTURE), "server"]) as scope:
+        process = Path("/proc") / str(scope._process.pid)
+        environ = dict(item.split("=", 1) for item in (process / "environ").read_bytes().decode().split("\0") if "=" in item)
+        assert {key: environ.get(key) for key in keys} == {key: os.environ[key] for key in keys}
+        for namespace in ["user", "pid", "mnt", "net"]:
+            assert os.readlink(process / "ns" / namespace) == os.readlink(Path("/proc/self/ns") / namespace)
+
+
 def test_parent_native_send_await_receives_real_source_reply(tmp_path):
     from tools.native_agent_hub import NativeHubSession
     parent = SimpleNamespace(session_id="parent-roundtrip", _native_hub_enabled=True, _native_hub_profile=str(tmp_path))

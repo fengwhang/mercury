@@ -159,6 +159,10 @@ class NativeHubSession:
         # No environment secrets are needed by the native mailbox server.
         env = {key: value for key, value in os.environ.items() if key in {
             "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "PI_NATIVE", "PI_NATIVES_PATH", "LD_LIBRARY_PATH",
+            "MERCURY_HOME", "HERMES_HOME", "MERCURY_PROFILE_HOME", "MERCURY_CONFIG", "PI_CODING_AGENT_DIR",
+            "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+            "DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS",
+            "HERMES_TEST_SUBPROCESS_ISOLATED", "MERCURY_TEST_SUBPROCESS_ISOLATED",
         }}
         try:
             if self._rendezvous is not None:
