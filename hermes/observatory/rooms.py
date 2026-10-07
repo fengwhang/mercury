@@ -135,6 +135,23 @@ def call_soon(coro):
     return None
 
 
+async def say(channel: str, text: str, *, kind: str = "status") -> bool:
+    """Await the sink's send receipt, on the transport-owning gateway loop."""
+    import asyncio
+
+    bot = get_bot_sink()
+    loop = _loop_now()
+    if bot is None or loop is None or not channel or not text:
+        return False
+    try:
+        if asyncio.get_running_loop() is loop:
+            return bool(await bot.say(channel, text, kind=kind))
+        future = call_soon(bot.say(channel, text, kind=kind))
+        return bool(await asyncio.wrap_future(future)) if future is not None else False
+    except Exception:
+        return False
+
+
 def set_bot_sink(sink: BotSink | None) -> None:
     """Register the live MIRC transport (adapter on connect; None on drop)."""
     global _current_sink
@@ -321,6 +338,8 @@ def format_lifecycle(
 ) -> str:
     if lifecycle == "start":
         return f"{LIFECYCLE_START} subagent '{name}' started — live trace streams here"
+    if lifecycle == "ready":
+        return f"{LIFECYCLE_START} subagent '{name}' execution ready — owner verified; feed attached"
     if lifecycle == "stop":
         tail = (
             f": {_truncate(summary)}" if summary else (f" ({status})" if status else "")
@@ -984,9 +1003,10 @@ class RoomManager:
             summary_key = child_frame_key(summary_frame)
             if summary and summary_key not in seen and not any(child_frame_key(f) == summary_key for f in frames):
                 frames.append(summary_frame)
-            for index in dedupe.replay_indexes([child_frame_key(f) for f in frames]):
-                frame = frames[index]
-                await self.publish_frame(channel, frame)
+            async def publish(index):
+                return await self.publish_frame(channel, frames[index])
+
+            await dedupe.publish_replay([child_frame_key(f) for f in frames], publish)
             if (result or {}).get("status") == "failed":
                 error = str((result or {}).get("error") or "OMP turn failed")
                 logger.warning("rooms: OMP turn failed in %s: %s", channel, error)
@@ -1053,15 +1073,17 @@ class RoomManager:
                 try:
                     key = child_frame_key(payload)
                     current_dedupe = _omp_rooms.get(node_id, {}).get("dedupe", dedupe)
-                    if current_dedupe is not None and current_dedupe.live_hit(key):
-                        continue
-                    if key is not None:
+
+                    async def publish():
+                        return await self._publish_routed_frame(
+                            node_id, channel, payload, grands)
+
+                    if current_dedupe is not None and not payload.get("subagent_id"):
+                        accepted = await current_dedupe.publish_live(key, publish)
+                    else:
+                        accepted = await publish()
+                    if accepted and key is not None:
                         seen.add(key)
-                except Exception:
-                    pass
-                try:
-                    await self._publish_routed_frame(
-                        node_id, channel, payload, grands)
                 except Exception:
                     continue
         except Exception:
@@ -1070,7 +1092,7 @@ class RoomManager:
     async def _publish_routed_frame(
         self, owner_id: str, channel: str, feed: dict[str, Any],
         grands: dict[str, str],
-    ) -> None:
+    ) -> bool:
         """One feed frame into the owner's room or its own N>1 room."""
         try:
             sub = str(feed.get("subagent_id") or "")
@@ -1085,14 +1107,13 @@ class RoomManager:
                     # Native ids/names can be reused after /new. Old queued
                     # lifecycle/output frames belong to the old transcript,
                     # not the replacement room or its parent.
-                    return
+                    return False
             kind = str(feed.get("kind") or "")
             if str(feed.get("feed") or "") == "node":
                 await self._apply_grandchild_node(owner_id, feed, grands)
-                return
+                return False
             if not sub:
-                await self.publish_frame(channel, feed)
-                return
+                return await self.publish_frame(channel, feed)
             target = grands.get(sub)
             if not target:
                 node_id = f"{owner_id}/sub-{sub}"
@@ -1102,7 +1123,7 @@ class RoomManager:
                     target = ""
             if not target:
                 if feed.get("feed") == "activity" and feed.get("active") is False:
-                    return  # A late end must not recreate a retired room.
+                    return False  # A late end must not recreate a retired room.
                 node_id = f"{owner_id}/sub-{sub}"
                 name = (str(feed.get("name") or "").strip()
                         or str(feed.get("agent") or "").strip()
@@ -1120,9 +1141,10 @@ class RoomManager:
             if target:
                 flat = dict(feed)
                 flat["subagent_id"] = ""
-                await self.publish_frame(target, flat)
+                return await self.publish_frame(target, flat)
         except Exception:
             pass
+        return False
 
     async def _apply_grandchild_node(
         self, owner_id: str, feed: dict[str, Any], grands: dict[str, str],

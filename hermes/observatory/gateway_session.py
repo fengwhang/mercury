@@ -491,32 +491,26 @@ def _child_transport_feedable(transport: Any) -> bool:
         return False
 
 
-#: Live-forward registries for the batched turn replay. The watcher records
-#: each child's forwarding OmpFeed (for a synchronous listener detach at
-#: replay time — no NEW frames queue after the turn) and a TurnFrameDedupe
-#: (live-vs-replay multiset: the replay pushes only the occurrences the
-#: live path missed). Guarded by ``_child_feed_lock`` (watcher loop vs
-#: delegation worker threads). Entries die with the forward task.
+#: Live-forward registries for batched turn replay. Feeds remain attached
+#: until their execution owner ends; receipt-aware dedupe serializes competing
+#: sends on the gateway loop. Registry access is cross-thread.
 _child_feed_lock = threading.Lock()
 _child_live_feeds: dict[str, Any] = {}
 _child_dedupe: dict[str, Any] = {}
 
 
 def replay_child_turn_frames(child_id: str, frames: Any) -> int:
-    """Push the batched turn's SELF frames the live path missed.
+    """Replay the turn's SELF misses from a worker; return accepted send count."""
+    return int(_hop(_replay_child_turn_frames(child_id, frames)) or 0)
 
-    ``frames`` are the transport's JSON-safe ``turn_frames`` dicts. Only
-    tool/thought/message frames for the child itself replay (grandchildren
-    rely on the live path — server-gated from task start by the synchronous
-    subscribe in the child_started hook). The multiset skips occurrences the
-    live forwarder already pushed, in turn order; a frame live-forwarded
-    AFTER this runs is likewise skipped. Returns pushed count. Never raises.
-    """
+
+async def _replay_child_turn_frames(child_id: str, frames: Any) -> int:
+    """Gateway-loop replay: failed sends never reserve late-live coverage."""
     try:
         cid = str(child_id or "")
         wanted = [
             f for f in (frames or [])
-            if isinstance(f, dict) and f.get("feed") in ("tool", "thought", "message")
+            if isinstance(f, dict) and f.get("feed") in ("tool", "thought", "message", "status")
             and not f.get("subagent_id")
         ]
         if not cid or not wanted:
@@ -528,89 +522,74 @@ def replay_child_turn_frames(child_id: str, frames: Any) -> int:
             if dd is None:
                 dd = TurnFrameDedupe()
                 _child_dedupe[cid] = dd
-            feed = _child_live_feeds.get(cid)
-            if feed is not None:
-                for attr in ("_dispose_listener", "_dispose_agent_listener"):
-                    try:
-                        dispose = getattr(feed, attr, None)
-                        if callable(dispose):
-                            dispose()
-                    except Exception:
-                        pass
-                    try:
-                        setattr(feed, attr, None)
-                    except Exception:
-                        pass
-            keys = [child_frame_key(f) for f in wanted]
-            surplus = dd.replay_indexes(keys)
-            try:
-                from observatory.rooms import (
-                    channel_for_node_id, format_frame, say_nowait,
-                )
+        from observatory.rooms import channel_for_node_id, format_frame, say
 
-                channel = channel_for_node_id(cid)
-            except Exception:
-                channel = ""
-            for i in surplus:
-                try:
-                    if not channel:
-                        continue
-                    line = format_frame(wanted[i])
-                    if line:
-                        say_nowait(channel, line, kind=frame_kind(wanted[i]))
-                except Exception:
-                    continue
-            return len(surplus)
+        channel = channel_for_node_id(cid)
+
+        async def publish(index):
+            line = format_frame(wanted[index])
+            return await say(channel, line, kind=frame_kind(wanted[index])) if line else False
+
+        return await dd.publish_replay([child_frame_key(f) for f in wanted], publish)
     except Exception:
         logger.debug("child turn replay failed for %s", child_id, exc_info=True)
         return 0
 
 
-def _publish_live_payload(
+async def _publish_live_payload(
     child_id: str, payload: dict[str, Any], grands: dict[str, str] | None,
-) -> None:
-    """One live feed frame into its room (watcher thread)."""
-    from observatory.rooms import format_frame, say_nowait
+    dedupe: Any = None,
+) -> bool:
+    """Publish on the gateway loop; dedupe owns the actual sink receipt."""
+    from observatory.rooms import format_frame, say
 
     try:
         if not isinstance(payload, dict):
-            return
+            return False
         sub = str(payload.get("subagent_id") or "")
         manager = _watcher_manager()
         if manager is None:
-            return
+            return False
         if str(payload.get("feed") or "") == "node":
             if sub:
-                _route_grandchild_frame(
+                await _route_grandchild_frame(
                     manager, child_id, payload, grands if grands is not None else {})
-            return
+            return False
         if sub:
-            _route_grandchild_frame(
+            await _route_grandchild_frame(
                 manager, child_id, payload, grands if grands is not None else {})
-            return
+            return False
         try:
             channel = manager.channel_for_node(child_id)
         except Exception:
             channel = ""
         if not channel:
-            return
+            return False
         if payload.get("feed") == "activity":
-            _hop(manager.publish_frame(channel, payload))
-            return
+            return bool(await manager.publish_frame(channel, payload))
         line = format_frame(payload)
-        if line:
-            say_nowait(channel, line, kind=frame_kind(payload))
+        if not line:
+            return False
+
+        async def publish():
+            return await say(channel, line, kind=frame_kind(payload))
+
+        if dedupe is not None and payload.get("feed") in ("tool", "thought", "message", "status"):
+            from observatory.omp_feed import child_frame_key
+
+            return await dedupe.publish_live(child_frame_key(payload), publish)
+        return await publish()
     except Exception:
-        pass
+        return False
 
 
-def _route_grandchild_frame(
+async def _route_grandchild_frame(
     manager, owner_id: str, feed: dict[str, Any],
     cache: dict[str, str],
 ) -> None:
     """Use the same tree routing as manually spawned OMP sessions."""
-    _hop(manager._publish_routed_frame(
-        owner_id, manager.channel_for_node(owner_id), feed, cache))
+    await manager._publish_routed_frame(
+        owner_id, manager.channel_for_node(owner_id), feed, cache)
 
 
 def _mark_child_execution_ready(child_id: str, transport: Any, feed: Any) -> bool:
@@ -641,9 +620,9 @@ def _mark_child_execution_ready(child_id: str, transport: Any, feed: Any) -> boo
             return False
         prior = (row.get("extra") or {}).get("execution_state")
         manager.state.update_extra(child_id, execution_state="ready", feed_attached=True,
-                                   execution_pid=pid, execution_started_at=started)
+                                   execution_pid=pid, execution_started_at=started, task_state="running")
         if prior != "ready":
-            _hop(manager.publish_lifecycle(str(row.get("room_id") or ""), "start",
+            _hop(manager.publish_lifecycle(str(row.get("room_id") or ""), "ready",
                                            name=str(row.get("name") or child_id)))
         return True
     except Exception:
@@ -690,7 +669,7 @@ async def _forward_child_feed(
             logger.debug("child feed subscribe failed for %s", child_id, exc_info=True)
             return
         try:
-            _mark_child_execution_ready(child_id, transport, feed)
+            await asyncio.to_thread(_mark_child_execution_ready, child_id, transport, feed)
         except Exception:
             # Readiness uncertainty must not detach an otherwise working feed.
             logger.debug("child readiness evidence unavailable for %s", child_id, exc_info=True)
@@ -703,22 +682,21 @@ async def _forward_child_feed(
                 if payload is None:
                     continue
                 try:
-                    if (
-                        dd is not None
-                        and payload.get("feed") in ("tool", "thought", "message")
-                        and not payload.get("subagent_id")
-                    ):
-                        from observatory.omp_feed import child_frame_key
+                    from observatory.rooms import _loop_now
 
-                        skip = False
+                    loop = _loop_now()
+                    if loop is None or loop.is_closed():
+                        continue
+                    coroutine = _publish_live_payload(child_id, payload, grands, dd)
+                    if asyncio.get_running_loop() is loop:
+                        await coroutine
+                    else:
                         try:
-                            with _child_feed_lock:
-                                skip = bool(dd.live_hit(child_frame_key(payload)))
+                            future = asyncio.run_coroutine_threadsafe(coroutine, loop)
                         except Exception:
-                            skip = False
-                        if skip:
-                            continue
-                    _publish_live_payload(child_id, payload, grands)
+                            coroutine.close()
+                            raise
+                        await asyncio.wrap_future(future)
                 except Exception:
                     continue
         except asyncio.CancelledError:
@@ -792,7 +770,9 @@ def _retire_watcher_room(child_id: str, *, name=None, summary: str = "") -> bool
             if row.get("extra", {}).get("task_state") != "pending":
                 from observatory.thinking import thinking_done
                 thinking_done(str(row.get("room_id") or ""))
-                manager.state.update_extra(child_id, task_state="pending")
+                manager.state.update_extra(child_id, task_state="pending",
+                                           execution_state="unverified", feed_attached=False,
+                                           execution_pid=None, execution_started_at=None)
                 _hop(manager.publish_lifecycle(
                     str(row.get("room_id") or ""), "pending",
                     name=str(name or row.get("name") or child_id),

@@ -149,6 +149,44 @@ async def test_boot_descendant_identity_requires_live_lineage(
         state.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pooled", [False, True])
+async def test_retained_legacy_delegation_cannot_keep_dead_owner_readiness(tmp_path, monkeypatch, pooled):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+    monkeypatch.setattr(platform_hook, "LAST_BOOT", None)
+    monkeypatch.setattr(identity, "_pool", identity.IdentityPool())
+    state = ObservatoryState(tmp_path / "state.db")
+    bot = SimpleNamespace(join_channel=AsyncMock(return_value=True),
+                          say=AsyncMock(return_value=True), invite_user=AsyncMock(return_value=True))
+    monkeypatch.setattr(rooms, "get_bot_sink", lambda: bot)
+    ensure = AsyncMock(return_value=True)
+    monkeypatch.setattr(identity, "ensure_identity", ensure)
+    child_id = "deleg_97e27028/0"
+    channel = "#nixpad_mercurator-mercury-stats-both-engines"
+    if pooled:
+        monkeypatch.setattr(identity, "_pool", SimpleNamespace(get=lambda room: object() if room == channel else None))
+    try:
+        _seed(state, "root", depth=0, room="#root", parent=None)
+        _seed(state, child_id, depth=1, room=channel, parent="root")
+        state.update_extra(child_id, kind="delegate", execution_state="ready",
+                           feed_attached=True, execution_pid=99999999, execution_started_at=1)
+        report = await platform_hook.boot_resync(RoomManager(state, bot), state, OrchestratorRegistry())
+        row = state.get(child_id)
+        assert row["status"] == "live", "unknown topology is retained, not execution proof"
+        assert row["extra"]["execution_state"] == "unverified"
+        assert row["extra"]["feed_attached"] is False
+        assert row["extra"]["task_state"] == "pending"
+        assert channel not in report["joined"]
+        assert channel not in {call.args[1] for call in ensure.await_args_list}
+        assert not any("online" in str(call) for call in bot.say.await_args_list)
+    finally:
+        state.close()
+
+
 _ONGOING_RPC = r"""
 import json, sys
 def emit(frame):
@@ -212,12 +250,12 @@ async def test_real_reconnect_keeps_worker_feed_and_native_thinking_visible(
     previous_sink = rooms.get_bot_sink()
     previous_loop = rooms._loop_now()
     try:
-        async with running_daemon(tmp_path, password="fixture") as (daemon, port, _):
+        async with running_daemon(tmp_path, password="fixture", agent_password="fixture") as (daemon, port, _):
             monkeypatch.setattr(
                 identity, "_endpoint", lambda: ("127.0.0.1", port, "fixture")
             )
             adapter = make_adapter(port, monkeypatch)
-            adapter.password = "fixture"
+            adapter.agent_password = "fixture"
             adapter.oper_password = "fixture"
             recovered = asyncio.Event()
 
@@ -337,9 +375,9 @@ async def test_real_boot_terminal_marker_visible_before_room_expiry(
     observer = RawClient()
     channel = "#nixpad_mercurator-mercury-stats-both-engines"
     try:
-        async with running_daemon(tmp_path, password="fixture") as (daemon, port, _):
+        async with running_daemon(tmp_path, password="fixture", agent_password="fixture") as (daemon, port, _):
             adapter = make_adapter(port, monkeypatch)
-            adapter.password = adapter.oper_password = "fixture"
+            adapter.agent_password = adapter.oper_password = "fixture"
             monkeypatch.setattr(
                 identity, "_endpoint", lambda: ("127.0.0.1", port, "fixture")
             )

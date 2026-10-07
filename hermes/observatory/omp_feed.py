@@ -915,46 +915,49 @@ class TurnFrameDedupe:
     """Live-vs-replay multiset: the batched replay renders only the
     occurrences the live path missed, in turn order.
 
-    The live forwarder records each pushed frame (``live_hit``); the replay
-    consumes one live occurrence per replayed occurrence and pushes the
-    surplus (``replay_indexes``). Genuine repeats survive (counts, not a
-    set); a frame live-forwarded AFTER the replay was computed is skipped
-    (the replay already covered that occurrence). One instance per child
-    turn; callers synchronize."""
+    ``publish_live`` and ``publish_replay`` serialize sends on their owning
+    event loop and record only successful sink receipts. Genuine repeats
+    survive (counts, not a set); queued live occurrences already accepted
+    by replay are skipped. Publishers return bool, never enqueue receipts."""
 
     def __init__(self) -> None:
         self._live: Dict[tuple, int] = {}
         self._replayed: Dict[tuple, int] = {}
+        self._missed: Dict[tuple, int] = {}
         self._done = False
+        self._send_lock = asyncio.Lock()
 
-    def live_hit(self, key: Any) -> bool:
-        """Record one live-forwarded frame; True = skip (already replayed)."""
-        if key is None:
-            return False
-        try:
-            if self._done and self._replayed.get(key, 0) > 0:
+    async def publish_live(self, key: Any, publish: Any) -> bool:
+        """Serialize live/replay sends; record only the sink's acceptance."""
+        async with self._send_lock:
+            if key is not None and self._done and self._replayed.get(key, 0) > 0:
                 self._replayed[key] -= 1
-                return True
-            self._live[key] = self._live.get(key, 0) + 1
-            return False
-        except Exception:
-            return False
+                return False
+            if not await publish():
+                if key is not None:
+                    self._missed[key] = self._missed.get(key, 0) + 1
+                return False
+            if key is not None:
+                self._live[key] = self._live.get(key, 0) + 1
+            return True
 
-    def replay_indexes(self, keys: list) -> list[int]:
-        """Surplus indexes to render, in order; marks the turn replayed."""
-        out: list[int] = []
-        try:
-            for i, key in enumerate(keys or ()):
-                if key is None:
-                    continue
-                if self._live.get(key, 0) > 0:
+    async def publish_replay(self, keys: list, publish: Any) -> int:
+        """Render misses, reserving late-live coverage only after each send."""
+        sent = 0
+        async with self._send_lock:
+            for i, key in enumerate(keys):
+                if key is not None and self._live.get(key, 0) > 0:
                     self._live[key] -= 1
                     continue
-                out.append(i)
-                self._replayed[key] = self._replayed.get(key, 0) + 1
-        finally:
-            try:
-                self._done = True
-            except Exception:
-                pass
-        return out
+                if await publish(i):
+                    sent += 1
+                    if key is not None:
+                        if self._missed.get(key, 0) > 0:
+                            # This occurrence already reached live and failed:
+                            # it cannot arrive late from that listener again.
+                            self._missed[key] -= 1
+                        else:
+                            self._replayed[key] = self._replayed.get(key, 0) + 1
+            self._done = True
+        return sent
+

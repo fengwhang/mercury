@@ -27,6 +27,8 @@ async def room_env(tmp_path, monkeypatch):
     frames: list[str] = []
     face_sent = asyncio.Event()
     faces = thinking.thinking_faces()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
     monkeypatch.setattr(thinking.random, "choice", lambda store: store[0])
     monkeypatch.setattr(thinking, "THINKING_FACE_DELAY_S", 30.0)
 
@@ -135,20 +137,19 @@ async def test_native_descendant_uses_same_face_and_clears_on_death(room_env, mo
 
 
 @pytest.mark.asyncio
-async def test_watcher_starts_face_even_when_first_agent_start_was_missed(room_env):
+async def test_watcher_room_waits_for_actual_activity_before_thinking(room_env):
     env = room_env
     channel = await asyncio.to_thread(gs._ensure_watcher_room, "deleg/0", {
         "name": "worker", "owner_session_id": "parent",
     })
-    assert channel in thinking._tasks
-    pending = thinking._tasks[channel]
+    assert channel not in thinking._tasks
     feed = OmpFeed(None)
-    # Same RPC run may be observed by both discovery and the live feed.
+    # A retained room is topology, not proof that a task has begun thinking.
     start = gs._feed_event_to_dict(feed._translate_agent_event({"type": "agent_start"})[0])
-    await asyncio.to_thread(gs._publish_live_payload, "deleg/0", start, {})
-    assert thinking._tasks[channel] is pending
+    await gs._publish_live_payload("deleg/0", start, {})
+    assert channel in thinking._tasks
     end = gs._feed_event_to_dict(feed._translate_agent_event({"type": "agent_end"})[0])
-    await asyncio.to_thread(gs._publish_live_payload, "deleg/0", end, {})
+    await gs._publish_live_payload("deleg/0", end, {})
     assert channel not in thinking._tasks
     # Control frames never become chat-history status messages.
     assert not any("agent_start" in frame or "agent_end" in frame for frame in env.frames)
@@ -166,10 +167,13 @@ async def test_watcher_descendant_restarts_indicator_for_later_runs(room_env):
         event = feed._translate({"type": "subagent_event", "payload": {
             "id": "grandchild", "event": {"type": event_type},
         }})[0]
-        await asyncio.to_thread(gs._publish_live_payload, "deleg/0", gs._feed_event_to_dict(event), cache)
+        await gs._publish_live_payload("deleg/0", gs._feed_event_to_dict(event), cache)
         channel = cache["grandchild"]
         assert (channel in thinking._tasks) == (event_type == "agent_start")
     assert "#vm_parent" not in thinking._tasks
+    from tools import async_delegation as ad
+    ad.record_child_spawn("deleg/0", "deleg")
+    ad.record_child_terminal("deleg/0", "completed", summary="verified task completion")
     await asyncio.to_thread(gs._retire_watcher_room, "deleg/0", name="worker")
     assert channel not in thinking._tasks
 
@@ -228,7 +232,7 @@ async def test_late_run_end_cannot_create_a_descendant_room(room_env):
         "id": "gone", "event": {"type": "agent_end"},
     }})[0]
     payload = gs._feed_event_to_dict(event)
-    await asyncio.to_thread(gs._publish_live_payload, "parent", payload, {})
+    await gs._publish_live_payload("parent", payload, {})
     await env.manager._publish_routed_frame("parent", "#vm_parent", payload, {})
     assert env.manager.channel_for_node("parent/sub-gone") == ""
     assert env.frames == []
