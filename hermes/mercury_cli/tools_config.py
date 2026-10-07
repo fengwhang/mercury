@@ -774,9 +774,9 @@ def _cua_driver_env() -> dict:
         env = cua_driver_child_env()
     except Exception:
         env = dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
-    from tools.environments.local import _sanitize_subprocess_env
+    from tools.computer_use.cua_backend import sanitized_cua_driver_env
 
-    return _sanitize_subprocess_env(env)
+    return sanitized_cua_driver_env(env)
 
 
 _CUA_DRIVER_CONTRACT_CACHE: dict = {}
