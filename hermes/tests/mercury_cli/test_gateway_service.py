@@ -348,8 +348,8 @@ class TestGeneratedSystemdUnits:
 class TestGatewayStopCleanup:
     @pytest.mark.linux_only
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
-        """Without --all, stop uses systemd (if available) and does NOT call
-        the global kill_gateway_processes().
+        """Without --all, stop uses systemd and only sweeps current-profile
+        stragglers, never gateways belonging to another profile.
 
         Linux-gated: the routing under test is the systemd arm, and it is only
         reached when the host really isn't macOS/Windows (the old
@@ -369,14 +369,14 @@ class TestGatewayStopCleanup:
         monkeypatch.setattr(
             gateway_cli,
             "kill_gateway_processes",
-            lambda force=False, all_profiles=False: kill_calls.append(force) or 2,
+            lambda force=False, all_profiles=False: kill_calls.append(all_profiles) or 2,
         )
 
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="stop"))
 
         assert service_calls == ["stop"]
-        # Global kill should NOT be called without --all
-        assert kill_calls == []
+        # The explicit stop's straggler sweep must remain profile-scoped.
+        assert kill_calls == [False]
 
 
 class TestLaunchdServiceRecovery:
@@ -1583,11 +1583,12 @@ class TestProfileArg:
         """sudo system install must keep the target user's named profile in ExecStart."""
         root_home = tmp_path / "root"
         target_home = tmp_path / "home" / "alice"
-        root_profile = root_home / ".mercury" / "profiles" / "mybot"
+        root_profile = root_home / ".mercury" / "hermes" / "profiles" / "mybot"
         root_profile.mkdir(parents=True)
 
         monkeypatch.setattr(Path, "home", lambda: root_home)
         monkeypatch.setenv("HERMES_HOME", str(root_profile))
+        monkeypatch.setenv("MERCURY_HOME", str(root_home / ".mercury"))
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_profile)
         monkeypatch.setattr(
             gateway_cli,
@@ -1599,13 +1600,14 @@ class TestProfileArg:
 
         assert "ExecStart=" in unit
         assert "--profile mybot gateway run" in unit
-        assert f'HERMES_HOME={target_home / ".mercury" / "profiles" / "mybot"}' in unit
+        assert f'HERMES_HOME={target_home / ".mercury" / "hermes" / "profiles" / "mybot"}' in unit
 
     def test_launchd_plist_wraps_gateway_stderr_with_timestamps(self, tmp_path, monkeypatch):
-        profile_dir = tmp_path / ".mercury" / "profiles" / "mybot"
+        profile_dir = tmp_path / ".mercury" / "hermes" / "profiles" / "mybot"
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setenv("MERCURY_HOME", str(tmp_path / ".mercury"))
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
         monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
 

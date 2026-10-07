@@ -353,3 +353,19 @@ async def test_original_receipt_id_crosses_real_control_socket_without_tokens(mo
         assert "test-only-token-not-provenance" not in str(received[0])
     finally:
         await server.stop()
+
+
+def test_target_user_profile_argument_uses_target_canonical_home(monkeypatch, tmp_path):
+    target_home = tmp_path / "alice"
+    target_profile = target_home / ".mercury" / "hermes" / "profiles" / "mybot"
+    monkeypatch.setattr("mercury_cli.profiles._get_profiles_root",
+                        lambda: tmp_path / "root" / ".mercury" / "hermes" / "profiles")
+    assert gateway._profile_arg_for_target_user(str(target_profile), str(target_home)) == "--profile mybot"
+
+
+def test_root_scope_remediation_only_prints_no_legacy_service_mutation(monkeypatch):
+    monkeypatch.setattr(gateway, "has_legacy_hermes_units", lambda: True)
+    remove = Mock(side_effect=AssertionError("remediation must not stop legacy services"))
+    monkeypatch.setattr(gateway, "remove_legacy_hermes_units", remove)
+    gateway._print_system_scope_remediation("restart")
+    remove.assert_not_called()
