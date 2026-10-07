@@ -296,6 +296,9 @@ def _request_gateway_admin_restart(pid: int, *, checkpoint_resume: bool = False)
     from gateway.control_socket import query_gateway_control
 
     params = {"trigger": "cli-admin-restart"}
+    # Correlate the original platform receipt; this is never actor authority.
+    if request_id := os.environ.get("MERCURY_RESTART_REQUEST_ID"):
+        params["request_id"] = request_id
     if checkpoint_resume:
         params["checkpoint_resume"] = True
     reply = query_gateway_control(
@@ -4859,8 +4862,12 @@ def request_automatic_gateway_restart(
     from gateway.control_socket import query_gateway_control
 
     home = Path(home) if home is not None else get_hermes_home()
+    params = {"trigger": trigger}
+    # Only the receipt identifier crosses this boundary, not environment credentials.
+    if request_id := os.environ.get("MERCURY_RESTART_REQUEST_ID"):
+        params["request_id"] = request_id
     reply = query_gateway_control(
-        home, "restart-when-idle", params={"trigger": trigger}, timeout=6,
+        home, "restart-when-idle", params=params, timeout=6,
     )
     if (
         reply

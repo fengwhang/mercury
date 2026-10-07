@@ -300,3 +300,56 @@ def test_update_refuses_new_gateway_holder_after_admitted_pause(monkeypatch):
         update._cmd_update_impl(Namespace(), gateway_mode=False)
     assert exit_info.value.code == 2
     kill.assert_not_called()
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+def test_restart_helpers_forward_original_receipt_id_without_environment_actor(monkeypatch, tmp_path, automatic):
+    monkeypatch.setenv("MERCURY_RESTART_REQUEST_ID", "original-receipt-123")
+    monkeypatch.setenv("MERCURY_RESTART_ACTOR", "untrusted-environment-actor")
+    monkeypatch.setenv("MIRC_SERVER_PASSWORD", "test-only-token-not-provenance")
+    query = Mock(return_value={"restarting": True, "deferred": False, "pid": 4242})
+    monkeypatch.setattr("gateway.control_socket.query_gateway_control", query)
+    if automatic:
+        reply = gateway.request_automatic_gateway_restart(home=tmp_path, pid=4242, trigger="onboarding")
+        assert reply["restarting"] is True
+        trigger = "onboarding"
+    else:
+        assert gateway._request_gateway_admin_restart(4242) is True
+        trigger = "cli-admin-restart"
+    assert query.call_args.kwargs["params"] == {
+        "trigger": trigger, "request_id": "original-receipt-123",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True])
+async def test_original_receipt_id_crosses_real_control_socket_without_tokens(monkeypatch, tmp_path, automatic):
+    import asyncio
+    import os
+    from gateway.control_socket import GatewayControlServer
+
+    monkeypatch.setenv("MERCURY_RESTART_REQUEST_ID", "platform-original-receipt")
+    monkeypatch.setenv("MIRC_SERVER_PASSWORD", "test-only-token-not-provenance")
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: tmp_path)
+    received = []
+    def handler(params):
+        received.append(params)
+        return {"pid": os.getpid(), "restarting": True, "deferred": False}
+    server = GatewayControlServer(home=tmp_path)
+    server.register_handler(
+        "restart-when-idle" if automatic else "restart-admin", handler, takes_params=True,
+    )
+    try:
+        assert await server.start()
+        if automatic:
+            reply = await asyncio.to_thread(
+                gateway.request_automatic_gateway_restart, home=tmp_path, pid=os.getpid(),
+            )
+            assert reply["restarting"] is True
+        else:
+            assert await asyncio.to_thread(gateway._request_gateway_admin_restart, os.getpid())
+        assert len(received) == 1
+        assert received[0]["request_id"] == "platform-original-receipt"
+        assert "test-only-token-not-provenance" not in str(received[0])
+    finally:
+        await server.stop()
