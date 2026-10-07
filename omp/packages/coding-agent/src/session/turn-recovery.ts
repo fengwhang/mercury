@@ -595,9 +595,19 @@ export class TurnRecovery {
 		const activeModel = this.#host.model();
 		if (!activeModel || !AIError.is(id, AIError.Flag.UsageLimit)) return false;
 
+		const errorMessage = message.errorMessage || "Unknown error";
+		// A plan-wide usage wall on a chain-covered model is a model-fallback
+		// signal, not a credential-recovery opportunity: the same wall greets
+		// every account of the plan, and the rotation would consume the switch
+		// the configured chain is about to make. Decline the credential
+		// treatment so #handleRetryableError walks the chain first; per-account
+		// limits (opaque 402s) and chain-less models keep the rotation.
+		if (AIError.matchesUsageLimitText(errorMessage) && this.isHardErrorFallbackEligible(message)) {
+			return false;
+		}
+
 		let recorded = this.#usageLimitOutcomes.get(message);
 		if (!recorded) {
-			const errorMessage = message.errorMessage || "Unknown error";
 			const retryAfterMs =
 				this.#parseRetryAfterMsFromError(errorMessage) ??
 				calculateRateLimitBackoffMs(parseRateLimitReason(errorMessage));
@@ -2323,11 +2333,15 @@ export class TurnRecovery {
 		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
 			// A refusal chain stops at the retry budget: the exhausted-attempt
 			// last resort is for provider failures, not classifier decisions.
+			// A pending sibling-credential wait may defer the walk while the
+			// budget lasts, but never past it — an exhausted attempt must not
+			// dead-end as `auto_retry_end{success:false}` with the configured
+			// chain left unconsulted.
 			if (
 				allowModelFallback &&
 				retrySettings.modelFallback &&
 				!thinkingLoop &&
-				!waitForSiblingCredential &&
+				(!waitForSiblingCredential || retryBudgetExhausted) &&
 				!(retryBudgetExhausted && classifierRefusal)
 			) {
 				if (!classifierRefusal) {
