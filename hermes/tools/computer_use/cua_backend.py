@@ -3164,32 +3164,6 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         return self._session.call_tool(name, payload, timeout=timeout)
 
     # ── Internal ───────────────────────────────────────────────────
-    def _maybe_attach_element_token(self, tool: str, args: Dict[str, Any]) -> None:
-        """Surface 6: when the wrapper is about to call a token-capable
-        tool with `element_index`, look up the matching `element_token`
-        from the last snapshot and attach it. cua-driver-rs's contract
-        for combined args is documented in trycua/cua#1961:
-
-          "element_token takes precedence over element_index when both
-           supplied. Returns an explicit 'stale' error if the snapshot
-           has been superseded."
-
-        Gated on the per-tool capability claim so we don't send the
-        field to drivers that predate the surface (which would reject
-        the schema with `additionalProperties: false`).
-        """
-        idx = args.get("element_index")
-        if not isinstance(idx, int):
-            return
-        token = self._snapshot_tokens.get(idx)
-        if not token:
-            return
-        if not self._session.supports_capability(
-            "accessibility.element_tokens", tool=tool
-        ):
-            return
-        args["element_token"] = token
-
     def _action(
         self,
         name: str,
@@ -3197,9 +3171,16 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         *,
         inject_session: bool = True,
     ) -> ActionResult:
-        # Attach the snapshot's element_token whenever the call carries
-        # an element_index and the target tool advertises support.
-        self._maybe_attach_element_token(name, args)
+        # The live schema is authoritative: drivers can accept element_token
+        # without publishing its capability. Keep legacy capability support,
+        # but never attach an unknown property to a strict older tool.
+        idx = args.get("element_index")
+        token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
+        if token and (
+            self._session.supports_input_property(name, "element_token")
+            or self._session.supports_capability("accessibility.element_tokens", tool=name)
+        ):
+            args["element_token"] = token
         # Carry this run's session id so the cua-driver agent cursor
         # and per-session state (config overrides, recording ownership)
         # stay tied to this run. setdefault preserves any explicit
