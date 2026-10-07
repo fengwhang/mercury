@@ -16,7 +16,7 @@ import io
 import json
 import subprocess
 import sys
-import textwrap
+import pytest
 from types import SimpleNamespace
 
 from mercury_cli import update_cmd
@@ -242,95 +242,48 @@ def test_service_matching_is_exact_for_overlapping_profile_names():
     )
 
 
-def test_recovery_child_restarts_each_profile_with_a_fresh_main(monkeypatch):
+def _wire_admission(monkeypatch, tmp_path, replies, *, verified=False):
+    import mercury_cli.gateway as gateway
+
+    monkeypatch.setattr("mercury_cli.profiles.get_profile_dir", lambda name: tmp_path / name)
+    monkeypatch.setattr("mercury_cli.profiles._get_default_hermes_dir", lambda: tmp_path / "default")
+    requested = []
+    def admit(**kwargs):
+        requested.append(kwargs)
+        return replies[kwargs["home"].name]
+    monkeypatch.setattr(gateway, "request_automatic_gateway_restart", admit)
+    monkeypatch.setattr(update_cmd, "_wait_for_automatic_gateway_replacement", lambda *a: verified)
+    return requested
+
+
+def test_recovery_child_records_deferred_restart_without_verification(monkeypatch, tmp_path):
     recovery = importlib.import_module("mercury_cli.update_restart_recovery")
-    calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return _Completed(0)
-
-    monkeypatch.setenv("_HERMES_GATEWAY", "1")
-    result = recovery.restart_profiles(["default", "coder"], run=fake_run)
-
-    # No supervisor observations were possible → conservative labels only.
-    assert result == {
-        "verified": [],
-        "relaunch_attempted": ["coder", "default"],
-        "failed": [],
-    }
-    assert [call[0] for call in calls] == [
-        [sys.executable, "-m", "mercury_cli.main", "-p", "coder", "gateway", "restart"],
-        [sys.executable, "-m", "mercury_cli.main", "-p", "default", "gateway", "restart"],
-    ]
-    for _, kwargs in calls:
-        assert kwargs["stdin"] is subprocess.DEVNULL
-        assert kwargs["capture_output"] is True
-        assert kwargs["text"] is True
-        assert kwargs["check"] is False
-        assert kwargs["env"]["HERMES_UPDATE_RESTART_RECOVERY"] == "1"
-        assert "_HERMES_GATEWAY" not in kwargs["env"]
+    requested = _wire_admission(monkeypatch, tmp_path, {
+        "default": {"restarting": True, "deferred": True, "pid": 4242},
+    })
+    result = recovery.restart_profiles(["default"], supervisors={"default": "systemd"})
+    assert result == {"verified": [], "relaunch_attempted": ["default"], "failed": []}
+    assert requested == [{"home": tmp_path / "default", "trigger": "update-recovery"}]
 
 
-def test_recovery_child_verifies_systemd_profiles_via_is_active(monkeypatch):
+def test_recovery_child_verifies_ready_replacement_for_any_supervisor(monkeypatch, tmp_path):
     recovery = importlib.import_module("mercury_cli.update_restart_recovery")
-    monkeypatch.setattr(recovery.shutil, "which", lambda name: f"/bin/{name}")
-    calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        if argv[0].endswith("systemctl"):
-            unit = argv[-1]
-            active = unit == "mercury-gateway.service"
-            return _Completed(0 if active else 3, stdout="active" if active else "inactive")
-        return _Completed(0)
-
-    result = recovery.restart_profiles(
-        ["default", "coder"],
-        supervisors={"default": "systemd", "coder": "launchd"},
-        run=fake_run,
-    )
-
-    assert result == {
-        "verified": ["default"],
-        "relaunch_attempted": ["coder"],
-        "failed": [],
-    }
-    # The launchd profile must never be probed with systemctl.
-    systemctl_units = [argv[-1] for argv in calls if argv[0].endswith("systemctl")]
-    assert all("coder" not in unit for unit in systemctl_units)
+    _wire_admission(monkeypatch, tmp_path, {
+        "coder": {"restarting": True, "deferred": False, "pid": 4242},
+        "default": {"restarting": True, "deferred": False, "pid": 5151},
+    }, verified=True)
+    result = recovery.restart_profiles(["default", "coder"], supervisors={"default": "systemd", "coder": "launchd"})
+    assert result == {"verified": ["coder", "default"], "relaunch_attempted": [], "failed": []}
 
 
-def test_recovery_child_treats_missing_systemctl_as_unverified(monkeypatch):
+def test_recovery_child_reports_failed_admission_without_losing_other_requests(monkeypatch, tmp_path):
     recovery = importlib.import_module("mercury_cli.update_restart_recovery")
-    monkeypatch.setattr(recovery.shutil, "which", lambda name: None)
-
-    result = recovery.restart_profiles(
-        ["default"],
-        supervisors={"default": "systemd"},
-        run=lambda *args, **kwargs: _Completed(0),
-    )
-
-    assert result == {
-        "verified": [],
-        "relaunch_attempted": ["default"],
-        "failed": [],
-    }
-
-
-def test_recovery_child_reports_failed_profile_without_losing_successes():
-    recovery = importlib.import_module("mercury_cli.update_restart_recovery")
-    outcomes = iter((_Completed(1), _Completed(0)))
-
-    result = recovery.restart_profiles(
-        ["coder", "default"], run=lambda *args, **kwargs: next(outcomes)
-    )
-
-    assert result == {
-        "verified": [],
-        "relaunch_attempted": ["default"],
-        "failed": ["coder"],
-    }
+    _wire_admission(monkeypatch, tmp_path, {
+        "coder": {"restarting": False, "deferred": True, "pid": 4242},
+        "default": {"restarting": True, "deferred": True, "pid": 5151},
+    })
+    result = recovery.restart_profiles(["coder", "default"])
+    assert result == {"verified": [], "relaunch_attempted": ["default"], "failed": ["coder"]}
 
 
 def test_recovery_payload_rejects_path_like_profile_ids():
@@ -378,85 +331,48 @@ def test_recovery_module_empty_payload_is_a_real_clean_process():
     }
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix control transport")
 def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
-    """E2E: the whole recovery protocol through a genuinely fresh interpreter.
-
-    A ``sitecustomize`` shim in the child's ``PYTHONPATH`` intercepts the
-    grandchild ``mercury_cli.main … gateway restart`` invocations (recording
-    them and returning rc 0) and answers ``systemctl --user is-active`` with
-    ``active`` only for the default profile's unit.  Everything else — stdin
-    payload parsing, profile ordering, environment scrubbing, verification
-    classification, JSON output, and exit code — runs the real module code in
-    a real new process, exactly as the aborted updater would spawn it.
-    """
-    ledger = tmp_path / "grandchild_calls.jsonl"
-    shim = textwrap.dedent(
-        f"""
-        import json
-        import shutil
-        import subprocess
-
-        _real_run = subprocess.run
-        _real_which = shutil.which
-        _LEDGER = {str(ledger)!r}
-
-
-        def _shim_which(name, *args, **kwargs):
-            if name == "systemctl":
-                return "/usr/bin/systemctl"
-            return _real_which(name, *args, **kwargs)
-
-
-        shutil.which = _shim_which
-
-
-        def _shim_run(argv, *args, **kwargs):
-            argv_list = list(argv)
-            if "mercury_cli.main" in argv_list:
-                with open(_LEDGER, "a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(argv_list) + "\\n")
-                return subprocess.CompletedProcess(argv_list, 0, "", "")
-            if argv_list and str(argv_list[0]).endswith("systemctl"):
-                unit = argv_list[-1]
-                if unit == "mercury-gateway.service":
-                    return subprocess.CompletedProcess(argv_list, 0, "active\\n", "")
-                return subprocess.CompletedProcess(argv_list, 3, "inactive\\n", "")
-            return _real_run(argv, *args, **kwargs)
-
-
-        subprocess.run = _shim_run
-        """
-    )
-    (tmp_path / "sitecustomize.py").write_text(shim, encoding="utf-8")
-
+    """A real fresh recovery CLI must preserve a live socket's busy deferral."""
     import os
+    import socket
+    import tempfile
+    import threading
+    from pathlib import Path
+    from gateway.control_socket import GatewayControlServer
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(tmp_path) + os.pathsep + env.get("PYTHONPATH", "")
-    env["_HERMES_GATEWAY"] = "1"  # must be scrubbed before the grandchild runs
-
-    result = subprocess.run(
-        [sys.executable, "-m", "mercury_cli.update_restart_recovery", "--stdin"],
-        input=json.dumps(
-            {
-                "profiles": ["default", "coder"],
-                "supervisors": {"default": "systemd", "coder": "launchd"},
-            }
-        ),
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-        timeout=120,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {
-        "failed": [],
-        "relaunch_attempted": ["coder"],
-        "verified": ["default"],
-    }
-    restarts = [json.loads(line) for line in ledger.read_text().splitlines()]
-    assert [argv[argv.index("-p") + 1] for argv in restarts] == ["coder", "default"]
-    for argv in restarts:
-        assert argv[-2:] == ["gateway", "restart"]
+    requests = []
+    with tempfile.TemporaryDirectory(prefix="ma-") as directory:
+        home = Path(directory) / "hermes"
+        home.mkdir()
+        server = GatewayControlServer(home=home, verb_handlers={
+            "restart-when-idle": lambda: {"restarting": True, "deferred": True, "pid": 4242},
+        })
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(home / "gateway.sock"))
+        listener.listen(1)
+        listener.settimeout(20)
+        def serve():
+            with listener:
+                conn, _ = listener.accept()
+                with conn:
+                    raw = conn.recv(4096)
+                    requests.append(json.loads(raw))
+                    conn.sendall(server.handle_request_line(raw))
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        result = subprocess.run(
+            [sys.executable, "-m", "mercury_cli.update_restart_recovery", "--stdin"],
+            input=json.dumps({"profiles": ["default"], "supervisors": {"default": "systemd"}}),
+            capture_output=True, text=True, check=False, timeout=30,
+            env={**os.environ, "HOME": str(tmp_path), "HERMES_HOME": str(home),
+                 "MERCURY_HOME": directory},
+        )
+        thread.join(timeout=20)
+        assert not thread.is_alive()
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {
+            "failed": [], "relaunch_attempted": ["default"], "verified": [],
+        }
+        assert [request["verb"] for request in requests] == ["restart-when-idle"]
+        assert requests[0]["params"] == {"trigger": "update-recovery"}

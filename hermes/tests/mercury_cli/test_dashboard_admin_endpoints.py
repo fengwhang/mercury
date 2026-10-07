@@ -347,64 +347,46 @@ class TestWebhookEndpoints:
         subs = self.client.get("/api/webhooks").json()["subscriptions"]
         assert subs[0]["script"] == "todoist_filter.py"
 
-    def test_enable_platform_starts_gateway_restart(self, monkeypatch):
-        import mercury_cli.web_server as ws
+    def test_enable_platform_requests_idle_gateway_restart(self, monkeypatch):
+        import mercury_cli.gateway as gateway
         from mercury_cli.config import load_config
 
-        ws._ACTION_PROCS.pop("gateway-restart", None)
-        restart_calls = []
-
-        class FakeRestartProc:
-            pid = 4242
-
-        def fake_spawn_action(subcommand, name):
-            restart_calls.append((subcommand, name))
-            return FakeRestartProc()
-
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
-
+        requested = []
+        monkeypatch.setattr(
+            gateway, "request_automatic_gateway_restart",
+            lambda **kw: requested.append(kw) or {"restarting": True, "deferred": False, "pid": 4242},
+        )
         r = self.client.post("/api/webhooks/enable")
-
         assert r.status_code == 200
         assert r.json() == {
-            "ok": True,
-            "platform": "webhook",
-            "enabled": True,
-            "needs_restart": False,
-            "restart_started": True,
-            "restart_action": "gateway-restart",
-            "restart_pid": 4242,
+            "ok": True, "platform": "webhook", "enabled": True, "needs_restart": False,
+            "restart_started": True, "restart_queued": True,
+            "restart_deferred": False, "restart_pid": 4242,
         }
-        assert restart_calls == [(["gateway", "restart"], "gateway-restart")]
+        assert requested[0]["trigger"] == "webhook-enable"
         assert load_config()["platforms"]["webhook"]["enabled"] is True
         assert self.client.get("/api/webhooks").json()["enabled"] is True
 
 
-    def test_enable_platform_reuses_inflight_gateway_restart(self, monkeypatch):
+    def test_enable_platform_reports_deferred_restart_honestly(self, monkeypatch):
+        import mercury_cli.gateway as gateway
         import mercury_cli.web_server as ws
         from mercury_cli.config import load_config
 
-        ws._ACTION_PROCS.pop("gateway-restart", None)
-
-        class FakeRunningProc:
-            pid = 5151
-
-            def poll(self):
-                return None
-
-        monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", FakeRunningProc())
-
-        def fail_spawn_action(subcommand, name):
-            raise AssertionError("must not spawn a second concurrent restart")
-
+        monkeypatch.setattr(
+            gateway, "request_automatic_gateway_restart",
+            lambda **_: {"restarting": True, "deferred": True, "pid": 5151},
+        )
+        def fail_spawn_action(*_, **__):
+            raise AssertionError("automatic enable must not spawn administrative restart")
         monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
-
         r = self.client.post("/api/webhooks/enable")
-
         assert r.status_code == 200
         data = r.json()
-        assert data["needs_restart"] is False
-        assert data["restart_started"] is True
+        assert data["needs_restart"] is True
+        assert data["restart_started"] is False
+        assert data["restart_deferred"] is True
+        assert data["restart_queued"] is True
         assert data["restart_pid"] == 5151
         assert load_config()["platforms"]["webhook"]["enabled"] is True
 
