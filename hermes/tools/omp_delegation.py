@@ -1055,14 +1055,22 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
             summary=result.get("summary"), error=result.get("error"))
 
     if durable:
+        from mercury_constants import get_hermes_home
         from tools.async_delegation import record_child_spawn, record_child_checkpoint
 
         child_id = _live_child_id(delegation_id, task_index)
+        session_dir = get_hermes_home() / "sessions" / "delegation" / child_id.replace("/", "-")
+        extra_env = {
+            **(extra_env or {}),
+            "MERCURY_DELEGATION_CHILD_ID": child_id,
+            "PI_CODING_AGENT_SESSION_DIR": str(session_dir),
+        }
         record_child_spawn(child_id, delegation_id, task_index,
                            name=name or "", goal=goal or "", transport_kind="pending")
         record_child_checkpoint(child_id, {
             "prompt": prompt, "model": model, "workdir": workdir,
             "profile_home": profile_home, "isolate_worktree": isolate_worktree,
+            "session_directory": str(session_dir),
             "owner_session_id": owner_session_id,
         })
     entry = _run_omp_task_inner(

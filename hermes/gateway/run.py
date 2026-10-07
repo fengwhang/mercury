@@ -12697,7 +12697,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
     def request_restart(
         self, *, detached: bool = False, via_service: bool = False,
-        after_turn_timeout: float | None = None,
+        after_turn_timeout: float | None = None, trigger: str = "request",
     ) -> bool:
         if after_turn_timeout is not None:
             # Operator-requested Observatory restarts checkpoint sessions
@@ -12705,6 +12705,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             self._restart_after_turn_timeout = max(0.0, after_turn_timeout)
         if self._restart_task_started:
             return False
+        from tools.async_delegation import checkpoint_active_delegations
+        checkpointed = checkpoint_active_delegations("planned gateway restart")
+        logger.info("Planned gateway restart requested: trigger=%s checkpointed_delegations=%d",
+                    trigger, checkpointed)
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service
@@ -27391,6 +27395,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             for message in transcript:
                 if (message.get("role") == "user"
                         and message.get("display_kind") == "internal_notification"
+                        and (message.get("platform_message_id") or message.get("message_id"))
+                        == f"async-delegation:{evt.get('delegation_id')}"):
+                    return True
+                if (message.get("role") == "user"
+                        and message.get("display_kind") == "internal_notification"
                         and isinstance(message.get("content"), str)
                         and (message["content"] == synth_text
                              or (canonical and canonical in message["content"]))):
@@ -27665,6 +27674,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if durable_delegation_id:
                 try:
                     from tools.async_delegation import claim_completion_delivery
+                    if await self._parent_completion_recorded(synth_text, evt) is True:
+                        from tools.async_delegation import mark_completion_delivered
+                        mark_completion_delivered(durable_delegation_id)
+                        return None
 
                     durable_claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
                     if not claim_completion_delivery(
@@ -33283,7 +33296,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+        runner.request_restart(detached=False, via_service=True, trigger="signal:SIGUSR1")
     
     loop = asyncio.get_running_loop()
 
@@ -33401,7 +33414,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             def _request() -> None:
                 try:
                     accepted_box.append(
-                        runner.request_restart(detached=False, via_service=True)
+                        runner.request_restart(detached=False, via_service=True, trigger="control:pause-for-update")
                     )
                 finally:
                     _done.set()

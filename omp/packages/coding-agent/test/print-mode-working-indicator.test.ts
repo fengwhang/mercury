@@ -177,6 +177,52 @@ describe("print mode working indicator", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("checkpoints the delegated terminal task before final stdout", async () => {
+		const previous = process.env.MERCURY_DELEGATION_CHILD_ID;
+		process.env.MERCURY_DELEGATION_CHILD_ID = "deleg_print/0";
+		const message = makeAssistantMessage("verified delegated print result");
+		const delayed = createDelayedSession(message);
+		const order: string[] = [];
+		const entries: Array<{ type: string; data?: unknown }> = [];
+		delayed.session.sessionManager.appendCustomEntry = (type, data) => {
+			entries.push({ type, data });
+			order.push(type);
+			return "fixture-entry";
+		};
+		delayed.session.sessionManager.flushSync = () => {
+			order.push("checkpoint-flush");
+		};
+		vi.spyOn(delayed.session, "prompt").mockImplementation(async () => {
+			delayed.session.state.messages.push(message);
+			delayed.emit({ type: "agent_end", isTerminal: true, messages: [message] });
+			return true;
+		});
+		vi.spyOn(process.stdout, "write").mockImplementation((...args: unknown[]) => {
+			order.push("stdout");
+			const callback = args[args.length - 1];
+			if (typeof callback === "function") callback();
+			return true;
+		});
+		try {
+			await runPrintMode(delayed.session, { mode: "text", initialMessage: "fixture task" });
+			expect(entries).toEqual([
+				{
+					type: "mercury_delegation_terminal",
+					data: {
+						childId: "deleg_print/0",
+						status: "completed",
+						summary: message.content[0].type === "text" ? message.content[0].text : "",
+						error: null,
+					},
+				},
+			]);
+			expect(order).toEqual(["mercury_delegation_terminal", "checkpoint-flush", "stdout"]);
+		} finally {
+			if (previous === undefined) delete process.env.MERCURY_DELEGATION_CHILD_ID;
+			else process.env.MERCURY_DELEGATION_CHILD_ID = previous;
+		}
+	});
+
 	it("does not enter startup plan mode in headless print mode and warns instead (#8272)", async () => {
 		const delayed = createDelayedSession(makeAssistantMessage("final answer"), { defaultPlanMode: true });
 		const run = runPrintMode(delayed.session, { mode: "text", initialMessage: "Reply with exactly: OK" });

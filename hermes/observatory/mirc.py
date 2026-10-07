@@ -100,12 +100,13 @@ def _live_room_ids_from_disk(state_dir: Path | str = "") -> list[str]:
             cands.append(Path(str(state_dir)).expanduser() / "state.db")
     except Exception:
         pass
-    try:
-        home = (_os.environ.get("MERCURY_HOME") or "").strip()
-        if home:
-            cands.append(Path(home).expanduser() / "observatory" / "state.db")
-    except Exception:
-        pass
+    if not cands:
+        try:
+            home = (_os.environ.get("MERCURY_HOME") or "").strip()
+            if home:
+                cands.append(Path(home).expanduser() / "observatory" / "state.db")
+        except Exception:
+            pass
     for db in cands:
         try:
             if not db.is_file():
@@ -781,30 +782,25 @@ class MircDaemon:
             # in state order.
             base = clean_channel(name or "mercury").lstrip("#")
             targets: list[str] = [f"#{base}_gateway"]
-            try:
-                from observatory.rooms import get_room_manager
-
-                manager = get_room_manager()
-                if manager is not None:
-                    for row in manager.live_rows():
-                        room = str((row or {}).get("room_id") or "").strip()
-                        if room.startswith("#") and room not in targets:
-                            targets.append(room)
-            except Exception:
-                logger.debug("ircd: room list lookup failed", exc_info=True)
-            if len(targets) <= 1:
-                # Separate-process law: the manager lives in the gateway,
-                # never here — without this fallback every client that
-                # (re)connects after an MIRC daemon restart lands on just the
-                # gateway channel and never sees spawned rooms.
+            if str(self.config.state_dir or "").strip():
+                # The configured registry is authoritative. A process-global
+                # manager may belong to another profile/server or a prior boot.
+                targets.extend(await asyncio.to_thread(
+                    _live_room_ids_from_disk, self.config.state_dir))
+            else:
                 try:
-                    for room in _live_room_ids_from_disk(
-                        getattr(self.config, "state_dir", "")):
-                        if room not in targets:
-                            targets.append(room)
+                    from observatory.rooms import get_room_manager
+
+                    manager = get_room_manager()
+                    if manager is not None:
+                        for row in manager.live_rows():
+                            room = str((row or {}).get("room_id") or "").strip()
+                            if room.startswith("#") and room not in targets:
+                                targets.append(room)
                 except Exception:
-                    logger.debug("ircd: state.db room fallback failed",
-                                 exc_info=True)
+                    logger.debug("ircd: room list lookup failed", exc_info=True)
+                if len(targets) <= 1:
+                    targets.extend(await asyncio.to_thread(_live_room_ids_from_disk))
             for display in targets:
                 # Targets may expire while an earlier JOIN is delivered.
                 # Use the same locked policy check as cached client JOINs.

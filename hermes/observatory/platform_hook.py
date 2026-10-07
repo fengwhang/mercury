@@ -303,6 +303,12 @@ async def boot_resync(
                         report["failed"].append(f"{node_id}: {exc}")
             except Exception:
                 continue
+        reconcile = getattr(manager, "reconcile_terminal_children", None)
+        if bot is not None and callable(reconcile):
+            try:
+                await reconcile()
+            except Exception as exc:
+                report["failed"].append(f"terminal marker replay: {exc}")
         try:
             # Boot self-heal (the zombie migration). The old teardown held
             # row deletion hostage to OPER DESTROY convergence, so an
@@ -317,7 +323,10 @@ async def boot_resync(
                 reap_orphan_rooms,
                 state,
                 mercury_home=home_for_children,
-                live_channels=report.get("joined") or [],
+                live_channels=[
+                    str(row.get("room_id") or "") for row in live
+                    if int(row.get("depth") or 0) == 0
+                ],
             )
         except Exception as exc:
             report["failed"].append(f"room reap: {exc}")

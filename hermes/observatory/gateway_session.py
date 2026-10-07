@@ -724,25 +724,33 @@ def _ensure_watcher_room(child_id: str, meta: dict[str, Any]) -> str:
         return ""
 
 
-def _retire_watcher_room(child_id: str, *, name=None, summary: str = "") -> None:
-    """Retire a finished delegate room inline (watcher thread)."""
-    try:
-        from observatory.rooms import format_lifecycle, say_nowait
+def _retire_watcher_room(child_id: str, *, name=None, summary: str = "") -> bool:
+    """Transport disappearance is not task completion; wait for durable fate."""
+    from tools.async_delegation import list_delegation_children
 
-        manager = _watcher_manager()
-        if manager is None:
-            return
-        channel = ""
+    child = next((row for row in list_delegation_children(child_id.rsplit("/", 1)[0])
+                  if row["child_id"] == child_id), None)
+    manager = _watcher_manager()
+    if manager is None:
+        return False
+    if child is None or child["status"] == "running":
         try:
-            channel = manager.channel_for_node(child_id)
+            row = manager.state.get(child_id)
+            if row.get("extra", {}).get("task_state") != "pending":
+                from observatory.thinking import thinking_done
+                thinking_done(str(row.get("room_id") or ""))
+                manager.state.update_extra(child_id, task_state="pending")
+                _hop(manager.publish_lifecycle(
+                    str(row.get("room_id") or ""), "pending",
+                    name=str(name or row.get("name") or child_id),
+                    summary="transport ended; awaiting durable task outcome"))
         except Exception:
             pass
-        if channel:
-            say_nowait(channel, format_lifecycle(
-                "stop", name=str(name or child_id), summary=summary))
-        _hop(manager._retire_child_room(child_id, summary=summary))
-    except Exception:
-        pass
+        return False
+    _hop(manager._retire_child_room(
+        child_id, status=child["status"],
+        summary=str(child.get("summary") or child.get("error") or summary)))
+    return True
 
 
 def _register_watcher_steer(child_id: str, meta: dict[str, Any]) -> None:
@@ -863,6 +871,12 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
         for child_id in list(known):
             if child_id in snapshot:
                 continue
+            try:
+                if not _retire_watcher_room(child_id, name=known[child_id].get("name")):
+                    continue
+            except Exception:
+                logger.debug("child terminal evidence unavailable for %s", child_id, exc_info=True)
+                continue
             gone_meta = known.pop(child_id, None) or {}
             try:
                 from observatory.rooms import drop_child_steer
@@ -886,11 +900,6 @@ async def _child_watcher_async(poll_interval: float = CHILD_FEED_POLL_S) -> None
                 stops_pushed.add(child_id)
                 logger.info("observatory: watcher child stop %s", child_id)
                 logger.info("observatory: watcher child stop %s", child_id)
-                try:
-                    _retire_watcher_room(
-                        child_id, name=gone_meta.get("name"))
-                except Exception:
-                    logger.debug("child stop failed for %s", child_id, exc_info=True)
         try:
             await asyncio.sleep(interval)
         except asyncio.CancelledError:

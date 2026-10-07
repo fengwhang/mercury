@@ -697,6 +697,14 @@ class RoomManager:
             logger.debug("rooms: identity ensure failed for %s", channel)
         return channel
 
+    async def reconcile_terminal_children(self) -> None:
+        """Replay terminal status while the bot is connected, before boot reap."""
+        from tools.async_delegation import terminal_child_evidence
+        for child in terminal_child_evidence():
+            await self._retire_child_room(
+                child["child_id"], status=child["status"],
+                summary=str(child.get("summary") or child.get("error") or ""))
+
     async def _retire_child_room(self, node_id: str, *, summary: str = "", status: str = "completed") -> None:
         """Depth 1 ends with its task; deeper agents share their parent's lifetime."""
         try:
@@ -704,10 +712,28 @@ class RoomManager:
         except Exception:
             return
         from observatory.thinking import thinking_done
+        import asyncio
 
         thinking_done(str(row.get("room_id") or ""))
         already_completed = row.get("extra", {}).get("task_state") == "completed"
         self.state.update_extra(node_id, task_state="completed", task_outcome=status)
+        marker_cancelled = False
+        if not row.get("extra", {}).get("terminal_marker_delivered"):
+            channel = str(row.get("room_id") or "")
+            if channel:
+                lifecycle = "stop" if status == "completed" else status
+                try:
+                    async with asyncio.timeout(2):
+                        delivered = await self.publish_lifecycle(
+                            channel, lifecycle, name=str(row.get("name") or node_id),
+                            summary=summary, status=status,
+                        )
+                    if delivered:
+                        self.state.update_extra(node_id, terminal_marker_delivered=True)
+                except asyncio.CancelledError:
+                    marker_cancelled = True
+                except Exception:
+                    logger.debug("rooms: terminal marker pending for %s", node_id, exc_info=True)
         parent_channel = ""
         try:
             parent_id = str(row.get("parent_node_id") or "")
@@ -734,6 +760,8 @@ class RoomManager:
             )
             await exit_orchestrator(node_id, state=self.state, registry=_shared_registry(),
                                     bot=self.bot, status=status, summary=summary)
+        if marker_cancelled:
+            raise asyncio.CancelledError
         if parent_channel and not already_completed:
             try:
                 label = str(row.get("name") or node_id)

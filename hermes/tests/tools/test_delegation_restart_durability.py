@@ -187,12 +187,15 @@ def test_reaper_uses_terminal_ledger_not_live_row_age(tmp_path):
         state.close()
 
 
-def test_recovery_uses_final_stop_message_not_process_dispose(tmp_path):
+def test_recovery_uses_bound_terminal_marker_not_process_dispose(tmp_path):
     transcript = tmp_path / "terminal.jsonl"
     summary = "verified artifact\n" + "full result " * 200
     transcript.write_text(json.dumps({"type": "message", "message": {
         "role": "assistant", "stopReason": "stop",
-        "content": [{"type": "text", "text": summary}]}}) + "\n")
+        "content": [{"type": "text", "text": summary}]}}) + "\n" +
+        json.dumps({"type": "custom", "customType": "mercury_delegation_terminal",
+                    "data": {"childId": "durable/0", "status": "completed",
+                             "summary": summary, "error": None}}) + "\n")
     dispatch_row()
     ad.record_child_spawn("durable/0", "durable", child_pid=os.getpid(),
                           child_started_at=-1, session_file=str(transcript))
@@ -209,6 +212,9 @@ def test_new_input_after_final_message_is_not_completed(tmp_path):
     transcript.write_text(
         json.dumps({"type": "message", "message": {"role": "assistant", "stopReason": "stop",
              "content": [{"type": "text", "text": "previous turn done"}]}}) + "\n" +
+        json.dumps({"type": "custom", "customType": "mercury_delegation_terminal",
+                    "data": {"childId": "durable/0", "status": "completed",
+                             "summary": "previous turn done", "error": None}}) + "\n" +
         json.dumps({"type": "message", "message": {"role": "user", "content": "remaining task"}}) + "\n")
     dispatch_row()
     ad.record_child_spawn("durable/0", "durable", child_pid=os.getpid(),
@@ -235,3 +241,113 @@ def test_terminal_first_wins_and_clears_restart_pending():
     with ad._transaction() as db:
         assert "restart_checkpoint" not in json.loads(db.execute(
             "SELECT task_json FROM async_delegations WHERE delegation_id='durable'").fetchone()[0])
+
+
+def test_unverifiable_pending_child_is_not_reaped_as_dead():
+    dispatch_row()
+    ad.record_child_spawn("durable/0", "durable", goal="original goal", transport_kind="pending")
+    ad.record_child_checkpoint("durable/0", {"prompt": "saved original task"})
+    dead_owner()
+    pending = queue.Queue()
+    ad.restore_undelivered_completions(pending)
+    event = pending.get_nowait()
+    assert event["status"] == "interrupted"
+    assert ad.list_delegation_children("durable")[0]["status"] == "running"
+    assert "durable/0" not in ad.terminal_child_outcomes()
+    assert event["results"][0]["recovery"]["ownership_verified"] is False
+
+
+@pytest.mark.parametrize("child_id", [None, "another-task/0"])
+def test_final_message_without_bound_task_terminal_does_not_complete(tmp_path, child_id):
+    transcript = tmp_path / "pending-continuation.jsonl"
+    records = [{"type": "message", "message": {"role": "assistant", "stopReason": "stop",
+                "content": [{"type": "text", "text": "before queued continuation"}]}}]
+    if child_id:
+        records.append({"type": "custom", "customType": "mercury_delegation_terminal",
+                        "data": {"childId": child_id, "status": "completed",
+                                 "summary": "different task", "error": None}})
+    transcript.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    dispatch_row()
+    ad.record_child_spawn("durable/0", "durable", child_pid=os.getpid(),
+                          child_started_at=-1, session_file=str(transcript))
+    dead_owner()
+    pending = queue.Queue()
+    ad.restore_undelivered_completions(pending)
+    event = pending.get_nowait()
+    assert event["status"] == "interrupted"
+    assert event["results"][0]["summary"] is None
+
+
+def test_adoption_monitor_keeps_selected_profile_ledgers_separate(tmp_path, monkeypatch):
+    from mercury_constants import set_hermes_home_override, reset_hermes_home_override
+    monkeypatch.setattr(ad, "_ensure_adoption_monitor", lambda: None)
+    monkeypatch.setattr(ad, "_ADOPTION_SWEEP_SECONDS", 0.001)
+    for name in ("profile-a", "profile-b"):
+        token = set_hermes_home_override(tmp_path / name)
+        try:
+            dispatch_row(name, session_key=name, parent_session_id=f"parent-{name}")
+            ad.record_child_spawn(f"{name}/0", name, child_pid=os.getpid(),
+                                  child_started_at=get_process_start_time(os.getpid()))
+            dead_owner(name)
+            ad.recover_abandoned_delegations()
+            ad.record_child_terminal(f"{name}/0", "completed", summary=f"result-{name}")
+        finally:
+            reset_hermes_home_override(token)
+    ad._adoption_monitor_loop()
+    for name in ("profile-a", "profile-b"):
+        token = set_hermes_home_override(tmp_path / name)
+        try:
+            row = ad.get_durable_delegation(name)
+            assert row["state"] == "completed"
+            assert row["result"]["results"][0]["summary"] == f"result-{name}"
+            assert row["origin_session"] == name
+        finally:
+            reset_hermes_home_override(token)
+
+
+def test_worker_receives_bound_identity_and_private_transcript_directory(tmp_path, monkeypatch):
+    from tools import omp_delegation as od
+    child = tmp_path / "fixture-identity"
+    child.write_text(f"#!{sys.executable}\nimport json, os\nprint(json.dumps({{'childId': os.environ.get('MERCURY_DELEGATION_CHILD_ID'), 'directory': os.environ.get('PI_CODING_AGENT_SESSION_DIR')}}))\n")
+    child.chmod(0o700)
+    monkeypatch.setenv("HERMES_OMP_TRANSPORT", "oneshot")
+    monkeypatch.setattr(od, "_resolve_omp_binary", lambda: str(child))
+    dispatch_row()
+    result = od._run_omp_task(0, "goal", "fixture/model", str(tmp_path), 5, None,
+                              delegation_id="durable", goal="goal")
+    observed = json.loads(result["summary"])
+    assert observed["childId"] == "durable/0"
+    assert observed["directory"] == str(tmp_path / "sessions" / "delegation" / "durable-0")
+    assert ad.list_delegation_children("durable")[0]["checkpoint"]["session_directory"] == observed["directory"]
+
+
+def test_oneshot_terminal_marker_recovers_from_private_directory(tmp_path):
+    directory = tmp_path / "sessions" / "delegation" / "durable-0"
+    directory.mkdir(parents=True)
+    (directory / "run.jsonl").write_text(json.dumps({
+        "type": "custom", "customType": "mercury_delegation_terminal",
+        "data": {"childId": "durable/0", "status": "completed",
+                 "summary": "verified oneshot result", "error": None}}) + "\n")
+    dispatch_row()
+    ad.record_child_spawn("durable/0", "durable", child_pid=os.getpid(),
+                          child_started_at=-1, transport_kind="oneshot")
+    ad.record_child_checkpoint("durable/0", {"session_directory": str(directory), "prompt": "original"})
+    dead_owner()
+    pending = queue.Queue()
+    ad.restore_undelivered_completions(pending)
+    event = pending.get_nowait()
+    assert event["status"] == "completed"
+    assert event["results"][0]["summary"] == "verified oneshot result"
+
+
+def test_process_fingerprint_parses_spaced_parenthesized_comm(monkeypatch):
+    from pathlib import Path
+    from gateway.status import get_process_start_time
+
+    # Linux field 2 may contain spaces and closing parentheses. Field 22
+    # remains relative to the final comm delimiter, not whitespace tokens.
+    stat = "321 (worker (task) name) S " + " ".join(
+        str(field) for field in range(4, 23)
+    )
+    monkeypatch.setattr(Path, "read_text", lambda self, **kwargs: stat)
+    assert get_process_start_time(321) == 22

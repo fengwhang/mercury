@@ -90,6 +90,9 @@ async def test_watcher_start_streams_stop_retires_depth1_session(tmp_path, monke
         await asyncio.sleep(0.3)
         assert any("bash" in t for c, t in bot.said if c == "#vm_alpha-bravo")
         # Depth-1 completion removes this task's room and leaves its root alive.
+        from tools import async_delegation
+        async_delegation.record_child_spawn("deleg_1/0", "deleg_1", name="bravo")
+        async_delegation.record_child_terminal("deleg_1/0", "completed", summary="verified completion")
         await asyncio.to_thread(
             gs._retire_watcher_room, "deleg_1/0", name="bravo")
         assert "#vm_alpha-bravo" in bot.destroyed

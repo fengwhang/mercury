@@ -56,6 +56,12 @@ def child():
         time.sleep(0.01)
     append_message({"role": "assistant", "stopReason": "stop", "content": [
         {"type": "text", "text": "verified fixture terminal outcome"}]})
+    with TRANSCRIPT.open("a") as handle:
+        handle.write(json.dumps({"type": "custom", "customType": "mercury_delegation_terminal",
+            "data": {"childId": "process-fixture/0", "status": "completed",
+                     "summary": "verified fixture terminal outcome", "error": None}}) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     marker("child-finished", True)
 
 

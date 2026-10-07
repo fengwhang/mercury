@@ -196,10 +196,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     # row carries), written at SPAWN and finalized at terminal outcome. It
     # is what a LATER gateway process needs to tell ``completed`` /
     # ``still running`` / ``died`` apart after the owning process exited:
-    # ``child_pid``+``child_started_at`` prove liveness, ``session_file``
-    # holds the child-written ``session_exit`` terminal marker (see
-    # :func:`omp_session_finished`), and the terminal columns record the
-    # outcome the runner observed.
+    # PID/start fingerprints prove liveness. A child-bound, flushed terminal
+    # task marker or an observed terminal ledger outcome proves completion;
+    # final assistant messages and session disposal do not.
     conn.execute(
         """CREATE TABLE IF NOT EXISTS delegation_children (
             child_id TEXT PRIMARY KEY,
@@ -377,9 +376,9 @@ def record_child_spawn(
 
     ``child_id`` is ``<delegation_id>/<task_index>`` — the steer/stop
     address and the observatory node id. The child process identity
-    (``child_pid`` + ``child_started_at``) and its omp session file are the
-    ONLY facts a post-restart process can use to decide whether the child
-    is still running, finished (session ``session_exit`` marker), or died.
+    (``child_pid`` + ``child_started_at``), its child-bound terminal task
+    checkpoint, and the observed terminal ledger outcome distinguish a
+    running process, completed task, or interrupted task after restart.
     Re-recording an existing child (transport fallback re-run) only
     refreshes identity fields; the spawn timestamp is kept. Never raises —
     evidence bookkeeping must not fail a dispatch.
@@ -481,6 +480,17 @@ def record_child_terminal(
         logger.debug("delegation: child terminal evidence failed for %s",
                      child_id, exc_info=True)
         return False
+
+
+def terminal_child_evidence() -> List[Dict[str, Any]]:
+    with _DB_LOCK, _transaction() as conn:
+        rows = conn.execute(
+            "SELECT child_id, status, summary, error FROM delegation_children "
+            "WHERE status IN ('completed','failed','interrupted','error','died')"
+        ).fetchall()
+    return [dict(zip(("child_id", "status", "summary", "error"), row)) for row in rows]
+
+
 def terminal_child_outcomes() -> Dict[str, str]:
     """Exact child identities with durable task-terminal evidence."""
     with _DB_LOCK, _transaction() as conn:
@@ -517,30 +527,6 @@ def list_delegation_children(delegation_id: str) -> List[Dict[str, Any]]:
     for child in children:
         child["checkpoint"] = json.loads(child.pop("checkpoint_json") or "null")
     return children
-
-
-def list_children_with_owner(*, owner_pid: int) -> List[Dict[str, Any]]:
-    """Every recorded child whose owning gateway process is ``owner_pid``."""
-    try:
-        with _DB_LOCK, _transaction() as conn:
-            rows = conn.execute(
-                """SELECT child_id, delegation_id, task_index, name, goal,
-                          owner_pid, owner_started_at, child_pid,
-                          child_started_at, session_file, transport_kind,
-                          started_at, finished_at, status, summary, error
-                   FROM delegation_children WHERE owner_pid=?
-                   ORDER BY started_at, child_id""",
-                (int(owner_pid),),
-            ).fetchall()
-    except Exception:
-        return []
-    keys = (
-        "child_id", "delegation_id", "task_index", "name", "goal",
-        "owner_pid", "owner_started_at", "child_pid", "child_started_at",
-        "session_file", "transport_kind", "started_at", "finished_at",
-        "status", "summary", "error",
-    )
-    return [dict(zip(keys, row)) for row in rows]
 
 
 def reassign_children_owner(
@@ -586,22 +572,26 @@ def child_process_alive(
     return process_identity_state(child_pid, child_started_at) == "live"
 
 
-def owner_process_alive(
-    owner_pid: Optional[int], owner_started_at: Optional[int] = None
-) -> bool:
-    """True when the gateway process that OWNS a delegation is provably alive."""
-    return child_process_alive(owner_pid, owner_started_at)
+def omp_session_result(
+    session_file: Optional[str], child_id: str, session_directory: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Read the child-bound terminal task marker flushed before RPC agent_end.
 
-
-def omp_session_result(session_file: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Recover a persisted final assistant stop, not a session-dispose notice.
-
-    A tool call, new input, compaction, or torn record after that stop invalidates
-    it. Error/aborted assistant stops are failures, never successful summaries.
+    Final assistant text and dispose notices are not terminal task evidence.
+    A later start/message, compaction, or torn record invalidates the marker.
     """
     if not session_file:
-        return None
-    last_message = None
+        if not session_directory:
+            return None
+        result = None
+        for path in __import__("pathlib").Path(session_directory).glob("*.jsonl"):
+            candidate = omp_session_result(str(path), child_id)
+            if candidate is not None:
+                if result is not None:
+                    return None  # contradictory runs require explicit reconciliation
+                result = candidate
+        return result
+    result = None
     try:
         with __import__("pathlib").Path(session_file).open(encoding="utf-8") as handle:
             for line in handle:
@@ -610,33 +600,25 @@ def omp_session_result(session_file: Optional[str]) -> Optional[Dict[str, Any]]:
                 try:
                     entry = json.loads(line)
                 except ValueError:
-                    last_message = None
+                    result = None
                     continue
-                if not isinstance(entry, dict):
-                    last_message = None
-                elif entry.get("type") == "message":
-                    last_message = entry.get("message")
-                elif entry.get("type") in ("compaction", "branch_summary"):
-                    last_message = None
+                if not isinstance(entry, dict) or entry.get("type") in ("message", "compaction", "branch_summary"):
+                    result = None
+                    continue
+                data = entry.get("data")
+                if entry.get("type") != "custom" or not isinstance(data, dict) or data.get("childId") != child_id:
+                    continue
+                if entry.get("customType") == "mercury_delegation_started":
+                    result = None
+                elif entry.get("customType") == "mercury_delegation_terminal":
+                    status = data.get("status")
+                    if status in ("completed", "interrupted", "failed"):
+                        summary = data.get("summary") if status == "completed" else None
+                        if status != "completed" or (isinstance(summary, str) and summary):
+                            result = {"status": status, "summary": summary, "error": data.get("error")}
     except (OSError, UnicodeError):
         return None
-    if not isinstance(last_message, dict) or last_message.get("role") != "assistant":
-        return None
-    reason = last_message.get("stopReason")
-    content = last_message.get("content") or []
-    if reason == "stop" and not any(
-        isinstance(block, dict) and block.get("type") == "toolCall" for block in content
-    ):
-        summary = "\n".join(
-            block["text"] for block in content
-            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
-        )
-        if summary:
-            return {"status": "completed", "summary": summary, "error": None}
-    if reason in ("error", "aborted"):
-        return {"status": "interrupted" if reason == "aborted" else "failed",
-                "summary": None, "error": last_message.get("errorMessage") or f"Assistant stopped: {reason}"}
-    return None
+    return result
 
 
 def _persist_completion(
@@ -668,26 +650,26 @@ def _persist_completion(
         return cur.rowcount == 1
 
 
-def _note_delivery_attempt(delegation_id: str) -> None:
-    with _DB_LOCK, _transaction() as conn:
-        conn.execute(
-            "UPDATE async_delegations SET delivery_attempts=delivery_attempts+1, updated_at=? WHERE delegation_id=?",
-            (time.time(), delegation_id),
-        )
-
-
 def _child_result_entry(child: Dict[str, Any]) -> Dict[str, Any]:
     """Only task-terminal evidence proves success; dispose is not success."""
     status = str(child.get("status") or "running")
+    ownership_verified = process_identity_state(
+        child.get("child_pid"), child.get("child_started_at")) == "dead"
     if status == "running":
-        result = omp_session_result(child.get("session_file"))
+        result = omp_session_result(
+            child.get("session_file"), str(child["child_id"]),
+            (child.get("checkpoint") or {}).get("session_directory"))
+        terminal_evidence = result is not None
         if result is None:
             result = {"status": "interrupted", "summary": None,
-                      "error": "Worker exited before recording a task-terminal result. Resume from saved goals and transcript; verify existing side effects first."}
+                      "error": ("Worker exited before recording a task-terminal result."
+                                if ownership_verified else
+                                "Delegation owner exited; worker identity is unverified. Do not start a duplicate worker until task ownership is reconciled.")}
         status = result["status"]
         child = {**child, **result}
         error = result["error"]
-        record_child_terminal(str(child["child_id"]), status, summary=result["summary"], error=error)
+        if ownership_verified or terminal_evidence:
+            record_child_terminal(str(child["child_id"]), status, summary=result["summary"], error=error)
     else:
         error = child.get("error")
     recovery = None
@@ -697,7 +679,9 @@ def _child_result_entry(child: Dict[str, Any]) -> Dict[str, Any]:
             "goal": child.get("goal") or "",
             "session_file": child.get("session_file"),
             "checkpoint": child.get("checkpoint"),
-            "instructions": "Read the saved transcript and inspect the task worktree. Do not replay completed side effects. Resume only remaining work using the original goal and context.",
+            "ownership_verified": ownership_verified,
+            "process_identity": {"pid": child.get("child_pid"), "started_at": child.get("child_started_at")},
+            "instructions": "Read the saved transcript and inspect the task worktree. Verify worker ownership before resuming. Do not replay completed side effects. Resume only remaining work using the original goal and context.",
         }
     return {
         "task_index": child.get("task_index", 0),
@@ -892,10 +876,10 @@ def recover_abandoned_delegations() -> int:
 # ---------------------------------------------------------------------------
 # A dispatch in flight when the gateway exits is RE-ADOPTED by the next
 # gateway: ownership is re-stamped to the new process and one daemon
-# watcher settles the record when its children turn terminal (completed
-# via the session ``session_exit`` marker, died via process death). The
-# watcher is the orphaned children's missing "worker thread": it lands the
-# same completion event and room retirement the lost runner would have.
+# watcher settles the record using child-bound task checkpoints or proven
+# process death. Missing identity never authorizes killing or reaping.
+# The watcher lands the durable result and room retirement that the lost
+# runner would otherwise have performed.
 _adopted_lock = threading.Lock()
 _adopted: Dict[str, Dict[str, Any]] = {}
 _adoption_thread: Optional[threading.Thread] = None
@@ -956,7 +940,8 @@ def _adopt_delegation(row: tuple, task: Dict[str, Any], live: List[Dict[str, Any
         _records[delegation_id] = record
     live_ids = {str(c.get("child_id") or "") for c in live}
     with _adopted_lock:
-        _adopted[delegation_id] = {"live": live_ids, "row": row, "task": task}
+        _adopted[delegation_id] = {
+            "live": live_ids, "row": row, "task": task, "home": str(get_hermes_home())}
     for child in list_delegation_children(delegation_id):
         child_id = str(child.get("child_id") or "")
         if not child_id:
@@ -1031,18 +1016,22 @@ def _ensure_adoption_monitor() -> None:
 
 def _adoption_monitor_loop() -> None:
     """Sweep adopted delegations until every one is settled; then exit."""
+    from mercury_constants import set_hermes_home_override, reset_hermes_home_override
     while True:
         try:
             with _adopted_lock:
-                ids = [d for d in _adopted]
-            if not ids:
+                entries = list(_adopted.items())
+            if not entries:
                 return
-            for delegation_id in ids:
+            for delegation_id, adopted in entries:
+                token = set_hermes_home_override(adopted["home"])
                 try:
                     _sweep_adopted(delegation_id)
                 except Exception:
                     logger.exception("delegation: adoption sweep failed for %s",
                                      delegation_id)
+                finally:
+                    reset_hermes_home_override(token)
         except Exception:
             logger.debug("delegation: adoption monitor error", exc_info=True)
         if _adoption_stop.wait(_ADOPTION_SWEEP_SECONDS):
@@ -1160,7 +1149,9 @@ def mark_completion_delivered(delegation_id: str) -> bool:
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         cur = conn.execute(
-            """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
+            """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?,
+               delivery_claim=NULL, delivery_claimed_at=NULL,
+               delivery_owner_pid=NULL, delivery_owner_started_at=NULL
                WHERE delegation_id=? AND delivery_state!='delivered'""",
             (now, now, delegation_id),
         )

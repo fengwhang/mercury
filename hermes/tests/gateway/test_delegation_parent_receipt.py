@@ -34,3 +34,40 @@ async def test_persisted_parent_receipt_skips_adapter_on_restart(tmp_path, monke
         assert len(db.get_messages("parent")) == 1
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_existing_parent_receipt_acknowledges_unverifiable_legacy_claim(tmp_path, monkeypatch):
+    import time
+    from mercury_state import SessionDB
+    from tests.gateway.test_completion_delivery import _runner
+    from tools import async_delegation as ad
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("parent", source="fixture", model="fixture")
+    evt = {"type": "async_delegation", "delegation_id": "receipt-fixture",
+           "parent_session_id": "parent", "session_key": "agent:main:telegram:dm:123",
+           "goal": "fixture", "status": "completed", "summary": "real result"}
+    ad._persist_dispatch({**evt, "dispatched_at": time.time()})
+    ad._persist_completion(evt, {"status": "completed", "summary": "real result"})
+    assert ad.claim_completion_delivery("receipt-fixture", "legacy-claim")
+    with ad._transaction() as conn:
+        conn.execute("UPDATE async_delegations SET delivery_owner_pid=NULL, delivery_owner_started_at=NULL WHERE delegation_id='receipt-fixture'")
+    text = format_process_notification(evt)
+    db.append_message("parent", "user", text, display_kind="internal_notification")
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner._session_db = SimpleNamespace(get_compression_tip=AsyncMock(return_value="parent"))
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        load_transcript=AsyncMock(side_effect=lambda sid: db.get_messages(sid)))
+    try:
+        await runner._deliver_completion_notification(text, evt)
+        assert ad.get_durable_delegation("receipt-fixture")["delivery_state"] == "delivered"
+        with ad._transaction() as conn:
+            assert conn.execute(
+                "SELECT delivery_claim FROM async_delegations WHERE delegation_id='receipt-fixture'"
+            ).fetchone()[0] is None
+        adapter.handle_message.assert_not_awaited()
+    finally:
+        db.close()

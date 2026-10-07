@@ -54,3 +54,33 @@ async def test_child_drain_deadline_is_bounded(tmp_path, monkeypatch):
         release.set()
         time.sleep(0.02)
         ad._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_restart_request_checkpoints_before_after_turn_wait(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ad._reset_for_tests()
+    release = threading.Event()
+    runner, _ = make_restart_runner()
+    try:
+        handle = ad.dispatch_async_delegation(goal="fixture", context="saved original goal",
+            toolsets=None, role="leaf", model="fixture/model", session_key="route",
+            runner=lambda: (release.wait(2), {"status": "completed"})[1])
+        assert runner.request_restart(after_turn_timeout=1)
+        with ad._transaction() as db:
+            task = json.loads(db.execute("SELECT task_json FROM async_delegations WHERE delegation_id=?",
+                                        (handle["delegation_id"],)).fetchone()[0])
+        assert task["restart_checkpoint"]["reason"] == "planned gateway restart"
+    finally:
+        task = getattr(runner, "_restart_task", None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        release.set()
+        time.sleep(0.02)
+        ad._reset_for_tests()
