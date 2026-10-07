@@ -290,3 +290,55 @@ async def test_automatic_restart_counts_real_native_worker_without_async_parent(
                 await task
             except asyncio.CancelledError:
                 pass
+
+
+@pytest.mark.asyncio
+async def test_platform_restart_does_not_report_acceptance_after_durability_refusal(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from gateway.platforms.base import MessageEvent, MessageType
+    from tests.gateway.restart_test_helpers import make_restart_source
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    runner, _ = make_restart_runner()
+    runner.request_restart = Mock(return_value=False)
+    event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=make_restart_source())
+    reply = await runner._handle_restart_command(event)
+    assert "refused" in str(reply).lower()
+    assert "restarting" not in str(reply).lower()
+    assert runner._running
+
+
+@pytest.mark.asyncio
+async def test_authorized_platform_restart_can_checkpoint_a_deferred_automatic_request(tmp_path, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from gateway.platforms.base import MessageEvent, MessageType
+    from tests.gateway.restart_test_helpers import make_restart_source
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.restart.is_gateway_supervisor_process", lambda: True)
+    runner, _ = make_restart_runner()
+    runner._active_work_count = lambda: 1
+    runner._awaitable_work_count = lambda: 1
+    runner._wedged_agent_count = lambda: 0
+    runner._restart_after_turn_timeout = 0
+    runner.stop = AsyncMock()
+    try:
+        assert runner.request_restart(automatic=True, via_service=True, trigger="control:restart-when-idle")
+        await asyncio.sleep(0.05)
+        runner.stop.assert_not_awaited()
+        event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=make_restart_source())
+        await runner._handle_restart_command(event)
+        await asyncio.wait_for(runner._restart_task, 2)
+        assert not runner._restart_automatic
+        runner.stop.assert_awaited_once()
+    finally:
+        task = getattr(runner, "_restart_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass

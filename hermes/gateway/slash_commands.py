@@ -1554,7 +1554,9 @@ class GatewaySlashCommandsMixin:
             )
             return ""
 
-        if self._restart_requested or self._draining:
+        if (self._restart_requested or self._draining) and not (
+            getattr(self, "_restart_automatic", False) and self._is_user_authorized(event.source)
+        ):
             count = self._running_agent_count()
             if count:
                 return t("gateway.draining", count=count)
@@ -1687,11 +1689,13 @@ class GatewaySlashCommandsMixin:
         _under_service = is_gateway_supervisor_process()
         _in_container = is_container_restart_context()
         if _under_service or _in_container:
-            self.request_restart(detached=False, via_service=True,
+            accepted = self.request_restart(detached=False, via_service=True,
                                  trigger="admin:slash-restart", actor=_restart_actor)
         else:
-            self.request_restart(detached=True, via_service=False,
+            accepted = self.request_restart(detached=True, via_service=False,
                                  trigger="admin:slash-restart", actor=_restart_actor)
+        if not accepted and not self._restart_task_started:
+            return EphemeralReply("Restart refused: durable request/checkpoint unavailable; gateway remains running.")
         if active_agents:
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))
