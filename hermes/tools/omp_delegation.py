@@ -871,6 +871,9 @@ class _ApprovalBridgeServer:
 
         class UnixHTTPServer(ThreadingHTTPServer):
             address_family = socket.AF_UNIX
+            # ThreadingHTTPServer defaults to daemon handlers. Close must drain
+            # accepted human decisions and their responses before unlinking.
+            daemon_threads = False
             def server_bind(self):
                 # HTTPServer.server_bind() calls socket.getfqdn() — a
                 # multi-SECOND DNS stall on resolver-less boxes (measured
@@ -888,6 +891,9 @@ class _ApprovalBridgeServer:
         self._server = UnixHTTPServer(self._path, Handler)
         self._thread = threading.Thread(
             target=self._server.serve_forever, daemon=True,
+            # BaseServer.shutdown() waits for this selector poll, not timeout.
+            # Keep batch teardown bounded without changing approval deadlines.
+            kwargs={"poll_interval": 0.05},
             name="mercury-approval-bridge")
 
     def start(self) -> str:
@@ -898,6 +904,7 @@ class _ApprovalBridgeServer:
     def stop(self) -> None:
         try:
             self._server.shutdown()
+            self._thread.join()
             self._server.server_close()
         except Exception:
             pass
