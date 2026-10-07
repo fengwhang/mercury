@@ -14255,6 +14255,12 @@ def main():
                     else:
                         print("    Run: mercury computer-use install")
                     return 1
+                from tools.computer_use.doctor import _apply_daemon_liveness_guard
+                daemon_report = _apply_daemon_liveness_guard({"overall": "ok", "checks": []}, path)
+                for check in daemon_report["checks"]:
+                    print(f"  {check['name']}: {check['message']}")
+                    if check.get("hint"):
+                        print(f"    {check['hint']}")
                 try:
                     st = cua_driver_update_check()
                     if st and st.get("update_available"):
@@ -14268,7 +14274,7 @@ def main():
                         print("  Refresh to latest: mercury computer-use install --upgrade")
                 except Exception:
                     print("  Refresh to latest: mercury computer-use install --upgrade")
-                return 0
+                return 1 if daemon_report["overall"] == "degraded" else 0
             print("cua-driver: not installed")
             print("  Run: mercury computer-use install")
             return 1

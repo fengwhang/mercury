@@ -150,6 +150,7 @@ _DESKTOP_WINDOW_NAMES = (
 # Setting it to "0" disables telemetry; absence => the binary's own default
 # (telemetry ON upstream).
 _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
+_CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 
 
 def _computer_use_cfg() -> Dict[str, Any]:
@@ -286,6 +287,9 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     """
     env = dict(base_env if base_env is not None else os.environ)
     env[_CUA_TELEMETRY_ENV_VAR] = "0"
+    if (sys.platform == "linux" and env.get("WAYLAND_DISPLAY")
+            and _computer_use_cfg().get("native_wayland") is True):
+        env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "1"
     return env
 
 def cua_driver_telemetry_disable_persistent(*, timeout: float = 30.0) -> bool:
@@ -366,6 +370,13 @@ def _empty_discovery_reason() -> str:
             "freezes app renderers"
         )
     if sys.platform == "linux" and not os.environ.get("DISPLAY"):
+        child_env = cua_driver_child_env()
+        if child_env.get("WAYLAND_DISPLAY") and child_env.get(_CUA_NATIVE_WAYLAND_ENV_VAR) == "1":
+            return (
+                "window discovery returned no windows with native Wayland opted in; "
+                "check compositor/display reachability and AT-SPI using "
+                "`mercury computer-use doctor` in this process environment"
+            )
         return "no DISPLAY is set — X11/XWayland is not reachable from this process"
     if sys.platform == "darwin":
         # Headless Mac / asleep panel: ScreenCaptureKit has 0 shareable

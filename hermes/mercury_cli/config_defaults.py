@@ -3666,6 +3666,8 @@ DEFAULT_CONFIG = {
 
     # Computer Use (cua-driver) toolset settings.
     "computer_use": {
+        # Opt in only for Linux children with an actual WAYLAND_DISPLAY.
+        "native_wayland": False,
         # Cap driver screenshot longest edge (pixels) via set_config on
         # session start. Shrinks SOM multimodal payloads; 0 disables.
         "max_image_dimension": 1456,
