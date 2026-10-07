@@ -215,6 +215,30 @@ def test_parent_turn_state_close_and_reset_follow_native_owner_boundaries(tmp_pa
             scope._process.wait()
 
 
+def test_compression_continuation_drains_stable_conversation_scope(tmp_path):
+    from tools.native_agent_hub import get_parent_hub, close_parent_hub, drain_peer_records, reset_agent_hub
+    parent = SimpleNamespace(session_id="original", _native_hub_enabled=True, _native_hub_profile=str(tmp_path),
+                             _native_hub_conversation_id="original", valid_tool_names={"hub"})
+    scope = get_parent_hub(parent, command=BUN + [str(FIXTURE), "server"])
+    try:
+        scope._inbox.append({"id": "queued", "from": "Left", "to": "Main", "body": "before compression", "ts": 1})
+        parent.session_id = "compression-tip"
+        messages = []
+        drain_peer_records(parent, messages)
+        assert [row["display_metadata"]["id"] for row in messages] == ["queued"]
+        assert messages[0]["attribution"] == "agent"
+        assert scope.drain() == []
+        scope._inbox.append({"id": "old", "from": "Left", "to": "Main", "body": "before new", "ts": 2})
+        parent.session_id = "new-conversation"
+        reset_agent_hub(parent)
+        fresh_messages = []
+        drain_peer_records(parent, fresh_messages)
+        assert fresh_messages == []
+    finally:
+        close_parent_hub(str(tmp_path), "original")
+        close_parent_hub(str(tmp_path), "new-conversation")
+
+
 def test_peer_data_cannot_impersonate_owner_or_cross_reset_scope(tmp_path):
     from tools.native_agent_hub import NativeHubSession, peer_record
     parent = SimpleNamespace(session_id="owner", _native_hub_enabled=True, _native_hub_profile=str(tmp_path))

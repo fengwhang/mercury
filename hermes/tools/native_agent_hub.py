@@ -495,10 +495,10 @@ def dispatch_hub(agent, params):
 
 
 def drain_peer_records(agent, messages):
-    key = (getattr(agent, "_native_hub_profile", ""), str(getattr(agent, "session_id", "")))
+    key = (getattr(agent, "_native_hub_profile", ""), str(getattr(agent, "_native_hub_conversation_id", None) or getattr(agent, "session_id", "")))
     with _scope_lock:
         scope = _scopes.get(key)
-    if scope is not None:
+    if scope is not None and scope._parent() is agent:
         messages.extend(peer_record(message) for message in scope.drain())
 
 
