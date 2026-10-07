@@ -274,9 +274,43 @@ async def boot_resync(
             live = []
         bot = get_bot_sink()
         reconcile = getattr(manager, "reconcile_terminal_children", None)
+        terminal_transport_ready = True
+        terminal_channels: set[str] = set()
         if bot is not None and callable(reconcile):
             try:
-                await reconcile()
+                from tools.async_delegation import terminal_child_evidence
+
+                terminal_ids = {
+                    child["child_id"] for child in terminal_child_evidence()
+                }
+                for row in live:
+                    if row.get("node_id") not in terminal_ids:
+                        continue
+                    channel = str(row.get("room_id") or "")
+                    if channel:
+                        terminal_channels.add(channel)
+                    parent_id = str(row.get("parent_node_id") or "")
+                    if parent_id:
+                        try:
+                            parent_channel = str(
+                                state.get(parent_id).get("room_id") or ""
+                            )
+                            if parent_channel:
+                                terminal_channels.add(parent_channel)
+                        except Exception:
+                            pass
+                # IRC rejects nonmember PRIVMSGs. Join only the bot to deliver
+                # terminal evidence before expiry; never recreate child identities
+                # or report these transient joins as live/readiness channels.
+                for channel in sorted(terminal_channels):
+                    if not await bot.join_channel(channel):
+                        raise ConnectionError(f"terminal JOIN not confirmed: {channel}")
+            except Exception as exc:
+                terminal_transport_ready = False
+                report["failed"].append(f"terminal marker transport: {exc}")
+            try:
+                if terminal_transport_ready:
+                    await reconcile()
             except Exception as exc:
                 report["failed"].append(f"terminal marker replay: {exc}")
         try:
@@ -297,6 +331,10 @@ async def boot_resync(
                     str(row.get("room_id") or "")
                     for row in live
                     if int(row.get("depth") or 0) == 0
+                    or (
+                        not terminal_transport_ready
+                        and row.get("room_id") in terminal_channels
+                    )
                 ],
             )
         except Exception as exc:

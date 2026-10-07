@@ -13,8 +13,9 @@ from tools import async_delegation as ad
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("transport_ready", [True, False])
 async def test_exact_delegation_terminal_boot_never_recreates_identity(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, transport_ready
 ):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
@@ -24,9 +25,9 @@ async def test_exact_delegation_terminal_boot_never_recreates_identity(
     actions = []
 
     class Bot:
-        async def join_channel(self, channel):
-            actions.append(("join", channel))
-            return True
+        async def join_channel(self, room):
+            actions.append(("join", room))
+            return transport_ready or room != channel
 
         async def say(self, channel, text, **kwargs):
             actions.append(("say", channel, text))
@@ -66,14 +67,21 @@ async def test_exact_delegation_terminal_boot_never_recreates_identity(
             RoomManager(state, bot), state, OrchestratorRegistry()
         )
         assert not any(
-            action[0] in {"join", "identity"} and action[1] == channel
-            for action in actions
+            action[0] == "identity" and action[1] == channel for action in actions
         )
         assert channel not in report["joined"]
-        assert {row["node_id"] for row in state.get_live()} == {"root"}
-        assert any(
-            action[0] == "say" and "worker killed" in action[2] for action in actions
+        expected = {"root"} if transport_ready else {"root", child_id}
+        assert {row["node_id"] for row in state.get_live()} == expected
+        assert (
+            any(
+                action[0] == "say" and "worker killed" in action[2]
+                for action in actions
+            )
+            == transport_ready
         )
+        if not transport_ready:
+            assert report["failed"]
+            assert not state.get(child_id)["extra"].get("terminal_marker_delivered")
         assert ("identity", "#root", "root") in actions
     finally:
         state.close()
@@ -309,3 +317,206 @@ async def test_real_reconnect_keeps_worker_feed_and_native_thinking_visible(
         state.close()
         rooms.set_bot_sink(previous_sink)
         rooms.set_event_loop(previous_loop)
+
+
+@pytest.mark.asyncio
+async def test_real_boot_terminal_marker_visible_before_room_expiry(
+    tmp_path, monkeypatch
+):
+    from tests.observatory.test_ircd import RawClient, running_daemon
+    from tests.observatory.test_mirc_adapter_liveness import make_adapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+    monkeypatch.setattr(platform_hook, "LAST_BOOT", None)
+    pool = identity.IdentityPool()
+    monkeypatch.setattr(identity, "_pool", pool)
+    state = ObservatoryState(tmp_path / "state.db")
+    previous_sink = rooms.get_bot_sink()
+    previous_loop = rooms._loop_now()
+    observer = RawClient()
+    channel = "#nixpad_mercurator-mercury-stats-both-engines"
+    try:
+        async with running_daemon(tmp_path, password="fixture") as (daemon, port, _):
+            adapter = make_adapter(port, monkeypatch)
+            adapter.password = adapter.oper_password = "fixture"
+            monkeypatch.setattr(
+                identity, "_endpoint", lambda: ("127.0.0.1", port, "fixture")
+            )
+            try:
+                assert await adapter.connect()
+                _seed(state, "root", depth=0, room="#root", parent=None)
+                _seed(state, "deleg_97e27028/0", depth=1, room=channel, parent="root")
+                ad.record_child_spawn("deleg_97e27028/0", "deleg_97e27028")
+                ad.record_child_terminal(
+                    "deleg_97e27028/0",
+                    "interrupted",
+                    error="verified original worker death",
+                )
+                await observer.connect(port)
+                await observer.register("observer", password="fixture")
+                await observer.send(f"JOIN {channel}")
+                await observer.next_match(" 366 ")
+                assert channel not in daemon._clients[adapter.nickname].channels
+                report = await platform_hook.boot_resync(
+                    RoomManager(state, bot=adapter), state, OrchestratorRegistry()
+                )
+                marker = await observer.next_match(
+                    "subagent '0': interrupted", timeout=1
+                )
+                assert f"PRIVMSG {channel}" in marker
+                assert adapter.nickname in marker
+                assert pool.get(channel) is None
+                assert channel not in report["joined"]
+                assert channel not in daemon.channel_names()
+                assert {row["node_id"] for row in state.get_live()} == {"root"}
+                print(
+                    "terminal marker received over actual IRC before own-room expiry; "
+                    "bot initially absent; no stale child identity created"
+                )
+            finally:
+                await observer.close()
+                await identity.drop_identity("#root")
+                await adapter.disconnect()
+    finally:
+        state.close()
+        rooms.set_bot_sink(previous_sink)
+        rooms.set_event_loop(previous_loop)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_waiter", [False, True])
+async def test_join_waits_for_membership_with_blocked_handler_and_coalesces(
+    tmp_path, monkeypatch, cancel_waiter
+):
+    import asyncio
+    from tests.observatory.test_ircd import running_daemon
+    from tests.observatory.test_mirc_adapter_liveness import make_adapter
+
+    async with running_daemon(tmp_path) as (daemon, port, _):
+        adapter = make_adapter(port, monkeypatch)
+        entered, release = asyncio.Event(), asyncio.Event()
+        joins = []
+        original = daemon._cmd_join
+
+        async def blocked_join(client, channel):
+            if channel == "#await-receipt":
+                joins.append(channel)
+                entered.set()
+                await release.wait()
+            await original(client, channel)
+
+        monkeypatch.setattr(daemon, "_cmd_join", blocked_join)
+        tasks = []
+        try:
+            assert await adapter.connect()
+            adapter._handler_task.cancel()
+            await asyncio.gather(adapter._handler_task, return_exceptions=True)
+            tasks = [
+                asyncio.create_task(adapter.join_channel("#await-receipt"))
+                for _ in range(2)
+            ]
+            await asyncio.wait_for(entered.wait(), 1)
+            assert not any(task.done() for task in tasks)
+            if cancel_waiter:
+                tasks[0].cancel()
+                await asyncio.gather(tasks[0], return_exceptions=True)
+            release.set()
+            remaining = tasks[1:] if cancel_waiter else tasks
+            assert await asyncio.wait_for(asyncio.gather(*remaining), 1) == [
+                True
+            ] * len(remaining)
+            assert "testbot" in daemon._channels["#await-receipt"]
+            assert joins == ["#await-receipt"]
+        finally:
+            release.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["rejected", "expired", "timeout", "disconnect"])
+async def test_join_never_reports_success_without_membership(
+    tmp_path, monkeypatch, failure
+):
+    import asyncio
+    from plugins.platforms.mirc import adapter as adapter_mod
+    from tests.observatory.test_ircd import running_daemon
+    from tests.observatory.test_mirc_adapter_liveness import make_adapter
+
+    monkeypatch.setattr(adapter_mod, "ROOM_CONTROL_TIMEOUT", 0.2)
+    async with running_daemon(tmp_path) as (daemon, port, _):
+        adapter = make_adapter(port, monkeypatch)
+        entered = asyncio.Event()
+        original = daemon._cmd_join
+
+        async def failed_join(client, channel):
+            if channel != "#no-membership":
+                return await original(client, channel)
+            entered.set()
+            if failure == "rejected":
+                await daemon._numeric(client, 475, channel, "Bad channel key")
+            elif failure == "expired":
+                await daemon._send(
+                    client, f":{client.nick}!relay@mercury PART {channel} :room expired"
+                )
+
+        monkeypatch.setattr(daemon, "_cmd_join", failed_join)
+        task = None
+        try:
+            assert await adapter.connect()
+            task = asyncio.create_task(adapter.join_channel("#no-membership"))
+            await asyncio.wait_for(entered.wait(), 1)
+            if failure == "disconnect":
+                await adapter.disconnect()
+            assert await asyncio.wait_for(task, 1) is False
+            peer = daemon._clients.get("testbot")
+            assert peer is None or "#no-membership" not in peer.channels
+        finally:
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_disconnected_join_keeps_intent_without_claiming_membership(monkeypatch):
+    from tests.observatory.test_mirc_adapter_liveness import make_adapter
+
+    adapter = make_adapter(1, monkeypatch)
+    assert not await adapter.join_channel("#offline")
+    assert "#offline" in adapter.extra_channels
+
+
+@pytest.mark.asyncio
+async def test_identity_creation_announces_transport_not_execution(
+    tmp_path, monkeypatch
+):
+    from tests.observatory.test_ircd import RawClient, running_daemon
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MERCURY_HOME", str(tmp_path))
+    monkeypatch.setattr(identity, "_pool", identity.IdentityPool())
+    observer = RawClient()
+    try:
+        async with running_daemon(tmp_path, password="fixture") as (_, port, _):
+            monkeypatch.setattr(
+                identity, "_endpoint", lambda: ("127.0.0.1", port, "fixture")
+            )
+            await observer.connect(port)
+            await observer.register("observer", password="fixture")
+            await observer.send("JOIN #transport-only")
+            await observer.next_match(" 366 ")
+            assert await identity.ensure_identity("transport-only", "#transport-only")
+            marker = await observer.next_match("PRIVMSG #transport-only")
+            assert marker.endswith(":transport-only transport connected.")
+            assert (
+                "online" not in marker
+                and "ready" not in marker
+                and "running" not in marker
+            )
+    finally:
+        await observer.close()
+        await identity.drop_identity("#transport-only")
