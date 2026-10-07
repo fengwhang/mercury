@@ -74,7 +74,7 @@ class PeerWire {
 		{ resolve: (value: unknown) => void; reject: (error: Error) => void; timer?: NodeJS.Timeout }
 	>();
 	#buffer = "";
-	handler: (method: string, data: unknown) => Promise<unknown> = async () => {
+	handler: (method: string, data: unknown, requestId?: number) => Promise<unknown> = async () => {
 		throw new Error("Hub not initialized");
 	};
 	onClose: () => void = () => {};
@@ -98,7 +98,7 @@ class PeerWire {
 					return;
 				}
 				if (frame.method) {
-					void this.handler(frame.method, frame.data).then(
+					void this.handler(frame.method, frame.data, frame.id).then(
 						result => this.#write({ id: frame.id, result }),
 						error => this.#write({ id: frame.id, error: error instanceof Error ? error.message : String(error) }),
 					);
@@ -263,6 +263,7 @@ export class NativeHubServer {
 		let grant: Grant | undefined;
 		const authTimer = setTimeout(() => wire.close(), REQUEST_TIMEOUT);
 		authTimer.unref();
+		const requests = new Map<number, AbortController>();
 		wire.onClose = () => {
 			clearTimeout(authTimer);
 			this.#wires.delete(wire);
@@ -276,7 +277,7 @@ export class NativeHubServer {
 			grant.refs.clear();
 			this.#broadcastRoster();
 		};
-		wire.handler = async (method, data) => {
+		wire.handler = async (method, data, requestId) => {
 			if (method === "hello") {
 				if (grant) throw new Error("Already authenticated");
 				grant = this.#grants.get(type({ token: "string" }).assert(data).token);
@@ -371,14 +372,27 @@ export class NativeHubServer {
 				if (this.#owners.get(payload.message.from) !== grant) throw new Error("Sender capability required");
 				return this.bus.send(payload.message, payload.options);
 			}
+			if (method === "cancel") {
+				const { id } = type({ id: "number", "+": "reject" }).assert(data);
+				requests.get(id)?.abort(new Error("Native hub wait interrupted by owner"));
+				return {};
+			}
 			if (method === "tool") {
 				const params = peerToolSchema.assert(data);
 				const senderId = grant.root;
 				const deps = { registry: this.registry, senderId, settings: this.#settings, bus: this.bus };
-				if (params.op === "list") return executeList(this.registry, senderId, params);
-				if (params.op === "send") return executeSend(deps, params, wire.disconnect.signal);
-				if (params.op === "wait") return executeMessageWait(deps, params, wire.disconnect.signal);
-				throw new Error("Only native peer list/send/wait are forwarded");
+				if (requestId === undefined || requests.has(requestId)) throw new Error("Unique tool request id required");
+				const controller = new AbortController();
+				requests.set(requestId, controller);
+				const signal = AbortSignal.any([wire.disconnect.signal, controller.signal]);
+				try {
+					if (params.op === "list") return await executeList(this.registry, senderId, params);
+					if (params.op === "send") return await executeSend(deps, params, signal);
+					if (params.op === "wait") return await executeMessageWait(deps, params, signal);
+					throw new Error("Only native peer list/send/wait are forwarded");
+				} finally {
+					requests.delete(requestId);
+				}
 			}
 			throw new Error("Unknown hub method");
 		};

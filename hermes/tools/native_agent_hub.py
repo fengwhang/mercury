@@ -216,10 +216,14 @@ class NativeHubSession:
                 raise RuntimeError("Native hub closed")
             self._serial += 1
             request_id = self._serial
-            slot = {"event": event}
+            slot = {"event": event, "cancellable": method == "tool" and data.get("op") == "send" and data.get("await") is True}
             self._pending[request_id] = slot
+            try:
+                self._write({"id": request_id, "method": method, "data": data})
+            except BaseException:
+                self._pending.pop(request_id, None)
+                raise
         try:
-            self._write({"id": request_id, "method": method, "data": data})
             if not event.wait(timeout):
                 raise RuntimeError("Native hub request timed out; send not replayed")
             if slot.get("error"):
@@ -568,3 +572,8 @@ def interrupt_agent_hub(agent):
                 if not slot["event"].is_set():
                     slot["error"] = "Native hub wait interrupted by owner"
                     slot["event"].set()
+        with scope._lock:
+            requests = [request_id for request_id, slot in scope._pending.items()
+                        if slot.get("cancellable") and not slot["event"].is_set()]
+            for request_id in requests:
+                scope._write({"method": "cancel", "data": {"id": request_id}})
