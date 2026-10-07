@@ -428,6 +428,7 @@ export class HubScopeClient {
 		const client = new HubScopeClient(registry, bus);
 		const socket = createConnection({ host: "127.0.0.1", port: Number(address.split(":")[1]) });
 		client.#wire = new PeerWire(socket);
+		client.#wire.onClose = () => client.close();
 		client.#wire.handler = async (method, data) => {
 			if (method === "roster") {
 				client.#roster(refsSchema.assert(data));

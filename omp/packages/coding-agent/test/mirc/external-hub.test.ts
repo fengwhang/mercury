@@ -129,6 +129,34 @@ test("reserved sibling root cannot be registered by another granted subtree", as
 	expect(server.registry.get("Right")).toBeUndefined();
 });
 
+test("involuntary disconnect clears mirrors and settles accepted unbounded await", async () => {
+	const server = await scope();
+	const left = await peer(server, "Left", "Main");
+	const right = await peer(server, "Right", "Main");
+	await left.client.flush();
+	const accepted = Promise.withResolvers<void>();
+	const send = left.bus.send.bind(left.bus);
+	left.bus.send = async (...args) => {
+		const receipt = await send(...args);
+		accepted.resolve();
+		return receipt;
+	};
+	const pending = executeSend(
+		{ registry: left.registry, senderId: "Left", settings: left.settings, bus: left.bus },
+		{ to: "Right", message: "question", await: true, timeoutMs: 0 },
+	);
+	await accepted.promise;
+	await server.close();
+	// A bounded deadline detects a missing real socket-close event; fake time
+	// cannot drive OS TCP shutdown. This is not a scheduling sleep.
+	const settled = await Promise.race([pending.then(() => true), Bun.sleep(200).then(() => false)]);
+	// Always settle the test's own outstanding request, including on the red run.
+	left.client.close();
+	await pending;
+	expect(settled).toBe(true);
+	expect(left.registry.get("Right")).toBeUndefined();
+});
+
 test("successful transport receipt is not duplicated into native inbox", async () => {
 	const server = await scope();
 	const l = await peer(server, "Left", "Main");
