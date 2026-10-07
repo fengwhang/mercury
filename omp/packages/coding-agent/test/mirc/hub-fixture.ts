@@ -37,6 +37,7 @@ else {
 				body: details.message,
 				ts: event.message.timestamp,
 			});
+			if (details.message === "held_pending") process.stdout.write("accepted\n");
 			if (details.message === "ask") {
 				bridge.trackReply(
 					MircBus.global()

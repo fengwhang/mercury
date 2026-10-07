@@ -68,6 +68,7 @@ const REQUEST_TIMEOUT = 10000;
 /** Correlated duplex frames. Disconnect rejects, never replays accepted sends. */
 class PeerWire {
 	#serial = 0;
+	readonly disconnect = new AbortController();
 	#pending = new Map<
 		number,
 		{ resolve: (value: unknown) => void; reject: (error: Error) => void; timer?: NodeJS.Timeout }
@@ -113,6 +114,7 @@ class PeerWire {
 		});
 		socket.on("error", () => {});
 		socket.on("close", () => {
+			this.disconnect.abort(new Error("Hub connection closed"));
 			for (const pending of this.#pending.values()) {
 				clearTimeout(pending.timer);
 				pending.reject(new Error("Hub connection closed"));
@@ -150,6 +152,7 @@ class PeerWire {
 		return promise;
 	}
 	close(): void {
+		this.disconnect.abort(new Error("Hub connection closed"));
 		this.socket.destroy();
 	}
 }
@@ -373,8 +376,8 @@ export class NativeHubServer {
 				const senderId = grant.root;
 				const deps = { registry: this.registry, senderId, settings: this.#settings, bus: this.bus };
 				if (params.op === "list") return executeList(this.registry, senderId, params);
-				if (params.op === "send") return executeSend(deps, params);
-				if (params.op === "wait") return executeMessageWait(deps, params);
+				if (params.op === "send") return executeSend(deps, params, wire.disconnect.signal);
+				if (params.op === "wait") return executeMessageWait(deps, params, wire.disconnect.signal);
 				throw new Error("Only native peer list/send/wait are forwarded");
 			}
 			throw new Error("Unknown hub method");

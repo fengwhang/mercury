@@ -130,6 +130,51 @@ def test_real_sdk_reconstruction_reopens_disposed_external_scope(tmp_path):
         assert scope.tool({"op": "list"})["details"]["peers"] == []
 
 
+
+@pytest.mark.parametrize("boundary", ["interrupt", "detach"])
+def test_accepted_remote_await_does_not_steal_next_generation_reply(tmp_path, boundary):
+    import threading
+    from tools.native_agent_hub import get_parent_hub, close_parent_hub, interrupt_agent_hub, detach_agent_hub
+    parent = SimpleNamespace(session_id="remote-await", _native_hub_enabled=True, _native_hub_profile=str(tmp_path),
+                             _native_hub_conversation_id="remote-await", _native_hub_turn_running=True)
+    scope = get_parent_hub(parent, command=BUN + [str(FIXTURE), "server"])
+    child = subprocess.Popen(BUN + [str(FIXTURE), "Left", "linger"], cwd=ROOT / "omp",
+                             env={**os.environ, **scope.child_env("Left")}, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    settled = []
+    def awaited():
+        try:
+            settled.append(scope.tool({"op": "send", "to": "Left", "message": "held_pending", "await": True, "timeoutMs": 0}))
+        except Exception as error:
+            settled.append({"error": str(error)})
+    thread = threading.Thread(target=awaited, daemon=True)
+    try:
+        assert child.stdout.readline().strip() == "ready"
+        thread.start()
+        assert child.stdout.readline().strip() == "accepted"
+        if boundary == "interrupt":
+            interrupt_agent_hub(parent)
+        else:
+            detach_agent_hub(parent)
+        thread.join(timeout=2)
+        assert not thread.is_alive(), "accepted unbounded await did not settle"
+        if boundary == "interrupt":
+            assert settled[0]["details"]["receipts"][0]["outcome"] == "injected"
+        replacement = get_parent_hub(parent, command=BUN + [str(FIXTURE), "server"])
+        assert replacement.address == scope.address
+        receipt = replacement.tool({"op": "send", "to": "Left", "message": "ask"})
+        assert receipt["details"]["receipts"][0]["outcome"] == "injected"
+        reply = replacement.tool({"op": "wait", "from": "Left", "timeoutMs": 1000})
+        assert reply["details"]["waited"]["body"] == "source-fixture-answer"
+        assert replacement.drain() == []
+    finally:
+        close_parent_hub(str(tmp_path), "remote-await")
+        thread.join(timeout=2)
+        child.stdin.close()
+        child.wait(timeout=10)
+        child.stdout.close()
+        child.stderr.close()
+
 def test_disabled_sdk_does_not_connect_to_provisioned_scope(tmp_path):
     sdk = ROOT / "omp/packages/coding-agent/test/mirc/sdk-hub-fixture.ts"
     result = subprocess.run(BUN + [str(sdk), "disabled", str(tmp_path)], cwd=ROOT / "omp",
