@@ -22,6 +22,7 @@ import {
 import { decodeEmbeddedClientArchive } from "./embedded-client";
 import embeddedClientArchiveTxt from "./embedded-client.generated.txt";
 import { getGainDashboardStats } from "./gain-aggregator";
+import { getEnginesDashboardStats } from "./mercury-engines";
 import {
 	prepareStatsPort,
 	recoverStatsPort,
@@ -195,12 +196,31 @@ const ensureClientBuild = async () => {
 /**
  * Handle API requests.
  */
-export async function handleApi(req: Request): Promise<Response> {
+/** MERCURY-OMP PATCH (dual-engine stats): engine coverage of one server instance. */
+export interface StatsServerEngines {
+	/** Hermes home to read; null/undefined resolves HERMES_HOME / MERCURY_HOME. */
+	hermesHome?: string | null;
+}
+
+export async function handleApi(req: Request, engines?: StatsServerEngines): Promise<Response> {
 	const url = new URL(req.url);
 	const path = url.pathname;
 
 	// Stats reads are DB-only; explicit /api/sync does the expensive session scan.
 	const range = url.searchParams.get("range");
+
+	// MERCURY-OMP PATCH (dual-engine stats): capability probe + both-engine payload.
+	// Stock servers (no engines option) answer 404 here, keeping the `omp stats`
+	// API surface byte-identical.
+	if (path === "/api/capabilities") {
+		return Response.json({ engines: engines !== undefined });
+	}
+
+	if (path === "/api/engines") {
+		if (engines === undefined) return new Response("Not Found", { status: 404 });
+		const stats = await getEnginesDashboardStats(range, engines.hermesHome);
+		return Response.json(stats);
+	}
 
 	if (path === "/api/stats") {
 		const stats = await getDashboardStats(range);
@@ -350,7 +370,7 @@ export function formatStatsDashboardUrl(hostname: string, port: number): string 
 	return `http://${urlHostname}:${port}`;
 }
 
-function createDashboardServer(port: number, hostname: string): Server<undefined> {
+function createDashboardServer(port: number, hostname: string, engines?: StatsServerEngines): Server<undefined> {
 	const server = Bun.serve({
 		port,
 		hostname,
@@ -373,7 +393,7 @@ function createDashboardServer(port: number, hostname: string): Server<undefined
 				let response: Response;
 
 				if (path.startsWith("/api/")) {
-					response = await handleApi(req);
+					response = await handleApi(req, engines);
 				} else {
 					response = await handleStatic(path);
 				}
@@ -415,7 +435,16 @@ export interface StatsServerHandle {
 // then dead-end in the reclaim path's self-PID guard.
 const activeServers = new Map<string, StatsServerHandle>();
 
-export async function startServer(port = 3847, hostname = STATS_DASHBOARD_HOSTNAME): Promise<StatsServerHandle> {
+export interface StartServerOptions {
+	/** MERCURY-OMP PATCH (dual-engine stats): serve Hermes numbers alongside OMP's. */
+	engines?: StatsServerEngines;
+}
+
+export async function startServer(
+	port = 3847,
+	hostname = STATS_DASHBOARD_HOSTNAME,
+	options?: StartServerOptions,
+): Promise<StatsServerHandle> {
 	const activeKey = `${hostname}:${port}`;
 	if (port !== 0) {
 		const active = activeServers.get(activeKey);
@@ -440,7 +469,7 @@ export async function startServer(port = 3847, hostname = STATS_DASHBOARD_HOSTNA
 	};
 
 	try {
-		return register(createDashboardServer(port, hostname));
+		return register(createDashboardServer(port, hostname, options?.engines));
 	} catch (error) {
 		if (!(error instanceof Error && "code" in error && error.code === "EADDRINUSE")) throw error;
 
@@ -450,7 +479,7 @@ export async function startServer(port = 3847, hostname = STATS_DASHBOARD_HOSTNA
 		}
 
 		try {
-			return register(createDashboardServer(port, hostname));
+			return register(createDashboardServer(port, hostname, options?.engines));
 		} catch (retryError) {
 			throw new Error(`Failed to start stats dashboard on ${hostname}:${port} after reclaiming it.`, {
 				cause: retryError,
