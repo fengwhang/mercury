@@ -188,6 +188,36 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
+    # Per-child RUN EVIDENCE — the restart-durability spine (the "subagent
+    # rooms dying ≠ subagents killed" defect class). One row per dispatched
+    # child (``deleg_<id>/<task_index>``, the same id its observatory node
+    # row carries), written at SPAWN and finalized at terminal outcome. It
+    # is what a LATER gateway process needs to tell ``completed`` /
+    # ``still running`` / ``died`` apart after the owning process exited:
+    # ``child_pid``+``child_started_at`` prove liveness, ``session_file``
+    # holds the child-written ``session_exit`` terminal marker (see
+    # :func:`omp_session_finished`), and the terminal columns record the
+    # outcome the runner observed.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS delegation_children (
+            child_id TEXT PRIMARY KEY,
+            delegation_id TEXT NOT NULL,
+            task_index INTEGER NOT NULL DEFAULT 0,
+            name TEXT NOT NULL DEFAULT '',
+            goal TEXT NOT NULL DEFAULT '',
+            owner_pid INTEGER,
+            owner_started_at INTEGER,
+            child_pid INTEGER,
+            child_started_at INTEGER,
+            session_file TEXT,
+            transport_kind TEXT NOT NULL DEFAULT '',
+            started_at REAL NOT NULL,
+            finished_at REAL,
+            status TEXT NOT NULL DEFAULT 'running',
+            summary TEXT,
+            error TEXT
+        )"""
+    )
 
 
 @contextmanager
@@ -317,6 +347,298 @@ def _prune_durable_records() -> None:
                    )""",
                 (overflow,),
             )
+
+
+# ---------------------------------------------------------------------------
+# Per-child run evidence (restart durability)
+# ---------------------------------------------------------------------------
+
+
+def record_child_spawn(
+    child_id: str,
+    delegation_id: str,
+    task_index: int = 0,
+    *,
+    name: str = "",
+    goal: str = "",
+    child_pid: Optional[int] = None,
+    child_started_at: Optional[int] = None,
+    session_file: Optional[str] = None,
+    transport_kind: str = "",
+    owner_pid: Optional[int] = None,
+    owner_started_at: Optional[int] = None,
+) -> None:
+    """Persist durable run evidence for one dispatched child at SPAWN.
+
+    ``child_id`` is ``<delegation_id>/<task_index>`` — the steer/stop
+    address and the observatory node id. The child process identity
+    (``child_pid`` + ``child_started_at``) and its omp session file are the
+    ONLY facts a post-restart process can use to decide whether the child
+    is still running, finished (session ``session_exit`` marker), or died.
+    Re-recording an existing child (transport fallback re-run) only
+    refreshes identity fields; the spawn timestamp is kept. Never raises —
+    evidence bookkeeping must not fail a dispatch.
+    """
+    try:
+        if not child_id or not delegation_id:
+            return
+        now = time.time()
+        if owner_pid is None:
+            owner_pid = __import__("os").getpid()
+        if owner_started_at is None:
+            try:
+                from gateway.status import get_process_start_time
+
+                owner_started_at = get_process_start_time(int(owner_pid))
+            except Exception:
+                owner_started_at = None
+        with _DB_LOCK, _transaction() as conn:
+            conn.execute(
+                """INSERT INTO delegation_children
+                   (child_id, delegation_id, task_index, name, goal,
+                    owner_pid, owner_started_at, child_pid, child_started_at,
+                    session_file, transport_kind, started_at, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')
+                   ON CONFLICT(child_id) DO UPDATE SET
+                       child_pid=excluded.child_pid,
+                       child_started_at=excluded.child_started_at,
+                       session_file=COALESCE(
+                           excluded.session_file, delegation_children.session_file),
+                       transport_kind=excluded.transport_kind,
+                       owner_pid=excluded.owner_pid,
+                       owner_started_at=excluded.owner_started_at""",
+                (
+                    str(child_id), str(delegation_id), int(task_index or 0),
+                    str(name or ""), str(goal or ""),
+                    int(owner_pid) if owner_pid else None,
+                    int(owner_started_at) if owner_started_at else None,
+                    int(child_pid) if child_pid else None,
+                    int(child_started_at) if child_started_at else None,
+                    str(session_file) if session_file else None,
+                    str(transport_kind or ""), now,
+                ),
+            )
+    except Exception:
+        logger.debug("delegation: child spawn evidence failed for %s", child_id,
+                     exc_info=True)
+
+
+def record_child_terminal(
+    child_id: str, status: str, *, summary: Optional[str] = None,
+    error: Optional[str] = None,
+) -> bool:
+    """Record one child's terminal outcome (what the runner observed).
+
+    Only the first terminal record wins — a later reconcile must not
+    overwrite a real outcome with a reconstructed one. Returns True when
+    this call recorded the outcome. Never raises.
+    """
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            cur = conn.execute(
+                """UPDATE delegation_children
+                   SET status=?, summary=?, error=?, finished_at=?
+                   WHERE child_id=? AND status='running'""",
+                (str(status or "completed"), summary, error, time.time(),
+                 str(child_id)),
+            )
+            return cur.rowcount == 1
+    except Exception:
+        logger.debug("delegation: child terminal evidence failed for %s",
+                     child_id, exc_info=True)
+        return False
+
+
+def list_delegation_children(delegation_id: str) -> List[Dict[str, Any]]:
+    """All recorded children of one delegation, spawn order."""
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            rows = conn.execute(
+                """SELECT child_id, delegation_id, task_index, name, goal,
+                          owner_pid, owner_started_at, child_pid,
+                          child_started_at, session_file, transport_kind,
+                          started_at, finished_at, status, summary, error
+                   FROM delegation_children WHERE delegation_id=?
+                   ORDER BY task_index, child_id""",
+                (str(delegation_id),),
+            ).fetchall()
+    except Exception:
+        return []
+    keys = (
+        "child_id", "delegation_id", "task_index", "name", "goal",
+        "owner_pid", "owner_started_at", "child_pid", "child_started_at",
+        "session_file", "transport_kind", "started_at", "finished_at",
+        "status", "summary", "error",
+    )
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def list_children_with_owner(*, owner_pid: int) -> List[Dict[str, Any]]:
+    """Every recorded child whose owning gateway process is ``owner_pid``."""
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            rows = conn.execute(
+                """SELECT child_id, delegation_id, task_index, name, goal,
+                          owner_pid, owner_started_at, child_pid,
+                          child_started_at, session_file, transport_kind,
+                          started_at, finished_at, status, summary, error
+                   FROM delegation_children WHERE owner_pid=?
+                   ORDER BY started_at, child_id""",
+                (int(owner_pid),),
+            ).fetchall()
+    except Exception:
+        return []
+    keys = (
+        "child_id", "delegation_id", "task_index", "name", "goal",
+        "owner_pid", "owner_started_at", "child_pid", "child_started_at",
+        "session_file", "transport_kind", "started_at", "finished_at",
+        "status", "summary", "error",
+    )
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def reassign_children_owner(
+    delegation_id: str, owner_pid: int, owner_started_at: Optional[int]
+) -> int:
+    """ADOPT: re-stamp a delegation's children to a new owning process."""
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            cur = conn.execute(
+                """UPDATE delegation_children
+                   SET owner_pid=?, owner_started_at=?
+                   WHERE delegation_id=?""",
+                (int(owner_pid), int(owner_started_at) if owner_started_at else None,
+                 str(delegation_id)),
+            )
+            return cur.rowcount
+    except Exception:
+        logger.debug("delegation: child re-own failed for %s", delegation_id,
+                     exc_info=True)
+        return 0
+
+
+def child_process_alive(
+    child_pid: Optional[int], child_started_at: Optional[int] = None
+) -> bool:
+    """True only when the child process is PROVABLY alive (pid + start time).
+
+    A recycled pid counts as dead. Verifiability is one-way: when the
+    platform helpers are unavailable the answer is False-but-unknown —
+    callers pair this with terminal evidence before declaring death.
+    """
+    try:
+        from gateway.status import _pid_exists, get_process_start_time
+    except Exception:
+        return False
+    try:
+        if not child_pid:
+            return False
+        pid = int(child_pid)
+        if not _pid_exists(pid):
+            return False
+        if child_started_at is not None:
+            started = get_process_start_time(pid)
+            if started is not None and int(started) != int(child_started_at):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def owner_process_alive(
+    owner_pid: Optional[int], owner_started_at: Optional[int] = None
+) -> bool:
+    """True when the gateway process that OWNS a delegation is provably alive."""
+    return child_process_alive(owner_pid, owner_started_at)
+
+
+def omp_session_finished(session_file: Optional[str]) -> bool:
+    """True when an omp session JSONL recorded its terminal ``session_exit``.
+
+    The vendored omp engine appends
+    ``{"type":"custom","customType":"session_exit",...}`` as the LAST record
+    of a session when the agent disposes it — the only child-written
+    terminal marker that outlives the owning process. A session without it
+    whose process is gone died mid-task. Reads only the file tail (the
+    marker is always last); never raises.
+    """
+    try:
+        if not session_file:
+            return False
+        path = __import__("pathlib").Path(str(session_file))
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - 16384))
+            tail = handle.read().decode("utf-8", errors="replace")
+        for line in reversed(tail.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            if record.get("type") == "custom" and \
+                    record.get("customType") == "session_exit":
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def omp_session_summary(session_file: Optional[str], max_chars: int = 600) -> str:
+    """Recovered result summary: the session's FINAL assistant text block.
+
+    Best-effort reconstruction for completions whose runner died with the
+    owning process — the transcript is the only surviving copy of the
+    result. Scans the file backwards for the last assistant message
+    carrying text content; returns "" when none is found. Never raises.
+    """
+    try:
+        if not session_file:
+            return ""
+        path = __import__("pathlib").Path(str(session_file))
+        chunk = 64 * 1024
+        max_scan = 5 * 1024 * 1024
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            scanned = 0
+            remainder = ""
+            while scanned < min(size, max_scan):
+                read = min(chunk, size - scanned, max_scan - scanned)
+                scanned += read
+                handle.seek(size - scanned)
+                data = handle.read(read).decode("utf-8", errors="replace")
+                lines = (data + remainder).splitlines()
+                remainder = lines.pop(0) if scanned < size else ""
+                for line in reversed(lines):
+                    line = line.strip()
+                    if not line or '"role":"assistant"' not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    message = record.get("message") if isinstance(record, dict) else None
+                    if not isinstance(message, dict):
+                        continue
+                    if message.get("role") != "assistant":
+                        continue
+                    texts = [
+                        block.get("text")
+                        for block in (message.get("content") or [])
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ]
+                    text = "\n".join(t for t in texts if isinstance(t, str)).strip()
+                    if text:
+                        return text[:max_chars]
+        return ""
+    except Exception:
+        return ""
 
 
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:

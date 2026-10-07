@@ -322,7 +322,77 @@ def format_lifecycle(
             f": {_truncate(summary)}" if summary else (f" ({status})" if status else "")
         )
         return f"{LIFECYCLE_STOP} subagent '{name}' finished{tail}"
+    # Restart-recovery tri-state (subagent-durability): a reconciled or
+    # adopted subagent must be readable at a glance as finished / still
+    # running / died — silence reads as "killed" and lies either way.
+    if lifecycle == "died":
+        tail = f": {_truncate(summary)}" if summary else ""
+        return f"❌ subagent '{name}' died before its task completed{tail}"
+    if lifecycle == "running":
+        tail = f": {_truncate(summary)}" if summary else ""
+        return (
+            f"⏳ subagent '{name}' is still running — the gateway restarted "
+            f"and reattached to it{tail}"
+        )
     return f"{NOTICE_PREFIX} subagent '{name}': {lifecycle}"
+
+
+def announce_subagent_state(
+    node_id: str,
+    lifecycle: str,
+    *,
+    name: str = "",
+    summary: str = "",
+    own_room: bool = True,
+) -> str:
+    """Post one honest subagent-fate marker where a human will see it.
+
+    Best-effort, thread-safe: the marker goes to the subagent's own room
+    (when it survives — the still-running case) and to the NEAREST LIVE
+    ancestor's room (a reconciled subagent's own room is about to be
+    reaped; the summary belongs to the conversation that dispatched it —
+    D8: "depth 1 -> summary lands in the PARENT's room"). Returns the
+    channel the marker landed in ("" when none). Never raises.
+    """
+    try:
+        manager = get_room_manager()
+        if manager is None:
+            return ""
+        row = None
+        try:
+            row = manager.state.get(node_id)
+        except Exception:
+            row = None
+        label = name or str((row or {}).get("name") or node_id)
+        line = format_lifecycle(lifecycle, name=label, summary=summary)
+        if not line:
+            return ""
+        channels: list[str] = []
+        if own_room:
+            channel = str((row or {}).get("room_id") or "")
+            if channel:
+                channels.append(channel)
+        ancestor = str((row or {}).get("parent_node_id") or "")
+        seen = {str(node_id)}
+        while ancestor and ancestor not in seen:
+            seen.add(ancestor)
+            try:
+                parent_row = manager.state.get(ancestor)
+            except Exception:
+                break
+            if str(parent_row.get("status") or "") == "live":
+                channel = str(parent_row.get("room_id") or "")
+                if channel and channel not in channels:
+                    channels.append(channel)
+                break
+            ancestor = str(parent_row.get("parent_node_id") or "")
+        landed = ""
+        for channel in channels:
+            if say_nowait(channel, line, kind="status"):
+                landed = landed or channel
+        return landed
+    except Exception:
+        return ""
 
 
 # --- room manager ----------------------------------------------------------
