@@ -400,8 +400,9 @@ def record_child_spawn(
                     session_file, transport_kind, started_at, status)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')
                    ON CONFLICT(child_id) DO UPDATE SET
-                       child_pid=excluded.child_pid,
-                       child_started_at=excluded.child_started_at,
+                       child_pid=COALESCE(excluded.child_pid, delegation_children.child_pid),
+                       child_started_at=COALESCE(
+                           excluded.child_started_at, delegation_children.child_started_at),
                        session_file=COALESCE(
                            excluded.session_file, delegation_children.session_file),
                        transport_kind=excluded.transport_kind,

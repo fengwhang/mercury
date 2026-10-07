@@ -202,6 +202,70 @@ def _register_live_child(meta: Dict[str, Any], transport: Any) -> None:
         return
     logger.info("observatory: live child registered %s (%s)",
                 meta.get("child_id"), meta.get("name"))
+    _record_child_spawn_evidence(meta, transport)
+
+
+def _child_run_identity(transport: Any):
+    """(pid, pid start time, omp session file) of a live child, best-effort.
+
+    The pid+start pair proves the child's liveness to a LATER process (a
+    recycled pid reads as dead); the session file carries the child-written
+    ``session_exit`` terminal marker and the result transcript. Both are
+    what restart-durable delegation bookkeeping reconciles from.
+    """
+    pid = getattr(transport, "pid", None)
+    started = None
+    session_file = None
+    try:
+        if pid:
+            from gateway.status import get_process_start_time
+
+            started = get_process_start_time(int(pid))
+    except Exception:
+        started = None
+    try:
+        from observatory.spawn import omp_session_file
+
+        session_file = omp_session_file(transport) or None
+    except Exception:
+        session_file = None
+    try:
+        pid = int(pid) if pid else None
+    except (TypeError, ValueError):
+        pid = None
+    try:
+        started = int(started) if started else None
+    except (TypeError, ValueError):
+        started = None
+    return pid, started, str(session_file) if session_file else None
+
+
+def _record_child_spawn_evidence(meta: Dict[str, Any], transport: Any) -> None:
+    """Persist durable run evidence for one child at spawn (never raises).
+
+    Written into the ``delegation_children`` ledger so a gateway restart
+    can tell completed / still-running / died apart after this process is
+    gone. Also refreshes on unregister (the RPC session file is final by
+    then). Children without a delegation id (unbound CLI runs) carry no
+    restart owner and are skipped.
+    """
+    try:
+        from tools.async_delegation import record_child_spawn
+
+        child_id = str(meta.get("child_id") or "")
+        delegation_id = str(meta.get("delegation_id") or "")
+        if not child_id or not delegation_id or delegation_id.startswith("local-"):
+            return
+        pid, started, session_file = _child_run_identity(transport)
+        record_child_spawn(
+            child_id, delegation_id, int(meta.get("task_index") or 0),
+            name=str(meta.get("name") or ""), goal=str(meta.get("goal") or ""),
+            child_pid=pid, child_started_at=started, session_file=session_file,
+            transport_kind=str(meta.get("transport_kind") or ""),
+        )
+    except Exception:
+        logger.debug("delegation: spawn evidence failed for %s",
+                     meta.get("child_id"), exc_info=True)
 
 
 def _subscribe_child_feed(transport: Any) -> None:
@@ -247,12 +311,16 @@ def _replay_child_turn(child_id: Any, turn_frames: Any) -> None:
 
 def _unregister_live_child(child_id: str, transport: Any) -> None:
     with _live_children_lock:
-        _live_children.pop(child_id, None)
+        meta = _live_children.pop(child_id, None)
     with _live_procs_lock:
         try:
             _live_procs.remove(transport)
         except ValueError:
             pass
+    # Refresh the durable run evidence: the RPC session file is final by
+    # now (spawn-time reads can race session creation).
+    if meta:
+        _record_child_spawn_evidence(meta, transport)
 
 
 def _resolve_live_child(subagent_id: str) -> "tuple[Optional[Dict[str, Any]], Optional[str]]":
@@ -959,6 +1027,43 @@ def _parent_approval_callback() -> Optional[Callable[..., Any]]:
 
 
 def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[str],
+                  timeout: int, fallback_chain: Optional[str],
+                  batch_procs: Optional[List["subprocess.Popen"]] = None,
+                  profile_home: Optional[str] = None,
+                  extra_env: Optional[Dict[str, str]] = None,
+                  delegation_id: Optional[str] = None,
+                  name: Optional[str] = None,
+                  goal: Optional[str] = None,
+                  owner_session_id: str = "",
+                  base_env: Optional[Dict[str, str]] = None,
+                  isolate_worktree: Optional[str] = None) -> Dict[str, Any]:
+    """Run ONE omp child and persist its terminal run evidence.
+
+    Thin wrapper around ``_run_omp_task_inner``: whatever the transport
+    observed is durable BEFORE the entry returns, so a gateway restart can
+    never again lose a finished subagent's outcome (the "Delegation owner
+    exited before recording a terminal result" defect). The record is
+    written first-wins — a restart reconciler reconstructing from session
+    evidence never overwrites a real runner-observed outcome.
+    """
+    entry = _run_omp_task_inner(
+        task_index, prompt, model, workdir, timeout, fallback_chain,
+        batch_procs, profile_home, extra_env, delegation_id, name, goal,
+        owner_session_id, base_env, isolate_worktree)
+    try:
+        from tools.async_delegation import record_child_terminal
+
+        record_child_terminal(
+            _live_child_id(delegation_id, task_index),
+            str(entry.get("status") or "error"),
+            summary=entry.get("summary"), error=entry.get("error"))
+    except Exception:
+        logger.debug("delegation: terminal evidence failed for task %s",
+                     task_index, exc_info=True)
+    return entry
+
+
+def _run_omp_task_inner(task_index: int, prompt: str, model: str, workdir: Optional[str],
                   timeout: int, fallback_chain: Optional[str],
                   batch_procs: Optional[List["subprocess.Popen"]] = None,
                   profile_home: Optional[str] = None,
