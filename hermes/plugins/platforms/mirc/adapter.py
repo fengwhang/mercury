@@ -260,6 +260,7 @@ class MIRCAdapter(BasePlatformAdapter):
         self._oper_event = asyncio.Event()
         self._destroy_lock = asyncio.Lock()
         self._destroy_pending: tuple[str, asyncio.Future[bool]] | None = None
+        self._join_pending: dict[str, asyncio.Future[bool]] = {}
         self._registration_event = asyncio.Event()
         self._current_nick = self.nickname
         # draft/multiline negotiation state (learned per connect; cleared
@@ -312,6 +313,7 @@ class MIRCAdapter(BasePlatformAdapter):
             self._lock_key = lock_key
         except ImportError:
             self._lock_key = None  # status module not available (e.g. tests)
+        self._fail_room_control()
         self._conn_generation = getattr(self, "_conn_generation", 0) + 1
         self._oper = False
         self._oper_event.clear()
@@ -811,17 +813,38 @@ class MIRCAdapter(BasePlatformAdapter):
         return bool(target) and target.lower() in self.managed_channels()
 
     async def join_channel(self, channel: str) -> bool:
-        """JOIN an agent room now (and on every reconnect). Never raises."""
-        if channel:
-            self.extra_channels.add(channel)
-        if not self._writer or self._writer.is_closing():
-            return channel in self.extra_channels
-        try:
-            await self._send_raw(f"JOIN {channel}")
-            return True
-        except Exception:
-            logger.debug("MIRC: join %s failed", channel, exc_info=True)
+        """Restore JOIN intent; return True only after server membership receipt."""
+        if not channel:
             return False
+        self.extra_channels.add(channel)
+        if not self._writer or self._writer.is_closing():
+            return False
+        key = channel.lower()
+        receipt = self._join_pending.get(key)
+        if receipt is None:
+            loop = asyncio.get_running_loop()
+            receipt = loop.create_future()
+            self._join_pending[key] = receipt
+
+            def expire() -> None:
+                if not receipt.done():
+                    receipt.set_result(False)
+
+            timeout = loop.call_later(ROOM_CONTROL_TIMEOUT, expire)
+
+            def finished(done) -> None:
+                timeout.cancel()
+                if self._join_pending.get(key) is done:
+                    self._join_pending.pop(key, None)
+
+            receipt.add_done_callback(finished)
+            try:
+                await self._send_raw(f"JOIN {channel}", timeout=ROOM_CONTROL_TIMEOUT)
+            except Exception:
+                logger.debug("MIRC: join %s failed", channel, exc_info=True)
+                expire()
+        # One cancelled waiter must not cancel another caller's JOIN receipt.
+        return await asyncio.shield(receipt)
 
     async def invite_user(self, nick: str, channel: str) -> bool:
         """INVITE a nick to a room (phone surfaces it as a tap). Never raises."""
@@ -865,13 +888,19 @@ class MIRCAdapter(BasePlatformAdapter):
                     if not self.oper_password:
                         return False
                     self._oper_event.clear()
-                    await self._send_raw(f"OPER {self.oper_password}", timeout=ROOM_CONTROL_TIMEOUT)
-                    await asyncio.wait_for(self._oper_event.wait(), ROOM_CONTROL_TIMEOUT)
+                    await self._send_raw(
+                        f"OPER {self.oper_password}", timeout=ROOM_CONTROL_TIMEOUT
+                    )
+                    await asyncio.wait_for(
+                        self._oper_event.wait(), ROOM_CONTROL_TIMEOUT
+                    )
                     if not self._oper:
                         return False
                 receipt = asyncio.get_running_loop().create_future()
                 self._destroy_pending = (channel.lower(), receipt)
-                await self._send_raw(f"DESTROY {channel} :room closed", timeout=ROOM_CONTROL_TIMEOUT)
+                await self._send_raw(
+                    f"DESTROY {channel} :room closed", timeout=ROOM_CONTROL_TIMEOUT
+                )
                 if not await asyncio.wait_for(receipt, ROOM_CONTROL_TIMEOUT):
                     return False
                 self.extra_channels.discard(channel)
@@ -885,11 +914,40 @@ class MIRCAdapter(BasePlatformAdapter):
     def _handle_room_control(self, msg: dict) -> bool:
         """Consume control receipts ahead of slow room-message handlers."""
         command, params = msg["command"], msg["params"]
+        if command in {
+            "366",
+            "403",
+            "405",
+            "471",
+            "473",
+            "474",
+            "475",
+            "476",
+            "477",
+            "489",
+        }:
+            for param in params:
+                receipt = self._join_pending.get(param.lower())
+                if receipt is not None and not receipt.done():
+                    receipt.set_result(command == "366")
+                    return True
+        if (
+            command == "PART"
+            and params
+            and str(msg.get("prefix") or "").split("!", 1)[0].lower()
+            == self._current_nick.lower()
+        ):
+            receipt = self._join_pending.get(params[0].lower())
+            if receipt is not None and not receipt.done():
+                receipt.set_result(False)
+            # The ordered handler still removes this expired JOIN intent.
         if command in {"381", "464", "481"}:
             self._oper = command == "381"
             self._oper_event.set()
             if not self._oper:
-                logger.warning("MIRC: oper/auth refused (%s) — room destroys will retry", command)
+                logger.warning(
+                    "MIRC: oper/auth refused (%s) — room destroys will retry", command
+                )
         pending = self._destroy_pending
         if pending is not None:
             channel, receipt = pending
@@ -907,6 +965,10 @@ class MIRCAdapter(BasePlatformAdapter):
     def _fail_room_control(self) -> None:
         self._oper = False
         self._oper_event.set()
+        pending, self._join_pending = self._join_pending, {}
+        for receipt in pending.values():
+            if not receipt.done():
+                receipt.set_result(False)
         if self._destroy_pending is not None:
             receipt = self._destroy_pending[1]
             if not receipt.done():
@@ -1036,6 +1098,8 @@ class MIRCAdapter(BasePlatformAdapter):
                     line, buffer = buffer.split(b"\r\n", 1)
                     try:
                         decoded = line.decode("utf-8", errors="replace")
+                        if my_generation != self._conn_generation:
+                            return
                         self._last_inbound = time.monotonic()
                         self._inbound_event.set()
                         if self._is_ping(decoded):

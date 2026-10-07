@@ -335,7 +335,7 @@ async def ensure_identity(nick: str, channel: str) -> bool:
     conn = IdentityConn(host=host, port=port, password=password,
                         nick=nick, channel=channel)
     pool.track(conn)
-    ok = await conn.send(f"{nick} online.")
+    ok = await conn.send(f"{nick} transport connected.")
     return ok
 
 
