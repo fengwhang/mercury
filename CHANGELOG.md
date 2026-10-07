@@ -3,6 +3,33 @@
 This is Mercury's product history. Vendored upstream changelogs document
 their original projects and are not Mercury release announcements.
 
+## [0.4.5] — nightly
+
+- Remove the grievance and outbound-telemetry systems. Nothing phones home:
+  no built-in collab relay or share upload endpoint (both default empty),
+  upstream `omp.sh`/`live.omp.sh`/`skills.omp.sh` hosts are rejected as invalid
+  Mercury endpoints, and remote diagnostic/report-tool-issue/OTLP/Langfuse
+  reporting is gone. Local-only reporting, issue recording and explicitly
+  configured self-hosted routes remain, gated behind privacy toggles.
+- Reach the configured model fallback chain on every provider exception for the
+  default and delegate models, including plan-wide usage limits and budget
+  exhaustion, and consult the chain before overflow/compaction terminals. An
+  exception-class fallback table (docs/exception-class-fallback-table.md)
+  documents, for both engines, exactly which exception classes fail over and
+  which (cancels/interrupts, deterministic request-shape errors, output-cap,
+  usage-backed overflows) deliberately do not. A startup provider that was only
+  inferred never auto-discovers on primary restore.
+- Add a top-level `mercury stats` command that reports BOTH the Hermes
+  personal-agent engine and the OMP coding engine on one dashboard, built on the
+  `omp stats` webserver with a dual-engine metrics API (`/api/engines`,
+  `/api/capabilities`). `mercury omp stats` remains the stock single-engine
+  passthrough. Metrics with no genuine source stay null and noted, never
+  invented.
+- Disable Photon, Mem0 and Browser Use dependency telemetry; require offline
+  embedded Hindsight model loading, local Marker OCR and provisioned GRPO
+  training assets; and drop hosted Hugging Face MCP suggestions and
+  computer-use telemetry opt-ins.
+
 ## [0.4.4] — nightly
 
 - Make mLounge's phone button open a full Hermes in-call screen: registered
