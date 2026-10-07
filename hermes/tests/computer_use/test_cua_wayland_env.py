@@ -67,3 +67,24 @@ def test_native_wayland_is_recognized_by_config_cli(tmp_path, monkeypatch, capsy
 def test_native_wayland_has_boolean_public_schema():
     from mercury_cli.web_server import CONFIG_SCHEMA
     assert CONFIG_SCHEMA["computer_use.native_wayland"]["type"] == "boolean"
+
+
+@pytest.mark.parametrize("policy_unavailable", [False, True])
+def test_cli_child_environment_never_forwards_provider_credentials(monkeypatch, policy_unavailable):
+    from mercury_cli.tools_config import _cua_driver_env
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-secret")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-fixture")
+    monkeypatch.setenv("DISPLAY", ":42")
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/fixture-session-bus")
+    monkeypatch.setenv(_VAR, "1")
+    if policy_unavailable:
+        with patch.object(cua_backend, "cua_driver_child_env", side_effect=RuntimeError("unavailable")):
+            env = _cua_driver_env()
+    else:
+        env = _cua_driver_env()
+    assert "OPENAI_API_KEY" not in env
+    assert env["WAYLAND_DISPLAY"] == "wayland-fixture"
+    assert env["DISPLAY"] == ":42"
+    assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/tmp/fixture-session-bus"
+    assert env[_VAR] == "1"
+    assert env["CUA_DRIVER_RS_TELEMETRY_ENABLED"] == "0"
