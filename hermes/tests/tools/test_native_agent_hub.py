@@ -404,6 +404,30 @@ def test_compression_continuation_drains_stable_conversation_scope(tmp_path):
         close_parent_hub(str(tmp_path), "new-conversation")
 
 
+def test_rebuilt_parent_uses_verified_compression_root_not_explicit_fork(tmp_path):
+    from mercury_state import SessionDB
+    from tools.native_agent_hub import attach_hub_capability, reset_agent_hub
+    db = SessionDB(db_path=tmp_path / "lineage.db")
+    try:
+        db.create_session("root", source="cli")
+        db.end_session("root", "compression")
+        db.create_session("tip", source="cli", parent_session_id="root")
+        db.create_session("fork", source="cli", parent_session_id="root", model_config={"_branched_from": "root"})
+        # The durable session API rejects explicit-fork ancestry; use its real
+        # classification and compare with the compression continuation.
+        for sid in ["tip", "fork"]:
+            parent = SimpleNamespace(session_id=sid, _session_db=db,
+                                     tools=[{"function": {"name": "delegate_task"}}], valid_tool_names={"delegate_task"})
+            attach_hub_capability(parent, {"omp": {"task": {"maxRecursionDepth": 2}}})
+            assert parent._native_hub_conversation_id == db.get_compression_lineage(sid)[0]
+            reset_agent_hub(parent)
+            assert parent._native_hub_conversation_id == db.get_compression_lineage(sid)[0]
+        assert db.get_compression_lineage("tip")[0] == "root"
+        assert db.get_compression_lineage("fork") == ["fork"]
+    finally:
+        db.close()
+
+
 def test_peer_data_cannot_impersonate_owner_or_cross_reset_scope(tmp_path):
     from tools.native_agent_hub import NativeHubSession, peer_record
     parent = SimpleNamespace(session_id="owner", _native_hub_enabled=True, _native_hub_profile=str(tmp_path))

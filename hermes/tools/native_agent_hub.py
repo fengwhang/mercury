@@ -88,7 +88,15 @@ def attach_hub_capability(agent, config=None):
     from agent.system_prompt import _agent_home
     home = _agent_home(agent) or Path(os.environ.get("MERCURY_PROFILE_HOME") or os.environ.get("HERMES_HOME") or Path.home() / ".mercury")
     agent._native_hub_profile = str(home.resolve())
-    agent._native_hub_conversation_id = getattr(agent, "_native_hub_conversation_id", None) or str(getattr(agent, "session_id", ""))
+    conversation = getattr(agent, "_native_hub_conversation_id", None)
+    if not conversation:
+        conversation = str(getattr(agent, "session_id", ""))
+        db = getattr(agent, "_session_db", None)
+        if db is not None and conversation:
+            lineage = db.get_compression_lineage(conversation)
+            if lineage:
+                conversation = lineage[0]
+    agent._native_hub_conversation_id = conversation
     agent._native_hub_timeout_ms = (native.get("irc") or {}).get("timeoutMs", native.get("irc.timeoutMs", 120000))
     if enabled and not any(tool.get("function", {}).get("name") == "hub" for tool in agent.tools):
         agent.tools.append(HUB_SCHEMA)
@@ -601,6 +609,9 @@ def reset_agent_hub(agent):
     conversation = getattr(agent, "_native_hub_conversation_id", None)
     target = str(getattr(agent, "session_id", ""))
     if conversation and conversation != target:
+        from tools.delegate_tool import _resolve_session_lineage
+        if _resolve_session_lineage(conversation, agent) == _resolve_session_lineage(target, agent):
+            return
         close_agent_hub(agent)
         agent._native_hub_conversation_id = target
 
