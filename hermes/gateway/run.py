@@ -12236,8 +12236,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         Persists to a JSON file so counters survive across restarts.
         Sessions NOT in active_session_keys are removed (they completed
         successfully, so the loop is broken).
+
+        Only *session-caused* shutdowns count.  The stuck-loop detector
+        (#7536) targets the pattern "session loads -> agent gets stuck ->
+        gateway restarts -> repeat", where the session is what forced the
+        restart.  A planned restart (``_restart_requested`` — /restart,
+        SIGUSR1, pause-for-update, stale-code respawn) is initiated by the
+        operator or the updater and is not the session's doing; every
+        planned path reaches ``stop(restart=True)``, which sets the flag,
+        so it reliably discriminates here.
+
+        Charging planned restarts against the counter is a real bug: three
+        unrelated gateway restarts while a session happened to be running
+        auto-suspended a healthy session and force-wiped its session_id,
+        orphaning an in-flight subagent's transcript so its work could no
+        longer be resumed.  Unplanned shutdowns (crashes, agent-caused
+        restarts) still count, so genuine stuck loops are still broken at
+        the threshold.
         """
         import json
+
+        if getattr(self, "_restart_requested", False):
+            logger.debug(
+                "Skipping stuck-loop counter increment: shutdown is a "
+                "planned restart, not a session-caused failure."
+            )
+            return
 
         path = _hermes_home / self._STUCK_LOOP_FILE
         try:
@@ -16730,6 +16754,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # for sessions that were running.  If a session hits the
             # threshold (3 consecutive restarts while active), the next
             # startup auto-suspends it — breaking the loop.
+            #
+            # Planned restarts are filtered out inside
+            # ``_increment_restart_failure_counts``: only session-caused
+            # shutdowns count toward the threshold.
             if active_agents:
                 self._increment_restart_failure_counts(set(active_agents.keys()))
 
