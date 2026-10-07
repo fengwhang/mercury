@@ -1046,6 +1046,17 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
     written first-wins — a restart reconciler reconstructing from session
     evidence never overwrites a real runner-observed outcome.
     """
+    if delegation_id and not delegation_id.startswith("local-"):
+        from tools.async_delegation import record_child_spawn, record_child_checkpoint
+
+        child_id = _live_child_id(delegation_id, task_index)
+        record_child_spawn(child_id, delegation_id, task_index,
+                           name=name or "", goal=goal or "", transport_kind="pending")
+        record_child_checkpoint(child_id, {
+            "prompt": prompt, "model": model, "workdir": workdir,
+            "profile_home": profile_home, "isolate_worktree": isolate_worktree,
+            "owner_session_id": owner_session_id,
+        })
     entry = _run_omp_task_inner(
         task_index, prompt, model, workdir, timeout, fallback_chain,
         batch_procs, profile_home, extra_env, delegation_id, name, goal,

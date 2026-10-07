@@ -9420,7 +9420,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             self._running_agent_count()
             + self._active_cron_job_count()
             + self._active_api_run_count()
+            + self._active_delegation_count()
         )
+
+    @staticmethod
+    def _active_delegation_count() -> int:
+        from tools.async_delegation import active_count
+        return active_count()
 
     def _active_cron_job_count(self) -> int:
         """Count of cron jobs currently executing, from the cron scheduler's
@@ -11543,6 +11549,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         last_active_count = self._running_agent_count()
         last_cron_count = self._active_cron_job_count()
         last_api_count = self._active_api_run_count()
+        last_delegation_count = GatewayRunner._active_delegation_count()
         last_status_at = 0.0
 
         def _maybe_update_status(force: bool = False) -> None:
@@ -11570,7 +11577,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # or a cron job's tool work gets killed with zero warning the
         # instant it's the only active thing running (#60432).
         # API-server / desk sessions have the same structural gap (#63529).
-        if not self._running_agents and last_cron_count == 0 and last_api_count == 0:
+        if (not self._running_agents and last_cron_count == 0
+                and last_api_count == 0 and last_delegation_count == 0):
             _maybe_update_status(force=True)
             return snapshot, False
 
@@ -11592,6 +11600,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             now = loop.time()
             if (
                 len(self._running_agents) or self._active_api_run_count()
+                or GatewayRunner._active_delegation_count()
             ) and now < deadline:
                 return True
             return bool(self._active_cron_job_count()) and now < cron_deadline
@@ -11607,6 +11616,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             bool(len(self._running_agents))
             or bool(self._active_cron_job_count())
             or bool(self._active_api_run_count())
+            or bool(GatewayRunner._active_delegation_count())
         )
         _maybe_update_status(force=True)
         return snapshot, timed_out
@@ -16258,6 +16268,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 except Exception as _e:
                     logger.debug("mark_running_jobs_interrupted (%s) error: %s", phase, _e)
                 try:
+                    from tools.async_delegation import checkpoint_active_delegations
+                    checkpoint_active_delegations(f"gateway shutdown ({phase})")
                     from tools.async_delegation import interrupt_all as _interrupt_async
                     _async_n = _interrupt_async(reason=f"gateway shutdown ({phase})")
                     if _async_n:
@@ -16369,6 +16381,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             )
 
             timeout = self._restart_drain_timeout
+            if self._restart_requested:
+                from tools.async_delegation import checkpoint_active_delegations
+                checkpoint_active_delegations("planned gateway restart")
 
             # Pre-mark sessions as resume_pending BEFORE the drain wait.
             # If the process is killed by the service manager during the
@@ -27359,6 +27374,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception as exc:
                 logger.error("Watch notification injection error: %s", exc)
 
+    async def _parent_completion_recorded(self, synth_text: str, evt: dict) -> Optional[bool]:
+        """The parent's persisted internal input is the idempotent receipt."""
+        parent_id = str(evt.get("parent_session_id") or "")
+        if evt.get("type") != "async_delegation" or not parent_id or not getattr(self, "_session_db", None):
+            return None
+        from tools.process_registry import format_process_notification
+
+        canonical = format_process_notification(evt)
+        ids = [parent_id]
+        tip = await self._session_db.get_compression_tip(parent_id)
+        if tip and tip != parent_id:
+            ids.append(tip)
+        for session_id in ids:
+            transcript = await self.async_session_store.load_transcript(session_id)
+            for message in transcript:
+                if (message.get("role") == "user"
+                        and message.get("display_kind") == "internal_notification"
+                        and isinstance(message.get("content"), str)
+                        and (message["content"] == synth_text
+                             or (canonical and canonical in message["content"]))):
+                    return True
+        return False
+
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict,
     ) -> Optional[bool]:
@@ -27371,6 +27409,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         is not a transactional boundary: a process crash after adapter
         acceptance can still cause durable at-least-once replay.
         """
+        receipt = await self._parent_completion_recorded(synth_text, evt)
+        if receipt is True:
+            return True
         source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
             # API-server-originated sessions bind a RAW session key (the
@@ -27481,7 +27522,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None,
+                message_id=(f"async-delegation:{evt['delegation_id']}"
+                            if evt.get("type") == "async_delegation" and evt.get("delegation_id")
+                            else str(evt.get("message_id") or "").strip() or None),
                 metadata=metadata,
             )
             logger.info(
@@ -27500,6 +27543,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if callable(_prime):
                 _prime(synth_event)
             await adapter.handle_message(synth_event)
+            if receipt is False:
+                # Base adapters schedule a background turn. Scheduling is not
+                # durable acceptance: wait for its typed input to reach the
+                # parent transcript. A restart cancels this wait and leaves
+                # the producer pending; replay sees the same receipt.
+                while self._running:
+                    if await self._parent_completion_recorded(synth_text, evt):
+                        return True
+                    await asyncio.sleep(0.1)
+                return False
             return True
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)

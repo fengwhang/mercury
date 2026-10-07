@@ -3204,6 +3204,15 @@ def _format_async_delegation(evt: dict) -> str:
                 lines.append(
                     f"Full live transcript (complete tool/assistant trace): {r_live}"
                 )
+            recovery = r.get("recovery")
+            if recovery:
+                lines.append("--- SAVED RECOVERY CONTEXT ---")
+                lines.append(json.dumps(recovery, ensure_ascii=False))
+                lines.append(
+                    "Read the transcript and inspect existing artifacts before continuing. "
+                    "Do not replay completed side effects. Resume the remaining task "
+                    "with the saved prompt/workdir, not a fresh replay of the whole task."
+                )
         return "\n".join(lines)
 
     age = ""
