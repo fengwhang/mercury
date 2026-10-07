@@ -542,6 +542,9 @@ export class HubScopeClient {
 			this.#localSubscriptions.set(ref.id, { session, unsubscribe });
 		}
 	}
+	get closed(): boolean {
+		return this.#closed;
+	}
 	close(): void {
 		if (this.#closed) return;
 		this.#closed = true;
@@ -575,15 +578,25 @@ export function externalHubIdentity(env: NodeJS.ProcessEnv = process.env) {
 }
 
 /** Native sessions with no explicit provisioning do not open any socket. */
-export async function ensureExternalHubScope(registry: AgentRegistry) {
+export async function ensureExternalHubScope(registry: AgentRegistry): Promise<HubScopeClient | undefined> {
 	if (!externalHubIdentity()) return undefined;
-	processHubScope ??= HubScopeClient.connect(
-		process.env.MERCURY_A2A_ADDRESS!,
-		process.env.MERCURY_A2A_TOKEN!,
-		registry,
-		MircBus.global(),
-	);
-	return processHubScope;
+	for (;;) {
+		const pending = (processHubScope ??= HubScopeClient.connect(
+			process.env.MERCURY_A2A_ADDRESS!,
+			process.env.MERCURY_A2A_TOKEN!,
+			registry,
+			MircBus.global(),
+		));
+		let client: HubScopeClient;
+		try {
+			client = await pending;
+		} catch (error) {
+			if (processHubScope === pending) processHubScope = undefined;
+			throw error;
+		}
+		if (!client.closed) return client;
+		if (processHubScope === pending) processHubScope = undefined;
+	}
 }
 
 /** Distribution entry: parent receives only an ephemeral localhost address/token. */

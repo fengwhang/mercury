@@ -118,6 +118,18 @@ def test_actual_cli_worker_and_sdk_session_handshake(tmp_path):
         assert scope.tool({"op": "list"})["details"]["peers"] == []
 
 
+def test_real_sdk_reconstruction_reopens_disposed_external_scope(tmp_path):
+    from tools.native_agent_hub import NativeHubSession
+    parent = SimpleNamespace(session_id="sdk-reuse", _native_hub_enabled=True, _native_hub_profile=str(tmp_path))
+    fixture = ROOT / "omp/packages/coding-agent/test/mirc/sdk-hub-reuse-fixture.ts"
+    with NativeHubSession(parent, command=BUN + [str(FIXTURE), "server"]) as scope:
+        result = subprocess.run(BUN + [str(fixture), str(tmp_path)], cwd=ROOT / "omp",
+                                env={**os.environ, **scope.child_env("SDKReuse")}, capture_output=True, text=True, timeout=40)
+        assert result.returncode == 0, result.stderr
+        assert "two SDK generations disposed cleanly" in result.stdout
+        assert scope.tool({"op": "list"})["details"]["peers"] == []
+
+
 def test_disabled_sdk_does_not_connect_to_provisioned_scope(tmp_path):
     sdk = ROOT / "omp/packages/coding-agent/test/mirc/sdk-hub-fixture.ts"
     result = subprocess.run(BUN + [str(sdk), "disabled", str(tmp_path)], cwd=ROOT / "omp",
