@@ -786,25 +786,6 @@ function WhatsAppOnboardingPanel({
     resetSetup();
   };
 
-  const watchRestartOutcome = async () => {
-    for (let i = 0; i < 20; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      try {
-        const st = await api.getActionStatus("gateway-restart", 5);
-        if (st.running) continue;
-        if (st.exit_code !== 0 && st.exit_code !== null) {
-          onRestartNeeded();
-          showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
-            "error",
-          );
-        }
-        return;
-      } catch {
-        // transient fetch error; keep polling
-      }
-    }
-  };
 
   const apply = async () => {
     if (!setup) return;
@@ -816,15 +797,17 @@ function WhatsAppOnboardingPanel({
         allowed_users: allowedUsers,
       });
       resetSetup();
-      if (result.restart_started) {
-        showToast("WhatsApp saved; gateway restarting…", "success");
+      if (result.restart_queued && result.restart_deferred) {
+        showToast("WhatsApp saved; gateway restart deferred until active tasks and delegates finish.", "success");
+        setRestartNeeded(false);
+      } else if (result.restart_started) {
+        showToast("WhatsApp saved; gateway restart requested while idle.", "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
-        void watchRestartOutcome();
       } else {
         onRestartNeeded();
         const detail = result.restart_error ? `: ${result.restart_error}` : "";
-        showToast(`WhatsApp saved; gateway restart failed${detail}`, "error");
+        showToast(`WhatsApp saved; automatic gateway restart deferred${detail}`, "error");
       }
       await onChanged();
     } catch (applyError) {
@@ -1185,31 +1168,6 @@ function TelegramOnboardingPanel({
     setNewAllowedId("");
   };
 
-  // restart_started only means the `hermes gateway restart` child spawned —
-  // not that the restart will succeed (e.g. systemd linger missing, service
-  // manager failure). Poll the action status briefly and surface a non-zero
-  // exit via the manual-restart banner. Note: in no-service installs the
-  // child becomes the foreground gateway and never exits, so "still running
-  // when the window closes" counts as success.
-  const watchRestartOutcome = async () => {
-    for (let i = 0; i < 20; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      try {
-        const st = await api.getActionStatus("gateway-restart", 5);
-        if (st.running) continue;
-        if (st.exit_code !== 0 && st.exit_code !== null) {
-          onRestartNeeded();
-          showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
-            "error",
-          );
-        }
-        return;
-      } catch {
-        // transient fetch error; keep polling
-      }
-    }
-  };
 
   const apply = async () => {
     if (!setup) return;
@@ -1224,25 +1182,17 @@ function TelegramOnboardingPanel({
         allowed_user_ids: allowedIds,
       });
       resetSetup();
-      if (result.restart_started) {
-        showToast("Telegram saved; gateway restarting…", "success");
+      if (result.restart_queued && result.restart_deferred) {
+        showToast("Telegram saved; gateway restart deferred until active tasks and delegates finish.", "success");
+        setRestartNeeded(false);
+      } else if (result.restart_started) {
+        showToast("Telegram saved; gateway restart requested while idle.", "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
-        void watchRestartOutcome();
-      } else if (result.restart_started === undefined && result.needs_restart) {
-        try {
-          await api.restartGateway();
-          showToast("Telegram saved; gateway restarting…", "success");
-          setRestartNeeded(false);
-          setTimeout(() => void onChanged(), 4000);
-        } catch (restartError) {
-          onRestartNeeded();
-          showToast(`Telegram saved; gateway restart failed: ${restartError}`, "error");
-        }
       } else {
         onRestartNeeded();
         const detail = result.restart_error ? `: ${result.restart_error}` : "";
-        showToast(`Telegram saved; gateway restart failed${detail}`, "error");
+        showToast(`Telegram saved; automatic gateway restart deferred${detail}`, "error");
       }
       await onChanged();
     } catch (applyError) {

@@ -49,13 +49,12 @@ async def test_systemd_quick_restart_uses_live_control_and_observes_one_replacem
     from mercury_cli import gateway
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    runner, _ = make_restart_runner()
-    runner.request_restart = lambda **kwargs: kwargs == {
-        "detached": False, "via_service": True, "after_turn_timeout": 0.0,
-    }
-    server = GatewayControlServer(home=tmp_path, verb_handlers={
-        "restart-observatory": quick_restart_handler(runner, asyncio.get_running_loop()),
-    })
+    requested = []
+    def handler(params):
+        requested.append(params)
+        return {"restarting": True, "deferred": False, "pid": os.getpid()}
+    server = GatewayControlServer(home=tmp_path)
+    server.register_handler("restart-admin", handler, takes_params=True)
     for name in ("_preflight_user_systemd", "_require_service_installed", "refresh_systemd_unit_if_needed"):
         monkeypatch.setattr(gateway, name, lambda *a, **k: None)
     monkeypatch.setattr(gateway, "_select_systemd_scope", lambda _system: False)
@@ -71,6 +70,9 @@ async def test_systemd_quick_restart_uses_live_control_and_observes_one_replacem
         assert await server.start()
         await asyncio.to_thread(gateway.systemd_restart, quick=True)
         assert observed == [{"system": False, "previous_pid": os.getpid(), "timeout": 90}]
+        assert len(requested) == 1
+        assert requested[0]["trigger"] == "cli-admin-restart"
+        assert requested[0]["checkpoint_resume"] is True
     finally:
         await server.stop()
 
@@ -82,7 +84,7 @@ def test_quick_restart_rejects_control_reply_for_other_pid(monkeypatch, tmp_path
     monkeypatch.setattr("gateway.control_socket.query_gateway_control", lambda *a, **k: {
         "pid": 2, "restarting": True,
     })
-    assert not gateway._request_gateway_quick_restart(1)
+    assert not gateway._request_gateway_admin_restart(1, checkpoint_resume=True)
 
 
 def test_legacy_gateway_quick_restart_has_bounded_grace(monkeypatch):
@@ -92,7 +94,7 @@ def test_legacy_gateway_quick_restart_has_bounded_grace(monkeypatch):
         monkeypatch.setattr(gateway, name, lambda *a, **k: None)
     monkeypatch.setattr(gateway, "_select_systemd_scope", lambda _system: False)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 101)
-    monkeypatch.setattr(gateway, "_request_gateway_quick_restart", lambda _pid: False)
+    monkeypatch.setattr(gateway, "_request_gateway_admin_restart", lambda _pid, **_kw: False)
     monkeypatch.setattr(gateway, "probe_gateway_loop_liveness", lambda _pid: "alive")
     monkeypatch.setattr(gateway, "_get_restart_exit_wait_budget", lambda: 1815)
     waits = []

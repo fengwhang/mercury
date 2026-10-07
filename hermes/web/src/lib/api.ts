@@ -1619,8 +1619,9 @@ export interface WebhookEnableResponse {
   platform: "webhook";
   enabled: true;
   needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
+  restart_started: boolean;
+  restart_queued: boolean;
+  restart_deferred: boolean;
   restart_pid?: number | null;
   restart_error?: string;
 }
@@ -1983,8 +1984,9 @@ export interface TelegramOnboardingApplyResponse {
   platform: "telegram";
   bot_username?: string;
   needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
+  restart_started: boolean;
+  restart_queued: boolean;
+  restart_deferred: boolean;
   restart_pid?: number | null;
   restart_error?: string;
 }
@@ -2015,8 +2017,9 @@ export interface WhatsAppOnboardingApplyResponse {
   ok: boolean;
   platform: "whatsapp";
   needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
+  restart_started: boolean;
+  restart_queued: boolean;
+  restart_deferred: boolean;
   restart_pid?: number | null;
   restart_error?: string;
 }

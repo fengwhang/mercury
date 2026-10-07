@@ -4936,26 +4936,39 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
     return proc, False
 
 
-def _restart_gateway_after_webhook_enable(profile: Optional[str] = None) -> dict[str, Any]:
-    """Best-effort gateway restart after enabling the webhook platform."""
+def _request_gateway_configuration_restart(profile: Optional[str], trigger: str) -> dict[str, Any]:
+    """Ask live admission to apply configuration once genuine work is idle."""
+    from mercury_cli.gateway import request_automatic_gateway_restart
+
+    requested = (profile or "").strip()
+    home = (
+        _resolve_profile_dir(requested)
+        if requested and requested.lower() != "current"
+        else get_process_hermes_home()
+    )
+    if requested.lower() == "default":
+        from mercury_cli.profiles import _get_default_hermes_dir
+
+        home = _get_default_hermes_dir()
     try:
-        proc, reused = _spawn_gateway_restart(profile)
+        reply = request_automatic_gateway_restart(home=home, trigger=trigger)
     except Exception as exc:
-        _log.exception("Failed to auto-restart gateway after enabling webhooks")
+        _log.exception("Automatic gateway restart admission failed")
         return {
-            "restart_started": False,
-            "restart_error": str(exc),
+            "restart_started": False, "restart_queued": False,
+            "restart_deferred": True, "restart_error": str(exc),
         }
-    if reused:
-        _log.info(
-            "Webhook enable: reusing in-flight gateway restart (pid %s)",
-            proc.pid,
-        )
     return {
-        "restart_started": True,
-        "restart_action": "gateway-restart",
-        "restart_pid": proc.pid,
+        "restart_started": reply["restarting"] and not reply["deferred"],
+        "restart_queued": reply["restarting"],
+        "restart_deferred": reply["deferred"],
+        "restart_pid": reply.get("pid"),
+        **({"restart_error": reply["reason"]} if reply.get("reason") else {}),
     }
+
+
+def _restart_gateway_after_webhook_enable(profile: Optional[str] = None) -> dict[str, Any]:
+    return _request_gateway_configuration_restart(profile, "webhook-enable")
 
 
 @app.post("/api/gateway/restart")
@@ -10167,24 +10180,7 @@ def _whatsapp_onboarding_payload(pairing_id: str, record: _WhatsAppOnboardingSes
 
 
 def _restart_gateway_after_whatsapp_onboarding(profile: Optional[str] = None) -> dict[str, Any]:
-    try:
-        proc, reused = _spawn_gateway_restart(profile)
-    except Exception as exc:
-        _log.exception("Failed to auto-restart gateway after WhatsApp onboarding")
-        return {
-            "restart_started": False,
-            "restart_error": str(exc),
-        }
-    if reused:
-        _log.info(
-            "WhatsApp onboarding: reusing in-flight gateway restart (pid %s)",
-            proc.pid,
-        )
-    return {
-        "restart_started": True,
-        "restart_action": "gateway-restart",
-        "restart_pid": proc.pid,
-    }
+    return _request_gateway_configuration_restart(profile, "whatsapp-onboarding")
 
 
 @app.post("/api/messaging/whatsapp/onboarding/start")
@@ -10306,7 +10302,9 @@ async def apply_whatsapp_onboarding(
     with _whatsapp_onboarding_lock:
         _whatsapp_onboarding_sessions.pop(pairing_id, None)
 
-    restart_result = _restart_gateway_after_whatsapp_onboarding(effective_profile)
+    restart_result = await asyncio.to_thread(
+        _restart_gateway_after_whatsapp_onboarding, effective_profile,
+    )
     return {
         "ok": True,
         "platform": "whatsapp",
@@ -10588,31 +10586,7 @@ async def get_telegram_onboarding_status(pairing_id: str):
 
 
 def _restart_gateway_after_telegram_onboarding(profile: Optional[str] = None) -> dict[str, Any]:
-    """Best-effort gateway restart after saving Telegram QR onboarding.
-
-    The QR flow naturally pulls users into Telegram on another device. If the
-    saved token waits on a separate dashboard restart click, Mercury appears
-    broken from the chat side. Keep the config save authoritative, but report
-    restart failures so the UI can fall back to the existing manual banner.
-    """
-    try:
-        proc, reused = _spawn_gateway_restart(profile)
-    except Exception as exc:
-        _log.exception("Failed to auto-restart gateway after Telegram onboarding")
-        return {
-            "restart_started": False,
-            "restart_error": str(exc),
-        }
-    if reused:
-        _log.info(
-            "Telegram onboarding: reusing in-flight gateway restart (pid %s)",
-            proc.pid,
-        )
-    return {
-        "restart_started": True,
-        "restart_action": "gateway-restart",
-        "restart_pid": proc.pid,
-    }
+    return _request_gateway_configuration_restart(profile, "telegram-onboarding")
 
 
 @app.post("/api/messaging/telegram/onboarding/{pairing_id}/apply")
@@ -10677,7 +10651,9 @@ async def apply_telegram_onboarding(
     with _telegram_onboarding_lock:
         _telegram_onboarding_pairings.pop(pairing_id, None)
 
-    restart_result = _restart_gateway_after_telegram_onboarding(effective_profile)
+    restart_result = await asyncio.to_thread(
+        _restart_gateway_after_telegram_onboarding, effective_profile,
+    )
 
     return {
         "ok": True,
@@ -14073,7 +14049,7 @@ async def enable_webhooks():
             detail="Failed to enable webhook platform.",
         ) from exc
 
-    restart_result = _restart_gateway_after_webhook_enable()
+    restart_result = await asyncio.to_thread(_restart_gateway_after_webhook_enable)
     return {
         "ok": True,
         "platform": "webhook",

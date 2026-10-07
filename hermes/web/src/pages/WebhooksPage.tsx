@@ -155,24 +155,28 @@ export default function WebhooksPage() {
     try {
       const result = await api.enableWebhooks();
       await loadWebhooks();
-      if (result.restart_started) {
-        setRestartMessage("Webhooks enabled; gateway restarting…");
-        showToast("Webhooks enabled; gateway restarting…", "success");
+      if (result.restart_queued && result.restart_deferred) {
+        const message = "Webhooks enabled; gateway restart deferred until active tasks and delegates finish.";
+        setRestartMessage(message);
+        setRestartNeeded(false);
+        showToast(message, "success");
+      } else if (result.restart_started) {
+        setRestartMessage("Webhooks enabled; gateway restart requested while idle.");
+        showToast("Webhooks enabled; gateway restart requested while idle.", "success");
         setTimeout(() => void loadWebhooks(), 4000);
-        void watchRestartOutcome();
       } else {
         const detail = result.restart_error ? `: ${result.restart_error}` : ".";
         setRestartMessage(null);
         setRestartNeeded(true);
-        setRestartError(`Gateway restart failed${detail}`);
-        showToast(`Webhooks enabled; gateway restart failed${detail}`, "error");
+        setRestartError(`Automatic gateway restart deferred${detail}`);
+        showToast(`Webhooks enabled; automatic gateway restart deferred${detail}`, "error");
       }
     } catch (e) {
       showToast(`Failed to enable webhooks: ${e}`, "error");
     } finally {
       setEnabling(false);
     }
-  }, [loadWebhooks, showToast, watchRestartOutcome]);
+  }, [loadWebhooks, showToast]);
 
   const resetForm = useCallback(() => {
     setName("");

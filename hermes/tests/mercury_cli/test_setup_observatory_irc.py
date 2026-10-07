@@ -595,15 +595,16 @@ def test_repair_path_offers_agent_bind():
     assert offer.call_args[0][1] == "mercury"
 
 
-def test_restart_gateway_runs_mercury_restart(monkeypatch):
-    ran = []
+def test_restart_gateway_requests_idle_only_admission(monkeypatch):
+    import mercury_cli.gateway as gateway
+    requested = []
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **k: True)
-    monkeypatch.setattr("shutil.which", lambda name: "/bin/mercury")
     monkeypatch.setattr(
-        "subprocess.run", lambda *a, **k: ran.append(a[0])
+        gateway, "request_automatic_gateway_restart",
+        lambda **kw: requested.append(kw) or {"restarting": True, "deferred": False, "pid": 4242},
     )
     assert setup_mod._restart_gateway("test reason") is True
-    assert ran == [["/bin/mercury", "gateway", "restart"]]
+    assert requested == [{"trigger": "setup-observatory"}]
 
 
 def test_restart_gateway_decline_prints_manual(monkeypatch, capsys):

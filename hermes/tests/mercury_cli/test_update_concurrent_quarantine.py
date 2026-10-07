@@ -189,80 +189,34 @@ def test_quarantine_reports_a_lock_it_cannot_break(_winp, tmp_path, capsys, monk
 # ---------------------------------------------------------------------------
 
 
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
-    _winp,
-    monkeypatch,
-    tmp_path,
-    capsys,
-):
-    import gateway.status as status_mod
+def _admit_profile_pause(monkeypatch, processes):
+    """Model current gateways that explicitly prove idle pause admission."""
     import mercury_cli.gateway as gateway_mod
 
-    profile_home = tmp_path / "profiles" / "work"
-    profile_home.mkdir(parents=True)
-    profile_proc = SimpleNamespace(profile="work", path=profile_home, pid=101)
-
-    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [101, 202])
+    monkeypatch.setattr(gateway_mod, "find_profile_gateway_processes", lambda **_: processes)
+    by_home = {proc.path: proc.pid for proc in processes}
     monkeypatch.setattr(
-        gateway_mod, "find_windows_gateway_services", lambda **_k: []
-    )
-    monkeypatch.setattr(
-        gateway_mod,
-        "find_profile_gateway_processes",
-        lambda **_k: [profile_proc],
-    )
-    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
-    waited_for = []
-
-    def fake_wait(pids, *, timeout):
-        waited_for.extend(pids)
-        return set()
-
-    monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", fake_wait)
-    monkeypatch.setattr(
-        gateway_mod,
-        "_capture_gateway_argv",
-        lambda pid: ["pythonw.exe", "-m", "mercury_cli.main", "gateway", "run"]
-        if pid == 202
-        else None,
+        "gateway.control_socket.pause_gateway_for_update",
+        lambda home: {"pid": by_home[home], "pausing": True, "already_stopping": False,
+                      "deferred": False, "active_work": 0, "drain_timeout": 0},
     )
 
-    terminated = []
-    monkeypatch.setattr(
-        status_mod,
-        "terminate_pid",
-        lambda pid, force=False, **kwargs: terminated.append((pid, force)),
-    )
 
-    token = cli_main._pause_windows_gateways_for_update()
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateways_refuses_unmapped_before_any_stop(_winp, monkeypatch, tmp_path):
+    import mercury_cli.gateway as gateway_mod
+    import mercury_cli.update_cmd as update_cmd
 
-    assert token == {
-        "resume_needed": True,
-        "profiles": {"work": 101},
-        "unmapped_pids": [202],
-        "unmapped": [
-            {
-                "pid": 202,
-                "argv": ["pythonw.exe", "-m", "mercury_cli.main", "gateway", "run"],
-            }
-        ],
-    }
-    assert waited_for == [101]
-    assert terminated == [(202, True)]
-
-    marker = json.loads(
-        (profile_home / ".gateway-planned-stop.json").read_text(encoding="utf-8")
-    )
-    assert marker["target_pid"] == 101
-    assert marker["stopper_pid"] == os.getpid()
-
-    captured = capsys.readouterr().out
-    assert "Paused gateway profile(s): work" in captured
-    assert "without profile mapping" in captured
-    # An unmapped PID whose argv we captured is respawnable, so we must NOT
-    # tell the user to restart it manually.
-    assert "Restart manually after update" not in captured
+    profile_proc = SimpleNamespace(profile="work", path=tmp_path, pid=101)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_: [101, 202])
+    monkeypatch.setattr(gateway_mod, "find_windows_gateway_services", lambda **_: [])
+    _admit_profile_pause(monkeypatch, [profile_proc])
+    stops = []
+    monkeypatch.setattr(update_cmd, "_write_update_planned_stop_marker", lambda *a: stops.append(a))
+    monkeypatch.setattr("gateway.status.terminate_pid", lambda *a, **k: stops.append(a))
+    with pytest.raises(RuntimeError, match="safe pause admission mapping"):
+        cli_main._pause_windows_gateways_for_update()
+    assert stops == []
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
@@ -279,6 +233,7 @@ def test_pause_and_resume_windows_gateway_service(
     profile_home = tmp_path / "profiles" / "default"
     profile_home.mkdir(parents=True)
     profile_proc = SimpleNamespace(profile="default", path=profile_home, pid=101)
+    _admit_profile_pause(monkeypatch, [profile_proc])
     service = SimpleNamespace(
         name="HermesGateway",
         profile="default",
@@ -342,6 +297,7 @@ def test_pause_and_resume_windows_gateway_service(
 @patch.object(cli_main, "_is_windows", return_value=True)
 def test_pause_windows_gateway_service_failure_restores_every_attempted_service(
     _winp,
+    tmp_path,
     monkeypatch,
 ):
     """A service that times out after accepting stop is restarted too."""
@@ -356,6 +312,10 @@ def test_pause_windows_gateway_service_failure_restores_every_attempted_service(
     monkeypatch.setattr(
         gateway_mod, "find_windows_gateway_services", lambda **_k: services
     )
+    _admit_profile_pause(monkeypatch, [
+        SimpleNamespace(profile=service.name, path=tmp_path / service.name, pid=service.gateway_pid)
+        for service in services
+    ])
 
     def fake_stop(name, **_kwargs):
         if name == "HermesGatewayPicasso":
@@ -379,6 +339,7 @@ def test_pause_windows_gateway_service_failure_restores_every_attempted_service(
 @patch.object(cli_main, "_is_windows", return_value=True)
 def test_pause_windows_gateway_service_surfaces_rollback_start_failure(
     _winp,
+    tmp_path,
     monkeypatch,
 ):
     import mercury_cli.gateway as gateway_mod
@@ -393,6 +354,10 @@ def test_pause_windows_gateway_service_surfaces_rollback_start_failure(
         gateway_mod, "find_windows_gateway_services", lambda **_k: services
     )
 
+    _admit_profile_pause(monkeypatch, [
+        SimpleNamespace(profile=service.name, path=tmp_path / service.name, pid=service.gateway_pid)
+        for service in services
+    ])
     def fake_stop(name, **_kwargs):
         if name == "HermesGatewayPicasso":
             raise RuntimeError("simulated stop timeout")
@@ -657,6 +622,7 @@ def test_pause_kill_set_covers_venv_guard_abort_set(
     profile_proc = SimpleNamespace(
         profile="default", path=profile_home, pid=worker_pid
     )
+    _admit_profile_pause(monkeypatch, [profile_proc])
 
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [worker_pid])
     monkeypatch.setattr(
@@ -1003,7 +969,7 @@ def test_update_gate_skips_abort_when_only_concurrent_is_gateway(
     scripts_dir = tmp_path / "Scripts"
     scripts_dir.mkdir()
 
-    with patch.object(
+    with patch("mercury_cli.update_cmd._require_idle_gateways_for_update"), patch.object(
         cli_main, "_venv_scripts_dir", return_value=scripts_dir
     ), patch.object(
         cli_main,
@@ -1034,7 +1000,7 @@ def test_update_gate_still_aborts_on_non_gateway_concurrent(
     scripts_dir = tmp_path / "Scripts"
     scripts_dir.mkdir()
 
-    with patch.object(
+    with patch("mercury_cli.update_cmd._require_idle_gateways_for_update"), patch.object(
         cli_main, "_venv_scripts_dir", return_value=scripts_dir
     ), patch.object(
         cli_main,
@@ -1077,7 +1043,7 @@ def test_update_impl_refuses_before_terminating_gateway_ancestor(
         lambda pid: pid == 300,
     )
 
-    with patch.object(
+    with patch("mercury_cli.update_cmd._require_idle_gateways_for_update"), patch.object(
         cli_main, "_venv_scripts_dir", return_value=None
     ), patch.object(
         cli_main, "_run_pre_update_backup", return_value=None
