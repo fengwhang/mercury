@@ -20569,6 +20569,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         session_key: str,
         content: str,
         plugin_id: str,
+        expected_session_id: Optional[str] = None,
     ) -> bool:
         """Schedule a plugin-triggered turn on the live gateway loop."""
         loop = getattr(self, "_gateway_loop", None)
@@ -20579,6 +20580,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             session_key=session_key,
             content=content,
             plugin_id=plugin_id,
+            expected_session_id=expected_session_id,
         )
         try:
             current_loop = asyncio.get_running_loop()
@@ -20637,6 +20639,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         session_key: str,
         content: str,
         plugin_id: str,
+        expected_session_id: Optional[str] = None,
     ) -> bool:
         """Route a plugin-triggered turn through the session's live adapter."""
         if not getattr(self, "_running", False) or getattr(self, "_draining", False):
@@ -20645,6 +20648,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         entry = await self.async_session_store.lookup_by_session_key(session_key)
         if entry is None or entry.origin is None:
             return False
+        if expected_session_id and entry.session_id != expected_session_id:
+            # Internal peer wakes pin the owning conversation, never just a
+            # reusable chat/channel key. Only a verified compression continuation
+            # may keep that native scope; /new and unrelated sessions fail closed.
+            session_db = getattr(self, "_session_db", None)
+            if session_db is None:
+                return False
+            row = await session_db.get_session(expected_session_id)
+            if not row or row.get("end_reason") != "compression":
+                return False
+            if await session_db.get_compression_tip(expected_session_id) != entry.session_id:
+                return False
         if not getattr(self, "_running", False) or getattr(self, "_draining", False):
             return False
 

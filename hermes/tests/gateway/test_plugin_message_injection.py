@@ -353,6 +353,7 @@ async def test_scheduler_submits_dispatch_on_live_gateway_loop():
         session_key="agent:main:telegram:dm:42",
         content="wake up",
         plugin_id="notify-plugin",
+        expected_session_id=None,
     )
 
 
@@ -560,3 +561,24 @@ def test_install_and_clear_gateway_injector_preserves_newer_owner():
     assert manager.has_gateway_message_injector is True
     assert manager.inject_gateway_message(value="kept") is True
     newer_injector.assert_called_once_with(value="kept")
+
+
+@pytest.mark.asyncio
+async def test_internal_peer_wake_cannot_cross_a_conversation_reset():
+    entry = _entry()
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(entry, adapter)
+    accepted = await runner._dispatch_plugin_message_injection(
+        session_key=entry.session_key, content="peer data", plugin_id="mercury.native-hub",
+        expected_session_id="old-conversation",
+    )
+    assert accepted is False
+    adapter.handle_message.assert_not_awaited()
+    accepted = await runner._dispatch_plugin_message_injection(
+        session_key=entry.session_key, content="peer data", plugin_id="mercury.native-hub",
+        expected_session_id=entry.session_id,
+    )
+    assert accepted is True
+    event = adapter.handle_message.await_args.args[0]
+    assert event.metadata["gateway_session_id"] == entry.session_id
+    assert event.allow_gateway_control is False

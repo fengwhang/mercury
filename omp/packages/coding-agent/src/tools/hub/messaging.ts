@@ -226,7 +226,13 @@ export interface HubSendParams {
 }
 
 export async function executeSend(
-	deps: { registry: AgentRegistry; senderId: string; settings: Settings; sessionFileHint?: string | null; bus?: MircBus },
+	deps: {
+		registry: AgentRegistry;
+		senderId: string;
+		settings: Settings;
+		sessionFileHint?: string | null;
+		bus?: MircBus;
+	},
 	params: HubSendParams,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<CoordinationDetails>> {

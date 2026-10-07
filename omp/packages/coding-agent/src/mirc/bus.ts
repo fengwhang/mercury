@@ -106,7 +106,8 @@ export class MircBus {
 	}
 
 	/** A session-scoped external-parent adapter; absent for native OMP sessions. */
-	setTransport(transport?: MircTransport): void {
+	setTransport(transport?: MircTransport, expected?: MircTransport): void {
+		if (expected && this.#transport !== expected) return;
 		this.#transport = transport;
 	}
 
@@ -142,16 +143,17 @@ export class MircBus {
 		msg: Omit<MircMessage, "id" | "ts">,
 		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
 	): Promise<MircDeliveryReceipt> {
-		if (this.#transport) return this.#transport(msg, opts);
-		const message: MircMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };
-		const receipt = await this.#deliver(message, opts);
+		const ts = Date.now();
+		const receipt = this.#transport
+			? await this.#transport(msg, opts)
+			: await this.#deliver({ ...msg, id: Snowflake.next(), ts }, opts);
 		if (receipt.outcome !== "failed") {
-			let sent = this.#lastSent.get(message.from);
+			let sent = this.#lastSent.get(msg.from);
 			if (!sent) {
 				sent = new Map();
-				this.#lastSent.set(message.from, sent);
+				this.#lastSent.set(msg.from, sent);
 			}
-			sent.set(message.to, message.ts);
+			sent.set(msg.to, ts);
 		}
 		return receipt;
 	}
@@ -195,7 +197,14 @@ export class MircBus {
 		}
 		// The external scope owns only transport. The destination's native bus
 		// still performs revival, waiter consumption, injection and wake.
-		if (this.#externalDelivery) return this.#externalDelivery(message, opts);
+		if (this.#externalDelivery) {
+			const waiter = this.#takeMatchingWaiter(message.to, message.from);
+			if (waiter) {
+				waiter.resolve(message);
+				return { to: message.to, outcome: "injected" };
+			}
+			return this.#externalDelivery(message, opts);
+		}
 
 		// A `parked` recipient always needs the lifecycle to revive it — this is
 		// read from *this* bus's registry, so it holds for any registry. The
@@ -392,10 +401,14 @@ export class MircBus {
 					settle({ kind: "abort", error: new MircAwaitTargetStopped(target) });
 					return;
 				}
-				void session.waitForMircReplies().then(() => {
+				const finishStopped = (): void => {
 					if (!active || registry.get(target)?.session !== session) return;
 					settle({ kind: "abort", error: new MircAwaitTargetStopped(target) });
-				});
+				};
+				// A failed remote drain cannot produce a future reply either.
+				// Settle through the same terminal path; never leave a rejected
+				// transport promise detached from the sender's wait.
+				void session.waitForMircReplies().then(finishStopped, finishStopped);
 			};
 			const sync = (): void => {
 				const ref = registry.get(target);
