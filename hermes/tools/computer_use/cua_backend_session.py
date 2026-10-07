@@ -213,7 +213,6 @@ class _CuaDriverSession:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
         from tools.computer_use import cua_backend as _cb
-        from tools.environments.local import _sanitize_subprocess_env
 
         self._shutdown_event = asyncio.Event()  # built on the loop's own thread
         _t0 = _time.monotonic()
@@ -231,8 +230,8 @@ class _CuaDriverSession:
                 (daemon.proxy_invocation(), daemon.child_env()) if daemon is not None
                 else _cb.sandbox_mcp_invocation() or (_driver._resolve_mcp_invocation(driver_cmd), _cb.cua_driver_child_env()))
             _t_manifest = _time.monotonic()
-            # Telemetry policy first (default: disabled), then strip Hermes secrets.
-            params = StdioServerParameters(command=command, args=args, env=_sanitize_subprocess_env(child_env))
+            # Strip secrets, then force no reporting after profile passthrough.
+            params = StdioServerParameters(command=command, args=args, env=_cb.sanitized_cua_driver_env(child_env))
             async with stdio_client(params) as (read, write):
                 self._startup_phase = "mcp-initialize"
                 async with ClientSession(read, write) as session:
@@ -442,7 +441,6 @@ class _CuaDriverSession:
         multi-megabyte base64 blob that congests the socket; ``_cli_result`` reads it back."""
         import tempfile as _tempfile
         from tools.computer_use import cua_backend as _cb
-        from tools.environments.local import _sanitize_subprocess_env
 
         call_args, shot_file = dict(args), None
         if name == "get_window_state" and "screenshot_out_file" not in call_args:
@@ -459,7 +457,7 @@ class _CuaDriverSession:
             socket_args = ["--socket", daemon.socket_path]
         cmd = [driver_command, "call", name, json.dumps(call_args), *socket_args]
         try:
-            return _cli_result(_cli_run_json(cmd, _sanitize_subprocess_env(child_env), name, timeout), shot_file)
+            return _cli_result(_cli_run_json(cmd, _cb.sanitized_cua_driver_env(child_env), name, timeout), shot_file)
         finally:
             if shot_file and os.path.exists(shot_file):
                 with contextlib.suppress(OSError):

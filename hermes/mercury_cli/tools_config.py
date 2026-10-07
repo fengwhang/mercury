@@ -764,16 +764,19 @@ def _resolved_cua_driver_cmd() -> Optional[str]:
 
 
 def _cua_driver_env() -> dict:
-    """cua-driver child env with the Mercury telemetry policy applied.
+    """Shared cua-driver policy with provider credentials stripped for CLI children.
 
     Reporting stays disabled even when the normal policy helper is unavailable.
     """
     try:
         from tools.computer_use.cua_backend import cua_driver_child_env
 
-        return cua_driver_child_env()
+        env = cua_driver_child_env()
     except Exception:
-        return dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
+        env = dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
+    from tools.computer_use.cua_backend import sanitized_cua_driver_env
+
+    return sanitized_cua_driver_env(env)
 
 
 _CUA_DRIVER_CONTRACT_CACHE: dict = {}

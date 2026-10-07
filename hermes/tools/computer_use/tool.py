@@ -1472,22 +1472,31 @@ _MAX_SPILL_FILES = 20
 # periodic media-cache cleanup. CLI-only sessions may never start the gateway,
 # and capture_after can otherwise leave an unbounded screenshot trail.
 _MAX_CAPTURE_FILES = 20
+_capture_export_dir = None
+_capture_export_identity = None
+_capture_export_files: List[str] = []
+_capture_export_lock = threading.Lock()
 
 
 def _persist_capture_image(cap: CaptureResult) -> Optional[str]:
-    """Save a capture in Mercury' media cache and return its absolute path.
+    """Save a bounded capture in a private, stageable temporary export directory.
 
-    Captures are normally embedded only in the model's tool context. Persisting
-    a bounded copy gives attachment-capable surfaces a real file to deliver
-    when the user explicitly asks for the screenshot. This is best-effort: an
-    unwritable cache must never break computer control.
+    Installation/profile caches contain secrets and are deliberately refused by
+    attachment staging. Export only the screenshot outside those roots; never
+    weaken that denylist. Persistence is best-effort and cannot break control.
     """
+    global _capture_export_dir, _capture_export_identity
     if not cap.png_b64:
         return None
+    directory_fd = None
     try:
-        import uuid as _uuid
+        import stat
+        import tempfile
+        import uuid
+        from pathlib import Path
 
-        from mercury_constants import get_hermes_dir
+        from mercury_constants import get_hermes_home
+        from observatory.provision import _mercury_home
 
         raw = base64.b64decode(cap.png_b64, validate=False)
         mime = str(cap.image_mime_type or "").lower()
@@ -1495,25 +1504,111 @@ def _persist_capture_image(cap: CaptureResult) -> Optional[str]:
             not mime and cap.png_b64[:8].startswith("/9j/")
         ) else ".png"
 
-        cache_dir = get_hermes_dir("cache/images", "image_cache")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            captures = sorted(
-                cache_dir.glob("computer_use_*.*"),
-                key=lambda path: path.stat().st_mtime,
-            )
-            keep_before_write = max(0, _MAX_CAPTURE_FILES - 1)
-            for stale in captures[: max(0, len(captures) - keep_before_write)]:
-                stale.unlink(missing_ok=True)
-        except Exception:
-            pass
+        forbidden = (
+            Path(_mercury_home()).expanduser().resolve(),
+            Path(get_hermes_home()).expanduser().resolve(),
+        )
+        anchored = (
+            hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW")
+            and os.open in os.supports_dir_fd and os.unlink in os.supports_dir_fd
+        )
+        with _capture_export_lock:
+            cache_dir = _capture_export_dir
+            if cache_dir is not None:
+                try:
+                    if anchored:
+                        directory_fd = os.open(cache_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                        info = os.fstat(directory_fd)
+                    else:
+                        info = cache_dir.lstat()
+                    if (cache_dir.resolve() != cache_dir
+                            or not stat.S_ISDIR(info.st_mode)
+                            or stat.S_IMODE(info.st_mode) != 0o700
+                            or (info.st_dev, info.st_ino) != _capture_export_identity
+                            or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+                            or any(cache_dir.is_relative_to(root) for root in forbidden)):
+                        cache_dir = None
+                except OSError:
+                    cache_dir = None
+            if cache_dir is None:
+                if directory_fd is not None:
+                    os.close(directory_fd)
+                    directory_fd = None
+                _capture_export_dir = None
+                _capture_export_identity = None
+                _capture_export_files.clear()
+                # Do not trust TMPDIR/XDG_CACHE_HOME to place Linux exports:
+                # either can point into Mercury's installation/secret roots.
+                candidates = ("/tmp", "/var/tmp") if os.name == "posix" else (tempfile.gettempdir(),)
+                for candidate in candidates:
+                    parent = Path(candidate).resolve()
+                    if any(parent.is_relative_to(root) for root in forbidden):
+                        continue
+                    try:
+                        cache_dir = Path(tempfile.mkdtemp(prefix="mercury-cua-export-", dir=parent))
+                        if anchored:
+                            directory_fd = os.open(cache_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                            os.fchmod(directory_fd, 0o700)
+                            info = os.fstat(directory_fd)
+                        else:
+                            cache_dir.chmod(0o700)
+                            info = cache_dir.lstat()
+                        break
+                    except OSError:
+                        if directory_fd is not None:
+                            os.close(directory_fd)
+                            directory_fd = None
+                        cache_dir = None
+                if cache_dir is None:
+                    return None
+                _capture_export_dir = cache_dir
+                _capture_export_identity = (info.st_dev, info.st_ino)
 
-        path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
-        path.write_bytes(raw)
-        return str(path)
+            def unlink_export(name):
+                try:
+                    if directory_fd is not None:
+                        os.unlink(name, dir_fd=directory_fd)
+                    else:
+                        (cache_dir / name).unlink()
+                except FileNotFoundError:
+                    pass
+
+            # Retention touches only files generated by this process in this
+            # exact directory, never arbitrary glob matches or another cache.
+            keep_before_write = max(0, _MAX_CAPTURE_FILES - 1)
+            while len(_capture_export_files) > keep_before_write:
+                unlink_export(_capture_export_files.pop(0))
+            if directory_fd is not None:
+                name = f"computer_use_{uuid.uuid4().hex}{ext}"
+                fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory_fd)
+            else:
+                fd, filename = tempfile.mkstemp(prefix="computer_use_", suffix=ext, dir=cache_dir)
+                name = Path(filename).name
+            try:
+                with os.fdopen(fd, "wb") as image:
+                    if hasattr(os, "fchmod"):
+                        os.fchmod(image.fileno(), 0o600)
+                    image.write(raw)
+                # A replaced path must never be advertised as a stageable
+                # screenshot. POSIX writes/prunes above use the pinned inode.
+                current = cache_dir.lstat()
+                if ((current.st_dev, current.st_ino) != _capture_export_identity
+                        or cache_dir.resolve() != cache_dir):
+                    unlink_export(name)
+                    _capture_export_dir = None
+                    return None
+            except BaseException:
+                unlink_export(name)
+                raise
+            _capture_export_files.append(name)
+            return str(cache_dir / name)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: screenshot persistence failed: %s", exc)
         return None
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
 
 
 def _spill_elements_to_file(cap: CaptureResult) -> Optional[str]:

@@ -86,7 +86,7 @@ platform-appropriate prereqs:
 |---|---|
 | **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Grant the identity named by `hermes computer-use doctor`. Standard mode uses CuaDriver.app; bounded and unrestricted modes use the Hermes host identity. |
 | **Windows** | None at install time. If you're driving over SSH (not RDP / console), you need the autostart pattern — see [cua.ai/docs/how-to-guides/driver/windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) for the Session 0 ↔ Session 1+ proxy. |
-| **Linux** | A reachable display server: `DISPLAY` set for X11, or `XDG_SESSION_TYPE=wayland`. Wayland sessions need an XWayland bridge for capture. AT-SPI must be on (default on GNOME/KDE/Xfce). |
+| **Linux** | A display reachable by the driver process: `DISPLAY` for X11/XWayland, or an actual `WAYLAND_DISPLAY` with explicit native-Wayland opt-in. `XDG_SESSION_TYPE=wayland` alone does not establish display access. AT-SPI must be available for accessibility discovery. |
 
 Then start a session with the toolset enabled:
 
@@ -204,6 +204,27 @@ The check matrix is platform-aware: `bundle_identity` / `tcc_*` are
 `ax_capability` checks AX on macOS, UIA on Windows, AT-SPI on Linux —
 each with the right diagnostic hint when it can't reach.
 
+On Linux, Mercury doctor identifies its environment as the **current CLI
+process**. JSON includes `mercury_environment.scope: cli_process` and
+`gateway_environment_checked: false`. An interactive terminal's successful
+doctor report does not establish display or session-bus access for an
+already-running gateway or its embedded driver daemon.
+
+Doctor and `mercury computer-use status` also inspect user-local systemd
+`[Service]` `ExecStart` entries and XDG autostart `[Desktop Entry]` `Exec`
+entries that directly invoke `cua-driver serve`. A safely parsed configured
+socket is probed with `cua-driver status --socket <path>`: an answer passes,
+an explicit not-running response fails (status exits 1), and an unsupported
+command or inconclusive probe is reported as unknown. Quoted paths and
+`--socket=<path>` are supported; shell wrappers, environment expansion and
+unsupported specifiers are not guessed. Disabled autostart entries and
+reset `ExecStart=` entries are ignored. No configured daemon means **no
+default-socket probe**: Mercury's private runtime need not use that socket.
+These checks do not call a service manager, start a daemon, or repair units.
+A missing answer can mean the unit targets the wrong socket; reinstalling
+the driver does not start or repair a daemon. Service-manager `status` is
+read-only, not a start operation.
+
 ## The agent cursor and sessions
 
 When the agent acts, you'll see a **tinted overlay cursor** glide
@@ -294,9 +315,11 @@ app never comes to front.
 
 Screenshots taken during computer control are normally internal — they exist
 so the model can see the screen, and the agent replies in text. But every
-image capture also saves a bounded, shareable copy under Hermes' image cache
-and reports its path, so on attachment-capable surfaces (Telegram, Discord,
-Desktop, and other gateway platforms) you can simply ask:
+image capture also saves a bounded, shareable copy in a private temporary
+export directory outside Mercury's installation and profile roots (directory
+mode `0700`, image files `0600`). It reports `screenshot_path`, so on
+attachment-capable surfaces (Telegram, Discord, Desktop, mLounge, and other
+gateway platforms) you can simply ask:
 
 > *"Send me a screenshot of my screen."*
 
@@ -409,11 +432,11 @@ of screenshot context, not ~600K.
     session, or set up cua-driver's autostart Scheduled Task —
     [windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh)
     has the recipe.
-  - **Linux** requires a reachable display server. Headless servers
-    need Xvfb (`Xvfb :99 -screen 0 1920x1080x24`) before
-    `computer_use` can capture or inject events. Pure Wayland sessions
-    need an XWayland bridge for screen capture (cua-driver's Wayland
-    inject path handles input independently).
+  - **Linux** requires a display reachable by the actual gateway/driver
+    process. An operator-managed private X server (for example Xvfb, or
+    TigerVNC `Xvnc` with a desktop session) can supply a headless display;
+    installing a driver does not create one. Native Wayland is an explicit
+    opt-in and still requires compositor/display access and AT-SPI.
 
 For cross-platform GUI automation without the desktop overhead (and
 without TCC / Session 0 / X11 setup), the `browser` toolset uses a
@@ -429,6 +452,54 @@ computer_use:
   permission_mode: standard        # standard (default) | bounded
   capability_manifest: ""          # capability manifest path, required for bounded
 ```
+
+### Linux display policy and gateway setup
+
+Native Wayland remains **off by default**. An operator can explicitly opt in
+for the intended profile:
+
+```bash
+mercury -p <profile> config set computer_use.native_wayland true
+```
+
+The same setting can be written in YAML:
+
+```yaml
+computer_use:
+  native_wayland: true
+```
+
+Mercury forwards `CUA_DRIVER_RS_ENABLE_WAYLAND=1` only to Linux
+children that already have a nonempty `WAYLAND_DISPLAY`. A manual driver
+environment opt-in is preserved when this setting is off. The setting does
+not discover a display, grant compositor permissions, change approval
+policy, or enable telemetry.
+
+Before using CUA from a gateway, the operator must choose and authorize its
+display and accessibility/session-bus access. Provision those variables and
+permissions in the **gateway's launch environment**, not merely in a
+terminal running doctor. For a foreground gateway, launch the selected
+profile with `mercury -p <profile> gateway run` from that explicitly prepared
+environment, only when another supervisor is not already managing it. For
+an existing managed gateway, update its operator-owned service launch
+environment first, then use the appropriate profile's
+`mercury -p <profile> gateway restart` (or `--system` for a Linux system
+service) during an approved maintenance window. Restarting does not import
+the invoking terminal's display variables into the service.
+
+Restart/recreate affected CUA sessions and their private embedded daemons
+after that approved change, and verify through a fresh gateway-originated
+capture against an authorized app. CLI doctor alone cannot verify the
+gateway's inherited environment; missing gateway displays are a separate
+setup prerequisite, not evidence that a healthy driver binary is broken.
+
+Optional headless desktop prerequisites include TigerVNC `Xvnc`, Xfce's
+`xfwm4`, `xfce4-panel`, `xfdesktop`, `xfsettingsd`, a private
+`dbus-run-session`, `xauth`, `xdpyinfo`, and `setxkbmap`. They require
+operator-managed installation and display/session setup (declarative
+provisioning on NixOS). Mercury does **not** install or enable these
+automatically, create per-bot desktops, or expose upstream Bot Screen
+streaming/takeover UI.
 
 Override the driver binary path (tests / CI / local builds):
 
@@ -448,6 +519,9 @@ cua-driver ships with anonymous usage telemetry enabled by default upstream.
 Mercury always disables it on every driver invocation (the MCP backend,
 `status`, `doctor`, permissions, and install) by setting
 `CUA_DRIVER_RS_TELEMETRY_ENABLED=0` in the child's environment.
+This mandatory value is written after credential sanitization and
+profile/skill environment passthrough, so those layers cannot restore an
+enabled value or remove the opt-out.
 
 There is no reporting opt-in. An inherited enabled flag or an obsolete
 configuration setting cannot override the policy. Setup also asks the driver
@@ -569,9 +643,13 @@ see an explicit error rather than a wrong click.
 matches the dangerous-shell-pattern list. Break the command up or
 reconsider.
 
-**Empty captures on Linux** — `DISPLAY` not set, or you're on pure
-Wayland without an XWayland bridge. `hermes computer-use doctor` will
-flag this as `ax_capability: fail` with a `Set DISPLAY (X11)…` hint.
+**Empty captures on Linux** — check display and AT-SPI reachability from
+the process that actually owns the CUA session. Without native-Wayland
+opt-in, X11/XWayland needs `DISPLAY`; with native Wayland opted in, inspect
+the compositor and actual `WAYLAND_DISPLAY` rather than assuming an X11-only
+failure. `XDG_SESSION_TYPE=wayland` by itself proves neither reachability
+nor a broken runtime. `mercury computer-use doctor` checks its CLI process,
+not the environment of an already-running gateway.
 
 **Empty captures on Windows over SSH** — You're in Session 0 (the
 services session). Drive from RDP / console directly, or set up the

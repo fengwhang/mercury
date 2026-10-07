@@ -69,19 +69,13 @@ def _cua_child_env() -> Dict[str, str]:
 
 def _sanitized_cua_env() -> Dict[str, str]:
     """Telemetry-policy env with Mercury provider secrets stripped.
-
     cua-driver is a third-party binary — it must never inherit provider
-    API keys (#53503/#55709/#58889 lineage). Falls back to the unsanitized
-    telemetry env if the sanitizer can't be imported, so doctor keeps
-    working in stripped-down environments.
+    API keys. Sanitization must not re-enable reporting through profile passthrough.
     """
     env = _cua_child_env()
-    try:
-        from tools.environments.local import _sanitize_subprocess_env
+    from tools.computer_use.cua_backend import sanitized_cua_driver_env
 
-        return _sanitize_subprocess_env(env)
-    except Exception:
-        return env
+    return sanitized_cua_driver_env(env)
 
 
 def _is_valid_health_report(payload: Any) -> bool:
@@ -740,11 +734,145 @@ def _apply_display_count_guard(report: Dict[str, Any]) -> Dict[str, Any]:
     return report
 
 
+def _parse_cua_daemon_exec(command: str, *, systemd: bool) -> Optional[Dict[str, Any]]:
+    """Parse only a direct cua-driver invocation; never expand a shell or environment."""
+    import shlex
+
+    # Preserve an unknown finding for malformed direct invocations without echoing
+    # arbitrary argv (which may contain credentials). Wrappers are not guessed.
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        first = command.split(None, 1)[0].strip("\"'") if command.strip() else ""
+        first = first.lstrip("-+:!") if systemd else first
+        return {"target": first, "serve": None, "socket": None} if os.path.basename(first) == "cua-driver" else None
+    if not tokens:
+        return None
+    target = tokens[0].lstrip("-+:!") if systemd else tokens[0]
+    if os.path.basename(target) != "cua-driver":
+        return None
+    unknown = {"target": target, "serve": None, "socket": None}
+    if len(tokens) < 2 or tokens[1] != "serve":
+        return {"target": target, "serve": False, "socket": None}
+    # systemd and Desktop Entry quoting are not shells. Their complex escapes,
+    # variables/specifiers, command prefixes and multiline forms are unsupported.
+    if any(char in command for char in "\\$`;|&\n") or (systemd and tokens[0].startswith(("@", "!"))):
+        return unknown
+    socket = None
+    seen_socket = False
+    index = 2
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--socket" or token.startswith("--socket="):
+            if seen_socket:
+                return unknown
+            seen_socket = True
+            if token == "--socket":
+                index += 1
+                if index >= len(tokens):
+                    return unknown
+                socket = tokens[index]
+            else:
+                socket = token.partition("=")[2]
+            if not socket or socket.startswith("-"):
+                return unknown
+        index += 1
+    home = os.path.expanduser("~")
+    # %h is a systemd specifier, not an XDG autostart field code.
+    expanded = [value.replace("%h", home) if systemd else value for value in (target, socket or "")]
+    if any("%" in value or "$" in value for value in expanded):
+        return unknown
+    if socket is not None and not os.path.isabs(expanded[1]):
+        return unknown
+    return {"target": expanded[0], "serve": True, "socket": expanded[1] if socket is not None else None}
+
+
+def cua_daemon_units(config_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Read user-local direct invocations only; no service-manager calls or autostart."""
+    from pathlib import Path
+
+    base = Path(config_dir or os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"))
+    units = []
+    for directory, suffix, section, key in (
+            (base / "systemd/user", ".service", "Service", "ExecStart"),
+            (base / "autostart", ".desktop", "Desktop Entry", "Exec")):
+        try:
+            entries = sorted(directory.glob("*" + suffix))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                lines = entry.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeError):
+                continue
+            active = False
+            commands = []
+            disabled = False
+            for line in lines:
+                line = line.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    active = line[1:-1] == section
+                    continue
+                if not active or line.startswith(("#", ";")):
+                    continue
+                field, sep, value = line.partition("=")
+                if not sep:
+                    continue
+                if section == "Desktop Entry" and (
+                        (field == "Hidden" and value.lower() == "true")
+                        or (field == "X-GNOME-Autostart-enabled" and value.lower() == "false")):
+                    disabled = True
+                if field == key:
+                    if not value:
+                        commands.clear()
+                    else:
+                        commands.append(value)
+            if disabled:
+                continue
+            for command in commands:
+                parsed = _parse_cua_daemon_exec(command, systemd=section == "Service")
+                if parsed is not None:
+                    units.append({"unit": entry.name, **parsed})
+    return units
+
+
+def _apply_daemon_liveness_guard(report: Dict[str, Any], binary: str) -> Dict[str, Any]:
+    """A healthy binary does not establish the health of a configured serve socket."""
+    from tools.computer_use.cua_backend_driver import cua_daemon_listening
+
+    if sys.platform != "linux" or not isinstance(report.get("checks"), list):
+        return report
+    for unit in cua_daemon_units():
+        if unit["serve"] is False:
+            continue
+        listening = cua_daemon_listening(binary, unit["socket"]) if unit["serve"] is True else None
+        shown = unit["socket"] or "the configured driver's default socket"
+        message = (f"cua-driver serve answered on {shown}" if listening is True else
+                   f"no daemon answered on {shown}" if listening is False else
+                   "configured daemon liveness is unknown (unsupported arguments or inconclusive probe)")
+        check = {"name": f"daemon ({unit['unit']})", "status": "pass" if listening is True else "fail" if listening is False else "skip",
+                 "message": message, "data": {"listening": listening}}
+        if listening is False:
+            check["hint"] = "Inspect the configured unit and socket; reinstalling the driver does not start or repair a daemon."
+            if report.get("overall") == "ok":
+                report["overall"] = "degraded"
+        report["checks"].append(check)
+    return report
+
+
+def _linux_environment_context(report: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """A CLI report cannot establish the environment of an already-running gateway."""
+    if report.get("platform") != "linux":
+        return None
+    return {"scope": "cli_process", "gateway_environment_checked": False}
+
+
 def _print_text_report(
     report: Dict[str, Any],
     color: bool,
     *,
     identity: Optional[Dict[str, Any]] = None,
+    environment: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Render the report in the same style as `cua-driver call health_report`
     would (one line per check + a summary footer).
@@ -795,6 +923,10 @@ def _print_text_report(
     elif cli_v and not mismatch:
         # Still show the resolved path; version already matches header.
         pass
+    if environment:
+        print(f"  {col_dim}environment: current CLI process{col_reset}")
+        print(f"  {col_dim}gateway environment was not checked; running gateway "
+              f"computer_use sessions use that process environment{col_reset}")
     if mismatch:
         warn = col_yellow if color else ""
         print(
@@ -878,7 +1010,9 @@ def run_doctor(
         print(f"cua-driver health_report failed: {e}", file=sys.stderr)
         return 2
 
+    report = _apply_daemon_liveness_guard(report, binary)
     identity = _build_identity(binary, report)
+    environment = _linux_environment_context(report)
 
     if json_output:
         # Additive envelope: preserve the upstream health_report keys and
@@ -886,12 +1020,14 @@ def run_doctor(
         # that only read overall/checks keep working.
         payload = dict(report)
         payload["mercury_identity"] = identity
+        if environment:
+            payload["mercury_environment"] = environment
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
     else:
         if color is None:
             color = sys.stdout.isatty()
-        _print_text_report(report, color=bool(color), identity=identity)
+        _print_text_report(report, color=bool(color), identity=identity, environment=environment)
 
     overall = report.get("overall")
     if overall in ("degraded", "failed"):

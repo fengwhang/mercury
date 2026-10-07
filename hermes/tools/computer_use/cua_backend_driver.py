@@ -178,3 +178,23 @@ def cua_driver_runtime_contract_status(binary: Optional[str] = None) -> Dict[str
 def cua_driver_update_check(*, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """Historical import: upstream release polling is retired; PM owns the pin."""
     return None
+
+
+def cua_daemon_listening(driver_cmd: str, socket_path: Optional[str] = None, *, timeout: float = 3.0) -> Optional[bool]:
+    """Probe an explicitly configured serve socket, without starting or repairing it."""
+    from mercury_cli._subprocess_compat import windows_hide_flags
+
+    args = [driver_cmd, "status"]
+    if socket_path is not None:
+        args.extend(["--socket", socket_path])
+    try:
+        proc = subprocess.run(
+            args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
+            env=_cb().sanitized_cua_driver_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode == 0:
+        return True
+    return False if "not running" in f"{proc.stdout}\n{proc.stderr}".lower() else None

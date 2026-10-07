@@ -164,3 +164,23 @@ def test_computer_use_install_returns_nonzero_for_unrepairable_custom_override(
     assert _invoke(monkeypatch, "install") == 1
     install.assert_called_once_with(upgrade=False)
     contract.assert_not_called()
+
+
+@pytest.mark.parametrize(("answer", "expected"), [(True, 0), (False, 1), (None, 0)])
+def test_status_reports_configured_daemon_even_with_healthy_binary(
+        monkeypatch, tmp_path, capsys, answer, expected):
+    from mercury_cli import tools_config
+    from tools.computer_use import cua_backend, cua_backend_driver
+
+    units = tmp_path / "systemd/user"
+    units.mkdir(parents=True)
+    (units / "driver.service").write_text("[Service]\nExecStart=cua-driver serve --socket=/tmp/fixture.sock\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(cua_backend, "resolve_cua_driver_cmd", lambda: "/fixture/cua-driver")
+    monkeypatch.setattr(tools_config, "_cua_driver_contract_status", lambda _binary=None: {"ready": True})
+    monkeypatch.setattr(cua_backend, "cua_driver_update_check", lambda: None)
+    probe = Mock(return_value=answer)
+    monkeypatch.setattr(cua_backend_driver, "cua_daemon_listening", probe)
+    assert _invoke(monkeypatch, "status") == expected
+    probe.assert_called_once_with("/fixture/cua-driver", "/tmp/fixture.sock")
+    assert "daemon (driver.service)" in capsys.readouterr().out

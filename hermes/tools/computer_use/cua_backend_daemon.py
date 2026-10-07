@@ -136,8 +136,7 @@ class _EmbeddedCuaDaemon:
         return env
 
     def _sanitized_env(self) -> Dict[str, str]:
-        from tools.environments.local import _sanitize_subprocess_env
-        return _sanitize_subprocess_env(self.child_env())
+        return _cb().sanitized_cua_driver_env(self.child_env())
 
     def _drain_stderr(self, process: Any) -> None:
         with contextlib.suppress(Exception):
