@@ -93,14 +93,17 @@ def prepare_room_cleanup(mercury_home=None) -> dict:
 
 def quick_restart_handler(runner, loop):
     """Control-socket handler; marshal a session-preserving restart to the loop."""
-    def request():
+    def request(params=None):
         done = threading.Event()
         accepted = []
 
         def on_loop():
             try:
                 accepted.append(runner.request_restart(
-                    detached=False, via_service=True, after_turn_timeout=0.0))
+                    detached=False, via_service=True, after_turn_timeout=0.0,
+                    trigger="control:restart-observatory",
+                    actor=(params or {}).get("_authenticated_actor"),
+                    request_id=(params or {}).get("request_id")))
             finally:
                 done.set()
 
@@ -114,7 +117,7 @@ def quick_restart_handler(runner, loop):
     return request
 
 
-def launch_observatory_restart(command: list[str]) -> None:
+def launch_observatory_restart(command: list[str], *, request_id: str | None = None) -> None:
     """Reuse the CLI's daemon/frontend/gateway restart, with mLounge optional.
 
     A detached child still belongs to a systemd gateway's cgroup. A transient
@@ -125,6 +128,8 @@ def launch_observatory_restart(command: list[str]) -> None:
 
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
     env.pop("_HERMES_GATEWAY", None)
+    if request_id:
+        env["MERCURY_RESTART_REQUEST_ID"] = request_id
     helper = [sys.executable, "-c", _RESTART_HELPER, *command, "observatory", "restart"]
     if os.environ.get("INVOCATION_ID"):
         systemd_run = shutil.which("systemd-run")
@@ -136,6 +141,7 @@ def launch_observatory_restart(command: list[str]) -> None:
             "PATH", "PYTHONPATH", "MERCURY_HOME", "MERCURY_CONFIG", "MERCURY_CMD",
             "MERCURY_CHANNEL", "MERCURY_REPO", "MERCURY_PYTHON", "HERMES_HOME",
             "PI_CODING_AGENT_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
+            "MERCURY_RESTART_REQUEST_ID",
         )
         argv = [systemd_run, "--user", "--collect", "--quiet", "--property=Type=exec",
                 f"--unit=mercury-observatory-restart-{uuid4().hex}"]

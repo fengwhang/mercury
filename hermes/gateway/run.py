@@ -9422,12 +9422,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_delegation_count()
+            + GatewayRunner._active_restart_owner_count()
         )
 
     @staticmethod
     def _active_delegation_count() -> int:
         from tools.async_delegation import active_count
-        return active_count()
+        from tools.omp_delegation import active_child_count
+
+        # Controllers and their native worker processes are separate owned
+        # work units; direct/native-hub workers can outlive a Hermes turn.
+        return active_count() + active_child_count()
+
+    @staticmethod
+    def _active_restart_owner_count() -> int:
+        from gateway.restart_owners import active_work_count
+
+        return active_work_count()
 
     def _active_cron_job_count(self) -> int:
         """Count of cron jobs currently executing, from the cron scheduler's
@@ -11551,6 +11562,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         last_cron_count = self._active_cron_job_count()
         last_api_count = self._active_api_run_count()
         last_delegation_count = GatewayRunner._active_delegation_count()
+        last_owner_count = GatewayRunner._active_restart_owner_count()
         last_status_at = 0.0
 
         def _maybe_update_status(force: bool = False) -> None:
@@ -11579,7 +11591,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # instant it's the only active thing running (#60432).
         # API-server / desk sessions have the same structural gap (#63529).
         if (not self._running_agents and last_cron_count == 0
-                and last_api_count == 0 and last_delegation_count == 0):
+                and last_api_count == 0 and last_delegation_count == 0 and last_owner_count == 0):
             _maybe_update_status(force=True)
             return snapshot, False
 
@@ -11602,6 +11614,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if (
                 len(self._running_agents) or self._active_api_run_count()
                 or GatewayRunner._active_delegation_count()
+                or GatewayRunner._active_restart_owner_count()
             ) and now < deadline:
                 return True
             return bool(self._active_cron_job_count()) and now < cron_deadline
@@ -11618,6 +11631,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             or bool(self._active_cron_job_count())
             or bool(self._active_api_run_count())
             or bool(GatewayRunner._active_delegation_count())
+            or bool(GatewayRunner._active_restart_owner_count())
         )
         _maybe_update_status(force=True)
         return snapshot, timed_out
@@ -12700,21 +12714,63 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self, *, detached: bool = False, via_service: bool = False,
         after_turn_timeout: float | None = None, trigger: str = "request",
         automatic: bool = False,
+        actor: dict | None = None, request_id: str | None = None,
     ) -> bool:
-        if after_turn_timeout is not None:
-            # Operator-requested Observatory restarts checkpoint sessions
-            # through the existing stop path, without waiting a whole turn.
-            self._restart_after_turn_timeout = max(0.0, after_turn_timeout)
-        if self._restart_task_started:
+        from gateway.restart_provenance import record_restart_request, record_restart_transition
+        from tools.async_delegation import active_delegation_ids, checkpoint_active_delegations
+
+        try:
+            receipt = record_restart_request(
+                source=trigger.split(":", 1)[0], reason=trigger, automatic=automatic,
+                actor=actor, request_id=request_id, active_delegations=active_delegation_ids(),
+            )
+            if self._restart_task_started:
+                explicit_checkpoint = after_turn_timeout is not None or (
+                    not automatic and trigger.startswith(("admin:", "control:restart-admin",
+                                                          "control:restart-observatory"))
+                )
+                if explicit_checkpoint:
+                    checkpointed = checkpoint_active_delegations("planned gateway restart")
+                    from gateway.restart_owners import checkpoint_owners
+
+                    checkpoint_owners("planned gateway restart")
+                    record_restart_transition(receipt["request_id"], "accepted",
+                        reason="expedite queued restart", checkpointed_delegations=checkpointed)
+                    previous_id = getattr(self, "_restart_request_id", None)
+                    if previous_id:
+                        record_restart_transition(previous_id, "rejected",
+                                                  reason="superseded by explicit checkpoint restart")
+                    self._restart_request_id = receipt["request_id"]
+                    self._restart_automatic = False
+                    self._draining = True
+                    if after_turn_timeout is not None:
+                        self._restart_after_turn_timeout = max(0.0, after_turn_timeout)
+                else:
+                    record_restart_transition(receipt["request_id"], "rejected",
+                                              reason="restart already queued")
+                return False
+            checkpointed = checkpoint_active_delegations("planned gateway restart")
+            from gateway.restart_owners import checkpoint_owners
+
+            checkpoint_owners("planned gateway restart")
+            record_restart_transition(receipt["request_id"], "accepted",
+                                      checkpointed_delegations=checkpointed)
+            if automatic and self._active_work_count() > 0:
+                record_restart_transition(receipt["request_id"], "deferred",
+                                          active_work=self._active_work_count())
+        except Exception:
+            logger.exception("Restart refused: durable request/checkpoint receipt unavailable")
             return False
-        from tools.async_delegation import checkpoint_active_delegations
-        checkpointed = checkpoint_active_delegations("planned gateway restart")
-        logger.info("Planned gateway restart requested: trigger=%s checkpointed_delegations=%d",
-                    trigger, checkpointed)
+        if after_turn_timeout is not None:
+            self._restart_after_turn_timeout = max(0.0, after_turn_timeout)
+        self._restart_request_id = receipt["request_id"]
+        logger.info("Planned gateway restart requested: id=%s trigger=%s automatic=%s checkpointed_delegations=%d",
+                    receipt["request_id"], trigger, automatic, checkpointed)
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service
         self._restart_task_started = True
+        self._restart_automatic = automatic
         # Refuse new turns immediately while in-flight work finishes.
         # Keep ``_running`` True so adapters stay connected and the active
         # turn can still deliver its final response (#77184).
@@ -12725,10 +12781,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         async def _run_restart() -> None:
             if automatic:
-                while self._active_work_count() > 0:
+                while self._active_work_count() > 0 and self._restart_automatic:
                     await asyncio.sleep(0.1)
                 self._draining = True
             await self._await_active_work_before_restart()
+            try:
+                record_restart_transition(self._restart_request_id, "stopping",
+                                          active_work=self._active_work_count())
+            except Exception:
+                logger.exception("Restart deferred: stopping receipt unavailable")
+                self._draining = False
+                self._restart_requested = False
+                self._restart_task_started = False
+                return
             # Launch the detached helper only AFTER the after-turn wait.
             # Its deadline is drain_timeout+5 and covers stop() teardown —
             # launching earlier would fire `mercury gateway restart` while
@@ -12739,7 +12804,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 except Exception as e:
                     logger.error("Failed to launch detached gateway restart helper: %s", e)
             await asyncio.sleep(0.05)
-            await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
+            try:
+                await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
+            except Exception:
+                logger.exception("Restart checkpoint/teardown could not complete")
+                if self._running:
+                    # Stop admission failed before any execution/feed teardown.
+                    # Keep serving; do not leave a phantom restart or dead guards.
+                    try:
+                        record_restart_transition(self._restart_request_id, "deferred",
+                                                  reason="stop admission checkpoint unavailable")
+                    except Exception:
+                        logger.exception("Restart refusal receipt unavailable")
+                    self._stop_task = None
+                    self._draining = False
+                    self._restart_requested = False
+                    self._restart_task_started = False
+                    self._restart_request_id = None
+                else:
+                    raise
 
         # _run_restart is a short-lived self-terminating task (calls stop()
         # then returns).  Don't add it to _background_tasks — _stop_impl
@@ -16220,8 +16303,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # getattr-guard: shutdown-path tests build bare runners via
         # object.__new__ that lack the liveness-guard machinery.
         _stop_guards = getattr(self, "_stop_loop_liveness_guards", None)
-        if callable(_stop_guards):
-            _stop_guards()
+        if restart and not getattr(self, "_restart_request_id", None):
+            from gateway.restart_provenance import record_restart_request, record_restart_transition
+            from tools.async_delegation import active_delegation_ids
+
+            receipt = record_restart_request(source="direct-stop", reason="bounded checkpoint restart",
+                                             automatic=False, active_delegations=active_delegation_ids())
+            from gateway.restart_owners import checkpoint_owners
+
+            await asyncio.to_thread(checkpoint_owners, "direct gateway restart admission")
+            record_restart_transition(receipt["request_id"], "accepted")
+            record_restart_transition(receipt["request_id"], "stopping",
+                                      active_work=self._active_work_count())
+            self._restart_request_id = receipt["request_id"]
         if restart:
             self._restart_requested = True
             self._restart_detached = detached_restart
@@ -16359,6 +16453,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             def _phase_elapsed() -> float:
                 return time.monotonic() - _stop_started_at
 
+            from gateway.restart_owners import checkpoint_owners, detach_owners
+
+            # Keep the old gateway usable if a registered native owner cannot
+            # make its actual task/mailbox state durable before teardown.
+            await asyncio.to_thread(checkpoint_owners, "gateway stop admission")
+            if callable(_stop_guards):
+                _stop_guards()
             self._running = False
             self._clear_plugin_message_injector()
             self._draining = True
@@ -16477,6 +16578,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                 _sk, _e,
                             )
 
+            # The bounded drain may have accepted more native work. Fence its
+            # durable state before any task interruption or child process kill.
+            await asyncio.to_thread(checkpoint_owners, "gateway drain complete")
             if timed_out:
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s), "
@@ -16596,6 +16700,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     await self._launch_detached_restart_command()
                 except Exception as e:
                     logger.error("Failed to launch detached gateway restart: %s", e)
+
+            await asyncio.to_thread(checkpoint_owners, "gateway owner detach")
+            await asyncio.to_thread(detach_owners)
 
             await self._finalize_shutdown_agents(active_agents)
 
@@ -16757,10 +16864,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # before release/exit, and require genuine settlement for clean.
             _delegations_settled = False
             try:
-                from tools.async_delegation import active_count, checkpoint_active_delegations
+                from tools.async_delegation import checkpoint_active_delegations
 
                 checkpoint_active_delegations("gateway clean-exit barrier")
-                _delegations_settled = active_count() == 0
+                await asyncio.to_thread(checkpoint_owners, "gateway clean-exit barrier")
+                _delegations_settled = (
+                    GatewayRunner._active_delegation_count() == 0
+                    and GatewayRunner._active_restart_owner_count() == 0
+                )
             except Exception:
                 logger.exception("Delegation clean-exit checkpoint failed")
 
@@ -16856,6 +16967,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             else:
                 self._update_runtime_status("stopped", self._exit_reason)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
+            if getattr(self, "_restart_request_id", None):
+                try:
+                    from gateway.restart_provenance import record_restart_transition
+
+                    record_restart_transition(self._restart_request_id, "exit",
+                                              exit_code=self._exit_code or 0, phase="exit_ready")
+                except Exception:
+                    logger.exception("Restart exit receipt unavailable; not certifying clean exit")
+                    try:
+                        (_hermes_home / ".clean_shutdown").unlink(missing_ok=True)
+                    except OSError:
+                        pass
             # This releases run_forever/the supervisor. Every durable child
             # checkpoint, result/claim and exit receipt must precede it.
             self._shutdown_event.set()
@@ -27409,6 +27532,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         from tools.process_registry import format_process_notification
 
         canonical = format_process_notification(evt)
+        # Historical typed receipts predate stable message IDs and used a
+        # misleading COMPLETE heading even for interrupted/unknown batches.
+        # Preserve that accepted identity without preserving the old renderer.
+        legacy_heading = (
+            f"[ASYNC DELEGATION BATCH COMPLETE — {evt['delegation_id']}]"
+            if evt.get("delegation_id") and (evt.get("is_batch") or isinstance(evt.get("results"), list))
+            else None
+        )
         ids = [parent_id]
         tip = await self._session_db.get_compression_tip(parent_id)
         if tip and tip != parent_id:
@@ -27425,7 +27556,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         and message.get("display_kind") == "internal_notification"
                         and isinstance(message.get("content"), str)
                         and (message["content"] == synth_text
-                             or (canonical and canonical in message["content"]))):
+                             or (canonical and canonical in message["content"])
+                             or (legacy_heading and (
+                                 message["content"].startswith(legacy_heading + "\n")
+                                 or "\n" + legacy_heading + "\n" in message["content"]
+                             )))):
                     return True
         return False
 
@@ -33319,7 +33454,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True, trigger="signal:SIGUSR1")
+        # Ordinary asyncio signal handlers cannot authenticate the sender.
+        # Unknown SIGUSR1 is therefore convenience admission, never authority
+        # to kill active children. Admin CLI uses the authenticated control verb.
+        runner.request_restart(detached=False, via_service=True, trigger="signal:SIGUSR1",
+                               automatic=True,
+                               actor={"authentication": "unknown", "signal": "SIGUSR1"})
     
     loop = asyncio.get_running_loop()
 
@@ -33428,13 +33568,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
         _restart_handlers = restart_control_handlers(runner, _main_loop)
         _control_server = GatewayControlServer(verb_handlers=_restart_handlers)
-        _control_server.register_handler(
-            "restart-when-idle", _restart_handlers["restart-when-idle"], takes_params=True,
-        )
+        for _verb in ("pause-for-update", "restart-when-idle", "restart-admin"):
+            _control_server.register_handler(_verb, _restart_handlers[_verb], takes_params=True)
         from observatory.restart import quick_restart_handler
 
         _control_server.register_handler(
-            "restart-observatory", quick_restart_handler(runner, _main_loop)
+            "restart-observatory", quick_restart_handler(runner, _main_loop), takes_params=True,
         )
         # observatory prompt delivery (irc-observatory): room text arrives
         # as `inject` with {text, kind, node_id, room_id}; the handler runs

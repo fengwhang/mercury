@@ -200,3 +200,93 @@ async def test_shutdown_signal_follows_durable_exit_barrier(tmp_path, monkeypatc
     await runner.stop(restart=True, service_restart=True)
     assert observed == [False], "run_forever must not exit/cancel teardown before durability"
     assert runner._shutdown_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_restart_receipt_is_durable_before_acceptance_flags(tmp_path, monkeypatch):
+    import asyncio
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner, _ = make_restart_runner()
+    from gateway import restart_provenance as provenance
+    record = provenance.record_restart_request
+    observed = []
+
+    def persist(**kwargs):
+        observed.append(runner._restart_requested)
+        return record(**kwargs)
+
+    monkeypatch.setattr(provenance, "record_restart_request", persist)
+    try:
+        assert runner.request_restart(trigger="signal:SIGUSR1", automatic=True,
+                                      actor={"authentication": "unknown", "signal": "SIGUSR1"},
+                                      request_id="receipt-before-flags")
+        rows = [json.loads(line) for line in
+                (tmp_path / "logs" / "gateway-restart-requests.jsonl").read_text().splitlines()]
+        assert observed == [False]
+        assert rows[0]["source"] == "signal"
+        assert rows[0]["actor"]["authentication"] == "unknown"
+        assert rows[0]["request_id"] == "receipt-before-flags"
+        assert rows[1]["state"] == "accepted"
+    finally:
+        task = getattr(runner, "_restart_task", None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+@pytest.mark.asyncio
+async def test_restart_provenance_failure_refuses_acceptance(tmp_path, monkeypatch):
+    from gateway import restart_provenance as provenance
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner, _ = make_restart_runner()
+
+    def unavailable(**kwargs):
+        raise OSError("fixture persistence unavailable")
+
+    monkeypatch.setattr(provenance, "record_restart_request", unavailable)
+    assert runner.request_restart(trigger="admin:restart") is False
+    assert not runner._restart_requested
+    assert not runner._restart_task_started
+    assert not runner._draining
+
+
+@pytest.mark.asyncio
+async def test_automatic_restart_counts_real_native_worker_without_async_parent(tmp_path, monkeypatch):
+    import asyncio
+    import os
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from tools import omp_delegation as omp
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ad._reset_for_tests()
+    runner, _ = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 0
+    transport = SimpleNamespace(pid=os.getpid())
+    omp._register_live_child({"child_id": "local-native-guard/0"}, transport)
+    try:
+        assert ad.active_count() == 0
+        assert runner._running_agent_count() == 0
+        assert runner._active_work_count() > 0
+        assert runner.request_restart(automatic=True, via_service=True, trigger="control:restart-when-idle")
+        await asyncio.sleep(0.15)
+        runner.stop.assert_not_awaited()
+        omp._unregister_live_child("local-native-guard/0", transport)
+        await asyncio.wait_for(runner._restart_task, timeout=2)
+        runner.stop.assert_awaited_once()
+    finally:
+        omp._unregister_live_child("local-native-guard/0", transport)
+        task = getattr(runner, "_restart_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass

@@ -252,6 +252,7 @@ def test_unverifiable_pending_child_is_not_reaped_as_dead():
     ad.restore_undelivered_completions(pending)
     event = pending.get_nowait()
     assert event["status"] == "interrupted"
+    assert event["results"][0]["status"] == "unverified"
     assert ad.list_delegation_children("durable")[0]["status"] == "running"
     assert "durable/0" not in ad.terminal_child_outcomes()
     assert event["results"][0]["recovery"]["ownership_verified"] is False
@@ -351,3 +352,42 @@ def test_process_fingerprint_parses_spaced_parenthesized_comm(monkeypatch):
     )
     monkeypatch.setattr(Path, "read_text", lambda self, **kwargs: stat)
     assert get_process_start_time(321) == 22
+
+
+def test_transport_refresh_preserves_spawn_fingerprint_and_excludes_reused_pid(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from tools import async_delegation as ad
+    from tools import omp_delegation as omp
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    transport = SimpleNamespace(pid=9100)
+    monkeypatch.setattr(omp, "_child_process_identity", lambda child: (9100, 12))
+    monkeypatch.setattr(omp, "_child_run_identity", lambda child: (9100, 12, "first.jsonl"))
+    omp._register_live_child({"child_id": "fingerprint-refresh/0",
+                             "delegation_id": "fingerprint-refresh"}, transport)
+    try:
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 13)
+        assert omp.active_child_count() == 0, "a replaced PID must not pin automatic restart"
+        monkeypatch.setattr(omp, "_child_run_identity", lambda child: (9100, 13, "final.jsonl"))
+        omp._unregister_live_child("fingerprint-refresh/0", transport)
+        child = ad.list_delegation_children("fingerprint-refresh")[0]
+        assert child["child_started_at"] == 12
+        assert child["session_file"] == "final.jsonl"
+    finally:
+        omp._unregister_live_child("fingerprint-refresh/0", transport)
+
+
+def test_batch_unknown_and_interruption_never_claim_complete():
+    from tools.process_registry import format_process_notification
+
+    for status in ("unknown", "interrupted", "failed"):
+        message = format_process_notification({
+            "type": "async_delegation", "delegation_id": "exact-trace-fixture",
+            "is_batch": True, "status": status, "goal": "saved original goal",
+            "error": "no task-terminal evidence", "goals": ["saved original goal"],
+        })
+        assert "BATCH COMPLETE" not in message
+        assert "has finished" not in message
+        assert status.upper() in message.splitlines()[0]
+        assert "no task-terminal evidence" in message

@@ -661,7 +661,7 @@ def _child_result_entry(child: Dict[str, Any]) -> Dict[str, Any]:
             (child.get("checkpoint") or {}).get("session_directory"))
         terminal_evidence = result is not None
         if result is None:
-            result = {"status": "interrupted", "summary": None,
+            result = {"status": "interrupted" if ownership_verified else "unverified", "summary": None,
                       "error": ("Worker exited before recording a task-terminal result."
                                 if ownership_verified else
                                 "Delegation owner exited; worker identity is unverified. Do not start a duplicate worker until task ownership is reconciled.")}
@@ -691,7 +691,7 @@ def _child_result_entry(child: Dict[str, Any]) -> Dict[str, Any]:
         "summary": child.get("summary") if status == "completed" else None,
         "error": error,
         "exit_reason": "completed" if status == "completed" else (
-            "interrupted" if status == "interrupted" else "error"),
+            status if status in ("interrupted", "unverified") else "error"),
         "truncated": False,
         "recovery": recovery,
     }
@@ -700,7 +700,7 @@ def _child_result_entry(child: Dict[str, Any]) -> Dict[str, Any]:
 def _recovered_status(entries: List[Dict[str, Any]]) -> str:
     if entries and all(e.get("status") == "completed" for e in entries):
         return "completed"
-    if entries and all(e.get("status") in ("completed", "interrupted") for e in entries):
+    if entries and all(e.get("status") in ("completed", "interrupted", "unverified") for e in entries):
         return "interrupted"
     return "failed"
 
@@ -1334,6 +1334,13 @@ def active_count() -> int:
             1 for r in _records.values()
             if r.get("status") in {"running", "stalling", "finalizing"}
         )
+
+
+def active_delegation_ids() -> List[str]:
+    """Exact owned work IDs for restart receipts; never use room presence."""
+    with _records_lock:
+        return [str(r["delegation_id"]) for r in _records.values()
+                if r.get("status") in {"running", "stalling", "finalizing"}]
 
 
 def active_for_session(origin_ui_session_id: str) -> int:

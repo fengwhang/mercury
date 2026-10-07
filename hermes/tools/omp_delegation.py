@@ -167,6 +167,8 @@ def _register_live_child(meta: Dict[str, Any], transport: Any) -> None:
 
         manager = get_room_manager()
     allowed = True
+    pid, started = _child_process_identity(transport)
+    meta = {**meta, "child_pid": pid, "child_started_at": started}
     # Serialize admission with begin_exit's durable dead mark. Unbound CLI
     # delegates keep their normal registry behavior, without a room lifetime.
     with manager.state.locked() if manager is not None else nullcontext():
@@ -205,38 +207,48 @@ def _register_live_child(meta: Dict[str, Any], transport: Any) -> None:
     _record_child_spawn_evidence(meta, transport)
 
 
+def active_child_count() -> int:
+    """Count owned native worker processes, never presentation/hub presence.
+
+    Unverified launch identities conservatively defer maintenance. A proven
+    dead/reused identity is not active, even if local teardown has not run.
+    """
+    from tools.async_delegation import process_identity_state
+
+    with _live_children_lock:
+        identities = [(row.get("child_pid"), row.get("child_started_at"))
+                      for row in _live_children.values()]
+    return sum(process_identity_state(pid, started) != "dead" for pid, started in identities)
+
+
+def _child_process_identity(transport: Any):
+    """Cheap birth fingerprint; unbound CLI workers need no session discovery."""
+    try:
+        pid = int(getattr(transport, "pid", None) or 0)
+    except (TypeError, ValueError):
+        return None, None
+    if pid <= 0:
+        return None, None
+    from gateway.status import get_process_start_time
+
+    return pid, get_process_start_time(pid)
+
+
 def _child_run_identity(transport: Any):
     """(pid, pid start time, omp session file) of a live child, best-effort.
 
-    The pid+start pair proves the child's liveness to a LATER process (a
-    recycled pid reads as dead); the session file carries the child-written
-    ``session_exit`` terminal marker and the result transcript. Both are
-    what restart-durable delegation bookkeeping reconciles from.
+    The pid+start pair proves liveness to a later process (a recycled PID is
+    dead). The session file holds child-bound terminal task checkpoints;
+    final messages and disposal alone never prove task completion.
     """
-    pid = getattr(transport, "pid", None)
-    started = None
+    pid, started = _child_process_identity(transport)
     session_file = None
-    try:
-        if pid:
-            from gateway.status import get_process_start_time
-
-            started = get_process_start_time(int(pid))
-    except Exception:
-        started = None
     try:
         from observatory.spawn import omp_session_file
 
         session_file = omp_session_file(transport) or None
     except Exception:
         session_file = None
-    try:
-        pid = int(pid) if pid else None
-    except (TypeError, ValueError):
-        pid = None
-    try:
-        started = int(started) if started else None
-    except (TypeError, ValueError):
-        started = None
     return pid, started, str(session_file) if session_file else None
 
 
@@ -257,6 +269,8 @@ def _record_child_spawn_evidence(meta: Dict[str, Any], transport: Any) -> None:
         if not child_id or not delegation_id or delegation_id.startswith("local-"):
             return
         pid, started, session_file = _child_run_identity(transport)
+        pid = meta.get("child_pid", pid)
+        started = meta.get("child_started_at", started)
         record_child_spawn(
             child_id, delegation_id, int(meta.get("task_index") or 0),
             name=str(meta.get("name") or ""), goal=str(meta.get("goal") or ""),

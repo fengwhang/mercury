@@ -438,7 +438,11 @@ class TestParallelFanout(unittest.TestCase):
         try:
             tasks = [{"prompt": f"t{i}"} for i in range(4)]
             t0 = time.monotonic()
-            res = mod._sync_run(tasks, {"OMP_MODEL": "m"}, None, 60, 4)
+            # This model-free concurrency contract must not time serialized
+            # bridge refusal subprocesses from an unrelated temporary profile.
+            # Effort/config selection has its own contract tests.
+            with mock.patch.object(mod, "_delegate_thinking_level", return_value="xhigh"):
+                res = mod._sync_run(tasks, {"OMP_MODEL": "m"}, None, 60, 4)
             dt = time.monotonic() - t0
         finally:
             for key, val in (("HERMES_OMP_BIN", old_bin),

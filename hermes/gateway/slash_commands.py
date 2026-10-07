@@ -1559,6 +1559,11 @@ class GatewaySlashCommandsMixin:
             if count:
                 return t("gateway.draining", count=count)
             return EphemeralReply(t("gateway.restart.in_progress"))
+        _restart_actor = {
+            "authentication": "authorized_platform_user" if self._is_user_authorized(event.source) else "platform_user",
+            "platform": event.source.platform.value,
+            "user_id": event.source.user_id, "chat_id": event.source.chat_id,
+        }
 
         # In the Observatory's gateway room, !restart (normalized to /restart)
         # refreshes the whole chat stack. Other platforms keep gateway restart.
@@ -1580,11 +1585,28 @@ class GatewaySlashCommandsMixin:
             command = _resolve_hermes_bin()
             if not command:
                 return EphemeralReply("Could not locate Mercury to restart the Observatory.")
-            self._observatory_restart_started = True
+            receipt = None
             try:
-                await asyncio.to_thread(launch_observatory_restart, command)
+                from gateway.restart_provenance import record_restart_request, record_restart_transition
+                from gateway.restart_owners import checkpoint_owners
+                from tools.async_delegation import active_delegation_ids, checkpoint_active_delegations
+
+                receipt = record_restart_request(source="platform", reason="admin:observatory-restart",
+                    automatic=False, actor=_restart_actor, active_delegations=active_delegation_ids())
+                checkpointed = checkpoint_active_delegations("planned Observatory restart")
+                await asyncio.to_thread(checkpoint_owners, "planned Observatory restart")
+                record_restart_transition(receipt["request_id"], "accepted",
+                                          checkpointed_delegations=checkpointed)
+                self._observatory_restart_started = True
+                await asyncio.to_thread(launch_observatory_restart, command, request_id=receipt["request_id"])
             except Exception as exc:
                 self._observatory_restart_started = False
+                if receipt is not None:
+                    try:
+                        record_restart_transition(receipt["request_id"], "rejected",
+                                                  reason="Observatory helper launch failed")
+                    except Exception:
+                        logger.exception("Observatory failure receipt unavailable")
                 logger.warning("Observatory restart could not be launched: %s", exc)
                 return EphemeralReply(f"Observatory restart could not be launched: {exc}")
             return EphemeralReply("Restarting Observatory — MIRC, optional mLounge, and gateway.")
@@ -1665,9 +1687,11 @@ class GatewaySlashCommandsMixin:
         _under_service = is_gateway_supervisor_process()
         _in_container = is_container_restart_context()
         if _under_service or _in_container:
-            self.request_restart(detached=False, via_service=True)
+            self.request_restart(detached=False, via_service=True,
+                                 trigger="admin:slash-restart", actor=_restart_actor)
         else:
-            self.request_restart(detached=True, via_service=False)
+            self.request_restart(detached=True, via_service=False,
+                                 trigger="admin:slash-restart", actor=_restart_actor)
         if active_agents:
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))

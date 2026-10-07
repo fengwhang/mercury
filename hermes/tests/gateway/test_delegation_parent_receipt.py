@@ -99,3 +99,33 @@ async def test_ended_cli_rawsession_is_user_boundary_not_api_wake(tmp_path, monk
     durable = ad.get_durable_delegation("closed-cli-fixture")
     assert durable["delivery_state"] == "dropped"
     assert durable["result"]["summary"] == "real output"
+
+
+@pytest.mark.asyncio
+async def test_legacy_accepted_batch_receipt_survives_honest_heading_cutover(tmp_path, monkeypatch):
+    from mercury_state import SessionDB
+    from tests.gateway.test_completion_delivery import _runner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("parent", source="fixture", model="fixture")
+    evt = {"type": "async_delegation", "delegation_id": "legacy-heading",
+           "parent_session_id": "parent", "session_key": "agent:main:telegram:dm:123",
+           "is_batch": True, "status": "interrupted", "goal": "saved original goal",
+           "error": "owner exited; no terminal task evidence"}
+    canonical = format_process_notification(evt)
+    legacy = canonical.replace("BATCH INTERRUPTED", "BATCH COMPLETE").replace(
+        canonical.splitlines()[1],
+        "A background fan-out has finished. Consolidated results are below.")
+    db.append_message("parent", "user", legacy, display_kind="internal_notification")
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner._session_db = SimpleNamespace(get_compression_tip=AsyncMock(return_value="parent"))
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store, load_transcript=AsyncMock(side_effect=lambda sid: db.get_messages(sid)))
+    try:
+        assert await runner._parent_completion_recorded(canonical, evt) is True
+        adapter.handle_message.assert_not_awaited()
+        assert len(db.get_messages("parent")) == 1
+    finally:
+        db.close()

@@ -3131,12 +3131,16 @@ def _format_async_delegation(evt: dict) -> str:
         goals = evt.get("goals") or []
         n = len(results) if results else len(goals)
         total_dur = evt.get("total_duration_seconds", duration)
+        heading = status.upper()
+        if status in ("completed", "success"):
+            heading = "COMPLETE" if all(
+                r.get("status") in ("completed", "success") for r in results
+            ) else "SETTLED"
         lines = [
-            f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
+            f"[ASYNC DELEGATION BATCH {heading} — {deleg_id}]",
             f"A background fan-out of {n} subagent(s) you dispatched earlier "
-            "has finished. All ran in parallel and waited on each other; their "
-            "consolidated results are below. You may have moved on since "
-            "dispatching — act on these or re-dispatch if things have changed.",
+            f"reported status={status}. Per-task results and recovery evidence "
+            "are below. Verify unfinished work before continuing its original goal.",
             "",
         ]
         if isinstance(dispatched_at, (int, float)):
