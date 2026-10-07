@@ -50,3 +50,20 @@ def test_default_preserves_manual_driver_opt_in():
 def test_native_wayland_is_disabled_in_product_defaults():
     from mercury_cli.config_defaults import DEFAULT_CONFIG
     assert DEFAULT_CONFIG["computer_use"]["native_wayland"] is False
+
+
+def test_native_wayland_is_recognized_by_config_cli(tmp_path, monkeypatch, capsys):
+    from mercury_cli import config
+
+    monkeypatch.setattr(config, "is_managed", lambda: False)
+    monkeypatch.setattr(config, "get_config_path", lambda: tmp_path / "config.yaml")
+    assert config._validate_config_key("computer_use.native_wayland") == (True, None)
+    config.set_config_value("computer_use.native_wayland", "true")
+    import yaml
+    assert yaml.safe_load((tmp_path / "config.yaml").read_text())["computer_use"]["native_wayland"] is True
+    assert "unknown" not in capsys.readouterr().out.lower()
+
+
+def test_native_wayland_has_boolean_public_schema():
+    from mercury_cli.web_server import CONFIG_SCHEMA
+    assert CONFIG_SCHEMA["computer_use.native_wayland"]["type"] == "boolean"
