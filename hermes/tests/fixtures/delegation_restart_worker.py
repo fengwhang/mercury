@@ -22,7 +22,19 @@ TRANSCRIPT = HOME / "worker.jsonl"
 
 
 def marker(name, payload):
-    (HOME / name).write_text(json.dumps(payload))
+    # A reader seeing the path must see the complete durable JSON, never the
+    # empty/truncated file exposed by write_text before its write completes.
+    temporary = HOME / f".{name}.{os.getpid()}.tmp"
+    with temporary.open("w") as handle:
+        json.dump(payload, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, HOME / name)
+    directory = os.open(HOME, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def wait_file(name):
