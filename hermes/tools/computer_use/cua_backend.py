@@ -370,6 +370,13 @@ def _empty_discovery_reason() -> str:
             "freezes app renderers"
         )
     if sys.platform == "linux" and not os.environ.get("DISPLAY"):
+        child_env = cua_driver_child_env()
+        if child_env.get("WAYLAND_DISPLAY") and child_env.get(_CUA_NATIVE_WAYLAND_ENV_VAR) == "1":
+            return (
+                "window discovery returned no windows with native Wayland opted in; "
+                "check compositor/display reachability and AT-SPI using "
+                "`mercury computer-use doctor` in this process environment"
+            )
         return "no DISPLAY is set — X11/XWayland is not reachable from this process"
     if sys.platform == "darwin":
         # Headless Mac / asleep panel: ScreenCaptureKit has 0 shareable

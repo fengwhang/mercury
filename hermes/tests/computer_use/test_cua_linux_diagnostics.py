@@ -32,3 +32,16 @@ def test_doctor_text_does_not_claim_gateway_checked(capsys):
     text = capsys.readouterr().out.lower()
     assert "current cli process" in text
     assert "gateway environment was not checked" in text
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_native_wayland_empty_discovery_does_not_require_x11(manual, monkeypatch):
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-test")
+    monkeypatch.setenv("CUA_DRIVER_RS_ENABLE_WAYLAND", "1" if manual else "0")
+    with patch.object(cua_backend, "_linux_session_locked", return_value=None), \
+         patch.object(cua_backend, "_computer_use_cfg", return_value={"native_wayland": not manual}), \
+         patch.object(cua_backend.sys, "platform", "linux"):
+        reason = cua_backend._empty_discovery_reason().lower()
+    assert "no display is set" not in reason
+    assert "native wayland" in reason
