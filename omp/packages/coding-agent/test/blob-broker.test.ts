@@ -86,13 +86,16 @@ describe("image URL destination consent", () => {
 			overrides: { "images.urls.enabled": true },
 		});
 		const connect = vi.spyOn(blobDaemon, "connectDaemonBlobBackend").mockResolvedValue(null);
-		const service = createImageUrlServiceFromSettings(settings, dir.path(), () => undefined);
+		const resolveCredential = vi.fn(async () => undefined);
+		const service = createImageUrlServiceFromSettings(settings, dir.path(), resolveCredential);
 		if (!service) throw new Error("Expected enabled image service");
 		try {
 			// Configs feed both prewarm and the upload/tunnel fallback path.
 			expect(resolveBlobBrokerConfigs(settings, dir.path())).toEqual([]);
 			service.prewarm();
 			const decorated = await service.decorateContext(makeContext(), anthropicModel);
+			expect(resolveCredential).toHaveBeenCalledTimes(1);
+			expect(resolveCredential).toHaveBeenCalledWith(anthropicModel);
 			expect(decorated.messages).toEqual(makeContext().messages);
 			expect(contextHasImageUrls(decorated)).toBe(false);
 			expect(connect).not.toHaveBeenCalled();
