@@ -315,9 +315,11 @@ app never comes to front.
 
 Screenshots taken during computer control are normally internal — they exist
 so the model can see the screen, and the agent replies in text. But every
-image capture also saves a bounded, shareable copy under Hermes' image cache
-and reports its path, so on attachment-capable surfaces (Telegram, Discord,
-Desktop, and other gateway platforms) you can simply ask:
+image capture also saves a bounded, shareable copy in a private temporary
+export directory outside Mercury's installation and profile roots (directory
+mode `0700`, image files `0600`). It reports `screenshot_path`, so on
+attachment-capable surfaces (Telegram, Discord, Desktop, mLounge, and other
+gateway platforms) you can simply ask:
 
 > *"Send me a screenshot of my screen."*
 
