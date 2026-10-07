@@ -1254,7 +1254,7 @@ class TestEnvWriteDenylist:
     @pytest.mark.parametrize(
         "allowed_key",
         [
-            "HERMES_LANGFUSE_PUBLIC_KEY",
+            "HERMES_GEMINI_API_KEY",
             "HERMES_SPOTIFY_CLIENT_ID",
             "HERMES_QWEN_BASE_URL",
             "HERMES_MAX_ITERATIONS",
@@ -1264,7 +1264,7 @@ class TestEnvWriteDenylist:
         """``HERMES_*`` overall is NOT blocked.
 
         Integration credentials following that convention must keep working
-        or we'd regress provider setup flows (auth.py, Spotify, Langfuse, …).
+        or we'd regress provider setup flows (auth.py, Spotify, …).
         """
         save_env_value(allowed_key, "test-value-123")
         env = load_env()

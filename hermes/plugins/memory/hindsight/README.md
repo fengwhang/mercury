@@ -5,7 +5,7 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 ## Requirements
 
 - **Cloud:** API key from [ui.hindsight.vectorize.io](https://ui.hindsight.vectorize.io)
-- **Local Embedded:** API key for a supported LLM provider (OpenAI, Anthropic, Gemini, Groq, OpenRouter, MiniMax, Ollama, or any OpenAI-compatible endpoint). Embeddings and reranking run locally — no additional API keys needed.
+- **Local Embedded:** API key for a supported LLM provider (OpenAI, Anthropic, Gemini, Groq, OpenRouter, MiniMax, Ollama, or any OpenAI-compatible endpoint), plus complete pre-provisioned embedding and reranking model assets. Those models run locally — no additional API keys needed.
 - **Local External:** A running Hindsight instance (Docker or self-hosted) reachable over HTTP.
 
 ## Setup
@@ -29,6 +29,12 @@ Connects to the Hindsight Cloud API. Requires an API key from [ui.hindsight.vect
 ### Local Embedded
 
 Hermes spins up a local Hindsight daemon with built-in PostgreSQL. Requires an LLM API key for memory extraction and synthesis. The daemon starts automatically in the background on first use and stops after 5 minutes of inactivity.
+
+Mercury forces `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` before loading
+the embedded runtime and in its profile environment. Provision the complete
+model caches locally before starting this mode. Missing assets fail locally;
+Mercury never downloads model weights. Cloud and local-external connections
+continue to use the selected server and do not launch local model loaders.
 
 Supports any OpenAI-compatible LLM endpoint (llama.cpp, vLLM, LM Studio, etc.) — pick `openai_compatible` as the provider and enter the base URL.
 

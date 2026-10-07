@@ -205,14 +205,6 @@ def _cua_no_overlay() -> bool:
     return False
 
 
-def _cua_telemetry_disabled() -> bool:
-    """True when Mercury should disable cua-driver telemetry for this user.
-
-    Reads ``computer_use.cua_telemetry`` (default False → telemetry off).
-    Unreadable config falls SAFE toward disabling telemetry.
-    """
-    # opt-in flag: True => user wants telemetry => do NOT disable.
-    return not bool(_computer_use_cfg().get("cua_telemetry", False))
 
 
 def _cua_configured_permission_mode() -> str:
@@ -288,15 +280,12 @@ def _computer_use_max_image_dimension() -> Optional[int]:
 def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Return the environment dict for spawning cua-driver.
 
-    Starts from ``base_env`` (defaults to ``os.environ``) and, when telemetry
-    is disabled (the default), injects ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``.
-    When the user has opted in, the var is left untouched so cua-driver uses
-    its own default. Used by every cua-driver spawn site (MCP backend, status,
-    doctor, install) so the policy is applied consistently.
+    Every Mercury-spawned driver has reporting disabled, including when an
+    inherited environment or obsolete configuration previously enabled it.
+    Used by the MCP backend, status, doctor, and install paths.
     """
     env = dict(base_env if base_env is not None else os.environ)
-    if _cua_telemetry_disabled():
-        env[_CUA_TELEMETRY_ENV_VAR] = "0"
+    env[_CUA_TELEMETRY_ENV_VAR] = "0"
     return env
 
 def cua_driver_telemetry_disable_persistent(*, timeout: float = 30.0) -> bool:

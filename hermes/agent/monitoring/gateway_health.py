@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.monitoring.events import GatewayDiagnosticEvent, GatewayHealthEvent
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,14 +49,14 @@ def _allowed_logger(name: str) -> bool:
     return name == "gateway" or name.startswith("gateway.")
 
 
-def source_logger_for_export(name: Any) -> Optional[str]:
-    """Return a bounded source-controlled gateway logger name for OTLP scope."""
+def source_logger_for_diagnostics(name: Any) -> Optional[str]:
+    """Return a bounded source-controlled gateway logger name."""
     value = str(name or "")
     return value if len(value) <= 128 and _SOURCE_LOGGER_RE.fullmatch(value) else None
 
 
 def redact_gateway_message(message: Any) -> str:
-    """Redact gateway diagnostic free text for operator-owned export.
+    """Redact gateway diagnostic free text for local reports.
 
     Single scrub path: everything goes through
     ``agent.monitoring.redaction.redact_for_export`` (unconditional
@@ -444,7 +447,7 @@ class GatewayDiagnosticLogHandler(logging.Handler):
             event = GatewayDiagnosticEvent(
                 name=f"gateway.log.{record.levelname.lower()}",
                 subsystem=subsystem,
-                source_logger=source_logger_for_export(record.name),
+                source_logger=source_logger_for_diagnostics(record.name),
                 platform=platform_for_subsystem(subsystem),
                 error_class=error_class,
                 error_code=error_class,
@@ -458,12 +461,148 @@ class GatewayDiagnosticLogHandler(logging.Handler):
             logging.getLogger(__name__).debug("gateway diagnostic emit failed", exc_info=True)
 
 
+def _supervision_mode() -> str:
+    if os.environ.get("INVOCATION_ID"):
+        return "systemd"
+    if os.environ.get("S6_CMD_ARG0") or os.environ.get("S6_VERSION"):
+        return "s6"
+    if os.environ.get("container") or os.path.exists("/.dockerenv"):
+        return "container"
+    if os.environ.get("LAUNCHD_SOCKET"):
+        return "launchd"
+    return "manual"
+
+
+def _read_gateway_snapshot(config: Dict[str, Any]):
+    try:
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        runtime = read_runtime_status() or {}
+        gateway_running = runtime_status_pid_is_live(runtime)
+    except Exception:
+        runtime = {}
+        gateway_running = False
+    return build_gateway_health_snapshot(
+        runtime,
+        gateway_running=gateway_running,
+        profile=_safe_profile(),
+        install_id=str((config.get("monitoring") or {}).get("install_id") or "unknown"),
+        version=_safe_version(),
+        supervision_mode=_supervision_mode(),
+    )
+
+
+def _read_cron_snapshot():
+    from agent.monitoring.cron_health import build_cron_health_snapshot
+
+    return build_cron_health_snapshot()
+
+
+def _read_background_work_count() -> int:
+    """Count live background/subagent work that ``active_agents`` does NOT include.
+
+    ``mercury.gateway.active_agents`` counts foreground turns + in-flight cron
+    jobs + API runs, but deliberately excludes backgrounded ``delegate_task``
+    subagents, ``terminal(background=true)`` processes, kanban workers, and the
+    runner's own background tasks (they are tracked only for the scale-to-zero
+    suspend guard, ``_scale_to_zero_has_live_background_work``). Without this
+    metric a peer churning through delegated subagents shows ``active_agents=0``
+    on the fleet dashboard. Best-effort and content-free: a single integer,
+    no job/task identity. Returns 0 if a source can't be imported.
+
+    Delegation is counted TASK-granular (``active_task_count``): a fan-out batch
+    of N subagents contributes N, not 1, so the metric reflects real concurrent
+    subagent load rather than dispatch-unit/pool-slot count. This intentionally
+    differs from the async pool's capacity accounting (one batch = one slot).
+    """
+    total = 0
+    try:
+        from tools.async_delegation import active_task_count
+
+        total += max(0, int(active_task_count()))
+    except Exception:
+        logger.debug("background-work async-delegation count failed", exc_info=True)
+    try:
+        from tools.process_registry import process_registry
+
+        total += max(0, int(process_registry.count_running()))
+    except Exception:
+        logger.debug("background-work process-registry count failed", exc_info=True)
+    return total
+
+
+def _read_background_delegations_count() -> int:
+    """Count live async delegation UNITS (dispatch/pool slots).
+
+    Complements ``_read_background_work_count`` (which is task-granular): this
+    counts each ``delegate_task`` dispatch as ONE regardless of fan-out width,
+    matching the async pool's capacity accounting (a batch = one slot). Together
+    the two metrics let an operator see both slot pressure
+    (``background_delegations``, alert vs ``max_concurrent_children``) and real
+    concurrent subagent load (``background_work``). Delegations only — it does
+    not include ``terminal(background)`` / kanban work, which are already folded
+    into ``background_work``. Best-effort; 0 if the source can't be imported.
+    """
+    try:
+        from tools.async_delegation import active_count
+
+        return max(0, int(active_count()))
+    except Exception:
+        logger.debug("background-delegations count failed", exc_info=True)
+        return 0
+
+
+def read_runtime_health_snapshot(config: Dict[str, Any]) -> GatewayHealthSnapshot:
+    """Read local gateway, cron, and background-work health without exporters."""
+    gateway_snapshot = _read_gateway_snapshot(config)
+    # Background/subagent work — a distinct metric from active_agents (which
+    # never counts it). Appended to the gateway snapshot so it rides the same
+    # base resource attributes (service.instance.id etc.).
+    try:
+        base = dict(gateway_snapshot.metrics[0].attributes) if gateway_snapshot.metrics else {}
+        gateway_snapshot.metrics.append(
+            GatewayMetric(
+                name="mercury.gateway.background_work",
+                value=_read_background_work_count(),
+                attributes=base,
+            )
+        )
+        gateway_snapshot.metrics.append(
+            GatewayMetric(
+                name="mercury.gateway.background_delegations",
+                value=_read_background_delegations_count(),
+                attributes=base,
+            )
+        )
+    except Exception as exc:
+        logger.warning(
+            "background-work snapshot unavailable (error_type=%s)",
+            type(exc).__name__,
+        )
+        logger.debug("background-work snapshot traceback", exc_info=True)
+    try:
+        cron_snapshot = _read_cron_snapshot()
+    except Exception as exc:
+        # Content-free visibility: cron telemetry silently dropping out is a
+        # release-relevant regression, so surface it at WARNING with only the
+        # exception *type* name (never the message, which could carry paths or
+        # other environment detail). exc_info stays on the DEBUG record.
+        logger.warning(
+            "cron health snapshot unavailable (error_type=%s)",
+            type(exc).__name__,
+        )
+        logger.debug("cron health snapshot traceback", exc_info=True)
+        return gateway_snapshot
+    gateway_snapshot.metrics.extend(cron_snapshot.metrics)
+    return gateway_snapshot
+
+
 __all__ = [
     "GatewayMetric",
     "GatewayHealthSnapshot",
     "GatewayDiagnosticLogHandler",
     "build_gateway_health_snapshot",
+    "read_runtime_health_snapshot",
     "classify_gateway_error",
-    "source_logger_for_export",
+    "source_logger_for_diagnostics",
     "redact_gateway_message",
 ]

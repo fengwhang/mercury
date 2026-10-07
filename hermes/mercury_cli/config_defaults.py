@@ -3053,42 +3053,10 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
-    # Gateway monitoring — Service Health Monitoring plus redacted Operational
-    # Diagnostics for the gateway daemon, exported over OTLP to an
-    # operator-configured endpoint (OTEL Collector, DataDog, ...). Content-free
-    # by construction: no prompts, messages, tool args/results, session
-    # history, usage analytics, audit logs, or trajectories. Off by default;
-    # nothing is collected or sent until an operator enables it and sets an
-    # endpoint.
+    # Local gateway health and diagnostics correlation.
     "monitoring": {
-        # Stable install identifier attached to exported health signals so an
-        # operator can tell instances apart in their collector. Empty string
-        # means "mint a fresh UUID on first use"; clear it to rotate. Carries
-        # no account identity.
+        # Stable local install identifier; empty means mint a UUID on first use.
         "install_id": "",
-        # Gateway health & diagnostics export.
-        "gateway_health_export": {
-            "enabled": False,
-            "metrics_enabled": True,
-            "diagnostic_events_enabled": True,
-            "warning_error_events_enabled": True,
-            "export_interval_seconds": 60,
-            "logs_export_interval_seconds": 5,
-            "resource_attributes": {
-                "service.name": "mercury-gateway",
-                "deployment.environment.name": "production",
-            },
-        },
-        # OTLP destination. headers_env maps header names to ENVIRONMENT
-        # VARIABLE NAMES (never secret values); values are read from the
-        # environment at export time.
-        "export": {
-            "otlp": {
-                "enabled": False,
-                "endpoint": "",
-                "headers_env": {},
-            },
-        },
     },
 
     # Gateway settings — control how messaging platforms (Telegram, Discord,
@@ -3698,13 +3666,6 @@ DEFAULT_CONFIG = {
 
     # Computer Use (cua-driver) toolset settings.
     "computer_use": {
-        # cua-driver ships with anonymous usage telemetry (PostHog) ENABLED
-        # by default upstream. Mercury disables it for our users unless they
-        # explicitly opt in here. When false (default), Mercury sets
-        # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in the cua-driver child env for
-        # every invocation (MCP backend, status, doctor, install). Set true
-        # to let cua-driver use its own default (telemetry on).
-        "cua_telemetry": False,
         # Cap driver screenshot longest edge (pixels) via set_config on
         # session start. Shrinks SOM multimodal payloads; 0 disables.
         "max_image_dimension": 1456,
@@ -4649,30 +4610,6 @@ OPTIONAL_ENV_VARS = {
     "OPENVIKING_ENDPOINT": {
         "description": "OpenViking server URL (default: http://127.0.0.1:1933)",
         "prompt": "OpenViking endpoint",
-        "category": "tool",
-        "advanced": True,
-    },
-
-    # ── Langfuse observability ──
-    "HERMES_LANGFUSE_PUBLIC_KEY": {
-        "description": "Langfuse project public key (pk-lf-...)",
-        "prompt": "Langfuse public key",
-        "url": "https://cloud.langfuse.com",
-        "password": False,
-        "category": "tool",
-    },
-    "HERMES_LANGFUSE_SECRET_KEY": {
-        "description": "Langfuse project secret key (sk-lf-...)",
-        "prompt": "Langfuse secret key",
-        "url": "https://cloud.langfuse.com",
-        "password": True,
-        "category": "tool",
-    },
-    "HERMES_LANGFUSE_BASE_URL": {
-        "description": "Langfuse server URL (default: https://cloud.langfuse.com)",
-        "prompt": "Langfuse server URL (leave empty for cloud.langfuse.com)",
-        "url": None,
-        "password": False,
         "category": "tool",
         "advanced": True,
     },

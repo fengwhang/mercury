@@ -92,30 +92,30 @@ def test_denylisted_key_does_not_block_other_writes(capsys):
     legitimate ones still land. The wizard must not abort mid-batch."""
     _write_env_vars({
         "LD_PRELOAD": "/tmp/evil.so",
-        "HERMES_LANGFUSE_PUBLIC_KEY": "pk-test-123",
+        "HERMES_SPOTIFY_CLIENT_ID": "test-client-123",
         "OPENROUTER_API_KEY": "sk-or-test-456",
     })
 
     assert "LD_PRELOAD" not in _env_file_keys()
     env = load_env()
-    assert env["HERMES_LANGFUSE_PUBLIC_KEY"] == "pk-test-123"
+    assert env["HERMES_SPOTIFY_CLIENT_ID"] == "test-client-123"
     assert env["OPENROUTER_API_KEY"] == "sk-or-test-456"
 
 
 def test_legitimate_hermes_integration_key_still_writable():
     """``HERMES_*`` overall is NOT blocked — only the four runtime
     location names (HOME/PROFILE/CONFIG/ENV). Integration credentials
-    following the ``HERMES_*`` convention (HERMES_LANGFUSE_*,
-    HERMES_SPOTIFY_*, HERMES_QWEN_BASE_URL, ...) must keep working or
+    following the ``HERMES_*`` convention (HERMES_SPOTIFY_*,
+    HERMES_QWEN_BASE_URL, ...) must keep working or
     the memory-setup wizard regresses for every plugin that follows
     the convention."""
     _write_env_vars({
-        "HERMES_LANGFUSE_PUBLIC_KEY": "pk-lf-789",
+        "HERMES_SPOTIFY_CLIENT_ID": "test-client-789",
         "HERMES_QWEN_BASE_URL": "https://example.com/v1",
     })
 
     env = load_env()
-    assert env["HERMES_LANGFUSE_PUBLIC_KEY"] == "pk-lf-789"
+    assert env["HERMES_SPOTIFY_CLIENT_ID"] == "test-client-789"
     assert env["HERMES_QWEN_BASE_URL"] == "https://example.com/v1"
 
 

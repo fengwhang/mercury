@@ -444,22 +444,14 @@ HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
 
 ### Telemetry
 
-cua-driver ships with anonymous usage telemetry (PostHog) enabled by default
-upstream. **Hermes disables it for you** — on every cua-driver invocation
-(the MCP backend, `status`, `doctor`, and install) Hermes sets
-`CUA_DRIVER_RS_TELEMETRY_ENABLED=0` in the driver's environment.
+cua-driver ships with anonymous usage telemetry enabled by default upstream.
+Mercury always disables it on every driver invocation (the MCP backend,
+`status`, `doctor`, permissions, and install) by setting
+`CUA_DRIVER_RS_TELEMETRY_ENABLED=0` in the child's environment.
 
-To opt back in (let cua-driver use its own default and send telemetry), set
-this in `config.yaml`:
-
-```yaml
-computer_use:
-  cua_telemetry: true   # default: false (telemetry off)
-```
-
-When it's on, `hermes computer-use doctor` reports `telemetry: enabled`;
-when off (the default), it reports `telemetry: disabled via
-CUA_DRIVER_RS_TELEMETRY_ENABLED`.
+There is no reporting opt-in. An inherited enabled flag or an obsolete
+configuration setting cannot override the policy. Setup also asks the driver
+to disable its own persistent telemetry setting.
 
 ## Testing against a local cua-driver build
 

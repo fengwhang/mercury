@@ -45,7 +45,7 @@ def _resolve_driver_cmd(override: Optional[str]) -> Optional[str]:
 
 
 def _child_env() -> Dict[str, str]:
-    """cua-driver child env: telemetry opt-in policy + secret sanitization.
+    """cua-driver child env: reporting disabled + secret sanitization.
 
     cua-driver is a third-party binary — it must never inherit provider
     API keys (#53503/#55709/#58889 lineage). Each layer degrades
@@ -56,7 +56,7 @@ def _child_env() -> Dict[str, str]:
 
         env = cua_driver_child_env()
     except Exception:
-        env = dict(os.environ)
+        env = dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
