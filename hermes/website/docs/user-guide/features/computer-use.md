@@ -517,6 +517,9 @@ cua-driver ships with anonymous usage telemetry enabled by default upstream.
 Mercury always disables it on every driver invocation (the MCP backend,
 `status`, `doctor`, permissions, and install) by setting
 `CUA_DRIVER_RS_TELEMETRY_ENABLED=0` in the child's environment.
+This mandatory value is written after credential sanitization and
+profile/skill environment passthrough, so those layers cannot restore an
+enabled value or remove the opt-out.
 
 There is no reporting opt-in. An inherited enabled flag or an obsolete
 configuration setting cannot override the policy. Setup also asks the driver

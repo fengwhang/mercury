@@ -183,7 +183,6 @@ def cua_driver_update_check(*, timeout: Optional[float] = None) -> Optional[Dict
 def cua_daemon_listening(driver_cmd: str, socket_path: Optional[str] = None, *, timeout: float = 3.0) -> Optional[bool]:
     """Probe an explicitly configured serve socket, without starting or repairing it."""
     from mercury_cli._subprocess_compat import windows_hide_flags
-    from tools.environments.local import _sanitize_subprocess_env
 
     args = [driver_cmd, "status"]
     if socket_path is not None:
@@ -192,7 +191,7 @@ def cua_daemon_listening(driver_cmd: str, socket_path: Optional[str] = None, *, 
         proc = subprocess.run(
             args, capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
-            env=_sanitize_subprocess_env(_cb().cua_driver_child_env()),
+            env=_cb().sanitized_cua_driver_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return None

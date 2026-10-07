@@ -292,6 +292,20 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
         env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "1"
     return env
 
+
+def sanitized_cua_driver_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Strip credentials from a prepared child env, then enforce final no-reporting.
+
+    Profile/skill passthrough can replace or remove values during sanitization.
+    Mercury's mandatory driver policy must therefore be the last writer.
+    A supplied environment already includes session permission/display policy.
+    """
+    from tools.environments.local import _sanitize_subprocess_env
+
+    env = _sanitize_subprocess_env(cua_driver_child_env() if base_env is None else base_env)
+    env[_CUA_TELEMETRY_ENV_VAR] = "0"
+    return env
+
 def cua_driver_telemetry_disable_persistent(*, timeout: float = 30.0) -> bool:
     """Persistently disable cua-driver telemetry via ``telemetry disable``.
 
@@ -668,14 +682,13 @@ class _EmbeddedCuaDaemon:
     def start(self) -> None:
         if self._running:
             return
-        from tools.environments.local import _sanitize_subprocess_env
 
         if not self._driver_cmd:
             self._driver_cmd = resolve_cua_driver_cmd() or ""
         if not self._driver_cmd:
             raise RuntimeError(cua_driver_install_hint())
         self._command, self._mcp_args = _resolve_mcp_invocation(self._driver_cmd)
-        env = _sanitize_subprocess_env(self.child_env())
+        env = sanitized_cua_driver_env(self.child_env())
         serve_args = [
             "serve",
             "--embedded",
@@ -777,7 +790,6 @@ class _EmbeddedCuaDaemon:
         self._owns_runtime = False
         self._running = False
         if owns_runtime:
-            from tools.environments.local import _sanitize_subprocess_env
 
             try:
                 subprocess.run(
@@ -786,7 +798,7 @@ class _EmbeddedCuaDaemon:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=3.0,
-                    env=_sanitize_subprocess_env(self.child_env()),
+                    env=sanitized_cua_driver_env(self.child_env()),
                 )
             except (OSError, subprocess.SubprocessError):
                 pass
@@ -833,7 +845,6 @@ def _resolve_mcp_invocation(
     spawn failure.
     """
     try:
-        from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
             [driver_cmd, "manifest"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
@@ -842,7 +853,7 @@ def _resolve_mcp_invocation(
             # cua-driver is a third-party binary — never hand it provider
             # API keys via inherited env (same policy as the MCP and CLI
             # fallback spawns below; #53503/#55709/#58889 lineage).
-            env=_sanitize_subprocess_env(cua_driver_child_env()),
+            env=sanitized_cua_driver_env(),
         )
     except Exception:
         return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS), driver_cmd=driver_cmd)
@@ -905,13 +916,12 @@ def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
         # cua-driver is a third-party binary — never hand it provider
         # API keys via inherited env (same policy as the manifest probe
         # and MCP spawn; #53503/#55709/#58889 lineage).
-        from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
             [driver_cmd, "--help"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
-            env=_sanitize_subprocess_env(cua_driver_child_env()),
+            env=sanitized_cua_driver_env(),
         )
         help_text = (proc.stdout or "") + (proc.stderr or "")
         return "--no-overlay" in help_text
@@ -1027,7 +1037,6 @@ def cua_driver_runtime_contract_status(binary: Optional[str] = None) -> Dict[str
         }
 
     try:
-        from tools.environments.local import _sanitize_subprocess_env
 
         result = subprocess.run(
             [resolved, "manifest"],
@@ -1037,7 +1046,7 @@ def cua_driver_runtime_contract_status(binary: Optional[str] = None) -> Dict[str
             errors="replace",
             timeout=15.0 if sys.platform == "win32" else 5.0,
             stdin=subprocess.DEVNULL,
-            env=_sanitize_subprocess_env(cua_driver_child_env()),
+            env=sanitized_cua_driver_env(),
             creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -1155,7 +1164,6 @@ def cua_driver_update_check(*, timeout: Optional[float] = None) -> Optional[Dict
     if not driver_cmd:
         return None
     try:
-        from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
             [driver_cmd, "check-update", "--json"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
@@ -1166,7 +1174,7 @@ def cua_driver_update_check(*, timeout: Optional[float] = None) -> Optional[Dict
             creationflags=windows_hide_flags(),
             # Sanitized like every other cua-driver spawn: third-party
             # binary, no inherited provider keys (#53503/#55709/#58889).
-            env=_sanitize_subprocess_env(cua_driver_child_env()),
+            env=sanitized_cua_driver_env(),
         )
     except Exception:
         return None
@@ -1394,7 +1402,6 @@ class _CuaDriverSession:
         import time as _time
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
-        from tools.environments.local import _sanitize_subprocess_env
 
         # Build the shutdown event on the loop's thread so the asyncio
         # primitive belongs to the correct loop.
@@ -1424,9 +1431,8 @@ class _CuaDriverSession:
             params = StdioServerParameters(
                 command=command,
                 args=args,
-                # Apply the telemetry policy first (default: disabled), then
-                # sanitize Mercury-managed secrets out of the child env.
-                env=_sanitize_subprocess_env(child_env),
+                # Strip secrets, then enforce no reporting after profile passthrough.
+                env=sanitized_cua_driver_env(child_env),
             )
 
             async with stdio_client(params) as (read, write):
@@ -1833,7 +1839,6 @@ class _CuaDriverSession:
         import subprocess as _subprocess
         import tempfile as _tempfile
         import time as _time
-        from tools.environments.local import _sanitize_subprocess_env
 
         call_args = dict(args)
         shot_file: Optional[str] = None
@@ -1869,7 +1874,7 @@ class _CuaDriverSession:
                     proc = _subprocess.run(
                         cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=max(15.0, timeout),
                         creationflags=windows_hide_flags(),
-                        env=_sanitize_subprocess_env(child_env),
+                        env=sanitized_cua_driver_env(child_env),
                     )
                 except Exception as e:  # pragma: no cover - subprocess spawn failure
                     raise RuntimeError(f"cua-driver CLI fallback for {name} failed to spawn: {e}") from e

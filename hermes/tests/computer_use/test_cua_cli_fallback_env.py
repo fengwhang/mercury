@@ -6,7 +6,7 @@ fallback) invoked ``subprocess.run`` with no ``env=`` at all, so the
 third-party ``cua-driver`` binary inherited the full, unsanitized parent
 environment — including provider API keys and other Mercury-managed
 secrets that ``_lifecycle_coro``'s primary MCP spawn already strips via
-``_sanitize_subprocess_env(cua_driver_child_env())``.
+``sanitized_cua_driver_env()``.
 """
 
 import json

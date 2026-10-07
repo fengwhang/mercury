@@ -69,19 +69,13 @@ def _cua_child_env() -> Dict[str, str]:
 
 def _sanitized_cua_env() -> Dict[str, str]:
     """Telemetry-policy env with Mercury provider secrets stripped.
-
     cua-driver is a third-party binary — it must never inherit provider
-    API keys (#53503/#55709/#58889 lineage). Falls back to the unsanitized
-    telemetry env if the sanitizer can't be imported, so doctor keeps
-    working in stripped-down environments.
+    API keys. Sanitization must not re-enable reporting through profile passthrough.
     """
     env = _cua_child_env()
-    try:
-        from tools.environments.local import _sanitize_subprocess_env
+    from tools.computer_use.cua_backend import sanitized_cua_driver_env
 
-        return _sanitize_subprocess_env(env)
-    except Exception:
-        return env
+    return sanitized_cua_driver_env(env)
 
 
 def _is_valid_health_report(payload: Any) -> bool:
