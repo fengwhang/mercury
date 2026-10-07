@@ -2776,8 +2776,12 @@ def _profile_arg(mercury_home: str | None = None, default_root: str | Path | Non
     default = Path(default_root).resolve() if default_root else get_default_hermes_root().resolve()
     if home == default:
         return ""
-    from mercury_cli.profiles import _get_profiles_root
-    profiles_root = _get_profiles_root().resolve()
+    if default_root is not None:
+        profiles_root = default / "hermes" / "profiles"
+    else:
+        from mercury_cli.profiles import _get_profiles_root
+
+        profiles_root = _get_profiles_root().resolve()
     try:
         rel = home.relative_to(profiles_root)
         parts = rel.parts
@@ -4620,13 +4624,10 @@ def _print_system_scope_remediation(action: str) -> None:
     print_info(f"    1. {action.capitalize()} it this time:")
     if action == "start":
         print_info(f"         sudo systemctl start {svc}")
-    if has_legacy_hermes_units():
-        print()
-        print_legacy_unit_warning()
-        print()
-        if non_interactive or prompt_yes_no("Remove the legacy unit(s) before installing?", True):
-            remove_legacy_hermes_units(interactive=False)
-            print()
+    else:
+        print_info(f"         sudo mercury gateway {action} --system")
+    print_info("    2. Move to a per-user service with explicit administration:")
+    print_info("         sudo mercury gateway uninstall --system")
     print_info("         mercury gateway install")
     print_info("         mercury gateway start")
 
