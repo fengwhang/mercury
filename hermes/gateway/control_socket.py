@@ -55,6 +55,7 @@ import socket
 import sys
 import tempfile
 import time
+import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -219,6 +220,88 @@ def build_status_payload() -> dict[str, Any]:
     return payload
 
 
+def restart_control_handlers(runner: Any, loop: asyncio.AbstractEventLoop) -> dict[str, Callable]:
+    """Answer service admission on the owner loop, never from stale status."""
+    def on_loop(action: Callable[[], dict]) -> dict:
+        answer: list[dict] = []
+        done = threading.Event()
+
+        def invoke() -> None:
+            try:
+                answer.append(action())
+            except Exception as exc:
+                answer.append({"pid": os.getpid(), "error": str(exc), "denied": True,
+                               "deferred": True, "restarting": False, "already_stopping": False})
+            finally:
+                done.set()
+
+        loop.call_soon_threadsafe(invoke)
+        if not done.wait(timeout=5.0):
+            return {"pid": os.getpid(), "error": "gateway loop did not answer admission",
+                    "denied": True, "deferred": True, "restarting": False, "already_stopping": False}
+        return answer[0]
+
+    def status() -> dict:
+        return on_loop(lambda: {
+            **build_status_payload(), "pid": os.getpid(),
+            "active_work": runner._active_work_count(),
+            "active_delegations": runner._active_delegation_count(),
+            "running_agents": runner._running_agent_count(),
+        })
+
+    def restart(verb: str, params: Optional[dict] = None) -> dict:
+        def admit() -> dict:
+            from gateway.restart_provenance import record_restart_request, record_restart_transition
+            from tools.async_delegation import active_delegation_ids
+
+            automatic = verb == "restart-when-idle"
+            updating = verb == "pause-for-update"
+            actor = (params or {}).get("_authenticated_actor") or {"authentication": "unknown"}
+            active = runner._active_work_count()
+            trigger = "control:" + verb
+            if params and params.get("trigger"):
+                trigger += ":" + str(params["trigger"])
+            same_unit_denied = (
+                verb == "restart-admin" and active and actor.get("same_gateway_cgroup") is True
+                and (params or {}).get("checkpoint_resume") is not True
+            )
+            if (active and updating) or same_unit_denied:
+                receipt = record_restart_request(source="control", reason=trigger,
+                    automatic=automatic, actor=actor, request_id=(params or {}).get("request_id"),
+                    active_delegations=active_delegation_ids())
+                record_restart_transition(receipt["request_id"], "deferred", active_work=active,
+                    reason="owned work remains active")
+                return {"pausing" if updating else "restarting": False,
+                        "already_stopping": False, "deferred": True,
+                        "denied": bool(same_unit_denied), "active_work": active,
+                        "request_id": receipt["request_id"], "pid": os.getpid(),
+                        "reason": "owned work active; automatic refresh deferred"}
+            from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
+
+            supervised = is_gateway_supervisor_process() or is_container_restart_context()
+            kwargs = {"automatic": True} if automatic else {}
+            accepted = runner.request_restart(detached=not supervised, via_service=supervised,
+                trigger=trigger, actor=actor, request_id=(params or {}).get("request_id"), **kwargs)
+            still_automatic = (not accepted and not automatic
+                               and bool(getattr(runner, "_restart_automatic", False)))
+            already = (not accepted and not still_automatic
+                       and bool(getattr(runner, "_restart_task_started", False)))
+            return {"pausing" if updating else "restarting": accepted,
+                    "already_stopping": already,
+                    "deferred": still_automatic or (bool(active) if automatic else False),
+                    "denied": not accepted and not already, "active_work": active,
+                    "request_id": getattr(runner, "_restart_request_id", None), "pid": os.getpid(),
+                    "drain_timeout": runner._restart_drain_timeout}
+        return on_loop(admit)
+
+    return {
+        "status": status,
+        "pause-for-update": lambda params=None: restart("pause-for-update", params),
+        "restart-when-idle": lambda params=None: restart("restart-when-idle", params),
+        "restart-admin": lambda params=None: restart("restart-admin", params),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
@@ -360,7 +443,7 @@ class GatewayControlServer:
 
     # -- request handling ----------------------------------------------------
 
-    def handle_request_line(self, raw: bytes) -> bytes:
+    def handle_request_line(self, raw: bytes, *, actor: Optional[dict] = None) -> bytes:
         """Process one JSON request line, return one JSON response line.
 
         Shared by the POSIX stream handler and the Windows pipe protocol.
@@ -383,8 +466,14 @@ class GatewayControlServer:
                 }
             else:
                 params = request.get("params")
-                if not isinstance(params, dict):
-                    params = {}
+                params = dict(params) if isinstance(params, dict) else {}
+                if verb in {"pause-for-update", "restart-admin", "restart-when-idle", "restart-observatory"}:
+                    # Transport identity always replaces a client's claimed
+                    # actor, including service membership and CLI ancestry.
+                    params["_authenticated_actor"] = {
+                        **(actor or {"authentication": "unknown"}),
+                        "context": {**((actor or {}).get("context") or {}), "verb": verb},
+                    }
                 if isinstance(verb, str) and verb in self._params_verbs:
                     result = handler(params)
                 else:
@@ -422,9 +511,13 @@ class GatewayControlServer:
             # Handlers read state files from disk; keep that off the
             # gateway's event loop (the same loop drives every platform
             # adapter), so a fast-polling consumer can't stall heartbeats.
+            from gateway.restart_provenance import authenticated_control_actor
+
+            peer_socket = writer.get_extra_info("socket")
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
-                None, self.handle_request_line, raw.rstrip(b"\n")
+                None, lambda: self.handle_request_line(raw.rstrip(b"\n"),
+                    actor=authenticated_control_actor(peer_socket)),
             )
             writer.write(response)
             await writer.drain()

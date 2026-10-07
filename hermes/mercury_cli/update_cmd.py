@@ -11,12 +11,6 @@ that target ``mercury_cli.main.<name>`` (``PROJECT_ROOT``, ``_is_windows``,
 every public-ish name from here (``# noqa: F401``) so the argparse wiring and
 the test-patch surface still resolve on ``mercury_cli.main``.
 
-Three self-contained closures nested inside ``_cmd_update_impl``
-(``_print_items``, ``_wait_for_service_active``, ``_service_restart_sec``) were
-hoisted to module level; they capture no enclosing state (verified via
-``symtable``). ``_restart_one_systemd_gateway_unit``, ``_resolve_manage_cmd``
-and ``_on_unit_timeout`` DO capture enclosing locals and stay nested,
-byte-identical.
 
 Imports are one-way: ``mercury_cli.main`` imports this module, never the reverse
 at import time (``_m()`` resolves lazily at call time, when main.py is fully
@@ -1165,6 +1159,10 @@ def _finish_dashboard_update_cleanup(
         print("  ℹ Leaving running dashboard process(es) untouched because the")
         print("    Node.js dependency refresh did not complete.")
         return
+
+    # A managed serve backend may own the gateway's process tree. Recheck
+    # live work after the build; restarting its owner can kill new delegates.
+    _require_idle_gateways_for_update()
 
     # The scan path lazy-imports symbols from _subprocess_compat; make sure
     # both modules reflect the freshly-updated source before touching them.
@@ -3301,139 +3299,77 @@ def _warn_pending_fleet_restart_on_startup() -> None:
         pass
 
 
-def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
-    """Best-effort ``systemctl restart`` of every mercury-gateway/serve unit."""
-    for scope, scope_cmd in (
-        ("user", ["systemctl", "--user"]),
-        ("system", ["systemctl"]),
-    ):
+
+
+def _wait_for_automatic_gateway_replacement(home: Path, old_pid: int, timeout: float = 90) -> bool:
+    """Observe a ready new generation; never turn an observation timeout into a stop."""
+    from gateway.control_socket import query_gateway_control
+
+    deadline = _time.monotonic() + timeout
+    while True:
+        reply = query_gateway_control(home, "status", timeout=2)
+        if (
+            reply and type(reply.get("pid")) is int and reply["pid"] > 0
+            and reply["pid"] != old_pid and reply.get("gateway_state") == "running"
+        ):
+            return True
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(0.5)
+
+
+def _restart_gateway_fleet_automatically(*, trigger: str) -> dict:
+    """Request gateway-owned idle restarts and record only observed replacements."""
+    from mercury_cli.gateway import (
+        find_gateway_pids, find_profile_gateway_processes,
+        request_automatic_gateway_restart,
+    )
+
+    processes = find_profile_gateway_processes(strict=True)
+    pids = set(find_gateway_pids(all_profiles=True))
+    result = {"requested": [], "verified": [], "deferred": [], "failed": [],
+              "previous_pids": sorted(pids | {proc.pid for proc in processes})}
+    mapped = {proc.pid for proc in processes}
+    result["failed"].extend(f"unmapped PID {pid}" for pid in sorted(pids - mapped))
+    seen = set()
+    for proc in processes:
+        if proc.pid in seen:
+            continue
+        seen.add(proc.pid)
         try:
-            result = subprocess.run(
-                scope_cmd
-                + [
-                    "list-units",
-                    "mercury-gateway*",
-                    "mercury-serve*",
-                    "--plain",
-                    "--no-legend",
-                    "--no-pager",
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
+            reply = request_automatic_gateway_restart(
+                home=Path(proc.path), pid=proc.pid, trigger=trigger,
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-        if result.returncode != 0:
-            continue
-
-        def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
-            restart_cmd = list(_cmd) + ["--no-ask-password", "restart", svc_name]
-            if (
-                _scope == "system"
-                and hasattr(os, "geteuid")
-                and os.geteuid() != 0  # windows-footgun: ok — systemd path, Linux-only
-            ):
-                restart_cmd = ["sudo", "-n"] + restart_cmd
-            subprocess.run(
-                restart_cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-            )
-
-        def on_timeout(svc_name: str, exc: subprocess.TimeoutExpired) -> None:
-            failed.append(svc_name)
-
-        _for_each_systemd_gateway_unit(
-            result.stdout,
-            process_unit=process_unit,
-            on_unit_timeout=on_timeout,
-        )
+            if not reply["restarting"]:
+                result["failed"].append(proc.profile)
+                continue
+            result["requested"].append(proc.profile)
+            if reply["deferred"]:
+                result["deferred"].append(proc.profile)
+            elif _wait_for_automatic_gateway_replacement(Path(proc.path), proc.pid):
+                result["verified"].append(proc.profile)
+            else:
+                result["failed"].append(proc.profile)
+        except Exception as exc:
+            logger.warning("Automatic restart admission failed for %s: %s", proc.profile, exc)
+            result["failed"].append(proc.profile)
+    return result
 
 
 def _run_pending_fleet_restart() -> bool:
-    """Catch-up restart for gateways left on pre-update code (#95294).
-
-    Returns True when restart completed or no services were running.
-    Returns False if restart was incomplete. Never raises.
-    """
-    print("→ Restarting gateways left on pre-update code...")
+    """Finish a skipped update restart without ever escalating active work."""
+    print("→ Requesting idle-only restarts for gateways left on pre-update code...")
     try:
         _m()._purge_stale_hermes_modules()
-    except Exception:
-        pass
-    try:
-        from mercury_cli.gateway import (
-            find_gateway_pids,
-            is_macos,
-            is_windows,
-            kill_gateway_processes,
-            supports_systemd_services,
-            _wait_for_gateway_exit,
-        )
+        result = _restart_gateway_fleet_automatically(trigger="pending-update")
     except Exception as exc:
         _warn_gateway_restart_phase_aborted(exc, None)
         return False
-
-    try:
-        pids = list(find_gateway_pids(all_profiles=True))
-    except Exception as exc:
-        logger.debug("Pending fleet restart: gateway probe failed: %s", exc)
-        pids = None
-
-    if pids == []:
-        print("  ✓ No running gateways — nothing to restart.")
-        return True
-
-    failed: list = []
-    try:
-        if supports_systemd_services():
-            _restart_systemd_gateway_units_best_effort(failed)
-        if is_macos():
-            restarted: list = []
-            try:
-                _restart_macos_launchd_gateways(restarted, failed, 45.0)
-            except Exception as exc:
-                logger.debug("Pending fleet restart: launchd failed: %s", exc)
-                failed.append("launchd")
-        if is_windows():
-            try:
-                from mercury_cli import gateway_windows
-
-                if gateway_windows.is_installed():
-                    gateway_windows.restart()
-            except Exception as exc:
-                logger.debug("Pending fleet restart: Windows failed: %s", exc)
-                failed.append("windows-gateway")
-        leftover: list = []
-        try:
-            leftover = list(find_gateway_pids(all_profiles=True))
-        except Exception:
-            leftover = list(pids or [])
-        if leftover:
-            try:
-                kill_gateway_processes(all_profiles=True)
-                _wait_for_gateway_exit(timeout=5.0, force_after=None)
-            except Exception as exc:
-                logger.debug("Pending fleet restart: PID stop failed: %s", exc)
-        if failed:
-            _warn_incomplete_gateway_fleet_restart(failed)
-            return False
-        print("  ✓ Pending fleet restart completed.")
-        return True
-    except Exception as exc:
-        surviving = None
-        try:
-            surviving = list(find_gateway_pids(all_profiles=True))
-        except Exception:
-            surviving = pids
-        _warn_gateway_restart_phase_aborted(exc, surviving)
+    if result["failed"] or result["deferred"]:
+        _warn_incomplete_gateway_fleet_restart(result["failed"] + result["deferred"])
         return False
+    print("  Pending fleet restart completed; replacements verified.")
+    return True
 
 
 def _apply_pending_fleet_restart_catchup() -> None:
@@ -6275,35 +6211,43 @@ def _pause_windows_gateways_for_update() -> dict | None:
             )
         return None
 
+    unmapped = set(running_pids) - set(profile_processes)
+    if unmapped:
+        raise RuntimeError(
+            "Update deferred: running gateway PID(s) have no safe pause admission mapping: "
+            + ", ".join(str(pid) for pid in sorted(unmapped))
+        )
+
     profiles: dict[str, int] = {}
     mapped_pids = []
     socket_acks: list[dict] = []
     for pid in running_pids:
-        if pid in service_gateway_pids:
-            continue
         proc = profile_processes.get(pid)
         if proc is None:
+            raise RuntimeError(
+                f"Update deferred: gateway PID {pid} has no safe pause admission mapping"
+            )
+        # Admission must precede the stop marker: the marker itself causes
+        # the gateway to exit, even if the socket subsequently declines.
+        from gateway.control_socket import pause_gateway_for_update
+
+        ack = pause_gateway_for_update(Path(proc.path))
+        if (
+            not ack or ack.get("pid") != int(pid)
+            or ack.get("deferred") is not False
+            or type(ack.get("active_work")) is not int or ack["active_work"] != 0
+            or not (ack.get("pausing") or ack.get("already_stopping"))
+        ):
+            raise RuntimeError(
+                f"Update deferred: gateway {proc.profile} declined safe pause admission; "
+                "its files and running environment must remain unchanged"
+            )
+        socket_acks.append(ack)
+        if pid in service_gateway_pids:
             continue
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
         _write_update_planned_stop_marker(Path(proc.path), int(pid))
-        # Socket-first pause (#92091 step 2): ask the gateway to drain and
-        # exit itself instead of relying on the marker poll + force-kill
-        # ladder. A positive ACK means the gateway is running its own
-        # graceful restart path (same drain as SIGUSR1/service restarts) and
-        # will release its venv handles on the way out. No answer (older
-        # gateway, no socket) → the marker watcher / force-kill fallback
-        # below behaves exactly as before this verb existed.
-        try:
-            from gateway.control_socket import pause_gateway_for_update
-
-            ack = pause_gateway_for_update(Path(proc.path))
-            if ack and (ack.get("pausing") or ack.get("already_stopping")):
-                socket_acks.append(ack)
-        except Exception as exc:
-            logger.debug(
-                "Socket pause unavailable for gateway %s: %s", pid, exc
-            )
 
     # Resolve each mapped worker's venv-side launcher BEFORE draining: the
     # drain stops tracking a PID exactly when it dies, so a gracefully
@@ -6543,60 +6487,7 @@ def _cold_start_windows_gateway_after_update() -> bool:
     return True
 
 
-def _for_each_systemd_gateway_unit(
-    list_units_stdout: str,
-    *,
-    process_unit,
-    on_unit_timeout,
-) -> None:
-    """Process each ``mercury-gateway*.service``/``mercury-serve*.service`` unit
-    from ``systemctl list-units``.
 
-    ``subprocess.TimeoutExpired`` raised by ``process_unit`` is isolated to
-    that unit via ``on_unit_timeout`` so one wedged systemctl call cannot
-    abort the rest of the fleet (#68523).
-    """
-    for line in (list_units_stdout or "").strip().splitlines():
-        parts = line.split()
-        if not parts:
-            continue
-        unit = parts[0]
-        if not unit.endswith(".service"):
-            continue
-        # list-units is already pattern-filtered, but keep the name gate so a
-        # stray non-gateway/serve line cannot enter the restart path.
-        # ``unit.startswith("mercury-serve")`` alone would also accept the
-        # unrelated ``mercury-server.service`` — require the exact base unit
-        # or the hyphenated profile family instead (review on #83595).
-        if not (
-            unit == "mercury-gateway.service"
-            or unit.startswith("mercury-gateway-")
-            or unit == "mercury-serve.service"
-            or unit.startswith("mercury-serve-")
-        ):
-            continue
-        svc_name = unit.removesuffix(".service")
-        try:
-            process_unit(svc_name)
-        except subprocess.TimeoutExpired as exc:
-            on_unit_timeout(svc_name, exc)
-
-def _service_unit_supports_graceful_sigusr1_restart(svc_name: str) -> bool:
-    """Whether *svc_name* wires SIGUSR1 to a graceful drain-then-restart.
-
-    Only ``mercury-gateway*`` units run ``gateway/run.py``, which installs the
-    SIGUSR1 handler. ``mercury-serve*`` units (#83438) don't, so sending them
-    SIGUSR1 would just invoke the default terminate action and burn the full
-    drain budget waiting for an exit that was never graceful — go straight to
-    the blunt ``systemctl restart`` path for those instead.
-
-    Uses the same strict exact/hyphenated shape as the unit-name gate in
-    ``_for_each_systemd_gateway_unit`` so a hypothetical near-prefix unit
-    (``mercury-gateway-helper`` is fine — profile units are
-    ``mercury-gateway-<profile>`` — but ``mercury-gatewayd``-style names are
-    not) can't be sent a SIGUSR1 it doesn't handle.
-    """
-    return svc_name == "mercury-gateway" or svc_name.startswith("mercury-gateway-")
 
 
 def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
@@ -6639,180 +6530,8 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
         print("    launchctl kickstart -k gui/$UID/<label>   # macOS (or user/$UID)")
 
 
-def _restart_launchd_gateway_after_update(
-    *, supervision_verify: bool = True
-) -> tuple[list, list]:
-    """Restart the invoking profile's launchd gateway after an update.
-
-    #74973 (salvage #75021 by @jeff-mettel): the restart used to be gated on
-    ``launchctl list <label>`` exiting 0. A *booted-out* job — plist present,
-    definition deregistered from launchd (crashed helper, manual bootout,
-    failed prior update) — fails that check, so the whole branch silently
-    skipped: no restart, no message, ``KeepAlive`` unable to revive a
-    definition launchd no longer knows, and the update still printed
-    "Update complete!". ``launchctl list`` is also session-scoped and can
-    exit non-zero while the job is alive in its gui/user domain, so it is
-    not a reliable classifier at all.
-
-    The fix performs NO list-based classification: when the plist exists,
-    ``launchd_restart()`` always runs — it drains a live PID, kickstarts
-    with ``-k``, and owns the bootout/bootstrap/kickstart ladder for the
-    genuinely unloaded state. Every failure path is loud and names the
-    manual recovery command.
-
-    Returns ``(restarted_labels, failed_labels)``. With
-    ``supervision_verify`` (the update path), success additionally requires
-    launchd reporting a fresh supervised PID (#88848 — "the call returned"
-    is not "the gateway is supervised").
-    """
-    from mercury_cli.gateway import (
-        get_launchd_label,
-        get_launchd_plist_path,
-        launchd_restart,
-        wait_for_launchd_gateway_supervision,
-    )
-
-    current_label = get_launchd_label()
-    try:
-        if not get_launchd_plist_path().exists():
-            return [], []  # not a launchd install — nothing to do or warn
-        try:
-            launchd_restart()
-        except subprocess.CalledProcessError as e:
-            stderr = (getattr(e, "stderr", "") or "").strip()
-            print(
-                f"  ⚠ Gateway restart failed: {stderr}\n"
-                "    The gateway may be DOWN on pre-update code. "
-                "Recover manually: mercury gateway restart"
-            )
-            return [], [current_label]
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        # A plist exists, so a gateway is SUPPOSED to be supervised here —
-        # a broken/missing/wedged launchctl is not proof nothing needs
-        # restarting. The old code `pass`ed here (#74973's second silent
-        # variant); count it and tell the operator.
-        print(
-            "  ⚠ Could not restart the gateway "
-            f"({e.__class__.__name__}: {e}).\n"
-            "    Recover manually: mercury gateway restart"
-        )
-        return [], [current_label]
-
-    if not supervision_verify:
-        return [current_label], []
-
-    # launchd_restart() returning is only "restart REQUESTED" — the
-    # self-restart branch hands work to the running gateway, a plist reload
-    # to a detached helper; both asynchronous. A helper that dies before its
-    # first bootstrap (#88848), or a bootstrap that exits 0 without
-    # registering (measured on macOS 26.6.1), otherwise reaches "Update
-    # complete!" with nothing supervising the gateway. Verified
-    # domain-agnostically (a domain locate fails on macOS-26 hosts whose
-    # per-user domains reject service management).
-    if wait_for_launchd_gateway_supervision(label=current_label):
-        return [current_label], []
-    print(
-        f"  ✗ {current_label} restarted but launchd is not supervising it.\n"
-        "    Check logs, then: mercury gateway restart"
-    )
-    return [], [current_label]
 
 
-def _restart_macos_launchd_gateways(
-    restarted_services: list,
-    failed_or_stale_units: list,
-    drain_budget: float,
-) -> None:
-    """Restart every launchd-managed gateway after an update (macOS).
-
-    The code update (git pull) is shared across all profiles, so every
-    ``ai.mercury.gateway*`` LaunchAgent must reload it — restarting only the
-    invoking profile's service leaves siblings on pre-update ``sys.modules``
-    until their next agent turn imports a symbol the old module generation
-    doesn't have (#41403).  Parity with the systemd fleet path.
-
-    The invoking profile keeps the existing ``launchd_restart()`` treatment
-    (self-restart request → graceful drain → kickstart).  Siblings get the
-    same drain-first sequence, with their launchd domain resolved per label:
-    a sibling bootstrapped in the other supported domain (``gui/<uid>`` vs
-    ``user/<uid>``) must not be kickstarted in the current profile's domain.
-    ``subprocess.TimeoutExpired`` is isolated per label so one wedged
-    launchctl call cannot leave the rest of the fleet on old code (#68523).
-    """
-    from mercury_cli.gateway import (
-        get_launchd_label,
-        get_launchd_plist_path,
-        launchd_restart,
-        launchd_gateway_labels_for_install,
-        _graceful_restart_via_sigusr1,
-        _launchd_kickstart,
-        _launchd_service_registered,
-        _locate_launchd_gateway_service,
-        _wait_for_launchd_service_pid,
-        wait_for_launchd_gateway_supervision,
-    )
-
-    # --- Current profile: unchanged single-service path ---------------------
-    _restarted, _failed = _restart_launchd_gateway_after_update(
-        supervision_verify=True
-    )
-    restarted_services.extend(_restarted)
-    failed_or_stale_units.extend(_failed)
-    current_label = get_launchd_label()
-
-    # --- Sibling profiles ---------------------------------------------------
-    for label in launchd_gateway_labels_for_install():
-        if label == current_label:
-            continue
-        try:
-            # Locate = liveness + domain in one domain-explicit probe; the
-            # kickstart and fresh-PID verification below reuse the located
-            # domain, so a sibling in the other gui/user domain can never be
-            # probed in one domain and restarted in another.
-            domain, old_pid = _locate_launchd_gateway_service(label)
-            if domain is None:
-                # Installed but not bootstrapped (stopped/uninstalled
-                # mid-way) — nothing is running old code here.
-                continue
-            graceful_ok = False
-            if old_pid is not None and old_pid > 0:
-                print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
-                graceful_ok = _graceful_restart_via_sigusr1(
-                    old_pid, drain_timeout=drain_budget
-                )
-            if graceful_ok and _wait_for_launchd_service_pid(
-                label, old_pid=old_pid, timeout=10.0, domain=domain
-            ):
-                # Unconditional KeepAlive already respawned it on the new
-                # code — a hard kickstart now would kill the fresh process.
-                restarted_services.append(label)
-                continue
-            try:
-                _launchd_kickstart(label, domain)
-            except subprocess.CalledProcessError as e:
-                stderr = (getattr(e, "stderr", "") or "").strip()
-                failed_or_stale_units.append(label)
-                print(
-                    f"  ⚠ Failed to restart {label}: {stderr}\n"
-                    f"    Recover manually: launchctl kickstart -k {domain}/{label}"
-                )
-                continue
-            if _wait_for_launchd_service_pid(
-                label, old_pid=old_pid, timeout=15.0, domain=domain
-            ):
-                restarted_services.append(label)
-            else:
-                failed_or_stale_units.append(label)
-                print(
-                    f"  ✗ {label} failed to come back after restart.\n"
-                    f"    Check logs, then: launchctl kickstart -k {domain}/{label}"
-                )
-        except subprocess.TimeoutExpired:
-            failed_or_stale_units.append(label)
-            print(
-                f"  ⚠ launchctl timed out restarting {label}; "
-                "continuing with remaining gateways"
-            )
 
 
 def _surviving_gateway_pids_after_failed_restart():
@@ -6948,10 +6667,8 @@ def _recover_gateway_restart_after_abort(
     ``mercury update`` normally performs the fleet restart in the interpreter
     that started before ``git pull``.  If that phase raises while importing the
     new tree, a warning alone leaves the old gateway alive against new files on
-    disk.  The recovery boundary launches the existing per-profile
-    ``gateway restart`` command through a new interpreter, preserving its
-    platform-specific drain and service-manager logic without inheriting the
-    stale ``sys.modules`` graph.
+    disk. The recovery boundary starts a fresh admission-only interpreter,
+    avoiding the stale module graph without administrative force fallback.
 
     Only profiles classified as supervisor-owned by the pre-update inventory
     are handed off.  A manual gateway must remain running and be reported for
@@ -6961,11 +6678,9 @@ def _recover_gateway_restart_after_abort(
     The returned protocol is persisted in the update receipt so operators can
     distinguish a spawn failure from a per-profile failure.
 
-    Outcome honesty: ``verified`` means the fresh child independently observed
-    the profile's systemd unit active after the relaunch.  A zero exit from
-    ``gateway restart`` alone is NOT observed proof that the new code
-    generation is serving, so those outcomes are reported as
-    ``relaunch_attempted`` and never claim supervisor coverage.
+    ``verified`` means a live, ready replacement PID was observed by the
+    fresh child. Deferred requests and unobserved replacements remain
+    ``relaunch_attempted`` and cannot claim completed fleet coverage.
     """
     candidates, skipped = _gateway_recovery_partition(
         plan, skip_profiles=skip_profiles
@@ -7073,12 +6788,12 @@ def _recover_gateway_restart_after_abort(
     if verified:
         print(
             "  ✓ Restarted supervised gateway(s) in a fresh process"
-            " (systemd-verified active): " + ", ".join(sorted(verified))
+            " (live ready replacement observed): " + ", ".join(sorted(verified))
         )
     if relaunch_attempted:
         print(
-            "  ⚠ Relaunch attempted in a fresh process but not"
-            " supervisor-verified (check these gateways manually): "
+            "  Gateway restart queued or requested in a fresh process but"
+            " replacement not yet verified (check these gateways manually): "
             + ", ".join(sorted(relaunch_attempted))
         )
     return {
@@ -7820,9 +7535,46 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
     sys.exit(1)
 
 
+def _require_idle_gateways_for_update() -> None:
+    """Refuse in-place mutation unless every live gateway proves it is idle.
+
+    Live control status includes delegates whose parent turn has already
+    ended. Neither stale status files nor an old gateway's agent-only count
+    authorize replacing its source or running environment.
+    """
+    from gateway.control_socket import query_gateway_control
+    from mercury_cli.gateway import find_gateway_pids, find_profile_gateway_processes
+
+    try:
+        processes = find_profile_gateway_processes(strict=True)
+        running_pids = set(find_gateway_pids(all_profiles=True))
+    except Exception as exc:
+        raise RuntimeError(f"Update deferred: could not establish live gateway admission: {exc}") from exc
+    mapped_pids = {proc.pid for proc in processes}
+    if running_pids - mapped_pids:
+        raise RuntimeError("Update deferred: a running gateway has no safe control admission mapping")
+    for proc in processes:
+        reply = query_gateway_control(Path(proc.path), "status", timeout=6)
+        active = reply.get("active_work") if reply else None
+        if (
+            not reply or reply.get("pid") != proc.pid
+            or type(active) is not int or active < 0
+        ):
+            raise RuntimeError(
+                f"Update deferred: gateway {proc.profile} cannot prove task/delegate idleness; "
+                "use an explicit administrative gateway restart before retrying"
+            )
+        if active:
+            raise RuntimeError(
+                f"Update deferred: gateway {proc.profile} has {active} active task(s)/delegate(s); "
+                "retry after they finish"
+            )
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
+    _require_idle_gateways_for_update()
     # A managed-runtime refresh can replace site-packages before the normal
     # ``.[all]`` install runs. Snapshot while the old environment can still
     # prove which optional backends the user had activated.
@@ -7988,32 +7740,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         _windows_gateway_resume
                     )
                     sys.exit(2)
-                # Every remaining holder is a gateway the pause machinery
-                # already owns — respawned by its supervisor inside the
-                # pause→guard window, or up through a spawn path discovery
-                # does not map. Stop them and re-check instead of
-                # dead-ending; the post-update resume (and the supervisor
-                # that respawned them) brings gateways back afterwards.
-                from gateway.status import get_process_start_time, terminate_pid
-
+                # A replacement has not ACKed safe pause admission. Never
+                # infer destructive authority from its executable/cmdline.
                 print(
-                    f"  ⚠ {len(_gateway_holders)} gateway process(es) still "
-                    "hold the venv after the pause; stopping them"
+                    "Update deferred: a gateway appeared after the admitted pause; "
+                    "its running environment is unchanged. Retry after it is idle."
                 )
-                for _pid in _gateway_holders:
-                    try:
-                        pid_int = int(_pid)
-                        terminate_pid(
-                            pid_int,
-                            force=True,
-                            expected_start_time=get_process_start_time(pid_int),
-                        )
-                    except Exception as exc:
-                        logger.debug(
-                            "Could not stop leftover gateway %s: %s", _pid, exc
-                        )
-                _time.sleep(1.0)
-                _venv_holders = _m()._detect_venv_python_processes()
+                sys.exit(2)
         if _venv_holders:
             # Positive-identity rung (runs FIRST, any update context): holders
             # the spawn ledger proves are orphaned Mercury backends — the
@@ -9440,24 +9173,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("cua-driver refresh failed: %s", e)
 
-        # Write exit code *before* the gateway restart attempt.
-        # When running as ``mercury update --gateway`` (spawned by the gateway's
-        # /update command), this process lives inside the gateway's systemd
-        # cgroup.  A graceful SIGUSR1 restart keeps the drain loop alive long
-        # enough for the exit-code marker to be written below, but the
-        # fallback ``systemctl restart`` path (see below) kills everything in
-        # the cgroup (KillMode=mixed → SIGKILL to remaining processes),
-        # including us and the wrapping bash shell.  The shell never reaches
-        # its ``printf $status > .update_exit_code`` epilogue, so the
-        # exit-code marker file would never be created.  The new gateway's
-        # update watcher would then poll for 30 minutes and send a spurious
-        # timeout message.
-        #
-        # Writing the marker here — after git pull + pip install succeed but
-        # before we attempt the restart — ensures the new gateway sees it
-        # regardless of how we die. Gated on desktop_build_ok (#88251): a
-        # Desktop rebuild failure must not be reported as "0" — the gateway's
-        # /update watcher (gateway/run.py) polls this file.
+        # Persist the update result before an admitted idle gateway exits and
+        # its supervisor cleans up this updater's cgroup. No automatic path
+        # forces service teardown; this marker survives the legitimate handoff.
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
 
@@ -9501,762 +9219,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # new gateway.py ← stale cli_output missing line_input).
         _m()._purge_stale_hermes_modules()
         try:
-            from mercury_cli.gateway import (
-                is_macos,
-                supports_systemd_services,
-                _ensure_user_systemd_env,
-                find_gateway_pids,
-                find_profile_gateway_processes,
-                _prepare_profile_gateway_update_restart,
-                _get_service_pids,
-                _graceful_restart_via_sigusr1,
-                _wait_for_gateway_exit,
-            )
-            import signal as _signal
-
-            def _wait_for_service_active(
-                scope_cmd_: list,
-                svc_name_: str,
-                timeout: float = 10.0,
-            ) -> bool:
-                """Poll ``systemctl is-active`` until the unit reports active.
-
-                systemd's Stopped -> Started transition after a graceful exit
-                (or a hard restart) is not instantaneous; a one-shot check
-                races that window and falsely reports the unit as down.
-                Poll every 0.5s up to ``timeout`` seconds before giving up.
-                """
-                deadline = _time.monotonic() + max(timeout, 0.5)
-                while True:
-                    try:
-                        _verify = subprocess.run(
-                            scope_cmd_ + ["is-active", svc_name_],
-                            capture_output=True,
-                            text=True, encoding="utf-8", errors="replace",
-                            timeout=5,
-                        )
-                        if _verify.stdout.strip() == "active":
-                            return True
-                    except (FileNotFoundError, subprocess.TimeoutExpired):
-                        pass
-                    if _time.monotonic() >= deadline:
-                        return False
-                    _time.sleep(0.5)
-
-            def _service_restart_sec(
-                scope_cmd_: list,
-                svc_name_: str,
-                default: float = 0.0,
-            ) -> float:
-                """Read the unit's ``RestartUSec`` (RestartSec) in seconds.
-
-                After a graceful exit-75, systemd waits ``RestartSec`` before
-                respawning the unit.  Callers that poll for ``is-active``
-                must use a timeout >= ``RestartSec`` + transition slack, or
-                they'll give up *during* the cooldown window and wrongly
-                conclude the unit didn't relaunch.
-                """
-                try:
-                    _show = subprocess.run(
-                        scope_cmd_
-                        + [
-                            "show",
-                            svc_name_,
-                            "--property=RestartUSec",
-                            "--value",
-                        ],
-                        capture_output=True,
-                        text=True, encoding="utf-8", errors="replace",
-                        timeout=5,
-                    )
-                except (FileNotFoundError, subprocess.TimeoutExpired):
-                    return default
-                raw = (_show.stdout or "").strip()
-                # systemd emits values like "30s", "100ms", "1min 30s", or
-                # "infinity".  Parse conservatively; on any miss return default.
-                if not raw or raw == "infinity":
-                    return default
-                total = 0.0
-                matched = False
-                for part in raw.split():
-                    for _suf, _mult in (
-                        ("ms", 0.001),
-                        ("us", 0.000001),
-                        ("min", 60.0),
-                        ("s", 1.0),
-                    ):
-                        if part.endswith(_suf):
-                            try:
-                                total += float(part[: -len(_suf)]) * _mult
-                                matched = True
-                            except ValueError:
-                                pass
-                            break
-                return total if matched else default
-
-            _manage_cmd_cache: dict = {}
-
-            def _resolve_manage_cmd(scope_: str, scope_cmd_: list, svc_name_: str):
-                """Resolve the command prefix for manage-units operations.
-
-                Read-only systemctl calls (``is-active``, ``show``,
-                ``list-units``) work unprivileged, but manage-units verbs
-                (``reset-failed``, ``start``, ``restart``) on a *system*
-                service trigger a polkit ``org.freedesktop.systemd1.manage-units``
-                authentication prompt when run as a non-root user.  That
-                interactive prompt runs inside our captured subprocess with a
-                10-15s timeout — the user sees the prompt flash and "exit
-                directly" before they can answer, and the resulting
-                TimeoutExpired used to be swallowed silently.
-
-                Strategy: if root, plain systemctl.  If not root, try
-                non-interactive sudo (``sudo -n``) — first a blanket probe,
-                then a targeted ``systemctl reset-failed`` probe so a
-                least-privilege sudoers entry scoped to
-                ``systemctl ... mercury-gateway*`` also qualifies
-                (``reset-failed`` is an idempotent no-op we run before every
-                privileged restart anyway).  If neither works, return None —
-                the caller must SKIP the restart (without draining the
-                gateway first!) and tell the user how to restart manually.
-                ``--no-ask-password`` guarantees polkit can never hang a
-                captured subprocess on this path.
-                """
-                if scope_ in _manage_cmd_cache:
-                    return _manage_cmd_cache[scope_]
-                cmd = scope_cmd_ + ["--no-ask-password"]
-                if (
-                    scope_ == "system"
-                    and hasattr(os, "geteuid")
-                    and os.geteuid() != 0  # windows-footgun: ok — systemd path, Linux-only
-                ):
-                    sudo_cmd = ["sudo", "-n"] + scope_cmd_ + ["--no-ask-password"]
-                    sudo_ok = False
-                    try:
-                        _probe = subprocess.run(
-                            ["sudo", "-n", "true"],
-                            capture_output=True,
-                            timeout=5,
-                        )
-                        sudo_ok = _probe.returncode == 0
-                        if not sudo_ok:
-                            # Blanket sudo refused — a targeted sudoers entry
-                            # (NOPASSWD for systemctl ... mercury-gateway*)
-                            # may still allow the exact commands we need.
-                            _probe = subprocess.run(
-                                sudo_cmd + ["reset-failed", svc_name_],
-                                capture_output=True,
-                                timeout=5,
-                            )
-                            sudo_ok = _probe.returncode == 0
-                    except (FileNotFoundError, subprocess.TimeoutExpired):
-                        sudo_ok = False
-                    cmd = sudo_cmd if sudo_ok else None
-                _manage_cmd_cache[scope_] = cmd
-                return cmd
-
-            # Wait budget for graceful SIGUSR1 restarts.  In-band restart
-            # may defer stop() until active turns finish
-            # (``restart_after_turn_timeout``, #77184) and then spend up to
-            # ``restart_drain_timeout`` inside stop(). Cover both phases so
-            # we don't fall back to a hard kill while the gateway is still
-            # patiently waiting for the requesting turn. On older systemd
-            # units without SIGUSR1 wiring this wait just times out and we
-            # fall back to ``systemctl restart`` (the old behaviour).
-            try:
-                from mercury_cli.gateway import _get_restart_exit_wait_budget
-
-                _drain_budget = max(float(_get_restart_exit_wait_budget()), 45.0)
-            except Exception:
-                _drain_budget = 45.0
-
-            failed_or_stale_units = []
-            killed_pids = set()
-            relaunched_profiles = []
-            externally_supervised_profiles = []
-
-            # Record which gateways are running before any stop/drain, so a
-            # later failure that leaves the survivor probe empty can still be
-            # recognised as "a running gateway was stopped and did not come
-            # back" rather than "nothing was running" (#78574). Best-effort:
-            # if the probe itself raises, leave the snapshot as-is (the
-            # survivor probe's own None result already fails closed).
-            try:
-                _pre_restart_gateway_pids = list(find_gateway_pids(all_profiles=True))
-            except Exception:
-                _pre_restart_gateway_pids = None
-
-            # --- Systemd services (Linux) ---
-            # Discover all mercury-gateway* units (default + profiles) plus
-            # mercury-serve* units (the Desktop app's backend, #83438).
-            if supports_systemd_services():
-                try:
-                    _ensure_user_systemd_env()
-                except Exception:
-                    pass
-
-                for scope, scope_cmd in [
-                    ("user", ["systemctl", "--user"]),
-                    ("system", ["systemctl"]),
-                ]:
-                    try:
-                        result = subprocess.run(
-                            scope_cmd
-                            + [
-                                "list-units",
-                                "mercury-gateway*",
-                                "mercury-serve*",
-                                "--plain",
-                                "--no-legend",
-                                "--no-pager",
-                            ],
-                            capture_output=True,
-                            text=True, encoding="utf-8", errors="replace",
-                            timeout=10,
-                        )
-                    except FileNotFoundError:
-                        continue
-                    except subprocess.TimeoutExpired as exc:
-                        # Discovery timeout — skip this scope, keep the other.
-                        print(
-                            f"  ⚠ systemctl timed out listing {scope}-scope "
-                            f"gateway units ({exc.cmd if exc.cmd else 'unknown command'}). "
-                            f"Check the gateway with: mercury gateway status"
-                        )
-                        continue
-
-                    def _restart_one_systemd_gateway_unit(svc_name: str) -> None:
-                        # Check if active
-                        check = subprocess.run(
-                            scope_cmd + ["is-active", svc_name],
-                            capture_output=True,
-                            text=True, encoding="utf-8", errors="replace",
-                            timeout=5,
-                        )
-                        if check.stdout.strip() != "active":
-                            return
-
-                        # Resolve how we may run manage-units verbs
-                        # (reset-failed/start/restart) for this scope.
-                        # None ⇒ no non-interactive privilege path; we
-                        # must avoid those verbs entirely or polkit will
-                        # throw an interactive auth prompt inside our
-                        # captured 10-15s subprocess (the user sees it
-                        # flash and "exit directly" — reported June 2026).
-                        _manage_cmd = _resolve_manage_cmd(
-                            scope, scope_cmd, svc_name
-                        )
-
-                        # Prefer a graceful SIGUSR1 restart so in-flight
-                        # agent runs drain instead of being SIGKILLed.
-                        # The gateway's SIGUSR1 handler calls
-                        # request_restart(via_service=True) → drain →
-                        # exit; systemd's Restart=always respawns the unit.
-                        # mercury-serve has no such handler (it isn't
-                        # gateway/run.py), so skip straight to the blunt
-                        # restart below rather than sending it an unhandled
-                        # signal and waiting out the drain budget for
-                        # nothing.
-                        _main_pid = 0
-                        if _service_unit_supports_graceful_sigusr1_restart(svc_name):
-                            try:
-                                _show = subprocess.run(
-                                    scope_cmd
-                                    + [
-                                        "show",
-                                        svc_name,
-                                        "--property=MainPID",
-                                        "--value",
-                                    ],
-                                    capture_output=True,
-                                    text=True, encoding="utf-8", errors="replace",
-                                    timeout=5,
-                                )
-                                _main_pid = int((_show.stdout or "").strip() or 0)
-                            except (
-                                ValueError,
-                                subprocess.TimeoutExpired,
-                                FileNotFoundError,
-                            ):
-                                _main_pid = 0
-
-                        _graceful_ok = False
-                        if _main_pid > 0:
-                            from mercury_cli.gateway import (
-                                GATEWAY_LOOP_WEDGED,
-                                _escalate_wedged_gateway,
-                                probe_gateway_loop_liveness,
-                            )
-
-                            if (
-                                probe_gateway_loop_liveness(_main_pid)
-                                == GATEWAY_LOOP_WEDGED
-                            ):
-                                # Loop-liveness probe says the gateway's event
-                                # loop is provably dead (#81642): SIGUSR1 can
-                                # never drain it, so waiting the full budget
-                                # (180s default) only wedges the update too.
-                                # Bounded escalation (SIGTERM grace → SIGKILL,
-                                # ~10s) then restart the unit. A busy gateway
-                                # keeps a fresh heartbeat and never takes this
-                                # path — its drain (incl. the #86684 cron
-                                # floor) is untouched.
-                                print(
-                                    f"  ⚠ {svc_name}: gateway event loop is "
-                                    "unresponsive — skipping drain, forcing "
-                                    "a bounded stop..."
-                                )
-                                _escalate_wedged_gateway(_main_pid)
-                                _graceful_ok = True
-                            else:
-                                print(
-                                    f"  → {svc_name}: draining (up to {int(_drain_budget)}s)..."
-                                )
-                                _graceful_ok = _graceful_restart_via_sigusr1(
-                                    _main_pid,
-                                    drain_timeout=_drain_budget,
-                                )
-
-                        if _graceful_ok:
-                            # Gateway exited after a planned restart.
-                            # ``Restart=always`` means systemd WILL respawn
-                            # the unit — but only after
-                            # ``RestartSec`` (default 60s on our unit
-                            # file). That 60s wait is a crash-loop guard,
-                            # and is the right default when the gateway
-                            # dies unexpectedly. For a voluntary restart
-                            # on update, it's dead time the user watches.
-                            #
-                            # Shortcut it: ``reset-failed`` + ``start``
-                            # skips RestartSec entirely (we're manually
-                            # initiating the unit, not waiting for
-                            # systemd's auto-restart logic). Takes about
-                            # as long as the process takes to come up
-                            # (~1-3s on a warm box).
-                            #
-                            # If the unit is already active because
-                            # RestartSec elapsed while we were draining,
-                            # ``start`` is a no-op and we fall through to
-                            # the poll below. Either way we collapse the
-                            # 60s+ delay to a ~5s one.
-                            #
-                            # The shortcut needs manage-units privileges.
-                            # Without them (system service, non-root, no
-                            # passwordless sudo) skip it — systemd's own
-                            # auto-restart still relaunches the unit after
-                            # RestartSec, no privileges required.
-                            if _manage_cmd is not None:
-                                subprocess.run(
-                                    _manage_cmd + ["reset-failed", svc_name],
-                                    capture_output=True,
-                                    text=True, encoding="utf-8", errors="replace",
-                                    timeout=10,
-                                )
-                                subprocess.run(
-                                    _manage_cmd + ["start", svc_name],
-                                    capture_output=True,
-                                    text=True, encoding="utf-8", errors="replace",
-                                    timeout=15,
-                                )
-                                # Short poll: the gateway should be up
-                                # within a few seconds now that we
-                                # bypassed RestartSec.
-                                if _wait_for_service_active(
-                                    scope_cmd,
-                                    svc_name,
-                                    timeout=10.0,
-                                ):
-                                    restarted_services.append(svc_name)
-                                    return
-                            # Passive poll: systemd's auto-restart fires
-                            # after RestartSec regardless of privileges.
-                            # This is the primary path when _manage_cmd is
-                            # None, and the fallback when the explicit
-                            # start didn't take.
-                            _restart_sec = _service_restart_sec(
-                                scope_cmd,
-                                svc_name,
-                                default=0.0,
-                            )
-                            _post_drain_timeout = max(
-                                10.0,
-                                _restart_sec + 10.0,
-                            )
-                            if _manage_cmd is None and _restart_sec > 5.0:
-                                print(
-                                    f"  → {svc_name}: waiting for systemd "
-                                    f"auto-restart (~{int(_restart_sec)}s; "
-                                    "no root for an immediate restart)..."
-                                )
-                            if _wait_for_service_active(
-                                scope_cmd,
-                                svc_name,
-                                timeout=_post_drain_timeout,
-                            ):
-                                restarted_services.append(svc_name)
-                                return
-                            # Process exited but wasn't respawned (older
-                            # unit without Restart=on-failure or
-                            # RestartForceExitStatus=75).  Fall through
-                            # to systemctl start/restart.
-                            print(
-                                f"  ⚠ {svc_name} drained but didn't relaunch — forcing restart"
-                            )
-
-                        # Forcing a restart requires manage-units
-                        # privileges.  Without a non-interactive path,
-                        # running systemctl here would spawn a polkit
-                        # auth prompt inside a captured 10-15s subprocess
-                        # — it flashes and dies before the user can
-                        # answer.  Skip with clear instructions instead.
-                        if _manage_cmd is None:
-                            failed_or_stale_units.append(svc_name)
-                            print(
-                                f"  ⚠ {svc_name} is a system service and restarting it needs root.\n"
-                                f"    Restart it manually to load the new version:\n"
-                                f"      sudo systemctl restart {svc_name}\n"
-                                f"    To let `mercury update` restart it automatically, allow\n"
-                                f"    passwordless sudo for systemctl, or run updates with sudo."
-                            )
-                            return
-
-                        # Fallback: blunt systemctl restart.  This is
-                        # what the old code always did; we get here only
-                        # when the graceful path failed (unit missing
-                        # SIGUSR1 wiring, drain exceeded the budget,
-                        # restart-policy mismatch).
-                        #
-                        # Always `reset-failed` first.  If systemd's own
-                        # auto-restart attempts already parked the unit
-                        # in a failed state (transient CHDIR / OOM /
-                        # filesystem race after our drain + exit-75),
-                        # a plain `systemctl restart` can wedge against
-                        # the RestartSec backoff and leave the unit
-                        # dead.  Clearing the failed state first makes
-                        # the restart idempotent.  Mirrors the recovery
-                        # path in `mercury gateway restart`
-                        # (`systemd_restart()`) as of PR #20949.
-                        subprocess.run(
-                            _manage_cmd + ["reset-failed", svc_name],
-                            capture_output=True,
-                            text=True, encoding="utf-8", errors="replace",
-                            timeout=10,
-                        )
-                        restart = subprocess.run(
-                            _manage_cmd + ["restart", svc_name],
-                            capture_output=True,
-                            text=True, encoding="utf-8", errors="replace",
-                            timeout=15,
-                        )
-                        if restart.returncode == 0:
-                            # Verify the service actually survived the
-                            # restart.  systemctl restart returns 0 even
-                            # if the new process crashes immediately.
-                            if _wait_for_service_active(
-                                scope_cmd,
-                                svc_name,
-                                timeout=10.0,
-                            ):
-                                restarted_services.append(svc_name)
-                            else:
-                                # Retry once — transient startup failures
-                                # (stale module cache, import race) often
-                                # resolve on the second attempt.  Again
-                                # clear any failed state first so the
-                                # retry isn't blocked by the previous
-                                # crash.
-                                print(
-                                    f"  ⚠ {svc_name} died after restart, retrying..."
-                                )
-                                subprocess.run(
-                                    _manage_cmd + ["reset-failed", svc_name],
-                                    capture_output=True,
-                                    text=True, encoding="utf-8", errors="replace",
-                                    timeout=10,
-                                )
-                                subprocess.run(
-                                    _manage_cmd + ["restart", svc_name],
-                                    capture_output=True,
-                                    text=True, encoding="utf-8", errors="replace",
-                                    timeout=15,
-                                )
-                                if _wait_for_service_active(
-                                    scope_cmd,
-                                    svc_name,
-                                    timeout=10.0,
-                                ):
-                                    restarted_services.append(svc_name)
-                                    print(f"  ✓ {svc_name} recovered on retry")
-                                else:
-                                    failed_or_stale_units.append(svc_name)
-                                    _scope_flag = "--user " if scope == "user" else ""
-                                    _sudo_hint = "sudo " if scope == "system" else ""
-                                    print(
-                                        f"  ✗ {svc_name} failed to stay running after restart.\n"
-                                        f"    Check logs: {_sudo_hint}journalctl {_scope_flag}-u {svc_name} --since '2 min ago'\n"
-                                        f"    Recover manually:\n"
-                                        f"      {_sudo_hint}systemctl {_scope_flag}reset-failed {svc_name}\n"
-                                        f"      {_sudo_hint}systemctl {_scope_flag}restart {svc_name}"
-                                    )
-                        else:
-                            failed_or_stale_units.append(svc_name)
-                            print(
-                                f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
-                            )
-
-                    def _on_unit_timeout(svc_name: str, exc: subprocess.TimeoutExpired) -> None:
-                        # Isolate the timeout to this unit and keep going
-                        # (#68523). A scope-wide handler used to abort every
-                        # later gateway and leave the fleet on mixed code.
-                        failed_or_stale_units.append(svc_name)
-                        print(
-                            f"  ⚠ systemctl timed out restarting {svc_name} "
-                            f"({exc.cmd if exc.cmd else 'unknown command'}); "
-                            f"continuing with remaining gateways"
-                        )
-
-                    _for_each_systemd_gateway_unit(
-                        result.stdout,
-                        process_unit=_restart_one_systemd_gateway_unit,
-                        on_unit_timeout=_on_unit_timeout,
-                    )
-
-            # --- Launchd services (macOS) ---
-            # Restart EVERY ai.mercury.gateway* LaunchAgent, not only the
-            # invoking profile's — parity with the systemd branch above
-            # (#41403). Per-label TimeoutExpired isolation happens inside.
-            if is_macos():
-                try:
-                    _restart_macos_launchd_gateways(
-                        restarted_services,
-                        failed_or_stale_units,
-                        _drain_budget,
-                    )
-                except (FileNotFoundError, ImportError):
-                    pass
-
-            # --- Manual (non-service) gateways ---
-            # Kill any remaining gateway processes not managed by a service.
-            # Exclude PIDs that belong to just-restarted services so we don't
-            # immediately kill the process that systemd/launchd just spawned.
-            service_pids = _get_service_pids(all_profiles=True)
-            manual_pids = find_gateway_pids(
-                exclude_pids=service_pids, all_profiles=True
-            )
-            profile_processes = {
-                proc.pid: proc
-                for proc in find_profile_gateway_processes(exclude_pids=service_pids)
-                if proc.pid in manual_pids
-            }
-            # Profile gateways we could not arm a relaunch for.  These must
-            # NOT be left running: their modules are the pre-update ones and
-            # every lazy import from here on mixes versions against the new
-            # code on disk (#88654).  Handing them to the unmapped sweep
-            # below stops them and surfaces them in the "Stopped N manual
-            # gateway process(es) / Restart manually" summary, which is the
-            # contract already used for gateways with no profile mapping.
-            unrestartable_pids = set()
-            for pid, proc in profile_processes.items():
-                restart_mode = _prepare_profile_gateway_update_restart(
-                    proc.profile, pid
-                )
-                if restart_mode is None:
-                    # Previously a bare ``continue``: the gateway was neither
-                    # relaunched nor stopped nor mentioned, so it kept serving
-                    # from stale modules with no operator signal at all.
-                    print(
-                        f"  ⚠ {proc.profile}: could not arm an automatic "
-                        f"gateway restart for PID {pid} — stopping it instead "
-                        "so it cannot keep running pre-update code"
-                    )
-                    unrestartable_pids.add(pid)
-                    continue
-                # Prefer a graceful SIGUSR1 drain so in-flight agent runs
-                # finish before the watcher respawns the gateway.  If the
-                # gateway doesn't support SIGUSR1 or doesn't exit within
-                # the drain budget, fall back to SIGTERM — the watcher
-                # still sees the exit and relaunches either way.
-                # Announce the drain first: this wait can hold for the full
-                # budget per gateway with no other output, and on surfaces
-                # that stream update progress (the desktop updater most of
-                # all) the silence reads as a hung update (#44515).
-                print(
-                    f"  → {proc.profile}: draining gateway PID {pid} "
-                    f"(up to {int(_drain_budget)}s)..."
-                )
-                from mercury_cli.gateway import (
-                    GATEWAY_LOOP_WEDGED,
-                    _escalate_wedged_gateway,
-                    probe_gateway_loop_liveness,
-                )
-
-                if probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
-                    # Loop-liveness probe: this gateway's event loop is
-                    # provably dead (#81642) — SIGUSR1/SIGTERM shutdown can
-                    # never run, so the drain wait would burn the full budget
-                    # and stall the update. Bounded stop instead (SIGTERM
-                    # grace → SIGKILL, ~10s). A busy-but-alive gateway keeps
-                    # a fresh heartbeat and never takes this branch, so live
-                    # drains (incl. the #86684 cron floor) are unaffected.
-                    print(
-                        f"  ⚠ {proc.profile}: gateway event loop is "
-                        "unresponsive — skipping drain, forcing a bounded stop..."
-                    )
-                    _escalate_wedged_gateway(pid)
-                    drained = True
-                else:
-                    drained = _graceful_restart_via_sigusr1(
-                        pid,
-                        drain_timeout=_drain_budget,
-                    )
-                if not drained:
-                    try:
-                        os.kill(pid, _signal.SIGTERM)
-                    except (ProcessLookupError, PermissionError):
-                        pass
-                # Wait for the old process to fully exit before the watcher
-                # spawns the new gateway.  Telegram holds the previous
-                # getUpdates long-poll session open on its servers for up to
-                # ~30s after the client disconnects.  If the new gateway
-                # connects before that window expires it receives a 409
-                # Conflict, which _handle_polling_conflict() recovers from
-                # via back-off retries — but a brief wait here reduces the
-                # chance of hitting that path at all, especially on fast
-                # machines where the watcher loop restarts in < 1s.
-                # We wait up to 5s for the process to exit (the OS-level
-                # close, not the Telegram server-side expiry), then let the
-                # watcher take over.  The Telegram adapter's retry logic
-                # handles any remaining 409s if the server session is still
-                # live when the new gateway polls.
-                _wait_for_gateway_exit(timeout=5.0, force_after=None)
-                killed_pids.add(pid)
-                if restart_mode == "external-supervisor":
-                    externally_supervised_profiles.append(proc.profile)
-                else:
-                    relaunched_profiles.append(proc.profile)
-
-            for pid in manual_pids:
-                if pid in profile_processes and pid not in unrestartable_pids:
-                    continue
-                try:
-                    os.kill(pid, _signal.SIGTERM)
-                    killed_pids.add(pid)
-                except (ProcessLookupError, PermissionError):
-                    pass
-
-            if restarted_services or killed_pids:
-                print()
-                for svc in restarted_services:
-                    print(f"  ✓ Restarted {svc}")
-                if relaunched_profiles:
-                    names = ", ".join(relaunched_profiles)
-                    print(f"  ✓ Restarting manual gateway profile(s): {names}")
-                if externally_supervised_profiles:
-                    names = ", ".join(externally_supervised_profiles)
-                    print(
-                        "  ✓ Handed gateway profile(s) back to their external "
-                        f"supervisor: {names}"
-                    )
-                unmapped_count = (
-                    len(killed_pids)
-                    - len(relaunched_profiles)
-                    - len(externally_supervised_profiles)
-                )
-                if unmapped_count:
-                    print(f"  → Stopped {unmapped_count} manual gateway process(es)")
-                    print("    Restart manually: mercury gateway run")
-                    if unmapped_count > 1:
-                        print(
-                            "    (or: mercury -p <profile> gateway run  for each profile)"
-                        )
-
-            if failed_or_stale_units:
-                gateway_fleet_restart_incomplete = True
-                if gateway_mode:
-                    _exit_code_path = get_hermes_home() / ".update_exit_code"
-                    try:
-                        _exit_code_path.write_text("1", encoding="utf-8")
-                    except OSError:
-                        pass
+            result = _restart_gateway_fleet_automatically(trigger="update")
+            _pre_restart_gateway_pids = result["previous_pids"]
+            relaunched_profiles.extend(result["verified"])
+            failed_or_stale_units.extend(result["failed"] + result["deferred"])
+            gateway_fleet_restart_incomplete = bool(failed_or_stale_units)
             _warn_incomplete_gateway_fleet_restart(failed_or_stale_units)
-
+            if gateway_fleet_restart_incomplete and gateway_mode:
+                _write_gateway_update_exit_code(False)
             try:
                 from mercury_cli.update_receipt import record_gateway_restart
 
                 record_gateway_restart(
-                    restarted_services=restarted_services,
+                    restarted_services=[],
                     relaunched_profiles=relaunched_profiles,
-                    externally_supervised_profiles=externally_supervised_profiles,
-                    killed_pids=sorted(killed_pids),
+                    externally_supervised_profiles=[],
+                    killed_pids=[],
                     failed_units=failed_or_stale_units,
-                    incomplete=bool(failed_or_stale_units),
+                    incomplete=gateway_fleet_restart_incomplete,
+                    requested_profiles=result["requested"],
+                    deferred_profiles=result["deferred"],
                 )
             except Exception:
                 pass
-
-            if not restarted_services and not killed_pids:
-                # No gateways were running — nothing to do
-                pass
-
-            # --- Stale duplicate unit retirement ---------------------------
-            # A same-home unit under a non-current name fights the restarted
-            # fleet over bot identities (silent nick steal, randomly dead
-            # rooms). Retire it now that the current generation is up.
-            # Best-effort and non-interactive: never fail the update.
-            try:
-                from mercury_cli.gateway import remove_duplicate_gateway_units
-
-                remove_duplicate_gateway_units(interactive=False)
-            except Exception as exc:
-                logger.debug("Duplicate unit retirement skipped: %s", exc)
-
-            # --- Post-restart survivor sweep -----------------------------
-            # Issue #17648: some gateways ignore SIGTERM (stuck drain,
-            # blocked I/O, PID dead but zombie).  The detached profile
-            # watchers wait 120s for the old PID to exit — if it never
-            # does, no respawn happens and the user keeps hitting
-            # ImportError against a stale sys.modules.  Give the
-            # graceful paths a brief window to complete, then SIGKILL
-            # any remaining pre-update PIDs so the watcher / service
-            # manager can relaunch with fresh code.
-            try:
-                _time.sleep(3.0)
-                _service_pids_after = _get_service_pids(all_profiles=True)
-                _surviving = find_gateway_pids(
-                    exclude_pids=_service_pids_after,
-                    all_profiles=True,
-                )
-                # Scope to PIDs we already tried to kill during this
-                # update (killed_pids).  Anything new is a gateway that
-                # started AFTER our restart attempt — respecting user
-                # intent, we don't kill those.
-                _stuck = [pid for pid in _surviving if pid in killed_pids]
-                if _stuck:
-                    print()
-                    print(
-                        f"  ⚠ {len(_stuck)} gateway process(es) ignored SIGTERM — force-killing"
-                    )
-                    from gateway.status import (
-                        get_process_start_time as _get_process_start_time,
-                        terminate_pid as _terminate_pid,
-                    )
-                    for pid in _stuck:
-                        try:
-                            # Routes through taskkill /T /F on Windows,
-                            # SIGKILL on POSIX — _signal.SIGKILL doesn't
-                            # exist on Windows so the old raw os.kill call
-                            # used to crash the entire update path.
-                            _terminate_pid(
-                                pid,
-                                force=True,
-                                expected_start_time=_get_process_start_time(pid),
-                            )
-                        except (ProcessLookupError, PermissionError, OSError):
-                            pass
-                    # Give the OS a beat to reap the processes so the
-                    # watchers see them exit and respawn.
-                    _time.sleep(1.5)
-            except Exception as _sweep_exc:
-                logger.debug("Post-restart survivor sweep failed: %s", _sweep_exc)
 
         except Exception as e:
             logger.debug("Gateway restart during update failed: %s", e)
@@ -10457,12 +9442,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Preserve the safety rule above: a failed Node refresh leaves the
         # currently running dashboard untouched.
         #
-        # Forward the systemd units restarted above (includes mercury-serve*,
-        # #83438) so a Serve-only install's freshly restarted process isn't
-        # found and restarted again below (review on #83595).
-        _finish_dashboard_update_cleanup(
-            node_failures, already_restarted_units=set(restarted_services)
-        )
+        # A deferred gateway must not be killed indirectly through its serve
+        # owner. Preserve the running dashboard as well in that case.
+        if not gateway_fleet_restart_incomplete:
+            _finish_dashboard_update_cleanup(
+                node_failures, already_restarted_units=set(restarted_services)
+            )
 
         print()
         print("Tip: You can now select a provider and model:")
@@ -10755,82 +9740,4 @@ def _print_items(items, label, key, fallback_key=None):
     if extra > 0:
         print(f"      … and {extra} more")
 
-def _wait_for_service_active(
-    scope_cmd_: list,
-    svc_name_: str,
-    timeout: float = 10.0,
-) -> bool:
-    """Poll ``systemctl is-active`` until the unit reports active.
 
-    systemd's Stopped -> Started transition after a graceful exit
-    (or a hard restart) is not instantaneous; a one-shot check
-    races that window and falsely reports the unit as down.
-    Poll every 0.5s up to ``timeout`` seconds before giving up.
-    """
-    deadline = _time.monotonic() + max(timeout, 0.5)
-    while True:
-        try:
-            _verify = subprocess.run(
-                scope_cmd_ + ["is-active", svc_name_],
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-                timeout=5,
-            )
-            if _verify.stdout.strip() == "active":
-                return True
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-        if _time.monotonic() >= deadline:
-            return False
-        _time.sleep(0.5)
-
-def _service_restart_sec(
-    scope_cmd_: list,
-    svc_name_: str,
-    default: float = 0.0,
-) -> float:
-    """Read the unit's ``RestartUSec`` (RestartSec) in seconds.
-
-    After a graceful exit-75, systemd waits ``RestartSec`` before
-    respawning the unit.  Callers that poll for ``is-active``
-    must use a timeout >= ``RestartSec`` + transition slack, or
-    they'll give up *during* the cooldown window and wrongly
-    conclude the unit didn't relaunch.
-    """
-    try:
-        _show = subprocess.run(
-            scope_cmd_
-            + [
-                "show",
-                svc_name_,
-                "--property=RestartUSec",
-                "--value",
-            ],
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return default
-    raw = (_show.stdout or "").strip()
-    # systemd emits values like "30s", "100ms", "1min 30s", or
-    # "infinity".  Parse conservatively; on any miss return default.
-    if not raw or raw == "infinity":
-        return default
-    total = 0.0
-    matched = False
-    for part in raw.split():
-        for _suf, _mult in (
-            ("ms", 0.001),
-            ("us", 0.000001),
-            ("min", 60.0),
-            ("s", 1.0),
-        ):
-            if part.endswith(_suf):
-                try:
-                    total += float(part[: -len(_suf)]) * _mult
-                    matched = True
-                except ValueError:
-                    pass
-                break
-    return total if matched else default

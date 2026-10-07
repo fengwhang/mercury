@@ -10,10 +10,20 @@ from tests.observatory.test_ircd import RawClient, running_daemon
 
 
 def make_adapter(port, monkeypatch):
-    adapter = adapter_mod.MIRCAdapter(PlatformConfig(enabled=True, extra={
-        "server": "127.0.0.1", "port": port, "nickname": "testbot",
-        "channel": "#test", "use_tls": False,
-    }))
+    # This is a loopback transport fixture, not a test of production env/profile
+    # precedence. Other gateway suites may load the real home into os.environ;
+    # prevent both those overrides and dotenv/scope lookup at construction.
+    with monkeypatch.context() as construction:
+        construction.setattr(adapter_mod, "get_env_value", lambda key: None)
+        construction.setattr(adapter_mod, "_get_scoped_secret", lambda key, default=None: default)
+        adapter = adapter_mod.MIRCAdapter(PlatformConfig(enabled=True, extra={
+            "server": "127.0.0.1", "port": port, "nickname": "testbot",
+            "channel": "#test", "use_tls": False,
+        }))
+    assert (adapter.server, adapter.port, adapter.nickname, adapter.channel, adapter.use_tls) == (
+        "127.0.0.1", port, "testbot", "#test", False)
+    assert not any((adapter.agent_password, adapter.server_password,
+                    adapter.oper_password, adapter.nickserv_password))
     monkeypatch.setattr(adapter, "_resync_observatory", AsyncMock())
     monkeypatch.setattr(adapter, "_wire_plugin_handlers", lambda _ctx: None)
     return adapter
@@ -23,6 +33,24 @@ async def until(predicate):
     async with asyncio.timeout(5):
         while not predicate():
             await asyncio.sleep(0.01)
+
+
+def test_loopback_fixture_ignores_ambient_env_and_profile_secrets(monkeypatch):
+    ambient = {
+        "IRC_SERVER": "ambient.invalid", "IRC_PORT": "12345",
+        "IRC_NICKNAME": "nixpad_gateway", "IRC_CHANNEL": "#ambient",
+        "IRC_USE_TLS": "true", "IRC_AGENT_PASSWORD": "ambient-agent",
+        "IRC_SERVER_PASSWORD": "ambient-server", "IRC_OPER_PASSWORD": "ambient-oper",
+        "IRC_NICKSERV_PASSWORD": "ambient-nickserv", "IRC_MANAGED_BY": "observatory",
+    }
+    for key, value in ambient.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(adapter_mod, "_scoped_get_secret", lambda name, default=None: ambient.get(name, default))
+    adapter = make_adapter(54321, monkeypatch)
+    assert (adapter.server, adapter.port, adapter.nickname, adapter.channel, adapter.use_tls) == (
+        "127.0.0.1", 54321, "testbot", "#test", False)
+    assert (adapter.agent_password, adapter.server_password, adapter.oper_password,
+            adapter.nickserv_password) == ("", "", "", "")
 
 
 @pytest.mark.asyncio

@@ -45,6 +45,7 @@ import { initializeExtensions } from "../runtime-init";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameEncoder } from "./rpc-frame";
+import { recordRpcDelegationEvent } from "./rpc-delegation-result";
 import { claimRpcInput, readRpcInputFrames } from "./rpc-input";
 import { pageRpcMessages, RPC_MESSAGES_PAGE_BUSY_ERROR, RpcMessagesPageError } from "./rpc-messages";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
@@ -1171,7 +1172,9 @@ export async function runRpcMode(
 	});
 
 	// Output all agent events as JSON
+	const delegationChildId = $env.MERCURY_DELEGATION_CHILD_ID;
 	session.subscribe(event => {
+		recordRpcDelegationEvent(session, event, delegationChildId);
 		output(event);
 	});
 

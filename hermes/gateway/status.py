@@ -400,8 +400,9 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text(encoding="utf-8").split()[21])
+        # comm (field 2) may contain whitespace and parentheses. The final
+        # closing parenthesis delimits it; the suffix starts at field 3.
+        return int(stat_path.read_text(encoding="utf-8").rsplit(")", 1)[1].split()[19])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         pass
 

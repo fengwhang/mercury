@@ -3408,8 +3408,7 @@ def setup_gateway(config: dict):
         _is_service_running,
         supports_systemd_services,
         ensure_gateway_service,
-        systemd_restart,
-        launchd_restart,
+        request_automatic_gateway_restart,
         UserSystemdUnavailableError,
         SystemScopeRequiresRootError,
         _system_scope_wizard_would_need_root,
@@ -3432,13 +3431,7 @@ def setup_gateway(config: dict):
             "  Restart the gateway to pick up changes?", True
         ):
             try:
-                if supports_systemd:
-                    systemd_restart()
-                elif _is_macos:
-                    launchd_restart()
-                elif _is_windows:
-                    from mercury_cli import gateway_windows
-                    gateway_windows.restart()
+                request_automatic_gateway_restart(trigger="setup-gateway")
             except UserSystemdUnavailableError as e:
                 print_error("  Restart failed — user systemd not reachable:")
                 for line in str(e).splitlines():
@@ -4413,10 +4406,9 @@ def _restart_observatory_daemon() -> dict:
 
 
 def _restart_gateway(reason: str) -> bool:
-    """Offer + perform a gateway restart (it reads .env only at boot).
+    """Offer an idle-only configuration restart without interrupting work.
 
-    A wired-but-unrestarted gateway never joins its MIRC channel — the
-    "no gateway room" failure. Returns True when restarted.
+    Returns True only when a restart was admitted immediately, not deferred.
     """
     try:
         restart_now = prompt_yes_no(
@@ -4432,28 +4424,14 @@ def _restart_gateway(reason: str) -> bool:
         print_info("Restart it to apply: mercury gateway restart")
         return False
     try:
-        import shutil
-        import subprocess
+        from mercury_cli.gateway import request_automatic_gateway_restart
 
-        from mercury_constants import mercury_command
-
-        mercury_bin = shutil.which(mercury_command())
-        if mercury_bin is None:
-            print_info(f"Restart it to apply: {mercury_command()} gateway restart")
-            return False
-        subprocess.run(
-            [mercury_bin, "gateway", "restart"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        reply = request_automatic_gateway_restart(trigger="setup-observatory")
     except Exception as exc:  # noqa: BLE001 — best-effort, never raises
         print_warning(f"Could not restart the gateway: {exc}")
         print_info("Restart it manually: mercury gateway restart")
         return False
-    print_success("Gateway restarted.")
-    return True
+    return reply["restarting"] and not reply["deferred"]
 
 
 def _print_mlounge_card(host: str, port: int, username: str,

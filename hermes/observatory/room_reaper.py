@@ -228,6 +228,14 @@ def reap_orphan_rooms(
     pinned.add(gateway_channel(str(cfg.get("server_name") or "mercury")).lower())
 
     expired: dict[str, dict[str, Any]] = {}
+    # A live node row is not task liveness. Only the delegation ledger's
+    # exact child identity and recorded terminal outcome justify expiry.
+    terminal_tasks: dict[str, str] = {}
+    try:
+        from tools.async_delegation import terminal_child_outcomes
+        terminal_tasks = terminal_child_outcomes()
+    except Exception:
+        logger.debug("room-reaper: terminal task evidence unavailable", exc_info=True)
     try:
         from observatory.state import purge_on_death
 
@@ -239,7 +247,8 @@ def reap_orphan_rooms(
             expired_roots.extend(
                 row for row in live_rows
                 if purge_on_death(int(row["depth"]))
-                and row.get("extra", {}).get("task_state") == "completed"
+                and (row.get("extra", {}).get("task_state") == "completed"
+                     or row["node_id"] in terminal_tasks)
             )
             for raw in expired_roots:
                 if raw["node_id"] in expired or _norm(raw["room_id"]) in pinned:

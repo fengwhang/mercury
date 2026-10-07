@@ -94,35 +94,46 @@ def test_frame_key_identities():
     assert child_frame_key(None) is None
 
 
-def test_dedupe_replay_renders_only_misses():
+async def _accepted(*args):
+    return True
+
+
+@pytest.mark.asyncio
+async def test_dedupe_replay_renders_only_misses():
     dd = TurnFrameDedupe()
     a = ("tool", "", "bash", '"ls"')
     b = ("thought", "", "listing")
-    assert dd.live_hit(a) is False  # live forwarded A first
-    assert dd.replay_indexes([a, b]) == [1]  # only B still missing
-    assert dd.live_hit(b) is True  # B arrives late — replay covered it
-    assert dd.live_hit(("tool", "", "new-tool", '"x"')) is False
+    assert await dd.publish_live(a, _accepted) is True
+    indexes = []
+    async def publish(index):
+        indexes.append(index)
+        return True
+    assert await dd.publish_replay([a, b], publish) == 1
+    assert indexes == [1]
+    assert await dd.publish_live(b, _accepted) is False
+    assert await dd.publish_live(("tool", "", "new-tool", '"x"'), _accepted) is True
 
 
-def test_dedupe_genuine_repeats_survive():
+@pytest.mark.asyncio
+async def test_dedupe_genuine_repeats_survive():
     dd = TurnFrameDedupe()
     a = ("tool", "", "sleep", '"5"')
-    assert dd.live_hit(a) is False
-    assert dd.live_hit(a) is False  # the turn really ran it twice
-    assert dd.replay_indexes([a, a]) == []  # both already live
+    assert await dd.publish_live(a, _accepted) is True
+    assert await dd.publish_live(a, _accepted) is True
+    assert await dd.publish_replay([a, a], _accepted) == 0
     dd2 = TurnFrameDedupe()
-    assert dd2.live_hit(a) is False  # live saw one of two
-    assert dd2.replay_indexes([a, a]) == [1]  # the missed repeat replays
+    assert await dd2.publish_live(a, _accepted) is True
+    assert await dd2.publish_replay([a, a], _accepted) == 1
 
 
-def test_dedupe_consumes_late_replay_coverage_before_parent_followup():
+@pytest.mark.asyncio
+async def test_dedupe_consumes_late_replay_coverage_before_parent_followup():
     dd = TurnFrameDedupe()
     key = ("status", "", "Tool completed: bash")
-    assert dd.replay_indexes([key, key]) == [0, 1]
-    assert dd.live_hit(key) is True
-    assert dd.live_hit(key) is True
-    # A subsequent completion in the parent's follow-up is new work.
-    assert dd.live_hit(key) is False
+    assert await dd.publish_replay([key, key], _accepted) == 2
+    assert await dd.publish_live(key, _accepted) is False
+    assert await dd.publish_live(key, _accepted) is False
+    assert await dd.publish_live(key, _accepted) is True
 
 
 @pytest.fixture()
@@ -134,62 +145,75 @@ def _clean_registries():
         table.clear()
 
 
-def test_replay_pushes_full_turn_when_live_missed_all(monkeypatch, _clean_registries):
+@pytest.mark.asyncio
+async def test_replay_pushes_full_turn_when_live_missed_all(monkeypatch, _clean_registries):
     pushed = []
     from observatory import rooms as _rooms
     monkeypatch.setattr(_rooms, "channel_for_node_id", lambda nid: "#t")
-    monkeypatch.setattr(_rooms, "say_nowait",
-                        lambda channel, text, **kw: pushed.append((channel, text)) or True)
+    async def say(channel, text, **kw):
+        pushed.append((channel, text))
+        return True
+    monkeypatch.setattr(_rooms, "say", say)
     frames = agent_turn_frames(_turn_events())
-    assert gs.replay_child_turn_frames("deleg_r/0", frames) == 3
+    assert await gs._replay_child_turn_frames("deleg_r/0", frames) == 3
     assert [n for n, _ in pushed] == ["#t"] * 3
     assert "terminal" in pushed[0][1]
 
 
-def test_replay_skips_live_covered_occurrences(monkeypatch, _clean_registries):
+@pytest.mark.asyncio
+async def test_replay_skips_live_covered_occurrences(monkeypatch, _clean_registries):
     pushed = []
     from observatory import rooms as _rooms
     monkeypatch.setattr(_rooms, "channel_for_node_id", lambda nid: "#t")
-    monkeypatch.setattr(_rooms, "say_nowait",
-                        lambda channel, text, **kw: pushed.append((channel, text)) or True)
+    async def say(channel, text, **kw):
+        pushed.append((channel, text))
+        return True
+    monkeypatch.setattr(_rooms, "say", say)
     frames = agent_turn_frames(_turn_events())
     tool_key = child_frame_key(frames[0])
     gs._child_dedupe["deleg_s/0"] = dd = TurnFrameDedupe()
-    assert dd.live_hit(tool_key) is False  # live forwarded the tool call
-    assert gs.replay_child_turn_frames("deleg_s/0", frames) == 2
+    assert await dd.publish_live(tool_key, _accepted) is True
+    assert await gs._replay_child_turn_frames("deleg_s/0", frames) == 2
     assert len(pushed) == 2
     # A second identical replay is a new turn's worth of occurrences: with no
     # live coverage recorded for it, the full turn pushes again.
-    assert gs.replay_child_turn_frames("deleg_s/0", frames) == 3
+    assert await gs._replay_child_turn_frames("deleg_s/0", frames) == 3
 
 
-def test_replay_detaches_live_listeners_first(monkeypatch, _clean_registries):
+@pytest.mark.asyncio
+async def test_replay_retains_ongoing_live_listeners(monkeypatch, _clean_registries):
     pushed = []
     from observatory import rooms as _rooms
     monkeypatch.setattr(_rooms, "channel_for_node_id", lambda nid: "#t")
-    monkeypatch.setattr(_rooms, "say_nowait",
-                        lambda channel, text, **kw: pushed.append((channel, text)) or True)
+    async def say(channel, text, **kw):
+        pushed.append((channel, text))
+        return True
+    monkeypatch.setattr(_rooms, "say", say)
     detached = []
     feed = SimpleNamespace(
         _dispose_listener=lambda: detached.append("subagent"),
         _dispose_agent_listener=lambda: detached.append("agent"),
     )
     gs._child_live_feeds["deleg_d/0"] = feed
-    assert gs.replay_child_turn_frames("deleg_d/0", agent_turn_frames(_turn_events())) == 3
-    assert sorted(detached) == ["agent", "subagent"]
-    assert feed._dispose_listener is None
-    assert pushed, "detach must not swallow the replay"
+    assert await gs._replay_child_turn_frames("deleg_d/0", agent_turn_frames(_turn_events())) == 3
+    assert detached == []
+    assert callable(feed._dispose_listener)
+    assert callable(feed._dispose_agent_listener)
+    assert pushed, "replay must not require a feed resubscription"
 
 
-def test_replay_ignores_non_self_and_empty(monkeypatch, _clean_registries):
+@pytest.mark.asyncio
+async def test_replay_ignores_non_self_and_empty(monkeypatch, _clean_registries):
     pushed = []
     from observatory import rooms as _rooms
     monkeypatch.setattr(_rooms, "channel_for_node_id", lambda nid: "#t")
-    monkeypatch.setattr(_rooms, "say_nowait",
-                        lambda channel, text, **kw: pushed.append((channel, text)) or True)
-    assert gs.replay_child_turn_frames("deleg_e/0", []) == 0
-    assert gs.replay_child_turn_frames("", agent_turn_frames(_turn_events())) == 0
-    assert gs.replay_child_turn_frames("deleg_e/0", [
+    async def say(channel, text, **kw):
+        pushed.append((channel, text))
+        return True
+    monkeypatch.setattr(_rooms, "say", say)
+    assert await gs._replay_child_turn_frames("deleg_e/0", []) == 0
+    assert await gs._replay_child_turn_frames("", agent_turn_frames(_turn_events())) == 0
+    assert await gs._replay_child_turn_frames("deleg_e/0", [
         {"feed": "tool", "subagent_id": "sa-9", "tool": "bash", "args": "x"},
         {"feed": "node", "subagent_id": "sa-9"},
     ]) == 0

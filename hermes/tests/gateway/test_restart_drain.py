@@ -56,7 +56,10 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     assert expected != "gateway.draining"
     assert "Draining" in expected and "1" in expected
     running_agent.interrupt.assert_not_called()
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+    runner.request_restart.assert_called_once_with(
+        detached=True, via_service=False, trigger="admin:slash-restart",
+        actor={"authentication": "authorized_platform_user", "platform": "telegram",
+               "user_id": "u1", "chat_id": "123456"})
 
 
 def test_load_busy_text_mode_follows_input_mode_and_honors_legacy(tmp_path, monkeypatch):

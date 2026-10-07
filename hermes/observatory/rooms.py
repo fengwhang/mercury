@@ -113,19 +113,43 @@ def say_nowait(channel: str, text: str, *, kind: str = "status") -> bool:
 def call_soon(coro):
     """Schedule a bot coroutine on the gateway loop from any thread.
 
-    Returns the concurrent Future, or None when unschedulable.
+    Returns the concurrent Future, or None when unschedulable. Ownership of
+    an unsubmitted coroutine is released here, including shutdown sink loss.
     Never raises.
     """
+    if coro is None:
+        return None
     try:
         bot = get_bot_sink()
         loop = _loop_now()
-        if bot is None or loop is None or coro is None:
-            return None
-        import asyncio as _asyncio
+        if bot is not None and loop is not None:
+            import asyncio as _asyncio
 
-        return _asyncio.run_coroutine_threadsafe(coro, loop)
+            return _asyncio.run_coroutine_threadsafe(coro, loop)
     except Exception:
-        return None
+        pass
+    try:
+        coro.close()
+    except Exception:
+        pass
+    return None
+
+
+async def say(channel: str, text: str, *, kind: str = "status") -> bool:
+    """Await the sink's send receipt, on the transport-owning gateway loop."""
+    import asyncio
+
+    bot = get_bot_sink()
+    loop = _loop_now()
+    if bot is None or loop is None or not channel or not text:
+        return False
+    try:
+        if asyncio.get_running_loop() is loop:
+            return bool(await bot.say(channel, text, kind=kind))
+        future = call_soon(bot.say(channel, text, kind=kind))
+        return bool(await asyncio.wrap_future(future)) if future is not None else False
+    except Exception:
+        return False
 
 
 def set_bot_sink(sink: BotSink | None) -> None:
@@ -265,13 +289,10 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
     {message, node, tool, thought} with ``text`` / ``tool`` / ``status``
     keys; ``subagent_id == ""`` is the child's own main session, a
     non-empty id tags a grandchild frame with ``[id]``.
-
-    Trace glyphs are readable labels; publish_frame carries explicit
-    rendering provenance separately so punctuation never selects a format.
-    Tool calls AND tool-role message frames (command outputs) are
-    traces; assistant/user message frames are the reply stream and stay
-    unmarked (markdown). Trace labels do not add backticks or escapes:
-    the fork renders the entire trace literally, preserving its source.
+    Tool invocations and results are separate trace kinds. Only calls carry
+    the invocation glyph; tool-role messages carry an explicit result label.
+    Assistant/user messages remain unmarked replies. Trace labels do not add
+    backticks or escapes: the fork renders the trace literally.
     """
     if not isinstance(feed, dict):
         return None
@@ -285,7 +306,7 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
         if str(feed.get("role") or "") in ("tool", "function", "toolResult"):
             if len(text) > FRAME_TEXT_LIMIT * 2:
                 text = text[:FRAME_TEXT_LIMIT * 2 - 1] + "…"
-            return f"{TOOL_PREFIX} {tag}{text}"
+            return f"result: {tag}{text}"
         # Replies must retain complete fences, math delimiters and line breaks.
         # The transport byte-wraps them losslessly into a multiline batch.
         return f"{tag}{text}"
@@ -317,12 +338,84 @@ def format_lifecycle(
 ) -> str:
     if lifecycle == "start":
         return f"{LIFECYCLE_START} subagent '{name}' started — live trace streams here"
+    if lifecycle == "ready":
+        return f"{LIFECYCLE_START} subagent '{name}' execution ready — owner verified; feed attached"
     if lifecycle == "stop":
         tail = (
             f": {_truncate(summary)}" if summary else (f" ({status})" if status else "")
         )
         return f"{LIFECYCLE_STOP} subagent '{name}' finished{tail}"
+    # Restart-recovery tri-state (subagent-durability): a reconciled or
+    # adopted subagent must be readable at a glance as finished / still
+    # running / died — silence reads as "killed" and lies either way.
+    if lifecycle == "died":
+        tail = f": {_truncate(summary)}" if summary else ""
+        return f"❌ subagent '{name}' died before its task completed{tail}"
+    if lifecycle == "running":
+        tail = f": {_truncate(summary)}" if summary else ""
+        return (
+            f"subagent '{name}' is still running — the gateway restarted; "
+            f"monitoring its saved process identity{tail}"
+        )
     return f"{NOTICE_PREFIX} subagent '{name}': {lifecycle}"
+
+
+def announce_subagent_state(
+    node_id: str,
+    lifecycle: str,
+    *,
+    name: str = "",
+    summary: str = "",
+    own_room: bool = True,
+) -> str:
+    """Post one honest subagent-fate marker where a human will see it.
+
+    Best-effort, thread-safe: the marker goes to the subagent's own room
+    (when it survives — the still-running case) and to the NEAREST LIVE
+    ancestor's room (a reconciled subagent's own room is about to be
+    reaped; the summary belongs to the conversation that dispatched it —
+    D8: "depth 1 -> summary lands in the PARENT's room"). Returns the
+    channel the marker landed in ("" when none). Never raises.
+    """
+    try:
+        manager = get_room_manager()
+        if manager is None:
+            return ""
+        row = None
+        try:
+            row = manager.state.get(node_id)
+        except Exception:
+            row = None
+        label = name or str((row or {}).get("name") or node_id)
+        line = format_lifecycle(lifecycle, name=label, summary=summary)
+        if not line:
+            return ""
+        channels: list[str] = []
+        if own_room:
+            channel = str((row or {}).get("room_id") or "")
+            if channel:
+                channels.append(channel)
+        ancestor = str((row or {}).get("parent_node_id") or "")
+        seen = {str(node_id)}
+        while ancestor and ancestor not in seen:
+            seen.add(ancestor)
+            try:
+                parent_row = manager.state.get(ancestor)
+            except Exception:
+                break
+            if str(parent_row.get("status") or "") == "live":
+                channel = str(parent_row.get("room_id") or "")
+                if channel and channel not in channels:
+                    channels.append(channel)
+                break
+            ancestor = str(parent_row.get("parent_node_id") or "")
+        landed = ""
+        for channel in channels:
+            if say_nowait(channel, line, kind="status"):
+                landed = landed or channel
+        return landed
+    except Exception:
+        return ""
 
 
 # --- room manager ----------------------------------------------------------
@@ -630,6 +723,14 @@ class RoomManager:
             logger.debug("rooms: identity ensure failed for %s", channel)
         return channel
 
+    async def reconcile_terminal_children(self) -> None:
+        """Replay terminal status while the bot is connected, before boot reap."""
+        from tools.async_delegation import terminal_child_evidence
+        for child in terminal_child_evidence():
+            await self._retire_child_room(
+                child["child_id"], status=child["status"],
+                summary=str(child.get("summary") or child.get("error") or ""))
+
     async def _retire_child_room(self, node_id: str, *, summary: str = "", status: str = "completed") -> None:
         """Depth 1 ends with its task; deeper agents share their parent's lifetime."""
         try:
@@ -637,10 +738,28 @@ class RoomManager:
         except Exception:
             return
         from observatory.thinking import thinking_done
+        import asyncio
 
         thinking_done(str(row.get("room_id") or ""))
         already_completed = row.get("extra", {}).get("task_state") == "completed"
         self.state.update_extra(node_id, task_state="completed", task_outcome=status)
+        marker_cancelled = False
+        if not row.get("extra", {}).get("terminal_marker_delivered"):
+            channel = str(row.get("room_id") or "")
+            if channel:
+                lifecycle = "stop" if status == "completed" else status
+                try:
+                    async with asyncio.timeout(2):
+                        delivered = await self.publish_lifecycle(
+                            channel, lifecycle, name=str(row.get("name") or node_id),
+                            summary=summary, status=status,
+                        )
+                    if delivered:
+                        self.state.update_extra(node_id, terminal_marker_delivered=True)
+                except asyncio.CancelledError:
+                    marker_cancelled = True
+                except Exception:
+                    logger.debug("rooms: terminal marker pending for %s", node_id, exc_info=True)
         parent_channel = ""
         try:
             parent_id = str(row.get("parent_node_id") or "")
@@ -667,6 +786,8 @@ class RoomManager:
             )
             await exit_orchestrator(node_id, state=self.state, registry=_shared_registry(),
                                     bot=self.bot, status=status, summary=summary)
+        if marker_cancelled:
+            raise asyncio.CancelledError
         if parent_channel and not already_completed:
             try:
                 label = str(row.get("name") or node_id)
@@ -882,9 +1003,10 @@ class RoomManager:
             summary_key = child_frame_key(summary_frame)
             if summary and summary_key not in seen and not any(child_frame_key(f) == summary_key for f in frames):
                 frames.append(summary_frame)
-            for index in dedupe.replay_indexes([child_frame_key(f) for f in frames]):
-                frame = frames[index]
-                await self.publish_frame(channel, frame)
+            async def publish(index):
+                return await self.publish_frame(channel, frames[index])
+
+            await dedupe.publish_replay([child_frame_key(f) for f in frames], publish)
             if (result or {}).get("status") == "failed":
                 error = str((result or {}).get("error") or "OMP turn failed")
                 logger.warning("rooms: OMP turn failed in %s: %s", channel, error)
@@ -951,15 +1073,17 @@ class RoomManager:
                 try:
                     key = child_frame_key(payload)
                     current_dedupe = _omp_rooms.get(node_id, {}).get("dedupe", dedupe)
-                    if current_dedupe is not None and current_dedupe.live_hit(key):
-                        continue
-                    if key is not None:
+
+                    async def publish():
+                        return await self._publish_routed_frame(
+                            node_id, channel, payload, grands)
+
+                    if current_dedupe is not None and not payload.get("subagent_id"):
+                        accepted = await current_dedupe.publish_live(key, publish)
+                    else:
+                        accepted = await publish()
+                    if accepted and key is not None:
                         seen.add(key)
-                except Exception:
-                    pass
-                try:
-                    await self._publish_routed_frame(
-                        node_id, channel, payload, grands)
                 except Exception:
                     continue
         except Exception:
@@ -968,7 +1092,7 @@ class RoomManager:
     async def _publish_routed_frame(
         self, owner_id: str, channel: str, feed: dict[str, Any],
         grands: dict[str, str],
-    ) -> None:
+    ) -> bool:
         """One feed frame into the owner's room or its own N>1 room."""
         try:
             sub = str(feed.get("subagent_id") or "")
@@ -983,14 +1107,13 @@ class RoomManager:
                     # Native ids/names can be reused after /new. Old queued
                     # lifecycle/output frames belong to the old transcript,
                     # not the replacement room or its parent.
-                    return
+                    return False
             kind = str(feed.get("kind") or "")
             if str(feed.get("feed") or "") == "node":
                 await self._apply_grandchild_node(owner_id, feed, grands)
-                return
+                return False
             if not sub:
-                await self.publish_frame(channel, feed)
-                return
+                return await self.publish_frame(channel, feed)
             target = grands.get(sub)
             if not target:
                 node_id = f"{owner_id}/sub-{sub}"
@@ -1000,7 +1123,7 @@ class RoomManager:
                     target = ""
             if not target:
                 if feed.get("feed") == "activity" and feed.get("active") is False:
-                    return  # A late end must not recreate a retired room.
+                    return False  # A late end must not recreate a retired room.
                 node_id = f"{owner_id}/sub-{sub}"
                 name = (str(feed.get("name") or "").strip()
                         or str(feed.get("agent") or "").strip()
@@ -1018,9 +1141,10 @@ class RoomManager:
             if target:
                 flat = dict(feed)
                 flat["subagent_id"] = ""
-                await self.publish_frame(target, flat)
+                return await self.publish_frame(target, flat)
         except Exception:
             pass
+        return False
 
     async def _apply_grandchild_node(
         self, owner_id: str, feed: dict[str, Any], grands: dict[str, str],

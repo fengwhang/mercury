@@ -1,120 +1,32 @@
-"""Regression coverage for #88654.
-
-``mercury update`` relaunches manually-run profile gateways through
-``_prepare_profile_gateway_update_restart``.  When the profile-derived
-relaunch could not be armed the helper returned ``None``, and the update
-path's response to ``None`` was a bare ``continue`` -- so the gateway was
-neither relaunched, nor stopped, nor mentioned.  It kept serving from
-pre-update modules while the new code sat on disk, and every lazy import
-from that point mixed versions.
-
-The helper now falls back to replaying the process's own captured command
-line via ``launch_detached_gateway_restart_by_cmdline`` -- the companion
-that already exists for gateways with no profile mapping, and that the
-Windows post-update path already uses for exactly this case.
-"""
-
-import pytest
+"""Manual gateways use live idle admission, never an updater-owned kill sweep."""
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import mercury_cli.gateway as gateway
+from mercury_cli import update_cmd as update
 
 
-_ARGV = ["python", "-m", "mercury_cli.main", "gateway", "run"]
+def test_manual_gateway_restart_does_not_arm_competing_detached_watcher(monkeypatch, tmp_path):
+    process = SimpleNamespace(profile="fitness", pid=4242, path=tmp_path)
+    monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **_: [process])
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda **_: [4242])
+    admission = Mock(return_value={"restarting": True, "deferred": False, "pid": 4242})
+    monkeypatch.setattr(gateway, "request_automatic_gateway_restart", admission)
+    monkeypatch.setattr(update, "_wait_for_automatic_gateway_replacement", lambda *_: True)
+    watcher = Mock(side_effect=AssertionError("gateway owns its relaunch"))
+    monkeypatch.setattr(gateway, "launch_detached_profile_gateway_restart", watcher)
+    result = update._restart_gateway_fleet_automatically(trigger="update")
+    assert result["verified"] == ["fitness"]
+    admission.assert_called_once_with(home=tmp_path, pid=4242, trigger="update")
+    watcher.assert_not_called()
 
 
-def _stub_argv(monkeypatch, argv):
-    monkeypatch.setattr(gateway, "_capture_gateway_argv", lambda _pid: argv)
-
-
-def test_profile_relaunch_wins_and_skips_the_cmdline_replay(monkeypatch):
-    """The existing path is unchanged: a profile relaunch short-circuits."""
-    _stub_argv(monkeypatch, list(_ARGV))
-    monkeypatch.setattr(
-        gateway, "launch_detached_profile_gateway_restart", lambda *_a: True
-    )
-    monkeypatch.setattr(
-        gateway,
-        "launch_detached_gateway_restart_by_cmdline",
-        lambda *_a: pytest.fail("cmdline replay must not run when the profile path works"),
-    )
-
-    assert gateway._prepare_profile_gateway_update_restart("fitness", 4242) == "detached"
-
-
-def test_falls_back_to_cmdline_replay_when_profile_relaunch_fails(monkeypatch):
-    """The #88654 fix: an unarmable profile relaunch still gets the gateway back."""
-    _stub_argv(monkeypatch, list(_ARGV))
-    monkeypatch.setattr(
-        gateway, "launch_detached_profile_gateway_restart", lambda *_a: False
-    )
-    seen = []
-
-    def _by_cmdline(pid, argv):
-        seen.append((pid, argv))
-        return True
-
-    monkeypatch.setattr(
-        gateway, "launch_detached_gateway_restart_by_cmdline", _by_cmdline
-    )
-
-    assert (
-        gateway._prepare_profile_gateway_update_restart("fitness", 4242)
-        == "detached-cmdline"
-    )
-    # Replays the process's OWN argv, which is the whole point: the profile
-    # could not be mapped back to a run argv, so the captured one is the only
-    # faithful description of how to restart it.
-    assert seen == [(4242, _ARGV)]
-
-
-def test_returns_none_when_there_is_no_argv_to_replay(monkeypatch):
-    """No captured argv means no honest way to relaunch; caller must be told."""
-    _stub_argv(monkeypatch, [])
-    monkeypatch.setattr(
-        gateway, "launch_detached_profile_gateway_restart", lambda *_a: False
-    )
-    monkeypatch.setattr(
-        gateway,
-        "launch_detached_gateway_restart_by_cmdline",
-        lambda *_a: pytest.fail("must not replay an empty argv"),
-    )
-
-    assert gateway._prepare_profile_gateway_update_restart("fitness", 4242) is None
-
-
-def test_returns_none_when_both_relaunch_paths_fail(monkeypatch):
-    """Both mechanisms failing is still reported as None, not a false success."""
-    _stub_argv(monkeypatch, list(_ARGV))
-    monkeypatch.setattr(
-        gateway, "launch_detached_profile_gateway_restart", lambda *_a: False
-    )
-    monkeypatch.setattr(
-        gateway, "launch_detached_gateway_restart_by_cmdline", lambda *_a: False
-    )
-
-    assert gateway._prepare_profile_gateway_update_restart("fitness", 4242) is None
-
-
-def test_external_supervisor_still_short_circuits_before_any_replay(monkeypatch):
-    """Guardrail: the supervisor hand-back must not gain a replay behind it.
-
-    Replaying the argv for an externally supervised gateway would escape the
-    manager and race its replacement process, which is the exact hazard the
-    supervisor branch exists to avoid.
-    """
-    _stub_argv(monkeypatch, _ARGV + ["--external-supervisor"])
-    monkeypatch.setattr(
-        gateway,
-        "launch_detached_profile_gateway_restart",
-        lambda *_a: pytest.fail("detached watcher must not be launched"),
-    )
-    monkeypatch.setattr(
-        gateway,
-        "launch_detached_gateway_restart_by_cmdline",
-        lambda *_a: pytest.fail("cmdline replay must not be launched"),
-    )
-
-    assert (
-        gateway._prepare_profile_gateway_update_restart("fitness", 4242)
-        == "external-supervisor"
-    )
+def test_unmapped_gateway_remains_running_and_is_reported_not_killed(monkeypatch):
+    monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **_: [])
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda **_: [4242])
+    kill = Mock(side_effect=AssertionError("unmapped PID must not be killed"))
+    monkeypatch.setattr(gateway, "kill_gateway_processes", kill)
+    result = update._restart_gateway_fleet_automatically(trigger="update")
+    assert result["failed"] == ["unmapped PID 4242"]
+    assert result["verified"] == []
+    kill.assert_not_called()
