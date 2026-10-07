@@ -15,6 +15,10 @@ export default class Stats extends Command {
 		host: Flags.string({ description: "Host to bind", default: "127.0.0.1" }),
 		json: Flags.boolean({ char: "j", description: "Output stats as JSON", default: false }),
 		summary: Flags.boolean({ char: "s", description: "Print summary to console", default: false }),
+		engines: Flags.boolean({
+			description: "Also report the Hermes engine's numbers (dual-engine Mercury dashboard)",
+			default: false,
+		}),
 	};
 
 	async run(): Promise<void> {
@@ -25,6 +29,7 @@ export default class Stats extends Command {
 			host: flags.host ?? "127.0.0.1",
 			json: flags.json,
 			summary: flags.summary,
+			engines: flags.engines,
 		};
 
 		await theme.initTheme();

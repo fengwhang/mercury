@@ -13345,6 +13345,27 @@ def main():
     omp_parser.set_defaults(func=cmd_omp)
 
     # =========================================================================
+    # stats command  (MERCURY-OMP PATCH: dual-engine usage dashboard)
+    # =========================================================================
+    from mercury_cli.omp_command import cmd_stats
+
+    stats_parser = subparsers.add_parser(
+        "stats",
+        help="Show usage statistics dashboard for BOTH engines (Hermes + OMP)",
+        description=(
+            "Start the usage statistics dashboard reporting both the Hermes "
+            "personal-agent engine and the OMP coding engine. Built on the "
+            "`omp stats` webserver with the dual-engine metrics API. "
+            "(`mercury omp stats` remains the stock single-engine passthrough.)"
+        ),
+    )
+    stats_parser.add_argument("--port", type=int, default=None, help="Port for the dashboard server (default 3847)")
+    stats_parser.add_argument("--host", default=None, help="Host to bind (default 127.0.0.1)")
+    stats_parser.add_argument("--summary", action="store_true", help="Print summary to console")
+    stats_parser.add_argument("--json", action="store_true", help="Output stats as JSON")
+    stats_parser.set_defaults(func=cmd_stats)
+
+    # =========================================================================
     # omp-sync command  (MERCURY-OMP PATCH: mirror hermes config -> both engines)
     # =========================================================================
     from mercury_cli.omp_sync import sync_omp_from_setup
