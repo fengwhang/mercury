@@ -1445,7 +1445,7 @@ _SLACK_PRIORITY_ALIASES: tuple[str, ...] = ()
 #     (the rehaul folded the old /credits + /billing surfaces into /topup.)
 #   - moa: high-cost slash mode, available through /mercury moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
-#   - debug: the log/report upload surface; reached via /mercury debug on Slack.
+#   - debug: local diagnostic guidance; reached via /mercury debug on Slack.
 #   - egress: Docker-only proxy status; reachable as /mercury egress on Slack.
 #   - init: repo-scan AGENTS.md bootstrap — a cwd-centric dev command that is
 #     rare from Slack; reachable as /mercury init. Without this entry, adding

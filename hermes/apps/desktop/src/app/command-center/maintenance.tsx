@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/button'
 import {
   type ActionResponse,
   type CuratorStatusResponse,
-  type DebugShareResponse,
   getActionStatus,
   getCuratorStatus,
   getMemoryStatus,
@@ -14,7 +13,6 @@ import {
   resetMemory,
   runBackup,
   runCurator,
-  runDebugShare,
   runDoctor,
   runSecurityAudit,
   setCuratorPaused
@@ -47,7 +45,7 @@ function formatBytes(size: number): string {
 }
 
 /** Maintenance panel — desktop parity for `hermes doctor` / `security audit` /
- *  `backup` / `debug share` / `curator` / `memory` (the dashboard System page's
+ *  `backup` / `curator` / `memory` (the dashboard System page's
  *  ops section). Spawn-based actions tail their logs inline via the shared
  *  /api/actions status endpoint. */
 export function MaintenancePanel() {
@@ -60,8 +58,6 @@ export function MaintenancePanel() {
   const [curatorBusy, setCuratorBusy] = useState(false)
   const [memory, setMemory] = useState<MemoryStatusResponse | null>(null)
   const [memoryBusy, setMemoryBusy] = useState(false)
-  const [share, setShare] = useState<DebugShareResponse | null>(null)
-  const [sharing, setSharing] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -135,20 +131,6 @@ export function MaintenancePanel() {
     [mm]
   )
 
-  const shareDebug = useCallback(async () => {
-    setSharing(true)
-    setShare(null)
-    setError('')
-
-    try {
-      setShare(await runDebugShare())
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      notifyError(err, mm.debugShareFailed)
-    } finally {
-      setSharing(false)
-    }
-  }, [mm])
 
   const toggleCurator = useCallback(async () => {
     if (!curator) {
@@ -218,37 +200,6 @@ export function MaintenancePanel() {
           label={mm.backup}
           onRun={() => void launch(mm.backup, runBackup)}
         />
-        <OpRow
-          description={mm.debugShareDesc}
-          disabled={sharing}
-          label={sharing ? mm.debugShareRunning : mm.debugShare}
-          onRun={() => void shareDebug()}
-        />
-
-        {share && Object.keys(share.urls).length > 0 && (
-          <div className="mt-2 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3">
-            <div className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              {mm.debugShareLinks}
-            </div>
-            {Object.entries(share.urls).map(([key, url]) => (
-              <div className="flex items-center justify-between gap-2 py-1" key={key}>
-                <span className="min-w-0 truncate font-mono text-[0.7rem]">
-                  {key}: {url}
-                </span>
-                <Button
-                  onClick={() => {
-                    void window.hermesDesktop.writeClipboard(url)
-                    notify({ durationMs: 1500, kind: 'success', message: mm.linkCopied })
-                  }}
-                  size="xs"
-                  variant="text"
-                >
-                  {mm.copyLink}
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
 
         {actionStatus && (
           <div className="mt-2">

@@ -109,13 +109,6 @@ gateway:
     turnhold_deferred:     "ℹ️ Kontextkomprimierung aufgeschoben — die Zusammenfassung streamt noch. Dieser Zug wird ohne Komprimierung fortgesetzt."
     failed:                "Komprimierung fehlgeschlagen: {error}"
 
-  debug:
-    upload_failed:         "✗ Debug-Bericht konnte nicht hochgeladen werden: {error}"
-    header:                "**Debug-Bericht hochgeladen:**"
-    auto_delete:           "⏱ Pastes werden in 6 Stunden automatisch gelöscht."
-    full_logs_hint:        "Für vollständige Log-Uploads verwenden Sie `hermes debug share` aus der CLI."
-    share_hint:            "Teilen Sie diese Links mit dem Hermes-Team, um Unterstützung zu erhalten."
-
   deny:
     stale:                 "❌ Befehl abgelehnt (Genehmigung war veraltet)."
     no_pending:            "Kein ausstehender Befehl zum Ablehnen."

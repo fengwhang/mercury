@@ -109,13 +109,6 @@ gateway:
     turnhold_deferred:     "ℹ️ 上下文压缩已推迟 — 摘要仍在生成中。本回合将不压缩继续。"
     failed:                "压缩失败：{error}"
 
-  debug:
-    upload_failed:         "✗ 无法上传调试报告：{error}"
-    header:                "**调试报告已上传：**"
-    auto_delete:           "⏱ 粘贴内容将在 6 小时后自动删除。"
-    full_logs_hint:        "如需上传完整日志，请在 CLI 中使用 `hermes debug share`。"
-    share_hint:            "请将这些链接分享给 Hermes 团队以获得支持。"
-
   deny:
     stale:                 "❌ 命令已拒绝（批准已过期）。"
     no_pending:            "没有待拒绝的命令。"

@@ -124,13 +124,6 @@ gateway:
     turnhold_deferred:     "ℹ️ Context compression deferred — summary still streaming. Continuing without compression this turn."
     failed:                "Compression failed: {error}"
 
-  debug:
-    upload_failed:         "✗ Failed to upload debug report: {error}"
-    header:                "**Debug report uploaded:**"
-    auto_delete:           "⏱ Pastes will auto-delete in 6 hours."
-    full_logs_hint:        "For full log uploads, use `hermes debug share` from the CLI."
-    share_hint:            "Share these links with the Hermes team for support."
-
   deny:
     stale:                 "❌ Command denied (approval was stale)."
     no_pending:            "No pending command to deny."

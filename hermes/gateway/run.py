@@ -32379,11 +32379,9 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     from tools.environments.local import cleanup_terminal_temp_cache
     from tools.bot_mode_dm import cleanup_bot_dm_cache
     from tools.bot_relay import cleanup_bot_relay_artifacts
-    from mercury_cli.debug import _sweep_expired_pastes
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
-    PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
     AUTO_ARCHIVE_EVERY = 60  # ticks — poll hourly (state_meta gate owns the real cadence)
     MEMORY_TRIM_EVERY = 1    # shared helper cooldown bounds actual allocator work
@@ -32435,16 +32433,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
                 except Exception as e:
                     logger.debug("%s cache cleanup error: %s", cache_name, e)
 
-        if tick_count % PASTE_SWEEP_EVERY == 0:
-            try:
-                deleted, remaining = _sweep_expired_pastes()
-                if deleted:
-                    logger.info(
-                        "Paste sweep: deleted %d expired paste(s), %d pending",
-                        deleted, remaining,
-                    )
-            except Exception as e:
-                logger.debug("Paste sweep error: %s", e)
 
         # Misfire catch-up (external cron providers only): fire jobs whose
         # scheduled time passed with no external fire delivered — the

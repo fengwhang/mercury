@@ -423,7 +423,7 @@ TIPS = [
     '/voice tts toggles TTS-only mode — agent replies out loud but you still type your prompts.',
     '/reload-skills re-scans ~/.mercury/skills/ so drop-in skills appear without restarting the session.',
     '/indicator kaomoji|emoji|unicode|ascii picks the TUI busy-indicator style shown during agent runs.',
-    '/debug uploads a support bundle (system info + logs) and returns shareable links — works in chat too.',
+    'mercury debug report prints local diagnostics; add --output report.txt to save them without uploading.',
 
     # --- CLI Subcommands & Flags ---
     'mercury -z "<prompt>" is the purest one-shot: final answer on stdout, nothing else — ideal for piping in scripts.',

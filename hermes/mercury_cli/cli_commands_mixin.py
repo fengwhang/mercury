@@ -3999,30 +3999,14 @@ class CLICommandsMixin:
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (this session — use --global to persist){_RST}")
 
     def _handle_debug_command(self, cmd_original: str = ""):
-        """Handle /debug — upload debug report + logs and print share URLs.
-
-        Accepts optional destination words after the command:
-
-        - ``/debug``        → upload to the public paste service (default)
-        - ``/debug nous``   → upload to Nous-internal storage (private, staff-only)
-        - ``/debug local``  → render the report to stdout, no upload
-
-        ``nous`` and ``local`` are mutually exclusive; if both are given,
-        ``local`` wins (it never touches the network).
-        """
-        from mercury_cli.debug import run_debug_share
+        """Handle /debug — print a local report, never upload diagnostics."""
+        from mercury_cli.debug import run_debug_report
         from types import SimpleNamespace
 
-        words = {w.lower() for w in cmd_original.split()[1:]}
-        local = "local" in words
-        nous = "nous" in words and not local
-        # Typing the /debug slash command is itself the explicit consent to
-        # upload, so we pass yes=True to skip run_debug_share's [y/N] prompt.
-        # input() would hang inside prompt_toolkit's event loop anyway.
-        args = SimpleNamespace(
-            lines=200, expire=7, local=local, nous=nous, yes=True
-        )
-        run_debug_share(args)
+        if len(cmd_original.split()) > 1:
+            print("Usage: /debug (local report only)")
+            return
+        run_debug_report(SimpleNamespace(lines=200, output=None))
 
     def _handle_update_command(self) -> bool:
         """Handle /update — update Mercury to the latest version.

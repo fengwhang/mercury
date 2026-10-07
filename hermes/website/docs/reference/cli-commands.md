@@ -67,7 +67,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes approvals` | Approval-prompt tools — mine approval history into allowlist proposals. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
 | `hermes prompt-size` | Show a byte breakdown of the system prompt + tool schemas (skills index, memory, profile). Runs offline. |
-| `hermes debug` | Debug tools — upload logs and system info for support. |
+| `mercury debug report` | Generate a redacted local diagnostic report; `--output PATH` saves it locally. |
 | `hermes backup` | Back up Hermes home directory to a zip file. |
 | `hermes checkpoints` | Inspect / prune / clear `~/.hermes/checkpoints/` (the shadow store used by `/rollback`). Run with no args for a status overview. |
 | `hermes import` | Restore a Hermes backup from a zip file. |
@@ -903,34 +903,32 @@ config_overrides:
 `hermes dump` is specifically designed for sharing. For interactive diagnostics, use `hermes doctor`. For a visual overview, use `hermes status`.
 :::
 
-## `hermes debug`
+## `mercury debug`
 
 ```bash
-hermes debug share [options]
+mercury debug report [--lines N] [--output PATH]
 ```
 
-Upload a debug report (system info + recent logs) to a paste service and get a shareable URL. Useful for quick support requests — includes everything a helper needs to diagnose your issue.
+Generate a redacted report of system information and recent agent, gateway,
+GUI/dashboard, desktop, and error logs. The report is printed to the terminal
+or written to a local file. No diagnostic content is uploaded, and there is no
+remote reporting command, service, or consent setting.
 
 | Option | Description |
 |--------|-------------|
-| `--lines <N>` | Number of log lines to include per log file (default: 200). |
-| `--expire <days>` | Paste expiry in days (default: 7). |
-| `--nous` | Upload to Nous-internal diagnostics storage instead of a public paste service. Use this when Nous support asks for a private diagnostic bundle. |
-| `--local` | Print the report locally instead of uploading. |
-| `--no-redact` | Disable upload-time secret redaction. By default, uploads are redacted. |
+| `--lines <N>` | Number of recent log lines per file (default: 200). |
+| `--output <PATH>` | Save the report locally instead of printing it. |
 
-The report includes system info (OS, Python version, Hermes version), recent agent, gateway, GUI/dashboard, and desktop logs (512 KB limit per file), and redacted API key status. By default, uploads are redacted so secrets are not included.
-
-Default uploads use public paste services tried in order: paste.rs, dpaste.com. `--nous` uploads the same debug bundle to private Nous diagnostics storage instead; the returned viewer link is for the Nous team and auto-deletes after 14 days.
+Redaction does not remove all conversation content, tool output, file paths,
+or personal information. Review a saved report before deciding whether to
+attach any part of it to a support issue.
 
 ### Examples
 
 ```bash
-hermes debug share              # Upload debug report, print URL
-hermes debug share --lines 500  # Include more log lines
-hermes debug share --expire 30  # Keep paste for 30 days
-hermes debug share --nous       # Upload a private diagnostics bundle for Nous support
-hermes debug share --local      # Print report to terminal (no upload)
+mercury debug report                         # Print the report locally
+mercury debug report --lines 500             # Include more recent log lines
+mercury debug report --output ~/report.txt   # Save a local text report
 ```
 
 ## `hermes backup`

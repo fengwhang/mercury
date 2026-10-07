@@ -567,31 +567,29 @@ config_overrides:
 `hermes dump` 专为分享而设计。交互式诊断请使用 `hermes doctor`。可视化概览请使用 `hermes status`。
 :::
 
-## `hermes debug`
+## `mercury debug`
 
 ```bash
-hermes debug share [options]
+mercury debug report [--lines N] [--output PATH]
 ```
 
-将调试报告（系统信息 + 近期日志）上传到粘贴服务并获取可分享的 URL。适用于快速支持请求——包含帮助者诊断问题所需的一切信息。
+生成系统信息和近期日志的脱敏报告，只打印到终端或保存到本地文件。
+Mercury 不会上传诊断内容，也没有远程报告命令或授权设置。
 
 | 选项 | 说明 |
 |--------|-------------|
-| `--lines <N>` | 每个日志文件包含的日志行数（默认：200）。 |
-| `--expire <days>` | 粘贴过期天数（默认：7）。 |
-| `--local` | 在本地打印报告而非上传。 |
+| `--lines <N>` | 每个日志文件包含的近期行数（默认：200）。 |
+| `--output <PATH>` | 将报告保存到本地文件，而非打印到终端。 |
 
-报告包含系统信息（操作系统、Python 版本、Hermes 版本）、近期 agent 和 gateway 日志（每文件 512 KB 限制）以及脱敏的 API 密钥状态。密钥始终脱敏——不会上传任何密钥。
-
-依次尝试的粘贴服务：paste.rs、dpaste.com。
+报告仍可能包含对话内容、工具输出、文件路径和个人信息。
+在决定向支持问题附加任何内容之前，请先检查报告。
 
 ### 示例
 
 ```bash
-hermes debug share              # 上传调试报告，打印 URL
-hermes debug share --lines 500  # 包含更多日志行
-hermes debug share --expire 30  # 粘贴保留 30 天
-hermes debug share --local      # 在终端打印报告（不上传）
+mercury debug report                         # 在本地打印报告
+mercury debug report --lines 500             # 包含更多近期日志
+mercury debug report --output ~/report.txt   # 保存本地文本报告
 ```
 
 ## `hermes backup`

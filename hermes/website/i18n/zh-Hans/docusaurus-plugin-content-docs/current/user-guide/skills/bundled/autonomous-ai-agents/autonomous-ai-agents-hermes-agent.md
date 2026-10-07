@@ -334,7 +334,7 @@ hermes uninstall            Uninstall Hermes
 /insights [days]     Usage analytics
 /status              Session info (gateway)
 /profile             Active profile info
-/debug               Upload debug report (system info + logs) and get shareable links
+/debug               Local diagnostics only; messaging shows backend-local report instructions
 ```
 
 ### 退出

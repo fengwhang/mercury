@@ -313,12 +313,12 @@ describe('external link helpers', () => {
       <LinkifiedText
         explicitOnly
         pretty={false}
-        text={'Report  https://paste.rs/abc\nagent.log  https://paste.rs/def\nerrors.log'}
+        text={'Report  https://example.com/abc\nagent.log  https://example.com/def\nerrors.log'}
       />
     )
 
     const links = screen.getAllByRole('link')
-    expect(links.map(a => a.getAttribute('href'))).toEqual(['https://paste.rs/abc', 'https://paste.rs/def'])
+    expect(links.map(a => a.getAttribute('href'))).toEqual(['https://example.com/abc', 'https://example.com/def'])
     // Bare filename-shaped tokens stay as plain text, not links.
     expect(screen.queryByText(content => content.includes('agent.log'))).toBeTruthy()
     expect(links.some(a => (a.textContent ?? '').includes('.log'))).toBe(false)

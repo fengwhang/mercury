@@ -24,7 +24,7 @@ def _dotenv_key_names() -> set[str]:
 
     The managed backends (launchd / systemd / the desktop-spawned ``serve``
     process) load credentials from this file — NOT from an interactive shell's
-    exports. ``mercury debug share`` runs in a terminal, so ``os.getenv`` reflects
+    exports. ``mercury debug report`` runs in a terminal, so ``os.getenv`` reflects
     the shell's environment, which can include exported keys the managed backend
     never sees. Comparing against this set lets the dump flag that mismatch (the
     exact trap behind #48504-style "no web_search" reports: key exported in the

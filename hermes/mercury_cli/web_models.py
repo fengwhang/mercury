@@ -296,15 +296,6 @@ class LearningNodeEdit(BaseModel):
     profile: Optional[str] = None
 
 
-# --- from web_server.py (originally lines 3786-3792) ---
-
-class DebugShareRequest(BaseModel):
-    # Redaction is ON by default — force-mode scrubs credential-shaped tokens
-    # out of log content before it leaves the machine. The toggle exists so an
-    # operator who knows the logs are clean can opt out for fuller fidelity.
-    redact: bool = True
-    # Recent log lines included in the summary tail (full logs are separate).
-    lines: int = 200
 
 
 # --- from web_server.py (originally lines 4492-4493) ---

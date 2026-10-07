@@ -440,16 +440,12 @@ generic error toast. The card offers recovery actions matched to the failure:
   or Cloud connection the button reads **Open Desktop logs**: it opens the
   local Desktop-side logs (transport evidence), since the failed turn's
   gateway/agent logs live on the remote machine.
-- **Send diagnostics** — uploads a redacted debug bundle to Nous-internal
-  storage after an explicit consent prompt (same pipeline as
-  `hermes debug share --nous`; secrets are always redacted, the bundle is
-  viewable by Nous staff only and auto-deletes after 14 days). On success you
-  get a private view link to paste into your support thread, plus quick links
-  to GitHub Issues, Nous Portal Support, and Discord. On a remote or Cloud
-  connection the backend bundles its own agent/gateway logs and the local
-  Desktop log is attached alongside, so support sees both halves.
 - **Copy error details** — copies a compact plain-text summary (layer, code,
   provider/model, error message) you can paste into a bug report or Discord.
+
+Mercury does not upload diagnostic reports. Generate a report on the backend
+host with `mercury debug report --output report.txt`; inspect it locally before
+deciding whether to attach an excerpt to an issue.
 
 The layer comes from the same error classifier the agent's retry loop uses,
 so it reflects the real failure semantics, not a guess from the message text.

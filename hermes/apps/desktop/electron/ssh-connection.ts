@@ -144,7 +144,7 @@ const _REDACTIONS: Array<[RegExp, string]> = [
   [/([?&](?:token|ticket)=)([^\s&"']+)/gi, '$1<redacted>'],
   // SSH target with a non-numeric segment where a port belongs
   // (user@host:SECRET or user@host:SECRET:22). A mistyped password in the
-  // host field must never reach logs / debug shares verbatim.
+  // host field must never reach logs / local debug reports verbatim.
   [/(\S+@[^\s:]+):(?!\d+\b)[^\s:]+/g, '$1:<redacted>']
 ]
 

@@ -109,13 +109,6 @@ gateway:
     turnhold_deferred:     "ℹ️ Compresión de contexto aplazada — el resumen aún se está transmitiendo. Se continúa sin compresión en este turno."
     failed:                "Compresión fallida: {error}"
 
-  debug:
-    upload_failed:         "✗ No se pudo subir el informe de depuración: {error}"
-    header:                "**Informe de depuración subido:**"
-    auto_delete:           "⏱ Los pastes se eliminarán automáticamente en 6 horas."
-    full_logs_hint:        "Para subir registros completos, usa `hermes debug share` desde la CLI."
-    share_hint:            "Comparte estos enlaces con el equipo de Hermes para obtener soporte."
-
   deny:
     stale:                 "❌ Comando denegado (la aprobación había caducado)."
     no_pending:            "No hay ningún comando pendiente que denegar."

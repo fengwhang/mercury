@@ -5,7 +5,6 @@ import type {
   AudioTranscriptionResponse,
   BackendUpdateCheckResponse,
   CuratorStatusResponse,
-  DebugShareResponse,
   ElevenLabsVoicesResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
@@ -215,8 +214,8 @@ export function getGhAuthStatus(refresh = false): Promise<{ available: boolean; 
 
 // ---------------------------------------------------------------------------
 // Maintenance operations (parity with `hermes doctor` / `hermes security
-// audit` / `hermes backup` / `hermes debug share` and the dashboard System
-// page). All except debug share are spawn-based background actions tailed via
+// audit` / `hermes backup` and the dashboard System page).
+// Operations are spawn-based background actions tailed via
 // getActionStatus().
 // ---------------------------------------------------------------------------
 
@@ -233,15 +232,5 @@ export function runBackup(): Promise<ActionResponse & { archive?: string }> {
     path: '/api/ops/backup',
     method: 'POST',
     body: {}
-  })
-}
-
-export function runDebugShare(): Promise<DebugShareResponse> {
-  return hermesApi<DebugShareResponse>({
-    path: '/api/ops/debug-share',
-    method: 'POST',
-    body: {},
-    // Synchronous upload of report + logs to the paste service.
-    timeoutMs: 120_000
   })
 }
