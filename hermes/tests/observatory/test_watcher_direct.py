@@ -84,7 +84,7 @@ async def test_watcher_start_streams_stop_retires_depth1_session(tmp_path, monke
         await asyncio.sleep(0.3)
         assert not any("started" in t for _, t in bot.said), "room transport is not execution readiness"
         # Live SELF frame streams straight into the room.
-        gs._publish_live_payload("deleg_1/0", {
+        await gs._publish_live_payload("deleg_1/0", {
             "feed": "tool", "subagent_id": "", "tool": "bash",
             "args": "ls"}, {})
         await asyncio.sleep(0.3)
@@ -131,7 +131,7 @@ async def test_execution_ready_requires_verified_child_and_attached_feed(tmp_pat
         feed._dispose_agent_listener = lambda: None
         assert await asyncio.to_thread(gs._mark_child_execution_ready, "ready/0", transport, feed) is True
         assert state.get("ready/0")["extra"]["execution_state"] == "ready"
-        assert any("started" in text for _, text in bot.said)
+        assert any("execution ready" in text and "feed attached" in text for _, text in bot.said)
         before = list(bot.said)
         assert await asyncio.to_thread(gs._mark_child_execution_ready, "ready/0", transport, feed) is True
         assert bot.said == before

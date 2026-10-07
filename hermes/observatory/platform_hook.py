@@ -170,6 +170,7 @@ def _identity_has_live_owner(row: dict[str, Any], state: Any) -> bool:
     if int(row.get("depth") or 0) == 0:
         return True
     pooled = get_pool().get(str(row.get("room_id") or "")) is not None
+    retained_row = row
     visited: set[str] = set()
     while int(row.get("depth") or 0) > 0:
         if (row.get("extra") or {}).get("task_state") in {"pending", "completed"}:
@@ -204,7 +205,43 @@ def _identity_has_live_owner(row: dict[str, Any], state: Any) -> bool:
             break
     # Same-process IRC recovery retains its existing identity and feed.
     # A new gateway has no pool: old rows alone cannot recreate live clients.
-    return pooled
+    return pooled and _has_attached_execution_feed(retained_row, state)
+
+
+def _has_attached_execution_feed(row: dict[str, Any], state: Any) -> bool:
+    """A saved feed_attached flag cannot stand in for this process's listeners."""
+    from observatory.gateway_session import _child_feed_lock, _child_live_feeds
+    from observatory.rooms import _omp_lock, _omp_rooms
+    from tools.async_delegation import process_identity_state
+    from tools.omp_delegation import _child_run_identity
+
+    visited: set[str] = set()
+    while row:
+        node_id = str(row.get("node_id") or "")
+        if not node_id or node_id in visited:
+            return False
+        visited.add(node_id)
+        with _child_feed_lock:
+            feed = _child_live_feeds.get(node_id)
+        if feed is None:
+            with _omp_lock:
+                feed = (_omp_rooms.get(node_id) or {}).get("feed")
+        if feed is not None:
+            pid, started, _ = _child_run_identity(getattr(feed, "_child", None))
+            return (
+                not getattr(feed, "_stopped", False)
+                and callable(getattr(feed, "_dispose_listener", None))
+                and callable(getattr(feed, "_dispose_agent_listener", None))
+                and process_identity_state(pid, started) == "live"
+            )
+        parent_id = str(row.get("parent_node_id") or "")
+        if not parent_id:
+            return False
+        try:
+            row = state.get(parent_id)
+        except Exception:
+            return False
+    return False
 
 
 async def boot_resync(
@@ -357,7 +394,20 @@ async def boot_resync(
                 channel = str((row or {}).get("room_id") or "")
                 if not channel:
                     continue
-                if not _identity_has_live_owner(row, state):
+                owner_live = _identity_has_live_owner(row, state)
+                if int(row.get("depth") or 0) > 0 and (
+                    not owner_live or not _has_attached_execution_feed(row, state)
+                ):
+                    changes = {
+                        "execution_state": "unattached" if owner_live else "unverified",
+                        "feed_attached": False,
+                        "execution_pid": None,
+                        "execution_started_at": None,
+                    }
+                    if not owner_live:
+                        changes["task_state"] = "pending"
+                    state.update_extra(str(row["node_id"]), **changes)
+                if not owner_live:
                     continue
                 if bot is not None:
                     try:
