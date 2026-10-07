@@ -221,6 +221,31 @@ test("failed remote reply drainage ends an await without an unhandled rejection"
 	expect(l.bus.inbox("Left")).toEqual([]);
 });
 
+test("remote reply drainage preserves native awaits beyond the transport deadline", async () => {
+	const server = await scope();
+	const l = await peer(server, "Left", "Main");
+	const r = await peer(server, "Right", "Main");
+	await l.client.flush();
+	let drain: Promise<void> | undefined;
+	r.session.waitForMircReplies = () => {
+		drain = (async () => {
+			await Bun.sleep(10_100);
+			await r.bus.send({ from: "Right", to: "Left", body: "slow-real-reply" });
+		})();
+		return drain;
+	};
+	r.session.deliverMircMessage = async () => {
+		queueMicrotask(() => r.endTurn());
+		return "injected";
+	};
+	const result = await executeSend(
+		{ registry: l.registry, senderId: "Left", settings: l.settings, bus: l.bus },
+		{ to: "Right", message: "question", await: true, timeoutMs: 15_000 },
+	);
+	await drain;
+	expect(result.details?.waited?.body).toBe("slow-real-reply");
+}, 20_000);
+
 test("hard-aborted peer capability cannot resurrect after transport reconnect", async () => {
 	const server = await scope();
 	const l = await peer(server, "Left", "Main");

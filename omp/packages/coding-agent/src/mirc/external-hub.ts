@@ -70,7 +70,7 @@ class PeerWire {
 	#serial = 0;
 	#pending = new Map<
 		number,
-		{ resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
+		{ resolve: (value: unknown) => void; reject: (error: Error) => void; timer?: NodeJS.Timeout }
 	>();
 	#buffer = "";
 	handler: (method: string, data: unknown) => Promise<unknown> = async () => {
@@ -127,15 +127,18 @@ class PeerWire {
 		if (Buffer.byteLength(encoded) > FRAME_LIMIT) throw new Error("Hub frame too large");
 		this.socket.write(`${encoded}\n`);
 	}
-	request(method: string, data: unknown, timeout = REQUEST_TIMEOUT): Promise<unknown> {
+	request(method: string, data: unknown, timeout: number | null = REQUEST_TIMEOUT): Promise<unknown> {
 		if (this.socket.destroyed) return Promise.reject(new Error("Hub connection closed"));
 		const id = ++this.#serial;
 		const { promise, resolve, reject } = Promise.withResolvers<unknown>();
-		const timer = setTimeout(() => {
-			this.#pending.delete(id);
-			reject(new Error("Hub request timed out; send not replayed"));
-		}, timeout);
-		timer.unref();
+		let timer: NodeJS.Timeout | undefined;
+		if (timeout !== null) {
+			timer = setTimeout(() => {
+				this.#pending.delete(id);
+				reject(new Error("Hub request timed out; send not replayed"));
+			}, timeout);
+			timer.unref();
+		}
 		this.#pending.set(id, { resolve, reject, timer });
 		try {
 			this.#write({ id, method, data });
@@ -312,7 +315,7 @@ export class NativeHubServer {
 				if (!proxy) {
 					proxy = new RemotePeerSession(ref.id, this.registry, async () => {
 						const owner = this.#owners.get(ref.id);
-						if (owner?.wire) await owner.wire.request("drainReplies", { id: ref.id });
+						if (owner?.wire) await owner.wire.request("drainReplies", { id: ref.id }, null);
 					});
 					this.#sessions.set(ref.id, proxy);
 				}
@@ -355,7 +358,7 @@ export class NativeHubServer {
 				const peer = peerIdSchema.assert(data);
 				const owner = this.#owners.get(peer.id);
 				if (!owner?.wire) throw new Error("Peer connection closed");
-				await owner.wire.request("drainReplies", peer);
+				await owner.wire.request("drainReplies", peer, null);
 				return {};
 			}
 			if (method === "send") {
@@ -500,7 +503,7 @@ export class HubScopeClient {
 						ref.id,
 						this.registry,
 						async () => {
-							await this.#wire.request("drainReplies", { id: ref.id });
+							await this.#wire.request("drainReplies", { id: ref.id }, null);
 						},
 						record => {
 							const details = record.details as { from: string; to: string; body: string };
