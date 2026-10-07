@@ -16852,6 +16852,10 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         Returns:
             The agent's response, or None on error
         """
+        from tools.native_agent_hub import PeerWake
+        peer_wake = message if isinstance(message, PeerWake) else None
+        if peer_wake is not None:
+            message = peer_wake.record["content"]
         # Single-query and direct chat callers do not go through run(), so
         # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
@@ -16882,6 +16886,12 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         agent = self.agent
         if agent is None:
             return None
+        if peer_wake is not None:
+            from tools.delegate_tool import _resolve_session_lineage
+            if (peer_wake.profile != getattr(agent, "_native_hub_profile", "")
+                    or _resolve_session_lineage(peer_wake.conversation_id, agent)
+                    != _resolve_session_lineage(agent.session_id, agent)):
+                return None
 
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
@@ -16951,7 +16961,7 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
 
         # Expand @ context references (e.g. @file:main.py, @diff, @folder:src/)
-        if isinstance(message, str) and "@" in message:
+        if peer_wake is None and isinstance(message, str) and "@" in message:
             try:
                 from agent.context_references import preprocess_context_references
                 from agent.model_metadata import get_model_context_length
@@ -17002,6 +17012,8 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             staged_user_message = stamp_message_timestamp(
                 {"role": "user", "content": message}
             )
+            if peer_wake is not None:
+                staged_user_message.update(peer_wake.record, content=message)
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 
@@ -20957,6 +20969,11 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 pass
                         continue
 
+                    from tools.native_agent_hub import PeerWake
+                    peer_wake = user_input if isinstance(user_input, PeerWake) else None
+                    if peer_wake is not None:
+                        user_input = peer_wake.record["content"]
+
                     # Voice-transcribed messages arrive wrapped in a sentinel
                     # so only genuine STT output gets the voice prefix (#65827).
                     is_voice_input = isinstance(user_input, _VoiceInputMessage)
@@ -20967,8 +20984,8 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # arbitrary launcher/script text that must be submitted
                     # LITERALLY — skip slash routing, ! shell dispatch, and
                     # file-drop detection for this one message.
-                    is_seeded_query = isinstance(user_input, _SeededQueryMessage)
-                    if is_seeded_query:
+                    is_seeded_query = isinstance(user_input, _SeededQueryMessage) or peer_wake is not None
+                    if isinstance(user_input, _SeededQueryMessage):
                         seeded = user_input
                         user_input = (
                             (seeded.text, seeded.images)
@@ -20988,7 +21005,7 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
 
-                    if isinstance(user_input, str):
+                    if peer_wake is None and isinstance(user_input, str):
                         user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
                         user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
                         if _had_mouse_reports:
@@ -20999,7 +21016,7 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # of sending the word to the agent. Voice transcripts are
                     # already stop-checked at the transcription points, so this
                     # only intercepts typed input.
-                    if not is_voice_input and self._typed_voice_stop(user_input):
+                    if peer_wake is None and not is_voice_input and self._typed_voice_stop(user_input):
                         continue
                     
                     # Check for commands — but detect dragged/pasted file paths first.
@@ -21029,6 +21046,7 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # the digit isn't sent to the agent as a message.
                     if (
                         not _file_drop
+                        and peer_wake is None
                         and self._pending_resume_sessions
                         and isinstance(user_input, str)
                         and self._consume_pending_resume_selection(user_input)
@@ -21081,7 +21099,7 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
-                    paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
+                    paste_refs = list(_paste_ref_re.finditer(user_input)) if peer_wake is None and isinstance(user_input, str) else []
                     if paste_refs:
                         user_input = self._expand_paste_references(user_input)
                     print()
@@ -21101,7 +21119,7 @@ class MercuryCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None, voice_input=is_voice_input)
+                        self.chat(peer_wake if peer_wake is not None else user_input, images=submit_images or None, voice_input=is_voice_input)
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
