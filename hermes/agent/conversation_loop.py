@@ -5459,6 +5459,29 @@ def run_conversation(
                     and not getattr(agent, "compression_enabled", True)
                     and not _is_output_cap_error
                 ):
+                    # A different model can fit this request without any
+                    # compaction (larger window, no long-context tier gate) —
+                    # consult the configured chain before honoring the
+                    # disabled setting with a terminal error. Falling back is
+                    # a route change, not an automatic compaction. Byte and
+                    # media-budget 413s stay terminal: a model switch cannot
+                    # fix an oversized body.
+                    if classified.reason in {
+                        FailoverReason.context_overflow,
+                        FailoverReason.long_context_tier,
+                    }:
+                        if agent._has_pending_fallback():
+                            agent._buffer_status(
+                                "⚠️ Context overflow and auto-compaction is disabled — trying fallback..."
+                            )
+                        if agent._try_activate_fallback(reason=classified.reason):
+                            active_system_prompt = _sync_failover_system_message(
+                                agent, api_messages, active_system_prompt)
+                            retry_count = 0
+                            compression_attempts = 0
+                            _retry.primary_recovery_attempted = False
+                            _retry.restart_with_rebuilt_messages = True
+                            break
                     agent._flush_status_buffer()
                     agent._vprint(
                         f"{agent.log_prefix}❌ Context overflow, but auto-compaction is disabled "
@@ -6156,6 +6179,21 @@ def run_conversation(
 
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
+                        # A larger-window model may still fit this request —
+                        # consult the configured chain before the overflow
+                        # becomes terminal.
+                        if agent._has_pending_fallback():
+                            agent._buffer_status(
+                                "⚠️ Context overflow persists after compression — trying fallback..."
+                            )
+                        if agent._try_activate_fallback(reason=classified.reason):
+                            active_system_prompt = _sync_failover_system_message(
+                                agent, api_messages, active_system_prompt)
+                            retry_count = 0
+                            compression_attempts = 0
+                            _retry.primary_recovery_attempted = False
+                            _retry.restart_with_rebuilt_messages = True
+                            break
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
@@ -6229,7 +6267,22 @@ def run_conversation(
                         _retry.restart_with_compressed_messages = True
                         break
                     else:
-                        # Can't compress further and already at minimum tier
+                        # Can't compress further and already at minimum tier.
+                        # A larger-window model may still fit what is left —
+                        # consult the configured chain before the overflow
+                        # becomes terminal.
+                        if agent._has_pending_fallback():
+                            agent._buffer_status(
+                                "⚠️ Context cannot compress further — trying fallback..."
+                            )
+                        if agent._try_activate_fallback(reason=classified.reason):
+                            active_system_prompt = _sync_failover_system_message(
+                                agent, api_messages, active_system_prompt)
+                            retry_count = 0
+                            compression_attempts = 0
+                            _retry.primary_recovery_attempted = False
+                            _retry.restart_with_rebuilt_messages = True
+                            break
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
@@ -6307,11 +6360,7 @@ def run_conversation(
                     # A future quota reset does not make this plan usable
                     # now. Once its configured chain is exhausted, stop
                     # rather than replaying the final depleted billing route.
-                    or (
-                        _is_usage_limit
-                        and bool(agent._fallback_chain)
-                        and agent._fallback_index >= len(agent._fallback_chain)
-                    )
+                    or _is_usage_limit
                     or (
                         not classified.retryable
                         and not classified.should_compress
@@ -6926,7 +6975,7 @@ def run_conversation(
 
         if _retry.restart_with_rebuilt_messages:
             # A stream stall or provider failure was escalated to the
-            # fallback chain (10 activation sites in the retry loop set this
+            # fallback chain (the activation sites in the retry loop set this
             # flag and break here).  Re-issue the API call against the
             # now-active fallback provider.  Refund the budget/count for the
             # stalled attempt so the fallback gets a fair turn.

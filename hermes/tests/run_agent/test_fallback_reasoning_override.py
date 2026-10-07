@@ -86,6 +86,7 @@ class TestFallbackReasoningOverride:
             "compressor_threshold_tokens": 0,
         }
         agent._fallback_activated = True
+        agent._startup_primary_selection = None
         agent._fallback_index = 0
         agent._fallback_chain = []
         agent._fallback_model = None

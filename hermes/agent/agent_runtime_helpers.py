@@ -1121,20 +1121,12 @@ def recover_with_credential_pool(
     if pool is None:
         return False, has_retried_429
 
-    # A usage limit is charged to the PLAN, not to one API key, so rotating
-    # within the same pool usually hits the same wall and just burns the retry
-    # budget. When a MODEL fallback is configured, decline pool recovery here
-    # so the caller's failover gate runs and the turn continues on
-    # ``models.fallback`` instead of dying. With no fallback configured the
-    # historical rotation behaviour is kept — that is still better than no
-    # recovery at all.
-    if is_usage_limit_exhausted(error_context) and getattr(agent, "_fallback_chain", None):
-        _chain = list(agent._fallback_chain)
+    # A plan-wide usage wall cannot be recovered by rotating keys, even
+    # when no fallback is configured. Let the caller fail over or terminate
+    # immediately instead of retrying the same exhausted billing route.
+    if is_usage_limit_exhausted(error_context):
         _ra().logger.info(
-            "Usage limit on the plan — skipping credential rotation in favour of "
-            "the configured model fallback (%d entr%s)",
-            len(_chain),
-            "y" if len(_chain) == 1 else "ies",
+            "Usage limit on the plan — skipping credential rotation",
         )
         return False, has_retried_429
 
@@ -1665,6 +1657,48 @@ def restore_primary_runtime(agent) -> bool:
 
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
+
+    # Startup can fail over before a primary client exists. Resolve that
+    # preferred route again without replacing the working fallback with an
+    # empty-key snapshot. Once available, the normal switch path establishes
+    # a real primary snapshot and refreshes the compressor and wire protocol.
+    startup_primary = getattr(agent, "_startup_primary_selection", None)
+    if startup_primary:
+        try:
+            from agent.auxiliary_client import resolve_provider_client
+
+            requested_provider = startup_primary["requested_provider"]
+            # A supplied URL alone must not grant a private custom route
+            # synthetic keyless credentials on recovery. Reuse its declared
+            # provider identity and the router's normal credential resolution.
+            # An inferred startup selection (""/auto) carries no identity of
+            # its own: re-resolve only the provider the router inferred back
+            # then, never auto-discover a new route here.
+            resolve_target = (requested_provider or "").strip().lower()
+            if resolve_target in {"", "auto"}:
+                resolve_target = (startup_primary.get("provider") or "").strip().lower()
+            if resolve_target in {"", "auto"}:
+                return False
+            client, model = resolve_provider_client(
+                resolve_target, model=startup_primary["model"],
+                raw_codex=True,
+                api_mode=startup_primary["api_mode"],
+            )
+            if client is None:
+                return False
+            agent.switch_model(
+                model or startup_primary["model"], startup_primary["provider"],
+                api_key=client.api_key, base_url=str(client.base_url),
+                api_mode=startup_primary["api_mode"],
+            )
+            agent.requested_provider = resolve_target
+            agent._primary_runtime["requested_provider"] = resolve_target
+            return True
+        except InterruptedError:
+            raise
+        except Exception:
+            logger.debug("Startup primary is still unavailable", exc_info=True)
+            return False
 
     # ── Reset-aware gate ──
     # The 60s ``_rate_limited_until`` cooldown covers transient rate limits,
@@ -3397,22 +3431,12 @@ def switch_model(
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
     agent._fallback_index = 0
+    agent._startup_primary_selection = None
 
-    # When the user deliberately swaps primary providers (e.g. openrouter
-    # → anthropic), drop any fallback entries that target the OLD primary
-    # or the NEW one.  The chain was seeded from config at agent init for
-    # the original provider — without pruning, a failed turn on the new
-    # primary silently re-activates the provider the user just rejected,
-    # which is exactly what was reported during TUI v2 blitz testing
-    # ("switched to anthropic, tui keeps trying openrouter").
-    old_norm = (old_provider or "").strip().lower()
-    new_norm = (new_provider or "").strip().lower()
+    # Switching the primary does not edit the user's fallback policy.
+    # Same-provider routes can name different models or endpoints; the
+    # activation path already skips the exact backend that just failed.
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
-    if old_norm and new_norm and old_norm != new_norm:
-        fallback_chain = [
-            entry for entry in fallback_chain
-            if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
-        ]
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
 

@@ -1153,6 +1153,21 @@ def init_agent(
     # same image history.
     agent._anthropic_image_fallback_cache: Dict[str, str] = {}
 
+    # Initialize the chain before client resolution so startup and mid-turn
+    # failures use the same route, wire-protocol and credential isolation.
+    if isinstance(fallback_model, list):
+        agent._fallback_chain = [
+            dict(f) for f in fallback_model
+            if isinstance(f, dict) and f.get("provider") and f.get("model")
+        ]
+    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+        agent._fallback_chain = [dict(fallback_model)]
+    else:
+        agent._fallback_chain = []
+    agent._fallback_index = 0
+    agent._fallback_activated = False
+    agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
+
     # Initialize LLM client via centralized provider router.
     # The router handles auth resolution, base URL, headers, and
     # Codex/Anthropic wrapping for all known providers.
@@ -1394,11 +1409,10 @@ def init_agent(
                 if _routed_headers:
                     client_kwargs["default_headers"] = dict(_routed_headers)
             else:
-                # When the user explicitly chose a non-OpenRouter provider
-                # but no credentials were found, fail fast with a clear
-                # message instead of silently routing through OpenRouter.
+                # An unavailable explicit route may use only the declared
+                # fallback policy, never an implicitly discovered provider.
                 _explicit = (agent.provider or "").strip().lower()
-                if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
+                if _explicit and _explicit != "auto":
                     # Look up the actual env var name from the provider
                     # config — some providers use non-standard names
                     # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
@@ -1410,54 +1424,17 @@ def init_agent(
                             _env_hint = _pcfg.api_key_env_vars[0]
                     except Exception:
                         pass
-                    # --- Init-time fallback (#17929) ---
-                    _fb_entries = []
-                    if isinstance(fallback_model, list):
-                        _fb_entries = [
-                            f for f in fallback_model
-                            if isinstance(f, dict) and f.get("provider") and f.get("model")
-                        ]
-                    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-                        _fb_entries = [fallback_model]
-                    _fb_resolved = False
-                    for _fb in _fb_entries:
-                        try:
-                            from mercury_cli.fallback_config import resolve_entry_api_key
-                            _fb_explicit_key = resolve_entry_api_key(_fb)
-                            _fb_client, _fb_model = resolve_provider_client(
-                                _fb["provider"], model=_fb["model"], raw_codex=True,
-                                explicit_base_url=_fb.get("base_url"),
-                                explicit_api_key=_fb_explicit_key,
-                            )
-                        except InterruptedError:
-                            # Startup cancellation must not select another
-                            # configured billing route.
-                            raise
-                        except Exception as _fb_exc:
-                            logger.debug(
-                                "Init-time fallback entry %s failed: %s",
-                                _fb.get("provider"), _fb_exc,
-                            )
-                            continue
-                        if _fb_client is not None:
-                            agent.provider = _fb["provider"]
-                            agent.model = _fb_model or _fb["model"]
-                            agent._fallback_activated = True
-                            client_kwargs = {
-                                "api_key": _fb_client.api_key,
-                                "base_url": str(_fb_client.base_url),
-                            }
-                            if _provider_timeout is not None:
-                                client_kwargs["timeout"] = _provider_timeout
-                            _fb_headers = getattr(_fb_client, "_custom_headers", None)
-                            if not _fb_headers:
-                                _fb_headers = getattr(_fb_client, "default_headers", None)
-                            if not _fb_headers:
-                                _fb_headers = getattr(_fb_client, "_default_headers", None)
-                            if _fb_headers:
-                                client_kwargs["default_headers"] = dict(_fb_headers)
-                            _fb_resolved = True
-                            break
+                    # Keep the preferred selection separate until it has a
+                    # usable runtime; a fallback is not the new primary.
+                    agent._startup_primary_selection = {
+                        "provider": agent.provider,
+                        "model": agent.model,
+                        "requested_provider": agent.requested_provider,
+                        "api_mode": agent.api_mode,
+                    }
+                    _fb_resolved = agent._try_activate_fallback()
+                    if _fb_resolved:
+                        client_kwargs = dict(agent._client_kwargs)
                     if not _fb_resolved:
                         raise RuntimeError(
                             f"Provider '{_explicit}' is set in config.yaml but no API key "
@@ -1541,32 +1518,27 @@ def init_agent(
         except Exception:
             logger.debug("custom-provider TLS resolution skipped", exc_info=True)
 
-        agent.api_key = client_kwargs.get("api_key", "")
-        agent.base_url = client_kwargs.get("base_url", agent.base_url)
-        try:
-            from agent.ssl_guard import verify_ca_bundle_with_fallback
+        if agent.api_mode != "anthropic_messages":
+            agent.api_key = client_kwargs.get("api_key", "")
+            agent.base_url = client_kwargs.get("base_url", agent.base_url)
+            try:
+                from agent.ssl_guard import verify_ca_bundle_with_fallback
 
-            verify_ca_bundle_with_fallback()
-            agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
-            if not agent.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {agent.model}")
-                if base_url:
-                    print(f"🔗 Using custom base URL: {base_url}")
-                # ``api_key`` may be a callable Entra ID bearer
-                # provider (Azure Foundry). The OpenAI SDK mints a
-                # fresh JWT per request internally — the banner
-                # never invokes or inspects the callable.
-                from agent.azure_identity_adapter import is_token_provider
+                verify_ca_bundle_with_fallback()
+                agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
+                if not agent.quiet_mode:
+                    print(f"🤖 AI Agent initialized with model: {agent.model}")
+                    from agent.azure_identity_adapter import is_token_provider
 
-                key_used = client_kwargs.get("api_key", "none")
-                if is_token_provider(key_used):
-                    print("🔑 Using credentials: Microsoft Entra ID")
-                elif isinstance(key_used, str) and key_used and key_used != "dummy-key" and len(key_used) > 12:
-                    print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
-                else:
-                    print("⚠️  Warning: API key appears invalid or missing")
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+                    key_used = client_kwargs.get("api_key", "none")
+                    if is_token_provider(key_used):
+                        print("🔑 Using credentials: Microsoft Entra ID")
+                    elif isinstance(key_used, str) and key_used and key_used != "dummy-key" and len(key_used) > 12:
+                        print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                    else:
+                        print("⚠️  Warning: API key appears invalid or missing")
+            except Exception as e:
+                raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
     # Keep a stable identity for the pool entry that supplied this runtime.
     # OAuth refreshes can replace the runtime token before a failed request is
@@ -1575,23 +1547,7 @@ def init_agent(
     from agent.agent_runtime_helpers import sync_credential_pool_entry_id
     sync_credential_pool_entry_id(agent)
     
-    # Provider fallback chain — ordered list of backup providers tried
-    # when the primary is exhausted (rate-limit, overload, connection
-    # failure).  Supports both legacy single-dict ``fallback_model`` and
-    # new list ``fallback_providers`` format.
-    if isinstance(fallback_model, list):
-        agent._fallback_chain = [
-            f for f in fallback_model
-            if isinstance(f, dict) and f.get("provider") and f.get("model")
-        ]
-    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-        agent._fallback_chain = [fallback_model]
-    else:
-        agent._fallback_chain = []
-    agent._fallback_index = 0
-    agent._fallback_activated = getattr(agent, "_fallback_activated", False)
-    # Legacy attribute kept for backward compat (tests, external callers)
-    agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
+    # The chain index may already have advanced during startup resolution.
     if agent._fallback_chain and not agent.quiet_mode:
         if len(agent._fallback_chain) == 1:
             fb = agent._fallback_chain[0]

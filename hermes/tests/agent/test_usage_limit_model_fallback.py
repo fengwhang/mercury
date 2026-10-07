@@ -178,8 +178,8 @@ def test_shared_fallback_retains_native_transport_options():
         {"provider": "nous", "model": "xiaomi/mimo-v2.6-pro", "base_url": "https://example.invalid/v1", "key_env": "TEST_KEY"}]
 
 
-@pytest.mark.parametrize("exhaust_chain", [False, True])
-def test_shared_config_quota_walk_never_retries_exhausted_plan(exhaust_chain, monkeypatch):
+@pytest.mark.parametrize("exhaust_chain,no_chain", [(False, False), (True, False), (True, True)])
+def test_shared_config_quota_walk_never_retries_exhausted_plan(exhaust_chain, no_chain, monkeypatch):
     from run_agent import AIAgent
 
     http = MagicMock(side_effect=AssertionError("offline test attempted HTTP"))
@@ -195,6 +195,8 @@ def test_shared_config_quota_walk_never_retries_exhausted_plan(exhaust_chain, mo
             "fallback_providers": [{"provider": "openai", "model": "stale-paid"}],
         },
     }
+    if no_chain:
+        config["models"]["fallback_chain"] = []
     with (
         patch("run_agent.get_tool_definitions", return_value=[]),
         patch("run_agent.check_toolset_requirements", return_value={}),
@@ -214,6 +216,7 @@ def test_shared_config_quota_walk_never_retries_exhausted_plan(exhaust_chain, mo
     pool.provider = "zai"
     pool.has_credentials.return_value = True
     pool.has_available.return_value = True
+    pool.mark_exhausted_and_rotate.return_value = None
     agent._credential_pool = pool
     calls = []
 
@@ -253,13 +256,18 @@ def test_shared_config_quota_walk_never_retries_exhausted_plan(exhaust_chain, mo
     ):
         result = agent.run_conversation("hello")
 
-    assert calls == [
-        ("zai", "primary"), ("deepseek", "vendor/first"), ("openrouter", "vendor/last"),
-    ]
+    assert calls == (
+        [("zai", "primary")] if no_chain else [
+            ("zai", "primary"), ("deepseek", "vendor/first"), ("openrouter", "vendor/last"),
+        ]
+    )
     http.assert_not_called()
-    assert [entry.args[0] for entry in router.call_args_list] == ["deepseek", "openrouter"]
+    assert [entry.args[0] for entry in router.call_args_list] == (
+        [] if no_chain else ["deepseek", "openrouter"]
+    )
     pool.mark_exhausted_and_rotate.assert_not_called()
-    assert agent._credential_pool is None
+    if not no_chain:
+        assert agent._credential_pool is None
     if exhaust_chain:
         assert result["completed"] is False
         assert result["failed"] is True
