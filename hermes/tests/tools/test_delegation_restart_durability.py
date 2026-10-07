@@ -162,3 +162,76 @@ def test_running_delivery_owner_not_stolen_by_claim_age():
     with ad._transaction() as db:
         db.execute("UPDATE async_delegations SET delivery_claimed_at=0 WHERE delegation_id='durable'")
     assert not ad.claim_completion_delivery("durable", "second")
+
+
+def test_reaper_uses_terminal_ledger_not_live_row_age(tmp_path):
+    from observatory.room_reaper import reap_orphan_rooms
+    from observatory.state import ObservatoryState, StateError
+    from tests.observatory.test_subagent_room_lifecycle import _seed
+    state = ObservatoryState(tmp_path / "observatory" / "state.db")
+    try:
+        _seed(state, "root", depth=0, room="#fixture-root", parent=None)
+        _seed(state, "durable/0", depth=1, room="#fixture-done", parent="root")
+        _seed(state, "durable/1", depth=1, room="#fixture-running", parent="root")
+        _seed(state, "deep", depth=2, room="#fixture-deep", parent="durable/1")
+        dispatch_row()
+        ad.record_child_spawn("durable/0", "durable")
+        ad.record_child_terminal("durable/0", "completed", summary="real result")
+        ad.record_child_spawn("durable/1", "durable", 1, child_pid=os.getpid(),
+                              child_started_at=get_process_start_time(os.getpid()))
+        state.update_extra("root", task_state="completed")
+        result = reap_orphan_rooms(state, mercury_home=tmp_path)
+        assert result["rows_purged"] == ["durable/0"]
+        assert {r["node_id"] for r in state.get_live()} == {"root", "durable/1", "deep"}
+    finally:
+        state.close()
+
+
+def test_recovery_uses_final_stop_message_not_process_dispose(tmp_path):
+    transcript = tmp_path / "terminal.jsonl"
+    summary = "verified artifact\n" + "full result " * 200
+    transcript.write_text(json.dumps({"type": "message", "message": {
+        "role": "assistant", "stopReason": "stop",
+        "content": [{"type": "text", "text": summary}]}}) + "\n")
+    dispatch_row()
+    ad.record_child_spawn("durable/0", "durable", child_pid=os.getpid(),
+                          child_started_at=-1, session_file=str(transcript))
+    dead_owner()
+    pending = queue.Queue()
+    ad.restore_undelivered_completions(pending)
+    event = pending.get_nowait()
+    assert event["status"] == "completed"
+    assert event["results"][0]["summary"] == summary
+
+
+def test_new_input_after_final_message_is_not_completed(tmp_path):
+    transcript = tmp_path / "new-turn.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "message", "message": {"role": "assistant", "stopReason": "stop",
+             "content": [{"type": "text", "text": "previous turn done"}]}}) + "\n" +
+        json.dumps({"type": "message", "message": {"role": "user", "content": "remaining task"}}) + "\n")
+    dispatch_row()
+    ad.record_child_spawn("durable/0", "durable", child_pid=os.getpid(),
+                          child_started_at=-1, session_file=str(transcript))
+    dead_owner()
+    pending = queue.Queue()
+    ad.restore_undelivered_completions(pending)
+    assert pending.get_nowait()["status"] == "interrupted"
+
+
+def test_terminal_first_wins_and_clears_restart_pending():
+    dispatch_row()
+    assert ad.checkpoint_active_delegations("planned restart") == 1
+    with ad._transaction() as db:
+        assert "restart_checkpoint" in json.loads(db.execute(
+            "SELECT task_json FROM async_delegations WHERE delegation_id='durable'").fetchone()[0])
+    ad._persist_completion({"delegation_id": "durable", "status": "completed"}, {"summary": "done"})
+    ad.mark_completion_delivered("durable")
+    ad._persist_completion({"delegation_id": "durable", "status": "interrupted"}, {"error": "late stop"})
+    row = ad.get_durable_delegation("durable")
+    assert row["state"] == "completed"
+    assert row["delivery_state"] == "delivered"
+    assert row["result"]["summary"] == "done"
+    with ad._transaction() as db:
+        assert "restart_checkpoint" not in json.loads(db.execute(
+            "SELECT task_json FROM async_delegations WHERE delegation_id='durable'").fetchone()[0])

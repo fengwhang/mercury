@@ -605,6 +605,7 @@ def run_omp_task_rpc(
     isolate_worktree: Optional[str] = None,
     child_started: Optional[Callable[["OmpRpcChild"], None]] = None,
     child_finished: Optional[Callable[["OmpRpcChild"], None]] = None,
+    task_result: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """One-shot helper: full RPC child lifecycle around a single task.
 
@@ -653,7 +654,10 @@ def run_omp_task_rpc(
                 child_started(child)
             except Exception:
                 logger.exception("C1: child_started hook raised (ignored)")
-        return child.run_task(prompt, timeout=timeout)
+        result = child.run_task(prompt, timeout=timeout)
+        if task_result is not None:
+            task_result(result)
+        return result
     finally:
         child.stop()
         if child_finished is not None:

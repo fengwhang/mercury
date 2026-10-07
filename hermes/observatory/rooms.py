@@ -265,13 +265,10 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
     {message, node, tool, thought} with ``text`` / ``tool`` / ``status``
     keys; ``subagent_id == ""`` is the child's own main session, a
     non-empty id tags a grandchild frame with ``[id]``.
-
-    Trace glyphs are readable labels; publish_frame carries explicit
-    rendering provenance separately so punctuation never selects a format.
-    Tool calls AND tool-role message frames (command outputs) are
-    traces; assistant/user message frames are the reply stream and stay
-    unmarked (markdown). Trace labels do not add backticks or escapes:
-    the fork renders the entire trace literally, preserving its source.
+    Tool invocations and results are separate trace kinds. Only calls carry
+    the invocation glyph; tool-role messages carry an explicit result label.
+    Assistant/user messages remain unmarked replies. Trace labels do not add
+    backticks or escapes: the fork renders the trace literally.
     """
     if not isinstance(feed, dict):
         return None
@@ -285,7 +282,7 @@ def format_frame(feed: dict[str, Any] | Any) -> str | None:
         if str(feed.get("role") or "") in ("tool", "function", "toolResult"):
             if len(text) > FRAME_TEXT_LIMIT * 2:
                 text = text[:FRAME_TEXT_LIMIT * 2 - 1] + "…"
-            return f"{TOOL_PREFIX} {tag}{text}"
+            return f"result: {tag}{text}"
         # Replies must retain complete fences, math delimiters and line breaks.
         # The transport byte-wraps them losslessly into a multiline batch.
         return f"{tag}{text}"
@@ -331,8 +328,8 @@ def format_lifecycle(
     if lifecycle == "running":
         tail = f": {_truncate(summary)}" if summary else ""
         return (
-            f"⏳ subagent '{name}' is still running — the gateway restarted "
-            f"and reattached to it{tail}"
+            f"subagent '{name}' is still running — the gateway restarted; "
+            f"monitoring its saved process identity{tail}"
         )
     return f"{NOTICE_PREFIX} subagent '{name}': {lifecycle}"
 

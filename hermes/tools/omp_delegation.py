@@ -1046,7 +1046,15 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
     written first-wins — a restart reconciler reconstructing from session
     evidence never overwrites a real runner-observed outcome.
     """
-    if delegation_id and not delegation_id.startswith("local-"):
+    durable = bool(delegation_id and not delegation_id.startswith("local-"))
+    def persist_result(result: Dict[str, Any]) -> None:
+        from tools.async_delegation import record_child_terminal
+        record_child_terminal(
+            _live_child_id(delegation_id, task_index),
+            str(result.get("status") or "error"),
+            summary=result.get("summary"), error=result.get("error"))
+
+    if durable:
         from tools.async_delegation import record_child_spawn, record_child_checkpoint
 
         child_id = _live_child_id(delegation_id, task_index)
@@ -1060,17 +1068,10 @@ def _run_omp_task(task_index: int, prompt: str, model: str, workdir: Optional[st
     entry = _run_omp_task_inner(
         task_index, prompt, model, workdir, timeout, fallback_chain,
         batch_procs, profile_home, extra_env, delegation_id, name, goal,
-        owner_session_id, base_env, isolate_worktree)
-    try:
-        from tools.async_delegation import record_child_terminal
-
-        record_child_terminal(
-            _live_child_id(delegation_id, task_index),
-            str(entry.get("status") or "error"),
-            summary=entry.get("summary"), error=entry.get("error"))
-    except Exception:
-        logger.debug("delegation: terminal evidence failed for task %s",
-                     task_index, exc_info=True)
+        owner_session_id, base_env, isolate_worktree,
+        result_hook=persist_result if durable else None)
+    if durable:
+        persist_result(entry)
     return entry
 
 
@@ -1084,7 +1085,8 @@ def _run_omp_task_inner(task_index: int, prompt: str, model: str, workdir: Optio
                   goal: Optional[str] = None,
                   owner_session_id: str = "",
                   base_env: Optional[Dict[str, str]] = None,
-                  isolate_worktree: Optional[str] = None) -> Dict[str, Any]:
+                  isolate_worktree: Optional[str] = None,
+                  result_hook: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
     """Run ONE omp child; return a result entry (old entry contract).
 
     C1 slice 2: prefer the RPC transport (approval routing live); fall
@@ -1178,6 +1180,7 @@ def _run_omp_task_inner(task_index: int, prompt: str, model: str, workdir: Optio
                     startup_timeout=_rpc_startup_timeout(),
                     batch_procs=batch_procs,
                     approval_callback=_parent_approval_callback(),
+                    task_result=result_hook,
                     thinking_level=_delegate_thinking_level(),
                     isolate_worktree=isolate_worktree,
                     # M0A: live-child registry (steer/stop) for the run

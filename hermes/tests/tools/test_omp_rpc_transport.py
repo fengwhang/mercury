@@ -494,11 +494,13 @@ class TestControlPlaneMethods(unittest.TestCase):
             workdir=fake._dir,
             command_override=fake.command(),
             child_started=lambda c: events.append(("started", c)),
+            task_result=lambda result: events.append(("result", result)),
             child_finished=lambda c: events.append(("finished", c)),
         )
         self.assertEqual(entry["status"], "completed")
-        self.assertEqual([e[0] for e in events], ["started", "finished"])
-        self.assertIs(events[0][1], events[1][1])  # same child both times
+        self.assertEqual([e[0] for e in events], ["started", "result", "finished"])
+        self.assertIs(events[0][1], events[2][1])  # same child both times
+        self.assertEqual(events[1][1]["summary"], entry["summary"])
 
 class TestTurnFramesPreserved(unittest.TestCase):
     """OmpRpcChild.run_task keeps the turn's own frames (observatory replay)."""

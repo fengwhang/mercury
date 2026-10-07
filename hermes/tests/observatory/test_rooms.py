@@ -69,7 +69,7 @@ def test_format_frame_traces_are_plaintext() -> None:
         "feed": "message", "role": "tool",
         "text": "[f#1A2B] 1:def a_b($x):", "subagent_id": "",
     })
-    assert out is not None and out.startswith("🔧 ")
+    assert out is not None and out.startswith("result: ")
     assert "[f#1A2B]" in out
     reply = format_frame({
         "feed": "message", "role": "assistant",
@@ -82,7 +82,7 @@ def test_reply_frames_keep_complete_markdown_and_trace_frames_keep_whitespace():
     reply = 'Before\n```bash\n  echo "$A-$B" ' + "*.txt " * 200 + '\n\n```\nAfter $x^2$.'
     assert format_frame({"feed": "message", "role": "assistant", "text": reply}) == reply
     trace = '\n\t**literal** "$A-$B" *.txt  \n'
-    assert format_frame({"feed": "message", "role": "tool", "text": trace}) == "🔧 " + trace
+    assert format_frame({"feed": "message", "role": "tool", "text": trace}) == "result: " + trace
     assert format_frame({"feed": "thought", "text": trace}) == "💭 " + trace
 
 

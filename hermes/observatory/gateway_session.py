@@ -302,6 +302,9 @@ def _push_progress(node_id: str, seq: int, event: dict[str, Any], *, internal: b
             feed = {"feed": "tool", "subagent_id": "",
                     "tool": str(event.get("tool") or "tool"),
                     "args": event.get("args") or {}}
+        elif kind == "tool_result":
+            feed = {"feed": "message", "role": "tool", "subagent_id": "",
+                    "text": str(event.get("text") or "")}
         elif kind == "status":
             feed = {"feed": "status", "subagent_id": "", "text": event.get("text") or ""}
         else:
@@ -1011,7 +1014,8 @@ class _TurnEventCollector:
                 stored_args = pending.pop(0) if event_type == "tool.completed" and pending else args
                 frame = hermes_progress_frame(event_type, name, args=stored_args, **kwargs)
                 if frame:
-                    self._record({"type": "status", "text": frame["text"]})
+                    kind = "tool_result" if frame.get("role") == "tool" else "status"
+                    self._record({"type": kind, "tool": str(name or "tool"), "text": frame["text"]})
         except Exception:
             pass
 

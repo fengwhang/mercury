@@ -481,6 +481,15 @@ def record_child_terminal(
         logger.debug("delegation: child terminal evidence failed for %s",
                      child_id, exc_info=True)
         return False
+def terminal_child_outcomes() -> Dict[str, str]:
+    """Exact child identities with durable task-terminal evidence."""
+    with _DB_LOCK, _transaction() as conn:
+        return dict(conn.execute(
+            "SELECT child_id, status FROM delegation_children "
+            "WHERE status IN ('completed','failed','interrupted','error','died')"
+        ))
+
+
 
 
 def list_delegation_children(delegation_id: str) -> List[Dict[str, Any]]:
@@ -584,105 +593,79 @@ def owner_process_alive(
     return child_process_alive(owner_pid, owner_started_at)
 
 
-def omp_session_finished(session_file: Optional[str]) -> bool:
-    """True when an omp session JSONL recorded its terminal ``session_exit``.
+def omp_session_result(session_file: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Recover a persisted final assistant stop, not a session-dispose notice.
 
-    The vendored omp engine appends
-    ``{"type":"custom","customType":"session_exit",...}`` as the LAST record
-    of a session when the agent disposes it — the only child-written
-    terminal marker that outlives the owning process. A session without it
-    whose process is gone died mid-task. Reads only the file tail (the
-    marker is always last); never raises.
+    A tool call, new input, compaction, or torn record after that stop invalidates
+    it. Error/aborted assistant stops are failures, never successful summaries.
     """
+    if not session_file:
+        return None
+    last_message = None
     try:
-        if not session_file:
-            return False
-        path = __import__("pathlib").Path(str(session_file))
-        with path.open("rb") as handle:
-            handle.seek(0, 2)
-            size = handle.tell()
-            handle.seek(max(0, size - 16384))
-            tail = handle.read().decode("utf-8", errors="replace")
-        for line in reversed(tail.splitlines()):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(record, dict):
-                continue
-            if record.get("type") == "custom" and \
-                    record.get("customType") == "session_exit":
-                return True
-        return False
-    except Exception:
-        return False
+        with __import__("pathlib").Path(session_file).open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    last_message = None
+                    continue
+                if not isinstance(entry, dict):
+                    last_message = None
+                elif entry.get("type") == "message":
+                    last_message = entry.get("message")
+                elif entry.get("type") in ("compaction", "branch_summary"):
+                    last_message = None
+    except (OSError, UnicodeError):
+        return None
+    if not isinstance(last_message, dict) or last_message.get("role") != "assistant":
+        return None
+    reason = last_message.get("stopReason")
+    content = last_message.get("content") or []
+    if reason == "stop" and not any(
+        isinstance(block, dict) and block.get("type") == "toolCall" for block in content
+    ):
+        summary = "\n".join(
+            block["text"] for block in content
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        )
+        if summary:
+            return {"status": "completed", "summary": summary, "error": None}
+    if reason in ("error", "aborted"):
+        return {"status": "interrupted" if reason == "aborted" else "failed",
+                "summary": None, "error": last_message.get("errorMessage") or f"Assistant stopped: {reason}"}
+    return None
 
 
-def omp_session_summary(session_file: Optional[str], max_chars: int = 600) -> str:
-    """Recovered result summary: the session's FINAL assistant text block.
-
-    Best-effort reconstruction for completions whose runner died with the
-    owning process — the transcript is the only surviving copy of the
-    result. Scans the file backwards for the last assistant message
-    carrying text content; returns "" when none is found. Never raises.
-    """
-    try:
-        if not session_file:
-            return ""
-        path = __import__("pathlib").Path(str(session_file))
-        chunk = 64 * 1024
-        max_scan = 5 * 1024 * 1024
-        with path.open("rb") as handle:
-            handle.seek(0, 2)
-            size = handle.tell()
-            scanned = 0
-            remainder = ""
-            while scanned < min(size, max_scan):
-                read = min(chunk, size - scanned, max_scan - scanned)
-                scanned += read
-                handle.seek(size - scanned)
-                data = handle.read(read).decode("utf-8", errors="replace")
-                lines = (data + remainder).splitlines()
-                remainder = lines.pop(0) if scanned < size else ""
-                for line in reversed(lines):
-                    line = line.strip()
-                    if not line or '"role":"assistant"' not in line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except ValueError:
-                        continue
-                    message = record.get("message") if isinstance(record, dict) else None
-                    if not isinstance(message, dict):
-                        continue
-                    if message.get("role") != "assistant":
-                        continue
-                    texts = [
-                        block.get("text")
-                        for block in (message.get("content") or [])
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    ]
-                    text = "\n".join(t for t in texts if isinstance(t, str)).strip()
-                    if text:
-                        return text[:max_chars]
-        return ""
-    except Exception:
-        return ""
-
-
-def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+def _persist_completion(
+    event: Dict[str, Any], result: Dict[str, Any], *,
+    expected_owner: Optional[tuple] = None,
+) -> bool:
+    """First terminal outcome wins; commit before queueing or room retirement."""
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
-        conn.execute(
+        row = conn.execute(
+            "SELECT state, task_json, owner_pid, owner_started_at "
+            "FROM async_delegations WHERE delegation_id=?", (event["delegation_id"],),
+        ).fetchone()
+        if row is None:
+            return True  # old non-durable event
+        if row[0] not in ("running", "finalizing"):
+            return False
+        if expected_owner is not None and tuple(row[2:4]) != expected_owner:
+            return False
+        task = json.loads(row[1] or "{}")
+        task.pop("restart_checkpoint", None)
+        cur = conn.execute(
             """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
-               event_json=?, result_json=?, delivery_state='pending'
-               WHERE delegation_id=?""",
+               event_json=?, result_json=?, task_json=?, delivery_state='pending'
+               WHERE delegation_id=? AND state IN ('running','finalizing')""",
             (event.get("status", "completed"), event.get("completed_at", now), now,
-             json.dumps(event), json.dumps(result), event["delegation_id"]),
+             json.dumps(event), json.dumps(result), json.dumps(task), event["delegation_id"]),
         )
+        return cur.rowcount == 1
 
 
 def _note_delivery_attempt(delegation_id: str) -> None:
@@ -697,9 +680,14 @@ def _child_result_entry(child: Dict[str, Any]) -> Dict[str, Any]:
     """Only task-terminal evidence proves success; dispose is not success."""
     status = str(child.get("status") or "running")
     if status == "running":
-        status = "interrupted"
-        error = "Worker exited before recording a task-terminal result. Resume from saved goals and transcript; verify existing side effects first."
-        record_child_terminal(str(child["child_id"]), status, error=error)
+        result = omp_session_result(child.get("session_file"))
+        if result is None:
+            result = {"status": "interrupted", "summary": None,
+                      "error": "Worker exited before recording a task-terminal result. Resume from saved goals and transcript; verify existing side effects first."}
+        status = result["status"]
+        child = {**child, **result}
+        error = result["error"]
+        record_child_terminal(str(child["child_id"]), status, summary=result["summary"], error=error)
     else:
         error = child.get("error")
     recovery = None
@@ -884,16 +872,8 @@ def recover_abandoned_delegations() -> int:
                 "results": entries,
                 "total_duration_seconds": event.get("total_duration_seconds"),
             }
-            with _DB_LOCK, _transaction() as conn:
-                conn.execute(
-                    """UPDATE async_delegations SET state=?, completed_at=?,
-                       updated_at=?, event_json=?, result_json=?,
-                       delivery_state='pending', delivery_claim=NULL,
-                       delivery_claimed_at=NULL
-                       WHERE delegation_id=?""",
-                    (status, now, now, json.dumps(event), json.dumps(result),
-                     delegation_id),
-                )
+            if not _persist_completion(event, result, expected_owner=(pid, started)):
+                continue
             reconciled += 1
             logger.info(
                 "Async delegation %s reconciled to %s after owner exit "
@@ -976,16 +956,17 @@ def _adopt_delegation(row: tuple, task: Dict[str, Any], live: List[Dict[str, Any
         _records[delegation_id] = record
     live_ids = {str(c.get("child_id") or "") for c in live}
     with _adopted_lock:
-        _adopted[delegation_id] = {"live": live_ids}
-    _ensure_adoption_monitor()
+        _adopted[delegation_id] = {"live": live_ids, "row": row, "task": task}
     for child in list_delegation_children(delegation_id):
         child_id = str(child.get("child_id") or "")
         if not child_id:
             continue
         if child_id in live_ids:
-            _announce_child_state(child, "running")
+            identity = process_identity_state(child.get("child_pid"), child.get("child_started_at"))
+            _announce_child_state(child, "running" if identity == "live" else "pending")
         else:
             _settle_dead_child(child)
+    _ensure_adoption_monitor()
     logger.info(
         "Async delegation %s ADOPTED by pid %s (%d child(ren) still running)",
         delegation_id, my_pid, len(live_ids),
@@ -1074,6 +1055,7 @@ def _sweep_adopted(delegation_id: str) -> None:
     running = [
         c for c in children
         if str(c.get("status") or "") == "running"
+        and c.get("child_pid")
         and process_identity_state(c.get("child_pid"), c.get("child_started_at")) != "dead"
     ]
     if running:
@@ -1097,67 +1079,24 @@ def _sweep_adopted(delegation_id: str) -> None:
 def _finish_adopted(
     delegation_id: str, results: List[Dict[str, Any]], status: str
 ) -> None:
-    """Record + queue the adopted delegation's terminal completion event."""
+    """Commit before retiring the monitor, so a failed write is retried."""
+    with _adopted_lock:
+        adopted = _adopted.get(delegation_id)
+    if adopted is None:
+        return
+    event = _reconciled_event(adopted["row"], adopted["task"], results, status)
+    result = {key: event.get(key) for key in (
+        "status", "summary", "error", "results", "total_duration_seconds")}
+    if _persist_completion(event, result):
+        from tools.process_registry import process_registry
+        process_registry.completion_queue.put(event)
     with _adopted_lock:
         _adopted.pop(delegation_id, None)
-    with _records_lock:
-        record = dict(_records.get(delegation_id) or {
-            "delegation_id": delegation_id, "goal": "", "status": "running",
-        })
-        record["status"] = "finalizing"
-        record["completed_at"] = time.time()
-    if not record.get("goals") and results:
-        record["goals"] = [r.get("goal") or r.get("name") or "" for r in results]
-    combined = {
-        "results": results,
-        "total_duration_seconds": round(
-            (record.get("completed_at") or time.time())
-            - (record.get("dispatched_at") or time.time()), 2),
-    }
-    try:
-        event = _reconciled_event(
-            (
-                delegation_id, record.get("session_key", ""),
-                record.get("origin_ui_session_id", ""),
-                record.get("parent_session_id"), record.get("dispatched_at"),
-                None, None, json.dumps({
-                    "goal": record.get("goal"), "goals": record.get("goals"),
-                    "names": record.get("names"), "context": record.get("context"),
-                    "toolsets": record.get("toolsets"), "role": record.get("role"),
-                    "model": record.get("model"),
-                    "is_batch": bool(record.get("goals")),
-                    **{k: record.get(k) for k in ("scope_id", "user_id", "user_name")
-                       if record.get(k)},
-                }),
-                record.get("origin_session_id") or "",
-            ),
-            {
-                "goal": record.get("goal"), "goals": record.get("goals"),
-                "names": record.get("names"), "context": record.get("context"),
-                "toolsets": record.get("toolsets"), "role": record.get("role"),
-                "model": record.get("model"),
-                "is_batch": bool(record.get("goals")),
-                **{k: record.get(k) for k in ("scope_id", "user_id", "user_name")
-                   if record.get(k)},
-            },
-            results, status,
-        )
-        event["completed_at"] = record.get("completed_at")
-        event["total_duration_seconds"] = combined["total_duration_seconds"]
-        _persist_completion(event, combined)
-        from tools.process_registry import process_registry
-
-        process_registry.completion_queue.put(event)
-    except Exception:
-        logger.exception(
-            "Async delegation %s (adopted) finished but delivery failed",
-            delegation_id,
-        )
-        return
     with _records_lock:
         record = _records.get(delegation_id)
         if record is not None:
             record["status"] = status
+            record["completed_at"] = event["completed_at"]
     logger.info("Async delegation %s (adopted) settled: %s", delegation_id, status)
 
 
@@ -1783,7 +1722,8 @@ def _push_completion_event(
     ):
         if _k in result:
             evt[_k] = result[_k]
-    _persist_completion(evt, result)
+    if not _persist_completion(evt, result):
+        return
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -1999,7 +1939,8 @@ def _push_batch_completion_event(
     ):
         if _k in combined:
             evt[_k] = combined[_k]
-    _persist_completion(evt, combined)
+    if not _persist_completion(evt, combined):
+        return
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
