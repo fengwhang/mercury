@@ -2957,36 +2957,41 @@ part/quit messages where we don't load previews (adds a blank line otherwise) */
  * below. Flex ordering only, so every message-type branch keeps working
  * untouched. Mobile (<480px) block layout is unaffected: order, flex-basis
  * and margins are inert outside flexbox. */
-#chat .msg {
-	flex-wrap: wrap;
-}
 
-#chat .from {
-	order: 1;
-	flex: 0 1 auto;
-	width: auto;
-	max-width: 100%;
-	padding: 8px 8px 0 10px;
-	text-align: left;
-	mask-image: none;
-	text-overflow: ellipsis;
-}
+/* Keep this override scope after the responsive rules: moving these
+ * declarations into the earlier base selectors changes the mobile cascade. */
+@media all {
+	#chat .msg {
+		flex-wrap: wrap;
+	}
 
-#chat .time {
-	order: 2;
-	flex: 0 0 auto;
-	width: auto;
-	margin-left: auto;
-	padding: 8px 6px 0 0;
-	font-size: 12px;
-}
+	#chat .from {
+		order: 1;
+		flex: 0 1 auto;
+		width: auto;
+		max-width: 100%;
+		padding: 8px 8px 0 10px;
+		text-align: left;
+		mask-image: none;
+		text-overflow: ellipsis;
+	}
 
-#chat .content {
-	order: 3;
-	flex: 1 1 100%;
-	box-sizing: border-box;
-	border-left: none;
-	padding: 1px 6px 3px 10px;
+	#chat .time {
+		order: 2;
+		flex: 0 0 auto;
+		width: auto;
+		margin-left: auto;
+		padding: 8px 6px 0 0;
+		font-size: 12px;
+	}
+
+	#chat .content {
+		order: 3;
+		flex: 1 1 100%;
+		box-sizing: border-box;
+		border-left: none;
+		padding: 1px 6px 3px 10px;
+	}
 }
 
 /* Consecutive messages from the same nick group into one visual block:
