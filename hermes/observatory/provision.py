@@ -838,6 +838,15 @@ def provision(
         passwords_made=list(summary.get("passwords", {}).get("made") or []),
         tls_action=str(summary.get("tls", {}).get("action") or ""),
     )
+    from mercury_cli.config import load_config
+    voice = load_config().get("voice_call") or {}
+    if voice.get("enabled", True) and voice.get("mirc_host_url"):
+        from observatory.voice_call import configure_mirc_voice_unit
+        from observatory.mlounge import install_voice_call_unit
+        voice_unit = configure_mirc_voice_unit(home)
+        summary["voice_unit"] = {"path": voice_unit}
+        if systemd:
+            install_voice_call_unit({"available": True, "local": True, "unit": voice_unit})
     return summary
 
 
