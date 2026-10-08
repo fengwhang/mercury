@@ -177,6 +177,19 @@ class GatewaySlashCommandsMixin:
         adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
+    async def _close_native_conversation_hub(self, source, entry):
+        """Explicit conversation boundaries revoke the verified logical scope."""
+        from tools.native_agent_hub import close_parent_hub
+        from gateway.run import _hermes_home
+        profile = self._resolve_profile_home_for_source(source) if hasattr(self, "_resolve_profile_home_for_source") else _hermes_home()
+        conversation = entry.session_id
+        db = getattr(self, "_session_db", None)
+        if db is not None:
+            lineage = await db.get_compression_lineage(conversation)
+            if lineage:
+                conversation = lineage[0]
+        await self._run_in_executor_with_context(close_parent_hub, str(profile), conversation)
+
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
@@ -194,6 +207,9 @@ class GatewaySlashCommandsMixin:
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
         old_entry = self.session_store._entries.get(session_key)
+        # /new is explicit revocation, unlike generic agent rebuild/restart close.
+        if old_entry is not None:
+            await self._close_native_conversation_hub(source, old_entry)
 
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.
@@ -6643,6 +6659,9 @@ class GatewaySlashCommandsMixin:
         target_id = str(target.get("node_id") or "")
         if target_id == "gw" or (gw_channel and str(target.get("room_id") or "").lower() == gw_channel.lower()):
             return "🚫 no /exit on the gateway agent — use /restart."
+        entry = self.session_store._entries.get(self._session_key_for_source(event.source))
+        if entry is not None:
+            await self._close_native_conversation_hub(event.source, entry)
         try:
             result = await exit_orchestrator(target_id, state=state, registry=registry)
         except Exception as exc:

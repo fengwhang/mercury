@@ -148,6 +148,7 @@ import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { type AgentKind, type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
+import { ensureExternalHubScope, externalHubIdentity } from "./mirc/external-hub";
 import {
 	buildSecretObfuscator,
 	deobfuscateSessionContext,
@@ -1303,6 +1304,11 @@ export function createAutoLearnCaptureRunner(
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
+	// External Hermes roots are native subagents, not independent Main sessions.
+	if (!options.parentTaskPrefix && !options.agentId) {
+		const identity = externalHubIdentity();
+		if (identity) options = { ...options, ...identity };
+	}
 	const extensionRoots = options.extensionRoots?.();
 	const explicit = extensionRoots?.explicit ?? options.additionalExtensionPaths ?? [];
 	const mode = extensionRoots?.mode ?? (options.disableExtensionDiscovery ? "explicit-only" : "merge");
@@ -1755,6 +1761,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const scopedAsyncJobManager = asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);
 
 	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
+	const externalHubScope =
+		options.enableMirc === false || options.enableIrc === false || options.restrictToolNames
+			? undefined
+			: await ensureExternalHubScope(agentRegistry);
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
 	const resolvedAgentDisplayName = options.agentDisplayName ?? agentKind;
 	let registeredAgentRef: AgentRef | undefined;
@@ -3986,6 +3996,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			throw new Error(`Agent "${resolvedAgentId}" was replaced during session initialization.`);
 		}
 		hasRegistered = true;
+		if (externalHubScope) await externalHubScope.publish(registeredAgentRef);
 		// MCP notification bridge cleanup — assigned when the bridge is wired below,
 		// invoked from the dispose wrapper AND registered as a postmortem so both
 		// explicit-dispose (SDK embedders that reuse the process across sessions) and
@@ -4003,7 +4014,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					// begins — the lifecycle await below opens an async gap before
 					// AgentSession.dispose() would otherwise set its guards.
 					session.beginDispose();
-					if (agentKind === "main") {
+					if (agentKind === "main" || externalHubScope?.root === resolvedAgentId) {
 						// Top-level teardown owns the global agent lifecycle: park timers,
 						// adopted subagent sessions, revivers. Tear it down while shared
 						// resources (kernels, MCP, LSP) are still live. Subagent disposal
@@ -4024,6 +4035,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					await originalDispose();
 				} finally {
 					unregisterUnlessParked();
+					if (externalHubScope && externalHubScope.root === resolvedAgentId) externalHubScope.close();
 					unsubscribeCredentialDisabled?.();
 					unsubscribeMcpNotifications?.();
 					unregisterMcpPostmortem?.();

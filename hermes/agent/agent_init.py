@@ -1761,6 +1761,9 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+    # Session capability only; never add the internal hub to the global registry.
+    from tools.native_agent_hub import attach_hub_capability
+    attach_hub_capability(agent, _agent_cfg)
 
     # Codex commentary visibility (display.show_commentary, default true).
     # When true, completed Codex phase=commentary messages are delivered as

@@ -226,7 +226,13 @@ export interface HubSendParams {
 }
 
 export async function executeSend(
-	deps: { registry: AgentRegistry; senderId: string; settings: Settings; sessionFileHint?: string | null },
+	deps: {
+		registry: AgentRegistry;
+		senderId: string;
+		settings: Settings;
+		sessionFileHint?: string | null;
+		bus?: MircBus;
+	},
 	params: HubSendParams,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<CoordinationDetails>> {
@@ -262,7 +268,7 @@ export async function executeSend(
 		await ensurePersistedRoster(registry, sessionFileHint);
 	}
 
-	const bus = MircBus.global();
+	const bus = deps.bus ?? MircBus.global();
 	let waited: MircMessage | null | undefined;
 	const timeoutMs = params.await ? resolveMessageTimeoutMs(settings, params.timeoutMs) : undefined;
 	const awaitAbort = params.await ? new AbortController() : undefined;
@@ -395,7 +401,7 @@ export async function executeSend(
 
 /** Pure message wait: no jobs in play, block on the bus with peer liveness. */
 export async function executeMessageWait(
-	deps: { registry: AgentRegistry; senderId: string; settings: Settings },
+	deps: { registry: AgentRegistry; senderId: string; settings: Settings; bus?: MircBus },
 	params: { from?: string; timeoutMs?: number },
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<CoordinationDetails>> {
@@ -403,7 +409,7 @@ export async function executeMessageWait(
 	const from = params.from?.trim() || undefined;
 	const timeoutMs = resolveMessageTimeoutMs(settings, params.timeoutMs);
 	try {
-		const waited = await MircBus.global().wait(senderId, { from }, timeoutMs, signal, {
+		const waited = await (deps.bus ?? MircBus.global()).wait(senderId, { from }, timeoutMs, signal, {
 			liveness: { registry, senderId },
 		});
 		if (!waited) {
