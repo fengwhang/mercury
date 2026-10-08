@@ -60,8 +60,6 @@ export interface StatsCommandArgs {
 	host: string;
 	json: boolean;
 	summary: boolean;
-	/** MERCURY-OMP PATCH (dual-engine stats): serve Hermes numbers alongside OMP's. */
-	engines?: boolean;
 }
 
 function formatCost(n: number): string {
@@ -102,10 +100,8 @@ export async function runStatsCommand(cmd: StatsCommandArgs): Promise<void> {
 		return;
 	}
 
-	// Start the dashboard server. `mercury stats` passes `engines` to report the
-	// Hermes engine alongside OMP's; the stock `omp stats` path leaves it unset
-	// and serves the byte-identical single-engine surface.
-	const { hostname, port } = await startServer(cmd.port, cmd.host, cmd.engines ? { engines: {} } : undefined);
+	// Start the dashboard server
+	const { hostname, port } = await startServer(cmd.port, cmd.host);
 	const url = formatStatsDashboardUrl(hostname, port);
 	console.log(chalk.green(`Dashboard available at: ${url}`));
 
