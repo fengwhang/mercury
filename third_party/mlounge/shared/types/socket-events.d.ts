@@ -17,9 +17,17 @@ type Session = {
 };
 
 type EventHandler<T> = (data: T) => void;
+export type VoiceCallFrame = {
+	type: string;
+	callId?: string;
+	attemptId?: number;
+	[key: string]: unknown;
+};
+
 type NoPayloadEventHandler = EventHandler<void>;
 
 interface ServerToClientEvents {
+	"voice:call": EventHandler<VoiceCallFrame>;
 	"auth:start": (serverHash: number) => void;
 	"auth:failed": NoPayloadEventHandler;
 	"auth:success": NoPayloadEventHandler;
@@ -113,6 +121,7 @@ type AuthPerformData =
 	  };
 
 interface ClientToServerEvents {
+	"voice:call": EventHandler<VoiceCallFrame>;
 	"auth:perform": EventHandler<AuthPerformData>;
 
 	changelog: NoPayloadEventHandler;

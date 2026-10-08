@@ -266,7 +266,7 @@ def test_render_mlounge_unit_carries_path() -> None:
 
 
 
-def test_provision_propagates_explicit_voice_sidecar_url_only(tmp_path, monkeypatch):
+def test_provision_exports_private_voice_bootstrap_path_only(tmp_path, monkeypatch):
     home = tmp_path / "mercury"
     home.mkdir()
     config = home / "config.yaml"
@@ -286,12 +286,12 @@ def test_provision_propagates_explicit_voice_sidecar_url_only(tmp_path, monkeypa
     monkeypatch.setattr(mlounge_mod, "ensure_mlounge_unit",
                         lambda paths, *, unit: units.append(unit) or "installed")
     mlounge_mod.provision_mlounge()
-    assert 'Environment="MERCURY_VOICE_CALL_SIDECAR_URL=https://stt.example.invalid/call?path=%%2F"' in units[-1]
+    assert f'Environment="MERCURY_VOICE_CALL_CONFIG={home}/observatory/voice/relay.json"' in units[-1]
     assert "TOKEN" not in units[-1]
     assert "synthetic-" not in units[-1]
     config.write_text("voice_call: {}\n")
     mlounge_mod.provision_mlounge()
-    assert 'Environment="MERCURY_VOICE_CALL_SIDECAR_URL="' in units[-1]
+    assert f'Environment="MERCURY_VOICE_CALL_CONFIG={home}/observatory/voice/relay.json"' in units[-1]
     assert "localhost" not in units[-1]
 
 def test_ensure_mlounge_user_uses_password_flag(tmp_path, monkeypatch) -> None:

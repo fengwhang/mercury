@@ -81,11 +81,11 @@ def test_token_gate() -> None:
     assert gated_health.check_token(_handler("/stt/health")) is False
     gated = SidecarState(mirc_url="http://m:8000", stt_config={}, token="s3cret")
     assert gated.check_token(_handler("/call/action")) is False
-    assert gated.check_token(_handler("/call/action?token=s3cret")) is True
+    assert gated.check_token(_handler("/call/action?token=s3cret")) is False
     assert gated.check_token(_handler("/call/action", "s3cret")) is True
-    assert gated.check_token(_handler("/call/action", "Bearer s3cret")) is True
+    assert gated.check_token(_handler("/call/action", "Bearer s3cret")) is False
     open_state = SidecarState(mirc_url="http://m:8000", stt_config={})
-    assert open_state.check_token(_handler("/call/action")) is True
+    assert open_state.check_token(_handler("/call/action")) is False
 
 
 def test_parser_defaults_have_no_localhost_urls() -> None:
@@ -198,6 +198,7 @@ def test_explicit_sidecar_home_overrides_inherited_mercury_config(tmp_path, monk
 
     home = tmp_path / "voice-home"
     home.mkdir()
+    (home / ".env").write_text("VOICE_CALL_SIDECAR_TOKEN=fixture-sidecar\nVOICE_CALL_MIRC_TOKEN=fixture-mirc\n")
     (home / "config.yaml").write_text(json.dumps({
         "stt": {"provider": "qwen3-asr"},
         "voice_call": {"mirc_host_url": "http://explicit-mirc:8123"},

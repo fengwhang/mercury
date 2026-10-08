@@ -569,17 +569,169 @@ def ensure_mlounge_user(paths: MLoungePaths, username: str,
     return {"action": "created"}
 
 
+def configure_voice_call_service(
+    mercury_home: str | Path, *, username: str, network: dict, hermes_root: str,
+) -> dict:
+    """Generate private voice bootstrap and unit from the selected Setup home.
+
+    Does not start services. Secrets never appear in the returned summary or
+    public config. Remote peers must already share their service secrets.
+    """
+    import secrets
+    import sys
+    from urllib.parse import urlsplit
+    from mercury_cli.config import get_config_path, get_env_path, load_config, load_env, save_env_value
+    from mercury_constants import get_hermes_home
+
+    install = Path(mercury_home).resolve()
+    config_path = get_config_path().resolve()
+    runtime = get_hermes_home().resolve()
+    if runtime != install and not runtime.is_relative_to(install / "hermes" / "profiles"):
+        raise MLoungeError("Voice configuration belongs to a different Mercury installation")
+    cfg = load_config()
+    voice = cfg.get("voice_call") or {}
+    if not voice.get("enabled", True):
+        (install / "observatory" / "voice" / "relay.json").unlink(missing_ok=True)
+        return {"available": False, "reason": "Voice calls disabled in Setup"}
+    urls = {}
+    for key in ("mirc_host_url", "mlounge_host_url", "stt_sidecar_url"):
+        value = str(voice.get(key) or "").strip().rstrip("/")
+        parsed = urlsplit(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+            raise MLoungeError(f"Configure explicit voice_call.{key} in Mercury Setup")
+        urls[key] = parsed
+    if not username or not network.get("host") or not network.get("port"):
+        raise MLoungeError("Voice calls require the provisioned authenticated MIRC network")
+    network = dict(network)
+    if not network.get("uuid"):
+        users_file = MLoungePaths(install).home / "users" / f"{username}.json"
+        try:
+            saved = json.loads(users_file.read_text(encoding="utf-8"))
+            matches = [item for item in saved.get("networks", [])
+                       if all(item.get(key) == network.get(key) for key in ("host", "port", "tls"))]
+        except (OSError, ValueError):
+            matches = []
+        if len(matches) != 1 or not matches[0].get("uuid"):
+            raise MLoungeError("Voice requires the existing authenticated owner's exact provisioned IRC network; rerun Observatory Setup")
+        network["uuid"] = matches[0]["uuid"]
+    same_host = urls["stt_sidecar_url"].hostname == urls["mlounge_host_url"].hostname
+    same_mirc = urls["mirc_host_url"].hostname == urls["mlounge_host_url"].hostname
+    env = load_env()
+    for key, local in (("VOICE_CALL_SIDECAR_TOKEN", same_host), ("VOICE_CALL_MIRC_TOKEN", same_mirc)):
+        if not env.get(key):
+            if not local:
+                raise MLoungeError(f"Split-host Setup requires {key} in the selected host .env; never enter it in the browser")
+            save_env_value(key, secrets.token_urlsafe(32))
+    env = load_env()
+    directory = install / "observatory" / "voice"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory.chmod(0o700)
+    private_path = directory / "relay.json"
+    profile = runtime.name if runtime != install else "default"
+    private = {
+        "origin": urls["mlounge_host_url"].geturl().rstrip("/"),
+        "sidecarUrl": urls["stt_sidecar_url"].geturl().rstrip("/"),
+        "envPath": str(get_env_path()),
+        "profile": profile, "configPath": str(config_path),
+        "users": [username], "network": network,
+    }
+    from utils import atomic_replace
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as stream:
+        json.dump(private, stream)
+        temp_path = stream.name
+    atomic_replace(temp_path, private_path)
+    unit_name = "mercury-nightly-voice-call.service" if "nightly" in install.name else "mercury-voice-call.service"
+    unit_path = directory / unit_name
+    sidecar = urls["stt_sidecar_url"]
+    # Explicit peer endpoint supplies the listener, never a guessed local port.
+    unit = "\n".join((
+        "[Unit]", "Description=Mercury configured browser-audio STT service",
+        "After=network-online.target", "[Service]", "Type=simple",
+        f"WorkingDirectory={hermes_root}",
+        f'Environment="MERCURY_HOME={install}"',
+        f'Environment="HERMES_HOME={runtime}"',
+        f'Environment="HERMES_PROFILE={profile}"',
+        f'Environment="MERCURY_CONFIG={config_path}"',
+        f'EnvironmentFile={get_env_path()}',
+        f'ExecStart={sys.executable} -m observatory.voice_call_stt --host {sidecar.hostname} --port {sidecar.port or (443 if sidecar.scheme == "https" else 80)}',
+        "Restart=on-failure", "KillMode=control-group", "TimeoutStopSec=10",
+        "[Install]", "WantedBy=default.target", "",
+    ))
+    unit_path.write_text(unit, encoding="utf-8")
+    result = {"available": True, "config": str(private_path), "unit": str(unit_path), "local": same_host}
+    if same_mirc:
+        from observatory.voice_call import configure_mirc_voice_unit
+        result["mirc_unit"] = configure_mirc_voice_unit(install)
+    return result
+
+
+def install_voice_call_unit(result: dict) -> None:
+    """Install the generated local service using the existing unit runner."""
+    if not result.get("available") or not result.get("local"):
+        return
+    if result.get("mirc_unit"):
+        install_voice_call_unit({"available": True, "local": True, "unit": result["mirc_unit"]})
+    source = Path(result["unit"])
+    target = Path.home() / ".config" / "systemd" / "user" / source.name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    if _systemctl_available():
+        for args in (["daemon-reload"], ["enable", source.name], ["restart", source.name]):
+            out = _run(["systemctl", "--user", *args])
+            if out.returncode:
+                raise MLoungeError("Configured voice service failed; inspect host Setup/doctor")
+
+
+def refresh_voice_call_service() -> None:
+    """Setup rerun refreshes an already-provisioned call, never invents peers."""
+    from observatory.provision import _mercury_home, read_config
+    from mercury_cli.config import load_config
+    home = _mercury_home()
+    voice = load_config().get("voice_call") or {}
+    if not all(voice.get(key) for key in ("mirc_host_url", "mlounge_host_url", "stt_sidecar_url")):
+        return
+    private_path = home / "observatory" / "voice" / "relay.json"
+    if private_path.exists():
+        saved = json.loads(private_path.read_text(encoding="utf-8"))
+        username, network = saved["users"][0], saved["network"]
+    else:
+        paths = MLoungePaths(home)
+        users = mlounge_users(paths)
+        if not users:
+            return
+        if len(users) != 1:
+            raise MLoungeError("Select the existing mLounge owner through Observatory Setup before enabling voice")
+        username = users[0]
+        data = json.loads((paths.home / "users" / f"{username}.json").read_text(encoding="utf-8"))
+        server_name = (read_config(home) or {}).get("server_name")
+        candidates = [item for item in data.get("networks", []) if item.get("name") == server_name]
+        if len(candidates) != 1:
+            raise MLoungeError("Voice requires the explicitly provisioned MIRC network; rerun Observatory Setup")
+        network = {key: candidates[0][key] for key in ("host", "port", "tls")}
+    result = configure_voice_call_service(
+        home, username=username, network=network,
+        hermes_root=str(Path(__file__).resolve().parents[1]))
+    install_voice_call_unit(result)
+    paths = MLoungePaths(home)
+    node = shutil.which("node") or ""
+    unit = render_mlounge_unit(
+        mlounge_bin=str(mlounge_bin(home)), home=str(paths.home),
+        voice_config=str(private_path), path_extra=str(Path(node).parent) if node else "")
+    ensure_mlounge_unit(paths, unit=unit)
+    if mlounge_unit_active():
+        restart_mlounge()
+
 def render_mlounge_unit(*, mlounge_bin: str, home: str, path_extra: str = "",
-                       stt_sidecar_url: str = "") -> str:
+                       voice_config: str = "") -> str:
     """Render the mlounge systemd USER unit (pure string templating)."""
     import os as _os
 
     _path = _os.pathsep.join(
         [p for p in (path_extra, "/usr/local/bin:/usr/bin:/bin") if p])
-    # Only the explicit, public endpoint crosses into the browser service.
-    # Tokens stay out of the unit/client; double systemd's percent specifier.
+    # Private bootstrap path only; no service/provider secret in unit text.
     sidecar_env = json.dumps(
-        f"MERCURY_VOICE_CALL_SIDECAR_URL={stt_sidecar_url}".replace("%", "%%"),
+        f"MERCURY_VOICE_CALL_CONFIG={voice_config}".replace("%", "%%"),
         ensure_ascii=False)
     return f"""\
 [Unit]
@@ -780,7 +932,6 @@ def provision_mlounge(
     """
     from observatory.provision import _mercury_home  # local import: no cycle
 
-    _ = hermes_root
     home = _mercury_home(mercury_home)
     summary: dict = {"node": str(ensure_node())}
     summary["bin"] = str(ensure_mlounge_installed())
@@ -794,9 +945,9 @@ def provision_mlounge(
     was_active = mlounge_unit_active()
     summary["config"] = ensure_mlounge_config(spaths, host=host, port=int(port))
     import os as _os2
-    from mercury_cli.config import cfg_get, load_config
-
-    sidecar_url = str(cfg_get(load_config(), "voice_call", "stt_sidecar_url", default="") or "").strip()
+    from mercury_cli.config import load_config
+    voice = load_config().get("voice_call") or {}
+    voice_config = str(home / "observatory" / "voice" / "relay.json")
 
     _node = shutil.which("node") or ""
     # `add` only CREATES: an existing login silently keeps its old
@@ -812,11 +963,18 @@ def provision_mlounge(
             net_name=uplink_name, host=uplink_host, port=int(uplink_port),
             server_password=uplink_password,
             nick=uplink_nick or username, channel=uplink_channel)
+    if voice.get("enabled", True) and all(voice.get(key) for key in ("mirc_host_url", "mlounge_host_url", "stt_sidecar_url")):
+        summary["voice"] = configure_voice_call_service(
+            home, username=username,
+            network={"host": uplink_host, "port": int(uplink_port), "tls": False},
+            hermes_root=str(hermes_root or Path(__file__).resolve().parents[1]))
+        voice_config = str(summary["voice"].get("config") or "")
+        install_voice_call_unit(summary["voice"])
     summary["unit"] = ensure_mlounge_unit(
         spaths,
         unit=render_mlounge_unit(
             mlounge_bin=summary["bin"], home=str(spaths.home),
-            stt_sidecar_url=sidecar_url,
+            voice_config=voice_config,
             path_extra=_os2.pathsep.join(
                 [str(mlounge_prefix(home) / "bin"),
                  str(Path(_node).parent)] if _node else
