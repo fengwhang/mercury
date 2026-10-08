@@ -16,6 +16,7 @@ class TestSwitchModelReasoningOverride:
     def _make_fake_agent(self, model="gpt-5", provider="openai"):
         """Create a minimal fake agent for switch_model testing."""
         agent = MagicMock()
+        agent._startup_primary_selection = None
         agent.model = model
         agent.provider = provider
         agent.base_url = "https://api.openai.com/v1"
@@ -59,18 +60,15 @@ class TestSwitchModelReasoningOverride:
             },
         }
 
-        with patch("mercury_cli.config.load_config", return_value=fake_cfg):
-            try:
-                switch_model(
-                    agent,
-                    new_model="claude-opus-4.5",
-                    new_provider="anthropic",
-                    base_url="https://api.anthropic.com",
-                    api_mode="anthropic_messages",
-                )
-            except Exception:
-                # Client creation may fail in test env; check _primary_runtime was set
-                pass
+        with patch("mercury_cli.config.load_config", return_value=fake_cfg), \
+             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()):
+            switch_model(
+                agent,
+                new_model="claude-opus-4.5",
+                new_provider="anthropic",
+                base_url="https://api.anthropic.com",
+                api_mode="anthropic_messages",
+            )
 
         assert hasattr(agent, "_primary_runtime")
         assert "reasoning_config" in agent._primary_runtime
@@ -82,6 +80,7 @@ class TestSwitchModelReasoningOverride:
         from agent.agent_runtime_helpers import restore_primary_runtime
 
         agent = MagicMock()
+        agent._startup_primary_selection = None
         agent._primary_runtime = {
             "model": "claude-opus-4.5",
             "provider": "anthropic",
@@ -123,4 +122,30 @@ class TestSwitchModelReasoningOverride:
         result = restore_primary_runtime(agent)
         assert result is True
         assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
+
+    def test_real_startup_selection_restores_declared_primary_reasoning(self):
+        from types import MethodType, SimpleNamespace
+        from agent.agent_runtime_helpers import restore_primary_runtime, switch_model
+        agent = self._make_fake_agent(model="fallback-model")
+        agent._rate_limited_until = 0
+        agent._fallback_activated = True
+        agent._primary_runtime = {}
+        agent.request_overrides = {}
+        agent.runtime_capabilities = {}
+        agent._startup_primary_selection = {
+            "requested_provider": "openai", "provider": "openai",
+            "model": "gpt-5", "api_mode": "openai",
+        }
+        agent.switch_model = MethodType(switch_model, agent)
+        client = SimpleNamespace(api_key="test-key", base_url="https://api.openai.com/v1")
+        cfg = {"agent": {"reasoning_effort": "medium", "reasoning_overrides": {"gpt-5": "xhigh"}}}
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(client, "gpt-5")) as resolver, \
+             patch("mercury_cli.config.load_config", return_value=cfg):
+            assert restore_primary_runtime(agent) is True
+        resolver.assert_called_once_with("openai", model="gpt-5", raw_codex=True, api_mode="openai")
+        assert agent.model == "gpt-5"
+        assert agent.requested_provider == "openai"
+        assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
+        assert agent._primary_runtime["reasoning_config"] == agent.reasoning_config
+        assert agent._startup_primary_selection is None
 

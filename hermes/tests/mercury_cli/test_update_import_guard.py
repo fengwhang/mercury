@@ -317,6 +317,8 @@ def test_import_guard_ignores_missing_third_party_dependency(monkeypatch, tmp_pa
 
 def test_import_guard_flags_missing_first_party_module(monkeypatch, tmp_path):
     """A missing *first-party* module IS skew — the update dropped a file."""
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "__init__.py").write_text("")
     (tmp_path / "consumer.py").write_text("import tools.nonexistent_module\n")
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
 
@@ -324,6 +326,17 @@ def test_import_guard_flags_missing_first_party_module(monkeypatch, tmp_path):
     assert ok is False
     assert module == "consumer"
     assert error is not None and "tools.nonexistent_module" in error
+
+
+def test_import_guard_flags_missing_first_party_root(monkeypatch, tmp_path):
+    """A clean isolated fixture must reject a wholly absent first-party root."""
+    (tmp_path / "consumer.py").write_text("import tools.todo_tool\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+    assert ok is False
+    assert module == "consumer"
+    assert error == "No module named 'tools'"
 
 
 @pytest.mark.parametrize("modname", ["agents", "agentops", "toolsets_x", "hermesx"])

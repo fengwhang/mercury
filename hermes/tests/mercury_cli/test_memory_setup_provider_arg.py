@@ -34,21 +34,14 @@ class TestMemorySetupProviderRouting:
 
 
 class TestInstallDependenciesRunner:
-    """`_install_dependencies` must route through the canonical
-    ``_pip_install`` ladder (uv → pip → ensurepip): uv when present, standard
-    pip when uv is unavailable, and an ensurepip bootstrap for pip-less venvs
-    instead of dead-ending with "cannot install"."""
+    """Explicit operator provisioning retains the uv → pip → ensurepip ladder.
+
+    Provider setup/runtime activation remains blocked from acquiring packages.
+    """
 
     def _run_with_missing_dep(self, tmp_path, which_side_effect, run_behavior=None):
-        """Drive _install_dependencies for a plugin that declares one missing
-        pip dep, capturing every subprocess.run argv issued by the ladder."""
-        import os
+        """Call the explicit post-setup installer with fully mocked subprocesses."""
         import sys
-        from unittest.mock import patch as _patch
-
-        (tmp_path / "plugin.yaml").write_text(
-            "pip_dependencies:\n  - definitely-not-installed-xyz\n", encoding="utf-8"
-        )
         calls = []
 
         def fake_run(cmd, **kw):
@@ -57,16 +50,11 @@ class TestInstallDependenciesRunner:
                 return run_behavior(cmd)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        # The hermetic conftest sets HERMES_DISABLE_LAZY_INSTALLS=1 so no test
-        # can trigger a real mid-run pip install. These tests exercise the
-        # install ladder itself (against a fully mocked subprocess.run), so
-        # they opt back in — the same both-directions override
-        # tests/tools/test_lazy_deps.py uses.
-        with _patch.dict(os.environ, {"HERMES_DISABLE_LAZY_INSTALLS": "0"}), \
-             patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
-             patch("mercury_cli.tools_config.shutil.which", side_effect=which_side_effect), \
+        with patch("mercury_cli.managed_uv.ensure_uv", return_value=which_side_effect("uv")), \
              patch("mercury_cli.tools_config.subprocess.run", fake_run):
-            memory_setup._install_dependencies("x")
+            from mercury_cli.tools_config import _pip_install
+            result = _pip_install(["definitely-not-installed-xyz"])
+            assert result.returncode == 0
         return calls, sys.executable
 
     def test_uses_uv_when_available(self, tmp_path):
@@ -94,3 +82,13 @@ class TestInstallDependenciesRunner:
         calls, py = self._run_with_missing_dep(tmp_path, lambda b: None, behavior)
         assert any("ensurepip" in c for c in calls)
         assert calls[-1][:4] == [py, "-m", "pip", "install"]
+
+    def test_provider_setup_missing_dependency_remains_blocked(self, tmp_path, capsys):
+        (tmp_path / "plugin.yaml").write_text(
+            "pip_dependencies:\n  - definitely-not-installed-xyz\n", encoding="utf-8"
+        )
+        with patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
+             patch("mercury_cli.tools_config.subprocess.run") as runner:
+            memory_setup._install_dependencies("x")
+        runner.assert_not_called()
+        assert "runtime installs are disabled" in capsys.readouterr().out.lower()

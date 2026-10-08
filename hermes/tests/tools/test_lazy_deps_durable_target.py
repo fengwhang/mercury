@@ -43,37 +43,45 @@ class TestTargetResolution:
 
 
 class TestGatingWithTarget:
-    """``HERMES_DISABLE_LAZY_INSTALLS=1`` must STOP blocking once a durable
-    target is configured — the redirect is the safe path — but the config
-    kill switch still wins in every mode."""
+    """Neither durable targets nor an env/config opt-in authorize acquisition."""
 
     def test_disable_env_blocks_without_target(self, monkeypatch):
         monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
-        # config unreadable → fails open on the config check, but the sealed
-        # env var with no target still blocks.
+        # Configuration defaults cannot authorize runtime installs.
         monkeypatch.setattr(
             "mercury_cli.config.load_config", lambda: {}, raising=False
         )
         assert ld._allow_lazy_installs() is False
 
-    def test_disable_env_allows_with_target(self, monkeypatch, tmp_path):
+    def test_disable_env_still_blocks_with_target(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
         monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(tmp_path))
         monkeypatch.setattr(
             "mercury_cli.config.load_config", lambda: {}, raising=False
         )
-        assert ld._allow_lazy_installs() is True
+        assert ld._allow_lazy_installs() is False
+        monkeypatch.setattr(ld, "_venv_pip_install", lambda *a, **kw: pytest.fail("acquisition"))
+        result = ld.install_specs(["honcho-ai==2.2.0"])
+        assert result.blocked is True
+        assert result.ok is False
 
 
-    def test_normal_mode_unaffected(self, monkeypatch):
-        # No sealed env, no target → default allow (unchanged behaviour).
+    @pytest.mark.parametrize("override", [None, "0"])
+    def test_normal_mode_and_env_optin_remain_blocked(self, monkeypatch, override):
+        # Explicit old opt-in cannot reopen the retired runtime installer.
         monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        if override is not None:
+            monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", override)
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
         monkeypatch.setattr(
             "mercury_cli.config.load_config", lambda: {}, raising=False
         )
-        assert ld._allow_lazy_installs() is True
+        assert ld._allow_lazy_installs() is False
+        monkeypatch.setattr(ld, "_venv_pip_install", lambda *a, **kw: pytest.fail("acquisition"))
+        result = ld.install_specs(["honcho-ai==2.2.0"])
+        assert result.blocked is True
+        assert result.ok is False
 
 
 # ---------------------------------------------------------------------------

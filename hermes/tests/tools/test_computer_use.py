@@ -818,13 +818,7 @@ class TestLazyMcpInstall:
 
 
 class TestContractAutoRepair:
-    """An installed-but-incompatible driver is repaired automatically, once.
-
-    The 0.20 runtime-contract gate fails closed; when the failure is an old
-    installed driver (a state Mercury' own version-floor bump created),
-    start() runs the standard install/repair path once instead of failing
-    every computer_use call until the user runs the CLI by hand.
-    """
+    """Incompatible drivers fail with manual guidance, never automatic repair."""
 
     def _incompatible(self):
         return {
@@ -834,7 +828,7 @@ class TestContractAutoRepair:
             "reason": "Mercury computer use requires cua-driver 0.20.0 or newer",
         }
 
-    def test_start_auto_repairs_incompatible_driver(self, monkeypatch):
+    def test_start_never_auto_repairs_incompatible_driver(self, monkeypatch):
         from unittest.mock import MagicMock, patch
         from tools.computer_use import cua_backend
 
@@ -845,17 +839,30 @@ class TestContractAutoRepair:
         with patch.object(
                  cua_backend,
                  "cua_driver_runtime_contract_status",
-                 side_effect=[self._incompatible(), {"ready": True}],
+                 return_value=self._incompatible(),
              ), \
              patch("mercury_cli.tools_config.install_cua_driver",
                    return_value=True) as installer, \
-             patch.object(cua_backend, "_maybe_nudge_update"), \
-             patch("tools.lazy_deps.ensure"):
-            backend.start()
+             patch.object(cua_backend, "_maybe_nudge_update") as nudge, \
+             patch("tools.lazy_deps.ensure") as ensure:
+            with pytest.raises(RuntimeError, match="mercury computer-use install"):
+                backend.start()
 
-        installer.assert_called_once_with(
-            upgrade=False, show_installer_progress=False
-        )
+        installer.assert_not_called()
+        nudge.assert_not_called()
+        ensure.assert_not_called()
+        backend._session.start.assert_not_called()
+
+    def test_provisioned_compatible_driver_starts_without_acquisition(self):
+        from unittest.mock import MagicMock, patch
+        from tools.computer_use import cua_backend
+        backend = cua_backend.CuaDriverBackend()
+        backend._session = MagicMock()
+        with patch.object(cua_backend, "cua_driver_runtime_contract_status", return_value={"ready": True}), \
+             patch("mercury_cli.tools_config.install_cua_driver") as installer, \
+             patch("tools.lazy_deps._is_satisfied", return_value=True):
+            backend.start()
+        installer.assert_not_called()
         backend._session.start.assert_called_once()
 
     def test_failed_repair_surfaces_original_error(self, monkeypatch):
@@ -875,7 +882,7 @@ class TestContractAutoRepair:
                 cua_backend.CuaDriverBackend().start()
         mock_ensure.assert_not_called()
 
-    def test_repair_is_attempted_once_per_process(self, monkeypatch):
+    def test_repeated_failures_never_attempt_repair(self, monkeypatch):
         from unittest.mock import patch
         from tools.computer_use import cua_backend
 
@@ -887,11 +894,13 @@ class TestContractAutoRepair:
              ), \
              patch("mercury_cli.tools_config.install_cua_driver",
                    return_value=False) as installer, \
+             patch.object(cua_backend, "_maybe_nudge_update") as nudge, \
              patch("tools.lazy_deps.ensure"):
             for _ in range(2):
-                with pytest.raises(RuntimeError):
+                with pytest.raises(RuntimeError, match="mercury computer-use install"):
                     cua_backend.CuaDriverBackend().start()
-        installer.assert_called_once()
+        installer.assert_not_called()
+        nudge.assert_not_called()
 
     def test_explicit_override_is_never_repaired(self, monkeypatch):
         from unittest.mock import patch

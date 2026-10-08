@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 
-def _mirc_adapter():
+def _mirc_adapter(*, acknowledge_joins=False):
     from unittest.mock import AsyncMock, MagicMock
 
     from gateway.config import PlatformConfig
@@ -26,6 +26,15 @@ def _mirc_adapter():
     writer.drain = AsyncMock()
     adapter._writer = writer
     adapter._line_queue = asyncio.Queue()
+    if acknowledge_joins:
+        async def acknowledge():
+            sent = writer.write.call_args.args[0].decode().strip()
+            if sent.startswith("JOIN "):
+                channel = sent.split()[1]
+                await adapter._handle_line(
+                    f":server 366 {adapter._current_nick} {channel} :End of NAMES"
+                )
+        writer.drain = acknowledge
     return adapter
 
 
@@ -185,7 +194,7 @@ async def test_send_raw_default_path_unchanged() -> None:
     ("testbot_1", "TESTBOT_1!relay@server"),
 ])
 async def test_self_part_clears_only_departed_room_cache(current_nick, prefix):
-    adapter = _mirc_adapter()
+    adapter = _mirc_adapter(acknowledge_joins=True)
     adapter._current_nick = current_nick
     for channel in ("#test-root", "#test-active", "#Test-Expired", "#test-expired"):
         assert await adapter.join_channel(channel)
@@ -212,7 +221,7 @@ async def test_self_part_clears_only_departed_room_cache(current_nick, prefix):
     ":testbot_1!relay@server PART",
 ])
 async def test_unrelated_part_preserves_managed_room_intent(raw):
-    adapter = _mirc_adapter()
+    adapter = _mirc_adapter(acknowledge_joins=True)
     adapter._current_nick = "testbot_1"
     assert await adapter.join_channel("#test-root")
     assert await adapter.join_channel("#test-active")
@@ -224,3 +233,15 @@ async def test_unrelated_part_preserves_managed_room_intent(raw):
     assert adapter._observatory_online_channels == {"#test-root", "#test-active"}
     assert adapter.channel == "#test"
     assert adapter.is_managed("#test")
+
+
+@pytest.mark.asyncio
+async def test_join_without_matching_receipt_fails_closed():
+    adapter = _mirc_adapter()
+    task = asyncio.create_task(adapter.join_channel("#test-unconfirmed"))
+    await asyncio.sleep(0)
+    await adapter._handle_line(":server 366 testbot #other :End of NAMES")
+    assert not task.done()
+    assert await asyncio.wait_for(task, 6) is False
+    # Intent survives for reconnect; the missing receipt must never report success.
+    assert "#test-unconfirmed" in adapter.extra_channels

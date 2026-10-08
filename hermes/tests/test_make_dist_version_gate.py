@@ -187,7 +187,7 @@ def test_modern_only_x64_addon_refuses_pack(tmp_path):
 
 
 def test_mlounge_build_preserves_committed_frontend_bytes(tmp_path, monkeypatch):
-    """The release-host dependency install must not rewrite archived source."""
+    """Prepared dependencies build offline without rewriting archived source."""
     repo = _sandbox_repo(tmp_path, VERSION)
     build = repo / "scripts/build-mlounge-fork.sh"
     shutil.copy2(REPO_ROOT / "scripts/build-mlounge-fork.sh", build)
@@ -198,25 +198,21 @@ def test_mlounge_build_preserves_committed_frontend_bytes(tmp_path, monkeypatch)
         path.name: hashlib.sha256(path.read_bytes()).hexdigest()
         for path in source.iterdir()
     }
+    (source / "node_modules").mkdir()
+    (source / "node_modules" / "prepared-fixture").write_text("cached dependency closure\n")
 
-    # Keep this regression offline: emulate the installers' lockfile behavior
-    # at the external tool boundary, while running the real generating script.
+    # Run the real generating script; all acquisition commands fail if reached.
     tools = tmp_path / "tools"
     tools.mkdir()
     (tools / "node").write_text("#!/bin/bash\nexit 0\n")
-    (tools / "npx").write_text(
-        "#!/bin/bash\nset -eu\n"
-        'if [ "$*" = "--yes yarn@1.22.22 install --frozen-lockfile --non-interactive" ]; then\n'
-        "  exit 0\n"
-        "fi\n"
-        "printf 'unlocked yarn install\\n' > yarn.lock\n")
+    (tools / "npx").write_text("#!/bin/bash\nprintf 'unexpected npx\\n' >&2\nexit 91\n")
     (tools / "npm").write_text(
         "#!/bin/bash\nset -eu\n"
-        'if [ "$1" = install ]; then\n'
-        "  printf 'npm rewrote dependency graph\\n' > yarn.lock\n"
-        "  printf '{}\\n' > package-lock.json\n"
-        "  exit 0\n"
+        'if [ "$1" = install ] || [ "$1" = ci ]; then\n'
+        "  printf 'unexpected dependency acquisition\\n' >&2\n"
+        "  exit 92\n"
         "fi\n"
+        '[ -f node_modules/prepared-fixture ]\n'
         '[ "$*" = "run build" ]\n'
         "mkdir -p dist/server/plugins/inputs dist/server/plugins/irc-events public/assets\n"
         "printf '// built\\n' > dist/server/index.js\n"
@@ -236,3 +232,13 @@ def test_mlounge_build_preserves_committed_frontend_bytes(tmp_path, monkeypatch)
         assert hashlib.sha256((source / name).read_bytes()).hexdigest() == digest
         assert hashlib.sha256((payload / name).read_bytes()).hexdigest() == digest, name
     assert not (payload / "package-lock.json").exists()
+    assert not (payload / "node_modules").exists()
+
+    shutil.rmtree(source / "node_modules")
+    missing = subprocess.run(
+        ["bash", str(build)], cwd=repo, capture_output=True, text=True, timeout=30
+    )
+    assert missing.returncode != 0
+    assert "prepared frozen mLounge dependencies missing" in missing.stderr
+    for name, digest in committed.items():
+        assert hashlib.sha256((source / name).read_bytes()).hexdigest() == digest
