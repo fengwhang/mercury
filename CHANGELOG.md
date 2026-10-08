@@ -23,6 +23,11 @@ their original projects and are not Mercury release announcements.
 - Disable dependency telemetry in Photon, Mem0 and Browser Use; require
   provisioned local Hindsight/OCR/training assets.
 - Repair the canonical Mercury tools MCP module path used by runtime subprocesses.
+- Correct mLounge's Hermes call UI with the 🌡️ indicator and automatic reuse of
+  existing Setup-configured canonical Hermes STT/TTS, without browser credentials.
+- Preserve call cancellation and stale-frame ownership across retries and
+  concurrent sessions; enable valid native browser audio playback with a scoped
+  media CSP correction and report bounded provider errors truthfully.
 
 ## [0.4.4] — nightly
 
