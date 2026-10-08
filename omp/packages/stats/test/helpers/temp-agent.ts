@@ -13,11 +13,6 @@
  * `PI_CONFIG_DIR` for the test, points the agent directory at a fresh
  * `TempDir`, closes the stats DB handle, and tears everything back down in the
  * matching `afterEach`.
- *
- * Under a Mercury launcher (`MERCURY_HOME` set) `getBaseConfigRoot` nests the
- * whole state tree under the live install — which would aim every test's
- * reads AND writes at the user's real `stats.db`. The launcher-owned home
- * variables are therefore scrubbed for the duration of each test too.
  */
 import { afterEach, beforeEach } from "bun:test";
 import * as os from "node:os";
@@ -26,7 +21,6 @@ import { closeDb } from "@oh-my-pi/omp-stats/db";
 import { getAgentDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
 const XDG_KEYS = ["XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"] as const;
-const HOME_KEYS = ["MERCURY_HOME", "HERMES_HOME", "PI_CODING_AGENT_DIR"] as const;
 
 export interface StatsTestIsolation {
 	/** Active per-test `TempDir`. Null between tests. */
@@ -43,10 +37,6 @@ export function installStatsTestIsolation(prefix: string): StatsTestIsolation {
 		tempDir = TempDir.createSync(prefix);
 		originalConfigDir = process.env.PI_CONFIG_DIR;
 		for (const key of XDG_KEYS) {
-			originalXdg[key] = process.env[key];
-			delete process.env[key];
-		}
-		for (const key of HOME_KEYS) {
 			originalXdg[key] = process.env[key];
 			delete process.env[key];
 		}
@@ -68,13 +58,6 @@ export function installStatsTestIsolation(prefix: string): StatsTestIsolation {
 			else process.env[key] = prior;
 		}
 		setAgentDir(originalAgentDir);
-		// After setAgentDir: it rewrites PI_CODING_AGENT_DIR to the previous
-		// agent dir, so the launcher's exact value is restored last.
-		for (const key of HOME_KEYS) {
-			const prior = originalXdg[key];
-			if (prior === undefined) delete process.env[key];
-			else process.env[key] = prior;
-		}
 		tempDir?.removeSync();
 		tempDir = null;
 	});

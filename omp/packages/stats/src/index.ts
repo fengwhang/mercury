@@ -17,25 +17,11 @@ export {
 } from "./aggregator";
 export { closeDb } from "./db";
 export { getGainDashboardStats } from "./gain-aggregator";
-export {
-	combineEngineAggregates,
-	getEnginesDashboardStats,
-	readHermesEngineStats,
-	resolveHermesHome,
-} from "./mercury-engines";
 export { formatStatsDashboardUrl, startServer } from "./server";
-export type { StartServerOptions, StatsServerEngines } from "./server";
 export type { GainDashboardStats, GainSource, GainSourceTotals, GainTimeSeriesPoint } from "./shared-types";
 export type {
 	AggregatedStats,
 	DashboardStats,
-	EngineAggregatedStats,
-	EngineBreakdownRow,
-	EngineId,
-	EngineMetricNote,
-	EnginesDashboardStats,
-	EngineStats,
-	EngineTimeSeriesPoint,
 	FolderStats,
 	MessageStats,
 	ModelPerformancePoint,
