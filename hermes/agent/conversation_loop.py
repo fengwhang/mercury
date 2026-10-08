@@ -2096,9 +2096,6 @@ def run_conversation(
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
-        # Peer payload is escaped agent data, not the owner's /steer channel.
-        from tools.native_agent_hub import drain_peer_records
-        drain_peer_records(agent, messages)
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
             _apply_active_turn_redirect(agent, messages, _redirect_text)

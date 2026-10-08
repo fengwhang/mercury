@@ -147,13 +147,6 @@ const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
 const BRIDGE_SEARCH_ARG = "__omp_worker_bridge_search";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
-	if (arg === "__omp_worker_native_hub") {
-		// Worker-only boundary: static import would snapshot the wrong profile's
-		// .env before runCli completes profile bootstrap.
-		const { runNativeHubServer } = await import("./mirc/external-hub");
-		await runNativeHubServer();
-		return true;
-	}
 	if (arg === BRIDGE_SEARCH_ARG) {
 		const { runBridgeSearchWorker } = await import("./cli/bridge-search-worker");
 		await runBridgeSearchWorker();

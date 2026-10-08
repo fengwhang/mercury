@@ -8304,11 +8304,6 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
         name_set.add(name)
         return True
 
-    # Rebuild the same per-session capability, without touching global schemas.
-    if getattr(agent, "_native_hub_enabled", False) and "delegate_task" in name_set:
-        from tools.native_agent_hub import HUB_SCHEMA
-        _add(HUB_SCHEMA["function"])
-
     # Memory-provider tools (mem0/honcho/byterover/supermemory/…).
     try:
         memory_manager = getattr(agent, "_memory_manager", None)

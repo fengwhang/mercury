@@ -3570,11 +3570,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             pass
         return result
 
-    if function_name == "hub":
-        def _execute(next_args: dict) -> Any:
-            from tools.native_agent_hub import dispatch_hub
-            return _finish_agent_tool(dispatch_hub(agent, next_args), next_args)
-    elif function_name == "todo":
+    if function_name == "todo":
         def _execute(next_args: dict) -> Any:
             from tools.todo_tool import todo_tool as _todo_tool
             return _finish_agent_tool(

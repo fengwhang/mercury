@@ -7173,9 +7173,6 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-            from tools.native_agent_hub import PeerWake
-            if isinstance(ctx.persist_user_message, PeerWake):
-                _conversation_kwargs["persist_user_message"] = ctx.persist_user_message
             result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
             unregister_gateway_notify(_approval_session_key)
@@ -20737,8 +20734,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         session_key: str,
         content: str,
         plugin_id: str,
-        expected_session_id: Optional[str] = None,
-        peer_wake=None,
     ) -> bool:
         """Schedule a plugin-triggered turn on the live gateway loop."""
         loop = getattr(self, "_gateway_loop", None)
@@ -20749,8 +20744,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             session_key=session_key,
             content=content,
             plugin_id=plugin_id,
-            expected_session_id=expected_session_id,
-            peer_wake=peer_wake,
         )
         try:
             current_loop = asyncio.get_running_loop()
@@ -20809,31 +20802,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         session_key: str,
         content: str,
         plugin_id: str,
-        expected_session_id: Optional[str] = None,
-        peer_wake=None,
     ) -> bool:
         """Route a plugin-triggered turn through the session's live adapter."""
-        from tools.native_agent_hub import PeerWake
-        if peer_wake is not None and (not isinstance(peer_wake, PeerWake) or content != peer_wake.record["content"]):
-            return False
         if not getattr(self, "_running", False) or getattr(self, "_draining", False):
             return False
 
         entry = await self.async_session_store.lookup_by_session_key(session_key)
         if entry is None or entry.origin is None:
             return False
-        if expected_session_id and entry.session_id != expected_session_id:
-            # Internal peer wakes pin the owning conversation, never just a
-            # reusable chat/channel key. Only a verified compression continuation
-            # may keep that native scope; /new and unrelated sessions fail closed.
-            session_db = getattr(self, "_session_db", None)
-            if session_db is None:
-                return False
-            row = await session_db.get_session(expected_session_id)
-            if not row or row.get("end_reason") != "compression":
-                return False
-            if await session_db.get_compression_tip(expected_session_id) != entry.session_id:
-                return False
         if not getattr(self, "_running", False) or getattr(self, "_draining", False):
             return False
 
@@ -20878,8 +20854,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 "gateway_session_strict": True,
             },
         )
-        if peer_wake is not None:
-            event.metadata["native_peer_wake"] = peer_wake
         await adapter.handle_message(event)
         logger.info(
             "Plugin message injection dispatched: plugin=%s session=%s session_id=%s",
@@ -21090,10 +21064,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         _redact_pii = False
         persist_user_message = None
         persist_user_timestamp = None
-        from tools.native_agent_hub import PeerWake
-        native_peer_wake = event_metadata.get("native_peer_wake")
-        if not getattr(event, "internal", False) or not isinstance(native_peer_wake, PeerWake):
-            native_peer_wake = None
         # Synthetic self-injected turns (async-delegation batch completions,
         # background watch notifications, resume wake-ups) arrive as
         # MessageEvent(internal=True). Persist their user row typed with
@@ -21105,8 +21075,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         persist_user_display_kind = (
             "internal_notification" if getattr(event, "internal", False) else None
         )
-        if native_peer_wake is not None:
-            persist_user_display_kind = "agent_peer"
         try:
             _pcfg = _load_gateway_config()
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
@@ -22667,7 +22635,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
                 moa_config=getattr(event, "_moa_config", None),
-                persist_user_message=native_peer_wake if native_peer_wake is not None else persist_user_message,
+                persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
@@ -23111,8 +23079,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 }
                 if persist_user_display_kind:
                     _user_entry["display_kind"] = persist_user_display_kind
-                if native_peer_wake is not None:
-                    _user_entry.update(attribution="agent", display_metadata=native_peer_wake.record["display_metadata"])
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
                 # Dedupe: skip if this platform message_id is already in the
@@ -23157,8 +23123,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     }
                     if persist_user_display_kind:
                         _user_entry["display_kind"] = persist_user_display_kind
-                    if native_peer_wake is not None:
-                        _user_entry.update(attribution="agent", display_metadata=native_peer_wake.record["display_metadata"])
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
                     await self.async_session_store.append_to_transcript(
@@ -23358,8 +23322,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         }
                         if 'persist_user_display_kind' in locals() and persist_user_display_kind:
                             _user_entry["display_kind"] = persist_user_display_kind
-                        if native_peer_wake is not None:
-                            _user_entry.update(attribution="agent", display_metadata=native_peer_wake.record["display_metadata"])
                         if getattr(event, "message_id", None):
                             _user_entry["message_id"] = str(event.message_id)
                         await self.async_session_store.append_to_transcript(

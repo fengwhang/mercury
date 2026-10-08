@@ -793,8 +793,6 @@ class AIAgent:
         instead of a bare reset. Default callers pass nothing and keep the
         existing reset-only behavior.
         """
-        from tools.native_agent_hub import reset_agent_hub
-        reset_agent_hub(self)
         # Token usage counters
         self.session_total_tokens = 0
         self.session_input_tokens = 0
@@ -3388,8 +3386,6 @@ class AIAgent:
             if hard_cancel:
                 _admit_hard_cancel()
             self._pending_redirect = None
-        from tools.native_agent_hub import interrupt_agent_hub
-        interrupt_agent_hub(self)
 
         # Codex app-server owns its model/tool loop and watches a private
         # interrupt event rather than Mercury' per-thread flag.
@@ -4639,8 +4635,6 @@ class AIAgent:
         Safe to call multiple times (idempotent).  Each cleanup step is
         independently guarded so a failure in one does not prevent the rest.
         """
-        from tools.native_agent_hub import detach_agent_hub
-        detach_agent_hub(self)
         # AIAgent.close() is the hard owner boundary. Gateway cleanup may
         # call shutdown_memory_provider() first; its idempotence prevents
         # duplicate extraction while direct callers cannot skip provider close.
@@ -8700,7 +8694,6 @@ class AIAgent:
         )
         from agent import relay_runtime
         from agent.conversation_loop import run_conversation
-        from tools.native_agent_hub import set_agent_hub_running
         from agent.portal_tags import (
             reset_conversation_context,
             set_conversation_context,
@@ -9045,7 +9038,6 @@ class AIAgent:
                         with durable_turn_lease_activity_lock:
                             durable_turn_lease_turn_active = True
                         durable_turn_lease_thread.start()
-                    set_agent_hub_running(self, True)
                     result = run_conversation(
                         self,
                         user_message,
@@ -9060,7 +9052,6 @@ class AIAgent:
                         moa_config=moa_config,
                     )
                 finally:
-                    set_agent_hub_running(self, False)
                     # The lease remains held through relay/task finalization, but
                     # those post-loop steps must not receive a late refresh
                     # interrupt that poisons the next turn on a cached agent.

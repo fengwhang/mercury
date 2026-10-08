@@ -34,12 +34,6 @@ export interface MircMessage {
 	replyTo?: string;
 }
 
-export type MircSendOptions = { expectsReply?: boolean; suppressRelay?: boolean };
-export type MircTransport = (
-	msg: Omit<MircMessage, "id" | "ts">,
-	opts?: MircSendOptions,
-) => Promise<MircDeliveryReceipt>;
-
 export interface MircDeliveryReceipt {
 	to: string;
 	outcome: "injected" | "woken" | "revived" | "failed";
@@ -90,31 +84,14 @@ export class MircBus {
 	readonly #waiters = new Map<string, MircWaiter[]>();
 	/** Timestamp of the latest successful send per `from` → `to`; see {@link sentSince}. */
 	readonly #lastSent = new Map<string, Map<string, number>>();
-	#transport?: MircTransport;
-	#externalDelivery?: (msg: MircMessage, opts?: MircSendOptions) => Promise<MircDeliveryReceipt>;
 
-	constructor(
-		registry: AgentRegistry = AgentRegistry.global(),
-		lifecycle?: AgentLifecycleManager,
-		externalDelivery?: (msg: MircMessage, opts?: MircSendOptions) => Promise<MircDeliveryReceipt>,
-	) {
+	constructor(registry: AgentRegistry = AgentRegistry.global(), lifecycle?: AgentLifecycleManager) {
 		this.#registry = registry;
-		this.#externalDelivery = externalDelivery;
 		// Lazy: the lifecycle global self-constructs against the global registry,
 		// so only touch it when a parked recipient actually needs reviving.
 		this.#lifecycle = () => lifecycle ?? AgentLifecycleManager.global();
 	}
 
-	/** A session-scoped external-parent adapter; absent for native OMP sessions. */
-	setTransport(transport?: MircTransport, expected?: MircTransport): void {
-		if (expected && this.#transport !== expected) return;
-		this.#transport = transport;
-	}
-
-	/** Receive a transport envelope without assigning a second ID or forwarding again. */
-	receive(message: MircMessage, opts?: MircSendOptions): Promise<MircDeliveryReceipt> {
-		return this.#deliver(message, opts);
-	}
 	/**
 	 * Fire-and-forget delivery. Never blocks on the recipient generating
 	 * anything: the receipt reports how the message reached the recipient
@@ -143,17 +120,15 @@ export class MircBus {
 		msg: Omit<MircMessage, "id" | "ts">,
 		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
 	): Promise<MircDeliveryReceipt> {
-		const ts = Date.now();
-		const receipt = this.#transport
-			? await this.#transport(msg, opts)
-			: await this.#deliver({ ...msg, id: Snowflake.next(), ts }, opts);
+		const message: MircMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };
+		const receipt = await this.#deliver(message, opts);
 		if (receipt.outcome !== "failed") {
-			let sent = this.#lastSent.get(msg.from);
+			let sent = this.#lastSent.get(message.from);
 			if (!sent) {
 				sent = new Map();
-				this.#lastSent.set(msg.from, sent);
+				this.#lastSent.set(message.from, sent);
 			}
-			sent.set(msg.to, ts);
+			sent.set(message.to, message.ts);
 		}
 		return receipt;
 	}
@@ -194,16 +169,6 @@ export class MircBus {
 				outcome: "failed",
 				error: `Agent "${message.to}" is a read-only advisor transcript and cannot be messaged.`,
 			};
-		}
-		// The external scope owns only transport. The destination's native bus
-		// still performs revival, waiter consumption, injection and wake.
-		if (this.#externalDelivery) {
-			const waiter = this.#takeMatchingWaiter(message.to, message.from);
-			if (waiter) {
-				waiter.resolve(message);
-				return { to: message.to, outcome: "injected" };
-			}
-			return this.#externalDelivery(message, opts);
 		}
 
 		// A `parked` recipient always needs the lifecycle to revive it — this is
@@ -401,14 +366,10 @@ export class MircBus {
 					settle({ kind: "abort", error: new MircAwaitTargetStopped(target) });
 					return;
 				}
-				const finishStopped = (): void => {
+				void session.waitForMircReplies().then(() => {
 					if (!active || registry.get(target)?.session !== session) return;
 					settle({ kind: "abort", error: new MircAwaitTargetStopped(target) });
-				};
-				// A failed remote drain cannot produce a future reply either.
-				// Settle through the same terminal path; never leave a rejected
-				// transport promise detached from the sender's wait.
-				void session.waitForMircReplies().then(finishStopped, finishStopped);
+				});
 			};
 			const sync = (): void => {
 				const ref = registry.get(target);

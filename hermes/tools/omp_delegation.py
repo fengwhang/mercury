@@ -871,9 +871,6 @@ class _ApprovalBridgeServer:
 
         class UnixHTTPServer(ThreadingHTTPServer):
             address_family = socket.AF_UNIX
-            # ThreadingHTTPServer defaults to daemon handlers. Close must drain
-            # accepted human decisions and their responses before unlinking.
-            daemon_threads = False
             def server_bind(self):
                 # HTTPServer.server_bind() calls socket.getfqdn() — a
                 # multi-SECOND DNS stall on resolver-less boxes (measured
@@ -891,9 +888,6 @@ class _ApprovalBridgeServer:
         self._server = UnixHTTPServer(self._path, Handler)
         self._thread = threading.Thread(
             target=self._server.serve_forever, daemon=True,
-            # BaseServer.shutdown() waits for this selector poll, not timeout.
-            # Keep batch teardown bounded without changing approval deadlines.
-            kwargs={"poll_interval": 0.05},
             name="mercury-approval-bridge")
 
     def start(self) -> str:
@@ -904,7 +898,6 @@ class _ApprovalBridgeServer:
     def stop(self) -> None:
         try:
             self._server.shutdown()
-            self._thread.join()
             self._server.server_close()
         except Exception:
             pass
@@ -1491,7 +1484,7 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
         results = [
             _run_omp_task(i, t["prompt"], env["OMP_MODEL"], workdir, timeout,
                           env.get("OMP_FALLBACK_CHAIN"), batch_procs,
-                          profile_home=_profile_home, extra_env={**(_extra or {}), **t.get("_hub_env", {})} or None,
+                          profile_home=_profile_home, extra_env=_extra or None,
                           delegation_id=delegation_id, name=t.get("name"),
                           goal=t.get("goal"),
                           owner_session_id=owner_session_id,
@@ -1506,7 +1499,7 @@ def _sync_run_inner(tasks: List[Dict[str, Any]], env: Dict[str, str],
                 pool.submit(propagate_context_to_thread(_run_omp_task), i, t["prompt"], env["OMP_MODEL"],
                             workdir, timeout, env.get("OMP_FALLBACK_CHAIN"),
                             batch_procs, profile_home=env.get("MERCURY_PROFILE_HOME"),
-                            extra_env={**(_extra or {}), **t.get("_hub_env", {})} or None,
+                            extra_env=_extra or None,
                             delegation_id=delegation_id, name=t.get("name"),
                             goal=t.get("goal"),
                             owner_session_id=owner_session_id,
@@ -1655,13 +1648,6 @@ def dispatch_omp_delegation(parent_agent: Any, function_args: Dict[str, Any]) ->
     # the moment they spawn) and can be passed to the async registry.
     delegation_id = f"deleg_{uuid.uuid4().hex[:8]}"
     owner_session_id = str(getattr(parent_agent, "session_id", "") or "")
-    # Internal native hub scope is independent of Observatory rooms. The
-    # capability was granted at agent construction, never by model task fields.
-    from tools.native_agent_hub import get_parent_hub
-    hub_scope = get_parent_hub(parent_agent)
-    if hub_scope is not None:
-        for index, task in enumerate(tasks):
-            task["_hub_env"] = hub_scope.child_env(f"{delegation_id}/{index}")
     # Wave-mem profiler (default off): when MERCURY_WAVE_MEM_PROFILE=1 (or
     # delegation.wave_mem_profile) a background sampler attributes
     # per-process RSS to parent/children/grandchildren for this wave and

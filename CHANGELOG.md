@@ -5,11 +5,6 @@ their original projects and are not Mercury release announcements.
 
 ## [0.4.5] — nightly
 
-- Give Hermes-delegated OMP children the native internal agent hub: scoped
-  parent/sibling/descendant messaging, explicit delivery receipts, peer wait
-  and inbox, reconnect-safe membership, and parent observation of sibling
-  messages. This uses a local authenticated mailbox transport, not a
-  user-facing MIRC/mLounge channel or a hosted relay.
 - Remove the grievance and outbound-telemetry systems. Nothing phones home:
   no built-in collab relay or share upload endpoint (both default empty),
   upstream `omp.sh`/`live.omp.sh`/`skills.omp.sh` hosts are rejected as invalid
