@@ -1204,6 +1204,24 @@ mod tests {
 
 	use super::ChainNode;
 
+	/// Own and reap the fixture even if an assertion panics.
+	struct OwnedProcess(std::process::Child);
+
+	impl Drop for OwnedProcess {
+		fn drop(&mut self) {
+			let _ = self.0.kill();
+			self.0.wait().expect("reap owned process fixture");
+		}
+	}
+
+	/// Run normally with EOF; the owned child stays live on its private stdin pipe.
+	#[test]
+	fn owned_process_fixture_waits_for_eof() {
+		use std::io::Read;
+		let mut byte = [0];
+		std::io::stdin().read(&mut byte).expect("read private fixture stdin");
+	}
+
 	/// Builds a lookup over a synthetic `(pid, ppid, pgid, start)` tree.
 	fn tree(nodes: &[(i32, Option<i32>, Option<i32>, u64)]) -> impl Fn(i32) -> Option<ChainNode> + '_ {
 		|pid| {
@@ -1337,14 +1355,30 @@ mod tests {
 	/// Guards against over-broad protection (a whole session, say).
 	#[test]
 	fn leaves_unrelated_processes_out_of_the_chain() {
-		let host = HostProcesses::resolve();
-		assert!(
-			ProcInfo::all()
-				.iter()
-				.map(ProcInfo::pid)
-				.any(|pid| !host.pids.contains(&pid)),
-			"every visible process is in the chain, which cannot be right"
-		);
+		let child = std::process::Command::new(std::env::current_exe().expect("test executable"))
+			.args(["--exact", "proc_snapshot::tests::owned_process_fixture_waits_for_eof", "--test-threads=1"])
+			.stdin(std::process::Stdio::piped())
+			.stdout(std::process::Stdio::null())
+			.stderr(std::process::Stdio::null())
+			.spawn()
+			.expect("spawn owned in-namespace nonancestor");
+		let mut owned = OwnedProcess(child);
+		let unrelated_pid = i32::try_from(owned.0.id()).expect("child pid fits in i32");
+		assert!(owned.0.try_wait().expect("query owned child").is_none(), "fixture must be live");
+		let all = ProcInfo::all();
+		assert!(all.iter().any(|process| process.pid() == unrelated_pid), "fixture must be observed");
+		let host = HostProcesses::resolve_in(&all);
+		assert!(!host.pids.contains(&unrelated_pid), "owned child is not an ancestor");
+		assert!(host.pids.contains(&i32::try_from(std::process::id()).expect("self pid fits in i32")));
+	}
+
+	/// An empty snapshot is valid: no ambient unrelated process is required.
+	#[test]
+	fn empty_population_protects_only_self() {
+		let host = HostProcesses::resolve_in(&[]);
+		let self_pid = i32::try_from(std::process::id()).expect("self pid fits in i32");
+		assert_eq!(host.pids.as_slice(), [self_pid]);
+		assert!(host.pgids.is_empty(), "no groups were observed");
 	}
 
 	/// Regression guard for the pid-recycling hazard: the chain comes from the
