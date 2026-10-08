@@ -43,7 +43,7 @@ class FakeSocket {
 	onerror: (() => void) | null = null;
 	send = vi.fn();
 	close = vi.fn();
-	constructor() {
+	constructor(readonly attemptId: number) {
 		const listener = relay.listener;
 		this.onmessage = (event) => listener?.(JSON.parse(event.data));
 		FakeSocket.instances.push(this);
@@ -52,6 +52,7 @@ class FakeSocket {
 		this.onmessage?.({
 			data: JSON.stringify({
 				callId: `fixture-${FakeSocket.instances.indexOf(this)}`,
+				attemptId: this.attemptId,
 				...value,
 			}),
 		});
@@ -143,9 +144,9 @@ beforeEach(() => {
 		}
 
 		if (value.type === "hello") {
-			new FakeSocket();
+			new FakeSocket(value.attemptId);
 		} else {
-			const {callId: _callId, ...control} = value;
+			const {callId: _callId, attemptId: _attemptId, ...control} = value;
 			sockets.at(-1)?.send(value.type === "audio" ? value.data : JSON.stringify(control));
 		}
 	});
@@ -188,6 +189,7 @@ describe("voice phone entry", () => {
 		expect(emitInput).toHaveBeenCalledWith("voice:call", {
 			type: "hello",
 			target: 1,
+			attemptId: expect.any(Number),
 			mime: "audio/webm;codecs=opus",
 		});
 		expect(localStorage.getItem("mlounge.voiceCall.token")).toBeNull();
@@ -364,11 +366,49 @@ describe("voice phone entry", () => {
 		expect(emitInput).toHaveBeenCalledWith("voice:call", {
 			type: "hangup",
 			callId: "fixture-0",
+			attemptId: sockets[0].attemptId,
 		});
 		delayed({data: JSON.stringify({type: "ready", engine: "hermes", callId: "fixture-0"})});
 		await flushPromises();
 		expect(document.querySelector(".voice-call-screen")).toBeNull();
 		expect(stop).toHaveBeenCalledOnce();
+		wrapper.unmount();
+	});
+	it("cancels before any ACK and isolates a new attempt from late old frames", async () => {
+		const wrapper = render();
+		configureRelay(wrapper);
+		await wrapper.get(".call-toggle").trigger("click");
+		await flushPromises();
+		const first = sockets[0];
+		await click(".voice-end");
+		expect(emitInput).toHaveBeenCalledWith("voice:call", {
+			type: "hangup",
+			attemptId: first.attemptId,
+		});
+		await wrapper.get(".call-toggle").trigger("click");
+		await flushPromises();
+		const second = sockets[1];
+		expect(second.attemptId).toBeGreaterThan(first.attemptId);
+
+		for (const type of ["ready", "audio", "transcript"]) {
+			// Deliver on the current listener, not merely the detached old closure.
+			relay.listener?.({
+				type,
+				attemptId: first.attemptId,
+				callId: "old",
+				engine: "hermes",
+				text: "must not send",
+				dataUrl: "must not play",
+			});
+		}
+
+		await flushPromises();
+		expect(document.querySelector(".voice-timer")).toBeNull();
+		expect(emitInput).not.toHaveBeenCalledWith("input", expect.anything());
+		expect(playedSources).toHaveLength(0);
+		second.message({type: "ready", engine: "hermes"});
+		await flushPromises();
+		expect(document.querySelector(".voice-timer")).not.toBeNull();
 		wrapper.unmount();
 	});
 	it("releases a microphone permission request that resolves after End", async () => {

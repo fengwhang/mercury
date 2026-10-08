@@ -43,6 +43,16 @@ mLounge session. Missing host configuration, local dependencies/model assets,
 service authentication, microphone permission, and engine failures are visible
 host Setup/doctor remediation—not a request for browser credentials.
 
+Each start carries a monotonically increasing socket-scoped `attemptId` through
+controls and returned frames. It is correlation, not authority: the relay still
+requires the owning authenticated session, exact origin/network and live target.
+The relay mints a local `callId` and maps the sidecar's separate authoritative
+upstream ID; neither browser field selects a MIRC registry ID. End cancels the
+pending attempt before any ready ACK, and late frames cannot bind a newer call.
+A cancelled status lookup never starts the registry. If start was already in
+flight, its outcome remains uncertain until exact-ID end reconciliation; it is
+not replayed and no bare-channel cleanup is used.
+
 The duration is `mm:ss`, measured from the sidecar's `ready` establishment,
 not from the button click or the microphone permission prompt. Established
 calls show no waveform, transcript, or connection status. Transcripts still

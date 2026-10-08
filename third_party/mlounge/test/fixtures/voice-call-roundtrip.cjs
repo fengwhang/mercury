@@ -53,7 +53,9 @@ const start = require("../../dist/server/server.js").default;
 
 	const server = await start({dev: false});
 
-	if (!server.listening) {await once(server, "listening");}
+	if (!server.listening) {
+		await once(server, "listening");
+	}
 
 	const browser = io(`http://127.0.0.1:${server.address().port}`, {
 		transports: ["websocket"],
@@ -79,18 +81,21 @@ const start = require("../../dist/server/server.js").default;
 			init.token,
 			"fresh browser must receive existing mLounge session token, not a voice credential"
 		);
-		const ready = await frame({type: "hello", target: 123, mime: "audio/wav"});
+		const attemptId = 1;
+		const ready = await frame({type: "hello", attemptId, target: 123, mime: "audio/wav"});
 		assert.equal(ready.type, "ready", JSON.stringify(ready));
 		assert.equal(ready.sttProvider, "parakeet");
 		const transcript = await frame({
 			type: "audio",
 			callId: ready.callId,
+			attemptId,
 			data: fs.readFileSync(process.env.FIXTURE_AUDIO),
 		});
 		assert.equal(transcript.text, "bonjour from browser");
 		const speech = await frame({
 			type: "tts",
 			callId: ready.callId,
+			attemptId,
 			text: "Hermes reply to " + transcript.text,
 			token: "reply-1",
 		});
@@ -99,7 +104,7 @@ const start = require("../../dist/server/server.js").default;
 		const bytes = Buffer.from(speech.dataUrl.split(",")[1], "base64");
 		assert.equal(bytes.subarray(0, 4).toString(), "RIFF");
 		assert.equal(bytes.readUInt32LE(40), 3200);
-		const ended = await frame({type: "hangup", callId: ready.callId});
+		const ended = await frame({type: "hangup", attemptId, callId: ready.callId});
 		assert.equal(ended.type, "ended");
 		process.stdout.write(
 			"VOICE_CALL_PROOF=" +

@@ -148,6 +148,31 @@ class WsConnection:
         self.rfile = rfile if rfile is not None else conn.makefile("rb")
         self.lock = threading.Lock()
         self.closed = False
+        self.messages: Optional[queue.Queue[tuple[str, bytes]]] = None
+
+    def watch_startup(self) -> None:
+        """One reader owns transport EOF even while status/start HTTP is blocked."""
+        messages: queue.Queue[tuple[str, bytes]] = queue.Queue(maxsize=12)
+        self.messages = messages
+
+        def read():
+            try:
+                while not self.closed:
+                    message = self._read_message()
+                    if message[0] == "close":
+                        break
+                    messages.put_nowait(message)
+            except (OSError, ValueError, queue.Full):
+                pass
+            finally:
+                self.close()
+                # A full queue is discarded only after the transport is closed.
+                while not messages.empty():
+                    with contextlib.suppress(queue.Empty):
+                        messages.get_nowait()
+                messages.put_nowait(("close", b""))
+
+        threading.Thread(target=read, daemon=True).start()
 
     def send_json(self, message: Dict[str, Any], *, guard=None, timeout=None) -> None:
         raw = json.dumps(message).encode("utf-8")
@@ -181,6 +206,11 @@ class WsConnection:
             raise ConnectionError("Voice control response failed; call ended") from failure
 
     def recv_message(self) -> tuple[str, bytes]:
+        if self.messages is not None:
+            return self.messages.get()
+        return self._read_message()
+
+    def _read_message(self) -> tuple[str, bytes]:
         """Next complete message as (kind, payload): text|binary|close."""
         fragments: list[bytes] = []
         text_mode: Optional[bool] = None
@@ -620,12 +650,16 @@ class SidecarHandler(BaseHTTPRequestHandler):
         if not channel:
             ws.send_json({"type": "error", "message": "hello.channel is required"})
             return
+        if isinstance(ws, WsConnection):
+            ws.watch_startup()
         status = self.state.request(
                 f"/api/voice-call/status?channel={urllib.parse.quote(channel)}",
             None,
             timeout=10.0,
         )
         engine = str(status.get("engine") or "unknown")
+        if getattr(ws, "closed", False):
+            return
         if not status.get("ok") or status.get("allowed") is not True:
             ws.send_json({
                 "type": "refused",
@@ -641,11 +675,22 @@ class SidecarHandler(BaseHTTPRequestHandler):
             ws.send_json({"type": "refused", "reason": "Configured STT unavailable; rerun Mercury Setup/doctor on the mLounge host"})
             return
         call_id = self.state.next_call_id()
+        if getattr(ws, "closed", False):
+            return
         started = self.state.request(
                 "/api/voice-call/call",
             {"action": "start", "channel": channel, "engine": engine, "call_id": call_id},
             timeout=10.0,
         )
+        if getattr(ws, "closed", False):
+            # Start was already in flight: its outcome may be unknown. Reconcile
+            # exactly the UUID we submitted, never replay start or end a room.
+            self.state.request(
+                "/api/voice-call/call",
+                {"action": "end", "channel": channel, "call_id": call_id},
+                timeout=10.0,
+            )
+            return
         if not started.get("ok"):
             try:
                 ws.send_json({
@@ -758,13 +803,13 @@ class SidecarHandler(BaseHTTPRequestHandler):
     def _call_authorized(self, ws: WsConnection, call_id: str) -> bool:
         """Revalidate the selected host/profile's live node before provider effects."""
         channel = self._call_channel(call_id)
-        if not channel:
+        if not channel or ws.closed:
             return False
         status = self.state.request(
             f"/api/voice-call/status?channel={urllib.parse.quote(channel)}",
             None, timeout=10.0)
         if status.get("ok") and status.get("allowed") is True and status.get("engine") == "hermes":
-            return self._call_channel(call_id) == channel
+            return not ws.closed and self._call_channel(call_id) == channel
         ws.close(message={"type": "refused", "callId": call_id,
                           "reason": str(status.get("reason") or status.get("error") or "Call target expired or changed engine/profile")})
         return False
@@ -783,7 +828,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             if not call or call["muted"] or call["audio_epoch"] != epoch:
                 return
             channel, mime = call["channel"], call["mime"]
-        if not self._call_authorized(ws, call_id) or not self._audio_current(call_id, epoch):
+        if not self._call_authorized(ws, call_id) or ws.closed or not self._audio_current(call_id, epoch):
             return
         result = transcribe_chunk(payload, mime, call.get("stt_config", self.state.stt_config))
         with self.state.lock:

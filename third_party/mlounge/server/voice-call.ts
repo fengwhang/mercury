@@ -1,4 +1,5 @@
 import fs from "fs";
+import {randomUUID} from "crypto";
 import WebSocket from "ws";
 import {ChanState, ChanType} from "../shared/types/chan";
 import type {VoiceCallFrame} from "../shared/types/socket-events";
@@ -43,6 +44,8 @@ type ActiveCall = {
 	network: string;
 	channel: string;
 	callId: string;
+	upstreamId: string;
+	attemptId: number;
 	config: VoiceRelayConfig;
 	timer: NodeJS.Timeout | null;
 };
@@ -143,7 +146,12 @@ export function loadVoiceRelayConfig(): VoiceRelayConfig | null {
 			sidecarToken,
 			profile: data.profile,
 			users: data.users,
-			network: {uuid: data.network.uuid, host: data.network.host, port: data.network.port, tls: data.network.tls},
+			network: {
+				uuid: data.network.uuid,
+				host: data.network.host,
+				port: data.network.port,
+				tls: data.network.tls,
+			},
 		};
 	} catch {
 		return null;
@@ -158,6 +166,7 @@ export function registerVoiceCall(
 	readConfig = loadVoiceRelayConfig
 ): void {
 	let active: ActiveCall | null = null;
+	let lastAttempt = 0;
 	const send = (frame: VoiceCallFrame) => socket.emit("voice:call", frame);
 
 	const close = () => {
@@ -173,7 +182,10 @@ export function registerVoiceCall(
 		}
 
 		if (call.peer.readyState === WebSocket.OPEN) {
-			call.peer.send(JSON.stringify({type: "hangup", callId: call.callId}));
+			if (call.upstreamId) {
+				call.peer.send(JSON.stringify({type: "hangup", callId: call.upstreamId}));
+			}
+
 			call.peer.close();
 		} else {
 			call.peer.terminate();
@@ -226,8 +238,23 @@ export function registerVoiceCall(
 		}
 
 		if (data.type === "hello") {
+			const attemptId = data.attemptId;
+
+			if (
+				typeof attemptId !== "number" ||
+				!Number.isSafeInteger(attemptId) ||
+				attemptId <= lastAttempt
+			) {
+				send({
+					type: "refused",
+					attemptId: typeof attemptId === "number" ? attemptId : undefined,
+					reason: "Invalid or replayed call attempt",
+				});
+				return;
+			}
+
 			if (active) {
-				send({type: "refused", reason: "End the existing call first"});
+				send({type: "refused", attemptId, reason: "End the existing call first"});
 				return;
 			}
 
@@ -240,19 +267,24 @@ export function registerVoiceCall(
 			if (!cfg || !target) {
 				send({
 					type: "refused",
+					attemptId,
 					reason: "Call target/session unavailable; rerun Mercury Setup on the selected host/profile",
 				});
 				return;
 			}
 
 			if (
-				Object.keys(data).some((key) => !["type", "target", "mime"].includes(key)) ||
+				Object.keys(data).some(
+					(key) => !["type", "target", "mime", "attemptId"].includes(key)
+				) ||
 				typeof data.mime !== "string" ||
 				!/^audio\/(webm|ogg|mp4|mpeg|wav)(;.*)?$/.test(data.mime)
 			) {
-				send({type: "refused", reason: "Invalid call configuration"});
+				send({type: "refused", attemptId, reason: "Invalid call configuration"});
 				return;
 			}
+
+			lastAttempt = attemptId;
 
 			const url = new URL(cfg.sidecarUrl);
 			url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -268,19 +300,29 @@ export function registerVoiceCall(
 				target: target.chan.id,
 				network: target.network.uuid,
 				channel: target.chan.name,
-				callId: "",
+				callId: randomUUID(),
+				upstreamId: "",
+				attemptId,
 				config: cfg,
 				timer: null,
 			};
 			active = call;
 			peer.on("open", () => {
-				if (active !== call || !targetAllowed(call.target, cfg)) {
+				if (active !== call) {
+					return;
+				}
+
+				if (!targetAllowed(call.target, cfg)) {
 					close();
 					return;
 				}
 
 				peer.send(JSON.stringify({type: "hello", channel: call.channel, mime: data.mime}));
 				call.timer = setInterval(() => {
+					if (active !== call) {
+						return;
+					}
+
 					const latest = readConfig();
 					const context =
 						latest && JSON.stringify(latest) === JSON.stringify(cfg)
@@ -293,7 +335,7 @@ export function registerVoiceCall(
 						context.chan.name !== call.channel
 					) {
 						close();
-						send({type: "ended", callId: call.callId});
+						send({type: "ended", callId: call.callId, attemptId});
 					}
 				}, 1000);
 			});
@@ -336,20 +378,27 @@ export function registerVoiceCall(
 							send({
 								type: "refused",
 								reason: "Only a confirmed Hermes call is allowed",
+								attemptId,
 							});
 							return;
 						}
 
-						call.callId = frame.callId;
-					} else if (frame.callId !== undefined && frame.callId !== call.callId) {
+						if (call.upstreamId) {
+							close();
+							return;
+						}
+
+						call.upstreamId = frame.callId;
+					} else if (frame.callId !== undefined && frame.callId !== call.upstreamId) {
 						close();
 						return;
 					}
 
-					send({...frame, type: frame.type});
+					send({...frame, type: frame.type, callId: call.callId, attemptId});
 				} catch {
 					close();
-					send({type: "error", message: "Invalid voice service response"});
+					// Every frame is scoped, including service errors without an upstream ID.
+					send({type: "error", attemptId, message: "Invalid voice service response"});
 				}
 			});
 			peer.on("error", () => {
@@ -357,6 +406,7 @@ export function registerVoiceCall(
 					close();
 					send({
 						type: "error",
+						attemptId,
 						message: "Configured voice service unavailable; rerun host Setup/doctor",
 					});
 				}
@@ -368,7 +418,7 @@ export function registerVoiceCall(
 
 				if (active === call) {
 					active = null;
-					send({type: "ended", callId: call.callId});
+					send({type: "ended", callId: call.callId, attemptId});
 				}
 			});
 			return;
@@ -376,8 +426,17 @@ export function registerVoiceCall(
 
 		const call = active;
 
-		if (!call || !call.callId || data.callId !== call.callId) {
-			send({type: "error", message: "Invalid or expired call ID"});
+		if (
+			!call ||
+			data.attemptId !== call.attemptId ||
+			(data.type !== "hangup" && (!call.upstreamId || data.callId !== call.callId)) ||
+			(data.type === "hangup" && data.callId !== undefined && data.callId !== call.callId)
+		) {
+			send({
+				type: "error",
+				attemptId: typeof data.attemptId === "number" ? data.attemptId : undefined,
+				message: "Invalid or expired call ID",
+			});
 			return;
 		}
 
@@ -389,13 +448,13 @@ export function registerVoiceCall(
 
 		if (!target || target.network.uuid !== call.network || target.chan.name !== call.channel) {
 			close();
-			send({type: "error", message: "Call authorization expired"});
+			send({type: "error", attemptId: call.attemptId, message: "Call authorization expired"});
 			return;
 		}
 
 		if (data.type === "hangup") {
 			close();
-			send({type: "ended", callId: call.callId});
+			send({type: "ended", callId: call.callId, attemptId: call.attemptId});
 			return;
 		}
 
@@ -413,7 +472,11 @@ export function registerVoiceCall(
 				audio.byteLength > MAX_AUDIO
 			) {
 				close();
-				send({type: "error", message: "Invalid or oversized audio"});
+				send({
+					type: "error",
+					attemptId: call.attemptId,
+					message: "Invalid or oversized audio",
+				});
 				return;
 			}
 
@@ -429,18 +492,20 @@ export function registerVoiceCall(
 			call.peer.send(
 				JSON.stringify({
 					type: "tts",
-					callId: call.callId,
+					callId: call.upstreamId,
 					text: data.text,
 					token: data.token,
 				})
 			);
 		} else if (data.type === "mute" && typeof data.muted === "boolean") {
-			call.peer.send(JSON.stringify({type: "mute", callId: call.callId, muted: data.muted}));
+			call.peer.send(
+				JSON.stringify({type: "mute", callId: call.upstreamId, muted: data.muted})
+			);
 		} else if (data.type === "ping") {
-			call.peer.send(JSON.stringify({type: "ping", callId: call.callId}));
+			call.peer.send(JSON.stringify({type: "ping", callId: call.upstreamId}));
 		} else {
 			close();
-			send({type: "error", message: "Invalid call control"});
+			send({type: "error", attemptId: call.attemptId, message: "Invalid call control"});
 		}
 	});
 	socket.on("disconnect", close);

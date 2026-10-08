@@ -162,6 +162,9 @@ type VoiceSocket = {
 };
 type CallConnection = {send(frame: VoiceFrame | ArrayBuffer): void; close(): void};
 
+// Monotonic for this authenticated browser socket, including component remounts.
+let nextAttempt = 0;
+
 export default defineComponent({
 	name: "VoiceCall",
 	props: {
@@ -747,6 +750,7 @@ export default defineComponent({
 				}
 
 				stream = acquired;
+				const attemptId = ++nextAttempt;
 				let callId = "";
 				// eslint-disable-next-line prefer-const -- Handlers capture the connection before registration.
 				let current: CallConnection;
@@ -770,6 +774,10 @@ export default defineComponent({
 					}
 
 					const message = payload as Record<string, unknown>;
+
+					if (message.attemptId !== attemptId) {
+						return;
+					}
 
 					if (typeof message.callId === "string" && message.callId) {
 						if (callId && message.callId !== callId) {
@@ -879,15 +887,24 @@ export default defineComponent({
 
 				current = {
 					send(packet) {
-						if (ws !== current || !store.state.isConnected || !callId) {
+						if (
+							ws !== current ||
+							!store.state.isConnected ||
+							(!callId &&
+								!(
+									typeof packet === "object" &&
+									"type" in packet &&
+									packet.type === "hangup"
+								))
+						) {
 							return;
 						}
 
 						relay.emit(
 							"voice:call",
 							packet instanceof ArrayBuffer
-								? {type: "audio", callId, data: packet}
-								: {...packet, callId}
+								? {type: "audio", callId, attemptId, data: packet}
+								: {...packet, attemptId, ...(callId ? {callId} : {})}
 						);
 					},
 					close() {
@@ -900,7 +917,7 @@ export default defineComponent({
 				relay.on("voice:call", onFrame);
 				relay.on("disconnect", onDisconnect);
 				relay.on("auth:failed", onAuthFailed);
-				relay.emit("voice:call", {type: "hello", target: channel.id, mime});
+				relay.emit("voice:call", {type: "hello", target: channel.id, mime, attemptId});
 			} catch (cause) {
 				if (callEpoch === epoch) {
 					const name =

@@ -105,6 +105,16 @@ it("relays retained call wire over authenticated socket with server-only credent
 		extraHeaders: {Origin: cfg.origin},
 		reconnection: false,
 	});
+	let attemptId = 0;
+	let callId = "";
+
+	const readyFrame = async (response: Promise<VoiceCallFrame>) => {
+		const ready = await response;
+		expect(ready.type).toBe("ready");
+		expect(ready.callId).not.toBe("call-owned");
+		callId = ready.callId!;
+	};
+
 	const nextFrame = () =>
 		new Promise<VoiceCallFrame>((resolve, reject) => {
 			const timeout = setTimeout(() => reject(new Error("frame timeout")), 2000);
@@ -116,14 +126,25 @@ it("relays retained call wire over authenticated socket with server-only credent
 
 	try {
 		await new Promise<void>((resolve) => browser.once("connect", resolve));
-		browser.emit("voice:call", {type: "hello", target: 123, mime: "audio/wav"});
+		browser.emit("voice:call", {
+			type: "hello",
+			attemptId: ++attemptId,
+			target: 123,
+			mime: "audio/wav",
+		});
 		browser.emit("auth:perform", "private-user");
 		let response = nextFrame();
-		browser.emit("voice:call", {type: "hello", target: 999, mime: "audio/wav"});
+		browser.emit("voice:call", {
+			type: "hello",
+			attemptId: ++attemptId,
+			target: 999,
+			mime: "audio/wav",
+		});
 		expect((await response).type).toBe("refused");
 		response = nextFrame();
 		browser.emit("voice:call", {
 			type: "hello",
+			attemptId: ++attemptId,
 			target: 123,
 			mime: "audio/wav",
 			url: "http://evil",
@@ -134,72 +155,120 @@ it("relays retained call wire over authenticated socket with server-only credent
 		expect(received).toHaveLength(0);
 		client.name = "foreign-user";
 		response = nextFrame();
-		browser.emit("voice:call", {type: "hello", target: 123, mime: "audio/wav"});
+		browser.emit("voice:call", {
+			type: "hello",
+			attemptId: ++attemptId,
+			target: 123,
+			mime: "audio/wav",
+		});
 		expect((await response).type).toBe("refused");
 		client.name = "owner";
 		target.network.irc.options.host = "foreign-irc";
 		response = nextFrame();
-		browser.emit("voice:call", {type: "hello", target: 123, mime: "audio/wav"});
+		browser.emit("voice:call", {
+			type: "hello",
+			attemptId: ++attemptId,
+			target: 123,
+			mime: "audio/wav",
+		});
 		expect((await response).type).toBe("refused");
 		target.network.irc.options.host = "irc.example";
 		cfg.origin = "https://foreign-origin.example";
 		response = nextFrame();
-		browser.emit("voice:call", {type: "hello", target: 123, mime: "audio/wav"});
+		browser.emit("voice:call", {
+			type: "hello",
+			attemptId: ++attemptId,
+			target: 123,
+			mime: "audio/wav",
+		});
 		expect((await response).type).toBe("refused");
 		cfg.origin = "https://lounge.example";
 		target.network.uuid = "foreign-network";
 		response = nextFrame();
-		browser.emit("voice:call", {type: "hello", target: 123, mime: "audio/wav"});
+		browser.emit("voice:call", {
+			type: "hello",
+			attemptId: ++attemptId,
+			target: 123,
+			mime: "audio/wav",
+		});
 		expect((await response).type).toBe("refused");
 		target.network.uuid = "owned-network";
 		expect(received).toHaveLength(0);
 		response = nextFrame();
-		browser.emit("voice:call", {type: "hello", target: 123, mime: "audio/wav"});
-		expect((await response).type).toBe("ready");
+		browser.emit("voice:call", {
+			type: "hello",
+			attemptId: ++attemptId,
+			target: 123,
+			mime: "audio/wav",
+		});
+		await readyFrame(response);
 		response = nextFrame();
-		browser.emit("voice:call", {type: "audio", callId: "foreign", data: Buffer.from("audio")});
+		browser.emit("voice:call", {
+			type: "audio",
+			attemptId,
+			callId: "foreign",
+			data: Buffer.from("audio"),
+		});
 		expect((await response).type).toBe("error");
 		response = nextFrame();
 		browser.emit("voice:call", {
 			type: "audio",
-			callId: "call-owned",
+			callId,
+			attemptId,
 			data: Buffer.from("audio"),
 		});
 		expect((await response).text).toBe("hello");
 		response = nextFrame();
 		browser.emit("voice:call", {
 			type: "tts",
-			callId: "call-owned",
+			callId,
+			attemptId,
 			text: "reply",
 			token: "reply-1",
 		});
 		expect((await response).type).toBe("audio");
 		response = nextFrame();
-		browser.emit("voice:call", {type: "hangup", callId: "call-owned"});
+		browser.emit("voice:call", {type: "hangup", attemptId, callId});
 		expect((await response).type).toBe("ended");
 		expect(received.some((value) => Buffer.isBuffer(value))).toBe(true);
 		response = nextFrame();
-		browser.emit("voice:call", {type: "hangup", callId: "call-owned"});
+		browser.emit("voice:call", {type: "hangup", attemptId, callId});
 		expect((await response).type).toBe("error");
 		Reflect.deleteProperty(client.config.sessions, "session");
 		response = nextFrame();
-		browser.emit("voice:call", {type: "hello", target: 123, mime: "audio/wav"});
+		browser.emit("voice:call", {
+			type: "hello",
+			attemptId: ++attemptId,
+			target: 123,
+			mime: "audio/wav",
+		});
 		expect((await response).type).toBe("refused");
 		Reflect.set(client.config.sessions, "session", {});
 		response = nextFrame();
-		browser.emit("voice:call", {type: "hello", target: 123, mime: "audio/wav"});
-		expect((await response).type).toBe("ready");
+		browser.emit("voice:call", {
+			type: "hello",
+			attemptId: ++attemptId,
+			target: 123,
+			mime: "audio/wav",
+		});
+		await readyFrame(response);
 		response = nextFrame();
 		browser.emit("voice:call", {
 			type: "audio",
-			callId: "call-owned",
+			callId,
+			attemptId,
 			data: Buffer.alloc(8 * 1024 * 1024 + 1),
 		});
 		expect((await response).type).toBe("error");
 		expect(received.filter((value) => Buffer.isBuffer(value))).toHaveLength(1);
 		response = nextFrame();
-		browser.emit("voice:call", {type: "hello", target: 123, mime: "audio/wav"});
-		expect((await response).type).toBe("ready");
+		browser.emit("voice:call", {
+			type: "hello",
+			attemptId: ++attemptId,
+			target: 123,
+			mime: "audio/wav",
+		});
+		await readyFrame(response);
 		response = nextFrame();
 		target.network.status.connected = false;
 		expect((await response).type).toBe("ended");

@@ -20,6 +20,7 @@ type EventHandler<T> = (data: T) => void;
 export type VoiceCallFrame = {
 	type: string;
 	callId?: string;
+	attemptId?: number;
 	[key: string]: unknown;
 };
 
