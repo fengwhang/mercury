@@ -14,9 +14,9 @@ const versions: SharedChangelogData = {
 	packages: undefined,
 };
 
-async function fetch() {
+function fetch(): Promise<SharedChangelogData> {
 	// Release information comes from the installed artifact, never a vendor poll.
-	return versions;
+	return Promise.resolve(versions);
 }
 
 function checkForUpdates(_manager: ClientManager) {

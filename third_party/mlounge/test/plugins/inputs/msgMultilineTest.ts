@@ -41,17 +41,17 @@ function fakeNetwork({multilineCap = true, echoCap = true} = {}): FakeHarness {
 					cap === "draft/multiline"
 						? multilineCap
 						: cap === "echo-message"
-							? echoCap
-							: false,
+						? echoCap
+						: false,
 			},
 		},
-		say: (target: string, text: string, tags?: Record<string, string>) => {
+		say(target: string, text: string, tags?: Record<string, string>) {
 			said.push({target, text, tags});
 		},
-		raw: (...parts: string[]) => {
+		raw(...parts: string[]) {
 			rawFrames.push(parts);
 		},
-		emit: (event: string, data: {nick: string; message: string}) => {
+		emit(event: string, data: {nick: string; message: string}) {
 			emitted.push({event, data});
 		},
 		user: {nick: "owner", username: "owner", host: "h"},
@@ -67,20 +67,12 @@ function fakeNetwork({multilineCap = true, echoCap = true} = {}): FakeHarness {
 describe("Mercury multiline input batching", () => {
 	it("sends a paste as one BATCH with tagged lines", () => {
 		const {network, chan, said, rawFrames} = fakeNetwork();
-		msgInput.input.call(
-			{},
-			network,
-			chan,
-			"say",
-			["line", "one\nline", "two"]
-		);
+		msgInput.input.call({}, network, chan, "say", ["line", "one\nline", "two"]);
 		expect(rawFrames[0][0]).toBe("BATCH");
 		const ref = rawFrames[0][1].slice(1);
 		expect(said).toHaveLength(2);
-		expect(said[0]).toEqual(
-			{target: "#test", text: "line one", tags: {batch: ref}});
-		expect(said[1]).toEqual(
-			{target: "#test", text: "line two", tags: {batch: ref}});
+		expect(said[0]).toEqual({target: "#test", text: "line one", tags: {batch: ref}});
+		expect(said[1]).toEqual({target: "#test", text: "line two", tags: {batch: ref}});
 		expect(rawFrames[rawFrames.length - 1]).toEqual(["BATCH", `-${ref}`]);
 	});
 

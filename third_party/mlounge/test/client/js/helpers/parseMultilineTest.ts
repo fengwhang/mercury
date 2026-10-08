@@ -6,8 +6,10 @@ import {expect, describe, it, vi} from "vitest";
 vi.mock("../../../../client/js/socket", () => ({default: {}}));
 
 import parse from "../../../../client/js/helpers/parse";
+
 function eachNode(nodes: unknown, visit: (node: unknown) => void): void {
 	const list = Array.isArray(nodes) ? nodes : [nodes];
+
 	for (const node of list) {
 		if (Array.isArray(node)) {
 			eachNode(node, visit);
@@ -22,12 +24,16 @@ function hasBr(nodes: unknown): boolean {
 	eachNode(nodes, (node) => {
 		if (node && typeof node === "object") {
 			const vnode = node as {type?: unknown; children?: unknown};
+
 			if (vnode.type === "br") {
 				found = true;
 			} else if (vnode.children !== undefined) {
 				eachNode(vnode.children, (inner) => {
-					if (inner && typeof inner === "object" &&
-						(inner as {type?: unknown}).type === "br") {
+					if (
+						inner &&
+						typeof inner === "object" &&
+						(inner as {type?: unknown}).type === "br"
+					) {
 						found = true;
 					}
 				});
@@ -44,6 +50,7 @@ function textOf(nodes: unknown): string {
 			out += node;
 		} else if (node && typeof node === "object") {
 			const vnode = node as {children?: unknown};
+
 			if (typeof vnode.children === "string") {
 				out += vnode.children;
 			}

@@ -97,17 +97,18 @@ const input: PluginInputHandler = function (network, chan, cmd, args) {
 	// (single visual message) when the server negotiated it; plain say()
 	// otherwise. Empty lines are dropped to match irc-framework's send.
 	const lines = msg.split(/\r\n|\n|\r/).filter((line) => line.length > 0);
-	const canBatch =
-		lines.length > 1 &&
-		network.irc.network.cap.isEnabled("draft/multiline");
+	const canBatch = lines.length > 1 && network.irc.network.cap.isEnabled("draft/multiline");
+
 	if (canBatch) {
-		const ref = `ml${Date.now().toString(36)}${Math.floor(
-			Math.random() * 0xffffff
-		).toString(36)}`;
+		const ref = `ml${Date.now().toString(36)}${Math.floor(Math.random() * 0xffffff).toString(
+			36
+		)}`;
 		network.irc.raw("BATCH", `+${ref}`, "draft/multiline", targetName);
+
 		for (const line of lines) {
 			network.irc.say(targetName, line, {batch: ref});
 		}
+
 		network.irc.raw("BATCH", `-${ref}`);
 	} else {
 		network.irc.say(targetName, msg);
