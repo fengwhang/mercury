@@ -22,6 +22,7 @@ their original projects and are not Mercury release announcements.
   Strip inference/cloud credentials from native CUA children after passthrough.
 - Disable dependency telemetry in Photon, Mem0 and Browser Use; require
   provisioned local Hindsight/OCR/training assets.
+- Repair the canonical Mercury tools MCP module path used by runtime subprocesses.
 
 ## [0.4.4] — nightly
 
