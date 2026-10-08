@@ -18,10 +18,11 @@ interface TemplateProbeResult {
 	assetsRemoved: number;
 }
 
+// Canonical offline recipe and input hashes: fixtures/html-export-template-provenance.json.
 const expectedTemplate: TemplateProbeResult = {
-	chars: 384_681,
-	bytes: 384_839,
-	sha256: "38176b9f29f520b366f5e5d97f634751a6e40ab9d325fbed15beefb8e237748d",
+	chars: 384_233,
+	bytes: 384_391,
+	sha256: "47b2bc3c6aed6a82f54db0c2d442d1b6133342632c40c5f96c7663a462ff77db",
 	stableCache: true,
 	assetsRemoved: 0,
 };
