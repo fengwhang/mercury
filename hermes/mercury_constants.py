@@ -1906,6 +1906,8 @@ FIRST_PARTY_MODULE_ROOTS = frozenset(
         "cli",
         "cron",
         "gateway",
+        "mercury_constants",
+        "mercury_cli",
         "model_tools",
         "plugins",
         "providers",

@@ -686,7 +686,27 @@ def _critical_module_import_failures(
 
     marker = f"__HERMES_IMPORT_HEALTH_{secrets.token_hex(16)}__"
     probe = (
-        "import importlib, json, sys\n"
+        "import importlib, importlib.abc, importlib.machinery, json, sys\n"
+        "from pathlib import Path\n"
+        "root = Path(%r).resolve()\n"
+        "sys.path.insert(0, str(root))\n"
+        "owned = frozenset(%r)\n"
+        "class PreparedSourceFinder(importlib.abc.MetaPathFinder):\n"
+        "    def find_spec(self, fullname, path=None, target=None):\n"
+        "        prefix = fullname.split('.')[0]\n"
+        "        if prefix not in owned and not prefix.startswith('hermes_'):\n"
+        "            return None\n"
+        "        spec = importlib.machinery.PathFinder.find_spec(\n"
+        "            fullname, [str(root)] if path is None else path)\n"
+        "        if spec is None:\n"
+        "            raise ModuleNotFoundError(f'No module named {fullname!r}', name=fullname)\n"
+        "        locations = list(spec.submodule_search_locations or ())\n"
+        "        if spec.origin is not None:\n"
+        "            locations.append(spec.origin)\n"
+        "        if not locations or any(not Path(p).resolve().is_relative_to(root) for p in locations):\n"
+        "            raise ImportError(f'First-party module {fullname!r} is outside prepared source root', name=fullname)\n"
+        "        return spec\n"
+        "sys.meta_path.insert(0, PreparedSourceFinder())\n"
         "failures = []\n"
         "for name in %r:\n"
         "    try:\n"
@@ -708,6 +728,10 @@ def _critical_module_import_failures(
         "        failures.append((name, type(exc).__name__, str(exc)))\n"
         "sys.stdout.write('\\n%s' + json.dumps(failures))\n"
         % (
+            str(Path(root).resolve()),
+            tuple(sorted(FIRST_PARTY_MODULE_ROOTS | {
+                name.split('.')[0] for name in _UPDATE_CRITICAL_MODULES
+            })),
             _UPDATE_CRITICAL_MODULES,
             tuple(sorted(FIRST_PARTY_MODULE_ROOTS)),
             report_runtime_errors,
@@ -726,7 +750,7 @@ def _critical_module_import_failures(
         except Exception:
             pass  # fall back to the running interpreter
         result = subprocess.run(
-            [interpreter, "-c", probe],
+            [interpreter, "-I", "-c", probe],
             cwd=str(root),
             capture_output=True,
             text=True,
