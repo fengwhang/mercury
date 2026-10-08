@@ -265,13 +265,46 @@ def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):
 
 
 def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "mercury_cli.gateway.find_gateway_pids", lambda **k: []
-    )
+    from unittest.mock import Mock
+    admission = Mock(return_value={
+        "requested": [], "verified": [], "deferred": [], "failed": [],
+        "previous_pids": [],
+    })
+    monkeypatch.setattr(update_cmd, "_restart_gateway_fleet_automatically", admission)
     monkeypatch.setattr(mercury_main, "_purge_stale_hermes_modules", lambda: None)
 
     assert update_cmd._run_pending_fleet_restart() is True
-    assert "nothing to restart" in capsys.readouterr().out
+    admission.assert_called_once_with(trigger="pending-update")
+    assert "replacements verified" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("state", ["accepted", "deferred", "unavailable", "failed"])
+def test_pending_restart_preserves_marker_until_verified_admission(monkeypatch, state):
+    import mercury_cli.gateway as gateway
+    home = get_hermes_home()
+    proc = SimpleNamespace(pid=12345, path=str(home), profile="selected")
+    monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **kw: [proc])
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda **kw: [proc.pid])
+    calls = []
+    def admission(**kw):
+        calls.append(kw)
+        if state == "failed":
+            raise RuntimeError("admission failed")
+        return {"restarting": state != "unavailable", "deferred": state == "deferred"}
+    monkeypatch.setattr(gateway, "request_automatic_gateway_restart", admission)
+    monkeypatch.setattr(update_cmd, "_wait_for_automatic_gateway_replacement", lambda *a: True)
+    monkeypatch.setattr(mercury_main, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr(gateway, "systemd_restart", lambda *a, **kw: pytest.fail("forced restart"))
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="selected-sha")
+    if state == "accepted":
+        update_cmd._apply_pending_fleet_restart_catchup()
+        assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    else:
+        with pytest.raises(SystemExit) as exc:
+            update_cmd._apply_pending_fleet_restart_catchup()
+        assert exc.value.code == 1
+        assert "selected-sha" in update_cmd._fleet_restart_pending_marker_path().read_text()
+    assert calls == [{"home": home, "pid": proc.pid, "trigger": "pending-update"}]
 
 
 # ---------------------------------------------------------------------------
