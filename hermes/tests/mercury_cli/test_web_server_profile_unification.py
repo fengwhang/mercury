@@ -578,8 +578,9 @@ class TestProfileScopedGateway:
 
 
 class TestProfileScopedTelegramOnboarding:
+    @pytest.mark.parametrize("state", ["accepted", "deferred", "unavailable", "failed"])
     def test_apply_writes_target_profile_and_restarts_target(
-        self, client, isolated_profiles, monkeypatch
+        self, client, isolated_profiles, monkeypatch, state
     ):
         import time
         import mercury_cli.web_server as web_server
@@ -599,13 +600,23 @@ class TestProfileScopedTelegramOnboarding:
 
         calls = []
 
-        class _FakeProc:
-            pid = 889
+        def admission(*, home, trigger):
+            calls.append((home, trigger))
+            if state == "failed":
+                raise RuntimeError("admission failed")
+            return {
+                "restarting": state in {"accepted", "deferred"},
+                "deferred": state != "accepted",
+                "pid": 889,
+                "reason": "admission unavailable" if state == "unavailable" else None,
+            }
 
         monkeypatch.setattr(
-            web_server,
-            "_spawn_hermes_action",
-            lambda subcommand, name: calls.append((list(subcommand), name)) or _FakeProc(),
+            "mercury_cli.gateway.request_automatic_gateway_restart", admission
+        )
+        monkeypatch.setattr(
+            web_server, "_spawn_hermes_action",
+            lambda *a, **kw: pytest.fail("onboarding must not force a subprocess restart"),
         )
         web_server._ACTION_PROCS.pop("gateway-restart", None)
         web_server._ACTION_COMMANDS.pop("gateway-restart", None)
@@ -617,10 +628,12 @@ class TestProfileScopedTelegramOnboarding:
         )
 
         assert resp.status_code == 200
-        assert resp.json()["restart_started"] is True
-        assert calls == [
-            (["-p", "worker_beta", "gateway", "restart"], "gateway-restart")
-        ]
+        assert resp.json()["restart_started"] is (state == "accepted")
+        assert resp.json()["restart_deferred"] is (state != "accepted")
+        assert resp.json()["restart_queued"] is (state in {"accepted", "deferred"})
+        if state in {"failed", "unavailable"}:
+            assert "admission" in resp.json()["restart_error"]
+        assert calls == [(isolated_profiles["worker_beta"], "telegram-onboarding")]
 
         worker_env = (isolated_profiles["worker_beta"] / ".env").read_text()
         assert "TELEGRAM_BOT_TOKEN=123456:SECRET" in worker_env
