@@ -18,7 +18,7 @@
 				class="voice-call-screen"
 				:class="{minimized}"
 				role="dialog"
-				aria-label="Voice call"
+				:aria-label="'Mercury voice call with ' + contactName"
 				:aria-modal="!minimized"
 			>
 				<button
@@ -40,13 +40,7 @@
 					</svg>
 				</button>
 				<div class="voice-identity">
-					<div class="voice-avatar" aria-hidden="true">
-						<svg viewBox="0 0 100 100">
-							<path d="M24 33q11-5 22 0v5H24Zm30 0q11-5 22 0v5H54Z" />
-							<rect x="32" y="35" width="5" height="9" rx="2.5" />
-							<rect x="62" y="35" width="5" height="9" rx="2.5" />
-						</svg>
-					</div>
+					<div class="voice-avatar" aria-hidden="true">🌡️</div>
 					<h2>{{ contactName }}</h2>
 				</div>
 				<div v-if="inCall" class="voice-timer" aria-label="Call duration">

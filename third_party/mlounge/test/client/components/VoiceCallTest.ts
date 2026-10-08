@@ -125,6 +125,18 @@ afterEach(() => {
 });
 
 describe("voice phone entry", () => {
+	it("renders the real Mercury thermometer without the pink face in full screen and PiP", async () => {
+		const wrapper = render();
+		await connect(wrapper);
+		expect(document.querySelector(".voice-avatar")?.textContent).toBe("🌡️");
+		expect(document.querySelector(".voice-avatar svg")).toBeNull();
+		expect(document.querySelector(".voice-call-screen")?.getAttribute("aria-label")).toBe(
+			"Mercury voice call with Gaia"
+		);
+		await click(".voice-pip");
+		expect(document.querySelector(".minimized .voice-avatar")?.textContent).toBe("🌡️");
+		wrapper.unmount();
+	});
 	it("shows the registered agent name rather than a prefixed channel slug", async () => {
 		const wrapper = render();
 		await wrapper.setProps({
