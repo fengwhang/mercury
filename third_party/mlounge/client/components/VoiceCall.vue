@@ -18,7 +18,7 @@
 				class="voice-call-screen"
 				:class="{minimized}"
 				role="dialog"
-				aria-label="Voice call"
+				:aria-label="'Mercury voice call with ' + contactName"
 				:aria-modal="!minimized"
 			>
 				<button
@@ -40,13 +40,7 @@
 					</svg>
 				</button>
 				<div class="voice-identity">
-					<div class="voice-avatar" aria-hidden="true">
-						<svg viewBox="0 0 100 100">
-							<path d="M24 33q11-5 22 0v5H24Zm30 0q11-5 22 0v5H54Z" />
-							<rect x="32" y="35" width="5" height="9" rx="2.5" />
-							<rect x="62" y="35" width="5" height="9" rx="2.5" />
-						</svg>
-					</div>
+					<div class="voice-avatar" aria-hidden="true">🌡️</div>
 					<h2>{{ contactName }}</h2>
 				</div>
 				<div v-if="inCall" class="voice-timer" aria-label="Call duration">
@@ -55,29 +49,7 @@
 				<div v-else class="voice-setup">
 					<p v-if="connecting">Connecting…</p>
 					<p v-if="error" class="voice-error" role="alert">{{ error }}</p>
-					<form v-if="showSettings" class="voice-settings" @submit.prevent="saveAndCall">
-						<label
-							>STT sidecar URL<input
-								v-model="sidecarUrl"
-								type="url"
-								placeholder="https://voice.example.net"
-								required
-						/></label>
-						<label
-							>Sidecar token (if required)<input
-								v-model="token"
-								type="password"
-								autocomplete="off"
-						/></label>
-						<p>
-							Use the mLounge host’s voice sidecar URL, not the MIRC host. Remote
-							microphone access requires HTTPS.
-						</p>
-						<button type="submit">Save and call</button>
-					</form>
-					<button v-else-if="!connecting" @click="showSettings = true">
-						Voice settings
-					</button>
+					<button v-if="!connecting" @click="retryCall">Retry call</button>
 				</div>
 				<div v-if="showOutputs && inCall" class="voice-outputs">
 					<label v-if="sinkSupported && outputs.length"
@@ -182,8 +154,16 @@ import type {ClientChan} from "../js/types";
 import {ChanType} from "../../shared/types/chan";
 
 type PlaybackAudio = HTMLAudioElement & {setSinkId?: (id: string) => Promise<void>};
-const URL_KEY = "mlounge.voiceCall.sidecarUrl";
-const TOKEN_KEY = "mlounge.voiceCall.token";
+type VoiceFrame = Record<string, unknown>;
+type VoiceSocket = {
+	emit(event: "voice:call", frame: VoiceFrame): void;
+	on(event: string, listener: (frame: unknown) => void): void;
+	off(event: string, listener: (frame: unknown) => void): void;
+};
+type CallConnection = {send(frame: VoiceFrame | ArrayBuffer): void; close(): void};
+
+// Monotonic for this authenticated browser socket, including component remounts.
+let nextAttempt = 0;
 
 export default defineComponent({
 	name: "VoiceCall",
@@ -202,9 +182,7 @@ export default defineComponent({
 		const minimized = ref(false);
 		const muted = ref(false);
 		const error = ref("");
-		const showSettings = ref(false);
-		const sidecarUrl = ref("");
-		const token = ref("");
+		const relay = socket as unknown as VoiceSocket;
 		const elapsed = ref(0);
 		const showOutputs = ref(false);
 		const sinkSupported = ref(false);
@@ -299,7 +277,7 @@ export default defineComponent({
 					elapsed.value % 60
 				).padStart(2, "0")}`
 		);
-		let ws: WebSocket | null = null;
+		let ws: CallConnection | null = null;
 		let stream: MediaStream | null = null;
 		let recorder: {stop: () => void} | null = null;
 		let epoch = 0;
@@ -318,10 +296,11 @@ export default defineComponent({
 		let discardThrough = 0;
 
 		try {
-			sidecarUrl.value = localStorage.getItem(URL_KEY) || "";
-			token.value = localStorage.getItem(TOKEN_KEY) || "";
+			// Remove obsolete browser-side service credentials without ever reading them.
+			localStorage.removeItem("mlounge.voiceCall.sidecarUrl");
+			localStorage.removeItem("mlounge.voiceCall.token");
 		} catch {
-			// Private browsing may keep settings for this session only.
+			// Storage may be disabled; voice does not depend on it.
 		}
 
 		const stopRecording = () => {
@@ -341,18 +320,15 @@ export default defineComponent({
 			inCall.value = false;
 			connecting.value = false;
 			const closing = ws;
-			ws = null;
 
 			if (closing) {
-				closing.onopen = closing.onmessage = closing.onerror = closing.onclose = null;
-
 				try {
-					if (closing.readyState === WebSocket.OPEN) {
-						closing.send(JSON.stringify({type: "hangup"}));
-					}
+					closing.send({type: "hangup"});
 				} catch {
 					// Closing still releases the server-side registry when hangup cannot be sent.
 				}
+
+				ws = null;
 
 				try {
 					closing.close();
@@ -609,7 +585,7 @@ export default defineComponent({
 							if (
 								generation === uploadEpoch &&
 								ws === current &&
-								current?.readyState === WebSocket.OPEN &&
+								current &&
 								inCall.value &&
 								!muted.value
 							) {
@@ -653,8 +629,8 @@ export default defineComponent({
 				}
 			}
 
-			if (ws?.readyState === WebSocket.OPEN) {
-				ws.send(JSON.stringify({type: "mute", muted: muted.value}));
+			if (ws) {
+				ws.send({type: "mute", muted: muted.value});
 			}
 		};
 
@@ -728,29 +704,22 @@ export default defineComponent({
 			panelOpen.value = true;
 			minimized.value = false;
 			error.value = "";
-			const configured = store.state.serverConfiguration?.voiceCallSidecarUrl || "";
-			const base = (sidecarUrl.value || configured).trim();
-			sidecarUrl.value = base;
-			let url: URL;
 
-			try {
-				url = new URL(base);
-
-				if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) {
-					throw new Error();
-				}
-
-				if (location.protocol === "https:" && ["http:", "ws:"].includes(url.protocol)) {
-					throw new Error();
-				}
-			} catch {
+			if (store.state.serverConfiguration?.voiceCallSidecarUrl !== "socket.io:/call") {
 				error.value =
-					"Set a valid STT sidecar URL first. An HTTPS page requires an HTTPS/WSS sidecar; no localhost is assumed.";
-				showSettings.value = true;
+					"Voice calls are not configured on the host. Run mercury setup stt on the mLounge host and mercury setup on the MIRC host, then retry.";
 				return;
 			}
 
-			showSettings.value = false;
+			if (
+				!store.state.isConnected ||
+				!store.state.networks.some((network) =>
+					network.channels.some((candidate) => candidate.id === channel.id)
+				)
+			) {
+				error.value = "Reconnect and sign in to mLounge before calling this contact.";
+				return;
+			}
 
 			if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
 				error.value =
@@ -769,16 +738,22 @@ export default defineComponent({
 					return;
 				}
 
-				stream = acquired;
-				url.protocol = ["https:", "wss:"].includes(url.protocol) ? "wss:" : "ws:";
-				url.pathname = url.pathname.replace(/\/+$/, "") + "/call";
-
-				if (token.value) {
-					url.searchParams.set("token", token.value);
+				if (
+					!store.state.isConnected ||
+					!store.state.networks.some((network) =>
+						network.channels.some((candidate) => candidate.id === channel.id)
+					)
+				) {
+					acquired.getTracks().forEach((track) => track.stop());
+					teardown("Reconnect and sign in to mLounge before calling this contact.");
+					return;
 				}
 
-				const current = new WebSocket(url.toString());
-				ws = current;
+				stream = acquired;
+				const attemptId = ++nextAttempt;
+				let callId = "";
+				// eslint-disable-next-line prefer-const -- Handlers capture the connection before registration.
+				let current: CallConnection;
 				const mime =
 					[
 						"audio/webm;codecs=opus",
@@ -787,30 +762,32 @@ export default defineComponent({
 						"audio/mp4",
 					].find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
 
-				current.onopen = () => {
-					if (ws === current) {
-						current.send(JSON.stringify({type: "hello", channel: channel.name, mime}));
-					}
-				};
-
-				current.onmessage = (event) => {
-					if (ws !== current || callEpoch !== epoch) {
-						return;
-					}
-
-					let payload: unknown;
-
-					try {
-						payload = JSON.parse(String(event.data));
-					} catch {
-						return;
-					}
-
-					if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+				const onFrame = (payload: unknown) => {
+					if (
+						ws !== current ||
+						callEpoch !== epoch ||
+						!payload ||
+						typeof payload !== "object" ||
+						Array.isArray(payload)
+					) {
 						return;
 					}
 
 					const message = payload as Record<string, unknown>;
+
+					if (message.attemptId !== attemptId) {
+						return;
+					}
+
+					if (typeof message.callId === "string" && message.callId) {
+						if (callId && message.callId !== callId) {
+							return;
+						}
+
+						callId = message.callId;
+					} else if (!["error", "refused"].includes(String(message.type))) {
+						return;
+					}
 
 					switch (message.type) {
 						case "ready":
@@ -894,38 +871,71 @@ export default defineComponent({
 					}
 				};
 
-				current.onerror = () => {
+				const onDisconnect = () => {
+					if (ws === current) {
+						teardown("Call connection lost. Reconnect to mLounge and retry.");
+					}
+				};
+
+				const onAuthFailed = () => {
 					if (ws === current) {
 						teardown(
-							"Call socket failed. Check the sidecar URL, token, and network access."
+							"Call authentication expired or was refused. Sign in to mLounge again."
 						);
 					}
 				};
 
-				current.onclose = () => {
-					if (ws === current) {
-						teardown("Call socket closed. Check the sidecar connection and retry.");
-					}
+				current = {
+					send(packet) {
+						if (
+							ws !== current ||
+							!store.state.isConnected ||
+							(!callId &&
+								!(
+									typeof packet === "object" &&
+									"type" in packet &&
+									packet.type === "hangup"
+								))
+						) {
+							return;
+						}
+
+						relay.emit(
+							"voice:call",
+							packet instanceof ArrayBuffer
+								? {type: "audio", callId, attemptId, data: packet}
+								: {...packet, attemptId, ...(callId ? {callId} : {})}
+						);
+					},
+					close() {
+						relay.off("voice:call", onFrame);
+						relay.off("disconnect", onDisconnect);
+						relay.off("auth:failed", onAuthFailed);
+					},
 				};
-			} catch {
+				ws = current;
+				relay.on("voice:call", onFrame);
+				relay.on("disconnect", onDisconnect);
+				relay.on("auth:failed", onAuthFailed);
+				relay.emit("voice:call", {type: "hello", target: channel.id, mime, attemptId});
+			} catch (cause) {
 				if (callEpoch === epoch) {
+					const name =
+						cause && typeof cause === "object" && "name" in cause
+							? String(cause.name)
+							: "";
 					teardown(
-						"Could not start the call. Allow microphone access and check the sidecar URL."
+						name === "NotAllowedError" || name === "SecurityError"
+							? "Microphone permission denied. Allow microphone access for this mLounge site and retry."
+							: name === "NotFoundError"
+							? "No microphone is available. Connect a microphone and retry."
+							: "Could not start microphone recording. Check your browser audio device and retry."
 					);
 				}
 			}
 		};
 
-		const saveAndCall = () => {
-			try {
-				localStorage.setItem(URL_KEY, sidecarUrl.value.trim());
-				localStorage.setItem(TOKEN_KEY, token.value);
-			} catch {
-				/* Session-only settings. */
-			}
-
-			void startCall(target.value);
-		};
+		const retryCall = () => void startCall(target.value);
 
 		const onPhone = (channel: ClientChan) => {
 			void startCall(channel);
@@ -966,7 +976,7 @@ export default defineComponent({
 		watch(
 			() => target.value?.messages.at(-1)?.id,
 			() => {
-				if (!inCall.value || !target.value || ws?.readyState !== WebSocket.OPEN) {
+				if (!inCall.value || !target.value || !ws || !store.state.isConnected) {
 					return;
 				}
 
@@ -983,9 +993,7 @@ export default defineComponent({
 							.trim();
 
 						if (text) {
-							ws.send(
-								JSON.stringify({type: "tts", text, token: `reply-${++ttsSeq}`})
-							);
+							ws.send({type: "tts", text, token: `reply-${++ttsSeq}`});
 						}
 					}
 				}
@@ -1006,9 +1014,6 @@ export default defineComponent({
 			minimized,
 			muted,
 			error,
-			showSettings,
-			sidecarUrl,
-			token,
 			contactName,
 			duration,
 			showOutputs,
@@ -1021,7 +1026,7 @@ export default defineComponent({
 			outputNotice,
 			playbackError,
 			startCall,
-			saveAndCall,
+			retryCall,
 			hangup,
 			toggleMute,
 			toggleOutputs,

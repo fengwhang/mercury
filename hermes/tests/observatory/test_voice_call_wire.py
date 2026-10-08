@@ -48,7 +48,7 @@ def sidecar():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"ws://127.0.0.1:{server.server_port}/call?token=browser-secret", requests, state
+        yield f"ws://127.0.0.1:{server.server_port}/call", requests, state
     finally:
         server.shutdown()
         mirc.shutdown()
@@ -77,7 +77,7 @@ def test_browser_codec_transcript_and_speech_roundtrip(sidecar, monkeypatch):
         return {"success": True, "transcript": "hello"}
 
     monkeypatch.setattr(stt, "transcribe_chunk", transcribe)
-    with connect(url) as ws:
+    with connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"}) as ws:
         ws.send(json.dumps({"type": "hello", "channel": "#chat", "mime": "audio/mp4"}))
         ready = json.loads(ws.recv(timeout=2))
         assert ready["type"] == "ready"
@@ -138,7 +138,7 @@ def test_hangup_and_ping_are_responsive_while_provider_blocked(sidecar, monkeypa
     monkeypatch.setattr(stt, "transcribe_chunk", slow_transcription)
     monkeypatch.setattr(state, "request", slow_speech)
     try:
-        with connect(url) as ws:
+        with connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"}) as ws:
             ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
             assert json.loads(ws.recv(timeout=2))["type"] == "ready"
             ws.send(b"slow-audio" if provider == "stt" else
@@ -158,7 +158,7 @@ def test_muted_audio_never_reaches_stt(sidecar, monkeypatch):
     monkeypatch.setattr(stt, "transcribe_chunk", lambda audio, *_: (
         chunks.append(audio) or {"success": True, "transcript": "should not arrive"}
     ))
-    with connect(url) as ws:
+    with connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"}) as ws:
         ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
         assert json.loads(ws.recv(timeout=2))["type"] == "ready"
         ws.send(json.dumps({"type": "mute", "muted": True}))
@@ -185,7 +185,7 @@ def test_hangup_closes_socket_before_blocked_registry_end(sidecar, monkeypatch):
 
     monkeypatch.setattr(state, "request", slow_end)
     try:
-        with connect(url) as ws:
+        with connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"}) as ws:
             ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
             assert json.loads(ws.recv(timeout=2))["type"] == "ready"
             ws.send(json.dumps({"type": "hangup"}))
@@ -275,7 +275,7 @@ def test_hangup_remains_responsive_during_mute_registry_request(sidecar, monkeyp
         return request(path, payload, **kwargs)
 
     monkeypatch.setattr(state, "request", blocked_mute)
-    ws = connect(url)
+    ws = connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"})
     try:
         ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
         assert json.loads(ws.recv(timeout=2))["type"] == "ready"
@@ -303,7 +303,7 @@ def test_mute_invalidates_queued_and_inflight_audio_after_unmute(sidecar, monkey
         return {"success": True, "transcript": audio.decode()}
 
     monkeypatch.setattr(stt, "transcribe_chunk", transcribe)
-    ws = connect(url)
+    ws = connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"})
     try:
         ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
         assert json.loads(ws.recv(timeout=2))["type"] == "ready"
@@ -344,7 +344,7 @@ def test_worker_exception_closes_call_and_registry(sidecar, monkeypatch):
         raise RuntimeError("provider worker broke")
 
     monkeypatch.setattr(stt, "transcribe_chunk", broken_stt)
-    ws = connect(url)
+    ws = connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"})
     try:
         ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
         assert json.loads(ws.recv(timeout=2))["type"] == "ready"
@@ -409,7 +409,7 @@ def test_mute_ack_prevents_already_completed_transcript_emission(sidecar, monkey
     monkeypatch.setattr(stt, "transcribe_chunk", lambda *_: {
         "success": True, "transcript": PausedTranscript(),
     })
-    ws = connect(url)
+    ws = connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"})
     try:
         ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
         assert json.loads(ws.recv(timeout=2))["type"] == "ready"
@@ -471,7 +471,7 @@ def test_control_before_hangup_cannot_pin_reader_behind_tts_writer(sidecar, monk
 
     monkeypatch.setattr(stt.WsConnection, "send_json", blocked_writer)
     monkeypatch.setattr(state, "request", track_end)
-    ws = connect(url)
+    ws = connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"})
     try:
         ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
         assert json.loads(ws.recv(timeout=2))["type"] == "ready"
@@ -570,7 +570,7 @@ def test_query_roundtrip_uses_real_registry_endpoints(sidecar, tmp_path, monkeyp
     monkeypatch.setattr(stt, "transcribe_chunk", lambda *_: {
         "success": True, "transcript": "query speech",
     })
-    with connect(url) as ws:
+    with connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"}) as ws:
         ws.send(json.dumps({"type": "hello", "channel": "Kai"}))
         ready = json.loads(ws.recv(timeout=2))
         assert ready["type"] == "ready"
@@ -592,12 +592,12 @@ def test_query_roundtrip_uses_real_registry_endpoints(sidecar, tmp_path, monkeyp
     assert ended.wait(2)
     assert not store.active_channels() and not sidecar_state.calls
     for target, reason in [("Coder", "OMP"), ("unknown-nick", "Cannot identify")]:
-        with connect(url) as ws:
+        with connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"}) as ws:
             ws.send(json.dumps({"type": "hello", "channel": target, "engine": "hermes"}))
             refused = json.loads(ws.recv(timeout=2))
             assert refused["type"] == "refused" and reason in refused["reason"]
     if expire_before_end:
-        with connect(url) as ws:
+        with connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"}) as ws:
             ws.send(json.dumps({"type": "hello", "channel": "Kai", "engine": "hermes"}))
             assert json.loads(ws.recv(timeout=2))["type"] == "refused"
 
@@ -630,7 +630,7 @@ def test_lost_start_ack_cleans_only_the_attempted_registry_owner(sidecar, monkey
         return response.json()
 
     monkeypatch.setattr(sidecar_state, "request", lose_start_ack)
-    with connect(url) as ws:
+    with connect(url, additional_headers={"X-Voice-Call-Token": "browser-secret"}) as ws:
         ws.send(json.dumps({"type": "hello", "channel": "#chat"}))
         assert json.loads(ws.recv(timeout=2))["type"] == "refused"
         with pytest.raises(ConnectionClosedOK):

@@ -39,7 +39,7 @@ def test_resolve_channel_agent_routes(monkeypatch) -> None:
     monkeypatch.setattr(rooms, "get_room_manager", lambda: Manager("child", {"engine": "omp"}))
     assert vc.resolve_channel_agent("#x")["engine"] == "omp"
     monkeypatch.setattr(rooms, "get_room_manager", lambda: Manager("child", {"engine": "hermes", "name": "Gaia"}))
-    assert vc.resolve_channel_agent("#x") == {"engine": "hermes", "name": "Gaia", "room_id": ""}
+    assert vc.resolve_channel_agent("#x") == {"engine": "hermes", "name": "Gaia", "room_id": "", "profile": "default"}
     monkeypatch.setattr(rooms, "get_room_manager", lambda: None)
     assert vc.resolve_channel_agent("#x")["engine"] == "unknown"
 
@@ -57,8 +57,8 @@ def test_separate_web_process_resolves_live_gateway_tree(tmp_path, monkeypatch):
             tree.add_node(name, engine=engine, name=name, slug=name,
                           mxid=name, session_ref=name)
             tree.set_room_id(name, "#" + name)
-        assert vc.resolve_channel_agent("#CODER") == {"engine": "omp", "name": "coder", "room_id": "#coder"}
-        assert vc.resolve_channel_agent("#chat") == {"engine": "hermes", "name": "chat", "room_id": "#chat"}
+        assert vc.resolve_channel_agent("#CODER") == {"engine": "omp", "name": "coder", "room_id": "#coder", "profile": "default"}
+        assert vc.resolve_channel_agent("#chat") == {"engine": "hermes", "name": "chat", "room_id": "#chat", "profile": "default"}
         tree.mark_dead("coder")
         assert vc.resolve_channel_agent("#coder") == {"engine": "unknown", "name": "", "room_id": ""}
 
