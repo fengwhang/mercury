@@ -8,7 +8,7 @@ import Client from "../../../server/client";
 function dispatchCalls(text: string): string[] {
 	const seen: string[] = [];
 	const fakeThis = {
-		inputLine: (data: {text: string}) => {
+		inputLine(data: {text: string}) {
 			seen.push(data.text);
 		},
 	};

@@ -456,10 +456,12 @@ class Client {
 		// commands and //-escapes behave exactly as before.
 		const lines = data.text.split("\n");
 		const hasSlash = lines.some((line) => line.charAt(0) === "/");
+
 		if (!hasSlash && lines.length > 1) {
 			client.inputLine(data);
 			return;
 		}
+
 		lines.forEach((line) => {
 			data.text = line;
 			client.inputLine(data);
