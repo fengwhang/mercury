@@ -380,11 +380,10 @@ describe("pi-native client metadata", () => {
 		});
 		try {
 			const model = createMockModel({ provider: "anthropic", id: final.model });
-			const result = await streamPiNative(
-				{ ...model, baseUrl: `http://127.0.0.1:${server.port}` },
-				baseContext,
-				{ apiKey: "gateway-token", sessionId: "session-only" },
-			).result();
+			const result = await streamPiNative({ ...model, baseUrl: `http://127.0.0.1:${server.port}` }, baseContext, {
+				apiKey: "gateway-token",
+				sessionId: "session-only",
+			}).result();
 			expect(result.usage.input).toBe(7);
 			expect(headers?.get("authorization")).toBe("Bearer gateway-token");
 			for (const name of ["x-omp-install-id", "x-omp-hostname", "x-omp-app"]) {

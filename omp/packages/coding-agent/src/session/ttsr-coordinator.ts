@@ -425,5 +425,4 @@ export class TtsrCoordinator {
 		);
 		return true;
 	}
-
 }

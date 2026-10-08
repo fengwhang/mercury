@@ -24,7 +24,13 @@ import {
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { reset as resetCapabilities } from "./capability";
-import { type Args, reportUnrecognizedFlags, validateGoalLaunch, validateGoalStartup, validateToolNames } from "./cli/args";
+import {
+	type Args,
+	reportUnrecognizedFlags,
+	validateGoalLaunch,
+	validateGoalStartup,
+	validateToolNames,
+} from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
 import { processFileArguments } from "./cli/file-processor";
 import { buildInitialMessage } from "./cli/initial-message";
@@ -2116,7 +2122,13 @@ export async function runRootCommand(
 				// Branch-only protocol runner: keep RPC host code out of normal interactive startup.
 				const runRpcMode: RunRpcMode = (await import("./modes/rpc/rpc-mode")).runRpcMode;
 				stopStartupWatchdog();
-				await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, subagentEventBus, rpcInput, parsedArgs.noUi === true);
+				await runRpcMode(
+					session,
+					mode === "rpc-ui" ? setToolUIContext : undefined,
+					subagentEventBus,
+					rpcInput,
+					parsedArgs.noUi === true,
+				);
 			} else if (isInteractive) {
 				const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
 				const startupChangelog = await startupChangelogPromise;

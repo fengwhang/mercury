@@ -61,7 +61,6 @@ function countLines(text: string): number {
 	return text.endsWith("\n") ? lines : lines + 1;
 }
 
-
 const int = (n: number): string => n.toLocaleString("en-US");
 const count = (n: number, label: string): string => `${int(n)} ${pluralize(label, n)}`;
 
