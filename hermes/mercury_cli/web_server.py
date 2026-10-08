@@ -1459,6 +1459,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "skills": "agent",
     "cron": "agent",
     "network": "agent",
+    "monitoring": "agent",
     # `models_dev.url` (mirror override) is the only schema-surfaced
     # models_dev field — fold it in with the other network/agent plumbing
     # rather than spawning a one-field orphan tab.

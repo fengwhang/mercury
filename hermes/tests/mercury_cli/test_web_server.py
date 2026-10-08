@@ -1579,12 +1579,16 @@ class TestWebServerEndpoints:
         monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
         ws._ACTION_PROCS.pop("gateway-restart", None)
 
-        def fail_spawn_action(subcommand, name):
-            assert subcommand == ["gateway", "restart"]
-            assert name == "gateway-restart"
+        def fail_admission(*, home, trigger):
+            from mercury_cli.web_server import get_process_hermes_home
+            assert home == get_process_hermes_home()
+            assert trigger == "telegram-onboarding"
             raise RuntimeError("supervisor unavailable")
 
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
+        monkeypatch.setattr(
+            "mercury_cli.gateway.request_automatic_gateway_restart", fail_admission
+        )
+        monkeypatch.setattr(ws, "_spawn_hermes_action", lambda *a, **kw: pytest.fail("forced restart"))
 
         start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
         assert start.status_code == 200
@@ -2456,6 +2460,16 @@ class TestBuildSchemaFromConfig:
         cats = Counter(e["category"] for e in CONFIG_SCHEMA.values())
         for cat, count in cats.items():
             assert count >= 2, f"Category '{cat}' has only {count} field(s) — should be merged"
+
+    def test_monitoring_identifier_retains_schema_without_exporter(self):
+        from mercury_cli.web_server import CONFIG_SCHEMA
+        from mercury_cli.config_defaults import DEFAULT_CONFIG
+        entry = CONFIG_SCHEMA["monitoring.install_id"]
+        assert entry["category"] == "agent"
+        assert entry["type"] == "string"
+        assert DEFAULT_CONFIG["monitoring"] == {"install_id": ""}
+        assert not any(key.startswith("monitoring.") and key != "monitoring.install_id"
+                       for key in CONFIG_SCHEMA)
 
 
 # ---------------------------------------------------------------------------
