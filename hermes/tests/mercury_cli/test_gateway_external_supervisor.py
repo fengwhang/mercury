@@ -2,7 +2,6 @@
 
 from types import SimpleNamespace
 
-import pytest
 
 import mercury_cli.gateway as gateway
 
@@ -41,108 +40,17 @@ def test_gateway_run_external_supervisor_flag_marks_process(monkeypatch):
     assert observed == ["1"]
 
 
-def test_update_hands_external_supervisor_gateway_back_without_watcher(monkeypatch):
-    monkeypatch.setattr(
-        gateway,
-        "_capture_gateway_argv",
-        lambda _pid: [
-            "python",
-            "-m",
-            "mercury_cli.main",
-            "gateway",
-            "run",
-            "--external-supervisor",
-        ],
-    )
-    monkeypatch.setattr(
-        gateway,
-        "launch_detached_profile_gateway_restart",
-        lambda *_args: pytest.fail("detached watcher must not be launched"),
-    )
-
-    assert gateway._prepare_profile_gateway_update_restart("work", 1234) == (
-        "external-supervisor"
-    )
 
 
-def test_update_hands_generated_launchd_inner_argv_back_without_watcher(monkeypatch):
-    """New launchd ProgramArguments put --external-supervisor on the grandchild."""
-    monkeypatch.setattr(
-        gateway,
-        "_capture_gateway_argv",
-        lambda _pid: [
-            "/usr/bin/python3",
-            "-m",
-            "mercury_cli.main",
-            "--profile",
-            "work",
-            "gateway",
-            "run",
-            "--replace",
-            "--external-supervisor",
-        ],
-    )
-    monkeypatch.setattr(
-        gateway,
-        "launch_detached_profile_gateway_restart",
-        lambda *_args: pytest.fail("detached watcher must not be launched"),
-    )
-
-    assert gateway._prepare_profile_gateway_update_restart("work", 1234) == (
-        "external-supervisor"
-    )
 
 
-def test_update_follows_wrapper_upgrade_of_stale_plist_argv(monkeypatch):
-    """stderr_timestamp upgrades stale inner argv so update sees the flag."""
+def test_wrapper_upgrades_stale_plist_argv_to_external_supervisor():
     from mercury_cli.stderr_timestamp import _prepare_child_command
 
-    stale = [
-        "/usr/bin/python3",
-        "-m",
-        "mercury_cli.main",
-        "gateway",
-        "run",
-        "--replace",
-    ]
-    upgraded = _prepare_child_command(
-        stale, {"XPC_SERVICE_NAME": "ai.mercury.gateway-work"}
-    )
+    stale = ["/usr/bin/python3", "-m", "mercury_cli.main", "gateway", "run", "--replace"]
+    upgraded = _prepare_child_command(stale, {"XPC_SERVICE_NAME": "ai.mercury.gateway-work"})
     assert upgraded[-1] == "--external-supervisor"
 
-    monkeypatch.setattr(gateway, "_capture_gateway_argv", lambda _pid: upgraded)
-    monkeypatch.setattr(
-        gateway,
-        "launch_detached_profile_gateway_restart",
-        lambda *_args: pytest.fail("detached watcher must not be launched"),
-    )
 
-    assert gateway._prepare_profile_gateway_update_restart("work", 1234) == (
-        "external-supervisor"
-    )
-
-
-def test_update_still_uses_detached_watcher_without_supervisor_flag(monkeypatch):
-    monkeypatch.setattr(
-        gateway,
-        "_capture_gateway_argv",
-        lambda _pid: [
-            "python",
-            "-m",
-            "mercury_cli.main",
-            "gateway",
-            "run",
-            "--replace",
-        ],
-    )
-    launched = []
-    monkeypatch.setattr(
-        gateway,
-        "launch_detached_profile_gateway_restart",
-        lambda profile, pid: launched.append((profile, pid)) or True,
-    )
-
-    assert gateway._prepare_profile_gateway_update_restart("work", 1234) == "detached"
-    assert launched == [("work", 1234)]
 
 

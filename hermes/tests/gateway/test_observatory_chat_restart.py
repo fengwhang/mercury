@@ -13,6 +13,7 @@ from tests.gateway.restart_test_helpers import make_restart_runner
 @pytest.mark.asyncio
 async def test_gateway_room_restart_launches_observatory_once(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner, adapter = make_restart_runner()
     adapter._observatory_managed = True
     runner.adapters[Platform.MIRC] = adapter
@@ -22,7 +23,16 @@ async def test_gateway_room_restart_launches_observatory_once(tmp_path, monkeypa
     runner.request_restart = MagicMock()
     launched = []
     monkeypatch.setattr("gateway.run._resolve_hermes_bin", lambda: ["/bin/mercury-nightly"])
-    monkeypatch.setattr("observatory.restart.launch_observatory_restart", lambda command: launched.append(command))
+    def launch(command, *, request_id):
+        import json
+        rows = [json.loads(line) for line in
+                (tmp_path / "logs" / "gateway-restart-requests.jsonl").read_text().splitlines()]
+        assert rows[0]["actor"]["user_id"] == "owner"
+        assert rows[0]["request_id"] == request_id
+        assert rows[-1]["state"] == "accepted"
+        launched.append(command)
+
+    monkeypatch.setattr("observatory.restart.launch_observatory_restart", launch)
     event = MessageEvent(
         text="/restart", message_type=MessageType.TEXT,
         source=SessionSource(platform=Platform.MIRC, chat_id="#pi_gateway", chat_type="group", user_id="owner"),
@@ -38,6 +48,7 @@ async def test_gateway_room_restart_launches_observatory_once(tmp_path, monkeypa
 @pytest.mark.asyncio
 async def test_failed_observatory_launch_can_be_retried(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner, adapter = make_restart_runner()
     adapter._observatory_managed = True
     runner.adapters[Platform.MIRC] = adapter
@@ -47,7 +58,7 @@ async def test_failed_observatory_launch_can_be_retried(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.run._resolve_hermes_bin", lambda: ["/bin/mercury-nightly"])
     launches = []
 
-    def launch(command):
+    def launch(command, *, request_id):
         launches.append(command)
         if len(launches) == 1:
             raise RuntimeError("launcher unavailable")
@@ -77,12 +88,13 @@ def test_service_restart_helper_escapes_gateway_cgroup_and_preserves_nightly(mon
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(restart.subprocess, "run", run)
-    restart.launch_observatory_restart(["/bin/mercury-nightly"])
+    restart.launch_observatory_restart(["/bin/mercury-nightly"], request_id="platform-receipt")
     argv, kwargs = calls[0]
     assert argv[0] == "/bin/systemd-run"
     assert "--user" in argv and "--collect" in argv
     assert argv[-3:] == ["/bin/mercury-nightly", "observatory", "restart"]
     assert "--setenv=MERCURY_HOME=/tmp/nightly" in argv
+    assert "--setenv=MERCURY_RESTART_REQUEST_ID=platform-receipt" in argv
     assert all("synthetic-test-key" not in part for part in argv)
     assert "_HERMES_GATEWAY" not in kwargs["env"]
 

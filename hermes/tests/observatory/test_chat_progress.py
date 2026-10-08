@@ -62,7 +62,7 @@ async def test_hermes_gateway_streams_completion_plan_and_failure_with_explicit_
             await asyncio.sleep(0.01)
     assert sent[0][2] == "tool_input"
     assert sent[1] == ("#root", "To do list:\n• [pending] Check routing", "status")
-    assert sent[2][2] == "status" and "Tool failed: bash" in sent[2][1]
+    assert sent[2][2] == "tool_output" and sent[2][1].startswith("result: ") and "Tool failed: bash" in sent[2][1]
     assert not any("private scratchpad" in text for _, text, _ in sent)
 
 

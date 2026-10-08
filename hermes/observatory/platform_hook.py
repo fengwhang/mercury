@@ -162,6 +162,88 @@ def try_boot_sidecar(
         return None
 
 
+def _identity_has_live_owner(row: dict[str, Any], state: Any) -> bool:
+    """Room retention is not worker liveness; native children share an owner."""
+    from observatory.identity import get_pool
+    from tools.async_delegation import list_delegation_children, process_identity_state
+
+    if int(row.get("depth") or 0) == 0:
+        return True
+    pooled = get_pool().get(str(row.get("room_id") or "")) is not None
+    retained_row = row
+    visited: set[str] = set()
+    while int(row.get("depth") or 0) > 0:
+        if (row.get("extra") or {}).get("task_state") in {"pending", "completed"}:
+            return False
+        node_id = str(row.get("node_id") or "")
+        if not node_id or node_id in visited:
+            return False
+        visited.add(node_id)
+        delegation_id = node_id.split("/", 1)[0]
+        child = next(
+            (
+                child
+                for child in list_delegation_children(delegation_id)
+                if child["child_id"] == node_id
+            ),
+            None,
+        )
+        if child is not None:
+            return (
+                child["status"] == "running"
+                and process_identity_state(
+                    child.get("child_pid"), child.get("child_started_at")
+                )
+                == "live"
+            )
+        parent_id = str(row.get("parent_node_id") or "")
+        if not parent_id:
+            break
+        try:
+            row = state.get(parent_id)
+        except Exception:
+            break
+    # Same-process IRC recovery retains its existing identity and feed.
+    # A new gateway has no pool: old rows alone cannot recreate live clients.
+    return pooled and _has_attached_execution_feed(retained_row, state)
+
+
+def _has_attached_execution_feed(row: dict[str, Any], state: Any) -> bool:
+    """A saved feed_attached flag cannot stand in for this process's listeners."""
+    from observatory.gateway_session import _child_feed_lock, _child_live_feeds
+    from observatory.rooms import _omp_lock, _omp_rooms
+    from tools.async_delegation import process_identity_state
+    from tools.omp_delegation import _child_run_identity
+
+    visited: set[str] = set()
+    while row:
+        node_id = str(row.get("node_id") or "")
+        if not node_id or node_id in visited:
+            return False
+        visited.add(node_id)
+        with _child_feed_lock:
+            feed = _child_live_feeds.get(node_id)
+        if feed is None:
+            with _omp_lock:
+                feed = (_omp_rooms.get(node_id) or {}).get("feed")
+        if feed is not None:
+            pid, started, _ = _child_run_identity(getattr(feed, "_child", None))
+            return (
+                not getattr(feed, "_stopped", False)
+                and callable(getattr(feed, "_dispose_listener", None))
+                and callable(getattr(feed, "_dispose_agent_listener", None))
+                and process_identity_state(pid, started) == "live"
+            )
+        parent_id = str(row.get("parent_node_id") or "")
+        if not parent_id:
+            return False
+        try:
+            row = state.get(parent_id)
+        except Exception:
+            return False
+    return False
+
+
 async def boot_resync(
     manager: Any = None, state: Any = None, registry: Any = None
 ) -> dict[str, Any]:
@@ -228,6 +310,78 @@ async def boot_resync(
         except Exception:
             live = []
         bot = get_bot_sink()
+        reconcile = getattr(manager, "reconcile_terminal_children", None)
+        terminal_transport_ready = True
+        terminal_channels: set[str] = set()
+        if bot is not None and callable(reconcile):
+            try:
+                from tools.async_delegation import terminal_child_evidence
+
+                terminal_ids = {
+                    child["child_id"] for child in terminal_child_evidence()
+                }
+                for row in live:
+                    if row.get("node_id") not in terminal_ids:
+                        continue
+                    channel = str(row.get("room_id") or "")
+                    if channel:
+                        terminal_channels.add(channel)
+                    parent_id = str(row.get("parent_node_id") or "")
+                    if parent_id:
+                        try:
+                            parent_channel = str(
+                                state.get(parent_id).get("room_id") or ""
+                            )
+                            if parent_channel:
+                                terminal_channels.add(parent_channel)
+                        except Exception:
+                            pass
+                # IRC rejects nonmember PRIVMSGs. Join only the bot to deliver
+                # terminal evidence before expiry; never recreate child identities
+                # or report these transient joins as live/readiness channels.
+                for channel in sorted(terminal_channels):
+                    if not await bot.join_channel(channel):
+                        raise ConnectionError(f"terminal JOIN not confirmed: {channel}")
+            except Exception as exc:
+                terminal_transport_ready = False
+                report["failed"].append(f"terminal marker transport: {exc}")
+            try:
+                if terminal_transport_ready:
+                    await reconcile()
+            except Exception as exc:
+                report["failed"].append(f"terminal marker replay: {exc}")
+        try:
+            # Boot self-heal (the zombie migration). The old teardown held
+            # row deletion hostage to OPER DESTROY convergence, so an
+            # upgraded install still carries dead rows and stale sidebar
+            # entries. Reconcile them here so existing zombies are fixed,
+            # not just future ones. Idempotent; never touches history.
+            import asyncio as _asyncio2
+
+            from observatory.room_reaper import reap_orphan_rooms
+
+            report["reaped"] = await _asyncio2.to_thread(
+                reap_orphan_rooms,
+                state,
+                mercury_home=home_for_children,
+                live_channels=[
+                    str(row.get("room_id") or "")
+                    for row in live
+                    if int(row.get("depth") or 0) == 0
+                    or (
+                        not terminal_transport_ready
+                        and row.get("room_id") in terminal_channels
+                    )
+                ],
+            )
+        except Exception as exc:
+            report["failed"].append(f"room reap: {exc}")
+        # Reconciliation changes the tree. Never JOIN or recreate identities
+        # from the pre-reconciliation snapshot of terminal children.
+        try:
+            live = list(state.get_live())
+        except Exception:
+            live = []
         mlounge_nick = ""
         try:
             from observatory.provision import get_mlounge_nick as _mlounge_nick
@@ -240,6 +394,21 @@ async def boot_resync(
                 channel = str((row or {}).get("room_id") or "")
                 if not channel:
                     continue
+                owner_live = _identity_has_live_owner(row, state)
+                if int(row.get("depth") or 0) > 0 and (
+                    not owner_live or not _has_attached_execution_feed(row, state)
+                ):
+                    changes = {
+                        "execution_state": "unattached" if owner_live else "unverified",
+                        "feed_attached": False,
+                        "execution_pid": None,
+                        "execution_started_at": None,
+                    }
+                    if not owner_live:
+                        changes["task_state"] = "pending"
+                    state.update_extra(str(row["node_id"]), **changes)
+                if not owner_live:
+                    continue
                 if bot is not None:
                     try:
                         if await bot.join_channel(channel):
@@ -249,9 +418,11 @@ async def boot_resync(
 
                                 nick = str((row or {}).get("mxid") or "")
                                 extra = (row or {}).get("extra") or {}
-                                is_gateway = (
-                                    str((row or {}).get("node_id") or "") == "gw"
-                                    or (isinstance(extra, dict) and extra.get("kind") == "gateway")
+                                is_gateway = str(
+                                    (row or {}).get("node_id") or ""
+                                ) == "gw" or (
+                                    isinstance(extra, dict)
+                                    and extra.get("kind") == "gateway"
                                 )
                                 # The gateway already owns the receive/dispatch
                                 # connection. A send-only clone reclaims its nick
@@ -304,24 +475,6 @@ async def boot_resync(
             except Exception:
                 continue
         try:
-            # Boot self-heal (the zombie migration). The old teardown held
-            # row deletion hostage to OPER DESTROY convergence, so an
-            # upgraded install still carries dead rows and stale sidebar
-            # entries. Reconcile them here so existing zombies are fixed,
-            # not just future ones. Idempotent; never touches history.
-            import asyncio as _asyncio2
-
-            from observatory.room_reaper import reap_orphan_rooms
-
-            report["reaped"] = await _asyncio2.to_thread(
-                reap_orphan_rooms,
-                state,
-                mercury_home=home_for_children,
-                live_channels=report.get("joined") or [],
-            )
-        except Exception as exc:
-            report["failed"].append(f"room reap: {exc}")
-        try:
             deferred = await replay_purge_journal(state)
             report["deferred_purges"] = deferred
         except Exception as exc:
@@ -339,12 +492,15 @@ async def boot_resync(
         import time as _time
 
         if state is not None:
-            state.set_meta("last-resync", _json.dumps({
-                "epoch": _time.time(),
-                "joined": sorted(set(report.get("joined") or [])),
-                "resumed": sorted(set(report.get("resumed") or [])),
-                "failed": list(report.get("failed") or []),
-            }))
+            state.set_meta(
+                "last-resync",
+                _json.dumps({
+                    "epoch": _time.time(),
+                    "joined": sorted(set(report.get("joined") or [])),
+                    "resumed": sorted(set(report.get("resumed") or [])),
+                    "failed": list(report.get("failed") or []),
+                }),
+            )
     except Exception:
         pass
     return report

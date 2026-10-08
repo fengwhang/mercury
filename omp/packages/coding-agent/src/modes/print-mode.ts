@@ -7,11 +7,12 @@
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { $env, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_MS } from "../session/agent-session";
 import { CREDENTIAL_DISABLED_NOTICE_SOURCE } from "../session/credential-disabled-notice";
 import { isSilentAbort } from "../session/messages";
 import { initializeExtensions } from "./runtime-init";
+import { recordRpcDelegationEvent } from "./rpc/rpc-delegation-result";
 
 /**
  * Options for print mode.
@@ -152,7 +153,9 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	}
 
 	// Always subscribe to enable session persistence via _handleAgentEvent
+	const delegationChildId = $env.MERCURY_DELEGATION_CHILD_ID;
 	session.subscribe(event => {
+		recordRpcDelegationEvent(session, event, delegationChildId);
 		// In JSON mode, output all events
 		if (mode === "json") {
 			writeStdoutLine(`${JSON.stringify(printableEvent(event))}\n`);

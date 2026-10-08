@@ -348,8 +348,8 @@ class TestGeneratedSystemdUnits:
 class TestGatewayStopCleanup:
     @pytest.mark.linux_only
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
-        """Without --all, stop uses systemd (if available) and does NOT call
-        the global kill_gateway_processes().
+        """Without --all, stop uses systemd and only sweeps current-profile
+        stragglers, never gateways belonging to another profile.
 
         Linux-gated: the routing under test is the systemd arm, and it is only
         reached when the host really isn't macOS/Windows (the old
@@ -369,14 +369,14 @@ class TestGatewayStopCleanup:
         monkeypatch.setattr(
             gateway_cli,
             "kill_gateway_processes",
-            lambda force=False, all_profiles=False: kill_calls.append(force) or 2,
+            lambda force=False, all_profiles=False: kill_calls.append(all_profiles) or 2,
         )
 
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="stop"))
 
         assert service_calls == ["stop"]
-        # Global kill should NOT be called without --all
-        assert kill_calls == []
+        # The explicit stop's straggler sweep must remain profile-scoped.
+        assert kill_calls == [False]
 
 
 class TestLaunchdServiceRecovery:
@@ -401,244 +401,50 @@ class TestLaunchdServiceRecovery:
 
 
 
-    def test_refresh_defers_reload_when_running_inside_gateway_tree(self, tmp_path, monkeypatch):
-        """#43842: when the refresh runs inside the gateway's own process tree,
-        a direct bootout would kill this CLI before bootstrap. The reload must
-        be delegated to a detached helper instead."""
-        plist_path = tmp_path / "ai.mercury.gateway.plist"
-        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
-
-        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+    def test_live_refresh_defers_manager_reload_without_helper(self, tmp_path, monkeypatch):
+        plist = tmp_path / "gateway.plist"
+        plist.write_text("old")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist)
         monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
-        monkeypatch.setattr(
-            gateway_cli,
-            "generate_launchd_plist",
-            lambda: (
-                "<plist>--replace\n<key>HERMES_HOME</key>"
-                "<string>/Users/alice/.mercury</string></plist>"
-            ),
-        )
-        # Pretend the gateway is running and that we ARE inside its tree.
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
-        monkeypatch.setattr(
-            gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: pid == 4242
-        )
-
-        run_calls = []
-
-        def fake_run(cmd, check=False, **kwargs):
-            run_calls.append(cmd)
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-
-        popen_calls = []
-
-        def fake_popen(cmd, **kwargs):
-            popen_calls.append((cmd, kwargs))
-            return SimpleNamespace(pid=9999)
-
-        monkeypatch.setattr(gateway_cli.subprocess, "Popen", fake_popen)
-
-        result = gateway_cli.refresh_launchd_plist_if_needed()
-
-        assert result is True
-        # The new plist was written.
-        assert "--replace" in plist_path.read_text(encoding="utf-8")
-        # No DIRECT bootout/bootstrap ran (those would kill us mid-sequence).
-        assert not [c for c in run_calls if "bootout" in c or "bootstrap" in c]
-        # Exactly one Popen call was made for the transient launchd job.
-        assert len(popen_calls) == 1
-        cmd, kwargs = popen_calls[0]
-        # Must use `launchctl submit` (not `start_new_session=True`) so the
-        # helper runs as a transient launchd job outside the gateway's process
-        # coalition, surviving bootout (#69098).
-        assert cmd[:3] == ["launchctl", "submit", "-l"]
-        assert kwargs.get("start_new_session") is not True
-        assert "-o" in cmd
-        assert "-e" in cmd
-        # The script is passed via -- /bin/bash -c ...
-        bash_idx = cmd.index("--") + 1
-        assert cmd[bash_idx] == "/bin/bash"
-        assert cmd[bash_idx + 1] == "-c"
-        script = cmd[bash_idx + 2]
-        assert "bootout" in script and "bootstrap" in script
-        assert str(plist_path) in script
-        # The one-shot job must deregister its own transient label at the end,
-        # otherwise every reload leaks a dead label in launchd.
-        submit_label = cmd[cmd.index("-l") + 1]
-        assert f"launchctl remove {submit_label}" in script
-
-    def test_refresh_defers_reload_even_when_not_a_posix_descendant(self, tmp_path, monkeypatch):
-        """The detached helper is used even when the gateway is NOT an ancestor.
-
-        POSIX ancestry does not decide who ``bootout`` kills — the launchd job's
-        process *coalition* does, and coalition membership is inherited at spawn
-        and survives reparenting. A gateway-spawned process whose intermediate
-        parent has exited is reparented to PID 1 (gateway no longer an ancestor)
-        yet still dies with the coalition. Trusting ancestry stranded the job on
-        2026-08-05: the in-process retry loop was killed mid-bootstrap and
-        nothing re-registered the label. So always prefer the detached helper.
-        """
-        plist_path = tmp_path / "ai.mercury.gateway.plist"
-        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
-
-        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
-        monkeypatch.setattr(
-            gateway_cli,
-            "generate_launchd_plist",
-            lambda: (
-                "<plist>--replace\n<key>HERMES_HOME</key>"
-                "<string>/Users/alice/.mercury</string></plist>"
-            ),
-        )
-        # Gateway running, but we are NOT inside its tree.
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
-        monkeypatch.setattr(
-            gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: False
-        )
-
-        run_calls = []
-
-        def fake_run(cmd, check=False, **kwargs):
-            run_calls.append(cmd)
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-
-        popen_calls = []
-        monkeypatch.setattr(
-            gateway_cli.subprocess, "Popen",
-            lambda cmd, **kw: popen_calls.append(cmd) or SimpleNamespace(pid=1),
-        )
-
-        result = gateway_cli.refresh_launchd_plist_if_needed()
-
-        assert result is True
-        # Reload was delegated, NOT run in-process where bootout could kill it.
-        assert len(popen_calls) == 1
-        assert popen_calls[0][:2] == ["launchctl", "submit"]
-        assert not [c for c in run_calls if "bootout" in c or "bootstrap" in c]
-
-
-    def test_deferred_reload_waits_for_old_gateway_pid_before_bootstrap(
-        self, tmp_path, monkeypatch
-    ):
-        """The helper must wait for the old gateway to exit before bootstrapping.
-
-        ``bootout`` only sends SIGTERM; the gateway then drains in-flight agent
-        runs (agent.restart_drain_timeout, default 180s). Every ``bootstrap``
-        issued while it drains fails EIO ("already loaded"), which is how the
-        retry budget got burned on 2026-08-05 (4 attempts, all rc=5).
-        """
-        plist_path = tmp_path / "ai.mercury.gateway.plist"
-        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
-
-        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
-        monkeypatch.setattr(
-            gateway_cli,
-            "generate_launchd_plist",
-            lambda: (
-                "<plist>--replace\n<key>HERMES_HOME</key>"
-                "<string>/Users/alice/.mercury</string></plist>"
-            ),
-        )
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
-        monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "run",
-            lambda cmd, check=False, **kw: SimpleNamespace(
-                returncode=0, stdout="", stderr=""
-            ),
-        )
-
-        popen_calls = []
-        monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "Popen",
-            lambda cmd, **kw: popen_calls.append(cmd) or SimpleNamespace(pid=1),
-        )
-
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "new")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+        monkeypatch.setattr(gateway_cli, "request_automatic_gateway_restart",
+                            lambda **_: {"restarting": True, "deferred": True, "pid": 4242})
+        calls = []
+        monkeypatch.setattr(gateway_cli.subprocess, "run", lambda *a, **k: calls.append(a))
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", lambda *a, **k: calls.append(a))
         assert gateway_cli.refresh_launchd_plist_if_needed() is True
+        assert plist.read_text() == "new"
+        assert calls == []
 
-        cmd = popen_calls[0]
-        script = cmd[cmd.index("--") + 3]
-        # Waits on the OLD pid, and does so AFTER bootout but BEFORE bootstrap.
-        assert "kill -0 4242" in script
-        assert (
-            script.index("bootout")
-            < script.index("kill -0 4242")
-            < script.index("bootstrap")
-        )
-        # The wait must be bounded, so a wedged gateway can't block the reload.
-        assert "_wait_deadline" in script
-
-
-    def test_refresh_falls_back_to_direct_reload_when_helper_cannot_spawn(
-        self, tmp_path, monkeypatch
-    ):
-        """If the transient job can't be spawned, still attempt the reload.
-
-        Bailing out would leave the plist rewritten but the service never
-        reloaded. The in-process path waits out the old gateway's drain first so
-        its retry budget isn't spent on guaranteed-EIO bootstraps.
-        """
-        plist_path = tmp_path / "ai.mercury.gateway.plist"
-        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
-
-        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+    def test_live_refresh_without_safe_support_leaves_plist_unchanged(self, tmp_path, monkeypatch):
+        plist = tmp_path / "gateway.plist"
+        plist.write_text("old")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist)
         monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
-        monkeypatch.setattr(
-            gateway_cli,
-            "generate_launchd_plist",
-            lambda: (
-                "<plist>--replace\n<key>HERMES_HOME</key>"
-                "<string>/Users/alice/.mercury</string></plist>"
-            ),
-        )
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "new")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+        monkeypatch.setattr(gateway_cli, "request_automatic_gateway_restart",
+                            lambda **_: {"restarting": False, "deferred": True, "pid": 4242})
+        assert gateway_cli.refresh_launchd_plist_if_needed() is False
+        assert plist.read_text() == "old"
 
-        def boom(cmd, **kwargs):
-            raise OSError("launchctl submit unavailable")
-
-        monkeypatch.setattr(gateway_cli.subprocess, "Popen", boom)
-
-        waited = []
-        monkeypatch.setattr(
-            gateway_cli,
-            "_wait_for_pid_exit",
-            lambda pid, timeout: waited.append((pid, timeout)) or True,
-        )
-
-        run_calls = []
-
-        def fake_run(cmd, check=False, **kwargs):
-            run_calls.append(cmd)
-            if cmd[:2] == ["launchctl", "list"]:
-                # Post-bootstrap launchd reports a supervised PID; without one
-                # the success check correctly refuses to stop retrying.
-                return SimpleNamespace(
-                    returncode=0,
-                    stdout='{\n\t"PID" = 5150;\n\t"Label" = "ai.mercury.gateway";\n};',
-                    stderr="",
-                )
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-
+    def test_inactive_definition_refresh_reregisters_only_inactive_job(self, tmp_path, monkeypatch):
+        plist = tmp_path / "gateway.plist"
+        plist.write_text("old")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "new")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.mercury.gateway")
+        monkeypatch.setattr(gateway_cli, "_locate_launchd_gateway_service", lambda _: ("gui/501", None))
+        monkeypatch.setattr(gateway_cli, "_retry_launchctl_bootstrap_until_registered",
+                            lambda *a, **k: True)
+        calls = []
+        monkeypatch.setattr(gateway_cli.subprocess, "run", lambda cmd, **_: calls.append(cmd))
         assert gateway_cli.refresh_launchd_plist_if_needed() is True
-
-        label = gateway_cli.get_launchd_label()
-        domain = gateway_cli._launchd_domain()
-        service_calls = [c for c in run_calls if "bootout" in c or "bootstrap" in c]
-        assert service_calls[:2] == [
-            ["launchctl", "bootout", f"{domain}/{label}"],
-            ["launchctl", "bootstrap", domain, str(plist_path)],
-        ]
-        # Drained the old pid between bootout and bootstrap.
-        assert waited and waited[0][0] == 4242
+        assert calls == [["launchctl", "bootout", "gui/501/ai.mercury.gateway"]]
+        assert plist.read_text() == "new"
 
 
     def test_launchd_domain_uses_user_domain(self, monkeypatch):
@@ -1777,11 +1583,12 @@ class TestProfileArg:
         """sudo system install must keep the target user's named profile in ExecStart."""
         root_home = tmp_path / "root"
         target_home = tmp_path / "home" / "alice"
-        root_profile = root_home / ".mercury" / "profiles" / "mybot"
+        root_profile = root_home / ".mercury" / "hermes" / "profiles" / "mybot"
         root_profile.mkdir(parents=True)
 
         monkeypatch.setattr(Path, "home", lambda: root_home)
         monkeypatch.setenv("HERMES_HOME", str(root_profile))
+        monkeypatch.setenv("MERCURY_HOME", str(root_home / ".mercury"))
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_profile)
         monkeypatch.setattr(
             gateway_cli,
@@ -1793,13 +1600,14 @@ class TestProfileArg:
 
         assert "ExecStart=" in unit
         assert "--profile mybot gateway run" in unit
-        assert f'HERMES_HOME={target_home / ".mercury" / "profiles" / "mybot"}' in unit
+        assert f'HERMES_HOME={target_home / ".mercury" / "hermes" / "profiles" / "mybot"}' in unit
 
     def test_launchd_plist_wraps_gateway_stderr_with_timestamps(self, tmp_path, monkeypatch):
-        profile_dir = tmp_path / ".mercury" / "profiles" / "mybot"
+        profile_dir = tmp_path / ".mercury" / "hermes" / "profiles" / "mybot"
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setenv("MERCURY_HOME", str(tmp_path / ".mercury"))
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
         monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
 

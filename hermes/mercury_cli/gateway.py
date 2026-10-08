@@ -291,11 +291,32 @@ def _is_pid_ancestor_of_current_process(target_pid: int) -> bool:
     return False
 
 
+def _request_gateway_admin_restart(pid: int, *, checkpoint_resume: bool = False) -> bool:
+    """Request a bounded administrative restart through authenticated control."""
+    from gateway.control_socket import query_gateway_control
+
+    params = {"trigger": "cli-admin-restart"}
+    # Correlate the original platform receipt; this is never actor authority.
+    if request_id := os.environ.get("MERCURY_RESTART_REQUEST_ID"):
+        params["request_id"] = request_id
+    if checkpoint_resume:
+        params["checkpoint_resume"] = True
+    reply = query_gateway_control(
+        get_hermes_home(), "restart-admin", params=params, timeout=6,
+    )
+    if reply and reply.get("denied"):
+        raise RuntimeError(f"Administrative gateway restart declined: {reply.get('reason', 'not authorized')}")
+    return bool(reply and reply.get("pid") == pid and reply.get("restarting") is True
+                and reply.get("deferred") is False)
+
+
 def _request_gateway_self_restart(pid: int) -> bool:
     """Ask a running gateway ancestor to restart itself asynchronously."""
-    if not hasattr(signal, "SIGUSR1"):
-        return False
     if not _is_pid_ancestor_of_current_process(pid):
+        return False
+    if _request_gateway_admin_restart(pid):
+        return True
+    if not hasattr(signal, "SIGUSR1"):
         return False
     try:
         os.kill(pid, signal.SIGUSR1)  # windows-footgun: ok — POSIX signal, guarded by hasattr(signal, 'SIGUSR1') above
@@ -305,35 +326,21 @@ def _request_gateway_self_restart(pid: int) -> bool:
 
 
 def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
-    """Send SIGUSR1 to a gateway PID and wait for it to exit gracefully.
+    """Use authenticated administrative admission, then a legacy signal fallback.
 
-    SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``,
-    which refuses new turns, waits for in-flight work up to
-    ``agent.restart_after_turn_timeout``, then runs ``stop()`` (force-interrupt
-    budget ``agent.restart_drain_timeout``) and exits.  Both systemd
-    (``Restart=always``) and launchd (unconditional KeepAlive) restart on
-    any exit.
-
-    This is the drain-aware alternative to ``systemctl restart`` / ``SIGTERM``,
-    which SIGKILL in-flight agents after a short timeout.
-
-    Args:
-        pid: Gateway process PID (systemd MainPID, launchd PID, or bare
-            process PID).
-        drain_timeout: Seconds to wait for the process to exit after sending
-            SIGUSR1.  Must cover the after-turn wait plus the stop()/drain
-            phase (#77184); callers should pass
-            ``resolve_restart_exit_wait_budget(...)``.
-
-    Returns:
-        True if the PID was signalled and exited within the timeout.
-        False if SIGUSR1 couldn't be sent or the process didn't exit in
-        time (caller should fall back to a harder restart path).
+    Only explicitly requested administrative commands call this bounded path.
+    New gateways attribute ``restart-admin`` to their local peer and checkpoint
+    work; old gateways without that verb retain compatibility SIGUSR1. A new
+    gateway treats unattributable signals as automatic and may defer them.
+    Convenience callers must use ``request_automatic_gateway_restart`` instead.
     """
-    if not hasattr(signal, "SIGUSR1"):
-        return False
     if pid <= 0:
         return False
+    if _request_gateway_admin_restart(pid):
+        return _wait_for_pid_exit(pid, max(drain_timeout, 1.0))
+    if not hasattr(signal, "SIGUSR1"):
+        return False
+    print("Administrative control unavailable; trying legacy SIGUSR1 compatibility restart.")
     try:
         os.kill(pid, signal.SIGUSR1)  # windows-footgun: ok — POSIX signal, guarded by hasattr(signal, 'SIGUSR1') above
     except ProcessLookupError:
@@ -1006,7 +1013,7 @@ def find_profile_gateway_processes(
     processes: list[ProfileGatewayProcess] = []
     try:
         from gateway.status import get_running_pid, get_running_pid_identity_strict
-        from mercury_cli.profiles import list_profiles
+        from mercury_cli.profiles import _get_default_hermes_dir, list_profiles
     except Exception:
         if strict:
             raise
@@ -1020,13 +1027,14 @@ def find_profile_gateway_processes(
             raise
         return processes
     for profile in profiles:
+        home = _get_default_hermes_dir() if profile.name == "default" else profile.path
         try:
             if strict:
-                identity = get_running_pid_identity_strict(profile.path / "gateway.pid")
+                identity = get_running_pid_identity_strict(home / "gateway.pid")
                 pid = identity[0] if identity else None
                 create_time = identity[1] if identity else 0.0
             else:
-                pid = get_running_pid(profile.path / "gateway.pid", cleanup_stale=False)
+                pid = get_running_pid(home / "gateway.pid", cleanup_stale=False)
                 create_time = 0.0
         except Exception as exc:
             if strict:
@@ -1040,7 +1048,7 @@ def find_profile_gateway_processes(
         processes.append(
             ProfileGatewayProcess(
                 profile=profile.name,
-                path=profile.path,
+                path=home,
                 pid=pid,
                 create_time=create_time,
             )
@@ -1184,7 +1192,7 @@ def _gateway_run_args_for_profile(profile: str) -> list[str]:
     args = [get_python_path(), "-m", "mercury_cli.main"]
     if profile != "default":
         args.extend(["--profile", profile])
-    args.extend(["gateway", "run", "--replace"])
+    args.extend(["gateway", "run"])
     return args
 
 
@@ -1227,32 +1235,6 @@ def _capture_gateway_argv(pid: int) -> list[str] | None:
     return argv
 
 
-def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | None:
-    """Choose who relaunches a profile gateway after ``mercury update``.
-
-    A gateway started with ``--external-supervisor`` must exit back to that
-    manager. Starting Mercury's detached watcher as well would escape the
-    manager and race its replacement process. Ordinary foreground gateways
-    retain the existing detached-watcher behavior.
-
-    When the profile-derived relaunch cannot be armed -- typically because
-    ``_gateway_run_args_for_profile`` cannot rebuild a run argv for this
-    profile -- fall back to replaying the process's own captured command
-    line, which is what ``launch_detached_gateway_restart_by_cmdline``
-    exists for and what the Windows post-update path already does for its
-    unmapped gateways.  Without this the caller has no way to relaunch the
-    process and (before #88654) silently left it running pre-update modules
-    against post-update code on disk.  ``argv`` is already captured above,
-    so the fallback costs nothing extra.
-    """
-    argv = _capture_gateway_argv(pid)
-    if argv and "--external-supervisor" in argv:
-        return "external-supervisor"
-    if launch_detached_profile_gateway_restart(profile, pid):
-        return "detached"
-    if argv and launch_detached_gateway_restart_by_cmdline(pid, list(argv)):
-        return "detached-cmdline"
-    return None
 
 
 def launch_detached_gateway_restart_by_cmdline(
@@ -2794,8 +2776,12 @@ def _profile_arg(mercury_home: str | None = None, default_root: str | Path | Non
     default = Path(default_root).resolve() if default_root else get_default_hermes_root().resolve()
     if home == default:
         return ""
-    from mercury_cli.profiles import _get_profiles_root
-    profiles_root = _get_profiles_root().resolve()
+    if default_root is not None:
+        profiles_root = default / "hermes" / "profiles"
+    else:
+        from mercury_cli.profiles import _get_profiles_root
+
+        profiles_root = _get_profiles_root().resolve()
     try:
         rel = home.relative_to(profiles_root)
         parts = rel.parts
@@ -4638,13 +4624,10 @@ def _print_system_scope_remediation(action: str) -> None:
     print_info(f"    1. {action.capitalize()} it this time:")
     if action == "start":
         print_info(f"         sudo systemctl start {svc}")
-    if has_legacy_hermes_units():
-        print()
-        print_legacy_unit_warning()
-        print()
-        if non_interactive or prompt_yes_no("Remove the legacy unit(s) before installing?", True):
-            remove_legacy_hermes_units(interactive=False)
-            print()
+    else:
+        print_info(f"         sudo mercury gateway {action} --system")
+    print_info("    2. Move to a per-user service with explicit administration:")
+    print_info("         sudo mercury gateway uninstall --system")
     print_info("         mercury gateway install")
     print_info("         mercury gateway start")
 
@@ -4867,13 +4850,46 @@ def systemd_stop(system: bool = False):
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
 
-def _request_gateway_quick_restart(pid: int) -> bool:
-    """Ask this profile's live gateway to checkpoint instead of waiting a turn."""
+def request_automatic_gateway_restart(
+    *, home: Path | None = None, pid: int | None = None,
+    trigger: str = "automatic-refresh",
+) -> dict:
+    """Queue a convenience restart through live, fail-closed admission.
+
+    Unlike an explicit administrative restart, this never signals a process,
+    stops a service, or imposes a deadline on active tasks and delegates.
+    A queued request is not proof that a replacement is already running.
+    """
     from gateway.control_socket import query_gateway_control
 
-    reply = query_gateway_control(get_hermes_home(), "restart-observatory", timeout=6)
-    return bool(reply and reply.get("pid") == pid and (
-        reply.get("restarting") is True or reply.get("already_stopping") is True))
+    home = Path(home) if home is not None else get_hermes_home()
+    params = {"trigger": trigger}
+    # Only the receipt identifier crosses this boundary, not environment credentials.
+    if request_id := os.environ.get("MERCURY_RESTART_REQUEST_ID"):
+        params["request_id"] = request_id
+    reply = query_gateway_control(
+        home, "restart-when-idle", params=params, timeout=6,
+    )
+    if (
+        reply
+        and reply.get("restarting") is True
+        and isinstance(reply.get("deferred"), bool)
+        and isinstance(reply.get("pid"), int)
+        and reply["pid"] > 0
+        and (pid is None or reply["pid"] == pid)
+    ):
+        if reply["deferred"]:
+            print("Automatic gateway restart deferred until active tasks and delegates finish.")
+        else:
+            print("Automatic gateway restart requested while idle.")
+        return reply
+    print("Automatic gateway restart deferred: safe admission is unavailable; gateway left running.")
+    return {
+        "restarting": False, "deferred": True, "pid": pid,
+        "reason": "safe automatic restart admission unavailable",
+    }
+
+
 
 
 def systemd_restart(system: bool = False, *, quick: bool = False):
@@ -4892,7 +4908,7 @@ def systemd_restart(system: bool = False, *, quick: bool = False):
     from gateway.status import get_running_pid
 
     pid = get_running_pid() or _systemd_main_pid(system=system)
-    if pid is not None and quick and _request_gateway_quick_restart(pid):
+    if pid is not None and quick and _request_gateway_admin_restart(pid, checkpoint_resume=True):
         print("→ Checkpointing active sessions and restarting the gateway...", flush=True)
         if not _wait_for_systemd_service_restart(system=system, previous_pid=pid, timeout=90):
             raise RuntimeError("Gateway restart was requested but is not ready; check gateway status")
@@ -5698,213 +5714,48 @@ def launchd_plist_is_current() -> bool:
 
 
 def refresh_launchd_plist_if_needed() -> bool:
-    """Rewrite the installed launchd plist when the generated definition has changed.
+    """Write a changed plist without automatically booting out a live job.
 
-    Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
-    ``launchctl kickstart`` cycle — no daemon-reload is needed. We still bootout/
-    bootstrap to make launchd re-read the updated plist immediately.
+    launchd retains its registered definition until re-registration. A
+    convenience refresh may queue an idle code restart, but re-registering
+    a live job is an explicit administrative action: even a helper waiting
+    for the old PID can tear down the replacement KeepAlive already started.
     """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
         return False
-
     new_plist = generate_launchd_plist()
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
+    from gateway.status import get_running_pid
 
-    plist_path.write_text(new_plist, encoding="utf-8")
+    pid = get_running_pid()
+    if pid is not None:
+        reply = request_automatic_gateway_restart(
+            pid=pid, trigger="launchd-definition-refresh",
+        )
+        if not reply["restarting"]:
+            return False
+        plist_path.write_text(new_plist, encoding="utf-8")
+        print(
+            "Gateway launchd plist written; idle-only code restart queued. "
+            "Manager definition reload deferred to explicit service re-registration."
+        )
+        return True
+
+    # Only an inactive job may be re-registered by the convenience path.
     label = get_launchd_label()
-    domain = _launchd_domain()
-    target = f"{domain}/{label}"
-
-    # If this refresh is running INSIDE the gateway's own launchd process tree
-    # (e.g. the agent triggered a self-update via its terminal tool), a direct
-    # `launchctl bootout` tears down the service's process group — which
-    # includes THIS CLI — before the follow-up `bootstrap` can run. The gateway
-    # then stays unloaded and KeepAlive can't revive it (#43842). The reload is
-    # therefore always handed to a detached helper job (see NOTE below — POSIX
-    # ancestry cannot reliably detect the dangerous case, so we no longer try).
-    gateway_pid = None
-    try:
-        from gateway.status import get_running_pid
-        gateway_pid = get_running_pid()
-    except Exception:
-        gateway_pid = None
-
-    # NOTE: POSIX ancestry is NOT a reliable test for "the bootout will kill us".
-    # What bootout tears down is the launchd job's process *coalition*, and
-    # coalition membership is inherited at spawn — it survives reparenting. A
-    # process the gateway spawned whose intermediate parent has since exited is
-    # reparented to PID 1, so the gateway is no longer an ancestor, yet the
-    # process is still in the coalition and still dies with it. That
-    # misclassification stranded the job on 2026-08-05: the in-process retry loop
-    # below was killed mid-bootstrap (4 attempts, rc=5, no exhaustion line) and
-    # nothing was left to re-register the label, so KeepAlive could not revive it.
-    #
-    # Since the detached helper is also correct when we are genuinely outside the
-    # coalition (just asynchronous), always prefer it and keep the in-process path
-    # only as the fallback for when the helper cannot be spawned.
-    if (
-        gateway_pid is not None
-        and hasattr(os, "setsid")  # POSIX-only; launchd is macOS so always true here
-    ):
-        # Delegate to a new session: `start_new_session=True` detaches the
-        # helper from the gateway's process group, so the bootout that kills
-        # the gateway (and us) does not kill the helper before it bootstraps.
-        #
-        # The bootstrap is retried up to 5 times with verification: under
-        # high load (loadavg observed >= 9) or a launchd race, the bootout
-        # can succeed (removing the service from launchd) while the
-        # follow-up bootstrap fails silently. Without retry+verify the
-        # service stays unregistered — KeepAlive can't revive a service
-        # launchd no longer knows about, so the gateway stays dark until a
-        # manual `launchctl bootstrap`. Failures append a timestamped line
-        # to ~/.mercury/logs/launchd-reload.log, which the health watchdog
-        # can tail to detect a persistent orphan. See mercury-restart
-        # rootcause handoff (2026-06-26 incident).
-        reload_log_path = get_hermes_home() / "logs" / "launchd-reload.log"
-        try:
-            reload_log_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-
-        # Write a durable pre-bootout marker so we can distinguish "helper
-        # never started" from "helper ran but bootout/bootstrap failed".
-        _append_launchd_reload_log(f"Launchd reload helper started for {target}")
-
-        # Retry until launchctl LISTS the label (not merely a zero bootstrap
-        # exit) or the drain window elapses. The failure happens while the old
-        # gateway is still draining (default agent.restart_drain_timeout=180s),
-        # so a fixed ~10s window is too short — bound by that budget instead.
-        _reload_budget = int(max(30.0, _get_restart_drain_timeout()))
-        # Label for the transient one-shot job (see `launchctl submit` below).
-        # Unique per reload so concurrent/repeated reloads never collide.
-        submit_label = f"{label}.reload.{os.getpid()}.{int(time.time())}"
-        reload_script = (
-            f"sleep 2; "
-            f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
-            # Wait for the OLD gateway to actually exit before bootstrapping.
-            # bootout only sends SIGTERM; the gateway then drains in-flight agent
-            # runs (up to agent.restart_drain_timeout), and every bootstrap issued
-            # while it is still draining fails EIO ("already loaded"). Racing the
-            # drain is what burned the retry budget on 2026-08-05.
-            f"_wait_deadline=$(($(date +%s) + {_reload_budget})); "
-            f"while kill -0 {gateway_pid} 2>/dev/null; do "
-            f"  if [ $(date +%s) -ge $_wait_deadline ]; then "
-            f"    echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] old gateway pid {gateway_pid} still alive after {_reload_budget}s drain wait — bootstrapping anyway\" >> {shlex.quote(str(reload_log_path))}; "
-            f"    break; "
-            f"  fi; "
-            f"  sleep 1; "
-            f"done; "
-            # Let launchd finish unregistering the label after the process exits.
-            f"sleep 1; "
-            f"_deadline=$(($(date +%s) + {_reload_budget})); "
-            f"while :; do "
-            f"  launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null; "
-            # Require a POSITIVE PID, not just exit 0: a bare `launchctl list`
-            # also succeeds for a registered-but-not-running definition, and a
-            # recently-crashed job reports `"PID" = -1` — both must keep the
-            # loop retrying (mirrors _parse_launchd_pid_from_list_output).
-            f"  if launchctl list {shlex.quote(label)} 2>/dev/null | grep -qE '\\\"PID\\\" = [0-9]+;'; then break; fi; "
-            f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] bootstrap not yet registered for {shlex.quote(target)} — retrying\" >> {shlex.quote(str(reload_log_path))}; "
-            f"  if [ $(date +%s) -ge $_deadline ]; then break; fi; "
-            f"  sleep 2; "
-            f"done; "
-            f"if ! launchctl list {shlex.quote(label)} 2>/dev/null | grep -qE '\\\"PID\\\" = [0-9]+;'; then "
-            f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] FAILED launchd reload for {shlex.quote(target)} — service NOT registered after {_reload_budget}s of retries\" >> {shlex.quote(str(reload_log_path))}; "
-            f"fi; "
-            # Submitted jobs stay registered with launchd after the script
-            # exits; without this, every reload leaks one dead label. Removing
-            # our own label is the documented way to end a one-shot submit job
-            # (it SIGTERMs the job, but this is the final statement anyway).
-            f"launchctl remove {shlex.quote(submit_label)} 2>/dev/null"
-        )
-        try:
-            # Spawn the reload helper via `launchctl submit` (a transient
-            # launchd one-shot job) instead of `start_new_session=True`.
-            # `start_new_session=True` only calls setsid(2), which creates a
-            # new POSIX session but does NOT move the child outside the
-            # launchd job's process coalition.  When `launchctl bootout` fires
-            # on the gateway label, launchd terminates ALL processes in that
-            # coalition — including a setsid-detached child (#69098).
-            #
-            # `launchctl submit` creates a wholly independent transient launchd
-            # job that launchd manages separately from the gateway, so bootout
-            # of the gateway job cannot reach the helper.
-            subprocess.Popen(
-                [
-                    "launchctl", "submit",
-                    "-l", submit_label,
-                    "-o", str(reload_log_path),
-                    "-e", str(reload_log_path),
-                    "--",
-                    "/bin/bash", "-c", reload_script,
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception as e:
-            # Don't give up — fall through to the in-process bootout/bootstrap
-            # below. It risks being killed mid-reload if we share the gateway's
-            # coalition, but an attempt beats leaving the plist updated and the
-            # service never reloaded.
-            logger.warning("Deferred launchd reload could not be spawned: %s", e)
-            _append_launchd_reload_log(
-                f"FAILED to spawn launchd reload helper for {target}: {e} — "
-                f"falling back to in-process bootout/bootstrap"
-            )
-        else:
-            print(
-                "↻ Updated gateway launchd service definition; reload deferred to "
-                "a transient launchd job (survives the bootout of this process)"
-            )
-            return True
-
-    # Bootout/bootstrap so launchd picks up the new definition. The reported
-    # incident (2026-06-26) happened when bootout succeeded but bootstrap
-    # failed silently under load (loadavg 9.48) during a graceful /restart
-    # drain, leaving the service unregistered — KeepAlive can't revive a job
-    # launchd no longer knows about. Retry the bootstrap (via the shared
-    # _launchctl_bootstrap EIO-recovery helper) until the label is actually
-    # registered or the drain window elapses, verify with `launchctl list`,
-    # and log exhaustion so the reload watchdog can detect a persistent orphan.
-    subprocess.run(
-        ["launchctl", "bootout", target],
-        check=False,
-        timeout=90,
-    )
-    # Size the retry window to the restart drain timeout (default 180s), not a
-    # fixed ~10s: the failure mode occurs while the old gateway is still
-    # draining, so a short window can exhaust before launchd settles.
-    _reload_budget = max(30.0, _get_restart_drain_timeout())
-    # Wait out the old gateway's drain first, so the retry budget is spent on
-    # real bootstrap failures rather than on EIO ("already loaded") responses
-    # that are guaranteed while the previous instance is still shutting down.
-    if gateway_pid is not None and not _wait_for_pid_exit(
-        gateway_pid, _reload_budget
-    ):
-        _append_launchd_reload_log(
-            f"old gateway pid {gateway_pid} still alive after "
-            f"{int(_reload_budget)}s drain wait — bootstrapping {target} anyway"
-        )
-    _deadline = time.monotonic() + _reload_budget
-    if not _retry_launchctl_bootstrap_until_registered(
-        domain, plist_path, label, deadline=_deadline
-    ):
-        _append_launchd_reload_log(
-            f"FAILED launchd reload of {target} — service NOT registered after "
-            f"retrying for {int(_reload_budget)}s (in-process fallback path)"
-        )
-        logger.error(
-            "launchd reload of %s failed — service not registered after %ds of "
-            "retries; see %s",
-            target,
-            int(_reload_budget),
-            _launchd_reload_log_path(),
-        )
-    print(
-        "↻ Updated gateway launchd service definition to match the current Mercury install"
-    )
+    domain, service_pid = _locate_launchd_gateway_service(label)
+    if service_pid is not None:
+        print("Gateway launchd definition refresh deferred: live job lacks safe profile admission.")
+        return False
+    domain = domain or _launchd_domain()
+    plist_path.write_text(new_plist, encoding="utf-8")
+    subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], check=False, timeout=90)
+    deadline = time.monotonic() + max(30.0, _get_restart_drain_timeout())
+    if not _retry_launchctl_bootstrap_until_registered(domain, plist_path, label, deadline=deadline):
+        raise RuntimeError("Gateway launchd definition was written but registration failed")
+    print("Updated inactive gateway launchd service definition.")
     return True
 
 
@@ -6155,7 +6006,7 @@ def launchd_restart(*, quick: bool = False):
 
     try:
         pid = get_running_pid()
-        if pid is not None and quick and _request_gateway_quick_restart(pid):
+        if pid is not None and quick and _request_gateway_admin_restart(pid, checkpoint_resume=True):
             print("→ Checkpointing active sessions and restarting the gateway...", flush=True)
             if not _wait_for_launchd_service_pid(label, pid, timeout=90, domain=domain):
                 raise RuntimeError("Gateway restart was requested but is not ready; check gateway status")
@@ -8264,17 +8115,7 @@ def gateway_setup():
                 _print_system_scope_remediation("restart")
             elif prompt_yes_no("  Restart the gateway to pick up changes?", True):
                 try:
-                    if supports_systemd_services():
-                        systemd_restart()
-                    elif is_macos():
-                        launchd_restart()
-                    elif is_windows():
-                        from mercury_cli import gateway_windows
-
-                        gateway_windows.restart()
-                    else:
-                        stop_profile_gateway()
-                        print_info("Start manually: mercury gateway")
+                    request_automatic_gateway_restart(trigger="gateway-setup")
                 except UserSystemdUnavailableError as e:
                     print_error("  Restart failed — user systemd not reachable:")
                     for line in str(e).splitlines():
@@ -9028,6 +8869,14 @@ def _gateway_command_inner(args):
         from tools.process_registry import _is_in_supervised_gateway_tree
 
         if _is_in_supervised_gateway_tree():
+            if getattr(args, "quick", False) and not getattr(args, "all", False):
+                from gateway.status import get_running_pid
+
+                pid = get_running_pid()
+                if pid is None or not _request_gateway_admin_restart(pid, checkpoint_resume=True):
+                    raise RuntimeError("Explicit checkpoint/resume restart requires authenticated admin admission")
+                print("Gateway checkpoint/resume restart requested.")
+                return
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"

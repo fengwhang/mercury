@@ -1,182 +1,34 @@
-"""Regression for #68523 — one systemctl timeout must not abort fleet restarts.
+"""One failed idle admission must not abandon the remaining gateway fleet."""
+from types import SimpleNamespace
 
-On hosts with many profile-backed ``mercury-gateway*.service`` units,
-``mercury update`` used to wrap the entire per-scope unit loop in a single
-``except subprocess.TimeoutExpired``. A timeout on unit N skipped units
-N+1…, leaving later gateways on pre-update in-memory modules while the
-checkout on disk was already new (mixed-generation crashes).
-"""
-
-from __future__ import annotations
-
-import subprocess
-
-import pytest
-
-from mercury_cli.main import (
-    _for_each_systemd_gateway_unit,
-    _service_unit_supports_graceful_sigusr1_restart,
-    _warn_incomplete_gateway_fleet_restart,
-)
+import mercury_cli.gateway as gateway
+from mercury_cli import update_cmd as update
 
 
-def _list_units_stdout(names: list[str]) -> str:
-    return "\n".join(f"{name}.service loaded active running" for name in names)
+def test_admission_failure_on_middle_gateway_continues_remaining_profiles(monkeypatch, tmp_path):
+    processes = [SimpleNamespace(pid=pid, profile=name, path=tmp_path / name)
+                 for pid, name in [(1, "before"), (2, "failed"), (3, "after")]]
+    monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **_: processes)
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda **_: [1, 2, 3])
+    requested = []
+
+    def admit(**kwargs):
+        requested.append(kwargs["pid"])
+        if kwargs["pid"] == 2:
+            raise OSError("control unavailable")
+        return {"restarting": True, "deferred": False, "pid": kwargs["pid"]}
+
+    monkeypatch.setattr(gateway, "request_automatic_gateway_restart", admit)
+    monkeypatch.setattr(update, "_wait_for_automatic_gateway_replacement", lambda *_: True)
+    result = update._restart_gateway_fleet_automatically(trigger="update")
+    assert result["verified"] == ["before", "after"]
+    assert result["failed"] == ["failed"]
+    assert requested == [1, 2, 3]
 
 
-class TestFleetRestartTimeoutIsolation:
-    def test_timeout_on_middle_unit_continues_remaining_units(self):
-        units = [
-            "mercury-gateway-xiaomo1",
-            "mercury-gateway-xiaomo2",
-            "mercury-gateway-xiaomo3",
-            "mercury-gateway-xiaomo4",
-            "mercury-gateway-xiaomo5",
-            "mercury-gateway-xiaomo6",
-            "mercury-gateway-xiaomo7",
-            "mercury-gateway",
-        ]
-        restarted: list[str] = []
-        failed: list[str] = []
-        timeout_cmds: list = []
-
-        def process_unit(svc_name: str) -> None:
-            if svc_name == "mercury-gateway-xiaomo5":
-                raise subprocess.TimeoutExpired(
-                    cmd=["systemctl", "--user", "--no-ask-password", "restart", svc_name],
-                    timeout=15,
-                )
-            restarted.append(svc_name)
-
-        def on_unit_timeout(svc_name: str, exc: subprocess.TimeoutExpired) -> None:
-            failed.append(svc_name)
-            timeout_cmds.append(exc.cmd)
-
-        _for_each_systemd_gateway_unit(
-            _list_units_stdout(units),
-            process_unit=process_unit,
-            on_unit_timeout=on_unit_timeout,
-        )
-
-        assert failed == ["mercury-gateway-xiaomo5"]
-        assert restarted == [
-            "mercury-gateway-xiaomo1",
-            "mercury-gateway-xiaomo2",
-            "mercury-gateway-xiaomo3",
-            "mercury-gateway-xiaomo4",
-            "mercury-gateway-xiaomo6",
-            "mercury-gateway-xiaomo7",
-            "mercury-gateway",
-        ]
-        assert set(restarted) | set(failed) == set(units)
-        assert timeout_cmds == [
-            ["systemctl", "--user", "--no-ask-password", "restart", "mercury-gateway-xiaomo5"]
-        ]
-
-    def test_non_gateway_units_in_list_output_are_ignored(self):
-        seen: list[str] = []
-
-        _for_each_systemd_gateway_unit(
-            "\n".join(
-                [
-                    "ssh.service loaded active running",
-                    "mercury-gateway-coder.service loaded active running",
-                    "not-a-service loaded active running",
-                    "",
-                ]
-            ),
-            process_unit=seen.append,
-            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
-        )
-
-        assert seen == ["mercury-gateway-coder"]
-
-    def test_hermes_serve_units_are_included(self):
-        # #83438 — mercury update restarted mercury-gateway* units but left
-        # mercury-serve* (the Desktop app's backend) on stale pre-update code.
-        seen: list[str] = []
-
-        _for_each_systemd_gateway_unit(
-            "\n".join(
-                [
-                    "ssh.service loaded active running",
-                    "mercury-serve.service loaded active running",
-                    "mercury-serve-work.service loaded active running",
-                    "mercury-gateway.service loaded active running",
-                    "",
-                ]
-            ),
-            process_unit=seen.append,
-            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
-        )
-
-        assert seen == ["mercury-serve", "mercury-serve-work", "mercury-gateway"]
-
-    def test_hermes_server_near_prefix_is_rejected(self):
-        # Review on #83595: a bare ``startswith("mercury-serve")`` gate also
-        # accepts the unrelated ``mercury-server.service``. Only the exact
-        # base unit or the hyphenated profile family should pass.
-        seen: list[str] = []
-
-        _for_each_systemd_gateway_unit(
-            _list_units_stdout(["mercury-server"]),
-            process_unit=seen.append,
-            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
-        )
-
-        assert seen == []
-
-    def test_hermes_gateway_near_prefix_is_rejected(self):
-        # Same strict shape on the gateway side: profile units are
-        # ``mercury-gateway-<profile>``, so a hypothetical
-        # ``mercury-gatewayd.service`` must not enter the restart path.
-        seen: list[str] = []
-
-        _for_each_systemd_gateway_unit(
-            _list_units_stdout(["mercury-gatewayd", "mercury-gateway-coder"]),
-            process_unit=seen.append,
-            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
-        )
-
-        assert seen == ["mercury-gateway-coder"]
-
-
-class TestGracefulSigusr1Eligibility:
-    def test_gateway_units_are_eligible(self):
-        assert _service_unit_supports_graceful_sigusr1_restart("mercury-gateway")
-        assert _service_unit_supports_graceful_sigusr1_restart(
-            "mercury-gateway-work"
-        )
-
-    def test_serve_units_are_not_eligible(self):
-        # mercury-serve doesn't run gateway/run.py, so it never installs the
-        # SIGUSR1 handler — sending it the signal would just terminate the
-        # process (the default action) instead of draining gracefully.
-        assert not _service_unit_supports_graceful_sigusr1_restart("mercury-serve")
-        assert not _service_unit_supports_graceful_sigusr1_restart(
-            "mercury-serve-work"
-        )
-
-    def test_process_errors_other_than_timeout_still_propagate(self):
-        def process_unit(_svc_name: str) -> None:
-            raise RuntimeError("not a timeout")
-
-        with pytest.raises(RuntimeError, match="not a timeout"):
-            _for_each_systemd_gateway_unit(
-                _list_units_stdout(["mercury-gateway"]),
-                process_unit=process_unit,
-                on_unit_timeout=lambda *_: pytest.fail("timeout handler must not run"),
-            )
-
-
-class TestIncompleteFleetRestartWarning:
-    def test_warns_with_exact_unrestarted_units(self, capsys):
-        _warn_incomplete_gateway_fleet_restart(
-            ["mercury-gateway-xiaomo5", "mercury-gateway-xiaomo6", "mercury-gateway-xiaomo5"]
-        )
-        out = capsys.readouterr().out
-        assert "Update incomplete" in out
-        assert out.count("mercury-gateway-xiaomo5") == 1
-        assert "mercury-gateway-xiaomo6" in out
-        assert "pre-update code" in out
-
+def test_warns_with_exact_unrestarted_units(capsys):
+    update._warn_incomplete_gateway_fleet_restart(["mercury-gateway-one", "mercury-gateway-two"])
+    out = capsys.readouterr().out
+    assert "mercury-gateway-one" in out
+    assert "mercury-gateway-two" in out
+    assert "pre-update code" in out

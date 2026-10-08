@@ -61,6 +61,7 @@ def hermes_progress_frame(event_type: str, name: str | None, *, args=None,
             text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
             if is_error:
                 text = f"Tool failed: {name}\n{text}"
+            return {"feed": "message", "role": "tool", "text": text, "subagent_id": ""}
     else:
         return None
     return {"feed": "status", "text": text, "subagent_id": ""}
