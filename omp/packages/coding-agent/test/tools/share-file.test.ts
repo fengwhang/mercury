@@ -1,57 +1,92 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { ShareFileTool } from "@oh-my-pi/pi-coding-agent/tools/share-file";
 
 let home: string;
 let oldMercuryHome: string | undefined;
 
 beforeEach(() => {
-	home = mkdtempSync(join(tmpdir(), "share-file-test-"));
+	home = fs.mkdtempSync(join(tmpdir(), "share-file-test-"));
 	oldMercuryHome = process.env.MERCURY_HOME;
+	fs.writeFileSync(join(home, "room.log"), "private fake room: no publication\n");
 	process.env.MERCURY_HOME = home;
 });
 
 afterEach(() => {
 	if (oldMercuryHome === undefined) delete process.env.MERCURY_HOME;
 	else process.env.MERCURY_HOME = oldMercuryHome;
-	rmSync(home, { recursive: true, force: true });
+	fs.rmSync(home, { recursive: true, force: true });
 });
 
-function run(params: { path: string; caption?: string }) {
-	const tool = new ShareFileTool();
-	return tool.execute("call-1", params as never);
+async function expectUnavailableWithoutSideEffects(params: { path: string; caption?: string }) {
+	const snapshot = () =>
+		fs.readdirSync(home, { recursive: true }).map(entry => {
+			const relative = String(entry);
+			const file = join(home, relative);
+			return [relative, fs.statSync(file).isFile() ? fs.readFileSync(file).toString("base64") : null];
+		});
+	const before = snapshot();
+	const spies = [
+		spyOn(Bun, "file"),
+		spyOn(Bun, "write"),
+		spyOn(globalThis, "fetch"),
+		spyOn(fs, "readFileSync"),
+		spyOn(fs, "writeFileSync"),
+		spyOn(fs, "copyFileSync"),
+		spyOn(fs, "mkdirSync"),
+		spyOn(fs, "statSync"),
+		spyOn(fsPromises, "readFile"),
+		spyOn(fsPromises, "writeFile"),
+		spyOn(fsPromises, "copyFile"),
+		spyOn(fsPromises, "mkdir"),
+		spyOn(fs, "lstatSync"),
+		spyOn(fs, "accessSync"),
+		spyOn(fs, "openSync"),
+		spyOn(fs, "existsSync"),
+		spyOn(fs, "readdirSync"),
+		spyOn(fs, "renameSync"),
+		spyOn(fs, "unlinkSync"),
+		spyOn(fsPromises, "lstat"),
+		spyOn(fsPromises, "access"),
+		spyOn(fsPromises, "open"),
+		spyOn(fsPromises, "readdir"),
+		spyOn(fsPromises, "rename"),
+		spyOn(fsPromises, "unlink"),
+		spyOn(fsPromises, "rm"),
+		spyOn(fsPromises, "stat"),
+	];
+	try {
+		const tool = new ShareFileTool();
+		const result = await tool.execute("call-1", params);
+		expect(tool.label).toContain("unavailable");
+		expect(result.isError).toBe(true);
+		expect(result.content).toEqual([{ type: "text", text: tool.description }]);
+		expect(tool.description).toContain("publication is excluded");
+		expect(result.details).toEqual({ url: "", filename: "" });
+		for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+	} finally {
+		for (const spy of spies) spy.mockRestore();
+	}
+	expect(snapshot()).toEqual(before);
 }
 
 describe("share_file", () => {
-	it("stages a file and returns a room-postable URL", async () => {
-		const src = join(tmpdir(), `share-src-${Date.now()}.pdf`);
-		writeFileSync(src, "%PDF-1.4 data");
-		try {
-			const result = await run({ path: src, caption: "read this" });
-			const text = result.content.map(part => (part as { text?: string }).text ?? "").join("\n");
-			expect(text).toContain("/uploads/");
-			expect(text).toContain(".pdf");
-			const details = result.details ?? { url: "", filename: "" };
-			expect(details.filename).toMatch(/^share-src-.*\.pdf$/);
-			const token = (details.url.split("/uploads/")[1] ?? "").split("/")[0];
-			expect(token).toMatch(/^[0-9a-f]{16}$/);
-		} finally {
-			rmSync(src, { force: true });
-		}
+	it("reports unavailable without staging a file or returning a room-postable URL", async () => {
+		const src = join(home, "share-src.pdf");
+		fs.writeFileSync(src, "%PDF-1.4 data");
+		await expectUnavailableWithoutSideEffects({ path: src, caption: "read this" });
+		expect(fs.readFileSync(src, "utf8")).toBe("%PDF-1.4 data");
 	});
 
-	it("refuses missing files, directories, and secrets", async () => {
-		const missing = await run({ path: join(home, "nope.txt") });
-		expect(JSON.stringify(missing)).toContain("file not found");
-		mkdirSync(join(home, "sub"));
-		const dir = await run({ path: join(home, "sub") });
-		expect(JSON.stringify(dir)).toContain("not a regular file");
-		writeFileSync(join(home, "id_rsa.key"), "x");
-		const key = await run({ path: join(home, "id_rsa.key") });
-		expect(JSON.stringify(key)).toContain("refusing");
-		const etc = await run({ path: "/etc/hostname" });
-		expect(JSON.stringify(etc)).toContain("refusing");
+	it("refuses missing files, directories, and secrets without inspecting or publishing them", async () => {
+		fs.mkdirSync(join(home, "sub"));
+		fs.writeFileSync(join(home, "id_rsa.key"), "private fake secret");
+		for (const path of [join(home, "nope.txt"), join(home, "sub"), join(home, "id_rsa.key"), "/etc/hostname"]) {
+			await expectUnavailableWithoutSideEffects({ path });
+		}
+		expect(fs.readFileSync(join(home, "id_rsa.key"), "utf8")).toBe("private fake secret");
 	});
 });
