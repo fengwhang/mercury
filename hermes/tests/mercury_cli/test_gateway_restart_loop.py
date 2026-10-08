@@ -30,7 +30,7 @@ class TestGatewayLifecyclePattern:
         "mercury gateway stop",
         "mercury gateway uninstall",
         "mercury  gateway  restart",         # double spaces
-        "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
+        "MercurY Gateway Restart",          # mixed case
         "MERCURY GATEWAY RESTART",           # uppercase
     ])
     def test_hermes_gateway_commands(self, text):
@@ -229,7 +229,7 @@ class TestGatewayLifecyclePattern:
         # (unbalanced quote), the per-physical-line fallback must still SCAN
         # the content — a lifecycle command alongside an unbalanced quote
         # must remain blocked, never waved through.
-        text = 'echo "unbalanced\nhermes gateway restart'
+        text = 'echo "unbalanced\nmercury gateway restart'
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
     @pytest.mark.parametrize("text", [
@@ -262,9 +262,9 @@ class TestGatewayLifecyclePattern:
 
     @pytest.mark.parametrize("text", [
         # Executable heredoc (shell consumer) must stay blocked.
-        "bash <<EOF\nhermes gateway restart\nEOF",
+        "bash <<EOF\nmercury gateway restart\nEOF",
         # Unquoted delimiter = expansion-capable = fail open to scanning.
-        "cat > /tmp/x <<EOF\nhermes gateway restart\nEOF",
+        "cat > /tmp/x <<EOF\nmercury gateway restart\nEOF",
     ])
     def test_non_inert_heredocs_still_scanned(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
@@ -387,7 +387,7 @@ class TestCronCreateLifecycleBlock:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".mercury"))
         scripts_dir = tmp_path / ".mercury" / "scripts"
         scripts_dir.mkdir(parents=True)
-        (scripts_dir / "restart.sh").write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        (scripts_dir / "restart.sh").write_text("#!/bin/bash\nmercury gateway restart\n", encoding="utf-8")
         args = Namespace(
             cron_command="create",
             schedule="1h",
@@ -444,7 +444,7 @@ class TestGatewaySelfTargetingGuard:
     def test_stop_refuses_inside_gateway(self, monkeypatch):
         from tools import process_registry
         monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process", lambda: True
+            process_registry, "_is_in_supervised_gateway_tree", lambda: True
         )
         from mercury_cli.gateway import gateway_command
         args = Namespace(gateway_command="stop", all=False, system=False)
@@ -518,7 +518,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         monkeypatch.setattr(tt, "_task_env_overrides", {})
         monkeypatch.setattr(tt, "_get_env_config", self._minimal_config)
         monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process",
+            process_registry, "_is_in_supervised_gateway_tree",
             lambda: inside_gateway,
         )
 
@@ -562,7 +562,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "delayed-ops.sh"
-        script.write_text("#!/bin/bash\nsleep 45\nhermes gateway restart\n", encoding="utf-8")
+        script.write_text("#!/bin/bash\nsleep 45\nmercury gateway restart\n", encoding="utf-8")
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(command=f"/bin/bash {script}"))
@@ -619,6 +619,7 @@ class TestTerminalToolGatewayLifecycleGuard:
             env = {}
 
             def execute(self, cmd, **kwargs):
+                assert cmd == command
                 calls.append(cmd)
                 return {"output": "", "returncode": 0}
 
@@ -635,9 +636,9 @@ class TestTerminalToolGatewayLifecycleGuard:
     def test_cli_agent_session_not_blocked_by_inherited_env(
         self, monkeypatch
     ):
-        """#92560: CLI/TUI agent sessions inherit _HERMES_GATEWAY=1 from the
-        gateway but are NOT the gateway supervisor.  The env gate must not
-        fire for them — only for the actual gateway process (PID-file owner).
+        """#92560: CLI/TUI import-leak sessions carry _HERMES_GATEWAY=1 but
+        have no supervisor markers. The tree gate must not fire for them;
+        supervised descendants remain protected even without PID ownership.
         """
         import tools.terminal_tool as tt
 
@@ -647,13 +648,14 @@ class TestTerminalToolGatewayLifecycleGuard:
             env = {}
 
             def execute(self, cmd, **kwargs):
+                assert cmd == "mercury gateway restart"
                 calls.append(cmd)
                 return {"output": "", "returncode": 0}
 
         # Simulate a CLI agent session: _HERMES_GATEWAY=1 is in the
-        # environment (inherited from the gateway), but
-        # _is_supervised_gateway_process() returns False because the
-        # process does not own the gateway PID file.
+        # environment (set by importing gateway.run), but
+        # _is_in_supervised_gateway_tree() returns False because the
+        # process has no supervisor markers.
         self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=False)
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
         monkeypatch.setattr(
@@ -685,7 +687,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "relative.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        script.write_text("#!/bin/bash\nmercury gateway restart\n", encoding="utf-8")
 
         class _FakeEnv:
             env = {}
@@ -704,7 +706,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "delayed.sh"
-        script.write_text("#!/bin/bash\nhermes gateway stop\n", encoding="utf-8")
+        script.write_text("#!/bin/bash\nmercury gateway stop\n", encoding="utf-8")
         script.chmod(0o700)
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
@@ -727,7 +729,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "options.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        script.write_text("#!/bin/bash\nmercury gateway restart\n", encoding="utf-8")
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(
@@ -760,7 +762,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         inner = tmp_path / "inner.sh"
-        inner.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        inner.write_text("#!/bin/bash\nmercury gateway restart\n", encoding="utf-8")
         outer = tmp_path / "outer.sh"
         outer.write_text("#!/bin/bash\n/bin/bash inner.sh\n", encoding="utf-8")
 
@@ -795,6 +797,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         class _FakeEnv:
             env = {}
             def execute(self, command, **kwargs):
+                assert command == "printf '%s\\n' 'launchctl submit is persistent'"
                 calls.append(command)
                 return {"output": "launchctl submit is persistent", "returncode": 0}
 
@@ -819,6 +822,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         class _FakeEnv:
             env = {}
             def execute(self, command, **kwargs):
+                assert command == f"/bin/bash {script}"
                 calls.append(command)
                 return {"output": "healthy", "returncode": 0}
 
@@ -842,6 +846,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         class _FakeEnv:
             env = {}
             def execute(self, command, **kwargs):
+                assert command == "systemctl status nginx"
                 calls.append(command)
                 return {"output": "Active: running", "returncode": 0}
 
@@ -873,7 +878,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nmercury gateway restart\n")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
             is True
@@ -891,7 +896,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "padded.sh"
-        script.write_bytes(b"#!/bin/bash\n# pad\x00\nhermes gateway restart\n")
+        script.write_bytes(b"#!/bin/bash\n# pad\x00\nmercury gateway restart\n")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f"bash {script}")
             is True
@@ -903,7 +908,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nmercury gateway restart\n")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f"source {script}")
             is True
@@ -932,7 +937,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "padded_noshebang.sh"
-        script.write_bytes(b"# ok\n# pad\x00\nhermes gateway restart\n")
+        script.write_bytes(b"# ok\n# pad\x00\nmercury gateway restart\n")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f"bash {script}")
             is True
@@ -1014,7 +1019,7 @@ class TestLifecycleGuardModule:
     def test_script_with_command_raises(self, tmp_path, monkeypatch):
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        script.write_text("#!/bin/bash\nmercury gateway restart\n", encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
 
@@ -1056,7 +1061,7 @@ class TestLifecycleGuardModule:
         decode with errors='replace' so the scan always sees the command."""
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "weird.bin"
-        script.write_bytes(b"\xfehermes gateway restart\xff")
+        script.write_bytes(b"\xfemercury gateway restart\xff")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("", str(script))
 
@@ -1189,7 +1194,7 @@ class TestLifecycleGuardModule:
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "wrapper.sh"
         script.write_text("#!/bin/bash\n./deploy.sh\n", encoding="utf-8")
-        (tmp_path / "deploy.sh").write_text("#!/bin/bash\nhermes gateway stop\n", encoding="utf-8")
+        (tmp_path / "deploy.sh").write_text("#!/bin/bash\nmercury gateway stop\n", encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily ops", str(script))
 
@@ -1486,7 +1491,7 @@ class TestDotSourceIsScannedLikeSource:
     @pytest.fixture
     def helper(self, tmp_path):
         script = tmp_path / "helper.sh"
-        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        script.write_text("#!/bin/sh\nmercury gateway restart\n", encoding="utf-8")
         return script
 
     @pytest.mark.parametrize("form", [". {path}", "source {path}"])
@@ -1542,7 +1547,7 @@ class TestTransparentWrapperPrefixes:
     @pytest.fixture
     def helper(self, tmp_path):
         script = tmp_path / "helper.sh"
-        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        script.write_text("#!/bin/sh\nmercury gateway restart\n", encoding="utf-8")
         return script
 
     @pytest.mark.parametrize("prefix", [
@@ -1636,7 +1641,7 @@ class TestTransparentWrapperPrefixes:
         Peeling is additive precisely so it cannot swallow the reference the
         un-peeled read finds."""
         script = tmp_path / name
-        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        script.write_text("#!/bin/sh\nmercury gateway restart\n", encoding="utf-8")
         assert self._scan(f"./{name}", cwd=str(tmp_path)) is True
         assert self._scan(str(script), cwd=str(tmp_path)) is True
 
@@ -1837,7 +1842,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         monkeypatch.setattr(tt, "_task_env_overrides", {})
         monkeypatch.setattr(tt, "_get_env_config", lambda: {"env_type": "local", "cwd": "/tmp", "timeout": 60, "lifetime_seconds": 3600})
         monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process",
+            process_registry, "_is_in_supervised_gateway_tree",
             lambda: inside_gateway,
         )
 
@@ -1854,9 +1859,11 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
             cwd = str(tmp_path)
             def execute(self, command, **kwargs):
                 calls.append(command)
-                if "head -c" in command and "/remote/workspace/remote.sh" in command:
-                    return {"output": "#!/bin/bash\nhermes gateway restart\n", "returncode": 0}
-                return {"output": "", "returncode": 0}
+                from cron.lifecycle_guard import _MAX_REFERENCED_SCRIPT_BYTES
+
+                assert command == f"head -c {_MAX_REFERENCED_SCRIPT_BYTES + 1} < {script}"
+                assert kwargs == {}
+                return {"output": "#!/bin/bash\nmercury gateway restart\n", "returncode": 0}
 
         fake_env = _RemoteEnv()
         fake_env.cwd = "/remote/workspace"
@@ -1882,7 +1889,7 @@ class TestCronCreateLifecycleBlockExtra:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".mercury"))
         scripts_dir = tmp_path / ".mercury" / "scripts"
         scripts_dir.mkdir(parents=True)
-        (scripts_dir / "inner.sh").write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        (scripts_dir / "inner.sh").write_text("#!/bin/bash\nmercury gateway restart\n", encoding="utf-8")
         (scripts_dir / "outer.sh").write_text("#!/bin/bash\n/bin/bash inner.sh\n", encoding="utf-8")
         args = Namespace(
             cron_command="create",
