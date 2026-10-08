@@ -183,19 +183,14 @@ class TestSupermemoryIsAvailable:
 
 
 # ---------------------------------------------------------------------------
-# 4. Real sealed-venv durable-target gate accepts the new features.
-#
-# This is the exact hosted-Fly condition: HERMES_DISABLE_LAZY_INSTALLS=1 seals
-# the venv, but HERMES_LAZY_INSTALL_TARGET redirects installs to a writable
-# durable dir, so installs are still ALLOWED. We exercise the real
-# _allow_lazy_installs() + ensure() flow end-to-end with only the pip
-# subprocess stubbed.
+# 4. Durable targets cannot authorize runtime package acquisition.
+# Preprovisioned provider dependencies remain usable without an installer.
 # ---------------------------------------------------------------------------
 
 
 class TestSealedVenvDurableTarget:
     @pytest.mark.parametrize("feature", MEMORY_FEATURES)
-    def test_ensure_installs_into_durable_target_on_sealed_venv(
+    def test_ensure_blocks_acquisition_with_durable_target_on_sealed_venv(
         self, feature, monkeypatch, tmp_path
     ):
         # Sealed venv + durable target = the published Docker image config.
@@ -207,31 +202,24 @@ class TestSealedVenvDurableTarget:
             lambda: {"security": {"allow_lazy_installs": True}},
         )
 
-        # Real gate must permit installs because a durable target is set.
-        assert ld._allow_lazy_installs() is True, (
-            "sealed venv WITH a durable target must allow installs — this is "
-            "the path honcho/hindsight use on hosted Fly instances"
+        assert ld._allow_lazy_installs() is False
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        from unittest.mock import Mock
+        installer = Mock(side_effect=AssertionError("runtime acquisition"))
+        monkeypatch.setattr(ld, "_venv_pip_install", installer)
+        with pytest.raises(ld.FeatureUnavailable, match="lazy installs disabled") as exc:
+            ld.ensure(feature, prompt=False)
+        assert "To enable manually" in str(exc.value)
+        installer.assert_not_called()
+        assert not (tmp_path / "lazy").exists()
+
+    @pytest.mark.parametrize("feature", MEMORY_FEATURES)
+    def test_preprovisioned_provider_never_acquires_packages(self, feature, monkeypatch):
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install", lambda *a, **kw: pytest.fail("runtime acquisition")
         )
-
-        # Drive ensure(): missing first, satisfied after the (stubbed) install.
-        states = iter([False, True])
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(states))
-
-        captured = {}
-
-        def fake_install(specs, **kw):
-            captured["specs"] = specs
-            captured["target_env"] = os.environ.get("HERMES_LAZY_INSTALL_TARGET")
-            return ld._InstallResult(True, "ok", "")
-
-        monkeypatch.setattr(ld, "_venv_pip_install", fake_install)
-
-        ld.ensure(feature, prompt=False)  # must not raise
-
-        assert captured.get("specs") == ld.LAZY_DEPS[feature]
-        assert captured.get("target_env"), (
-            "install ran without the durable target env set"
-        )
+        ld.ensure(feature, prompt=False)
 
     @pytest.mark.parametrize("feature", MEMORY_FEATURES)
     def test_sealed_venv_without_target_blocks(self, feature, monkeypatch):

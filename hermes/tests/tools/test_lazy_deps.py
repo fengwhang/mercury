@@ -114,15 +114,21 @@ class TestSecurityGating:
             ld.ensure("test.feat", prompt=False)
 
 
-    def test_config_failure_fails_open(self, monkeypatch):
-        # If config can't be read at all, we ALLOW installs rather than
-        # blocking the user out of their own backends.
+    def test_config_failure_fails_closed(self, monkeypatch):
+        # Broken configuration cannot authorize runtime acquisition.
         monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
         monkeypatch.setattr(
             "mercury_cli.config.load_config",
             lambda: (_ for _ in ()).throw(RuntimeError("config broken")),
         )
-        assert ld._allow_lazy_installs() is True
+        assert ld._allow_lazy_installs() is False
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_venv_pip_install", lambda *a, **kw: pytest.fail("acquisition"))
+        with pytest.raises(ld.FeatureUnavailable, match="lazy installs disabled"):
+            ld.ensure("memory.honcho", prompt=False)
+        result = ld.install_specs(["honcho-ai==2.2.0"])
+        assert result.blocked is True
+        assert result.ok is False
 
 
 # ---------------------------------------------------------------------------
@@ -453,17 +459,29 @@ class TestInstallSpecs:
         assert result.blocked is True
 
 
-    def test_never_raises_on_unexpected_error(self, monkeypatch):
+    def test_runtime_blocks_before_unexpected_installer_error(self, monkeypatch):
         monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
         monkeypatch.setattr(
-            "mercury_cli.config.load_config", lambda: {}, raising=False
+            ld, "_venv_pip_install", lambda *a, **kw: pytest.fail("installer reached")
         )
-        # Contract: install_specs never raises — even an unexpected installer
-        # crash comes back as a failed result the caller can render.
-        def boom(specs, **kw):
-            raise RuntimeError("disk on fire")
-        monkeypatch.setattr(ld, "_venv_pip_install", boom)
         result = ld.install_specs(["honcho-ai==2.2.0"])
         assert result.ok is False
+        assert result.blocked is True
+
+    def test_explicit_installer_contains_pip_error(self, monkeypatch):
+        from types import SimpleNamespace
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr("mercury_cli.managed_uv.resolve_uv", lambda: None)
+        monkeypatch.setattr(ld.shutil, "which", lambda name: None)
+        calls = []
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if cmd[-1] == "--version":
+                return SimpleNamespace(returncode=0)
+            raise RuntimeError("disk on fire")
+        monkeypatch.setattr(ld.subprocess, "run", run)
+        result = ld._venv_pip_install(("honcho-ai==2.2.0",))
+        assert result.success is False
         assert "disk on fire" in result.stderr
+        assert calls[-1][-2:] == ["install", "honcho-ai==2.2.0"]
