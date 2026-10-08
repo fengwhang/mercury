@@ -282,6 +282,9 @@ def mirc_request(
     token: str = "",
 ) -> Dict[str, Any]:
     """POST/GET JSON against the MIRC host. Never raises: errors → dict."""
+    import re
+    import urllib.error
+
     url = mirc_url.rstrip("/") + path
     try:
         data = None
@@ -301,8 +304,46 @@ def mirc_request(
             body = response.read().decode("utf-8")
         parsed = json.loads(body) if body.strip() else {}
         return parsed if isinstance(parsed, dict) else {"ok": False, "error": "bad MIRC response"}
-    except Exception as exc:
-        return {"ok": False, "error": f"MIRC host unreachable ({exc})"}
+    except urllib.error.HTTPError as exc:
+        # HTTP failures are responses. Only bounded, canonical public messages
+        # may cross this service boundary; arbitrary provider bodies are private.
+        result = {"ok": False, "status": exc.code, "error": "request failed"}
+        try:
+            with exc:
+                raw = exc.read(4097)
+            if exc.code in (401, 403) or len(raw) > 4096:
+                return result
+            parsed = json.loads(raw.decode("utf-8"))
+            if not isinstance(parsed, dict):
+                return result
+            message = parsed.get("detail") or parsed.get("error")
+            if not isinstance(message, str) or not 0 < len(message) <= 512:
+                return result
+            public = {
+                "Voice calls disabled in Mercury Setup",
+                "Voice request exceeds limits",
+                "channel is required",
+                "action must be start|end|mute|unmute",
+                "no active call on channel",
+            }
+            configuration = re.fullmatch(
+                r"Configure (?:STT|TTS) in Mercury Setup on the (?:MIRC|mLounge) host"
+                r"(?:; no cloud fallback)?",
+                message,
+            )
+            secrets = (token, os.environ.get("VOICE_CALL_MIRC_TOKEN", ""),
+                       os.environ.get("VOICE_CALL_SIDECAR_TOKEN", ""))
+            if (message in public or configuration) and not any(
+                secret and secret in message for secret in secrets
+            ):
+                result["error"] = message
+        except (OSError, ValueError, UnicodeError):
+            pass
+        return result
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return {"ok": False, "error": "MIRC host unreachable"}
+    except Exception:
+        return {"ok": False, "error": "request failed"}
 
 
 # ---------------------------------------------------------------------------
