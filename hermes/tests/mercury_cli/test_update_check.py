@@ -12,8 +12,8 @@ import pytest
 
 
 
-def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
-    """When cache is fresh, check_for_updates should return cached value without calling git."""
+def test_check_for_updates_ignores_cache_without_external_query(tmp_path, monkeypatch):
+    """Ordinary startup neither announces cached updates nor queries a vendor."""
     from mercury_cli.banner import check_for_updates
     from mercury_cli import __version__
 
@@ -24,13 +24,19 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
 
     cache_file = tmp_path / ".update_check"
     cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}))
+    before = cache_file.read_bytes()
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("mercury_cli.banner.subprocess.run") as mock_run:
+    with patch("mercury_cli.banner.subprocess.run") as mock_run, \
+         patch("mercury_cli.banner._check_via_local_git") as local_query, \
+         patch("mercury_cli.banner._check_via_rev") as remote_query:
         result = check_for_updates()
 
-    assert result == 3
+    assert result is None
     mock_run.assert_not_called()
+    local_query.assert_not_called()
+    remote_query.assert_not_called()
+    assert cache_file.read_bytes() == before
 
 
 
