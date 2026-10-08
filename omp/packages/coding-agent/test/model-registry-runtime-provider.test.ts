@@ -173,8 +173,11 @@ describe("ModelRegistry runtime provider registration", () => {
 				return Response.json({ data: [{ id: "operator-selfhosted-model" }] });
 			},
 		});
+		expect(urls).toEqual([]);
 		configuredRegistry.refreshInBackground();
 		await configuredRegistry.awaitBackgroundRefresh();
+		expect(urls).toEqual([]);
+		await configuredRegistry.refresh("online");
 		expect(urls.filter(url => new URL(url).hostname !== "127.0.0.1")).toEqual([`${endpoint}/models`]);
 		expect(configuredRegistry.find("zenmux", "operator-selfhosted-model")?.baseUrl).toBe(endpoint);
 		urls.length = 0;
@@ -1280,7 +1283,9 @@ describe("ModelRegistry runtime provider registration", () => {
 			"ext://oauth",
 		);
 
-		const refreshPromise = registry.refresh("offline");
+		// Targeted refresh reloads the catalog before its discovery await; a full
+		// refresh first awaits Mercury hydration and has not invalidated it yet.
+		const refreshPromise = registry.refreshProvider("anthropic", "offline");
 		expect(registry.find("anthropic", anthropicId!)).toBeDefined();
 		expect(registry.find("changing-provider", "runtime-model")?.name).toBe("projection-3");
 		await refreshPromise;

@@ -208,7 +208,7 @@ describe("ModelRegistry runtime discovery", () => {
 		};
 	}
 
-	test("scoped discovery coalesces with an in-flight background refresh", async () => {
+	test("scoped discovery coalesces with an in-flight explicit refresh", async () => {
 		writeRawModelsJson({
 			gateway: {
 				baseUrl: "http://127.0.0.1:9992",
@@ -231,7 +231,11 @@ describe("ModelRegistry runtime discovery", () => {
 		};
 		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
 
+		expect(modelListCalls).toBe(0);
 		registry.refreshInBackground();
+		await registry.awaitBackgroundRefresh();
+		expect(modelListCalls).toBe(0);
+		const ownerRefresh = registry.refresh("online-if-uncached");
 		await started.promise;
 		expect(modelListCalls).toBe(1);
 
@@ -239,7 +243,7 @@ describe("ModelRegistry runtime discovery", () => {
 		expect(modelListCalls).toBe(1);
 
 		resolve(Response.json({ data: [{ id: "dynamic-model", context_length: 65_536 }] }));
-		await Promise.all([scopedRefresh, registry.awaitBackgroundRefresh()]);
+		await Promise.all([scopedRefresh, ownerRefresh]);
 
 		expect(modelListCalls).toBe(1);
 		expect(registry.find("gateway", "dynamic-model")).toBeDefined();
@@ -256,10 +260,12 @@ describe("ModelRegistry runtime discovery", () => {
 		});
 		const oldResponse = Promise.withResolvers<Response>();
 		const oldStarted = Promise.withResolvers<void>();
+		let oldModelListCalls = 0;
 		let newModelListCalls = 0;
 		const fetchMock: FetchImpl = async input => {
 			const url = String(input);
 			if (url === "http://127.0.0.1:9992/v1/models") {
+				oldModelListCalls++;
 				oldStarted.resolve();
 				return oldResponse.promise;
 			}
@@ -271,7 +277,13 @@ describe("ModelRegistry runtime discovery", () => {
 		};
 		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
 
+		expect(oldModelListCalls).toBe(0);
+		expect(newModelListCalls).toBe(0);
 		registry.refreshInBackground();
+		await registry.awaitBackgroundRefresh();
+		expect(oldModelListCalls).toBe(0);
+		expect(newModelListCalls).toBe(0);
+		const ownerRefresh = registry.refresh("online-if-uncached");
 		await oldStarted.promise;
 
 		const previousMtime = fs.statSync(modelsJsonPath).mtimeMs;
@@ -287,8 +299,9 @@ describe("ModelRegistry runtime discovery", () => {
 		fs.utimesSync(modelsJsonPath, changedTime, changedTime);
 		const refreshed = registry.refresh("online-if-uncached");
 		oldResponse.resolve(Response.json({ data: [{ id: "old-model", context_length: 65_536 }] }));
-		await Promise.all([refreshed, registry.awaitBackgroundRefresh()]);
+		await Promise.all([refreshed, ownerRefresh]);
 
+		expect(oldModelListCalls).toBe(1);
 		expect(newModelListCalls).toBe(1);
 		expect(registry.find("gateway", "new-model")).toBeDefined();
 		expect(registry.find("gateway", "old-model")).toBeUndefined();
