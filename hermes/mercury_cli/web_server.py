@@ -1102,11 +1102,16 @@ async def _token_auth_seam(request: Request, call_next):
     # separate secret grants only the three voice routes, never dashboard
     # administration. Ordinary dashboard requests retain their existing auth.
     if request.url.path in {"/api/voice-call/status", "/api/voice-call/call", "/api/audio/speak"}:
-        expected = os.environ.get("VOICE_CALL_MIRC_TOKEN", "")
+        from mercury_cli.config import get_env_value
+        expected = get_env_value("VOICE_CALL_MIRC_TOKEN") or ""
         presented = request.headers.get("authorization", "")
         if expected and hmac.compare_digest(
             presented.encode(), f"Bearer {expected}".encode()
         ):
+            selected_profile = os.environ.get("HERMES_PROFILE") or "default"
+            requested_profile = request.query_params.get("profile") or "default"
+            if requested_profile != selected_profile:
+                return JSONResponse(status_code=403, content={"detail": "Voice service profile not authorized"})
             request.state.token_authenticated = True
             return await call_next(request)
     from mercury_cli.dashboard_auth.token_auth import token_auth_middleware
@@ -5828,6 +5833,8 @@ async def voice_call_status(channel: str = "", profile: Optional[str] = None):
     agent = _voice_call.resolve_channel_agent(name) if name else {"engine": "hermes", "name": ""}
     engine = agent["engine"]
     allowed, reason = _voice_call.check_engine_allowed(engine)
+    if allowed and agent.get("profile", "default") != (profile or "default"):
+        allowed, reason = False, "Call target belongs to a different Hermes profile"
     call = _voice_call.default_store().status(name)
     response: Dict[str, Any] = {
         "ok": True,
@@ -5859,7 +5866,10 @@ async def voice_call_action(payload: VoiceCallActionRequest, profile: Optional[s
         ended = store.end(channel, call_id=payload.call_id)
         return {"ok": True, "action": action, "channel": channel, "ended": ended}
     # Caller hints cannot override the server's room engine.
-    engine = _voice_call.resolve_channel_agent(channel)["engine"]
+    agent = _voice_call.resolve_channel_agent(channel)
+    engine = agent["engine"]
+    if agent.get("profile", "default") != (profile or "default"):
+        raise HTTPException(status_code=403, detail="Call target belongs to a different Hermes profile")
     allowed, reason = _voice_call.check_engine_allowed(engine)
     if not allowed:
         raise HTTPException(status_code=409, detail=reason)

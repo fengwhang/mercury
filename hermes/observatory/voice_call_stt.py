@@ -4,7 +4,7 @@
 Three-tier audio path (see docs/voice-call.md)::
 
   browser (getUserMedia mic / HTMLAudio speakers)
-      │ WebSocket /call — audio chunks up, transcripts + TTS audio down
+      │ authenticated mLounge session -> private /call service socket
       ▼
   this sidecar (mLounge host) — selected ASR + relay to the MIRC host
       │ HTTP — transcripts are returned to the browser (which delivers
@@ -19,18 +19,15 @@ Hard rules:
 - Playback happens ONLY in the browser. This process never plays audio;
   it forwards base64 TTS payloads back down the call socket.
 - No localhost assumption: the MIRC base URL is explicit (``--mirc-url``
-  or ``voice_call.mirc_host_url``) and the browser reaches this sidecar
-  at an explicit URL (``voice_call.stt_sidecar_url``). Same-machine is a
-  degenerate case, never a default.
+  or ``voice_call.mirc_host_url``); mLounge reaches the configured private
+  STT peer using a service header. The browser never supplies peer URLs
+  or service/provider credentials.
 - Hermes-only: the opening ``hello`` resolves the channel engine through
   the MIRC host and refuses OMP rooms before any audio flows.
 
-Run on the mLounge host (after ``mercury setup stt`` there)::
-
-  python -m observatory.voice_call_stt --host 0.0.0.0 --port 8765 \\
-      --mirc-url http://mirc-host:8000 --token s3cret
-
-Stdlib only — no third-party server dependencies on the mLounge host.
+Setup provisions this listener from saved host/profile configuration.
+Service credentials are loaded from the selected host's .env, never argv.
+The transport uses stdlib HTTP/WebSocket framing and canonical Hermes STT.
 """
 
 from __future__ import annotations
@@ -63,7 +60,7 @@ if os.path.isdir(os.path.join(REPO_HERMES, "tools")):
     sys.path.insert(0, os.path.dirname(REPO_HERMES))
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-WS_MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+WS_MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 
 CHUNK_SUFFIX_BY_MIME = {
     "audio/webm": ".webm",
@@ -151,6 +148,31 @@ class WsConnection:
         self.rfile = rfile if rfile is not None else conn.makefile("rb")
         self.lock = threading.Lock()
         self.closed = False
+        self.messages: Optional[queue.Queue[tuple[str, bytes]]] = None
+
+    def watch_startup(self) -> None:
+        """One reader owns transport EOF even while status/start HTTP is blocked."""
+        messages: queue.Queue[tuple[str, bytes]] = queue.Queue(maxsize=12)
+        self.messages = messages
+
+        def read():
+            try:
+                while not self.closed:
+                    message = self._read_message()
+                    if message[0] == "close":
+                        break
+                    messages.put_nowait(message)
+            except (OSError, ValueError, queue.Full):
+                pass
+            finally:
+                self.close()
+                # A full queue is discarded only after the transport is closed.
+                while not messages.empty():
+                    with contextlib.suppress(queue.Empty):
+                        messages.get_nowait()
+                messages.put_nowait(("close", b""))
+
+        threading.Thread(target=read, daemon=True).start()
 
     def send_json(self, message: Dict[str, Any], *, guard=None, timeout=None) -> None:
         raw = json.dumps(message).encode("utf-8")
@@ -184,6 +206,11 @@ class WsConnection:
             raise ConnectionError("Voice control response failed; call ended") from failure
 
     def recv_message(self) -> tuple[str, bytes]:
+        if self.messages is not None:
+            return self.messages.get()
+        return self._read_message()
+
+    def _read_message(self) -> tuple[str, bytes]:
         """Next complete message as (kind, payload): text|binary|close."""
         fragments: list[bytes] = []
         text_mode: Optional[bool] = None
@@ -266,7 +293,11 @@ def mirc_request(
             data = json.dumps(payload).encode("utf-8")
             method = "POST"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+        opener = urllib.request.build_opener(NoRedirect)
+        with opener.open(request, timeout=timeout) as response:
             body = response.read().decode("utf-8")
         parsed = json.loads(body) if body.strip() else {}
         return parsed if isinstance(parsed, dict) else {"ok": False, "error": "bad MIRC response"}
@@ -289,13 +320,15 @@ def load_sidecar_stt_config(overlays: Optional[Dict[str, str]] = None) -> Dict[s
     else:
         stt_config = dict(stt_config)
     overlays = overlays or {}
+    if not overlays.get("provider"):
+        from tools.tool_backend_helpers import read_selection
+        if read_selection("stt") is None:
+            stt_config["provider"] = "none"
     provider = (overlays.get("provider") or "").strip().lower()
     if provider:
         stt_config["provider"] = provider
     elif any(overlays.get(key) for key in ("model", "language", "endpoint")):
-        from tools.transcription_tools import _get_provider
-
-        provider = _get_provider(stt_config)
+        provider = active_stt_provider(stt_config)
     if provider:
         section = dict(stt_config.get(provider) or {})
         if overlays.get("model"):
@@ -320,9 +353,12 @@ def load_sidecar_stt_config(overlays: Optional[Dict[str, str]] = None) -> Dict[s
 def active_stt_provider(stt_config: Dict[str, Any]) -> str:
     """Resolved provider name for status reporting (never raises)."""
     try:
-        from tools.transcription_tools import _get_provider
-
-        return str(_get_provider(stt_config))
+        from tools import transcription_tools as tt
+        if not tt.is_stt_enabled(stt_config) or not stt_config.get("provider"):
+            return "none"
+        if stt_config.get("provider") == "local" and not tt._HAS_FASTER_WHISPER and not tt._has_local_command():
+            return "none"
+        return str(tt._get_provider(stt_config))
     except Exception as exc:
         return f"unavailable ({exc})"
 
@@ -337,6 +373,8 @@ def transcribe_chunk(
     (file safety, validation, non-local size cap, cloud silence trim) while
     serving the overlay config instead of the on-disk one.
     """
+    if not stt_config.get("enabled", True):
+        return {"success": False, "transcript": "", "error": "STT is disabled; enable it in Mercury Setup on the mLounge host."}
     if not audio_bytes:
         return {"success": False, "transcript": "", "error": "empty audio chunk"}
     try:
@@ -356,7 +394,9 @@ def transcribe_chunk(
         error = tt._validate_audio_file(tmp_path, enforce_size_limit=False)
         if error:
             return error
-        provider = tt._get_provider(stt_config)
+        provider = active_stt_provider(stt_config)
+        if provider == "none" or provider.startswith("unavailable"):
+            return {"success": False, "transcript": "", "error": "Configured STT unavailable; run Mercury Setup/doctor on the mLounge host. No automatic install or cloud fallback."}
         if not tt._is_local_stt_provider(provider, stt_config):
             error = tt._validate_audio_file_size(__import__("pathlib").Path(tmp_path))
             if error:
@@ -405,29 +445,27 @@ class SidecarState:
         stt_config: Dict[str, Any],
         token: str = "",
         mirc_token: str = "",
+        profile: str = "default",
+        reload_config: bool = False,
     ) -> None:
         self.mirc_url = mirc_url.rstrip("/")
         self.stt_config = stt_config
         self.token = token
         self.mirc_token = mirc_token
+        self.profile = profile
+        self.reload_config = reload_config
         self.calls: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.Lock()
 
     def check_token(self, handler: BaseHTTPRequestHandler) -> bool:
-        if not self.token:
-            return True
-        query = urllib.parse.urlparse(handler.path).query
-        params = urllib.parse.parse_qs(query)
-        presented = ""
-        for values in (params.get("token") or []):
-            presented = values
-        if not presented:
-            presented = (handler.headers.get("X-Voice-Call-Token") or "").strip()
-        if presented.startswith("Bearer "):
-            presented = presented[len("Bearer "):].strip()
+        # This listener is a private service peer, never browser-authenticated.
+        if not self.token or handler.headers.get("Origin") or urllib.parse.urlparse(handler.path).query:
+            return False
+        presented = (handler.headers.get("X-Voice-Call-Token") or "").strip()
         return hmac.compare_digest(presented.encode(), self.token.encode())
 
     def request(self, path: str, payload=None, *, timeout=60.0):
+        path += ("&" if "?" in path else "?") + "profile=" + urllib.parse.quote(self.profile, safe="")
         return mirc_request(self.mirc_url, path, payload, timeout=timeout, token=self.mirc_token)
 
     def next_call_id(self) -> str:
@@ -442,15 +480,10 @@ class SidecarHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         logger.info("%s - %s", self.address_string(), fmt % args)
 
-    def _cors(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Voice-Call-Token")
 
     def _send_json(self, payload: Dict[str, Any], status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
-        self._cors()
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -461,7 +494,6 @@ class SidecarHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:  # noqa: N802 — handler naming convention
         self.send_response(204)
-        self._cors()
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -571,7 +603,6 @@ class SidecarHandler(BaseHTTPRequestHandler):
             return
         if not self.state.check_token(self):
             self.send_response(401)
-            self._cors()
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
@@ -619,24 +650,47 @@ class SidecarHandler(BaseHTTPRequestHandler):
         if not channel:
             ws.send_json({"type": "error", "message": "hello.channel is required"})
             return
+        if isinstance(ws, WsConnection):
+            ws.watch_startup()
         status = self.state.request(
                 f"/api/voice-call/status?channel={urllib.parse.quote(channel)}",
             None,
             timeout=10.0,
         )
-        engine = str(status.get("engine") or "hermes")
-        if not status.get("ok") or not status.get("allowed", True):
+        engine = str(status.get("engine") or "unknown")
+        if getattr(ws, "closed", False):
+            return
+        if not status.get("ok") or status.get("allowed") is not True:
             ws.send_json({
                 "type": "refused",
                 "reason": str(status.get("reason") or status.get("error") or "call not allowed"),
             })
             return
+        # Resolve the engine first: OMP refusal must not touch voice providers.
+        if engine != "hermes":
+            ws.send_json({"type": "refused", "reason": "Voice calls require a confirmed Hermes engine"})
+            return
+        call_config = load_sidecar_stt_config() if self.state.reload_config else self.state.stt_config
+        if self.state.reload_config and active_stt_provider(call_config) == "none":
+            ws.send_json({"type": "refused", "reason": "Configured STT unavailable; rerun Mercury Setup/doctor on the mLounge host"})
+            return
         call_id = self.state.next_call_id()
+        if getattr(ws, "closed", False):
+            return
         started = self.state.request(
                 "/api/voice-call/call",
             {"action": "start", "channel": channel, "engine": engine, "call_id": call_id},
             timeout=10.0,
         )
+        if getattr(ws, "closed", False):
+            # Start was already in flight: its outcome may be unknown. Reconcile
+            # exactly the UUID we submitted, never replay start or end a room.
+            self.state.request(
+                "/api/voice-call/call",
+                {"action": "end", "channel": channel, "call_id": call_id},
+                timeout=10.0,
+            )
+            return
         if not started.get("ok"):
             try:
                 ws.send_json({
@@ -658,6 +712,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             self.state.calls[call_id] = {
                 "channel": channel, "engine": engine, "mime": mime,
                 "muted": False, "audio_epoch": 0,
+                "stt_config": call_config,
             }
         # STT and synthesis can each block on a provider. Keep the socket
         # reader free for microphone traffic, ping, mute, and hangup, with
@@ -705,7 +760,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 "engine": engine,
                 "agentName": str(status.get("agent_name") or ""),
                 "agentRoom": str(status.get("agent_room") or ""),
-                "sttProvider": active_stt_provider(self.state.stt_config),
+                "sttProvider": active_stt_provider(call_config),
             })
             while True:
                 kind, payload = ws.recv_message()
@@ -745,6 +800,20 @@ class SidecarHandler(BaseHTTPRequestHandler):
         with self.state.lock:
             return str((self.state.calls.get(call_id) or {}).get("channel") or "")
 
+    def _call_authorized(self, ws: WsConnection, call_id: str) -> bool:
+        """Revalidate the selected host/profile's live node before provider effects."""
+        channel = self._call_channel(call_id)
+        if not channel or ws.closed:
+            return False
+        status = self.state.request(
+            f"/api/voice-call/status?channel={urllib.parse.quote(channel)}",
+            None, timeout=10.0)
+        if status.get("ok") and status.get("allowed") is True and status.get("engine") == "hermes":
+            return not ws.closed and self._call_channel(call_id) == channel
+        ws.close(message={"type": "refused", "callId": call_id,
+                          "reason": str(status.get("reason") or status.get("error") or "Call target expired or changed engine/profile")})
+        return False
+
     def _audio_current(self, call_id: str, epoch: int) -> bool:
         with self.state.lock:
             call = self.state.calls.get(call_id)
@@ -759,7 +828,9 @@ class SidecarHandler(BaseHTTPRequestHandler):
             if not call or call["muted"] or call["audio_epoch"] != epoch:
                 return
             channel, mime = call["channel"], call["mime"]
-        result = transcribe_chunk(payload, mime, self.state.stt_config)
+        if not self._call_authorized(ws, call_id) or ws.closed or not self._audio_current(call_id, epoch):
+            return
+        result = transcribe_chunk(payload, mime, call.get("stt_config", self.state.stt_config))
         with self.state.lock:
             call = self.state.calls.get(call_id)
             if not call or call["muted"] or call["audio_epoch"] != epoch:
@@ -801,11 +872,15 @@ class SidecarHandler(BaseHTTPRequestHandler):
             return False
         kind = str(message.get("type") or "")
         channel = self._call_channel(call_id)
+        if not channel or message.get("callId", call_id) != call_id:
+            return True
         if kind == "tts":
+            if not self._call_authorized(ws, call_id):
+                return True
             text = str(message.get("text") or "").strip()
             token = str(message.get("token") or "")
-            if not text:
-                ws.send_json({"type": "error", "message": "tts.text is required"})
+            if not text or len(text) > 16000 or len(token) > 128:
+                ws.send_json({"type": "error", "message": "tts.text is empty or exceeds call limits"})
                 return False
             result = self.state.request(
                 "/api/audio/speak", {"text": text}, timeout=90.0,
@@ -883,6 +958,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list] = None) -> int:
     args = build_parser().parse_args(argv)
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
     if args.home:
         os.environ["MERCURY_HOME"] = args.home
         os.environ["HERMES_HOME"] = args.home
@@ -896,7 +973,8 @@ def main(argv: Optional[list] = None) -> int:
             file=sys.stderr,
         )
         return 2
-    token = (args.token or os.environ.get("VOICE_CALL_SIDECAR_TOKEN") or "").strip()
+    from mercury_cli.config import get_env_value
+    token = (args.token or get_env_value("VOICE_CALL_SIDECAR_TOKEN") or "").strip()
     overlays = {
         "provider": args.provider,
         "model": args.model,
@@ -909,17 +987,30 @@ def main(argv: Optional[list] = None) -> int:
         print(f"error: cannot load STT config: {exc}", file=sys.stderr)
         return 2
     provider = active_stt_provider(stt_config)
-    mirc_token = (args.mirc_token or os.environ.get("VOICE_CALL_MIRC_TOKEN") or "").strip()
-    state = SidecarState(mirc_url=mirc_url, stt_config=stt_config, token=token, mirc_token=mirc_token)
+    mirc_token = (args.mirc_token or get_env_value("VOICE_CALL_MIRC_TOKEN") or "").strip()
+    if not token or not mirc_token:
+        print("error: voice service authentication missing; rerun host Mercury Setup.", file=sys.stderr)
+        return 2
+    state = SidecarState(mirc_url=mirc_url, stt_config=stt_config, token=token, mirc_token=mirc_token,
+                         profile=os.environ.get("HERMES_PROFILE") or "default",
+                         reload_config=not any(overlays.values()))
     SidecarHandler.state = state
+    tls_context = None
+    if urllib.parse.urlsplit(str(section.get("stt_sidecar_url") or "")).scheme == "https":
+        if not section.get("tls_cert") or not section.get("tls_key"):
+            print("error: HTTPS STT service needs voice_call.tls_cert/tls_key on this host; configure them in host Setup.", file=sys.stderr)
+            return 2
+        import ssl
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_context.load_cert_chain(section["tls_cert"], section["tls_key"])
     server = ThreadingHTTPServer((args.host, args.port), SidecarHandler)
+    if tls_context:
+        server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     server.daemon_threads = True
     print(f"voice-call sidecar: http://{args.host}:{args.port}")
     print(f"  MIRC host : {mirc_url}")
     print(f"  STT       : {provider} (browser-sourced audio only, no host mic)")
-    print("  Browser WS: ws://<this-host>:<port>/call (explicit sidecar URL, no localhost default)")
-    if not token:
-        print("  warning: no --token set — any host that can reach this port can transcribe.")
+    print("  Transport : authenticated mLounge relay (no browser credentials)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
