@@ -80,13 +80,15 @@ def resolve_channel_agent(channel: str) -> Dict[str, str]:
             with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as db:
                 field = "room_id" if is_channel else "mxid"
                 rows = db.execute(
-                    f"SELECT engine, name, room_id FROM nodes WHERE lower({field}) = lower(?) "
+                    f"SELECT engine, name, room_id, extra_json FROM nodes WHERE lower({field}) = lower(?) "
                     "AND status = 'live' ORDER BY created_epoch DESC LIMIT ?",
                     (target, 1 if is_channel else 2),
                 ).fetchall()
             if not rows or (not is_channel and len(rows) != 1):
                 return unknown
-            row = {"engine": rows[0][0], "name": rows[0][1], "room_id": rows[0][2]}
+            import json
+            row = {"engine": rows[0][0], "name": rows[0][1], "room_id": rows[0][2],
+                   "extra": json.loads(rows[0][3] or "{}")}
         elif is_channel:
             _route, row = manager.inbound_route(target)
         else:
@@ -100,7 +102,8 @@ def resolve_channel_agent(channel: str) -> Dict[str, str]:
         if engine not in {"hermes", "omp"}:
             return unknown
         return {"engine": engine, "name": str(row.get("name") or ""),
-                "room_id": str(row.get("room_id") or "")}
+                "room_id": str(row.get("room_id") or ""),
+                "profile": str((row.get("extra") or {}).get("profile") or "default")}
     except Exception:
         return unknown
 
@@ -274,3 +277,121 @@ def transcript_envelope(channel: str, text: str) -> Dict[str, Any]:
         "source": VOICE_CALL_SOURCE,
         "engine": "hermes",
     }
+
+
+def create_voice_service_app():
+    """Expose only existing canonical voice handlers behind service auth."""
+    import hmac
+    import os
+    from fastapi import FastAPI
+    from starlette.responses import JSONResponse
+    from mercury_cli import web_server
+    from mercury_cli.config import get_env_value
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.middleware("http")
+    async def service_auth(request, call_next):
+        expected = get_env_value("VOICE_CALL_MIRC_TOKEN") or ""
+        presented = request.headers.get("authorization", "")
+        if not expected or request.headers.get("origin") or not hmac.compare_digest(
+            presented.encode(), f"Bearer {expected}".encode()
+        ):
+            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+        profile = request.query_params.get("profile") or "default"
+        if profile != (os.environ.get("HERMES_PROFILE") or "default"):
+            return JSONResponse(status_code=403, content={"detail": "Voice service profile not authorized"})
+        if not voice_call_config().get("enabled", True):
+            return JSONResponse(status_code=503, content={"detail": "Voice calls disabled in Mercury Setup"})
+        try:
+            size = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            size = -1
+        if size < 0 or size > 65536 or request.headers.get("transfer-encoding"):
+            return JSONResponse(status_code=413, content={"detail": "Voice request exceeds limits"})
+        if request.url.path == "/api/audio/speak":
+            from tools.tool_backend_helpers import read_selection
+            with web_server._config_profile_scope(profile):
+                if read_selection("tts") is None:
+                    return JSONResponse(status_code=503, content={"detail": "Configure TTS in Mercury Setup on the MIRC host; no cloud fallback"})
+        return await call_next(request)
+
+    app.add_api_route("/api/voice-call/status", web_server.voice_call_status, methods=["GET"])
+    app.add_api_route("/api/voice-call/call", web_server.voice_call_action, methods=["POST"])
+    app.add_api_route("/api/audio/speak", web_server.speak_text, methods=["POST"])
+    return app
+
+
+def configure_mirc_voice_unit(installation) -> str:
+    """Generate the MIRC host unit for the existing authenticated voice API."""
+    from pathlib import Path
+    import secrets
+    import sys
+    from urllib.parse import urlsplit
+    from mercury_cli.config import get_config_path, get_env_path, load_env, save_env_value
+    from mercury_constants import get_hermes_home
+    cfg = voice_call_config()
+    endpoint = urlsplit(str(cfg.get("mirc_host_url") or ""))
+    if endpoint.scheme not in ("http", "https") or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment or endpoint.path not in ("", "/"):
+        raise VoiceCallConfigError("Configure explicit voice_call.mirc_host_url in Mercury Setup")
+    install = Path(installation).resolve()
+    runtime = get_hermes_home().resolve()
+    if runtime != install and not runtime.is_relative_to(install / "hermes" / "profiles"):
+        raise VoiceCallConfigError("MIRC voice profile belongs to a different installation")
+    if not load_env().get("VOICE_CALL_MIRC_TOKEN"):
+        save_env_value("VOICE_CALL_MIRC_TOKEN", secrets.token_urlsafe(32))
+    profile = runtime.name if runtime != install else "default"
+    directory = install / "observatory" / "voice"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    name = "mercury-nightly-mirc-voice.service" if "nightly" in install.name else "mercury-mirc-voice.service"
+    unit = directory / name
+    unit.write_text("\n".join((
+        "[Unit]", "Description=Mercury authenticated Hermes voice API",
+        "After=network-online.target", "[Service]", "Type=simple",
+        f"WorkingDirectory={Path(__file__).resolve().parents[1]}",
+        f'Environment="MERCURY_HOME={install}"',
+        f'Environment="HERMES_HOME={runtime}"',
+        f'Environment="HERMES_PROFILE={profile}"',
+        f'Environment="MERCURY_CONFIG={get_config_path()}"',
+        f'EnvironmentFile={get_env_path()}',
+        f'ExecStart={sys.executable} -m observatory.voice_call --host {endpoint.hostname} --port {endpoint.port or (443 if endpoint.scheme == "https" else 80)}',
+        "Restart=on-failure", "KillMode=control-group", "TimeoutStopSec=10",
+        "[Install]", "WantedBy=default.target", "",
+    )), encoding="utf-8")
+    return str(unit)
+
+
+def main(argv=None) -> int:
+    """Setup-managed MIRC voice API; no dashboard, mic, speaker or agent loop."""
+    import argparse
+    import importlib.util
+    import os
+    import sys
+    parser = argparse.ArgumentParser(description="Configured Hermes voice service")
+    parser.add_argument("--host", required=True)
+    parser.add_argument("--port", required=True, type=int)
+    args = parser.parse_args(argv)
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    if any(importlib.util.find_spec(name) is None for name in ("fastapi", "uvicorn")):
+        print("Voice API dependencies unavailable; provision cached FastAPI/uvicorn on the MIRC host via Setup/doctor. No automatic install.", file=sys.stderr)
+        return 2
+    from mercury_cli.config import get_env_value
+    if not get_env_value("VOICE_CALL_MIRC_TOKEN"):
+        print("Voice API authentication missing; rerun Mercury Setup on the MIRC host.", file=sys.stderr)
+        return 2
+    import uvicorn
+    cfg = voice_call_config()
+    tls = {}
+    from urllib.parse import urlsplit
+    if urlsplit(str(cfg.get("mirc_host_url") or "")).scheme == "https":
+        if not cfg.get("tls_cert") or not cfg.get("tls_key"):
+            print("HTTPS MIRC voice service needs configured voice_call.tls_cert/tls_key on this host.", file=sys.stderr)
+            return 2
+        tls = {"ssl_certfile": cfg["tls_cert"], "ssl_keyfile": cfg["tls_key"]}
+    uvicorn.run(create_voice_service_app(), host=args.host, port=args.port,
+                proxy_headers=False, log_level="warning", **tls)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

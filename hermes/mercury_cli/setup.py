@@ -2134,7 +2134,8 @@ def apply_voice_call_stt_selection(
         section.pop("endpoint", None)
 
     if canonical in ("qwen3-asr", "parakeet"):
-        template = (command or "").strip() or _voice_call_stt_default_command(canonical)
+        saved_entry = (stt.get("providers") or {}).get(canonical) or {}
+        template = (command or "").strip() or str(saved_entry.get("command") or "").strip() or _voice_call_stt_default_command(canonical)
         if endpoint and "--endpoint" not in template:
             import shlex as _shlex
 
@@ -2198,10 +2199,18 @@ def _voice_call_stt_cli_available(config: dict, provider: str) -> bool | None:
         return None
 
 
+def _refresh_configured_voice_call() -> None:
+    from observatory.mlounge import MLoungeError, refresh_voice_call_service
+    try:
+        refresh_voice_call_service()
+    except MLoungeError as exc:
+        print_warning(f"Voice call unavailable: {exc}")
+
+
 def setup_stt(config: dict, args=None) -> None:
     """Standalone STT setup (for 'mercury setup stt'). Re-runnable."""
     stt_config = config.get("stt", {}) if isinstance(config.get("stt"), dict) else {}
-    current_provider = normalize_voice_call_stt_provider(stt_config.get("provider", "")) or ""
+    current_provider = str(stt_config.get("provider") or "").strip()
     current_label = VOICE_CALL_STT_LABELS.get(current_provider, current_provider or "none")
 
     non_interactive = bool(getattr(args, "non_interactive", False)) or not is_interactive_stdin()
@@ -2219,9 +2228,10 @@ def setup_stt(config: dict, args=None) -> None:
                     apply_voice_call_hosts(config, **resolved)
                     save_config(config)
                     print_success(f"Voice-call hosts set: {', '.join(f'{k}={v}' for k, v in resolved.items())}")
+                _refresh_configured_voice_call()
                 return
-            selection = {"provider": "openai", "model": "", "endpoint": "", "language": ""}
-            print_info("No STT selector given; keeping the starting default (OpenAI Whisper).")
+            print_warning("No STT provider selected; choose one in Mercury Setup. No automatic cloud provider or fallback.")
+            return
         try:
             canonical = apply_voice_call_stt_selection(config, **selection)
         except ValueError as exc:
@@ -2243,6 +2253,7 @@ def setup_stt(config: dict, args=None) -> None:
             apply_voice_call_hosts(config, **resolved)
             save_config(config)
             print_success(f"Voice-call hosts set: {', '.join(f'{k}={v}' for k, v in resolved.items())}")
+        _refresh_configured_voice_call()
         return
 
     print()
@@ -2260,6 +2271,7 @@ def setup_stt(config: dict, args=None) -> None:
         default_idx = VOICE_CALL_STT_OPTIONS.index(current_provider)
     idx = prompt_choice("Select STT provider:", choices, default_idx)
     if idx == keep_current_idx:
+        _refresh_configured_voice_call()
         return
     selected = VOICE_CALL_STT_OPTIONS[idx]
 
@@ -2311,6 +2323,7 @@ def setup_stt(config: dict, args=None) -> None:
     print_success(f"STT provider set to: {VOICE_CALL_STT_LABELS.get(canonical, canonical)}")
     _setup_voice_call_hosts(config)
     save_config(config)
+    _refresh_configured_voice_call()
 
 
 #: Explicit split-host URLs for voice calls. Empty default everywhere: the
@@ -2320,7 +2333,7 @@ VOICE_CALL_HOST_KEYS = ("mirc_host_url", "mlounge_host_url", "stt_sidecar_url")
 VOICE_CALL_HOST_LABELS = {
     "mirc_host_url": "MIRC host base URL (gateway: /api/voice-call/*, /api/audio/speak)",
     "mlounge_host_url": "mLounge host URL (serves the browser UI)",
-    "stt_sidecar_url": "STT sidecar URL (browser socket + relay, on the mLounge host)",
+    "stt_sidecar_url": "Private STT service peer URL (on the mLounge host; never a browser credential endpoint)",
 }
 VOICE_CALL_HOST_PLACEHOLDERS = {
     "mirc_host_url": "http://mirc-host:8000",
@@ -2375,6 +2388,8 @@ def _setup_voice_call_hosts(config: dict, args=None) -> None:
             apply_voice_call_hosts(config, **resolved)
             print_success(f"Voice-call hosts set: {', '.join(f'{k}={v}' for k, v in resolved.items())}")
         return
+    from observatory.voice_call import voice_call_config
+    section = voice_call_config(config)
     print()
     print_header("Voice-call hosts (explicit — no localhost assumed)")
     print_info("Browser <-> mLounge host (STT) <-> MIRC host (TTS + Hermes loop).")
