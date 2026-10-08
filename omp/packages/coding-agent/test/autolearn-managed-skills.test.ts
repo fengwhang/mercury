@@ -17,9 +17,12 @@ describe("managed-skills primitives", () => {
 	let tempHome: string;
 
 	let originalAgentDir: string;
+	let originalSkillsDir: string | undefined;
 	beforeEach(async () => {
 		originalAgentDir = getAgentDir();
 		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "omp-managed-skills-"));
+		originalSkillsDir = process.env.MERCURY_SKILLS_DIR;
+		process.env.MERCURY_SKILLS_DIR = path.join(tempHome, "skills");
 		spyOn(os, "homedir").mockReturnValue(tempHome);
 		setAgentDir(path.join(tempHome, ".omp", "agent"));
 	});
@@ -27,6 +30,8 @@ describe("managed-skills primitives", () => {
 	afterEach(async () => {
 		spyOn(os, "homedir").mockRestore();
 		setAgentDir(originalAgentDir);
+		if (originalSkillsDir === undefined) delete process.env.MERCURY_SKILLS_DIR;
+		else process.env.MERCURY_SKILLS_DIR = originalSkillsDir;
 		await removeWithRetries(tempHome);
 	});
 
@@ -220,11 +225,23 @@ describe("managed-skills primitives", () => {
 			await Bun.write(outside, "user-authored content");
 			await removeWithRetries(skillFile("hardlink"));
 			await fs.link(outside, skillFile("hardlink"));
+			const before = await fs.stat(outside);
+			const linked = await fs.stat(skillFile("hardlink"));
+			expect(linked.dev).toBe(before.dev);
+			expect(linked.ino).toBe(before.ino);
+			expect(before.nlink).toBe(2);
+			expect(linked.nlink).toBe(2);
 
 			await expect(
 				writeManagedSkill({ action: "update", name: "hardlink", description: "d", body: "updated" }),
 			).rejects.toThrow(/hard links/);
 			expect(await Bun.file(outside).text()).toBe("user-authored content");
+			expect(await Bun.file(skillFile("hardlink")).text()).toBe("user-authored content");
+			const after = await fs.stat(outside);
+			expect(after.dev).toBe(before.dev);
+			expect(after.ino).toBe(before.ino);
+			expect(after.nlink).toBe(2);
+			expect((await fs.stat(skillFile("hardlink"))).ino).toBe(before.ino);
 		});
 	});
 
