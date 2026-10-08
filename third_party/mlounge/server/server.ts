@@ -376,7 +376,7 @@ function addSecurityHeaders(_req: Request, res: Response, next: NextFunction) {
 		"worker-src 'self'", // service worker
 		"manifest-src 'self'", // manifest.json
 		"font-src 'self' https:", // allow loading fonts from secure sites (e.g. google fonts)
-		"media-src 'self' https:", // self for notification sound; allow https media (audio previews)
+		"media-src 'self' https: data:", // self for notifications; https previews; data for canonical call audio
 	];
 
 	// If prefetch is enabled, but storage is not, we have to allow mixed content
