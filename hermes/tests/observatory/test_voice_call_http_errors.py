@@ -5,6 +5,7 @@ import io
 import socket
 import threading
 from contextlib import contextmanager
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError
 
@@ -16,7 +17,7 @@ from observatory.voice_call_stt import mirc_request
 @contextmanager
 def error_server(status, body):
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *_):
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
         def do_GET(self):
@@ -98,7 +99,7 @@ def test_http_error_read_is_bounded_and_response_is_closed(monkeypatch):
             return super().read(size)
 
     body = BoundedBody(b"x" * 10000)
-    error = HTTPError("http://private/?token=canary", 503, "private-canary", {}, body)
+    error = HTTPError("http://private/?token=canary", 503, "private-canary", Message(), body)
 
     class Opener:
         def open(self, *_args, **_kwargs):
@@ -116,3 +117,30 @@ def test_configured_secret_in_public_looking_message_is_not_echoed(monkeypatch):
     monkeypatch.setenv("VOICE_CALL_SIDECAR_TOKEN", "Mercury")
     with error_server(503, json.dumps({"detail": message}).encode()) as url:
         assert mirc_request(url, "/")["error"] == "request failed"
+
+
+@pytest.mark.parametrize("status,message", [
+    (500, "Invalid TTS response"),
+    (500, "Audio file missing"),
+    (400, "Speech synthesis failed"),
+    (400, "Text is required"),
+])
+def test_canonical_static_tts_errors_preserve_public_reason_and_status(status, message):
+    with error_server(status, json.dumps({"detail": message}).encode()) as url:
+        assert mirc_request(url, "/api/audio/speak") == {
+            "ok": False, "status": status, "error": message,
+        }
+
+
+@pytest.mark.parametrize("message", [
+    "Invalid TTS response: private-provider-canary",
+    "Audio file missing: /private/canary.wav",
+    "Speech synthesis failed: private-provider-canary",
+    "Text is required\nprivate-provider-canary",
+])
+def test_static_tts_reason_does_not_allow_private_suffix(message, caplog):
+    with error_server(500, json.dumps({"detail": message}).encode()) as url:
+        assert mirc_request(url, "/api/audio/speak") == {
+            "ok": False, "status": 500, "error": "request failed",
+        }
+    assert "canary" not in caplog.text

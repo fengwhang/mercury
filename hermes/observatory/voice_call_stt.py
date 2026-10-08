@@ -325,6 +325,10 @@ def mirc_request(
                 "channel is required",
                 "action must be start|end|mute|unmute",
                 "no active call on channel",
+                "Invalid TTS response",
+                "Audio file missing",
+                "Speech synthesis failed",
+                "Text is required",
             }
             configuration = re.fullmatch(
                 r"Configure (?:STT|TTS) in Mercury Setup on the (?:MIRC|mLounge) host"
