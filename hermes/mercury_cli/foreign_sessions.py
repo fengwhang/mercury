@@ -1,4 +1,3 @@
-from mercury_constants import cli_invocation_name
 """Import sessions from foreign coding agents (Claude Code, Codex CLI).
 
 ``mercury sessions import`` (and ``--resume @claude`` / ``--resume @codex``)
@@ -34,6 +33,7 @@ role-alternation invariant Mercury enforces everywhere else:
 """
 
 from __future__ import annotations
+from mercury_constants import cli_invocation_name
 
 import json
 import re
