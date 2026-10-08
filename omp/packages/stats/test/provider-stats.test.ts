@@ -5,11 +5,7 @@ import * as path from "node:path";
 import { getProviderDashboardStats } from "@oh-my-pi/omp-stats/aggregator";
 import { initDb, insertMessageStats } from "@oh-my-pi/omp-stats/db";
 import type { MessageStats } from "@oh-my-pi/omp-stats/types";
-import {
-	computeUsageWindowStats,
-	readUsageSnapshots,
-	type UsageSnapshotRow,
-} from "@oh-my-pi/omp-stats/usage-windows";
+import { computeUsageWindowStats, readUsageSnapshots, type UsageSnapshotRow } from "@oh-my-pi/omp-stats/usage-windows";
 import { getAgentDbPath } from "@oh-my-pi/pi-utils";
 import { installStatsTestIsolation } from "./helpers/temp-agent";
 

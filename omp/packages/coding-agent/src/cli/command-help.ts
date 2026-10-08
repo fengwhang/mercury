@@ -48,7 +48,6 @@ export const findHelp = {
 	description: "Semantic search: describe a behavior, get the files and line ranges that implement it",
 } satisfies CommandMetadata;
 
-
 export const galleryHelp = {
 	description: "Preview tool, composer, and status-line renderers in a deterministic visual gallery",
 } satisfies CommandMetadata;
@@ -77,7 +76,6 @@ export const loginHelp = {
 	description: "Log in to a model provider via the Mercury credential bridge (counterpart of /login)",
 } satisfies CommandMetadata;
 
-
 export const modelsHelp = { description: "List, search, and refresh available models" } satisfies CommandMetadata;
 
 export const pluginHelp = { description: "Manage plugins (install, uninstall, list, etc.)" } satisfies CommandMetadata;
@@ -102,7 +100,6 @@ export const playHelp = {
 	description: "Replay a /record session recording in the terminal (space pauses, q quits)",
 } satisfies CommandMetadata;
 
-
 export const shareHelp = {
 	description: "Share a saved session via an encrypted link (same as /share)",
 } satisfies CommandMetadata;
@@ -125,7 +122,6 @@ export const tokenHelp = { description: "Get the API key or OAuth token for a pr
 export const toksHelp = {
 	description: "Count a file or text with every embedded offline tokenizer (OpenAI, Claude, Qwen, …)",
 } satisfies CommandMetadata;
-
 
 export const ttsrHelp = {
 	description: "Inspect and test Time-Traveling Stream Rules (TTSR)",

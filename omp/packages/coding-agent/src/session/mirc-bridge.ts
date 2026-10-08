@@ -188,7 +188,10 @@ export class MircBridge {
 			if (recipientParentId === msg.from) {
 				this.#host.agent.steer({
 					role: "user",
-					content: prompt.render(parentMircSteerTemplate, { from: msg.from, message: escapeHarnessTags(msg.body) }),
+					content: prompt.render(parentMircSteerTemplate, {
+						from: msg.from,
+						message: escapeHarnessTags(msg.body),
+					}),
 					attribution: "agent",
 					timestamp: msg.ts,
 					steering: true,
