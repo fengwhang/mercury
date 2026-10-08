@@ -278,7 +278,7 @@ def _computer_use_max_image_dimension() -> Optional[int]:
     return dim if dim > 0 else None
 
 
-def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def _cua_driver_policy_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Return the environment dict for spawning cua-driver.
 
     Every Mercury-spawned driver has reporting disabled, including when an
@@ -298,6 +298,10 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     return env
 
 
+def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    return _cua_driver_policy_env(base_env)
+
+
 def sanitized_cua_driver_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Strip credentials from a prepared child env, then enforce final no-reporting.
 
@@ -307,8 +311,8 @@ def sanitized_cua_driver_env(base_env: Optional[Dict[str, str]] = None) -> Dict[
     """
     from tools.environments.local import _sanitize_subprocess_env
 
-    env = _sanitize_subprocess_env(cua_driver_child_env() if base_env is None else base_env)
-    return cua_driver_child_env(env)
+    env = _sanitize_subprocess_env(_cua_driver_policy_env() if base_env is None else base_env)
+    return _cua_driver_policy_env(env)
 
 def cua_driver_telemetry_disable_persistent(*, timeout: float = 30.0) -> bool:
     """Persistently disable cua-driver telemetry via ``telemetry disable``.
