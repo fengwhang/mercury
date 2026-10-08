@@ -72,10 +72,15 @@ describe("AgentSession retry delay cap", () => {
 	let authStorage: AuthStorage;
 	let modelRegistry: ModelRegistry;
 	let session: AgentSession | undefined;
+	const usageFetch = vi.fn(async () => {
+		throw new Error("Retry fixture denies external usage requests");
+	});
 
 	beforeAll(async () => {
 		tempDir = TempDir.createSync("@pi-retry-cap-");
-		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
+		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"), {
+			usageFetch: Object.assign(usageFetch, { preconnect: fetch.preconnect }),
+		});
 		modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 	});
 
@@ -286,13 +291,17 @@ describe("AgentSession retry delay cap", () => {
 			text: "recovered on cross-provider fallback",
 		});
 	});
-	it("waits for a short OpenCode Go sibling credential before model fallback", async () => {
+	it.each([
+		["waits for a short OpenCode Go sibling credential when model fallback is disabled", false],
+		["prefers eligible configured fallback over a short OpenCode Go sibling credential on explicit quota", true],
+	] as const)("%s", async (_purpose, eligibleFallback) => {
 		const exhaustedModel = getBundledModel("opencode-go", "deepseek-v4-flash");
 		const fallbackModel = getBundledModel("openai", "gpt-5.5");
 		if (!exhaustedModel || !fallbackModel) {
 			throw new Error("Expected bundled OpenCode Go and fallback test models to exist");
 		}
 
+		await authStorage.remove("opencode-go");
 		await authStorage.set("opencode-go", [
 			{ type: "api_key", key: "opencode-go-key-1" },
 			{ type: "api_key", key: "opencode-go-key-2" },
@@ -305,6 +314,7 @@ describe("AgentSession retry delay cap", () => {
 		expect(blocked.switched).toBe(true);
 		const usageLimitSpy = vi.spyOn(authStorage, "markUsageLimitReached");
 
+		const recoveredText = eligibleFallback ? "recovered on configured fallback" : "recovered after sibling unblock";
 		const mock = createMockModel();
 		const requestedModels: string[] = [];
 		const agent = new Agent({
@@ -322,7 +332,7 @@ describe("AgentSession retry delay cap", () => {
 						? {
 								throw: "429 Weekly usage limit reached. type=GoUsageLimitError retry-after-ms=3242000",
 							}
-						: { content: ["recovered after sibling unblock"], stopReason: "stop" },
+						: { content: [recoveredText], stopReason: "stop" },
 				);
 				return mock.stream(requestedModel, context, options);
 			},
@@ -331,7 +341,7 @@ describe("AgentSession retry delay cap", () => {
 			"compaction.enabled": false,
 			"retry.maxDelayMs": 300_000,
 			"retry.maxRetries": 2,
-			"retry.modelFallback": true,
+			"retry.modelFallback": eligibleFallback,
 			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
 		});
 		settings.setModelRole("default", `${exhaustedModel.provider}/${exhaustedModel.id}`);
@@ -348,23 +358,46 @@ describe("AgentSession retry delay cap", () => {
 			if (event.type === "retry_fallback_applied") fallbackEvents.push(event);
 		});
 
+		waitSpy.mockClear();
+		usageFetch.mockClear();
 		await session.prompt("Trigger the long OpenCode Go limit while a sibling is briefly blocked");
 		await session.waitForIdle();
-		expect(usageLimitSpy).toHaveBeenCalledTimes(1);
-		const usageLimitResult = usageLimitSpy.mock.results[0]?.value;
-		expect(usageLimitResult).toBeDefined();
-		expect(await usageLimitResult).toMatchObject({ retryAtMs: expect.any(Number), switched: false });
+		if (eligibleFallback) {
+			expect(usageLimitSpy).toHaveBeenCalledTimes(0);
+			expect(requestedModels).toEqual([
+				`${exhaustedModel.provider}/${exhaustedModel.id}`,
+				`${fallbackModel.provider}/${fallbackModel.id}`,
+			]);
+			expect(fallbackEvents).toEqual([
+				{
+					type: "retry_fallback_applied",
+					from: `${exhaustedModel.provider}/${exhaustedModel.id}`,
+					to: `${fallbackModel.provider}/${fallbackModel.id}`,
+					role: "default",
+				},
+			]);
+			// Agent throttling also uses scheduler.wait; no sibling-credential backoff is allowed.
+			expect(waitSpy.mock.calls.every(call => call[0] < 1_000)).toBe(true);
+			expect(usageFetch).not.toHaveBeenCalled();
+		} else {
+			expect(usageLimitSpy).toHaveBeenCalledTimes(1);
+			const usageLimitResult = usageLimitSpy.mock.results[0]?.value;
+			expect(usageLimitResult).toBeDefined();
+			expect(await usageLimitResult).toMatchObject({ retryAtMs: expect.any(Number), switched: false });
 
-		expect(requestedModels).toEqual([
-			`${exhaustedModel.provider}/${exhaustedModel.id}`,
-			`${exhaustedModel.provider}/${exhaustedModel.id}`,
-		]);
-		expect(fallbackEvents).toEqual([]);
-		expect(waitSpy.mock.calls.some(call => call[0] >= 1_000 && call[0] <= 3_000)).toBe(true);
+			expect(requestedModels).toEqual([
+				`${exhaustedModel.provider}/${exhaustedModel.id}`,
+				`${exhaustedModel.provider}/${exhaustedModel.id}`,
+			]);
+			expect(fallbackEvents).toEqual([]);
+			expect(waitSpy.mock.calls.some(call => call[0] >= 1_000 && call[0] <= 3_000)).toBe(true);
+		}
 		expect(lastAssistant(session).content).toContainEqual({
 			type: "text",
-			text: "recovered after sibling unblock",
+			text: recoveredText,
 		});
+		expect(lastAssistant(session).stopReason).toBe("stop");
+		expect(session.isRetrying).toBe(false);
 	});
 
 	it("honors the reason backoff for a transient rate-limit 429 without a provider hint", async () => {

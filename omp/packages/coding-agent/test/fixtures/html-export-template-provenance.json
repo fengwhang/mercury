@@ -1,0 +1,29 @@
+{
+	"purpose": "Exact HTML source composition, cached bytes, normal/compiled unrelated-CWD exports, cache after four asset removals",
+	"generator": {
+		"path": "/home/user/Documents/mercury-releases/v0.4.5-readiness-residual/runtimes/bun-1.4.2",
+		"sha256": "a83d263767d839e4d2649ca8e35d07159c7afc99afdc96d731ced29e056dda0c",
+		"version": "1.4.2"
+	},
+	"test_driver": {
+		"path": "/nix/store/za7z7zwn13590i8g3dzlnbk2frjrclqs-bun-1.4.0/bin/bun",
+		"sha256": "9dbaadbc478352dcb31fe736c57f713c62dd87ac052a0c71a2261a16541ff183",
+		"version": "1.4.0"
+	},
+	"recipe": "From omp/: pinned Bun 1.4.2 run gen:tool-views; PATH must resolve nested bun to the same pinned executable. No install or prepack.",
+	"source_base": "154fe3b219a58b070def5dc9008de897a26769b5",
+	"lockfile_sha256": "d4ea6859a1d3274fba4c8c118b8f842841c04ac841f1eccb1bb9c29321c168e2",
+	"input_closure_sha256": "ef881af8c2f2204c1156168c67f675e1d81aa0c72787ab343f8883d2c3669478",
+	"input_count": 49,
+	"generated_asset": {
+		"bytes": 284134,
+		"sha256": "3cac3a8baf0f822c26fb50c2b4c207ff4c6bd9ee7db2a78568b3ac643bb9e088"
+	},
+	"expected": {
+		"chars": 384233,
+		"bytes": 384391,
+		"sha256": "47b2bc3c6aed6a82f54db0c2d442d1b6133342632c40c5f96c7663a462ff77db"
+	},
+	"historical_golden": "Old frozen 384681 chars / 384839 bytes / 38176b9f... recipe not reconstructed; historical baseline differed by one byte. No historical recipe claimed.",
+	"source_delta": "Removal of report_tool_issue renderer remains intentional; no renderer restored."
+}
