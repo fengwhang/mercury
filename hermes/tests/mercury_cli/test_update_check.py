@@ -51,7 +51,7 @@ def test_prefetch_non_blocking():
     banner._update_result = None
     banner._update_check_done = threading.Event()
 
-    with patch.object(banner, "check_for_updates", return_value=5):
+    with patch.object(banner.subprocess, "run") as external_query:
         start = time.monotonic()
         banner.prefetch_update_check()
         elapsed = time.monotonic() - start
@@ -60,8 +60,9 @@ def test_prefetch_non_blocking():
         assert elapsed < 1.0
 
         # Wait for the background thread to finish
-        banner._update_check_done.wait(timeout=5)
-        assert banner._update_result == 5
+        assert banner._update_check_done.wait(timeout=5)
+        assert banner._update_result is None
+        external_query.assert_not_called()
 
 
 def test_check_via_local_git_fetch_failure_returns_none(tmp_path, monkeypatch):
