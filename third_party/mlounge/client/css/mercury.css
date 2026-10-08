@@ -344,17 +344,12 @@ code,
 }
 
 .voice-avatar {
+	display: grid;
+	place-items: center;
 	width: 76px;
 	height: 76px;
-	border-radius: 50%;
-	background: radial-gradient(circle at 35% 20%, #ff9fcb, #ef78b4 55%, #bf5192);
-	box-shadow: inset 0 1px 4px rgb(255 255 255 / 30%);
-}
-
-.voice-avatar svg {
-	width: 100%;
-	height: 100%;
-	fill: #332d32;
+	font-size: 64px;
+	line-height: 1;
 }
 
 .voice-identity h2 {
@@ -439,13 +434,11 @@ code,
 	background: rgb(40 0 20 / 45%);
 }
 
-.voice-settings label,
 .voice-outputs label {
 	display: block;
 	margin-bottom: 12px;
 }
 
-.voice-settings input,
 .voice-outputs select {
 	display: block;
 	width: 100%;
@@ -480,6 +473,7 @@ code,
 .minimized .voice-avatar {
 	width: 52px;
 	height: 52px;
+	font-size: 44px;
 }
 
 .minimized .voice-timer {

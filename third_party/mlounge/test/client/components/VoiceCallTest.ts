@@ -24,7 +24,14 @@ vi.mock("../../../client/js/helpers/voice-recording", () => ({
 		return {stop: vi.fn()};
 	},
 }));
-vi.mock("../../../client/js/socket", () => ({default: {emit: emitInput}}));
+const relay = vi.hoisted(() => ({
+	listener: null as null | ((value: Record<string, unknown>) => void),
+	on: vi.fn(),
+	off: vi.fn(),
+}));
+vi.mock("../../../client/js/socket", () => ({
+	default: {emit: emitInput, on: relay.on, off: relay.off},
+}));
 
 class FakeSocket {
 	static OPEN = 1;
@@ -37,16 +44,36 @@ class FakeSocket {
 	send = vi.fn();
 	close = vi.fn();
 	constructor() {
+		const listener = relay.listener;
+		this.onmessage = (event) => listener?.(JSON.parse(event.data));
 		FakeSocket.instances.push(this);
 	}
 	message(value: object) {
-		this.onmessage?.({data: JSON.stringify(value)});
+		this.onmessage?.({
+			data: JSON.stringify({
+				callId: `fixture-${FakeSocket.instances.indexOf(this)}`,
+				...value,
+			}),
+		});
 	}
 }
 // Only FakeSocket constructors register instances.
 const sockets = FakeSocket.instances as FakeSocket[];
 const getMedia = vi.fn();
 const enumerate = vi.fn();
+
+function configureRelay(wrapper: VueWrapper) {
+	state.serverConfiguration.voiceCallSidecarUrl = "socket.io:/call";
+
+	if (
+		!state.networks.some((network) =>
+			network.channels.some((channel) => channel.id === wrapper.props("channel")?.id)
+		)
+	) {
+		state.networks.push({uuid: "mirc", channels: [wrapper.props("channel")]} as ClientNetwork);
+	}
+}
+
 const stop = vi.fn();
 const track = {stop, enabled: true};
 const media = {getTracks: () => [track], getAudioTracks: () => [track]};
@@ -78,7 +105,7 @@ class FakeAudio {
 }
 
 async function connect(wrapper: VueWrapper) {
-	state.serverConfiguration.voiceCallSidecarUrl = "https://voice.example.test";
+	configureRelay(wrapper);
 	await wrapper.get(".call-toggle").trigger("click");
 	await flushPromises();
 	sockets[0].onopen?.();
@@ -97,6 +124,31 @@ beforeEach(() => {
 	stop.mockClear();
 	state.serverConfiguration.voiceCallSidecarUrl = "";
 	state.networks.length = 0;
+	state.isConnected = true;
+	relay.listener = null;
+	relay.on.mockImplementation((event, listener) => {
+		if (event === "voice:call") {
+			relay.listener = listener;
+		}
+	});
+	relay.off.mockImplementation((event) => {
+		if (event === "voice:call") {
+			sockets.at(-1)?.close();
+			relay.listener = null;
+		}
+	});
+	emitInput.mockReset().mockImplementation((event, value) => {
+		if (event !== "voice:call") {
+			return;
+		}
+
+		if (value.type === "hello") {
+			new FakeSocket();
+		} else {
+			const {callId: _callId, ...control} = value;
+			sockets.at(-1)?.send(value.type === "audio" ? value.data : JSON.stringify(control));
+		}
+	});
 	recordings.length = 0;
 	sink.mockClear();
 	pause.mockClear();
@@ -125,6 +177,104 @@ afterEach(() => {
 });
 
 describe("voice phone entry", () => {
+	it("uses authenticated chat transport with numeric target and no browser secrets", async () => {
+		localStorage.setItem("mlounge.voiceCall.token", "obsolete-service-secret");
+		localStorage.setItem("mlounge.voiceCall.sidecarUrl", "http://localhost:9999");
+		const wrapper = render();
+		configureRelay(wrapper);
+		await wrapper.get(".call-toggle").trigger("click");
+		await flushPromises();
+		expect(document.querySelector("input")).toBeNull();
+		expect(emitInput).toHaveBeenCalledWith("voice:call", {
+			type: "hello",
+			target: 1,
+			mime: "audio/webm;codecs=opus",
+		});
+		expect(localStorage.getItem("mlounge.voiceCall.token")).toBeNull();
+		expect(localStorage.getItem("mlounge.voiceCall.sidecarUrl")).toBeNull();
+		wrapper.unmount();
+	});
+	it("releases delayed microphone permission when chat disconnects before it resolves", async () => {
+		const wrapper = render();
+		configureRelay(wrapper);
+		const {promise, resolve} = Promise.withResolvers<MediaStream>();
+		getMedia.mockReturnValue(promise);
+		await wrapper.get(".call-toggle").trigger("click");
+		state.isConnected = false;
+		resolve(media as unknown as MediaStream);
+		await flushPromises();
+		expect(sockets).toHaveLength(0);
+		expect(stop).toHaveBeenCalledOnce();
+		expect(document.body.textContent).toContain("Reconnect");
+		state.isConnected = true;
+		wrapper.unmount();
+	});
+	it("does not acquire a microphone for disconnected or unowned chat targets", async () => {
+		const wrapper = render();
+		configureRelay(wrapper);
+		state.isConnected = false;
+		getMedia.mockClear();
+		await wrapper.get(".call-toggle").trigger("click");
+		expect(getMedia).not.toHaveBeenCalled();
+		expect(document.body.textContent).toContain("sign in to mLounge");
+		state.isConnected = true;
+		state.networks.splice(0);
+		await wrapper.get(".call-toggle").trigger("click");
+		expect(getMedia).not.toHaveBeenCalled();
+		wrapper.unmount();
+	});
+	it("shows permission denial without credential prompts or a late call start", async () => {
+		const wrapper = render();
+		configureRelay(wrapper);
+		getMedia.mockRejectedValue(new DOMException("denied", "NotAllowedError"));
+		await wrapper.get(".call-toggle").trigger("click");
+		await flushPromises();
+		expect(document.body.textContent).toContain("Microphone permission denied");
+		expect(document.querySelector("input")).toBeNull();
+		expect(sockets).toHaveLength(0);
+		wrapper.unmount();
+	});
+	it("ignores frames from another call ID after establishment", async () => {
+		const wrapper = render();
+		await connect(wrapper);
+		emitInput.mockClear();
+		sockets[0].message({type: "transcript", callId: "stale", text: "wrong"});
+		sockets[0].message({type: "ended", callId: "stale"});
+		await flushPromises();
+		expect(emitInput).not.toHaveBeenCalled();
+		expect(document.querySelector(".voice-timer")).not.toBeNull();
+		wrapper.unmount();
+	});
+	it.each(["expired", "forged"])(
+		"surfaces %s authentication errors without asking for secrets",
+		async (kind) => {
+			const wrapper = render();
+			configureRelay(wrapper);
+			await wrapper.get(".call-toggle").trigger("click");
+			await flushPromises();
+			sockets[0].message({
+				type: "error",
+				message: `Call authentication ${kind}. Sign in to mLounge again.`,
+			});
+			await flushPromises();
+			expect(document.body.textContent).toContain(`authentication ${kind}`);
+			expect(document.querySelector("input")).toBeNull();
+			expect(stop).toHaveBeenCalledOnce();
+			wrapper.unmount();
+		}
+	);
+	it("renders the real Mercury thermometer without the pink face in full screen and PiP", async () => {
+		const wrapper = render();
+		await connect(wrapper);
+		expect(document.querySelector(".voice-avatar")?.textContent).toBe("🌡️");
+		expect(document.querySelector(".voice-avatar svg")).toBeNull();
+		expect(document.querySelector(".voice-call-screen")?.getAttribute("aria-label")).toBe(
+			"Mercury voice call with Gaia"
+		);
+		await click(".voice-pip");
+		expect(document.querySelector(".minimized .voice-avatar")?.textContent).toBe("🌡️");
+		wrapper.unmount();
+	});
 	it("shows the registered agent name rather than a prefixed channel slug", async () => {
 		const wrapper = render();
 		await wrapper.setProps({
@@ -134,7 +284,7 @@ describe("voice phone entry", () => {
 				messages: [],
 			} as unknown as ClientChan,
 		});
-		state.serverConfiguration.voiceCallSidecarUrl = "https://voice.example.test";
+		configureRelay(wrapper);
 		await wrapper.get(".call-toggle").trigger("click");
 		await flushPromises();
 		sockets[0].message({type: "ready", engine: "hermes", agentName: "Registered Agent"});
@@ -142,19 +292,16 @@ describe("voice phone entry", () => {
 		expect(document.querySelector(".voice-identity h2")?.textContent).toBe("Registered Agent");
 		wrapper.unmount();
 	});
-	it("opens actionable settings outside the clipping chat header when unconfigured", async () => {
+	it("shows canonical host setup instead of collecting browser credentials when unconfigured", async () => {
 		const wrapper = render();
 		await wrapper.get(".call-toggle").trigger("click");
-		expect(document.body.querySelector(".voice-settings input")).not.toBeNull();
-		expect(wrapper.element.contains(document.body.querySelector(".voice-settings"))).toBe(
-			false
-		);
-		expect(document.body.textContent).toContain("sidecar URL");
+		expect(document.body.querySelector(".voice-settings input")).toBeNull();
+		expect(document.body.textContent).toContain("mercury setup stt");
 		wrapper.unmount();
 	});
-	it("starts from the configured URL and starts the timer only at ready", async () => {
+	it("starts from configured relay and starts the timer only at ready", async () => {
 		const wrapper = render();
-		state.serverConfiguration.voiceCallSidecarUrl = "https://voice.example.test";
+		configureRelay(wrapper);
 		await wrapper.get(".call-toggle").trigger("click");
 		await flushPromises();
 		vi.useFakeTimers();
@@ -206,9 +353,27 @@ describe("voice phone entry", () => {
 		expect(document.querySelector(".voice-call-screen")).toBeNull();
 		wrapper.unmount();
 	});
+	it("cancels an acknowledged pending relay before ready without accepting late readiness", async () => {
+		const wrapper = render();
+		configureRelay(wrapper);
+		await wrapper.get(".call-toggle").trigger("click");
+		await flushPromises();
+		sockets[0].message({type: "pong"});
+		const delayed = sockets[0].onmessage!;
+		await click(".voice-end");
+		expect(emitInput).toHaveBeenCalledWith("voice:call", {
+			type: "hangup",
+			callId: "fixture-0",
+		});
+		delayed({data: JSON.stringify({type: "ready", engine: "hermes", callId: "fixture-0"})});
+		await flushPromises();
+		expect(document.querySelector(".voice-call-screen")).toBeNull();
+		expect(stop).toHaveBeenCalledOnce();
+		wrapper.unmount();
+	});
 	it("releases a microphone permission request that resolves after End", async () => {
 		const wrapper = render();
-		state.serverConfiguration.voiceCallSidecarUrl = "https://voice.example.test";
+		configureRelay(wrapper);
 		const {promise, resolve} = Promise.withResolvers<MediaStream>();
 		getMedia.mockReturnValue(promise);
 		await wrapper.get(".call-toggle").trigger("click");
@@ -269,7 +434,7 @@ describe("voice phone entry", () => {
 		} as unknown as ClientChan;
 		await wrapper.setProps({channel: query});
 		state.networks.push({uuid: "mirc", channels: [room, query]} as ClientNetwork);
-		state.serverConfiguration.voiceCallSidecarUrl = "https://voice.example.test";
+		configureRelay(wrapper);
 		await wrapper.get(".call-toggle").trigger("click");
 		await flushPromises();
 		sockets[0].message({
@@ -297,7 +462,7 @@ describe("voice phone entry", () => {
 			uuid: "mirc",
 			channels: [{id: 1, name: "#agent", type: "channel", messages: []}, query],
 		} as ClientNetwork);
-		state.serverConfiguration.voiceCallSidecarUrl = "https://voice.example.test";
+		configureRelay(wrapper);
 		await wrapper.get(".call-toggle").trigger("click");
 		await flushPromises();
 		sockets[0].message({
@@ -323,19 +488,19 @@ describe("voice phone entry", () => {
 		expect(document.querySelector(".voice-timer")).not.toBeNull();
 		wrapper.unmount();
 	});
-	it("ends an established call into visible actionable provider error settings", async () => {
+	it("ends an established call into visible actionable provider errors", async () => {
 		const wrapper = render();
 		await connect(wrapper);
 		sockets[0].message({
 			type: "error",
-			message: "STT local assets missing. Configure STT on the mLounge host.",
+			message: "STT local assets missing. Run mercury setup stt on the mLounge host.",
 		});
 		await flushPromises();
 		expect(document.querySelector(".voice-timer")).toBeNull();
 		expect(document.querySelector(".voice-error")?.textContent).toContain(
 			"STT local assets missing"
 		);
-		expect(document.querySelector(".voice-setup")?.textContent).toContain("Voice settings");
+		expect(document.querySelector(".voice-setup")?.textContent).toContain("mercury setup stt");
 		expect(stop).toHaveBeenCalledOnce();
 		expect(sockets[0].close).toHaveBeenCalledOnce();
 		wrapper.unmount();
