@@ -19,6 +19,7 @@ tests patch ``_load_config`` directly, mirroring test_code_execution_modes.
 import json
 import os
 import sys
+import tempfile
 import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -54,10 +55,14 @@ def _kernel_config(**overrides):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_kernel_registry():
+def _fresh_kernel_registry(monkeypatch):
     shutdown_all_kernels()
-    yield
-    shutdown_all_kernels()
+    # AF_UNIX endpoints must fit sun_path; pytest's long release evidence
+    # directory is not a suitable socket root. This is private test state.
+    with tempfile.TemporaryDirectory(prefix="mk-", dir="/tmp") as socket_root:
+        monkeypatch.setattr(tempfile, "tempdir", socket_root)
+        yield
+        shutdown_all_kernels()
 
 
 def _run(code, **kwargs):
@@ -331,7 +336,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         from tools.terminal_tool import set_approval_callback
 
         seen = []
-        cell = "import mercury_tools\nhermes_tools.web_search(query='q')\n"
+        cell = "import mercury_tools\nmercury_tools.web_search(query='q')\n"
         with _kernel_config(), patch(
             "model_tools.handle_function_call", new=self._recorder(seen)
         ):
