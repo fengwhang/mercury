@@ -1,8 +1,8 @@
 # mLounge voice calls (Hermes engines only)
 
-Experimental browser calls for Hermes-agent rooms. The phone action opens
-an established-call screen with the registered agent/contact name, a pink avatar,
-rose-to-burgundy background, a duration timer, and Audio, End, and Mute controls.
+Browser calls use the Hermes STT/TTS providers selected in Mercury Setup.
+The call screen uses Mercury's 🌡️ identity, a duration timer, and Audio,
+End, and Mute controls. No browser provider or service credentials are needed.
 Ordinary text chat remains independent of voice.
 
 ## Three tiers, no localhost
@@ -38,10 +38,20 @@ Hermes engine (never OMP — refused at call start)
 
 ## Browser controls and lifecycle
 
-The phone button starts a configured call directly. Missing or invalid sidecar
-configuration opens visible settings with **Save and call**; microphone, network,
-authentication, and engine failures remain visible instead of disappearing below
-the chat header. The call surface is mounted outside that clipping header.
+The phone button starts the configured call through the existing authenticated
+mLounge session. Missing host configuration, local dependencies/model assets,
+service authentication, microphone permission, and engine failures are visible
+host Setup/doctor remediation—not a request for browser credentials.
+
+Each start carries a monotonically increasing socket-scoped `attemptId` through
+controls and returned frames. It is correlation, not authority: the relay still
+requires the owning authenticated session, exact origin/network and live target.
+The relay mints a local `callId` and maps the sidecar's separate authoritative
+upstream ID; neither browser field selects a MIRC registry ID. End cancels the
+pending attempt before any ready ACK, and late frames cannot bind a newer call.
+A cancelled status lookup never starts the registry. If start was already in
+flight, its outcome remains uncertain until exact-ID end reconciliation; it is
+not replayed and no bare-channel cleanup is used.
 
 The duration is `mm:ss`, measured from the sidecar's `ready` establishment,
 not from the button click or the microphone permission prompt. Established
@@ -93,10 +103,9 @@ navigation and ready-metadata changes are not treated as removal.
 
 Rejected browser playback retains the queued reply. Audio retries it immediately
 within the click's user activation, before waiting for output enumeration.
-Playback failures remain visible independently of output-selection messages;
-they are not silently replaced by routing status. A worker/provider error ends
-the established state and exposes its error plus **Voice settings**, rather
-than leaving an inaudible call hidden behind the timer.
+Playback failures remain visible independently of output-selection messages.
+A worker/provider error ends the established state and exposes its error;
+repair the selected host's configuration through Mercury Setup/doctor.
 
 Acceptance: a remote laptop browser against muted/headless servers
 captures mic locally and plays replies through the laptop speakers —
@@ -141,78 +150,78 @@ Missing assets are an actionable host-configuration error; configure STT on the
 mLounge host and TTS on the MIRC host before retrying. Explicitly configured
 cloud APIs remain available with their own credentials.
 
-## Split-host config (`voice_call` section)
+## Setup-managed authenticated transport
 
-All URLs explicit, empty by default — the call UI refuses to start
-until they are set. Same-machine works by pointing them at the one
-box; localhost is never filled in for you.
+The browser uses its existing private mLounge Socket.IO login. The public
+`voiceCallSidecarUrl` key advertises `socket.io:/call` when the host's private
+bootstrap is available. It never contains a provider key or service token.
+The browser must not use legacy URL/token localStorage overrides.
 
-- `voice_call.mirc_host_url` — MIRC/gateway host
-  (`/api/voice-call/*`, `/api/audio/speak`). Consumed by the sidecar.
-- `voice_call.mlounge_host_url` — host serving the mLounge UI.
-- `voice_call.stt_sidecar_url` — sidecar base the browser uses
-  (e.g. `https://voice.example.ts.net`). Observatory service provisioning exports
-  this nonsecret URL as `MERCURY_VOICE_CALL_SIDECAR_URL`; mLounge sends it in its
-  public browser configuration. Reprovision/regenerate and restart the mLounge
-  service after changing it; this is not a hot-reloaded setting. A per-browser
-  URL override in voice settings takes precedence.
-- `voice_call.language`, `voice_call.enabled`.
+Setup retains the existing explicit three-host `voice_call` configuration:
 
-`mercury setup stt` prompts for all three (flags `--mirc-url`,
-`--mlounge-url`, `--sidecar-url`, or `MERCURY_MIRC_URL` /
-`MERCURY_MLOUNGE_URL` / `MERCURY_STT_SIDECAR_URL`).
+- `mirc_host_url`: the selected MIRC host's existing voice API
+  (`/api/voice-call/status`, `/api/voice-call/call`, `/api/audio/speak`).
+- `mlounge_host_url`: the exact browser origin allowed to initiate calls.
+- `stt_sidecar_url`: the private STT service peer on the mLounge host;
+  this URL is consumed server-side, not opened by the browser.
+- `enabled`, and the canonical saved `stt` and `tts` sections.
 
-## Running the sidecar (mLounge host)
+`mercury setup stt` retains `--mirc-url`, `--mlounge-url`, and `--sidecar-url`.
+All peers are explicit: a remote host is never replaced with localhost.
+When all tiers run on one selected installation, provisioning creates both
+the STT and authenticated MIRC voice API units from these configured endpoints.
+An existing installation's normal Setup rerun regenerates the private bootstrap
+and unit definitions; no separate manual sidecar command is the normal path.
+The STT service reloads the selected provider/model/language at the next call.
+Provider credentials resolve through the canonical selected-home `.env` helpers.
 
-After `mercury setup stt` on that host:
+The installation home and named profile are pinned in generated unit
+environment variables. Stable and nightly voice unit names are distinct.
+The private bootstrap contains only configuration paths, explicit peers,
+authorized owner/network context, and profile identity. Service secrets stay
+in the selected host/profile `.env`; neither unit arguments, unit text,
+bootstrap JSON, browser payloads, nor public YAML contain them.
 
-```
-python -m observatory.voice_call_stt --host 0.0.0.0 --port 8765 \
-    --mirc-url http://mirc-host:8000 --token s3cret
-```
+On a split deployment, run Setup/provisioning on the host owning each service.
+The mLounge host must have its explicit STT peer, canonical STT configuration,
+authorized provisioned IRC network and owner login. The MIRC host must have
+its canonical TTS configuration and selected profile. The corresponding
+`VOICE_CALL_SIDECAR_TOKEN` and `VOICE_CALL_MIRC_TOKEN` service pairs must be
+provisioned securely in the participating hosts' `.env` stores; Setup refuses
+an unconfigured remote peer rather than generating an unrelated remote secret.
+These are host-deployment prerequisites, never per-browser inputs.
+Use HTTPS for split-host service traffic or an explicitly encrypted private
+network. Direct HTTPS voice listeners require `voice_call.tls_cert` and
+`voice_call.tls_key` pointing to existing host certificate/key files.
 
-Stdlib HTTP/WebSocket transport. `--provider/--model/--language` overlay the
-stored STT config in memory. Model and language flags also apply when the stored
-provider is retained (without `--provider`). The parsed `--endpoint` flag does
-**not** redirect the current OpenAI client or update a local provider's baked
-command endpoint; configure endpoints through `mercury setup stt` instead.
-When reusing a local command template, update any existing `--endpoint` argument
-in that template too: setup only appends the flag when it is absent.
-`--token` (or `VOICE_CALL_SIDECAR_TOKEN`) gates every route except `/stt/health`;
-without it the port transcribes for anyone who can reach it — bind loopback or
-firewall accordingly.
+The private listener authenticates every effectful route using a service
+header; missing authentication fails closed. Token URLs, wildcard CORS,
+browser origins on the internal listener, arbitrary redirects and
+client-selected peer/profile/provider URLs are rejected. mLounge resolves
+the numeric target only inside the authenticated owner's connected,
+provisioned IRC network and joined channel/query context. Each control and
+audio frame is bound to that socket's returned call ID. Session revocation,
+target removal and disconnect invalidate the relay; stale call IDs cannot
+mutate a new call. OMP/unknown/foreign-profile targets are refused before
+STT or TTS execution.
 
-Set `VOICE_CALL_MIRC_TOKEN` to the same secret in the **MIRC web-server
-process** and the **sidecar process** (or pass `--mirc-token` to the
-sidecar). This authenticates the sidecar only to the dashboard's three
-voice/audio routes. It does not grant access to configuration or other
-dashboard endpoints. The browser receives only the distinct sidecar token.
-Restart the two processes after adding the service secret.
+Remote browsers require an HTTPS mLounge origin for `getUserMedia`.
+A plain HTTP tailnet hostname is not a secure microphone context.
+The authenticated same-origin session relay avoids mixed-content browser
+connections to an internal HTTP service; it does not excuse insecure
+host-to-host deployment.
 
-`--home PATH` selects that home's `config.yaml` as well as its state directories,
-overriding an inherited `MERCURY_CONFIG`. Without `--home`, the launcher's active
-configuration remains authoritative.
 
-The separate sidecar token is entered in the browser's voice settings and kept
-in local browser storage. Service provisioning and public mLounge configuration
-never export the MIRC authentication token or automatically publish a sidecar
-secret. When a configured sidecar refuses authentication, open **Voice settings**
-and enter its dedicated browser token.
+## Retained call protocol
 
-For a remote browser, serve mLounge over HTTPS and put the sidecar behind
-an HTTPS reverse proxy that supports WebSocket upgrades; use its HTTPS
-URL in the panel. The sidecar itself serves HTTP. A plain tailnet HTTP
-hostname is not a browser secure context for microphone access, and an
-HTTPS page cannot use an insecure `ws://` sidecar. Tailscale Serve or an
-equivalent proxy can provide the HTTPS endpoints.
-
-## Call protocol (sidecar `/call` socket)
-
-- Browser → sidecar: `{type: hello, channel, mime}` first; then complete
-  independently recorded audio files (at least 2s, waiting for a speech
-  pause up to a 12s cap; WebM/Ogg/MP4 depending on
-  browser support), `{type: tts, text, token}`,
-  `{type: mute, muted}`, `{type: hangup}`, `{type: ping}`.
+The browser emits `voice:call` on its existing authenticated Socket.IO
+connection. The first object is `{type: hello, target, mime}`, with a numeric
+mLounge channel/query target. Subsequent audio is
+`{type: audio, callId, data}` containing a complete independently decodable
+browser recording. Controls retain `tts`, `mute`, `hangup`, and `ping`, and
+include the returned `callId`. mLounge resolves the target server-side and
+forwards the retained `/call` hello/binary/control wire to its private STT
+peer using a server-only authentication header.
 - Sidecar → browser: `{type: ready, callId, engine, sttProvider, agentName?, agentRoom?}`,
   `{type: refused, reason}` (OMP and unidentified/expired rooms),
   `{type: transcript, text}`, `{type: audio, token, mime, dataUrl}`,

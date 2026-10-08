@@ -19,6 +19,7 @@ import changelog from "./plugins/changelog";
 import inputs from "./plugins/inputs";
 import Auth from "./plugins/auth";
 import {injectServerConfig} from "./plugins/html-config";
+import {registerVoiceCall, loadVoiceRelayConfig} from "./voice-call";
 
 import themes from "./plugins/packages/themes";
 themes.loadLocalThemes();
@@ -223,6 +224,7 @@ export default async function (
 			// TODO: type as Server.Transport[]
 			transports: Config.values.transports as any,
 			pingTimeout: 60000,
+			maxHttpBufferSize: 8 * 1024 * 1024 + 65536,
 		});
 
 		sockets.on("connect", (socket) => {
@@ -833,6 +835,10 @@ function initializeClient(
 	void socket.join(client.id);
 
 	const sendInitEvent = (tokenToSend?: string) => {
+		if (!Config.values.public) {
+			registerVoiceCall(socket, client, token);
+		}
+
 		socket.emit("init", {
 			active: openChannel,
 			networks: client.networks.map((network) =>
@@ -872,7 +878,7 @@ function getClientConfiguration(): SharedConfiguration | LockedSharedConfigurati
 		public: Config.values.public,
 		useHexIp: Config.values.useHexIp,
 		prefetch: Config.values.prefetch,
-		voiceCallSidecarUrl: process.env.MERCURY_VOICE_CALL_SIDECAR_URL || "",
+		voiceCallSidecarUrl: loadVoiceRelayConfig() ? "socket.io:/call" : "",
 		fileUploadMaxFileSize: Uploader ? Uploader.getMaxFileSize() : undefined, // TODO can't be undefined?
 	};
 
