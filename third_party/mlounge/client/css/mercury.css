@@ -434,13 +434,11 @@ code,
 	background: rgb(40 0 20 / 45%);
 }
 
-.voice-settings label,
 .voice-outputs label {
 	display: block;
 	margin-bottom: 12px;
 }
 
-.voice-settings input,
 .voice-outputs select {
 	display: block;
 	width: 100%;
