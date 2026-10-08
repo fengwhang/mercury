@@ -29,7 +29,7 @@ import pytest
 PLUGIN_MODULE_PATH = (
     Path(__file__).resolve().parents[2]
     / "plugins"
-    / "mercury-achievements"
+    / "hermes-achievements"
     / "dashboard"
     / "plugin_api.py"
 )
