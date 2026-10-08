@@ -475,41 +475,8 @@ def activate_durable_lazy_target() -> None:
 
 
 def _allow_lazy_installs() -> bool:
-    """Return whether lazy installs are permitted in this environment.
-
-    Resolution order:
-
-    1. ``security.allow_lazy_installs: false`` in config.yaml is an absolute
-       opt-out — it disables installs in BOTH venv-scoped and durable-target
-       modes. This is the user-facing kill switch.
-    2. ``HERMES_DISABLE_LAZY_INSTALLS=1`` seals the *agent venv* (set by the
-       immutable Docker image). It blocks venv-scoped installs — UNLESS a
-       durable install target is configured, in which case installs are
-       redirected there (a path that structurally cannot break the sealed
-       venv) and are therefore allowed.
-
-    Defaults to True. If config is unreadable we fail open (allow), because
-    refusing to install would lock people out of their own backends; the
-    decision to block is an explicit user opt-in.
-    """
-    # (1) Config kill switch wins in every mode.
-    try:
-        from mercury_cli.config import load_config
-        cfg = load_config()
-    except Exception:
-        cfg = None
-    if cfg is not None:
-        sec = cfg.get("security") or {}
-        if not bool(sec.get("allow_lazy_installs", True)):
-            return False
-
-    # (2) Sealed-venv env var: blocks ONLY when there is no safe durable
-    # target to redirect into. With a target set, the install goes to the
-    # data volume (append-only on sys.path), so the seal is preserved.
-    if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1":
-        return _lazy_install_target() is not None
-
-    return True
+    """Runtime never provisions packages, including into durable targets."""
+    return False
 
 
 def _unsupported_feature_reason(feature: str) -> Optional[str]:

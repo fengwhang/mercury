@@ -392,81 +392,8 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
 
 def check_for_updates() -> Optional[int]:
-    """Check whether a Mercury update is available.
-
-    Two paths: if ``HERMES_REVISION`` is set (nix builds embed it), compare
-    it to upstream main via ``git ls-remote``. Otherwise look for a local
-    git checkout and count commits behind ``origin/main``.
-
-    Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
-    if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
-    the check failed or doesn't apply. Cached for 6 hours.
-    """
-    mercury_home = get_hermes_home()
-    cache_file = mercury_home / ".update_check"
-    embedded_rev = os.environ.get("HERMES_REVISION") or None
-
-    # Docker images have no working tree to count commits against — the
-    # published image excludes `.git` (see .dockerignore) and sets no
-    # HERMES_REVISION (that's nix-only). Returning None makes both the Rich
-    # banner (build_welcome_banner) and the Ink badge (branding.tsx, guarded
-    # on `typeof === 'number' && > 0`) show nothing. The dashboard's REST
-    # `/api/mercury/update/check` endpoint short-circuits docker the same way
-    # (web_server.py); mirror that here so the banner/TUI surfaces agree.
-    try:
-        from mercury_cli.config import detect_install_method, get_project_root
-        if detect_install_method(get_project_root()) in {"docker", "apt"}:
-            return None
-    except Exception:
-        pass
-
-    # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check.
-    now = time.time()
-    try:
-        if cache_file.exists():
-            cached = json.loads(cache_file.read_text(encoding="utf-8"))
-            if (
-                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
-                and cached.get("ver") == VERSION
-            ):
-                return cached.get("behind")
-    except Exception:
-        pass
-
-    if embedded_rev:
-        behind = _check_via_rev(embedded_rev)
-    else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/mercury-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = mercury_home / "mercury-agent"
-        if not (repo_dir / ".git").exists():
-            # No git checkout and no embedded revision — can't determine
-            # update status. This is the Docker path (already short-circuited
-            # above) or an unsupported install without a source tree.
-            behind = None
-        else:
-            behind = _check_via_local_git(repo_dir)
-
-    try:
-        # Don't cache inconclusive results (None). A None means the check
-        # could not run — typically a failed git fetch. Caching None would
-        # suppress retries for the full 6-hour cache window, leaving the
-        # user with a stale "up to date" or no information for hours after
-        # connectivity is restored (#82166).
-        if behind is not None:
-            cache_file.write_text(
-                json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
-                encoding="utf-8",
-            )
-    except Exception:
-        pass
-
-    return behind
+    """Automatic startup/version checks never contact a release server."""
+    return None
 
 
 def _resolve_repo_dir() -> Optional[Path]:

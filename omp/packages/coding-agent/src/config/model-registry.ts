@@ -488,11 +488,12 @@ export class ModelRegistry {
 		}
 	}
 
-	refreshInBackground(strategy: ModelRefreshStrategy = "online-if-uncached"): void {
+	refreshInBackground(_strategy: ModelRefreshStrategy = "offline"): void {
 		if (this.#backgroundRefresh) {
 			return;
 		}
-		const refreshPromise = this.refresh(strategy)
+		// Automatic startup must not refresh unrelated providers.
+		const refreshPromise = this.refresh("offline")
 			.catch(error => {
 				logger.warn("background model refresh failed", {
 					error: error instanceof Error ? error.message : String(error),

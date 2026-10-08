@@ -5,30 +5,23 @@ their original projects and are not Mercury release announcements.
 
 ## [0.4.5] — nightly
 
-- Remove the grievance and outbound-telemetry systems. Nothing phones home:
-  no built-in collab relay or share upload endpoint (both default empty),
-  upstream `omp.sh`/`live.omp.sh`/`skills.omp.sh` hosts are rejected as invalid
-  Mercury endpoints, and remote diagnostic/report-tool-issue/OTLP/Langfuse
-  reporting is gone. Local-only reporting, issue recording and explicitly
-  configured self-hosted routes remain, gated behind privacy toggles.
-- Reach the configured model fallback chain on every provider exception for the
-  default and delegate models, including plan-wide usage limits and budget
-  exhaustion, and consult the chain before overflow/compaction terminals. An
-  exception-class fallback table (docs/exception-class-fallback-table.md)
-  documents, for both engines, exactly which exception classes fail over and
-  which (cancels/interrupts, deterministic request-shape errors, output-cap,
-  usage-backed overflows) deliberately do not. A startup provider that was only
-  inferred never auto-discovers on primary restore.
-- Add a top-level `mercury stats` command that reports BOTH the Hermes
-  personal-agent engine and the OMP coding engine on one dashboard, built on the
-  `omp stats` webserver with a dual-engine metrics API (`/api/engines`,
-  `/api/capabilities`). `mercury omp stats` remains the stock single-engine
-  passthrough. Metrics with no genuine source stay null and noted, never
-  invented.
-- Disable Photon, Mem0 and Browser Use dependency telemetry; require offline
-  embedded Hindsight model loading, local Marker OCR and provisioned GRPO
-  training assets; and drop hosted Hugging Face MCP suggestions and
-  computer-use telemetry opt-ins.
+- Remove grievance and remote diagnostic/telemetry reporting systems while
+  retaining local reports and explicitly configured self-hosted routes.
+- Reach the configured default/delegate fallback chain on eligible provider
+  exceptions, including usage limits and budget exhaustion. Preserve cancellation
+  and deterministic request-error exclusions.
+- Improve Linux CUA compatibility, local diagnostics, telemetry-off precedence
+  and Hermes screenshot staging/delivery.
+- Persist delegated task checkpoints and terminal outcomes across registered
+  process restarts; reconcile reconnect feeds using durable receipts and render
+  tool outcomes without fabricating success.
+- Authenticate restart ownership/provenance, defer convenience maintenance
+  restarts, and drain accepted approval responses during bounded bridge shutdown.
+- Disable automatic banner/CUA release checks, CUA runtime repair, lazy package
+  installation, marketplace updates and incidental startup provider refresh.
+  Strip inference/cloud credentials from native CUA children after passthrough.
+- Disable dependency telemetry in Photon, Mem0 and Browser Use; require
+  provisioned local Hindsight/OCR/training assets.
 
 ## [0.4.4] — nightly
 

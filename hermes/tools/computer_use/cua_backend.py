@@ -285,7 +285,12 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     inherited environment or obsolete configuration previously enabled it.
     Used by the MCP backend, status, doctor, and install paths.
     """
-    env = dict(base_env if base_env is not None else os.environ)
+    source = base_env if base_env is not None else os.environ
+    env = {
+        key: value for key, value in source.items()
+        if not key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIALS"))
+        and key.upper() not in {"AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN"}
+    }
     env[_CUA_TELEMETRY_ENV_VAR] = "0"
     if (sys.platform == "linux" and env.get("WAYLAND_DISPLAY")
             and _computer_use_cfg().get("native_wayland") is True):
@@ -303,8 +308,7 @@ def sanitized_cua_driver_env(base_env: Optional[Dict[str, str]] = None) -> Dict[
     from tools.environments.local import _sanitize_subprocess_env
 
     env = _sanitize_subprocess_env(cua_driver_child_env() if base_env is None else base_env)
-    env[_CUA_TELEMETRY_ENV_VAR] = "0"
-    return env
+    return cua_driver_child_env(env)
 
 def cua_driver_telemetry_disable_persistent(*, timeout: float = 30.0) -> bool:
     """Persistently disable cua-driver telemetry via ``telemetry disable``.
@@ -1218,62 +1222,13 @@ _contract_repair_attempted = False
 
 
 def _maybe_repair_runtime_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
-    """Try one automatic driver repair for a failed runtime contract.
-
-    Returns the post-repair contract state (or the original state when no
-    repair was attempted / the repair failed). Never raises. An explicit
-    ``HERMES_CUA_DRIVER_CMD`` override is authoritative even when broken, and
-    a missing binary means installation was never requested — both are left
-    for the caller's error message.
-    """
-    global _contract_repair_attempted
-    if contract.get("ready"):
-        return contract
-    if _contract_repair_attempted:
-        return contract
-    if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
-        return contract
-    if not contract.get("binary"):
-        return contract
-    _contract_repair_attempted = True
-    logger.info(
-        "computer_use: installed cua-driver is not usable (%s); "
-        "attempting automatic repair",
-        contract.get("reason") or "runtime contract is incomplete",
-    )
-    try:
-        from mercury_cli.tools_config import install_cua_driver
-
-        if not install_cua_driver(upgrade=False, show_installer_progress=False):
-            return contract
-    except Exception as exc:
-        logger.warning("computer_use: automatic cua-driver repair failed: %s", exc)
-        return contract
-    try:
-        return cua_driver_runtime_contract_status()
-    except Exception:
-        return contract
+    """Leave incompatible drivers unchanged; runtime never downloads repairs."""
+    return contract
 
 
 def _maybe_nudge_update() -> None:
-    """Emit an update nudge at most once per process, off-thread so the
-    (cached, ~20h) GitHub poll never blocks the first computer_use action."""
-    global _update_checked
-    if _update_checked:
-        return
-    _update_checked = True
-
-    def _run() -> None:
-        try:
-            msg = cua_driver_update_nudge()
-        except Exception:
-            return
-        if msg:
-            logger.info("computer_use: %s", msg)
-
-    threading.Thread(
-        target=_run, name="cua-driver-update-check", daemon=True
-    ).start()
+    """Runtime never starts a vendor release check."""
+    return None
 
 
 def cua_driver_install_hint() -> str:
